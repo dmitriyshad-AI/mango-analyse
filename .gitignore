@@ -1,0 +1,39 @@
+.venv/
+.venv-asrbench/
+.local/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+
+*.db
+*.sqlite
+.env
+.amocrm_tokens.json
+
+*.egg-info/
+build/
+dist/
+
+.DS_Store
+
+# Local runtime/output artifacts
+benchmarks/
+logs/
+transcripts/
+transcripts_*/
+transcripts_semi_prod_*/
+stable_runtime/runs/
+stable_runtime/venv_stable/
+stable_runtime/*.db
+
+# Local source data dumps
+2026-03-05-21-06-49-ч1/
+2026-03-05-21-06-49-ч2/
+
+sample_calls/
+
+# Deploy/local overrides
+deploy/.env.deploy

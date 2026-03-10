@@ -1,0 +1,64 @@
+name: deploy-server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+
+      - name: Add target host to known_hosts
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "${PORT}" -H "${DEPLOY_SSH_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Sync repo to server
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          APP_DIR="${DEPLOY_APP_DIR:-/opt/mango-analyse}"
+          ssh -p "${PORT}" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" "mkdir -p '${APP_DIR}'"
+          rsync -az --delete \
+            --exclude '.git/' \
+            --exclude '.venv/' \
+            --exclude '.venv-asrbench/' \
+            --exclude '.pytest_cache/' \
+            --exclude '__pycache__/' \
+            --exclude '*.db' \
+            --exclude 'transcripts*/' \
+            --exclude 'stable_runtime/runs/' \
+            -e "ssh -p ${PORT}" \
+            ./ "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}:${APP_DIR}/"
+
+      - name: Rebuild app on server
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          APP_DIR="${DEPLOY_APP_DIR:-/opt/mango-analyse}"
+          ssh -p "${PORT}" "${DEPLOY_SSH_USER}@${DEPLOY_SSH_HOST}" \
+            "cd '${APP_DIR}' && bash deploy/server_rebuild.sh"

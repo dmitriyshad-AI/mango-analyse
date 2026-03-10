@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mango-call-mvp"
+version = "0.1.0"
+description = "MVP pipeline: Mango export recordings -> transcript -> analysis -> amoCRM sync"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "openai>=1.70.0",
+  "python-dotenv>=1.0.1",
+  "requests>=2.32.3",
+  "SQLAlchemy>=2.0.36"
+]
+
+[project.scripts]
+mango-mvp = "mango_mvp.cli:main"
+mango-mvp-ui = "mango_mvp.gui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

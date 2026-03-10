@@ -40,22 +40,22 @@ class MangoMvpGui(tk.Tk):
         self.export_dir = tk.StringVar(value=str(Path.cwd() / "transcripts"))
 
         current_python = Path(sys.executable).resolve()
-        fallback_backend = Path.cwd() / ".venv-asrbench" / "bin"
-        fallback_candidates = [fallback_backend / "python", fallback_backend / "python3"]
-        in_known_venv = (
-            ".venv-asrbench" in str(current_python)
-            or "stable_runtime/venv_stable" in str(current_python)
+        stable_backend = Path.cwd() / "stable_runtime" / "venv_stable" / "bin"
+        asrbench_backend = Path.cwd() / ".venv-asrbench" / "bin"
+        fallback_candidates = [
+            current_python,
+            stable_backend / "python",
+            stable_backend / "python3",
+            asrbench_backend / "python",
+            asrbench_backend / "python3",
+        ]
+        backend_default = next(
+            (candidate for candidate in fallback_candidates if self._python_has_runtime_deps(candidate)),
+            current_python,
         )
-        if in_known_venv:
-            backend_default = current_python
-        else:
-            backend_default = next(
-                (candidate for candidate in fallback_candidates if candidate.exists()),
-                current_python,
-            )
         self.backend_python = tk.StringVar(value=str(backend_default))
         self.use_project_src = tk.BooleanVar(
-            value="stable_runtime/venv_stable" not in str(current_python)
+            value="stable_runtime/venv_stable" not in str(backend_default)
         )
 
         self.transcribe_mode = tk.StringVar(value="dual")
@@ -120,6 +120,22 @@ class MangoMvpGui(tk.Tk):
         self.after(LOG_POLL_MS, self._drain_log_queue)
         self._refresh_stats_async(silent=True)
         self._schedule_auto_stats()
+
+    @staticmethod
+    def _python_has_runtime_deps(executable: Path) -> bool:
+        if not executable.exists():
+            return False
+        try:
+            proc = subprocess.run(
+                [str(executable), "-c", "import sqlalchemy, dotenv"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+            return proc.returncode == 0
+        except Exception:  # noqa: BLE001
+            return False
 
     def _setup_theme(self) -> None:
         style = ttk.Style(self)
@@ -858,6 +874,13 @@ class MangoMvpGui(tk.Tk):
                 self._append_log(stdout)
             if stderr and not quiet:
                 self._append_log(stderr)
+                lowered = stderr.lower()
+                if "no module named 'sqlalchemy'" in lowered or 'no module named "sqlalchemy"' in lowered:
+                    self._append_log(
+                        "[hint] Selected Backend Python does not have project dependencies. "
+                        "Choose stable runtime python: stable_runtime/venv_stable/bin/python "
+                        "or start UI via ./stable_runtime/run-ui.sh"
+                    )
             payload = self._extract_json_payload(stdout)
             if not quiet:
                 self._append_log(f"[exit_code={proc.returncode}]")

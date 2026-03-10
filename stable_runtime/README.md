@@ -15,6 +15,12 @@ cd "/Users/dmitrijfabarisov/Projects/Mango analyse"
 ./stable_runtime/run-ui.sh
 ```
 
+UI highlights in the current stable build:
+- independent transcription mode selection: `whisper (mlx)` / `gigaam` / `dual`
+- explicit resume-safe queue processing (`pending/failed` only)
+- separate Codex post-processing actions (`resolve`, `analyze`, full drain)
+- built-in status dashboard and functional reference tab
+
 CLI from stable runtime:
 
 ```bash

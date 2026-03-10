@@ -61,7 +61,7 @@ class MangoMvpGui(tk.Tk):
         self.transcribe_mode = tk.StringVar(value="dual")
         self.transcribe_provider = tk.StringVar(value="mlx")
         self.secondary_provider = tk.StringVar(value="gigaam")
-        self.dual_enabled = tk.BooleanVar(value=True)
+        self.dual_mode_state = tk.StringVar(value="")
         self.merge_provider = tk.StringVar(value="codex_cli")
         self.language = tk.StringVar(value="ru")
         self.stage_limit = tk.StringVar(value="100")
@@ -114,6 +114,8 @@ class MangoMvpGui(tk.Tk):
         }
 
         self._setup_theme()
+        self.transcribe_mode.trace_add("write", self._on_transcribe_mode_changed)
+        self._on_transcribe_mode_changed()
         self._build_ui()
         self.after(LOG_POLL_MS, self._drain_log_queue)
         self._refresh_stats_async(silent=True)
@@ -219,12 +221,73 @@ class MangoMvpGui(tk.Tk):
         self._build_design_tab(self.tab_design)
         self._build_log_panel(logs_wrap)
 
-    def _build_pipeline_tab(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.columnconfigure(1, weight=1)
-        parent.rowconfigure(2, weight=1)
+    def _on_transcribe_mode_changed(self, *_: object) -> None:
+        mode = self.transcribe_mode.get().strip().lower()
+        if mode == "dual":
+            self.dual_mode_state.set("Dual mode: ON (two ASR systems)")
+            if not self.secondary_provider.get().strip():
+                self.secondary_provider.set("gigaam")
+        elif mode == "whisper":
+            self.dual_mode_state.set("Dual mode: OFF (Whisper only)")
+        elif mode == "gigaam":
+            self.dual_mode_state.set("Dual mode: OFF (GigaAM only)")
+        else:
+            self.dual_mode_state.set("Dual mode: OFF")
 
-        paths_card = ttk.LabelFrame(parent, text="Project & Paths", style="Card.TLabelframe", padding=10)
+    def _make_scrollable_tab(self, parent: ttk.Frame) -> ttk.Frame:
+        wrap = ttk.Frame(parent, style="App.TFrame")
+        wrap.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(wrap, bg="#F2F4F7", highlightthickness=0, borderwidth=0)
+        vbar = ttk.Scrollbar(wrap, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        content = ttk.Frame(canvas, style="App.TFrame")
+        win_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _sync_scroll_region(_event: object) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _sync_width(_event: object) -> None:
+            canvas.itemconfigure(win_id, width=canvas.winfo_width())
+
+        def _on_mousewheel(event: tk.Event) -> None:
+            if hasattr(event, "delta") and event.delta:
+                # macOS trackpad/mouse
+                step = int(-event.delta / 120) if event.delta % 120 == 0 else int(-event.delta / 6)
+                if step == 0:
+                    step = -1 if event.delta > 0 else 1
+                canvas.yview_scroll(step, "units")
+                return
+            if getattr(event, "num", None) == 4:
+                canvas.yview_scroll(-1, "units")
+            elif getattr(event, "num", None) == 5:
+                canvas.yview_scroll(1, "units")
+
+        def _bind_wheel(_event: object) -> None:
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", _on_mousewheel)
+            canvas.bind_all("<Button-5>", _on_mousewheel)
+
+        def _unbind_wheel(_event: object) -> None:
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        content.bind("<Configure>", _sync_scroll_region)
+        canvas.bind("<Configure>", _sync_width)
+        wrap.bind("<Enter>", _bind_wheel)
+        wrap.bind("<Leave>", _unbind_wheel)
+        return content
+
+    def _build_pipeline_tab(self, parent: ttk.Frame) -> None:
+        content = self._make_scrollable_tab(parent)
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=1)
+
+        paths_card = ttk.LabelFrame(content, text="Project & Paths", style="Card.TLabelframe", padding=10)
         paths_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 6))
         self._path_row(paths_card, 0, "Project dir", self.project_dir, self._pick_project_dir)
         self._path_row(paths_card, 1, "Recordings dir", self.recordings_dir, self._pick_recordings_dir)
@@ -238,7 +301,7 @@ class MangoMvpGui(tk.Tk):
             variable=self.use_project_src,
         ).grid(row=6, column=1, sticky="w", padx=6, pady=4)
 
-        asr_card = ttk.LabelFrame(parent, text="Transcription Setup", style="Card.TLabelframe", padding=10)
+        asr_card = ttk.LabelFrame(content, text="Stage 1: Transcription Setup", style="Card.TLabelframe", padding=10)
         asr_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 6))
 
         self._combo_row(
@@ -262,8 +325,16 @@ class MangoMvpGui(tk.Tk):
             self.secondary_provider,
             ["gigaam", "mlx", "openai", "mock", ""],
         )
-        ttk.Checkbutton(asr_card, text="Dual transcribe", variable=self.dual_enabled).grid(
-            row=2, column=2, sticky="w", padx=6, pady=3
+        ttk.Label(
+            asr_card,
+            textvariable=self.dual_mode_state,
+            style="Muted.TLabel",
+        ).grid(
+            row=2,
+            column=2,
+            sticky="w",
+            padx=6,
+            pady=3,
         )
         self._combo_row(
             asr_card,
@@ -272,18 +343,55 @@ class MangoMvpGui(tk.Tk):
             self.merge_provider,
             ["rule", "codex_cli", "ollama", "openai", "primary"],
         )
-        self._entry_row(asr_card, 4, "Batch size (--limit)", self.stage_limit)
-        self._entry_row(asr_card, 5, "Language", self.language)
-        self._entry_row(asr_card, 6, "MLX Whisper model", self.mlx_model)
-        self._entry_row(asr_card, 7, "GigaAM model", self.gigaam_model)
-        self._entry_row(asr_card, 8, "GigaAM device", self.gigaam_device)
-        self._entry_row(asr_card, 9, "GigaAM segment sec", self.gigaam_segment_sec)
-        self._entry_row(asr_card, 10, "Merge similarity threshold", self.merge_similarity_threshold)
+        ttk.Label(asr_card, text="Records per batch (--limit)", style="App.TLabel").grid(
+            row=4, column=0, sticky="w", padx=6, pady=3
+        )
+        ttk.Spinbox(
+            asr_card,
+            from_=1,
+            to=10000,
+            increment=10,
+            textvariable=self.stage_limit,
+            width=12,
+        ).grid(row=4, column=1, sticky="w", padx=6, pady=3)
+        preset = ttk.Frame(asr_card, style="App.TFrame")
+        preset.grid(row=4, column=2, sticky="w", padx=6, pady=3)
+        ttk.Label(preset, text="Quick:", style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 4))
+        for value in (50, 100, 250, 500):
+            ttk.Button(
+                preset,
+                text=str(value),
+                command=lambda v=value: self.stage_limit.set(str(v)),
+                width=5,
+            ).pack(side=tk.LEFT, padx=1)
+
+        ttk.Label(
+            asr_card,
+            text=(
+                "To run only recognition: choose mode and click 'Stage 1: Transcribe All Pending'. "
+                "Batch count is this field."
+            ),
+            style="Muted.TLabel",
+            wraplength=440,
+            justify=tk.LEFT,
+        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=6, pady=(2, 6))
+
+        self._entry_row(asr_card, 6, "Language", self.language)
+        self._entry_row(asr_card, 7, "MLX Whisper model", self.mlx_model)
+        self._entry_row(asr_card, 8, "GigaAM model", self.gigaam_model)
+        self._entry_row(asr_card, 9, "GigaAM device", self.gigaam_device)
+        self._entry_row(asr_card, 10, "GigaAM segment sec", self.gigaam_segment_sec)
+        self._entry_row(asr_card, 11, "Merge similarity threshold", self.merge_similarity_threshold)
         ttk.Checkbutton(asr_card, text="Split stereo channels", variable=self.split_stereo).grid(
-            row=10, column=2, sticky="w", padx=6, pady=3
+            row=11, column=2, sticky="w", padx=6, pady=3
         )
 
-        codex_card = ttk.LabelFrame(parent, text="Codex / LLM Post-processing", style="Card.TLabelframe", padding=10)
+        codex_card = ttk.LabelFrame(
+            content,
+            text="Stage 2: Codex / LLM Post-processing",
+            style="Card.TLabelframe",
+            padding=10,
+        )
         codex_card.grid(row=1, column=0, sticky="nsew", padx=(0, 6), pady=(0, 6))
         self._combo_row(
             codex_card,
@@ -307,7 +415,7 @@ class MangoMvpGui(tk.Tk):
         self._entry_row(codex_card, 7, "Ollama think", self.ollama_think)
         self._entry_row(codex_card, 8, "Ollama temperature", self.ollama_temperature)
 
-        reliability_card = ttk.LabelFrame(parent, text="Reliability", style="Card.TLabelframe", padding=10)
+        reliability_card = ttk.LabelFrame(content, text="Reliability", style="Card.TLabelframe", padding=10)
         reliability_card.grid(row=1, column=1, sticky="nsew", padx=(6, 0), pady=(0, 6))
         self._entry_row(
             reliability_card,
@@ -335,29 +443,61 @@ class MangoMvpGui(tk.Tk):
         self._entry_row(reliability_card, 8, "Worker poll sec", self.worker_poll_sec)
         self._entry_row(reliability_card, 9, "Worker max idle cycles", self.worker_max_idle_cycles)
 
-        actions_card = ttk.LabelFrame(parent, text="Actions", style="Card.TLabelframe", padding=10)
+        actions_card = ttk.LabelFrame(content, text="Actions", style="Card.TLabelframe", padding=10)
         actions_card.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 6))
         for col in range(4):
             actions_card.columnconfigure(col, weight=1)
 
-        primary_actions = [
-            ("1. Init DB", self.on_init_db),
-            ("2. Ingest Calls", self.on_ingest),
-            ("3. Refresh Stats", self.on_refresh_stats),
-            ("Transcribe Batch", self.on_transcribe_batch),
-            ("Transcribe All Pending", self.on_transcribe_drain),
-            ("Codex Resolve Batch", self.on_codex_resolve_batch),
-            ("Codex Analyze Batch", self.on_codex_analyze_batch),
-            ("Codex Post-process All", self.on_codex_postprocess_drain),
-        ]
-        for idx, (label, callback) in enumerate(primary_actions):
-            ttk.Button(actions_card, text=label, command=callback, style="Primary.TButton").grid(
-                row=idx // 4,
-                column=idx % 4,
-                padx=4,
-                pady=4,
-                sticky="ew",
-            )
+        ttk.Label(actions_card, text="Setup", style="App.TLabel").grid(
+            row=0, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 2)
+        )
+        ttk.Button(actions_card, text="1. Init DB", command=self.on_init_db, style="Primary.TButton").grid(
+            row=1, column=0, padx=4, pady=4, sticky="ew"
+        )
+        ttk.Button(actions_card, text="2. Ingest Calls", command=self.on_ingest, style="Primary.TButton").grid(
+            row=1, column=1, padx=4, pady=4, sticky="ew"
+        )
+        ttk.Button(actions_card, text="3. Refresh Stats", command=self.on_refresh_stats, style="Primary.TButton").grid(
+            row=1, column=2, padx=4, pady=4, sticky="ew"
+        )
+
+        ttk.Label(actions_card, text="Stage 1: Recognition only", style="App.TLabel").grid(
+            row=2, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 2)
+        )
+        ttk.Button(
+            actions_card,
+            text="Stage 1: Transcribe Batch",
+            command=self.on_transcribe_batch,
+            style="Primary.TButton",
+        ).grid(row=3, column=0, padx=4, pady=4, sticky="ew")
+        ttk.Button(
+            actions_card,
+            text="Stage 1: Transcribe All Pending",
+            command=self.on_transcribe_drain,
+            style="Primary.TButton",
+        ).grid(row=3, column=1, padx=4, pady=4, sticky="ew")
+
+        ttk.Label(actions_card, text="Stage 2: Post-processing", style="App.TLabel").grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 2)
+        )
+        ttk.Button(
+            actions_card,
+            text="Codex Resolve Batch",
+            command=self.on_codex_resolve_batch,
+            style="Primary.TButton",
+        ).grid(row=5, column=0, padx=4, pady=4, sticky="ew")
+        ttk.Button(
+            actions_card,
+            text="Codex Analyze Batch",
+            command=self.on_codex_analyze_batch,
+            style="Primary.TButton",
+        ).grid(row=5, column=1, padx=4, pady=4, sticky="ew")
+        ttk.Button(
+            actions_card,
+            text="Codex Post-process All Pending",
+            command=self.on_codex_postprocess_drain,
+            style="Primary.TButton",
+        ).grid(row=5, column=2, padx=4, pady=4, sticky="ew")
 
         secondary_actions = [
             ("Resolve Batch (current)", self.on_resolve_batch),
@@ -372,7 +512,10 @@ class MangoMvpGui(tk.Tk):
             ("Export Failed Resolve", self.on_export_failed_resolve_queue),
             ("Export CRM Fields", self.on_export_crm_fields),
         ]
-        base = (len(primary_actions) + 3) // 4
+        ttk.Label(actions_card, text="Advanced Operations", style="App.TLabel").grid(
+            row=6, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 2)
+        )
+        base = 7
         for idx, (label, callback) in enumerate(secondary_actions):
             ttk.Button(actions_card, text=label, command=callback).grid(
                 row=base + idx // 4,
@@ -389,16 +532,18 @@ class MangoMvpGui(tk.Tk):
             justify=tk.LEFT,
             text=(
                 "Resume-safe behavior: transcribe/resolve/analyze commands work on pending+failed only. "
-                "Rows with done status are preserved and skipped automatically, so no duplicate processing occurs."
+                "Rows with done status are preserved and skipped automatically, so no duplicate processing occurs. "
+                "Use batch size above to control how many calls are processed per iteration."
             ),
         ).grid(row=base + 3, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 2))
 
     def _build_status_tab(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.columnconfigure(1, weight=1)
-        parent.rowconfigure(2, weight=1)
+        content = self._make_scrollable_tab(parent)
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(2, weight=1)
 
-        cards = ttk.Frame(parent, style="App.TFrame")
+        cards = ttk.Frame(content, style="App.TFrame")
         cards.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         for col in range(4):
             cards.columnconfigure(col, weight=1)
@@ -419,7 +564,7 @@ class MangoMvpGui(tk.Tk):
             ttk.Label(card, textvariable=self.metric_vars[key], style="CardValue.TLabel").pack(anchor="w")
             ttk.Label(card, text=f"metric: {key}", style="CardCaption.TLabel").pack(anchor="w", pady=(4, 0))
 
-        progress = ttk.LabelFrame(parent, text="Progress", style="Card.TLabelframe", padding=10)
+        progress = ttk.LabelFrame(content, text="Progress", style="Card.TLabelframe", padding=10)
         progress.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         progress.columnconfigure(1, weight=1)
         ttk.Label(progress, text="Transcribe completion", style="App.TLabel").grid(
@@ -440,7 +585,7 @@ class MangoMvpGui(tk.Tk):
             row=0, column=2, rowspan=2, padx=6, pady=4, sticky="nsew"
         )
 
-        stats_wrap = ttk.LabelFrame(parent, text="Raw Stats JSON", style="Card.TLabelframe", padding=8)
+        stats_wrap = ttk.LabelFrame(content, text="Raw Stats JSON", style="Card.TLabelframe", padding=8)
         stats_wrap.grid(row=2, column=0, columnspan=2, sticky="nsew")
         stats_wrap.rowconfigure(0, weight=1)
         stats_wrap.columnconfigure(0, weight=1)
@@ -595,9 +740,7 @@ class MangoMvpGui(tk.Tk):
         env["PATH"] = f"{project / '.local' / 'bin'}:{env.get('PATH', '')}"
         env["DATABASE_URL"] = f"sqlite:///{Path(self.database_path.get()).expanduser().resolve()}"
         env["TRANSCRIPT_EXPORT_DIR"] = self.export_dir.get().strip()
-        env["TRANSCRIBE_PROVIDER"] = self.transcribe_provider.get().strip()
-        env["DUAL_TRANSCRIBE_ENABLED"] = "1" if self.dual_enabled.get() else "0"
-        env["SECONDARY_TRANSCRIBE_PROVIDER"] = self.secondary_provider.get().strip()
+        env.update(self._transcribe_mode_env())
         env["DUAL_MERGE_PROVIDER"] = self.merge_provider.get().strip()
         env["RESOLVE_LLM_PROVIDER"] = self.resolve_llm_provider.get().strip()
         env["ANALYZE_PROVIDER"] = self.analyze_provider.get().strip()
@@ -736,6 +879,8 @@ class MangoMvpGui(tk.Tk):
 
     def _transcribe_mode_env(self) -> dict[str, str]:
         mode = self.transcribe_mode.get().strip().lower()
+        primary = self.transcribe_provider.get().strip() or "mlx"
+        secondary = self.secondary_provider.get().strip() or "gigaam"
         if mode == "whisper":
             return {
                 "TRANSCRIBE_PROVIDER": "mlx",
@@ -749,9 +894,9 @@ class MangoMvpGui(tk.Tk):
                 "SECONDARY_TRANSCRIBE_PROVIDER": "",
             }
         return {
-            "TRANSCRIBE_PROVIDER": "mlx",
+            "TRANSCRIBE_PROVIDER": primary,
             "DUAL_TRANSCRIBE_ENABLED": "1",
-            "SECONDARY_TRANSCRIBE_PROVIDER": "gigaam",
+            "SECONDARY_TRANSCRIBE_PROVIDER": secondary,
         }
 
     def _launch_task(self, title: str, fn) -> None:
@@ -914,7 +1059,7 @@ class MangoMvpGui(tk.Tk):
             self._run_cli(["transcribe", "--limit", str(self._limit_value())], env_overrides=env)
             self._refresh_stats_sync(silent=True)
 
-        self._launch_task("Transcribe Batch", _task)
+        self._launch_task("Stage 1: Transcribe Batch", _task)
 
     def on_transcribe_drain(self) -> None:
         def _task() -> None:
@@ -923,7 +1068,7 @@ class MangoMvpGui(tk.Tk):
             self._append_log(f"[transcribe drain] summary: {summary}")
             self._refresh_stats_sync(silent=True)
 
-        self._launch_task("Transcribe All Pending", _task)
+        self._launch_task("Stage 1: Transcribe All Pending", _task)
 
     def on_codex_resolve_batch(self) -> None:
         def _task() -> None:
@@ -1101,19 +1246,22 @@ class MangoMvpGui(tk.Tk):
     def _functions_reference_text(self) -> str:
         return (
             "Mango Calls Studio - function reference\n\n"
-            "Core flow\n"
+            "Recommended flow\n"
             "1. Init DB\n"
             "   Creates DB schema in the selected SQLite file.\n\n"
             "2. Ingest Calls\n"
             "   Scans recordings directory, parses Mango filename metadata, and inserts only new files.\n"
             "   Already indexed source_file rows are skipped automatically.\n\n"
-            "3. Transcribe Batch / Transcribe All Pending\n"
-            "   Runs speech-to-text using selected mode:\n"
+            "3. Stage 1: Recognition only\n"
+            "   Use Transcribe mode + Records per batch field, then click:\n"
+            "   - Stage 1: Transcribe Batch\n"
+            "   - Stage 1: Transcribe All Pending\n"
+            "   Modes:\n"
             "   - whisper: MLX Whisper only\n"
             "   - gigaam: GigaAM only\n"
             "   - dual: Whisper + GigaAM merge\n"
             "   Resume-safe behavior: command processes pending+failed only; done rows are preserved.\n\n"
-            "4. Codex Resolve / Codex Analyze\n"
+            "4. Stage 2: Codex post-processing\n"
             "   Post-processing pipeline with Codex CLI:\n"
             "   - Resolve improves risky transcripts and quality flags\n"
             "   - Analyze builds CRM-ready summaries/structured fields\n"
@@ -1147,15 +1295,23 @@ class MangoMvpGui(tk.Tk):
             "- Problem: it was unclear if completed calls can be reprocessed accidentally.\n"
             "- Change: explicit resume-safe messaging, status cards, progress bars, and queue drains.\n"
             "- Result: operator sees pending/done/failed and can continue from exact checkpoint.\n\n"
-            "Iteration 3 - production ergonomics\n"
-            "- Problem: Codex post-processing was not isolated as a separate stage.\n"
-            "- Change: dedicated Codex actions (resolve batch, analyze batch, full post-process drain).\n"
-            "- Result: transcript generation and post-processing are fully independent workflows.\n\n"
+            "Iteration 3 - stage ergonomics\n"
+            "- Problem: stage 1 (ASR) and stage 2 (Codex) were visually mixed.\n"
+            "- Change: explicit Stage 1/Stage 2 action blocks and clearer naming.\n"
+            "- Result: users can run recognition-only flow with minimal cognitive load.\n\n"
+            "Iteration 4 - accessibility/scroll\n"
+            "- Problem: some controls were clipped on smaller windows.\n"
+            "- Change: added scrollable tab containers with mouse wheel support.\n"
+            "- Result: all controls are reachable without resizing the app.\n\n"
+            "Iteration 5 - dual mode confusion\n"
+            "- Problem: dual checkbox with cross/check state looked ambiguous.\n"
+            "- Change: removed ambiguous toggle; transcribe mode now controls behavior directly.\n"
+            "- Result: no conflicting state, one obvious source of truth.\n\n"
             "Reviewer verdict\n"
             "- Information hierarchy is now clear.\n"
             "- Primary actions are front-loaded.\n"
             "- Status visibility supports long-running operations.\n"
-            "- Further polish can include custom icons and dark/light adaptive palette, but current UX is stable.\n"
+            "- Current UI is stable for semi-production operators.\n"
         )
 
 

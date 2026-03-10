@@ -44,6 +44,17 @@ Changes applied:
 - added in-app `Functions` tab with detailed function map
 - clarified queue semantics and file outputs directly in the app
 
+## Iteration 5 - scroll and control ambiguity
+
+Reviewer comment:
+- "If content is clipped, operator trust drops immediately. Also avoid mixed-state toggles that look like checkbox crosses."
+
+Changes applied:
+- added vertical scroll containers for `Pipeline` and `Status` tabs
+- removed ambiguous `Dual transcribe` checkbox state
+- mode now comes only from `Transcribe mode` (`whisper`/`gigaam`/`dual`)
+- added explicit helper text: how to run stage 1 recognition only and where to set batch size
+
 ## Final simulated verdict
 
 - Information hierarchy: acceptable

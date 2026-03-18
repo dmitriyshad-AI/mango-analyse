@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import random
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -47,6 +48,136 @@ def _join_list(value: Any) -> str:
     return " | ".join(items)
 
 
+def _parse_status_list(raw: str) -> list[str]:
+    items = []
+    for part in str(raw or "").split(","):
+        value = part.strip().lower()
+        if value:
+            items.append(value)
+    return items
+
+
+def _load_id_file(path: Path) -> list[int]:
+    raw = path.read_text(encoding="utf-8")
+    ids: list[int] = []
+    for token in raw.replace(",", "\n").splitlines():
+        token = token.strip()
+        if not token:
+            continue
+        ids.append(int(token))
+    return ids
+
+
+def _write_id_file(path: Path, ids: list[int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(str(x) for x in ids) + ("\n" if ids else ""), encoding="utf-8")
+
+
+def _is_test_artifact_call(call: CallRecord) -> bool:
+    filename = (call.source_filename or "").strip().lower()
+    source_file = (call.source_file or "").strip().lower()
+    if filename.startswith("test-"):
+        return True
+    if "site-packages/scipy/io/tests" in source_file:
+        return True
+    if "/scipy/io/tests/data/" in source_file:
+        return True
+    return False
+
+
+def _safe_stem(value: str) -> str:
+    text = Path(value or "call").stem.strip() or "call"
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", " ", "."} else "_" for ch in text).strip() or "call"
+
+
+def _manager_name_for_call(call: CallRecord) -> str:
+    manager = _clean_str(call.manager_name)
+    if manager:
+        return manager
+    stem = Path(call.source_filename or "").stem
+    parts = stem.split("__")
+    if len(parts) >= 4:
+        tail = "__".join(parts[3:]).strip()
+        if "_" in tail:
+            base, maybe_id = tail.rsplit("_", 1)
+            if maybe_id.isdigit() and base.strip():
+                return base.strip()
+        return tail or "не указан"
+    return "не указан"
+
+
+def _render_role_text_pair(manager_text: str, client_text: str, manager_name: str) -> str:
+    return (
+        f"Менеджер ({manager_name}):\n{manager_text.strip() or '[нет распознанной речи]'}\n\n"
+        f"Клиент:\n{client_text.strip() or '[нет распознанной речи]'}\n"
+    )
+
+
+def _dialogue_export_path(call: CallRecord, transcript_export_dir: str | None) -> Path | None:
+    export_dir = (transcript_export_dir or "").strip()
+    if not export_dir:
+        return None
+    source_path = Path(call.source_file)
+    return Path(export_dir) / source_path.parent.name / f"{source_path.stem}_text.txt"
+
+
+def _current_call_text(call: CallRecord, transcript_export_dir: str | None) -> str:
+    export_path = _dialogue_export_path(call, transcript_export_dir)
+    if export_path and export_path.exists():
+        return export_path.read_text(encoding="utf-8", errors="ignore")
+    manager_name = _manager_name_for_call(call)
+    if _clean_str(call.transcript_manager) or _clean_str(call.transcript_client):
+        return _render_role_text_pair(
+            _clean_str(call.transcript_manager),
+            _clean_str(call.transcript_client),
+            manager_name,
+        )
+    return _clean_str(call.transcript_text)
+
+
+def _provider_variants_for_export(call: CallRecord) -> Dict[str, str]:
+    raw = (call.transcript_variants_json or "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    mode = _clean_str(payload.get("mode"))
+    primary = _clean_str(payload.get("primary_provider")) or "variant_a"
+    secondary = _clean_str(payload.get("secondary_provider")) or "variant_b"
+    manager_name = _manager_name_for_call(call)
+    out: Dict[str, str] = {}
+
+    if mode == "stereo":
+        manager = _as_dict(payload.get("manager"))
+        client = _as_dict(payload.get("client"))
+        a_text = _render_role_text_pair(
+            _clean_str(manager.get("variant_a")),
+            _clean_str(client.get("variant_a")),
+            manager_name,
+        )
+        if _clean_str(a_text):
+            out[primary] = a_text
+        b_manager = _clean_str(manager.get("variant_b"))
+        b_client = _clean_str(client.get("variant_b"))
+        if b_manager or b_client:
+            out[secondary] = _render_role_text_pair(b_manager, b_client, manager_name)
+        return out
+
+    full = _as_dict(payload.get("full"))
+    a_text = _clean_str(full.get("variant_a"))
+    b_text = _clean_str(full.get("variant_b"))
+    if a_text:
+        out[primary] = a_text + "\n"
+    if b_text:
+        out[secondary] = b_text + "\n"
+    return out
+
+
 def cmd_init_db(_args) -> int:
     settings = get_settings()
     init_db(settings)
@@ -72,8 +203,30 @@ def cmd_transcribe(args) -> int:
     settings = get_settings()
     session_factory = build_session_factory(settings)
     service = TranscribeService(settings)
+
+    def _progress(payload):
+        print(json.dumps({"type": "transcribe_progress", **payload}, ensure_ascii=False), flush=True)
+
     with session_factory() as session:
-        result = service.run(session, limit=args.limit)
+        result = service.run(session, limit=args.limit, progress_callback=_progress)
+    _json_print(result)
+    return 0
+
+
+def cmd_backfill_second_asr(args) -> int:
+    settings = get_settings()
+    session_factory = build_session_factory(settings)
+    service = TranscribeService(settings)
+
+    def _progress(payload):
+        print(json.dumps({"type": "transcribe_progress", **payload}, ensure_ascii=False), flush=True)
+
+    with session_factory() as session:
+        result = service.backfill_secondary_asr(
+            session,
+            limit=args.limit,
+            progress_callback=_progress,
+        )
     _json_print(result)
     return 0
 
@@ -92,9 +245,298 @@ def cmd_resolve(args) -> int:
     settings = get_settings()
     session_factory = build_session_factory(settings)
     service = ResolveService(settings)
+
+    def _progress(payload):
+        print(json.dumps({"type": "resolve_progress", **payload}, ensure_ascii=False), flush=True)
+
     with session_factory() as session:
-        result = service.run(session, limit=args.limit)
+        result = service.run_with_progress(session, limit=args.limit, progress_callback=_progress)
     _json_print(result)
+    return 0
+
+
+def cmd_prepare_resolve_pilot(args) -> int:
+    settings = get_settings()
+    session_factory = build_session_factory(settings)
+    service = ResolveService(settings)
+
+    min_duration_sec = (
+        float(args.min_duration_sec)
+        if args.min_duration_sec is not None
+        else float(settings.resolve_min_duration_sec)
+    )
+    requested_statuses = _parse_status_list(args.statuses)
+    if not requested_statuses and not args.ids_in:
+        requested_statuses = ["done", "manual"]
+
+    with session_factory() as session:
+        selected_calls: list[CallRecord] = []
+        eligible_total = 0
+        blocked_secondary = 0
+        skipped_tests = 0
+        skipped_short = 0
+        missing_ids: list[int] = []
+        skipped_ids: list[int] = []
+
+        if args.ids_in:
+            requested_ids = _load_id_file(Path(args.ids_in))
+            if not requested_ids:
+                _json_print(
+                    {
+                        "mode": "ids_in",
+                        "selected": 0,
+                        "updated": 0,
+                        "missing_ids": [],
+                        "skipped_ids": [],
+                    }
+                )
+                return 0
+            unique_ids = list(dict.fromkeys(requested_ids))
+            by_id = {
+                call.id: call
+                for call in session.scalars(
+                    select(CallRecord).where(CallRecord.id.in_(unique_ids))
+                ).all()
+            }
+            for call_id in unique_ids:
+                call = by_id.get(call_id)
+                if call is None:
+                    missing_ids.append(call_id)
+                    continue
+                if call.transcription_status != "done" or call.dead_letter_stage is not None:
+                    skipped_ids.append(call_id)
+                    continue
+                if not args.include_tests and _is_test_artifact_call(call):
+                    skipped_ids.append(call_id)
+                    skipped_tests += 1
+                    continue
+                duration = float(call.duration_sec or 0.0)
+                if duration <= 0.0 or duration < min_duration_sec:
+                    skipped_ids.append(call_id)
+                    skipped_short += 1
+                    continue
+                if service._waiting_for_secondary_asr(call):
+                    skipped_ids.append(call_id)
+                    blocked_secondary += 1
+                    continue
+                selected_calls.append(call)
+            eligible_total = len(selected_calls)
+        else:
+            query = (
+                select(CallRecord)
+                .where(CallRecord.transcription_status == "done")
+                .where(CallRecord.dead_letter_stage.is_(None))
+                .where(CallRecord.resolve_status.in_(requested_statuses))
+                .order_by(CallRecord.id.asc())
+            )
+            candidates = session.scalars(query).all()
+            eligible_pool: list[CallRecord] = []
+            for call in candidates:
+                if not args.include_tests and _is_test_artifact_call(call):
+                    skipped_tests += 1
+                    continue
+                duration = float(call.duration_sec or 0.0)
+                if duration <= 0.0 or duration < min_duration_sec:
+                    skipped_short += 1
+                    continue
+                if service._waiting_for_secondary_asr(call):
+                    blocked_secondary += 1
+                    continue
+                eligible_pool.append(call)
+            eligible_total = len(eligible_pool)
+            rng = random.Random(int(args.seed))
+            rng.shuffle(eligible_pool)
+            selected_calls = eligible_pool[: max(0, int(args.limit))]
+
+        selected_ids = [int(call.id) for call in selected_calls]
+        updated = 0
+        if not args.dry_run:
+            for call in selected_calls:
+                call.resolve_status = "pending"
+                call.resolve_attempts = 0
+                call.resolve_json = None
+                call.resolve_quality_score = None
+                call.analysis_status = "pending"
+                call.analyze_attempts = 0
+                call.analysis_json = None
+                call.sync_status = "pending"
+                call.sync_attempts = 0
+                call.next_retry_at = None
+                call.last_error = None
+                session.add(call)
+                updated += 1
+            session.commit()
+        else:
+            updated = len(selected_calls)
+
+    if args.ids_out:
+        _write_id_file(Path(args.ids_out), selected_ids)
+
+    _json_print(
+        {
+            "mode": "ids_in" if args.ids_in else "random_select",
+            "eligible_total": eligible_total,
+            "selected": len(selected_calls),
+            "updated": updated,
+            "statuses": requested_statuses,
+            "min_duration_sec": min_duration_sec,
+            "seed": None if args.ids_in else int(args.seed),
+            "include_tests": bool(args.include_tests),
+            "dry_run": bool(args.dry_run),
+            "blocked_secondary": blocked_secondary,
+            "skipped_tests": skipped_tests,
+            "skipped_short": skipped_short,
+            "missing_ids": missing_ids,
+            "skipped_ids": skipped_ids,
+            "ids_out": str(Path(args.ids_out).resolve()) if args.ids_out else None,
+            "selected_ids": selected_ids,
+        }
+    )
+    return 0
+
+
+def cmd_export_pilot_bundle(args) -> int:
+    settings = get_settings()
+    ids = _load_id_file(Path(args.ids_in))
+    selected_ids = list(dict.fromkeys(ids))
+    out_dir = Path(args.out)
+    label = _clean_str(args.label).lower() or "snapshot"
+    if label not in {"initial", "final", "snapshot"}:
+        raise RuntimeError("Unsupported --label. Use initial, final, or snapshot.")
+
+    session_factory = build_session_factory(settings)
+    with session_factory() as session:
+        by_id = {
+            call.id: call
+            for call in session.scalars(
+                select(CallRecord).where(CallRecord.id.in_(selected_ids))
+            ).all()
+        }
+
+    resolved_out = out_dir.resolve()
+    resolved_out.mkdir(parents=True, exist_ok=True)
+
+    manifest_items: list[Dict[str, Any]] = []
+    exported = 0
+    missing_ids: list[int] = []
+    total = len(selected_ids)
+    for idx, call_id in enumerate(selected_ids, start=1):
+        call = by_id.get(call_id)
+        if call is None:
+            missing_ids.append(call_id)
+            print(
+                json.dumps(
+                    {
+                        "type": "pilot_progress",
+                        "stage": "export_pilot_bundle",
+                        "current": idx,
+                        "total": total,
+                        "exported": exported,
+                        "missing_id": call_id,
+                        "label": label,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            continue
+
+        stem = _safe_stem(call.source_filename or f"call_{call.id}")
+        call_dir = resolved_out / f"{idx:03d}_{call.id}_{stem}"
+        call_dir.mkdir(parents=True, exist_ok=True)
+
+        manager_name = _manager_name_for_call(call)
+        metadata = {
+            "id": call.id,
+            "source_filename": call.source_filename,
+            "source_file": call.source_file,
+            "phone": call.phone,
+            "manager_name": manager_name,
+            "duration_sec": call.duration_sec,
+            "transcription_status": call.transcription_status,
+            "resolve_status": call.resolve_status,
+            "analysis_status": call.analysis_status,
+            "label": label,
+        }
+        (call_dir / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        variants = _provider_variants_for_export(call)
+        for variant_idx, (provider_name, text) in enumerate(variants.items(), start=1):
+            filename = f"{variant_idx:02d}_{provider_name}.txt"
+            (call_dir / filename).write_text(text, encoding="utf-8")
+
+        merge_name = {
+            "initial": "03_initial_merge.txt",
+            "final": "04_final_merge.txt",
+            "snapshot": "03_snapshot_merge.txt",
+        }[label]
+        (call_dir / merge_name).write_text(
+            _current_call_text(call, settings.transcript_export_dir),
+            encoding="utf-8",
+        )
+
+        if _clean_str(call.resolve_json):
+            (call_dir / "resolve.json").write_text(
+                _clean_str(call.resolve_json),
+                encoding="utf-8",
+            )
+        if _clean_str(call.analysis_json):
+            (call_dir / "analysis.json").write_text(
+                _clean_str(call.analysis_json),
+                encoding="utf-8",
+            )
+
+        manifest_items.append(
+            {
+                "seq": idx,
+                "id": call.id,
+                "source_filename": call.source_filename,
+                "dir": str(call_dir),
+                "providers": list(variants.keys()),
+                "label": label,
+            }
+        )
+        exported += 1
+        print(
+            json.dumps(
+                {
+                    "type": "pilot_progress",
+                    "stage": "export_pilot_bundle",
+                    "current": idx,
+                    "total": total,
+                    "exported": exported,
+                    "call_id": call.id,
+                    "source_filename": call.source_filename,
+                    "label": label,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+
+    manifest = {
+        "label": label,
+        "total_requested": total,
+        "exported": exported,
+        "missing_ids": missing_ids,
+        "items": manifest_items,
+    }
+    (resolved_out / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _json_print(
+        {
+            "label": label,
+            "total_requested": total,
+            "exported": exported,
+            "missing_ids": missing_ids,
+            "out": str(resolved_out),
+        }
+    )
     return 0
 
 
@@ -264,6 +706,15 @@ def cmd_sync(args) -> int:
 def cmd_run_all(args) -> int:
     settings = get_settings()
     session_factory = build_session_factory(settings)
+    primary_only_settings = settings
+    if settings.dual_transcribe_enabled and settings.secondary_transcribe_provider:
+        from dataclasses import replace
+
+        primary_only_settings = replace(
+            settings,
+            dual_transcribe_enabled=False,
+            secondary_transcribe_provider=None,
+        )
 
     with session_factory() as session:
         ingest_result = ingest_from_directory(
@@ -273,7 +724,15 @@ def cmd_run_all(args) -> int:
             limit=args.ingest_limit,
         )
     with session_factory() as session:
-        transcribe_result = TranscribeService(settings).run(session, limit=args.stage_limit)
+        transcribe_result = TranscribeService(primary_only_settings).run(
+            session,
+            limit=args.stage_limit,
+        )
+    with session_factory() as session:
+        backfill_result = TranscribeService(settings).backfill_secondary_asr(
+            session,
+            limit=args.stage_limit,
+        )
     with session_factory() as session:
         resolve_result = ResolveService(settings).run(session, limit=args.stage_limit)
     with session_factory() as session:
@@ -285,6 +744,7 @@ def cmd_run_all(args) -> int:
         {
             "ingest": ingest_result,
             "transcribe": transcribe_result,
+            "backfill-second-asr": backfill_result,
             "resolve": resolve_result,
             "analyze": analyze_result,
             "sync": sync_result,
@@ -296,6 +756,7 @@ def cmd_run_all(args) -> int:
 def cmd_stats(_args) -> int:
     settings = get_settings()
     session_factory = build_session_factory(settings)
+    transcribe_service = TranscribeService(settings)
     with session_factory() as session:
         total = session.scalar(select(func.count(CallRecord.id))) or 0
         by_transcribe = session.execute(
@@ -321,6 +782,7 @@ def cmd_stats(_args) -> int:
             .where(CallRecord.dead_letter_stage.is_not(None))
             .group_by(CallRecord.dead_letter_stage)
         ).all()
+        secondary_backfill = transcribe_service.count_secondary_backfill_pending(session)
 
     _json_print(
         {
@@ -330,6 +792,7 @@ def cmd_stats(_args) -> int:
             "analysis_status": {k: v for k, v in by_analyze},
             "sync_status": {k: v for k, v in by_sync},
             "dead_letter_stage": {k: v for k, v in by_dead_letter},
+            "secondary_asr_backfill": secondary_backfill,
         }
     )
     return 0
@@ -337,6 +800,11 @@ def cmd_stats(_args) -> int:
 
 def cmd_worker(args) -> int:
     settings = get_settings()
+    stages = [
+        stage.strip()
+        for stage in str(args.stages or "").split(",")
+        if stage.strip()
+    ] or None
 
     def _progress(payload):
         print(json.dumps({"type": "worker_cycle", **payload}, ensure_ascii=False), flush=True)
@@ -345,6 +813,7 @@ def cmd_worker(args) -> int:
         settings,
         stage_limit=args.stage_limit,
         once=args.once,
+        stages=stages,
         poll_sec=args.poll_sec,
         max_idle_cycles=args.max_idle_cycles,
         progress_callback=_progress,
@@ -537,12 +1006,46 @@ def build_parser() -> argparse.ArgumentParser:
     p_transcribe.add_argument("--limit", type=int, default=100)
     p_transcribe.set_defaults(func=cmd_transcribe)
 
+    p_backfill_second_asr = sub.add_parser(
+        "backfill-second-asr",
+        help="Backfill missing secondary ASR variant on already done calls",
+    )
+    p_backfill_second_asr.add_argument("--limit", type=int, default=100)
+    p_backfill_second_asr.set_defaults(func=cmd_backfill_second_asr)
+
     p_resolve = sub.add_parser(
         "resolve",
         help="Resolve low-quality transcripts via LLM + rescue ASR fallback",
     )
     p_resolve.add_argument("--limit", type=int, default=100)
     p_resolve.set_defaults(func=cmd_resolve)
+
+    p_prepare_resolve = sub.add_parser(
+        "prepare-resolve-pilot",
+        help="Select real calls and reset only resolve/analyze/sync for a fresh resolve pilot",
+    )
+    p_prepare_resolve.add_argument("--limit", type=int, default=100)
+    p_prepare_resolve.add_argument("--seed", type=int, default=42)
+    p_prepare_resolve.add_argument(
+        "--statuses",
+        default="done,manual",
+        help="Comma-separated resolve statuses to sample from when --ids-in is not used",
+    )
+    p_prepare_resolve.add_argument("--min-duration-sec", type=float, default=None)
+    p_prepare_resolve.add_argument("--ids-in")
+    p_prepare_resolve.add_argument("--ids-out")
+    p_prepare_resolve.add_argument("--include-tests", action="store_true")
+    p_prepare_resolve.add_argument("--dry-run", action="store_true")
+    p_prepare_resolve.set_defaults(func=cmd_prepare_resolve_pilot)
+
+    p_export_pilot = sub.add_parser(
+        "export-pilot-bundle",
+        help="Export ASR variants and merge snapshots for a prepared resolve pilot",
+    )
+    p_export_pilot.add_argument("--ids-in", required=True)
+    p_export_pilot.add_argument("--out", required=True)
+    p_export_pilot.add_argument("--label", default="snapshot")
+    p_export_pilot.set_defaults(func=cmd_export_pilot_bundle)
 
     p_analyze = sub.add_parser("analyze", help="Analyze transcribed calls")
     p_analyze.add_argument("--limit", type=int, default=100)
@@ -593,6 +1096,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_worker.add_argument("--stage-limit", type=int, default=100)
     p_worker.add_argument("--once", action="store_true")
+    p_worker.add_argument(
+        "--stages",
+        default="transcribe,backfill-second-asr,resolve,analyze,sync",
+        help="Comma-separated ordered subset of stages",
+    )
     p_worker.add_argument("--poll-sec", type=int, default=None)
     p_worker.add_argument("--max-idle-cycles", type=int, default=None)
     p_worker.set_defaults(func=cmd_worker)

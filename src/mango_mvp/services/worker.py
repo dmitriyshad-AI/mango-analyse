@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -10,67 +11,112 @@ from mango_mvp.services.resolve import ResolveService
 from mango_mvp.services.sync_amocrm import AmoCRMSyncService
 from mango_mvp.services.transcribe import TranscribeService
 
+PIPELINE_STAGE_ORDER = (
+    "transcribe",
+    "backfill-second-asr",
+    "resolve",
+    "analyze",
+    "sync",
+)
+
+
+def normalize_pipeline_stages(stages: Optional[list[str]]) -> list[str]:
+    if not stages:
+        return list(PIPELINE_STAGE_ORDER)
+
+    aliases = {
+        "backfill": "backfill-second-asr",
+        "secondary-asr": "backfill-second-asr",
+        "second-asr": "backfill-second-asr",
+        "backfill_second_asr": "backfill-second-asr",
+    }
+    requested: list[str] = []
+    invalid: list[str] = []
+    for raw in stages:
+        stage = str(raw).strip().lower().replace("_", "-")
+        if not stage:
+            continue
+        stage = aliases.get(stage, stage)
+        if stage not in PIPELINE_STAGE_ORDER:
+            invalid.append(stage)
+            continue
+        if stage not in requested:
+            requested.append(stage)
+    if invalid:
+        raise RuntimeError(
+            "Unsupported worker stages: " + ", ".join(invalid)
+        )
+    return [stage for stage in PIPELINE_STAGE_ORDER if stage in requested]
+
 
 def run_worker(
     settings: Settings,
     *,
     stage_limit: int,
     once: bool,
+    stages: Optional[list[str]] = None,
     poll_sec: int | None = None,
     max_idle_cycles: int | None = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     session_factory = build_session_factory(settings)
+    selected_stages = normalize_pipeline_stages(stages)
     poll_interval = max(1, poll_sec if poll_sec is not None else settings.worker_poll_sec)
     max_idle = (
         max_idle_cycles
         if max_idle_cycles is not None
         else max(0, settings.worker_max_idle_cycles)
     )
+    primary_only_settings = replace(
+        settings,
+        dual_transcribe_enabled=False,
+        secondary_transcribe_provider=None,
+    )
 
     cycles = 0
     idle_cycles = 0
     totals = {
-        "transcribe": {"processed": 0, "success": 0, "failed": 0},
-        "resolve": {"processed": 0, "success": 0, "failed": 0},
-        "analyze": {"processed": 0, "success": 0, "failed": 0},
-        "sync": {"processed": 0, "success": 0, "failed": 0},
+        stage: {"processed": 0, "success": 0, "failed": 0} for stage in selected_stages
     }
     while True:
         cycles += 1
-        with session_factory() as session:
-            transcribe_result = TranscribeService(settings).run(session, limit=stage_limit)
-        with session_factory() as session:
-            resolve_result = ResolveService(settings).run(session, limit=stage_limit)
-        with session_factory() as session:
-            analyze_result = AnalyzeService(settings).run(session, limit=stage_limit)
-        with session_factory() as session:
-            sync_result = AmoCRMSyncService(settings).run(session, limit=stage_limit)
-
-        cycle_payload = {
+        cycle_payload: Dict[str, Any] = {
             "cycle": cycles,
-            "transcribe": transcribe_result,
-            "resolve": resolve_result,
-            "analyze": analyze_result,
-            "sync": sync_result,
+            "stages": list(selected_stages),
         }
+        if "transcribe" in selected_stages:
+            with session_factory() as session:
+                cycle_payload["transcribe"] = TranscribeService(primary_only_settings).run(
+                    session,
+                    limit=stage_limit,
+                )
+        if "backfill-second-asr" in selected_stages:
+            with session_factory() as session:
+                cycle_payload["backfill-second-asr"] = TranscribeService(settings).backfill_secondary_asr(
+                    session,
+                    limit=stage_limit,
+                )
+        if "resolve" in selected_stages:
+            with session_factory() as session:
+                cycle_payload["resolve"] = ResolveService(settings).run(session, limit=stage_limit)
+        if "analyze" in selected_stages:
+            with session_factory() as session:
+                cycle_payload["analyze"] = AnalyzeService(settings).run(session, limit=stage_limit)
+        if "sync" in selected_stages:
+            with session_factory() as session:
+                cycle_payload["sync"] = AmoCRMSyncService(settings).run(session, limit=stage_limit)
+
         if progress_callback is not None:
             progress_callback(cycle_payload)
-        for stage, stage_result in (
-            ("transcribe", transcribe_result),
-            ("resolve", resolve_result),
-            ("analyze", analyze_result),
-            ("sync", sync_result),
-        ):
+        for stage in selected_stages:
+            stage_result = cycle_payload.get(stage) or {}
             totals[stage]["processed"] += int(stage_result.get("processed", 0))
             totals[stage]["success"] += int(stage_result.get("success", 0))
             totals[stage]["failed"] += int(stage_result.get("failed", 0))
 
-        cycle_work = (
-            int(transcribe_result.get("processed", 0))
-            + int(resolve_result.get("processed", 0))
-            + int(analyze_result.get("processed", 0))
-            + int(sync_result.get("processed", 0))
+        cycle_work = sum(
+            int((cycle_payload.get(stage) or {}).get("processed", 0))
+            for stage in selected_stages
         )
         if once:
             return {

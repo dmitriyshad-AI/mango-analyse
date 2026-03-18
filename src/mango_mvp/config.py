@@ -47,6 +47,7 @@ class Settings:
     codex_merge_model: str
     codex_cli_command: str
     codex_cli_timeout_sec: int
+    codex_reasoning_effort: str
     dual_merge_similarity_threshold: float
     analyze_provider: str
     openai_transcribe_model: str
@@ -80,6 +81,7 @@ class Settings:
     resolve_llm_trigger_score: int
     resolve_accept_score: int
     resolve_llm_provider: str
+    resolve_dialogue_mode: str
     resolve_llm_for_risky: bool
     resolve_rescue_provider: Optional[str]
     resolve_rescue_dual_enabled: bool
@@ -134,7 +136,10 @@ def get_settings() -> Settings:
         openai_merge_model=os.getenv("OPENAI_MERGE_MODEL", "gpt-4o-mini").strip(),
         codex_merge_model=os.getenv("CODEX_MERGE_MODEL", "gpt-5.4").strip(),
         codex_cli_command=os.getenv("CODEX_CLI_COMMAND", "codex").strip(),
-        codex_cli_timeout_sec=_int_env("CODEX_CLI_TIMEOUT_SEC", 120),
+        codex_cli_timeout_sec=_int_env("CODEX_CLI_TIMEOUT_SEC", 180),
+        codex_reasoning_effort=(
+            os.getenv("CODEX_REASONING_EFFORT", "medium").strip().lower() or "medium"
+        ),
         dual_merge_similarity_threshold=_float_env("DUAL_MERGE_SIMILARITY_THRESHOLD", 0.985),
         analyze_provider=os.getenv("ANALYZE_PROVIDER", "codex_cli").strip().lower(),
         openai_transcribe_model=os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe"),
@@ -176,6 +181,9 @@ def get_settings() -> Settings:
         resolve_llm_trigger_score=_int_env("RESOLVE_LLM_TRIGGER_SCORE", 75),
         resolve_accept_score=_int_env("RESOLVE_ACCEPT_SCORE", 75),
         resolve_llm_provider=os.getenv("RESOLVE_LLM_PROVIDER", "codex_cli").strip().lower(),
+        resolve_dialogue_mode=(
+            os.getenv("RESOLVE_DIALOGUE_MODE", "dialogue").strip().lower() or "dialogue"
+        ),
         resolve_llm_for_risky=_bool_env("RESOLVE_LLM_FOR_RISKY", False),
         resolve_rescue_provider=(os.getenv("RESOLVE_RESCUE_PROVIDER", "").strip().lower() or None),
         resolve_rescue_dual_enabled=_bool_env("RESOLVE_RESCUE_DUAL_ENABLED", False),

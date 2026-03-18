@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from openai import OpenAI
 from sqlalchemy import or_, select
@@ -95,6 +95,7 @@ CLIENT_CUES: dict[str, float] = {
 ARTIFACT_ONLY_PHRASES = {
     "продолжение следует",
 }
+SECONDARY_BACKFILL_MAX_ATTEMPTS = 2
 
 
 class TranscribeService:
@@ -112,6 +113,191 @@ class TranscribeService:
         base = max(1, self._settings.retry_base_delay_sec)
         multiplier = max(1, 2 ** max(0, attempts - 1))
         return timedelta(seconds=base * multiplier)
+
+    @staticmethod
+    def _safe_json_dict(raw: Any) -> Dict[str, Any]:
+        if not isinstance(raw, str):
+            return {}
+        text = raw.strip()
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _secondary_backfill_meta(payload: Dict[str, Any]) -> Dict[str, Any]:
+        meta = payload.get("secondary_backfill_meta")
+        return meta if isinstance(meta, dict) else {}
+
+    def _secondary_backfill_attempts(
+        self,
+        payload: Dict[str, Any],
+        *,
+        secondary_provider: str,
+    ) -> int:
+        meta = self._secondary_backfill_meta(payload)
+        if str(meta.get("provider") or "").strip() == secondary_provider:
+            try:
+                return max(0, int(meta.get("attempts", 0) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        cached_secondary = str(payload.get("secondary_provider") or "").strip()
+        if cached_secondary != secondary_provider:
+            return 0
+        # Legacy payload without retry metadata: if the target secondary provider
+        # is already present but slot(s) are still incomplete, treat it as one
+        # attempt already spent so we only allow one extra retry.
+        return 1
+
+    def _secondary_backfill_state_from_payload(
+        self,
+        payload: Dict[str, Any],
+        *,
+        secondary_provider: str,
+    ) -> str:
+        if not payload:
+            return "not_needed"
+
+        meta = self._secondary_backfill_meta(payload)
+        if (
+            str(meta.get("provider") or "").strip() == secondary_provider
+            and bool(meta.get("exhausted"))
+        ):
+            return "exhausted"
+
+        mode = str(payload.get("mode") or "").strip()
+        cached_secondary = str(payload.get("secondary_provider") or "").strip()
+        secondary_matches = cached_secondary == secondary_provider
+
+        def _slot_has_primary(slot: str) -> bool:
+            block = payload.get(slot)
+            if not isinstance(block, dict):
+                return False
+            return bool(str(block.get("variant_a") or "").strip())
+
+        def _slot_missing(slot: str) -> bool:
+            if not _slot_has_primary(slot):
+                return False
+            block = payload.get(slot)
+            if not isinstance(block, dict):
+                return False
+            secondary_text = str(block.get("variant_b") or "").strip()
+            if not secondary_matches:
+                return True
+            return not bool(secondary_text)
+
+        needs_backfill = False
+        if mode == "stereo":
+            if _slot_has_primary("manager") and _slot_has_primary("client"):
+                needs_backfill = _slot_missing("manager") or _slot_missing("client")
+        elif mode == "mono_or_fallback":
+            if _slot_has_primary("full"):
+                needs_backfill = _slot_missing("full")
+        if not needs_backfill:
+            return "not_needed"
+        if secondary_matches:
+            return "retry"
+        return "fresh"
+
+    def _apply_secondary_backfill_meta(
+        self,
+        payload: Dict[str, Any],
+        *,
+        secondary_provider: str,
+        attempts: int,
+        status: str,
+        exhausted: bool,
+        error: str = "",
+    ) -> Dict[str, Any]:
+        updated = dict(payload)
+        updated["secondary_backfill_meta"] = {
+            "provider": secondary_provider,
+            "attempts": int(max(0, attempts)),
+            "status": status,
+            "exhausted": bool(exhausted),
+            "last_error": error.strip(),
+            "last_attempt_utc": self._utc_now().isoformat(),
+        }
+        return updated
+
+    @staticmethod
+    def _clear_secondary_backfill_meta(
+        payload: Dict[str, Any],
+        *,
+        secondary_provider: str,
+    ) -> Dict[str, Any]:
+        updated = dict(payload)
+        meta = updated.get("secondary_backfill_meta")
+        if not isinstance(meta, dict):
+            return updated
+        if str(meta.get("provider") or "").strip() != secondary_provider:
+            return updated
+        updated.pop("secondary_backfill_meta", None)
+        return updated
+
+    @staticmethod
+    def _variant_text_for_provider(
+        block: Any,
+        *,
+        provider: str,
+        cached_primary_provider: str,
+        cached_secondary_provider: str,
+        fallback_to_variant_a: bool = False,
+    ) -> str:
+        if not isinstance(block, dict):
+            return ""
+        if provider and provider == cached_primary_provider:
+            return str(block.get("variant_a") or "").strip()
+        if provider and provider == cached_secondary_provider:
+            return str(block.get("variant_b") or "").strip()
+        if (
+            fallback_to_variant_a
+            and not str(block.get("variant_b") or "").strip()
+            and str(block.get("variant_a") or "").strip()
+        ):
+            return str(block.get("variant_a") or "").strip()
+        return ""
+
+    def _cached_variant_candidate(
+        self,
+        call: CallRecord,
+        *,
+        slot: str,  # manager | client | full
+        provider: str,
+        primary_provider: str,
+    ) -> Optional[Dict[str, Any]]:
+        payload = self._safe_json_dict(call.transcript_variants_json)
+        if not payload:
+            return None
+
+        mode = str(payload.get("mode") or "").strip()
+        if slot in {"manager", "client"} and mode != "stereo":
+            return None
+        if slot == "full" and mode != "mono_or_fallback":
+            return None
+
+        block = payload.get(slot)
+        cached_primary_provider = str(payload.get("primary_provider") or "").strip()
+        cached_secondary_provider = str(payload.get("secondary_provider") or "").strip()
+        cached_text = self._variant_text_for_provider(
+            block,
+            provider=provider,
+            cached_primary_provider=cached_primary_provider,
+            cached_secondary_provider=cached_secondary_provider,
+            fallback_to_variant_a=(provider == primary_provider),
+        )
+        if not cached_text:
+            return None
+        return {
+            "text": cached_text,
+            "segments": None,
+            "error": None,
+            "cached": True,
+        }
 
     def _openai_client(self) -> OpenAI:
         if not self._settings.openai_api_key:
@@ -1436,8 +1622,11 @@ class TranscribeService:
                 self._settings.codex_merge_model,
                 "--output-last-message",
                 out_file.name,
-                prompt,
             ]
+            reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+            if reasoning_effort in {"low", "medium", "high"}:
+                cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+            cmd.append(prompt)
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -1792,19 +1981,39 @@ class TranscribeService:
             if split:
                 left, right, temp_dir = split
                 try:
-                    manager_primary = self._try_transcribe_file_with_meta(
+                    manager_primary = self._cached_variant_candidate(
+                        call,
+                        slot="manager",
+                        provider=primary_provider,
+                        primary_provider=primary_provider,
+                    ) or self._try_transcribe_file_with_meta(
                         left, provider=primary_provider
                     )
-                    client_primary = self._try_transcribe_file_with_meta(
+                    client_primary = self._cached_variant_candidate(
+                        call,
+                        slot="client",
+                        provider=primary_provider,
+                        primary_provider=primary_provider,
+                    ) or self._try_transcribe_file_with_meta(
                         right, provider=primary_provider
                     )
                     manager_secondary: Optional[Dict[str, Any]] = None
                     client_secondary: Optional[Dict[str, Any]] = None
                     if dual_enabled and secondary_provider:
-                        manager_secondary = self._try_transcribe_file_with_meta(
+                        manager_secondary = self._cached_variant_candidate(
+                            call,
+                            slot="manager",
+                            provider=secondary_provider,
+                            primary_provider=primary_provider,
+                        ) or self._try_transcribe_file_with_meta(
                             left, provider=secondary_provider
                         )
-                        client_secondary = self._try_transcribe_file_with_meta(
+                        client_secondary = self._cached_variant_candidate(
+                            call,
+                            slot="client",
+                            provider=secondary_provider,
+                            primary_provider=primary_provider,
+                        ) or self._try_transcribe_file_with_meta(
                             right, provider=secondary_provider
                         )
                 finally:
@@ -1812,6 +2021,14 @@ class TranscribeService:
 
                 manager_primary_text = str(manager_primary["text"]).strip()
                 client_primary_text = str(client_primary["text"]).strip()
+                for label, payload in (
+                    ("manager_primary", manager_primary),
+                    ("client_primary", client_primary),
+                    ("manager_secondary", manager_secondary or {}),
+                    ("client_secondary", client_secondary or {}),
+                ):
+                    if bool((payload or {}).get("cached")):
+                        warnings.append(f"{label}: reused_cached_variant")
                 for label, payload in (
                     ("manager_primary", manager_primary),
                     ("client_primary", client_primary),
@@ -1985,13 +2202,29 @@ class TranscribeService:
                             ),
                         }
 
-        full_primary = self._try_transcribe_file_with_meta(path, provider=primary_provider)
+        full_primary = self._cached_variant_candidate(
+            call,
+            slot="full",
+            provider=primary_provider,
+            primary_provider=primary_provider,
+        ) or self._try_transcribe_file_with_meta(path, provider=primary_provider)
         full_primary_text = str(full_primary["text"]).strip()
         full_secondary_text = ""
         full_secondary: Optional[Dict[str, Any]] = None
         if dual_enabled and secondary_provider:
-            full_secondary = self._try_transcribe_file_with_meta(path, provider=secondary_provider)
+            full_secondary = self._cached_variant_candidate(
+                call,
+                slot="full",
+                provider=secondary_provider,
+                primary_provider=primary_provider,
+            ) or self._try_transcribe_file_with_meta(path, provider=secondary_provider)
             full_secondary_text = str(full_secondary.get("text", "")).strip()
+        for label, payload in (
+            ("full_primary", full_primary),
+            ("full_secondary", full_secondary or {}),
+        ):
+            if bool((payload or {}).get("cached")):
+                warnings.append(f"{label}: reused_cached_variant")
         for label, payload in (
             ("full_primary", full_primary),
             ("full_secondary", full_secondary or {}),
@@ -2083,7 +2316,256 @@ class TranscribeService:
             "transcript_variants_json": json.dumps(variants_payload, ensure_ascii=False),
         }
 
-    def run(self, session: Session, limit: int) -> Dict[str, int]:
+    def _call_needs_secondary_backfill(
+        self,
+        call: CallRecord,
+        *,
+        secondary_provider: str,
+    ) -> bool:
+        payload = self._safe_json_dict(call.transcript_variants_json)
+        state = self._secondary_backfill_state_from_payload(
+            payload,
+            secondary_provider=secondary_provider,
+        )
+        return state in {"fresh", "retry"}
+
+    def backfill_secondary_asr(
+        self,
+        session: Session,
+        limit: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, int]:
+        primary_provider = (self._settings.transcribe_provider or "").strip().lower()
+        secondary_provider = (self._settings.secondary_transcribe_provider or "").strip().lower()
+        if not secondary_provider:
+            return {
+                "processed": 0,
+                "success": 0,
+                "failed": 0,
+                "scanned_done": 0,
+                "skipped_config": 1,
+            }
+        if secondary_provider == primary_provider:
+            return {
+                "processed": 0,
+                "success": 0,
+                "failed": 0,
+                "scanned_done": 0,
+                "skipped_config": 1,
+            }
+
+        done_calls = session.scalars(
+            select(CallRecord)
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.transcription_status == "done")
+            .order_by(CallRecord.id.asc())
+        ).all()
+
+        fresh_candidates: list[CallRecord] = []
+        retry_candidates: list[CallRecord] = []
+        scanned_done = 0
+        for call in done_calls:
+            scanned_done += 1
+            state = self._secondary_backfill_state_from_payload(
+                self._safe_json_dict(call.transcript_variants_json),
+                secondary_provider=secondary_provider,
+            )
+            if state == "fresh":
+                fresh_candidates.append(call)
+                if len(fresh_candidates) >= limit:
+                    break
+            elif state == "retry" and len(retry_candidates) < limit:
+                retry_candidates.append(call)
+
+        candidates = list(fresh_candidates)
+        if len(candidates) < limit:
+            candidates.extend(retry_candidates[: limit - len(candidates)])
+
+        success = 0
+        failed = 0
+        partial = 0
+        exhausted = 0
+        total = len(candidates)
+
+        def _assign_transcribe_result(call: CallRecord, result: Dict[str, Any]) -> None:
+            self._export_transcript_file(call, result)
+            call.transcript_manager = result["transcript_manager"]
+            call.transcript_client = result["transcript_client"]
+            call.transcript_text = result["transcript_text"]
+            call.transcript_variants_json = result.get("transcript_variants_json")
+            call.transcription_status = "done"
+            call.resolve_status = "pending"
+            call.resolve_attempts = 0
+            call.resolve_json = None
+            call.resolve_quality_score = None
+            call.analysis_status = "pending"
+            call.sync_status = "pending"
+            call.next_retry_at = None
+            call.dead_letter_stage = None
+
+        def _emit_progress(payload: Dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception:
+                return
+
+        _emit_progress(
+            {
+                "stage": "backfill_second_asr",
+                "current": 0,
+                "total": total,
+                "success": 0,
+                "failed": 0,
+                "partial": 0,
+                "exhausted": 0,
+            }
+        )
+
+        for idx, call in enumerate(candidates, start=1):
+            current_payload = self._safe_json_dict(call.transcript_variants_json)
+            attempts = self._secondary_backfill_attempts(
+                current_payload,
+                secondary_provider=secondary_provider,
+            ) + 1
+            outcome = "success"
+            error_text = ""
+            try:
+                result = self._transcribe_call(call)
+                result_payload = self._safe_json_dict(result.get("transcript_variants_json"))
+                backfill_state = self._secondary_backfill_state_from_payload(
+                    result_payload,
+                    secondary_provider=secondary_provider,
+                )
+                if backfill_state in {"fresh", "retry"}:
+                    is_exhausted = attempts >= SECONDARY_BACKFILL_MAX_ATTEMPTS
+                    result_payload = self._apply_secondary_backfill_meta(
+                        result_payload or current_payload,
+                        secondary_provider=secondary_provider,
+                        attempts=attempts,
+                        status="partial",
+                        exhausted=is_exhausted,
+                        error="secondary_variant_still_missing",
+                    )
+                    result["transcript_variants_json"] = json.dumps(result_payload, ensure_ascii=False)
+                    _assign_transcribe_result(call, result)
+                    call.last_error = (
+                        f"backfill-second-asr: secondary variant still missing for {secondary_provider}"
+                    )
+                    if is_exhausted:
+                        exhausted += 1
+                        outcome = "exhausted"
+                    else:
+                        partial += 1
+                        outcome = "partial"
+                else:
+                    result_payload = self._clear_secondary_backfill_meta(
+                        result_payload or current_payload,
+                        secondary_provider=secondary_provider,
+                    )
+                    result["transcript_variants_json"] = json.dumps(result_payload, ensure_ascii=False)
+                    _assign_transcribe_result(call, result)
+                    call.last_error = None
+                    success += 1
+            except Exception as exc:  # noqa: BLE001
+                is_exhausted = attempts >= SECONDARY_BACKFILL_MAX_ATTEMPTS
+                failed += 1
+                outcome = "failed"
+                error_text = str(exc)
+                updated_payload = self._apply_secondary_backfill_meta(
+                    current_payload,
+                    secondary_provider=secondary_provider,
+                    attempts=attempts,
+                    status="failed",
+                    exhausted=is_exhausted,
+                    error=error_text,
+                )
+                call.transcript_variants_json = json.dumps(updated_payload, ensure_ascii=False)
+                # Keep existing successful transcript intact when selective backfill fails.
+                call.transcription_status = "done"
+                call.last_error = f"backfill-second-asr: {exc}"
+                if is_exhausted:
+                    exhausted += 1
+                    outcome = "exhausted"
+            session.add(call)
+            _emit_progress(
+                {
+                    "stage": "backfill_second_asr",
+                    "current": idx,
+                    "total": total,
+                    "success": success,
+                    "failed": failed,
+                    "partial": partial,
+                    "exhausted": exhausted,
+                    "status": outcome,
+                    "call_id": call.id,
+                    "source_filename": call.source_filename,
+                    "error": error_text,
+                }
+            )
+
+        session.commit()
+        return {
+            "processed": total,
+            "success": success,
+            "failed": failed,
+            "partial": partial,
+            "exhausted": exhausted,
+            "scanned_done": scanned_done,
+        }
+
+    def count_secondary_backfill_pending(self, session: Session) -> Dict[str, Any]:
+        primary_provider = (self._settings.transcribe_provider or "").strip().lower()
+        secondary_provider = (self._settings.secondary_transcribe_provider or "").strip().lower()
+        if not secondary_provider or secondary_provider == primary_provider:
+            return {
+                "enabled": False,
+                "primary_provider": primary_provider,
+                "secondary_provider": secondary_provider or None,
+                "pending": 0,
+                "retry_pending": 0,
+                "exhausted": 0,
+            }
+
+        done_calls = session.scalars(
+            select(CallRecord)
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.transcription_status == "done")
+            .where(CallRecord.transcript_variants_json.is_not(None))
+            .order_by(CallRecord.id.asc())
+        ).all()
+
+        pending = 0
+        retry_pending = 0
+        exhausted = 0
+        for call in done_calls:
+            state = self._secondary_backfill_state_from_payload(
+                self._safe_json_dict(call.transcript_variants_json),
+                secondary_provider=secondary_provider,
+            )
+            if state in {"fresh", "retry"}:
+                pending += 1
+                if state == "retry":
+                    retry_pending += 1
+            elif state == "exhausted":
+                exhausted += 1
+
+        return {
+            "enabled": True,
+            "primary_provider": primary_provider,
+            "secondary_provider": secondary_provider,
+            "pending": pending,
+            "retry_pending": retry_pending,
+            "exhausted": exhausted,
+        }
+
+    def run(
+        self,
+        session: Session,
+        limit: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, int]:
         now = self._utc_now()
         max_attempts = max(1, self._settings.transcribe_max_attempts)
         calls = session.scalars(
@@ -2098,9 +2580,32 @@ class TranscribeService:
 
         success = 0
         failed = 0
-        for call in calls:
+        total = len(calls)
+
+        def _emit_progress(payload: Dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception:
+                # Progress telemetry should never break the main transcription flow.
+                return
+
+        _emit_progress(
+            {
+                "stage": "transcribe",
+                "current": 0,
+                "total": total,
+                "success": 0,
+                "failed": 0,
+            }
+        )
+
+        for idx, call in enumerate(calls, start=1):
             call.transcribe_attempts = int(call.transcribe_attempts or 0) + 1
             attempt = call.transcribe_attempts
+            outcome = "success"
+            error_text = ""
             try:
                 result = self._transcribe_call(call)
                 self._export_transcript_file(call, result)
@@ -2129,7 +2634,22 @@ class TranscribeService:
                     call.transcription_status = "failed"
                     call.next_retry_at = self._utc_now() + self._retry_delay(attempt)
                 failed += 1
+                outcome = "failed"
+                error_text = str(exc)
             session.add(call)
+            _emit_progress(
+                {
+                    "stage": "transcribe",
+                    "current": idx,
+                    "total": total,
+                    "success": success,
+                    "failed": failed,
+                    "status": outcome,
+                    "call_id": call.id,
+                    "source_filename": call.source_filename,
+                    "error": error_text,
+                }
+            )
 
         session.commit()
         return {"processed": len(calls), "success": success, "failed": failed}

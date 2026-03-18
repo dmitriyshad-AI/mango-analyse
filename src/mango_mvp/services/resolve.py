@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 from sqlalchemy import or_, select
@@ -35,6 +35,35 @@ Return strict JSON only:
   "confidence": 0.0-1.0,
   "notes": "short reason"
 }"""
+
+DIALOGUE_RESOLVE_SYSTEM_PROMPT = """You improve a turn-by-turn Russian sales phone call dialogue.
+Rules:
+1) Use only information from the provided baseline turns and role variants. Do not invent facts.
+2) Preserve the set of turn_id values. Do not add new turns.
+3) Keep ts_sec unchanged. Do not rewrite timestamps.
+4) final_text must stay close to baseline/variant wording. If uncertain, keep baseline_text.
+5) You may set drop=true only for obvious artifact, exact echo, or duplicated garbage.
+6) You may set swap_with_next=true only when two adjacent turns are clearly in the wrong order.
+7) Speaker should normally stay unchanged. Change speaker only if the baseline speaker is clearly wrong.
+8) Return strict JSON only:
+{
+  "schema_version": "dialogue_resolve_result_v1",
+  "turns": [
+    {
+      "turn_id": 1,
+      "speaker": "manager|client|unknown",
+      "final_text": "...",
+      "selection": "A|B|MIX|BASELINE",
+      "drop": false,
+      "swap_with_next": false,
+      "confidence": 0.0,
+      "notes": ""
+    }
+  ],
+  "warnings": [],
+  "global_notes": ""
+}
+No markdown, no extra keys."""
 
 
 TIMED_LINE_RE = re.compile(
@@ -115,6 +144,27 @@ class ResolveService:
             values.append(max(0.0, min(1.0, conf)))
         return values
 
+    def _secondary_asr_required(self) -> bool:
+        primary = (self._settings.transcribe_provider or "").strip().lower()
+        secondary = (self._settings.secondary_transcribe_provider or "").strip().lower()
+        return bool(
+            self._settings.dual_transcribe_enabled
+            and secondary
+            and secondary != primary
+        )
+
+    def _waiting_for_secondary_asr(self, call: CallRecord) -> bool:
+        if not self._secondary_asr_required():
+            return False
+        secondary = (self._settings.secondary_transcribe_provider or "").strip().lower()
+        payload = self._safe_json(call.transcript_variants_json or "")
+        if not payload:
+            return True
+        return self._transcribe_helper._call_needs_secondary_backfill(
+            call,
+            secondary_provider=secondary,
+        )
+
     def _dialogue_export_path(self, call: CallRecord) -> Optional[Path]:
         export_dir = (self._settings.transcript_export_dir or "").strip()
         if not export_dir:
@@ -128,31 +178,56 @@ class ResolveService:
             return []
         return [line.strip() for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
 
-    def _parse_dialogue_lines(self, call: CallRecord, dialogue_lines: Optional[List[str]]) -> List[Tuple[float, str, str]]:
+    @staticmethod
+    def _parse_timed_line(line: str) -> Optional[Dict[str, Any]]:
+        match = TIMED_LINE_RE.match(str(line).strip())
+        if not match:
+            return None
+        mm = int(match.group("mm"))
+        ss = float(match.group("ss"))
+        ts = mm * 60.0 + ss
+        speaker = (match.group("speaker") or "").strip()
+        if speaker.startswith("Менеджер"):
+            role = "manager"
+        elif speaker.startswith("Клиент"):
+            role = "client"
+        else:
+            role = "unknown"
+        return {
+            "ts_sec": ts,
+            "approximate": bool(match.group("approx")),
+            "speaker_label": speaker,
+            "role": role,
+            "text": (match.group("text") or "").strip(),
+            "raw_line": str(line).strip(),
+        }
+
+    def _parse_dialogue_lines(
+        self,
+        call: CallRecord,
+        dialogue_lines: Optional[List[str]],
+        *,
+        allow_export_fallback: bool = False,
+    ) -> List[Tuple[float, str, str]]:
         rows: List[Tuple[float, str, str]] = []
         lines: List[str] = []
         if dialogue_lines:
             lines = [str(line).strip() for line in dialogue_lines if str(line).strip()]
-        else:
+        elif allow_export_fallback:
             path = self._dialogue_export_path(call)
             if path and path.exists():
                 lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         for raw in lines:
-            match = TIMED_LINE_RE.match(raw.strip())
-            if not match:
+            parsed = self._parse_timed_line(raw)
+            if parsed is None:
                 continue
-            mm = int(match.group("mm"))
-            ss = float(match.group("ss"))
-            ts = mm * 60.0 + ss
-            speaker = match.group("speaker")
-            if speaker.startswith("Менеджер"):
-                role = "manager"
-            elif speaker.startswith("Клиент"):
-                role = "client"
-            else:
-                role = "unknown"
-            text = (match.group("text") or "").strip()
-            rows.append((ts, role, text))
+            rows.append(
+                (
+                    float(parsed.get("ts_sec", 0.0)),
+                    str(parsed.get("role") or "unknown"),
+                    str(parsed.get("text") or "").strip(),
+                )
+            )
         return rows
 
     @staticmethod
@@ -235,7 +310,7 @@ class ResolveService:
         meta = candidate.get("meta")
         if not isinstance(meta, dict):
             meta = {}
-        rows_before = self._parse_dialogue_lines(call, lines)
+        rows_before = self._parse_dialogue_lines(call, lines, allow_export_fallback=False)
         if rows_before:
             before_metrics = self._line_metrics(rows_before)
             meta["same_ts_events_before_postfilter"] = int(
@@ -251,7 +326,11 @@ class ResolveService:
 
         candidate["dialogue_lines"] = fixed["dialogue_lines"]
         meta["same_ts_postfilter_adjusted_lines"] = adjusted
-        rows_after = self._parse_dialogue_lines(call, fixed["dialogue_lines"])
+        rows_after = self._parse_dialogue_lines(
+            call,
+            fixed["dialogue_lines"],
+            allow_export_fallback=False,
+        )
         if rows_after:
             after_metrics = self._line_metrics(rows_after)
             meta["same_ts_events_after_postfilter"] = int(
@@ -487,7 +566,7 @@ class ResolveService:
             score -= 12
             reasons.append("few_words")
 
-        rows = self._parse_dialogue_lines(call, dialogue_lines)
+        rows = self._parse_dialogue_lines(call, dialogue_lines, allow_export_fallback=False)
         if rows:
             metrics = self._line_metrics(rows)
             signals.update(metrics)
@@ -621,11 +700,16 @@ class ResolveService:
                         self._settings.codex_merge_model,
                         "--output-last-message",
                         out_file.name,
+                    ]
+                    reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+                    if reasoning_effort in {"low", "medium", "high"}:
+                        cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+                    cmd.append(
                         (
                             f"{RESOLVE_SYSTEM_PROMPT}\n\n"
                             f"{user_prompt}"
-                        ),
-                    ]
+                        )
+                    )
                     proc = subprocess.run(
                         cmd,
                         capture_output=True,
@@ -679,6 +763,461 @@ class ResolveService:
                 "similarity": round(similarity, 4),
             }
 
+    def _dialogue_resolve_provider(self) -> str:
+        mode = (self._settings.resolve_dialogue_mode or "").strip().lower()
+        if mode not in {"dialogue", "legacy"}:
+            mode = "dialogue"
+        if mode != "dialogue":
+            return "rule"
+        provider = (self._settings.resolve_llm_provider or "").strip().lower()
+        if provider in {"ollama", "openai", "codex_cli"}:
+            return provider
+        return "rule"
+
+    def _build_dialogue_resolve_payload(
+        self,
+        call: CallRecord,
+        variants_payload: Dict[str, Any],
+        baseline_dialogue_lines: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        mode = str(variants_payload.get("mode") or "")
+        if mode != "stereo":
+            return None
+        manager = variants_payload.get("manager")
+        client = variants_payload.get("client")
+        if not isinstance(manager, dict) or not isinstance(client, dict):
+            return None
+
+        parsed_turns: List[Dict[str, Any]] = []
+        previous_ts: Optional[float] = None
+        previous_role: Optional[str] = None
+        for idx, raw in enumerate(baseline_dialogue_lines, start=1):
+            parsed = self._parse_timed_line(raw)
+            if parsed is None:
+                continue
+            role = str(parsed.get("role") or "unknown")
+            text = str(parsed.get("text") or "").strip()
+            flags: List[str] = []
+            ts_sec = float(parsed.get("ts_sec") or 0.0)
+            if previous_ts is not None and previous_role is not None:
+                if role != previous_role and abs(ts_sec - previous_ts) <= 1e-6:
+                    flags.append("same_ts_cross")
+            if ARTIFACT_RE.search(text.lower()):
+                flags.append("artifact_candidate")
+            parsed_turns.append(
+                {
+                    "turn_id": idx,
+                    "ts_sec": round(ts_sec, 3),
+                    "ts_label": self._format_timecode(
+                        ts_sec,
+                        approximate=bool(parsed.get("approximate")),
+                    ).strip("[]"),
+                    "speaker": role,
+                    "speaker_label": str(parsed.get("speaker_label") or "").strip(),
+                    "baseline_text": text,
+                    "approximate": bool(parsed.get("approximate")),
+                    "flags": flags,
+                }
+            )
+            previous_ts = ts_sec
+            previous_role = role
+
+        if not parsed_turns:
+            return None
+
+        metrics = self._line_metrics(
+            [
+                (
+                    float(turn["ts_sec"]),
+                    str(turn["speaker"]),
+                    str(turn["baseline_text"]),
+                )
+                for turn in parsed_turns
+            ]
+        )
+        manager_name = (
+            (call.manager_name or "").strip()
+            or self._transcribe_helper._extract_manager_name_from_filename(call.source_filename)
+        )
+        return {
+            "schema_version": "dialogue_resolve_v1",
+            "call_id": int(call.id or 0),
+            "source_filename": call.source_filename,
+            "manager_name": manager_name,
+            "mode": mode,
+            "duration_sec": round(float(call.duration_sec or 0.0), 3),
+            "providers": {
+                "primary": variants_payload.get("primary_provider"),
+                "secondary": variants_payload.get("secondary_provider"),
+                "merge_provider": variants_payload.get("merge_provider"),
+            },
+            "role_variants": {
+                "manager": {
+                    "variant_a": str(manager.get("variant_a") or "").strip(),
+                    "variant_b": str(manager.get("variant_b") or "").strip(),
+                    "baseline_text": str(manager.get("final") or call.transcript_manager or "").strip(),
+                },
+                "client": {
+                    "variant_a": str(client.get("variant_a") or "").strip(),
+                    "variant_b": str(client.get("variant_b") or "").strip(),
+                    "baseline_text": str(client.get("final") or call.transcript_client or "").strip(),
+                },
+            },
+            "turns": parsed_turns,
+            "quality_hints": {
+                "same_ts_cross": int(metrics.get("same_ts_cross_speaker_events", 0) or 0),
+                "near_dup_pairs": int(metrics.get("near_dup_pairs", 0) or 0),
+                "warnings": self._get_warnings(variants_payload),
+            },
+        }
+
+    def _dialogue_turn_output_prompt(self, input_payload: Dict[str, Any]) -> str:
+        return (
+            "Call dialogue payload JSON:\n"
+            + json.dumps(input_payload, ensure_ascii=False, indent=2)
+        )
+
+    def _run_dialogue_llm(
+        self,
+        input_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        provider = self._dialogue_resolve_provider()
+        if provider == "rule":
+            raise RuntimeError("dialogue-level LLM is disabled")
+        user_prompt = self._dialogue_turn_output_prompt(input_payload)
+        if provider == "openai":
+            response = self._openai().chat.completions.create(
+                model=self._settings.openai_merge_model,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": DIALOGUE_RESOLVE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            content = response.choices[0].message.content if response.choices else None
+            if not content:
+                raise RuntimeError("empty content")
+            payload = json.loads(content)
+        elif provider == "codex_cli":
+            codex_bin = (self._settings.codex_cli_command or "codex").strip() or "codex"
+            if shutil.which(codex_bin) is None:
+                raise RuntimeError(f"codex binary is not available: {codex_bin}")
+            timeout_sec = max(15, int(self._settings.codex_cli_timeout_sec))
+            with tempfile.NamedTemporaryFile(
+                prefix="mango_resolve_dialogue_codex_", suffix=".txt"
+            ) as out_file:
+                cmd = [
+                    codex_bin,
+                    "exec",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--sandbox",
+                    "read-only",
+                    "--model",
+                    self._settings.codex_merge_model,
+                    "--output-last-message",
+                    out_file.name,
+                ]
+                reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+                if reasoning_effort in {"low", "medium", "high"}:
+                    cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+                cmd.append(f"{DIALOGUE_RESOLVE_SYSTEM_PROMPT}\n\n{user_prompt}")
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_sec,
+                )
+                if proc.returncode != 0:
+                    stderr_tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
+                    raise RuntimeError(
+                        f"codex exec failed rc={proc.returncode}: {stderr_tail[0].strip()}"
+                    )
+                raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
+            payload = self._transcribe_helper._extract_json_payload(raw)
+        else:
+            payload = self._ollama().generate_json(
+                model=self._settings.ollama_model,
+                think=self._settings.ollama_think,
+                temperature=self._settings.ollama_temperature,
+                system_prompt=DIALOGUE_RESOLVE_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                num_predict=max(1600, len(input_payload.get("turns") or []) * 120),
+            )
+        if not isinstance(payload, dict):
+            raise RuntimeError("dialogue resolve payload is not an object")
+        return payload
+
+    def _normalize_dialogue_result(
+        self,
+        input_payload: Dict[str, Any],
+        llm_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        input_turns = input_payload.get("turns")
+        if not isinstance(input_turns, list) or not input_turns:
+            raise RuntimeError("dialogue resolve input has no turns")
+        output_turns = llm_payload.get("turns")
+        if not isinstance(output_turns, list):
+            raise RuntimeError("dialogue resolve output has no turns array")
+
+        input_by_id: Dict[int, Dict[str, Any]] = {}
+        for turn in input_turns:
+            try:
+                turn_id = int(turn.get("turn_id"))
+            except (TypeError, ValueError):
+                raise RuntimeError("dialogue resolve input contains invalid turn_id")
+            input_by_id[turn_id] = dict(turn)
+
+        output_by_id: Dict[int, Dict[str, Any]] = {}
+        for raw in output_turns:
+            if not isinstance(raw, dict):
+                raise RuntimeError("dialogue resolve output turn is not object")
+            try:
+                turn_id = int(raw.get("turn_id"))
+            except (TypeError, ValueError):
+                raise RuntimeError("dialogue resolve output contains invalid turn_id")
+            if turn_id not in input_by_id:
+                raise RuntimeError(f"dialogue resolve output contains unknown turn_id={turn_id}")
+            if turn_id in output_by_id:
+                raise RuntimeError(f"dialogue resolve output duplicated turn_id={turn_id}")
+            output_by_id[turn_id] = raw
+
+        if set(output_by_id) != set(input_by_id):
+            raise RuntimeError("dialogue resolve output turn_id set mismatch")
+
+        role_variants = input_payload.get("role_variants")
+        if not isinstance(role_variants, dict):
+            role_variants = {}
+
+        normalized: List[Dict[str, Any]] = []
+        warnings: List[str] = []
+        speaker_corrections = 0
+        drops_requested = 0
+        for input_turn in input_turns:
+            turn_id = int(input_turn["turn_id"])
+            out_turn = output_by_id[turn_id]
+            role = str(input_turn.get("speaker") or "unknown")
+            requested_role = str(out_turn.get("speaker") or role).strip().lower()
+            turn_flags = {
+                str(flag).strip().lower()
+                for flag in input_turn.get("flags", [])
+                if str(flag).strip()
+            }
+            if requested_role not in {"manager", "client", "unknown"}:
+                requested_role = role
+            if requested_role != role:
+                if role == "unknown" or "same_ts_cross" in turn_flags:
+                    role = requested_role
+                    speaker_corrections += 1
+                else:
+                    warnings.append(f"speaker_change_ignored:{turn_id}")
+
+            baseline_text = str(input_turn.get("baseline_text") or "").strip()
+            role_block = role_variants.get(role) if isinstance(role_variants.get(role), dict) else {}
+            ref_lengths = [
+                len(baseline_text),
+                len(str(role_block.get("variant_a") or "").strip()),
+                len(str(role_block.get("variant_b") or "").strip()),
+                len(str(role_block.get("baseline_text") or "").strip()),
+            ]
+            max_ref_len = max(1, max(ref_lengths))
+            final_text = " ".join(str(out_turn.get("final_text") or "").split()).strip()
+            if not final_text and not bool(out_turn.get("drop")):
+                final_text = baseline_text
+            if len(final_text) > max_ref_len * 3 + 80:
+                warnings.append(f"oversize_text_reset:{turn_id}")
+                final_text = baseline_text
+
+            drop = bool(out_turn.get("drop"))
+            if drop:
+                drops_requested += 1
+                drop_allowed = "artifact_candidate" in turn_flags or "echo_candidate" in turn_flags
+                if not drop_allowed:
+                    warnings.append(f"drop_ignored:{turn_id}")
+                    drop = False
+
+            selection = str(out_turn.get("selection") or "BASELINE").strip().upper()
+            if selection not in {"A", "B", "MIX", "BASELINE"}:
+                selection = "BASELINE"
+
+            try:
+                confidence = float(out_turn.get("confidence"))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            confidence = max(0.0, min(1.0, confidence))
+
+            normalized.append(
+                {
+                    "turn_id": turn_id,
+                    "ts_sec": float(input_turn.get("ts_sec") or 0.0),
+                    "approximate": bool(input_turn.get("approximate")),
+                    "speaker": role,
+                    "baseline_text": baseline_text,
+                    "final_text": final_text or baseline_text,
+                    "selection": selection,
+                    "drop": drop,
+                    "swap_with_next": bool(out_turn.get("swap_with_next")),
+                    "confidence": confidence,
+                    "notes": str(out_turn.get("notes") or "").strip(),
+                }
+            )
+
+        swaps_applied = 0
+        ordered = normalized[:]
+        idx = 0
+        while idx < len(ordered) - 1:
+            current = ordered[idx]
+            if not bool(current.get("swap_with_next")):
+                idx += 1
+                continue
+            if bool(ordered[idx + 1].get("swap_with_next")):
+                warnings.append(f"swap_chain_ignored:{current['turn_id']}")
+                current["swap_with_next"] = False
+                idx += 1
+                continue
+            ordered[idx], ordered[idx + 1] = ordered[idx + 1], ordered[idx]
+            swaps_applied += 1
+            idx += 2
+
+        kept_turns = [turn for turn in ordered if not bool(turn.get("drop")) and str(turn.get("final_text") or "").strip()]
+        if not kept_turns:
+            raise RuntimeError("dialogue resolve dropped all turns")
+
+        if len(kept_turns) < max(1, len(input_turns) // 3):
+            raise RuntimeError("dialogue resolve dropped too many turns")
+
+        global_notes = str(llm_payload.get("global_notes") or "").strip()
+        raw_warnings = llm_payload.get("warnings")
+        if isinstance(raw_warnings, list):
+            for item in raw_warnings:
+                text = str(item).strip()
+                if text:
+                    warnings.append(text)
+
+        return {
+            "turns": kept_turns,
+            "warnings": warnings,
+            "global_notes": global_notes,
+            "swaps_applied": swaps_applied,
+            "drops_requested": drops_requested,
+            "speaker_corrections": speaker_corrections,
+        }
+
+    def _dialogue_turns_to_candidate(
+        self,
+        call: CallRecord,
+        variants_payload: Dict[str, Any],
+        normalized_result: Dict[str, Any],
+        *,
+        provider: str,
+    ) -> Dict[str, Any]:
+        manager_name = (
+            (call.manager_name or "").strip()
+            or self._transcribe_helper._extract_manager_name_from_filename(call.source_filename)
+        )
+        manager_label = f"Менеджер ({manager_name})"
+        manager_parts: List[str] = []
+        client_parts: List[str] = []
+        dialogue_lines: List[str] = []
+        for turn in normalized_result.get("turns", []):
+            role = str(turn.get("speaker") or "unknown")
+            text = str(turn.get("final_text") or "").strip()
+            if not text:
+                continue
+            ts_sec = float(turn.get("ts_sec") or 0.0)
+            approximate = bool(turn.get("approximate"))
+            if role == "manager":
+                speaker_label = manager_label
+                manager_parts.append(text)
+            elif role == "client":
+                speaker_label = "Клиент"
+                client_parts.append(text)
+            else:
+                speaker_label = "Спикер (не определен)"
+            dialogue_lines.append(
+                f"{self._format_timecode(ts_sec, approximate=approximate)} {speaker_label}: {text}"
+            )
+
+        manager_text = " ".join(manager_parts).strip()
+        client_text = " ".join(client_parts).strip()
+        if manager_text or client_text:
+            transcript_text = f"MANAGER:\n{manager_text}\n\nCLIENT:\n{client_text}"
+        else:
+            transcript_text = "\n".join(dialogue_lines).strip()
+
+        payload = self._copy_payload(variants_payload)
+        warnings = self._get_warnings(payload)
+        for item in normalized_result.get("warnings", []):
+            text = str(item).strip()
+            if text and text not in warnings:
+                warnings.append(text)
+        payload["warnings"] = warnings
+        payload["resolve"] = {
+            "provider": provider,
+            "mode": "stereo_dialogue",
+            "applied": True,
+            "swaps_applied": int(normalized_result.get("swaps_applied") or 0),
+            "speaker_corrections": int(normalized_result.get("speaker_corrections") or 0),
+        }
+        payload["dialogue_resolve"] = {
+            "schema_version": "dialogue_resolve_result_v1",
+            "turns_kept": len(dialogue_lines),
+            "swaps_applied": int(normalized_result.get("swaps_applied") or 0),
+            "drops_requested": int(normalized_result.get("drops_requested") or 0),
+            "speaker_corrections": int(normalized_result.get("speaker_corrections") or 0),
+            "warnings": normalized_result.get("warnings", []),
+            "global_notes": str(normalized_result.get("global_notes") or "").strip(),
+        }
+        manager_block = payload.get("manager")
+        if isinstance(manager_block, dict):
+            manager_block["final"] = manager_text
+        client_block = payload.get("client")
+        if isinstance(client_block, dict):
+            client_block["final"] = client_text
+
+        return {
+            "name": "llm",
+            "transcript_manager": manager_text,
+            "transcript_client": client_text,
+            "transcript_text": transcript_text,
+            "dialogue_lines": dialogue_lines,
+            "transcript_variants_json": json.dumps(payload, ensure_ascii=False),
+            "meta": {
+                "mode": "stereo",
+                "provider": provider,
+                "resolve_mode": "dialogue_level",
+                "swaps_applied": int(normalized_result.get("swaps_applied") or 0),
+                "speaker_corrections": int(normalized_result.get("speaker_corrections") or 0),
+            },
+        }
+
+    def _resolve_dialogue_with_llm(
+        self,
+        call: CallRecord,
+        variants_payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        provider = self._dialogue_resolve_provider()
+        if provider == "rule":
+            return None
+        baseline_dialogue_lines = self._load_dialogue_lines_from_export(call)
+        input_payload = self._build_dialogue_resolve_payload(
+            call,
+            variants_payload,
+            baseline_dialogue_lines,
+        )
+        if not input_payload:
+            return None
+        raw_result = self._run_dialogue_llm(input_payload)
+        normalized_result = self._normalize_dialogue_result(input_payload, raw_result)
+        return self._dialogue_turns_to_candidate(
+            call,
+            variants_payload,
+            normalized_result,
+            provider=f"{provider}_dialogue",
+        )
+
     def _resolve_with_llm(
         self,
         call: CallRecord,
@@ -695,6 +1234,10 @@ class ResolveService:
         contextual_provider = f"{llm_provider}_contextual" if llm_provider != "rule" else "rule"
 
         if mode == "stereo":
+            dialogue_candidate = self._resolve_dialogue_with_llm(call, payload)
+            if dialogue_candidate is not None:
+                return dialogue_candidate
+
             manager = payload.get("manager")
             client = payload.get("client")
             if not isinstance(manager, dict) or not isinstance(client, dict):
@@ -890,9 +1433,17 @@ class ResolveService:
         return payload
 
     def run(self, session: Session, limit: int) -> Dict[str, int]:
+        return self.run_with_progress(session, limit=limit, progress_callback=None)
+
+    def run_with_progress(
+        self,
+        session: Session,
+        limit: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, int]:
         now = self._utc_now()
         max_attempts = max(1, self._settings.resolve_max_attempts)
-        calls = session.scalars(
+        candidate_calls = session.scalars(
             select(CallRecord)
             .where(CallRecord.transcription_status == "done")
             .where(CallRecord.dead_letter_stage.is_(None))
@@ -900,8 +1451,14 @@ class ResolveService:
             .where(CallRecord.resolve_attempts < max_attempts)
             .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
             .order_by(CallRecord.id.asc())
-            .limit(limit)
         ).all()
+        calls: List[CallRecord] = []
+        for call in candidate_calls:
+            if self._waiting_for_secondary_asr(call):
+                continue
+            calls.append(call)
+            if len(calls) >= limit:
+                break
 
         success = 0
         failed = 0
@@ -910,9 +1467,33 @@ class ResolveService:
         llm_used = 0
         rescue_used = 0
 
-        for call in calls:
+        def _emit_progress(payload: Dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception:
+                return
+
+        _emit_progress(
+            {
+                "stage": "resolve",
+                "current": 0,
+                "total": len(calls),
+                "success": 0,
+                "failed": 0,
+                "manual": 0,
+                "skipped_short": 0,
+                "llm_used": 0,
+                "rescue_used": 0,
+            }
+        )
+
+        for idx, call in enumerate(calls, start=1):
             call.resolve_attempts = int(call.resolve_attempts or 0) + 1
             attempt = call.resolve_attempts
+            outcome = "success"
+            error_text = ""
             try:
                 duration = float(call.duration_sec or 0.0)
                 if duration > 0.0 and duration < float(self._settings.resolve_min_duration_sec):
@@ -935,6 +1516,24 @@ class ResolveService:
                     skipped += 1
                     success += 1
                     session.add(call)
+                    outcome = "skipped_short"
+                    _emit_progress(
+                        {
+                            "stage": "resolve",
+                            "current": idx,
+                            "total": len(calls),
+                            "success": success,
+                            "failed": failed,
+                            "manual": manual,
+                            "skipped_short": skipped,
+                            "llm_used": llm_used,
+                            "rescue_used": rescue_used,
+                            "status": outcome,
+                            "call_id": call.id,
+                            "source_filename": call.source_filename,
+                            "error": error_text,
+                        }
+                    )
                     continue
 
                 baseline = self._candidate_from_call(call)
@@ -1049,10 +1648,12 @@ class ResolveService:
                     call.analysis_status = "pending"
                     call.sync_status = "pending"
                     success += 1
+                    outcome = "done"
                 else:
                     decision = "manual_review_required"
                     call.resolve_status = "manual"
                     manual += 1
+                    outcome = "manual"
 
                 call.resolve_quality_score = float(best_score)
                 call.resolve_json = json.dumps(
@@ -1079,7 +1680,26 @@ class ResolveService:
                     call.resolve_status = "failed"
                     call.next_retry_at = self._utc_now() + self._retry_delay(attempt)
                 failed += 1
+                outcome = "failed"
+                error_text = str(exc)
             session.add(call)
+            _emit_progress(
+                {
+                    "stage": "resolve",
+                    "current": idx,
+                    "total": len(calls),
+                    "success": success,
+                    "failed": failed,
+                    "manual": manual,
+                    "skipped_short": skipped,
+                    "llm_used": llm_used,
+                    "rescue_used": rescue_used,
+                    "status": outcome,
+                    "call_id": call.id,
+                    "source_filename": call.source_filename,
+                    "error": error_text,
+                }
+            )
 
         session.commit()
         return {

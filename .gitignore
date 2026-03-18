@@ -9,6 +9,7 @@ __pycache__/
 .coverage
 
 *.db
+*.db.bak_*
 *.sqlite
 .env
 .amocrm_tokens.json
@@ -28,6 +29,8 @@ transcripts_semi_prod_*/
 stable_runtime/runs/
 stable_runtime/venv_stable/
 stable_runtime/*.db
+stable_runtime/pilots/
+pilot_exports/
 
 # Local source data dumps
 2026-03-05-21-06-49-ч1/

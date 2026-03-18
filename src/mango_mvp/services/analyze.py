@@ -444,6 +444,17 @@ class AnalyzeService:
                 if mode in {"stereo", "mono_or_fallback"}:
                     flags["mode"] = mode
                     flags["mono_fallback"] = mode == "mono_or_fallback"
+                secondary_provider = payload.get("secondary_provider")
+                if secondary_provider is not None:
+                    flags["secondary_provider"] = str(secondary_provider or "") or None
+                secondary_backfill_meta = payload.get("secondary_backfill_meta")
+                if isinstance(secondary_backfill_meta, dict):
+                    flags["secondary_backfill_status"] = str(
+                        secondary_backfill_meta.get("status") or ""
+                    ).strip() or None
+                    flags["secondary_backfill_exhausted"] = bool(
+                        secondary_backfill_meta.get("exhausted")
+                    )
                 warnings = payload.get("warnings")
                 if isinstance(warnings, list):
                     clean_warnings = [str(item) for item in warnings if str(item).strip()]
@@ -769,8 +780,11 @@ class AnalyzeService:
         }
 
     def _is_non_conversation(self, text: str) -> bool:
-        lowered = text.lower()
-        if len(lowered.strip()) <= 80:
+        raw = (text or "").strip()
+        if not raw:
+            return True
+        lowered = raw.lower()
+        if len(raw) <= 40 and not self._looks_like_dialogue_dump(raw):
             return True
         return any(marker in lowered for marker in NON_CONVERSATION_MARKERS)
 
@@ -846,8 +860,11 @@ class AnalyzeService:
                 self._settings.codex_merge_model,
                 "--output-last-message",
                 out_file.name,
-                prompt,
             ]
+            reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+            if reasoning_effort in {"low", "medium", "high"}:
+                cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+            cmd.append(prompt)
             proc = subprocess.run(
                 cmd,
                 capture_output=True,

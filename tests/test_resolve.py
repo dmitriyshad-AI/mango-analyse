@@ -329,6 +329,167 @@ class ResolveServiceTest(unittest.TestCase):
             self.assertTrue(llm_called["value"])
             self.assertEqual(result["llm_used"], 1)
 
+    def test_score_candidate_does_not_fallback_to_export_for_missing_dialogue_lines(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_no_export_fallback_") as td:
+            export_dir = Path(td) / "transcripts"
+            source_dir = Path(td) / "calls"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            source_file = source_dir / "score.mp3"
+            source_file.write_bytes(b"")
+
+            settings = replace(
+                make_settings(),
+                transcript_export_dir=str(export_dir),
+            )
+            service = ResolveService(settings)
+            call = CallRecord(
+                id=1,
+                source_file=str(source_file),
+                source_filename=source_file.name,
+                duration_sec=180.0,
+                transcript_text="MANAGER:\nДобрый день\n\nCLIENT:\nЗдравствуйте",
+                transcript_manager="Добрый день",
+                transcript_client="Здравствуйте",
+            )
+
+            target_dir = export_dir / source_dir.name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "score_text.txt").write_text(
+                "\n".join(
+                    [
+                        "[00:10.0] Менеджер (Иван): Добрый день.",
+                        "[00:10.0] Клиент: Здравствуйте.",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            quality = service._score_candidate(
+                call,
+                call.transcript_text or "",
+                call.transcript_manager,
+                call.transcript_client,
+                {"mode": "stereo", "warnings": []},
+                dialogue_lines=None,
+            )
+            self.assertNotIn("same_ts_cross=1", quality["reasons"])
+            self.assertEqual(
+                int(quality.get("signals", {}).get("same_ts_cross_speaker_events", 0) or 0),
+                0,
+            )
+
+    def test_resolve_with_llm_uses_dialogue_level_candidate_for_stereo(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_dialogue_level_") as td:
+            export_dir = Path(td) / "transcripts"
+            source_dir = Path(td) / "calls"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            source_file = source_dir / "dialogue.mp3"
+            source_file.write_bytes(b"")
+
+            settings = replace(
+                make_settings(),
+                transcript_export_dir=str(export_dir),
+                resolve_llm_provider="codex_cli",
+            )
+            service = ResolveService(settings)
+            call = CallRecord(
+                id=1,
+                source_file=str(source_file),
+                source_filename=source_file.name,
+                manager_name="Иван",
+                duration_sec=180.0,
+                transcript_text="MANAGER:\nЗдравствуйте как вам удобно\n\nCLIENT:\nДа, слушаю хорошо",
+                transcript_manager="Здравствуйте как вам удобно",
+                transcript_client="Да, слушаю хорошо",
+                transcript_variants_json=json.dumps(
+                    {
+                        "mode": "stereo",
+                        "warnings": [],
+                        "primary_provider": "mlx",
+                        "secondary_provider": "gigaam",
+                        "merge_provider": "codex_cli",
+                        "manager": {
+                            "variant_a": "Здравствуйте как вам удобно",
+                            "variant_b": "Здравствуйте, как вам удобно",
+                            "final": "Здравствуйте как вам удобно",
+                        },
+                        "client": {
+                            "variant_a": "Да, слушаю хорошо",
+                            "variant_b": "Да, слушаю. Хорошо.",
+                            "final": "Да, слушаю хорошо",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+            target_dir = export_dir / source_dir.name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "dialogue_text.txt").write_text(
+                "\n".join(
+                    [
+                        "[00:01.0] Менеджер (Иван): Здравствуйте как вам удобно",
+                        "[00:01.0] Клиент: Да, слушаю хорошо",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def fake_dialogue_runner(payload: dict) -> dict:
+                self.assertEqual(payload.get("schema_version"), "dialogue_resolve_v1")
+                turns = payload.get("turns") or []
+                self.assertEqual(len(turns), 2)
+                return {
+                    "schema_version": "dialogue_resolve_result_v1",
+                    "turns": [
+                        {
+                            "turn_id": 1,
+                            "speaker": "manager",
+                            "final_text": "Здравствуйте, как вам удобно?",
+                            "selection": "B",
+                            "drop": False,
+                            "swap_with_next": False,
+                            "confidence": 0.9,
+                            "notes": "",
+                        },
+                        {
+                            "turn_id": 2,
+                            "speaker": "client",
+                            "final_text": "Да, слушаю. Хорошо.",
+                            "selection": "B",
+                            "drop": False,
+                            "swap_with_next": False,
+                            "confidence": 0.85,
+                            "notes": "",
+                        },
+                    ],
+                    "warnings": [],
+                    "global_notes": "",
+                }
+
+            service._run_dialogue_llm = fake_dialogue_runner  # type: ignore[method-assign]
+
+            candidate = service._resolve_with_llm(
+                call,
+                json.loads(call.transcript_variants_json or "{}"),
+            )
+
+            self.assertIsNotNone(candidate)
+            assert candidate is not None
+            self.assertEqual(candidate["name"], "llm")
+            self.assertEqual(candidate["meta"]["resolve_mode"], "dialogue_level")
+            self.assertEqual(
+                candidate["dialogue_lines"],
+                [
+                    "[00:01.0] Менеджер (Иван): Здравствуйте, как вам удобно?",
+                    "[00:01.0] Клиент: Да, слушаю. Хорошо.",
+                ],
+            )
+            self.assertIn("Здравствуйте, как вам удобно?", candidate["transcript_text"])
+            self.assertIn("Да, слушаю. Хорошо.", candidate["transcript_text"])
+
     def test_openai_provider_without_key_falls_back_to_rule(self) -> None:
         settings = replace(
             make_settings(),

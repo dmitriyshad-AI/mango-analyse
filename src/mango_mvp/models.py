@@ -39,6 +39,15 @@ class CallRecord(Base):
     resolve_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     analyze_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     sync_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pipeline_stage: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    pipeline_worker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    pipeline_claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    analysis_worker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    analysis_claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     next_retry_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

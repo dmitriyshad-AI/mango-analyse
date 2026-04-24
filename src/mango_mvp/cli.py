@@ -8,15 +8,20 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from mango_mvp.config import get_settings
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
 from mango_mvp.services.analyze import AnalyzeService
+from mango_mvp.services.export_excel import build_call_rows, build_contact_rows, write_workbook
+from mango_mvp.services.export_ai_office import push_call_insights
 from mango_mvp.services.ingest import ingest_from_directory
 from mango_mvp.services.resolve import ResolveService
-from mango_mvp.services.sync_amocrm import AmoCRMSyncService
+from mango_mvp.services.sync_amocrm import (
+    LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE,
+    AmoCRMSyncService,
+)
 from mango_mvp.services.transcribe import TranscribeService
 from mango_mvp.services.worker import run_worker
 
@@ -598,6 +603,7 @@ def cmd_export_crm_fields(args) -> int:
         interests = _as_dict(blocks.get("interests"))
         commercial = _as_dict(blocks.get("commercial"))
         next_step = _as_dict(blocks.get("next_step"))
+        quality_flags = _as_dict(analysis.get("quality_flags"))
 
         history_summary = (
             _clean_str(analysis.get("history_summary"))
@@ -637,6 +643,13 @@ def cmd_export_crm_fields(args) -> int:
             "personal_offer": _clean_str(analysis.get("personal_offer")),
             "follow_up_score": analysis.get("follow_up_score"),
             "follow_up_reason": _clean_str(analysis.get("follow_up_reason")),
+            "call_type": _clean_str(quality_flags.get("call_type")),
+            "needs_review": bool(
+                analysis.get("needs_review")
+                if analysis.get("needs_review") is not None
+                else quality_flags.get("needs_review")
+            ),
+            "review_reasons": _join_list(analysis.get("review_reasons")) or _join_list(quality_flags.get("review_reasons")),
             "tags": _join_list(analysis.get("tags")),
             "analysis_schema_version": _clean_str(analysis.get("analysis_schema_version")),
         }
@@ -681,6 +694,9 @@ def cmd_export_crm_fields(args) -> int:
             "personal_offer",
             "follow_up_score",
             "follow_up_reason",
+            "call_type",
+            "needs_review",
+            "review_reasons",
             "tags",
             "analysis_schema_version",
         ]
@@ -693,12 +709,122 @@ def cmd_export_crm_fields(args) -> int:
     return 0
 
 
+def cmd_export_sales_workbook(args) -> int:
+    settings = get_settings()
+    session_factory = build_session_factory(settings)
+    with session_factory() as session:
+        query = select(CallRecord).where(CallRecord.analysis_json.is_not(None))
+        if args.only_done:
+            query = query.where(CallRecord.analysis_status == "done")
+        calls = session.scalars(query.order_by(CallRecord.id.asc()).limit(args.limit)).all()
+
+    calls_rows = build_call_rows(calls)
+    contacts_rows = build_contact_rows(calls_rows)
+    out_path = write_workbook(
+        Path(args.out),
+        calls_rows=calls_rows,
+        contacts_rows=contacts_rows,
+    )
+    _json_print(
+        {
+            "calls_exported": len(calls_rows),
+            "contacts_exported": len(contacts_rows),
+            "out": str(out_path.resolve()),
+        }
+    )
+    return 0
+
+
+def cmd_reset_analysis(args) -> int:
+    settings = get_settings()
+    session_factory = build_session_factory(settings)
+    requested_statuses = _parse_status_list(args.statuses)
+    if not requested_statuses:
+        requested_statuses = ["done", "failed", "dead", "pending", "in_progress"]
+
+    with session_factory() as session:
+        query = select(CallRecord).where(CallRecord.transcription_status == "done")
+        if args.only_terminal_resolve:
+            query = query.where(
+                or_(CallRecord.resolve_status.in_(["done", "skipped"]), CallRecord.resolve_status.is_(None))
+            )
+        if args.only_analysis_dead_letter:
+            query = query.where(
+                or_(CallRecord.dead_letter_stage.is_(None), CallRecord.dead_letter_stage == "analyze")
+            )
+        query = query.where(CallRecord.analysis_status.in_(requested_statuses))
+        calls = session.scalars(query.order_by(CallRecord.id.asc()).limit(args.limit)).all()
+
+        updated = 0
+        for call in calls:
+            call.analysis_status = "pending"
+            call.analyze_attempts = 0
+            call.analysis_worker_id = None
+            call.analysis_claimed_at = None
+            call.sync_status = "pending"
+            call.sync_attempts = 0
+            call.next_retry_at = None
+            if call.dead_letter_stage == "analyze":
+                call.dead_letter_stage = None
+            if args.clear_json:
+                call.analysis_json = None
+            if args.clear_error:
+                call.last_error = None
+            session.add(call)
+            updated += 1
+        session.commit()
+
+    _json_print(
+        {
+            "updated": updated,
+            "statuses": requested_statuses,
+            "only_terminal_resolve": bool(args.only_terminal_resolve),
+            "only_analysis_dead_letter": bool(args.only_analysis_dead_letter),
+            "clear_json": bool(args.clear_json),
+            "clear_error": bool(args.clear_error),
+        }
+    )
+    return 0
+
+
+def cmd_push_ai_office_insights(args) -> int:
+    settings = get_settings()
+    session_factory = build_session_factory(settings)
+    selected_ids = _load_id_file(Path(args.ids_in)) if args.ids_in else None
+    with session_factory() as session:
+        result = push_call_insights(
+            session,
+            settings,
+            project_id=args.project_id,
+            ids=selected_ids,
+            limit=args.limit,
+            only_done=not args.include_not_done,
+            dry_run=args.dry_run,
+        )
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        result["out"] = str(out_path.resolve())
+
+    _json_print(result)
+    return 0
+
+
 def cmd_sync(args) -> int:
     settings = get_settings()
     session_factory = build_session_factory(settings)
     service = AmoCRMSyncService(settings)
-    with session_factory() as session:
-        result = service.run(session, limit=args.limit)
+    try:
+        with session_factory() as session:
+            result = service.run(session, limit=args.limit)
+    except RuntimeError as exc:
+        _json_print({"ok": False, "error": str(exc)})
+        return 2
     _json_print(result)
     return 0
 
@@ -737,8 +863,14 @@ def cmd_run_all(args) -> int:
         resolve_result = ResolveService(settings).run(session, limit=args.stage_limit)
     with session_factory() as session:
         analyze_result = AnalyzeService(settings).run(session, limit=args.stage_limit)
-    with session_factory() as session:
-        sync_result = AmoCRMSyncService(settings).run(session, limit=args.stage_limit)
+    sync_result = {
+        "processed": 0,
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "status": "disabled_by_default",
+        "summary": LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE,
+    }
 
     _json_print(
         {
@@ -757,6 +889,7 @@ def cmd_stats(_args) -> int:
     settings = get_settings()
     session_factory = build_session_factory(settings)
     transcribe_service = TranscribeService(settings)
+    resolve_service = ResolveService(settings)
     with session_factory() as session:
         total = session.scalar(select(func.count(CallRecord.id))) or 0
         by_transcribe = session.execute(
@@ -782,6 +915,13 @@ def cmd_stats(_args) -> int:
             .where(CallRecord.dead_letter_stage.is_not(None))
             .group_by(CallRecord.dead_letter_stage)
         ).all()
+        by_pipeline_stage = session.execute(
+            select(CallRecord.pipeline_stage, func.count(CallRecord.id))
+            .where(CallRecord.pipeline_stage.is_not(None))
+            .group_by(CallRecord.pipeline_stage)
+        ).all()
+        transcribe_queue = transcribe_service.count_primary_queue_state(session)
+        resolve_queue = resolve_service.count_queue_state(session)
         secondary_backfill = transcribe_service.count_secondary_backfill_pending(session)
 
     _json_print(
@@ -792,6 +932,9 @@ def cmd_stats(_args) -> int:
             "analysis_status": {k: v for k, v in by_analyze},
             "sync_status": {k: v for k, v in by_sync},
             "dead_letter_stage": {k: v for k, v in by_dead_letter},
+            "pipeline_stage_leases": {k: v for k, v in by_pipeline_stage},
+            "transcribe_queue": transcribe_queue,
+            "resolve_queue": resolve_queue,
             "secondary_asr_backfill": secondary_backfill,
         }
     )
@@ -809,15 +952,19 @@ def cmd_worker(args) -> int:
     def _progress(payload):
         print(json.dumps({"type": "worker_cycle", **payload}, ensure_ascii=False), flush=True)
 
-    result = run_worker(
-        settings,
-        stage_limit=args.stage_limit,
-        once=args.once,
-        stages=stages,
-        poll_sec=args.poll_sec,
-        max_idle_cycles=args.max_idle_cycles,
-        progress_callback=_progress,
-    )
+    try:
+        result = run_worker(
+            settings,
+            stage_limit=args.stage_limit,
+            once=args.once,
+            stages=stages,
+            poll_sec=args.poll_sec,
+            max_idle_cycles=args.max_idle_cycles,
+            progress_callback=_progress,
+        )
+    except RuntimeError as exc:
+        _json_print({"ok": False, "error": str(exc)})
+        return 2
     _json_print(result)
     return 0
 
@@ -852,6 +999,8 @@ def cmd_requeue(args) -> int:
             elif call.dead_letter_stage == "analyze" or stage == "analyze":
                 call.analysis_status = "pending"
                 call.analyze_attempts = 0
+                call.analysis_worker_id = None
+                call.analysis_claimed_at = None
                 call.sync_status = "pending"
             elif call.dead_letter_stage == "sync" or stage == "sync":
                 call.sync_status = "pending"
@@ -859,6 +1008,9 @@ def cmd_requeue(args) -> int:
             call.dead_letter_stage = None
             call.next_retry_at = None
             call.last_error = None
+            call.pipeline_stage = None
+            call.pipeline_worker_id = None
+            call.pipeline_claimed_at = None
             session.add(call)
             updated += 1
         session.commit()
@@ -889,6 +1041,11 @@ def cmd_reset_transcribe(args) -> int:
             call.resolve_attempts = 0
             call.analyze_attempts = 0
             call.sync_attempts = 0
+            call.analysis_worker_id = None
+            call.analysis_claimed_at = None
+            call.pipeline_stage = None
+            call.pipeline_worker_id = None
+            call.pipeline_claimed_at = None
             call.next_retry_at = None
             call.dead_letter_stage = None
             call.resolve_json = None
@@ -964,6 +1121,7 @@ def cmd_migrate_analysis_schema(args) -> int:
 
             if not args.dry_run:
                 call.analysis_json = json.dumps(migrated, ensure_ascii=False)
+                service._export_analysis_files(call, migrated)
                 session.add(call)
             updated += 1
 
@@ -1076,11 +1234,54 @@ def build_parser() -> argparse.ArgumentParser:
     p_crm_export.add_argument("--only-done", action="store_true")
     p_crm_export.set_defaults(func=cmd_export_crm_fields)
 
-    p_sync = sub.add_parser("sync", help="Sync analyzed calls to amoCRM")
+    p_sales_workbook = sub.add_parser(
+        "export-sales-workbook",
+        help="Export Excel workbook with Calls and Contacts sheets for sales operations",
+    )
+    p_sales_workbook.add_argument("--out", required=True)
+    p_sales_workbook.add_argument("--limit", type=int, default=100000)
+    p_sales_workbook.add_argument("--only-done", action="store_true")
+    p_sales_workbook.set_defaults(func=cmd_export_sales_workbook)
+
+    p_reset_analysis = sub.add_parser(
+        "reset-analysis",
+        help="Reset analysis_status back to pending for a fresh Analyze rerun",
+    )
+    p_reset_analysis.add_argument("--limit", type=int, default=200000)
+    p_reset_analysis.add_argument(
+        "--statuses",
+        default="done,failed,dead,pending,in_progress",
+        help="Comma-separated analysis statuses to reset",
+    )
+    p_reset_analysis.add_argument("--only-terminal-resolve", action="store_true")
+    p_reset_analysis.add_argument("--only-analysis-dead-letter", action="store_true")
+    p_reset_analysis.add_argument("--clear-json", action="store_true")
+    p_reset_analysis.add_argument("--clear-error", action="store_true")
+    p_reset_analysis.set_defaults(func=cmd_reset_analysis)
+
+    p_ai_office_push = sub.add_parser(
+        "push-ai-office-insights",
+        help="Push analyzed call insights into AI Office intake API",
+    )
+    p_ai_office_push.add_argument("--project-id", required=True)
+    p_ai_office_push.add_argument("--limit", type=int, default=100)
+    p_ai_office_push.add_argument("--ids-in")
+    p_ai_office_push.add_argument("--include-not-done", action="store_true")
+    p_ai_office_push.add_argument("--dry-run", action="store_true")
+    p_ai_office_push.add_argument("--out")
+    p_ai_office_push.set_defaults(func=cmd_push_ai_office_insights)
+
+    p_sync = sub.add_parser(
+        "sync",
+        help="DEPRECATED: explicit opt-in legacy contact sync to amoCRM",
+    )
     p_sync.add_argument("--limit", type=int, default=100)
     p_sync.set_defaults(func=cmd_sync)
 
-    p_run_all = sub.add_parser("run-all", help="Run all stages sequentially")
+    p_run_all = sub.add_parser(
+        "run-all",
+        help="Run ingest/transcribe/backfill/resolve/analyze sequentially (legacy sync excluded)",
+    )
     p_run_all.add_argument("--recordings-dir", required=True)
     p_run_all.add_argument("--metadata-csv")
     p_run_all.add_argument("--ingest-limit", type=int, default=None)
@@ -1092,14 +1293,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_worker = sub.add_parser(
         "worker",
-        help="Run resilient background loop for transcribe/resolve/analyze/sync",
+        help="Run resilient background loop for transcribe/backfill/resolve/analyze (legacy sync excluded by default)",
     )
     p_worker.add_argument("--stage-limit", type=int, default=100)
     p_worker.add_argument("--once", action="store_true")
     p_worker.add_argument(
         "--stages",
-        default="transcribe,backfill-second-asr,resolve,analyze,sync",
-        help="Comma-separated ordered subset of stages",
+        default="transcribe,backfill-second-asr,resolve,analyze",
+        help="Comma-separated ordered subset of stages; add 'sync' only with explicit legacy opt-in",
     )
     p_worker.add_argument("--poll-sec", type=int, default=None)
     p_worker.add_argument("--max-idle-cycles", type=int, default=None)

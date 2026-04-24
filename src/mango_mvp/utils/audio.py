@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import audioop
 import json
 import re
 import shutil
@@ -160,29 +161,94 @@ def probe_audio(path: Path) -> Dict[str, Optional[float]]:
     return _merge_meta(meta, _probe_audio_wave(path))
 
 
+def resolve_ffmpeg_bin() -> Optional[str]:
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+    except Exception:
+        return None
+    try:
+        bundled_ffmpeg = str(get_ffmpeg_exe() or "").strip()
+    except Exception:
+        return None
+    if bundled_ffmpeg and Path(bundled_ffmpeg).exists():
+        return bundled_ffmpeg
+    return None
+
+
 def split_stereo_to_mono(path: Path) -> Optional[Tuple[Path, Path, Path]]:
-    if shutil.which("ffmpeg") is None:
+    ffmpeg_bin = resolve_ffmpeg_bin()
+    if ffmpeg_bin is not None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="mango_mvp_split_"))
+        left = temp_dir / "left.wav"
+        right = temp_dir / "right.wav"
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            str(path),
+            "-filter_complex",
+            "[0:a]channelsplit=channel_layout=stereo[left][right]",
+            "-map",
+            "[left]",
+            str(left),
+            "-map",
+            "[right]",
+            str(right),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode == 0 and left.exists() and right.exists():
+            return left, right, temp_dir
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    afconvert_bin = shutil.which("afconvert")
+    if afconvert_bin is None:
         return None
 
     temp_dir = Path(tempfile.mkdtemp(prefix="mango_mvp_split_"))
+    stereo_wav = temp_dir / "stereo.wav"
     left = temp_dir / "left.wav"
     right = temp_dir / "right.wav"
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
+        afconvert_bin,
+        "-f",
+        "WAVE",
+        "-d",
+        "LEI16@16000",
+        "-c",
+        "2",
         str(path),
-        "-filter_complex",
-        "[0:a]channelsplit=channel_layout=stereo[left][right]",
-        "-map",
-        "[left]",
-        str(left),
-        "-map",
-        "[right]",
-        str(right),
+        str(stereo_wav),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0 or not left.exists() or not right.exists():
+    if result.returncode != 0 or not stereo_wav.exists():
         shutil.rmtree(temp_dir, ignore_errors=True)
         return None
-    return left, right, temp_dir
+
+    try:
+        with wave.open(str(stereo_wav), "rb") as wf:
+            channels = int(wf.getnchannels())
+            sample_width = int(wf.getsampwidth())
+            sample_rate = int(wf.getframerate())
+            frames = wf.readframes(wf.getnframes())
+        if channels != 2 or sample_width <= 0:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+
+        left_frames = audioop.tomono(frames, sample_width, 1, 0)
+        right_frames = audioop.tomono(frames, sample_width, 0, 1)
+        for out_path, mono_frames in ((left, left_frames), (right, right_frames)):
+            with wave.open(str(out_path), "wb") as out_wav:
+                out_wav.setnchannels(1)
+                out_wav.setsampwidth(sample_width)
+                out_wav.setframerate(sample_rate)
+                out_wav.writeframes(mono_frames)
+        if not left.exists() or not right.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+        return left, right, temp_dir
+    except (wave.Error, OSError, EOFError):
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return None

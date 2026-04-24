@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from mango_mvp.db import build_session_factory, init_db
@@ -14,6 +15,53 @@ from tests.test_dialogue_format import make_settings
 
 
 class ResolveServiceTest(unittest.TestCase):
+    def test_merge_pair_with_codex_uses_response_cache_on_repeat(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_cache_") as td:
+            service = ResolveService(
+                replace(
+                    make_settings(),
+                    resolve_llm_provider="codex_cli",
+                    codex_resolve_model="gpt-5.4",
+                    llm_cache_enabled=True,
+                    llm_cache_dir=str(Path(td) / "llm-cache"),
+                )
+            )
+            payload = {
+                "merged_text": "Здравствуйте, расскажите подробнее.",
+                "selection": "MIX",
+                "confidence": 0.91,
+                "notes": "merged",
+            }
+            state = {"calls": 0}
+
+            def fake_run(cmd, capture_output, text, check, timeout):
+                state["calls"] += 1
+                self.assertIn("--model", cmd)
+                self.assertIn("gpt-5.4", cmd)
+                out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+                out_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                return CompletedProcess(cmd, 0, stdout="", stderr="tokens used\n710\n")
+
+            with patch("mango_mvp.services.resolve.shutil.which", return_value="/usr/bin/codex"):
+                with patch("mango_mvp.services.resolve.subprocess.run", side_effect=fake_run):
+                    first = service._merge_pair_with_llm(
+                        speaker_label="Менеджер",
+                        variant_a="Здравствуйте, расскажите.",
+                        variant_b="Здравствуйте, расскажите подробнее.",
+                        context="",
+                    )
+                    second = service._merge_pair_with_llm(
+                        speaker_label="Менеджер",
+                        variant_a="Здравствуйте, расскажите.",
+                        variant_b="Здравствуйте, расскажите подробнее.",
+                        context="",
+                    )
+
+            self.assertEqual(state["calls"], 1)
+            self.assertEqual(first["merged_text"], second["merged_text"])
+            self.assertEqual(first["selection"], second["selection"])
+            self.assertEqual(first.get("tokens_used_actual"), 710)
+
     def test_same_ts_postfilter_adjusts_cross_speaker_timecodes(self) -> None:
         service = ResolveService(make_settings())
         lines = [
@@ -467,6 +515,10 @@ class ResolveServiceTest(unittest.TestCase):
                     ],
                     "warnings": [],
                     "global_notes": "",
+                    "_llm_meta": {
+                        "llm_tokens_used_actual": 901,
+                        "llm_duration_sec": 8.7,
+                    },
                 }
 
             service._run_dialogue_llm = fake_dialogue_runner  # type: ignore[method-assign]
@@ -480,6 +532,8 @@ class ResolveServiceTest(unittest.TestCase):
             assert candidate is not None
             self.assertEqual(candidate["name"], "llm")
             self.assertEqual(candidate["meta"]["resolve_mode"], "dialogue_level")
+            self.assertEqual(candidate["meta"]["llm_tokens_used_actual"], 901)
+            self.assertEqual(candidate["meta"]["llm_duration_sec"], 8.7)
             self.assertEqual(
                 candidate["dialogue_lines"],
                 [

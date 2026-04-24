@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -35,9 +37,23 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _default_codex_cli_command() -> str:
+    detected = shutil.which("codex")
+    if detected:
+        return detected
+    app_binary = Path("/Applications/Codex.app/Contents/Resources/codex")
+    if app_binary.exists():
+        return str(app_binary)
+    return "codex"
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
+    sqlite_wal_enabled: bool
+    sqlite_busy_timeout_ms: int
+    llm_cache_enabled: bool
+    llm_cache_dir: str
     openai_api_key: Optional[str]
     transcribe_provider: str
     dual_transcribe_enabled: bool
@@ -45,6 +61,9 @@ class Settings:
     dual_merge_provider: str
     openai_merge_model: str
     codex_merge_model: str
+    codex_transcribe_model: str
+    codex_resolve_model: str
+    codex_analyze_model: str
     codex_cli_command: str
     codex_cli_timeout_sec: int
     codex_reasoning_effort: str
@@ -58,6 +77,9 @@ class Settings:
     gigaam_device: str
     gigaam_segment_sec: int
     openai_analysis_model: str
+    analyze_prompt_profile: str
+    analyze_escalate_full_on_ambiguity: bool
+    analyze_transcript_compaction_enabled: bool
     analyze_ollama_num_predict: int
     ollama_base_url: str
     ollama_model: str
@@ -88,9 +110,14 @@ class Settings:
     resolve_postfilter_same_ts: bool
     resolve_risky_same_ts_threshold: int
     resolve_aggressive_rescue_for_risky: bool
+    pipeline_lease_timeout_sec: int
+    analyze_lease_timeout_sec: int
     retry_base_delay_sec: int
     worker_poll_sec: int
     worker_max_idle_cycles: int
+    ai_office_api_base_url: Optional[str]
+    ai_office_api_key: Optional[str]
+    ai_office_timeout_sec: int
     amocrm_base_url: Optional[str]
     amocrm_access_token: Optional[str]
     amocrm_refresh_token: Optional[str]
@@ -109,6 +136,7 @@ class Settings:
     amocrm_task_type_id: Optional[int]
     amocrm_task_responsible_user_id: Optional[int]
     sync_dry_run: bool
+    legacy_amocrm_sync_enabled: bool
     follow_up_task_threshold: int
 
 
@@ -124,8 +152,13 @@ def _optional_int(raw: Optional[str]) -> Optional[int]:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     load_dotenv()
+    legacy_codex_model = os.getenv("CODEX_MERGE_MODEL", "gpt-5.4").strip() or "gpt-5.4"
     return Settings(
         database_url=os.getenv("DATABASE_URL", "sqlite:///mango_mvp.db"),
+        sqlite_wal_enabled=_bool_env("SQLITE_WAL_ENABLED", True),
+        sqlite_busy_timeout_ms=_int_env("SQLITE_BUSY_TIMEOUT_MS", 30000),
+        llm_cache_enabled=_bool_env("LLM_CACHE_ENABLED", True),
+        llm_cache_dir=(os.getenv("LLM_CACHE_DIR", ".cache/llm_responses").strip() or ".cache/llm_responses"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         transcribe_provider=os.getenv("TRANSCRIBE_PROVIDER", "mock").strip().lower(),
         dual_transcribe_enabled=_bool_env("DUAL_TRANSCRIBE_ENABLED", False),
@@ -134,8 +167,17 @@ def get_settings() -> Settings:
         ),
         dual_merge_provider=os.getenv("DUAL_MERGE_PROVIDER", "codex_cli").strip().lower(),
         openai_merge_model=os.getenv("OPENAI_MERGE_MODEL", "gpt-4o-mini").strip(),
-        codex_merge_model=os.getenv("CODEX_MERGE_MODEL", "gpt-5.4").strip(),
-        codex_cli_command=os.getenv("CODEX_CLI_COMMAND", "codex").strip(),
+        codex_merge_model=legacy_codex_model,
+        codex_transcribe_model=(
+            os.getenv("CODEX_TRANSCRIBE_MODEL", "").strip() or legacy_codex_model
+        ),
+        codex_resolve_model=(
+            os.getenv("CODEX_RESOLVE_MODEL", "").strip() or legacy_codex_model
+        ),
+        codex_analyze_model=(
+            os.getenv("CODEX_ANALYZE_MODEL", "").strip() or "gpt-5.4-mini"
+        ),
+        codex_cli_command=os.getenv("CODEX_CLI_COMMAND", _default_codex_cli_command()).strip(),
         codex_cli_timeout_sec=_int_env("CODEX_CLI_TIMEOUT_SEC", 180),
         codex_reasoning_effort=(
             os.getenv("CODEX_REASONING_EFFORT", "medium").strip().lower() or "medium"
@@ -152,6 +194,17 @@ def get_settings() -> Settings:
         gigaam_device=os.getenv("GIGAAM_DEVICE", "cpu").strip().lower(),
         gigaam_segment_sec=_int_env("GIGAAM_SEGMENT_SEC", 20),
         openai_analysis_model=os.getenv("OPENAI_ANALYSIS_MODEL", "gpt-4o-mini"),
+        analyze_prompt_profile=(
+            os.getenv("ANALYZE_PROMPT_PROFILE", "compact").strip().lower() or "compact"
+        ),
+        analyze_escalate_full_on_ambiguity=_bool_env(
+            "ANALYZE_ESCALATE_FULL_ON_AMBIGUITY",
+            True,
+        ),
+        analyze_transcript_compaction_enabled=_bool_env(
+            "ANALYZE_TRANSCRIPT_COMPACTION_ENABLED",
+            True,
+        ),
         analyze_ollama_num_predict=_int_env("ANALYZE_OLLAMA_NUM_PREDICT", 500),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
         ollama_model=os.getenv("OLLAMA_MODEL", "gpt-oss:20b").strip(),
@@ -192,9 +245,14 @@ def get_settings() -> Settings:
         resolve_aggressive_rescue_for_risky=_bool_env(
             "RESOLVE_AGGRESSIVE_RESCUE_FOR_RISKY", True
         ),
+        pipeline_lease_timeout_sec=_int_env("PIPELINE_LEASE_TIMEOUT_SEC", 1800),
+        analyze_lease_timeout_sec=_int_env("ANALYZE_LEASE_TIMEOUT_SEC", 1800),
         retry_base_delay_sec=_int_env("RETRY_BASE_DELAY_SEC", 30),
         worker_poll_sec=_int_env("WORKER_POLL_SEC", 10),
         worker_max_idle_cycles=_int_env("WORKER_MAX_IDLE_CYCLES", 30),
+        ai_office_api_base_url=(os.getenv("AI_OFFICE_API_BASE_URL", "").strip() or None),
+        ai_office_api_key=(os.getenv("AI_OFFICE_API_KEY", "").strip() or None),
+        ai_office_timeout_sec=_int_env("AI_OFFICE_TIMEOUT_SEC", 30),
         amocrm_base_url=os.getenv("AMOCRM_BASE_URL"),
         amocrm_access_token=os.getenv("AMOCRM_ACCESS_TOKEN"),
         amocrm_refresh_token=os.getenv("AMOCRM_REFRESH_TOKEN"),
@@ -223,5 +281,6 @@ def get_settings() -> Settings:
             os.getenv("AMOCRM_TASK_RESPONSIBLE_USER_ID")
         ),
         sync_dry_run=_bool_env("SYNC_DRY_RUN", True),
+        legacy_amocrm_sync_enabled=_bool_env("LEGACY_AMOCRM_SYNC_ENABLED", False),
         follow_up_task_threshold=_int_env("FOLLOW_UP_TASK_THRESHOLD", 70),
     )

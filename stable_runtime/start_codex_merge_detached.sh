@@ -23,7 +23,7 @@ This runs dual-ASR with Codex CLI merge on blocks of calls in detached mode.
 Requires `codex login` done beforehand.
 
 Example:
-  CODEX_MERGE_MODEL=gpt-5.4 \
+  CODEX_TRANSCRIBE_MODEL=gpt-5.4 \
   ./stable_runtime/start_codex_merge_detached.sh \
     --input "/path/to/mango_export" \
     --output "/path/to/transcripts_codex_merge" \

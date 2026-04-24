@@ -7,18 +7,21 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from openai import OpenAI
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.services.transcribe import TranscribeService
 
 
@@ -34,7 +37,8 @@ Return strict JSON only:
   "selection": "A|B|MIX",
   "confidence": 0.0-1.0,
   "notes": "short reason"
-}"""
+}
+Return a single-line minified JSON object."""
 
 DIALOGUE_RESOLVE_SYSTEM_PROMPT = """You improve a turn-by-turn Russian sales phone call dialogue.
 Rules:
@@ -63,7 +67,10 @@ Rules:
   "warnings": [],
   "global_notes": ""
 }
-No markdown, no extra keys."""
+Return a single-line minified JSON object. No markdown, no extra keys."""
+
+RESOLVE_PAIR_PROMPT_VERSION = "v2"
+RESOLVE_DIALOGUE_PROMPT_VERSION = "v2"
 
 
 TIMED_LINE_RE = re.compile(
@@ -85,6 +92,10 @@ class ResolveService:
         self._ollama_client: Optional[OllamaClient] = None
         self._openai_client: Optional[OpenAI] = None
         self._rescue_service_cache: Dict[Tuple[str, bool], TranscribeService] = {}
+        self._llm_cache = LLMResponseCache(
+            enabled=settings.llm_cache_enabled,
+            root_dir=settings.llm_cache_dir,
+        )
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -94,6 +105,105 @@ class ResolveService:
         base = max(1, self._settings.retry_base_delay_sec)
         multiplier = max(1, 2 ** max(0, attempts - 1))
         return timedelta(seconds=base * multiplier)
+
+    @staticmethod
+    def _is_retry_due(next_retry_at: Optional[datetime], now: datetime) -> bool:
+        if next_retry_at is None:
+            return True
+        retry_at = next_retry_at
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return retry_at <= now
+
+    @staticmethod
+    def _pipeline_worker_id(prefix: str) -> str:
+        return f"{prefix}-{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
+
+    def _claim_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
+        if limit <= 0:
+            return []
+        now = self._utc_now()
+        max_attempts = max(1, self._settings.resolve_max_attempts)
+        release_stale_pipeline_claims(session, self._settings, now)
+        session.execute(
+            text(
+                """
+                UPDATE call_records
+                   SET resolve_status = 'in_progress',
+                       pipeline_stage = 'resolve',
+                       pipeline_worker_id = :worker_id,
+                       pipeline_claimed_at = :now,
+                       updated_at = :now
+                 WHERE id IN (
+                    SELECT id
+                      FROM call_records
+                     WHERE transcription_status = 'done'
+                       AND dead_letter_stage IS NULL
+                       AND resolve_status IN ('pending', 'failed')
+                       AND resolve_attempts < :max_attempts
+                       AND (next_retry_at IS NULL OR next_retry_at <= :now)
+                       AND pipeline_stage IS NULL
+                     ORDER BY id ASC
+                     LIMIT :limit
+                 )
+                """
+            ),
+            {
+                "worker_id": worker_id,
+                "now": now,
+                "max_attempts": max_attempts,
+                "limit": int(limit),
+            },
+        )
+        ids = [
+            int(row[0])
+            for row in session.execute(
+                text(
+                    """
+                    SELECT id
+                      FROM call_records
+                     WHERE resolve_status = 'in_progress'
+                       AND pipeline_stage = 'resolve'
+                       AND pipeline_worker_id = :worker_id
+                     ORDER BY id ASC
+                    """
+                ),
+                {"worker_id": worker_id},
+            ).all()
+        ]
+        session.commit()
+        return ids
+
+    def count_queue_state(self, session: Session) -> Dict[str, int]:
+        now = self._utc_now()
+        candidate_calls = session.scalars(
+            select(CallRecord)
+            .where(CallRecord.transcription_status == "done")
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.resolve_status.in_(["pending", "failed"]))
+            .where(CallRecord.resolve_attempts < max(1, self._settings.resolve_max_attempts))
+            .order_by(CallRecord.id.asc())
+        ).all()
+        ready = 0
+        blocked_waiting_secondary = 0
+        for call in candidate_calls:
+            if self._waiting_for_secondary_asr(call):
+                blocked_waiting_secondary += 1
+            elif self._is_retry_due(call.next_retry_at, now):
+                ready += 1
+        in_progress = int(
+            session.scalar(
+                select(func.count(CallRecord.id))
+                .where(CallRecord.resolve_status == "in_progress")
+                .where(CallRecord.pipeline_stage == "resolve")
+            )
+            or 0
+        )
+        return {
+            "ready_pending": ready,
+            "blocked_waiting_secondary": blocked_waiting_secondary,
+            "in_progress": in_progress,
+        }
 
     def _ollama(self) -> OllamaClient:
         if self._ollama_client is None:
@@ -666,6 +776,26 @@ class ResolveService:
             f"Variant A:\n{a}\n\n"
             f"Variant B:\n{b}"
         )
+        prompt = f"{RESOLVE_SYSTEM_PROMPT}\n\n{user_prompt}"
+        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        cached = self._llm_cache.get(
+            namespace="resolve_pair_merge",
+            provider=provider,
+            model=self._settings.openai_merge_model if provider == "openai" else (
+                self._settings.codex_resolve_model if provider == "codex_cli" else self._settings.ollama_model
+            ),
+            reasoning=(
+                "temperature=0.0"
+                if provider == "openai"
+                else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
+            ),
+            prompt_version=RESOLVE_PAIR_PROMPT_VERSION,
+            prompt=prompt,
+        )
+        if cached is not None:
+            cached = dict(cached)
+            cached["similarity"] = round(similarity, 4)
+            return cached
         try:
             if provider == "openai":
                 response = self._openai().chat.completions.create(
@@ -697,19 +827,16 @@ class ResolveService:
                         "--sandbox",
                         "read-only",
                         "--model",
-                        self._settings.codex_merge_model,
+                        self._settings.codex_resolve_model,
                         "--output-last-message",
                         out_file.name,
                     ]
-                    reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
                     if reasoning_effort in {"low", "medium", "high"}:
                         cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
                     cmd.append(
-                        (
-                            f"{RESOLVE_SYSTEM_PROMPT}\n\n"
-                            f"{user_prompt}"
-                        )
+                        prompt
                     )
+                    started_at = time.time()
                     proc = subprocess.run(
                         cmd,
                         capture_output=True,
@@ -717,6 +844,7 @@ class ResolveService:
                         check=False,
                         timeout=timeout_sec,
                     )
+                    elapsed_sec = time.time() - started_at
                     if proc.returncode != 0:
                         stderr_tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
                         raise RuntimeError(
@@ -744,7 +872,7 @@ class ResolveService:
             except (TypeError, ValueError):
                 confidence = 0.0
             confidence = max(0.0, min(1.0, confidence))
-            return {
+            result = {
                 "merged_text": merged,
                 "selection": selection,
                 "confidence": confidence,
@@ -752,6 +880,25 @@ class ResolveService:
                 "notes": str(payload.get("notes", "")).strip(),
                 "similarity": round(similarity, 4),
             }
+            if provider == "codex_cli":
+                result["tokens_used_actual"] = self._transcribe_helper._parse_codex_tokens_used(proc.stderr or "")
+                result["duration_sec"] = round(elapsed_sec, 3)
+            self._llm_cache.put(
+                namespace="resolve_pair_merge",
+                provider=provider,
+                model=self._settings.openai_merge_model if provider == "openai" else (
+                    self._settings.codex_resolve_model if provider == "codex_cli" else self._settings.ollama_model
+                ),
+                reasoning=(
+                    "temperature=0.0"
+                    if provider == "openai"
+                    else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
+                ),
+                prompt_version=RESOLVE_PAIR_PROMPT_VERSION,
+                prompt=prompt,
+                response=result,
+            )
+            return result
         except Exception as exc:  # noqa: BLE001
             merged = self._rule_merge(a, b, self._transcribe_helper)
             return {
@@ -885,6 +1032,24 @@ class ResolveService:
         if provider == "rule":
             raise RuntimeError("dialogue-level LLM is disabled")
         user_prompt = self._dialogue_turn_output_prompt(input_payload)
+        prompt = f"{DIALOGUE_RESOLVE_SYSTEM_PROMPT}\n\n{user_prompt}"
+        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        cached = self._llm_cache.get(
+            namespace="resolve_dialogue",
+            provider=provider,
+            model=self._settings.openai_merge_model if provider == "openai" else (
+                self._settings.codex_resolve_model if provider == "codex_cli" else self._settings.ollama_model
+            ),
+            reasoning=(
+                "temperature=0.0"
+                if provider == "openai"
+                else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
+            ),
+            prompt_version=RESOLVE_DIALOGUE_PROMPT_VERSION,
+            prompt=prompt,
+        )
+        if cached is not None:
+            return cached
         if provider == "openai":
             response = self._openai().chat.completions.create(
                 model=self._settings.openai_merge_model,
@@ -915,14 +1080,14 @@ class ResolveService:
                     "--sandbox",
                     "read-only",
                     "--model",
-                    self._settings.codex_merge_model,
+                    self._settings.codex_resolve_model,
                     "--output-last-message",
                     out_file.name,
                 ]
-                reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
                 if reasoning_effort in {"low", "medium", "high"}:
                     cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
-                cmd.append(f"{DIALOGUE_RESOLVE_SYSTEM_PROMPT}\n\n{user_prompt}")
+                cmd.append(prompt)
+                started_at = time.time()
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -930,6 +1095,7 @@ class ResolveService:
                     check=False,
                     timeout=timeout_sec,
                 )
+                elapsed_sec = time.time() - started_at
                 if proc.returncode != 0:
                     stderr_tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
                     raise RuntimeError(
@@ -937,6 +1103,10 @@ class ResolveService:
                     )
                 raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
             payload = self._transcribe_helper._extract_json_payload(raw)
+            payload["_llm_meta"] = {
+                "llm_tokens_used_actual": self._transcribe_helper._parse_codex_tokens_used(proc.stderr or ""),
+                "llm_duration_sec": round(elapsed_sec, 3),
+            }
         else:
             payload = self._ollama().generate_json(
                 model=self._settings.ollama_model,
@@ -948,6 +1118,21 @@ class ResolveService:
             )
         if not isinstance(payload, dict):
             raise RuntimeError("dialogue resolve payload is not an object")
+        self._llm_cache.put(
+            namespace="resolve_dialogue",
+            provider=provider,
+            model=self._settings.openai_merge_model if provider == "openai" else (
+                self._settings.codex_resolve_model if provider == "codex_cli" else self._settings.ollama_model
+            ),
+            reasoning=(
+                "temperature=0.0"
+                if provider == "openai"
+                else (reasoning_effort if provider == "codex_cli" else f"think={self._settings.ollama_think}")
+            ),
+            prompt_version=RESOLVE_DIALOGUE_PROMPT_VERSION,
+            prompt=prompt,
+            response=payload,
+        )
         return payload
 
     def _normalize_dialogue_result(
@@ -1112,6 +1297,7 @@ class ResolveService:
         normalized_result: Dict[str, Any],
         *,
         provider: str,
+        llm_meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         manager_name = (
             (call.manager_name or "").strip()
@@ -1170,6 +1356,8 @@ class ResolveService:
             "warnings": normalized_result.get("warnings", []),
             "global_notes": str(normalized_result.get("global_notes") or "").strip(),
         }
+        if isinstance(llm_meta, dict) and llm_meta:
+            payload["dialogue_resolve"]["llm_meta"] = llm_meta
         manager_block = payload.get("manager")
         if isinstance(manager_block, dict):
             manager_block["final"] = manager_text
@@ -1190,6 +1378,7 @@ class ResolveService:
                 "resolve_mode": "dialogue_level",
                 "swaps_applied": int(normalized_result.get("swaps_applied") or 0),
                 "speaker_corrections": int(normalized_result.get("speaker_corrections") or 0),
+                **(llm_meta if isinstance(llm_meta, dict) else {}),
             },
         }
 
@@ -1210,12 +1399,14 @@ class ResolveService:
         if not input_payload:
             return None
         raw_result = self._run_dialogue_llm(input_payload)
+        llm_meta = raw_result.get("_llm_meta") if isinstance(raw_result.get("_llm_meta"), dict) else None
         normalized_result = self._normalize_dialogue_result(input_payload, raw_result)
         return self._dialogue_turns_to_candidate(
             call,
             variants_payload,
             normalized_result,
             provider=f"{provider}_dialogue",
+            llm_meta=llm_meta,
         )
 
     def _resolve_with_llm(
@@ -1277,6 +1468,15 @@ class ResolveService:
                 "mode": "stereo_per_role",
                 "applied": True,
             }
+            llm_tokens_used_actual = sum(
+                int(item.get("tokens_used_actual") or 0)
+                for item in (manager_merge, client_merge)
+                if isinstance(item, dict)
+            )
+            llm_duration_sec = round(
+                sum(float(item.get("duration_sec") or 0.0) for item in (manager_merge, client_merge) if isinstance(item, dict)),
+                3,
+            )
             return {
                 "name": "llm",
                 "transcript_manager": manager_text,
@@ -1287,6 +1487,8 @@ class ResolveService:
                 "meta": {
                     "mode": "stereo",
                     "provider": contextual_provider,
+                    "llm_tokens_used_actual": llm_tokens_used_actual or None,
+                    "llm_duration_sec": llm_duration_sec,
                 },
             }
 
@@ -1325,6 +1527,8 @@ class ResolveService:
             "meta": {
                 "mode": "mono_or_fallback",
                 "provider": contextual_provider,
+                "llm_tokens_used_actual": int(full_merge.get("tokens_used_actual") or 0) or None,
+                "llm_duration_sec": round(float(full_merge.get("duration_sec") or 0.0), 3),
             },
         }
 
@@ -1441,24 +1645,18 @@ class ResolveService:
         limit: int,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, int]:
-        now = self._utc_now()
+        worker_id = self._pipeline_worker_id("rs")
+        claimed_ids = self._claim_batch(session, limit=limit, worker_id=worker_id)
         max_attempts = max(1, self._settings.resolve_max_attempts)
-        candidate_calls = session.scalars(
-            select(CallRecord)
-            .where(CallRecord.transcription_status == "done")
-            .where(CallRecord.dead_letter_stage.is_(None))
-            .where(CallRecord.resolve_status.in_(["pending", "failed"]))
-            .where(CallRecord.resolve_attempts < max_attempts)
-            .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
-            .order_by(CallRecord.id.asc())
-        ).all()
-        calls: List[CallRecord] = []
-        for call in candidate_calls:
-            if self._waiting_for_secondary_asr(call):
-                continue
-            calls.append(call)
-            if len(calls) >= limit:
-                break
+        calls = (
+            session.scalars(
+                select(CallRecord)
+                .where(CallRecord.id.in_(claimed_ids))
+                .order_by(CallRecord.id.asc())
+            ).all()
+            if claimed_ids
+            else []
+        )
 
         success = 0
         failed = 0
@@ -1466,6 +1664,7 @@ class ResolveService:
         skipped = 0
         llm_used = 0
         rescue_used = 0
+        handled = 0
 
         def _emit_progress(payload: Dict[str, Any]) -> None:
             if progress_callback is None:
@@ -1490,8 +1689,21 @@ class ResolveService:
         )
 
         for idx, call in enumerate(calls, start=1):
+            if call.resolve_status != "in_progress" or call.pipeline_stage != "resolve":
+                continue
+            if self._waiting_for_secondary_asr(call):
+                wait_retry_sec = max(10, min(int(self._settings.worker_poll_sec or 10), 60))
+                call.resolve_status = "pending"
+                call.pipeline_stage = None
+                call.pipeline_worker_id = None
+                call.pipeline_claimed_at = None
+                call.next_retry_at = self._utc_now() + timedelta(seconds=wait_retry_sec)
+                session.add(call)
+                session.commit()
+                continue
             call.resolve_attempts = int(call.resolve_attempts or 0) + 1
             attempt = call.resolve_attempts
+            handled += 1
             outcome = "success"
             error_text = ""
             try:
@@ -1513,6 +1725,9 @@ class ResolveService:
                     call.sync_status = "pending"
                     call.next_retry_at = None
                     call.last_error = None
+                    call.pipeline_stage = None
+                    call.pipeline_worker_id = None
+                    call.pipeline_claimed_at = None
                     skipped += 1
                     success += 1
                     session.add(call)
@@ -1534,6 +1749,7 @@ class ResolveService:
                             "error": error_text,
                         }
                     )
+                    session.commit()
                     continue
 
                 baseline = self._candidate_from_call(call)
@@ -1670,6 +1886,9 @@ class ResolveService:
                 call.next_retry_at = None
                 call.dead_letter_stage = None
                 call.last_error = None
+                call.pipeline_stage = None
+                call.pipeline_worker_id = None
+                call.pipeline_claimed_at = None
             except Exception as exc:  # noqa: BLE001
                 call.last_error = f"resolve: {exc}"
                 if attempt >= max_attempts:
@@ -1679,6 +1898,9 @@ class ResolveService:
                 else:
                     call.resolve_status = "failed"
                     call.next_retry_at = self._utc_now() + self._retry_delay(attempt)
+                call.pipeline_stage = None
+                call.pipeline_worker_id = None
+                call.pipeline_claimed_at = None
                 failed += 1
                 outcome = "failed"
                 error_text = str(exc)
@@ -1700,10 +1922,9 @@ class ResolveService:
                     "error": error_text,
                 }
             )
-
-        session.commit()
+            session.commit()
         return {
-            "processed": len(calls),
+            "processed": handled,
             "success": success,
             "failed": failed,
             "manual": manual,

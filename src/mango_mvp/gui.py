@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -18,6 +19,153 @@ STATUS_REFRESH_SEC = 12
 LOG_POLL_MS = 100
 
 
+def _detect_codex_cli_command() -> str:
+    detected = shutil.which("codex")
+    if detected:
+        return detected
+    app_binary = Path("/Applications/Codex.app/Contents/Resources/codex")
+    if app_binary.exists():
+        return str(app_binary)
+    return "codex"
+
+
+def _env_bool(name: str) -> bool | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _apply_env_ui_overrides(defaults: dict[str, str | bool]) -> dict[str, str | bool]:
+    text_keys = {
+        "project_dir": "MANGO_UI_PROJECT_DIR",
+        "recordings_dir": "MANGO_UI_RECORDINGS_DIR",
+        "database_path": "MANGO_UI_DATABASE_PATH",
+        "export_dir": "MANGO_UI_EXPORT_DIR",
+        "backend_python": "MANGO_UI_BACKEND_PYTHON",
+        "stage_limit": "MANGO_UI_STAGE_LIMIT",
+        "transcribe_mode": "MANGO_UI_TRANSCRIBE_MODE",
+        "transcribe_provider": "MANGO_UI_TRANSCRIBE_PROVIDER",
+        "secondary_provider": "MANGO_UI_SECONDARY_PROVIDER",
+        "merge_provider": "MANGO_UI_MERGE_PROVIDER",
+        "mono_role_assignment_mode": "MANGO_UI_MONO_ROLE_ASSIGNMENT_MODE",
+        "resolve_llm_provider": "MANGO_UI_RESOLVE_LLM_PROVIDER",
+        "resolve_dialogue_mode": "MANGO_UI_RESOLVE_DIALOGUE_MODE",
+        "analyze_provider": "MANGO_UI_ANALYZE_PROVIDER",
+        "codex_transcribe_model": "MANGO_UI_CODEX_TRANSCRIBE_MODEL",
+        "codex_resolve_model": "MANGO_UI_CODEX_RESOLVE_MODEL",
+        "codex_analyze_model": "MANGO_UI_CODEX_ANALYZE_MODEL",
+    }
+    bool_keys = {
+        "simple_mode": "MANGO_UI_SIMPLE_MODE",
+        "use_project_src": "MANGO_UI_USE_PROJECT_SRC",
+        "pipeline_stage_transcribe": "MANGO_UI_PIPELINE_STAGE_TRANSCRIBE",
+        "pipeline_stage_backfill": "MANGO_UI_PIPELINE_STAGE_BACKFILL",
+        "pipeline_stage_resolve": "MANGO_UI_PIPELINE_STAGE_RESOLVE",
+        "pipeline_stage_analyze": "MANGO_UI_PIPELINE_STAGE_ANALYZE",
+        "pipeline_stage_sync": "MANGO_UI_PIPELINE_STAGE_SYNC",
+    }
+    merged = dict(defaults)
+    for key, env_name in text_keys.items():
+        raw = os.getenv(env_name)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if value:
+            merged[key] = value
+    for key, env_name in bool_keys.items():
+        value = _env_bool(env_name)
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _test_ui_defaults(project_root: Path) -> dict[str, str | bool] | None:
+    test_runs_dir = project_root / "test_runs"
+    test_runs_dir.mkdir(parents=True, exist_ok=True)
+
+    night_root = project_root / "stable_runtime" / "night_asr_3000_20260328"
+    night_batch_dir = night_root / "batch_3000"
+    if night_batch_dir.exists() and night_batch_dir.is_dir():
+        export_dir = night_root / "night_asr_3000_20260328_transcripts"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "recordings_dir": str(night_batch_dir),
+            "database_path": str(night_root / "night_asr_3000_20260328.db"),
+            "export_dir": str(export_dir),
+            "simple_mode": False,
+            "stage_limit": "20",
+            "transcribe_mode": "dual",
+            "transcribe_provider": "mlx",
+            "secondary_provider": "gigaam",
+            "merge_provider": "rule",
+            "mono_role_assignment_mode": "rule",
+            "pipeline_stage_transcribe": True,
+            "pipeline_stage_backfill": True,
+            "pipeline_stage_resolve": False,
+            "pipeline_stage_analyze": False,
+            "pipeline_stage_sync": False,
+        }
+
+    fresh_merge_root = project_root / "stable_runtime" / "benchmarks" / "fresh_ui_merge_500x2_20260327"
+    fresh_full_dir = fresh_merge_root / "full_500"
+    if fresh_full_dir.exists() and fresh_full_dir.is_dir():
+        export_dir = fresh_merge_root / "full_500_transcripts"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "recordings_dir": str(fresh_full_dir),
+            "database_path": str(fresh_merge_root / "full_500_ui.db"),
+            "export_dir": str(export_dir),
+            "simple_mode": False,
+            "stage_limit": "20",
+            "codex_transcribe_model": "gpt-5.4",
+            "codex_resolve_model": "gpt-5.4",
+            "codex_analyze_model": "gpt-5.4",
+            "pipeline_stage_transcribe": True,
+            "pipeline_stage_backfill": True,
+            "pipeline_stage_resolve": True,
+            "pipeline_stage_analyze": False,
+            "pipeline_stage_sync": False,
+        }
+
+    march_sample_dir = project_root / "test_sets" / "march_2026_batch500"
+    if march_sample_dir.exists() and march_sample_dir.is_dir():
+        export_dir = test_runs_dir / "march_2026_batch500_ui_transcripts"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "recordings_dir": str(march_sample_dir),
+            "database_path": str(test_runs_dir / "march_2026_batch500_ui.db"),
+            "export_dir": str(export_dir),
+            "simple_mode": False,
+            "stage_limit": "20",
+            "codex_transcribe_model": "gpt-5.4",
+            "codex_resolve_model": "gpt-5.4",
+            "codex_analyze_model": "gpt-5.4-mini",
+        }
+
+    sample_dir = project_root / "test_sets" / "random_100_calls"
+    if sample_dir.exists() and sample_dir.is_dir():
+        export_dir = test_runs_dir / "test_100_transcripts"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "recordings_dir": str(sample_dir),
+            "database_path": str(test_runs_dir / "test_100_pipeline_clean.db"),
+            "export_dir": str(export_dir),
+            "simple_mode": False,
+            "stage_limit": "20",
+            "codex_transcribe_model": "gpt-5.4",
+            "codex_resolve_model": "gpt-5.4",
+            "codex_analyze_model": "gpt-5.4-mini",
+        }
+
+    return None
+
+
 class MangoMvpGui(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -26,6 +174,7 @@ class MangoMvpGui(tk.Tk):
         self.minsize(1080, 760)
 
         self.worker_process: Optional[subprocess.Popen[str]] = None
+        self.parallel_stage_processes: dict[str, subprocess.Popen[str]] = {}
         self.current_process: Optional[subprocess.Popen[str]] = None
         self.current_process_lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -35,16 +184,27 @@ class MangoMvpGui(tk.Tk):
         self._scroll_canvases: list[tk.Canvas] = []
         self._advanced_widgets: list[tk.Widget] = []
 
-        self.project_dir = tk.StringVar(value=str(Path.cwd()))
-        self.recordings_dir = tk.StringVar(value=str(Path.cwd()))
+        project_root = Path.cwd()
+        test_defaults = _apply_env_ui_overrides(_test_ui_defaults(project_root) or {})
+
+        self.project_dir = tk.StringVar(
+            value=str(test_defaults.get("project_dir") or project_root)
+        )
+        self.recordings_dir = tk.StringVar(
+            value=str(test_defaults.get("recordings_dir") or project_root)
+        )
         self.metadata_csv = tk.StringVar(value="")
-        self.database_path = tk.StringVar(value=str(Path.cwd() / "mango_mvp.db"))
-        self.export_dir = tk.StringVar(value=str(Path.cwd() / "transcripts"))
-        self.simple_mode = tk.BooleanVar(value=True)
+        self.database_path = tk.StringVar(
+            value=str(test_defaults.get("database_path") or (project_root / "mango_mvp.db"))
+        )
+        self.export_dir = tk.StringVar(
+            value=str(test_defaults.get("export_dir") or (project_root / "transcripts"))
+        )
+        self.simple_mode = tk.BooleanVar(value=bool(test_defaults.get("simple_mode", True)))
 
         current_python = Path(sys.executable).resolve()
-        stable_backend = Path.cwd() / "stable_runtime" / "venv_stable" / "bin"
-        asrbench_backend = Path.cwd() / ".venv-asrbench" / "bin"
+        stable_backend = project_root / "stable_runtime" / "venv_stable" / "bin"
+        asrbench_backend = project_root / ".venv-asrbench" / "bin"
         fallback_candidates = [
             current_python,
             stable_backend / "python",
@@ -56,21 +216,32 @@ class MangoMvpGui(tk.Tk):
             (candidate for candidate in fallback_candidates if self._python_has_runtime_deps(candidate)),
             current_python,
         )
-        self.backend_python = tk.StringVar(value=str(backend_default))
+        self.backend_python = tk.StringVar(
+            value=str(test_defaults.get("backend_python") or backend_default)
+        )
         self.use_project_src = tk.BooleanVar(
-            value="stable_runtime/venv_stable" not in str(backend_default)
+            value=bool(
+                test_defaults.get(
+                    "use_project_src",
+                    "stable_runtime/venv_stable" not in str(
+                        test_defaults.get("backend_python") or backend_default
+                    ),
+                )
+            )
         )
 
-        self.transcribe_mode = tk.StringVar(value="dual")
-        self.transcribe_provider = tk.StringVar(value="mlx")
-        self.secondary_provider = tk.StringVar(value="gigaam")
+        self.transcribe_mode = tk.StringVar(value=str(test_defaults.get("transcribe_mode") or "dual"))
+        self.transcribe_provider = tk.StringVar(value=str(test_defaults.get("transcribe_provider") or "mlx"))
+        self.secondary_provider = tk.StringVar(value=str(test_defaults.get("secondary_provider") or "gigaam"))
         self.dual_mode_state = tk.StringVar(value="")
-        self.merge_provider = tk.StringVar(value="codex_cli")
+        self.merge_provider = tk.StringVar(value=str(test_defaults.get("merge_provider") or "codex_cli"))
         self.language = tk.StringVar(value="ru")
-        self.stage_limit = tk.StringVar(value="100")
+        self.stage_limit = tk.StringVar(value=str(test_defaults.get("stage_limit") or "100"))
 
         self.split_stereo = tk.BooleanVar(value=True)
-        self.mono_role_assignment_mode = tk.StringVar(value="rule")
+        self.mono_role_assignment_mode = tk.StringVar(
+            value=str(test_defaults.get("mono_role_assignment_mode") or "rule")
+        )
         self.mono_role_assignment_min_confidence = tk.StringVar(value="0.62")
         self.mono_role_assignment_llm_threshold = tk.StringVar(value="0.72")
         self.openai_role_assign_model = tk.StringVar(value="gpt-4o-mini")
@@ -81,19 +252,33 @@ class MangoMvpGui(tk.Tk):
         self.gigaam_segment_sec = tk.StringVar(value="20")
         self.merge_similarity_threshold = tk.StringVar(value="0.985")
 
-        self.resolve_llm_provider = tk.StringVar(value="codex_cli")
-        self.resolve_dialogue_mode = tk.StringVar(value="dialogue")
-        self.analyze_provider = tk.StringVar(value="codex_cli")
-        self.codex_merge_model = tk.StringVar(value="gpt-5.4")
-        self.codex_cli_command = tk.StringVar(value="codex")
+        self.resolve_llm_provider = tk.StringVar(
+            value=str(test_defaults.get("resolve_llm_provider") or "codex_cli")
+        )
+        self.resolve_dialogue_mode = tk.StringVar(
+            value=str(test_defaults.get("resolve_dialogue_mode") or "dialogue")
+        )
+        self.analyze_provider = tk.StringVar(
+            value=str(test_defaults.get("analyze_provider") or "codex_cli")
+        )
+        self.codex_transcribe_model = tk.StringVar(
+            value=str(test_defaults.get("codex_transcribe_model") or "gpt-5.4")
+        )
+        self.codex_resolve_model = tk.StringVar(
+            value=str(test_defaults.get("codex_resolve_model") or "gpt-5.4")
+        )
+        self.codex_analyze_model = tk.StringVar(
+            value=str(test_defaults.get("codex_analyze_model") or "gpt-5.4-mini")
+        )
+        self.codex_cli_command = tk.StringVar(value=_detect_codex_cli_command())
         self.codex_cli_timeout_sec = tk.StringVar(value="180")
         self.codex_reasoning_effort = tk.StringVar(value="medium")
         self.pilot_seed = tk.StringVar(value="42")
         self.pilot_ids_path = tk.StringVar(
-            value=str(Path.cwd() / "stable_runtime" / "pilots" / "resolve_pilot_ids.txt")
+            value=str(project_root / "stable_runtime" / "pilots" / "resolve_pilot_ids.txt")
         )
         self.pilot_export_dir = tk.StringVar(
-            value=str(Path.cwd() / "pilot_exports" / "resolve_pilot")
+            value=str(project_root / "pilot_exports" / "resolve_pilot")
         )
 
         self.ollama_base_url = tk.StringVar(value="http://127.0.0.1:11434")
@@ -107,29 +292,53 @@ class MangoMvpGui(tk.Tk):
         self.retry_base_delay_sec = tk.StringVar(value="30")
         self.worker_poll_sec = tk.StringVar(value="10")
         self.worker_max_idle_cycles = tk.StringVar(value="30")
-        self.pipeline_stage_transcribe = tk.BooleanVar(value=True)
-        self.pipeline_stage_backfill = tk.BooleanVar(value=True)
-        self.pipeline_stage_resolve = tk.BooleanVar(value=True)
-        self.pipeline_stage_analyze = tk.BooleanVar(value=True)
-        self.pipeline_stage_sync = tk.BooleanVar(value=False)
+        self.pipeline_stage_transcribe = tk.BooleanVar(
+            value=bool(test_defaults.get("pipeline_stage_transcribe", True))
+        )
+        self.pipeline_stage_backfill = tk.BooleanVar(
+            value=bool(test_defaults.get("pipeline_stage_backfill", True))
+        )
+        self.pipeline_stage_resolve = tk.BooleanVar(
+            value=bool(test_defaults.get("pipeline_stage_resolve", True))
+        )
+        self.pipeline_stage_analyze = tk.BooleanVar(
+            value=bool(test_defaults.get("pipeline_stage_analyze", True))
+        )
+        self.pipeline_stage_sync = tk.BooleanVar(
+            value=bool(test_defaults.get("pipeline_stage_sync", False))
+        )
 
         self.run_state = tk.StringVar(value="Ожидание")
         self.batch_progress = tk.StringVar(value="Батч: —")
         self.secondary_asr_summary = tk.StringVar(value="Очередь 2-го ASR: —")
+        self.parallel_pipeline_state = tk.StringVar(value="Параллельный конвейер: не запущен")
+        self.stage_summary_vars = {
+            "transcribe": tk.StringVar(value="Whisper/ASR: —"),
+            "backfill-second-asr": tk.StringVar(value="GigaAM 2-й проход: —"),
+            "resolve": tk.StringVar(value="Resolve: —"),
+            "analyze": tk.StringVar(value="Analyze: —"),
+            "sync": tk.StringVar(value="Sync: —"),
+        }
         self.metric_vars = {
             "total_calls": tk.StringVar(value="0"),
             "secondary_asr_pending": tk.StringVar(value="0"),
+            "secondary_asr_in_progress": tk.StringVar(value="0"),
             "tr_done": tk.StringVar(value="0"),
+            "tr_in_progress": tk.StringVar(value="0"),
             "tr_pending": tk.StringVar(value="0"),
             "tr_failed": tk.StringVar(value="0"),
             "tr_dead": tk.StringVar(value="0"),
             "rs_done": tk.StringVar(value="0"),
             "rs_skipped": tk.StringVar(value="0"),
             "rs_manual": tk.StringVar(value="0"),
+            "rs_in_progress": tk.StringVar(value="0"),
+            "rs_ready_pending": tk.StringVar(value="0"),
+            "rs_blocked_secondary": tk.StringVar(value="0"),
             "rs_pending": tk.StringVar(value="0"),
             "rs_failed": tk.StringVar(value="0"),
             "rs_dead": tk.StringVar(value="0"),
             "an_done": tk.StringVar(value="0"),
+            "an_in_progress": tk.StringVar(value="0"),
             "an_pending": tk.StringVar(value="0"),
             "an_failed": tk.StringVar(value="0"),
             "an_dead": tk.StringVar(value="0"),
@@ -592,22 +801,24 @@ class MangoMvpGui(tk.Tk):
             ["codex_cli", "ollama", "openai", "mock"],
         )
         self._entry_row(codex_card, 3, "Команда Codex CLI", self.codex_cli_command)
-        self._entry_row(codex_card, 4, "Модель Codex", self.codex_merge_model)
-        self._entry_row(codex_card, 5, "Таймаут Codex (сек)", self.codex_cli_timeout_sec)
+        self._entry_row(codex_card, 4, "Codex для merge", self.codex_transcribe_model)
+        self._entry_row(codex_card, 5, "Codex для Resolve", self.codex_resolve_model)
+        self._entry_row(codex_card, 6, "Codex для Analyze", self.codex_analyze_model)
+        self._entry_row(codex_card, 7, "Таймаут Codex (сек)", self.codex_cli_timeout_sec)
         self._combo_row(
             codex_card,
-            6,
+            8,
             "Codex reasoning",
             self.codex_reasoning_effort,
             ["low", "medium", "high"],
         )
-        self._entry_row(codex_card, 7, "Ollama base URL", self.ollama_base_url)
-        self._entry_row(codex_card, 8, "Ollama model", self.ollama_model)
-        self._entry_row(codex_card, 9, "Ollama think", self.ollama_think)
-        self._entry_row(codex_card, 10, "Ollama temperature", self.ollama_temperature)
-        self._entry_row(codex_card, 11, "Pilot seed", self.pilot_seed)
-        self._entry_row(codex_card, 12, "Pilot ids file", self.pilot_ids_path)
-        self._entry_row(codex_card, 13, "Pilot export dir", self.pilot_export_dir)
+        self._entry_row(codex_card, 9, "Ollama base URL", self.ollama_base_url)
+        self._entry_row(codex_card, 10, "Ollama model", self.ollama_model)
+        self._entry_row(codex_card, 11, "Ollama think", self.ollama_think)
+        self._entry_row(codex_card, 12, "Ollama temperature", self.ollama_temperature)
+        self._entry_row(codex_card, 13, "Pilot seed", self.pilot_seed)
+        self._entry_row(codex_card, 14, "Pilot ids file", self.pilot_ids_path)
+        self._entry_row(codex_card, 15, "Pilot export dir", self.pilot_export_dir)
 
         reliability_card = ttk.LabelFrame(content, text="Надежность", style="Card.TLabelframe", padding=10)
         self.reliability_card = reliability_card
@@ -768,27 +979,47 @@ class MangoMvpGui(tk.Tk):
             command=self.on_pipeline_drain,
             style="Primary.TButton",
         ).grid(row=11, column=0, columnspan=2, padx=4, pady=4, sticky="ew")
+        ttk.Button(
+            actions_card,
+            text="Параллельный pipeline старт",
+            command=self.on_parallel_pipeline_start,
+            style="Primary.TButton",
+        ).grid(row=11, column=2, padx=4, pady=4, sticky="ew")
+        ttk.Button(
+            actions_card,
+            text="Параллельный pipeline стоп",
+            command=self.on_parallel_pipeline_stop,
+            style="Primary.TButton",
+        ).grid(row=11, column=3, padx=4, pady=4, sticky="ew")
+        ttk.Label(
+            actions_card,
+            textvariable=self.parallel_pipeline_state,
+            style="Muted.TLabel",
+            wraplength=1220,
+            justify=tk.LEFT,
+        ).grid(row=12, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4))
 
         secondary_actions = [
             ("Resolve батч (текущий)", self.on_resolve_batch),
             ("Analyze батч (текущий)", self.on_analyze_batch),
             ("Sync батч", self.on_sync_batch),
             ("Worker один цикл (этапы)", self.on_worker_once),
-            ("Worker старт (этапы)", self.on_worker_start),
-            ("Worker стоп", self.on_worker_stop),
+            ("Worker старт (последовательно)", self.on_worker_start),
+            ("Worker стоп (последовательно)", self.on_worker_stop),
             ("Вернуть dead в очередь", self.on_requeue_dead),
             ("Сбросить missing variants", self.on_reset_missing_variants),
             ("Экспорт очереди проверки", self.on_export_review_queue),
             ("Экспорт failed resolve", self.on_export_failed_resolve_queue),
             ("Экспорт полей CRM", self.on_export_crm_fields),
+            ("Экспорт Excel витрины", self.on_export_sales_workbook),
         ]
         self._advanced_widgets = []
         advanced_label = ttk.Label(actions_card, text="Дополнительные операции", style="App.TLabel")
         advanced_label.grid(
-            row=12, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 2)
+            row=13, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 2)
         )
         self._advanced_widgets.append(advanced_label)
-        base = 13
+        base = 14
         for idx, (label, callback) in enumerate(secondary_actions):
             btn = ttk.Button(actions_card, text=label, command=callback)
             btn.grid(
@@ -808,6 +1039,7 @@ class MangoMvpGui(tk.Tk):
             text=(
                 "Режим безопасного продолжения: transcribe/resolve/analyze обрабатывают только pending+failed. "
                 "Строки со статусом done сохраняются и автоматически пропускаются, поэтому двойной обработки нет. "
+                "В параллельном pipeline каждая стадия захватывает свои звонки lease-механизмом. "
                 "Размер батча выше управляет количеством звонков за итерацию."
             ),
         ).grid(row=base + 3, column=0, columnspan=4, sticky="w", padx=4, pady=(8, 2))
@@ -816,7 +1048,7 @@ class MangoMvpGui(tk.Tk):
         content = self._make_scrollable_tab(parent)
         content.columnconfigure(0, weight=1)
         content.columnconfigure(1, weight=1)
-        content.rowconfigure(4, weight=1)
+        content.rowconfigure(5, weight=1)
 
         explainer = ttk.LabelFrame(
             content,
@@ -839,6 +1071,13 @@ class MangoMvpGui(tk.Tk):
             wraplength=1220,
             justify=tk.LEFT,
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(
+            explainer,
+            textvariable=self.parallel_pipeline_state,
+            style="App.TLabel",
+            wraplength=1220,
+            justify=tk.LEFT,
+        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
 
         cards = ttk.Frame(content, style="App.TFrame")
         cards.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
@@ -889,8 +1128,48 @@ class MangoMvpGui(tk.Tk):
                 justify=tk.LEFT,
             ).pack(anchor="w", pady=(4, 0))
 
+        pipeline_cards = ttk.Frame(content, style="App.TFrame")
+        pipeline_cards.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        for col in range(5):
+            pipeline_cards.columnconfigure(col, weight=1)
+        self._build_stage_card(
+            pipeline_cards,
+            column=0,
+            title="1. Whisper",
+            summary_var=self.stage_summary_vars["transcribe"],
+            description="Первичное распознавание новых звонков.",
+        )
+        self._build_stage_card(
+            pipeline_cards,
+            column=1,
+            title="2. GigaAM",
+            summary_var=self.stage_summary_vars["backfill-second-asr"],
+            description="Резервный ASR только для звонков с недостающим 2-м вариантом.",
+        )
+        self._build_stage_card(
+            pipeline_cards,
+            column=2,
+            title="3. Resolve",
+            summary_var=self.stage_summary_vars["resolve"],
+            description="Склейка и контроль качества текста. Может ждать завершения 2-го ASR.",
+        )
+        self._build_stage_card(
+            pipeline_cards,
+            column=3,
+            title="4. Analyze",
+            summary_var=self.stage_summary_vars["analyze"],
+            description="Конспект, call_type, CRM-поля и QC-флаги.",
+        )
+        self._build_stage_card(
+            pipeline_cards,
+            column=4,
+            title="5. Sync",
+            summary_var=self.stage_summary_vars["sync"],
+            description="Отдельная очередь выгрузки в CRM.",
+        )
+
         stages = ttk.Frame(content, style="App.TFrame")
-        stages.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 6))
+        stages.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(0, 6))
         stages.columnconfigure(0, weight=1)
         stages.columnconfigure(1, weight=1)
         self._build_status_section(
@@ -900,11 +1179,21 @@ class MangoMvpGui(tk.Tk):
             title="Этап 1. Распознавание",
             rows=[
                 ("done", "tr_done", "Звонки уже распознаны. Текст сохранен, этап завершен."),
+                (
+                    "in_progress",
+                    "tr_in_progress",
+                    "Сейчас заняты первичным ASR. При параллельном pipeline это живые активные задачи.",
+                ),
                 ("pending", "tr_pending", "Ждут первого распознавания или повторного запуска этапа."),
                 (
                     "2-й ASR pending",
                     "secondary_asr_pending",
                     "Уже распознаны первым ASR, но еще стоят в очереди на дораспознавание резервным провайдером.",
+                ),
+                (
+                    "2-й ASR in_progress",
+                    "secondary_asr_in_progress",
+                    "Сейчас обрабатываются резервным ASR. Это независимая очередь от первого распознавания.",
                 ),
                 ("failed", "tr_failed", "Последняя попытка распознавания упала, но автоповтор еще возможен."),
                 ("dead", "tr_dead", "Лимит попыток исчерпан. Нужен ручной requeue или разбор ошибки."),
@@ -917,7 +1206,22 @@ class MangoMvpGui(tk.Tk):
             title="Этап 2. Resolve / склейка",
             rows=[
                 ("done", "rs_done", "Склейка и улучшение текста завершены, запись готова к анализу."),
-                ("pending", "rs_pending", "Ждет запуска resolve после распознавания."),
+                (
+                    "ready_pending",
+                    "rs_ready_pending",
+                    "Реально готовы к Resolve прямо сейчас: распознавание done и второй ASR больше не блокирует.",
+                ),
+                (
+                    "blocked by 2-й ASR",
+                    "rs_blocked_secondary",
+                    "Формально pending, но Resolve их не берет, пока не завершится резервный ASR.",
+                ),
+                (
+                    "in_progress",
+                    "rs_in_progress",
+                    "Сейчас заняты Resolve-воркерами.",
+                ),
+                ("pending(raw)", "rs_pending", "Сырой счетчик статуса pending без разделения ready/blocked."),
                 ("manual", "rs_manual", "Автоматика не уверена в качестве. Нужна ручная или LLM-проверка."),
                 ("skipped", "rs_skipped", "Resolve осознанно пропущен, обычно для коротких или простых звонков."),
                 ("failed", "rs_failed", "Resolve упал, но повторная попытка еще возможна."),
@@ -931,6 +1235,11 @@ class MangoMvpGui(tk.Tk):
             title="Этап 3. Анализ разговора",
             rows=[
                 ("done", "an_done", "Готов итоговый конспект и структурированные поля для CRM."),
+                (
+                    "in_progress",
+                    "an_in_progress",
+                    "Звонки сейчас обрабатываются Analyze-воркерами. При параллельной работе это нормальный статус.",
+                ),
                 ("pending", "an_pending", "Ждет запуска анализа после resolve."),
                 ("failed", "an_failed", "Последний запуск анализа завершился ошибкой, но может быть повторен."),
                 ("dead", "an_dead", "Анализ остановлен после исчерпания попыток."),
@@ -954,7 +1263,7 @@ class MangoMvpGui(tk.Tk):
         )
 
         progress = ttk.LabelFrame(content, text="Прогресс", style="Card.TLabelframe", padding=10)
-        progress.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        progress.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         progress.columnconfigure(1, weight=1)
         ttk.Label(progress, text="Завершено распознавание", style="App.TLabel").grid(
             row=0, column=0, sticky="w", padx=4, pady=4
@@ -980,7 +1289,7 @@ class MangoMvpGui(tk.Tk):
             style="Card.TLabelframe",
             padding=8,
         )
-        stats_wrap.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        stats_wrap.grid(row=5, column=0, columnspan=2, sticky="nsew")
         stats_wrap.rowconfigure(0, weight=1)
         stats_wrap.columnconfigure(0, weight=1)
         self.stats_text = tk.Text(stats_wrap, wrap=tk.WORD, height=16)
@@ -1031,6 +1340,32 @@ class MangoMvpGui(tk.Tk):
                 justify=tk.LEFT,
             ).grid(row=idx, column=2, sticky="w", pady=3)
 
+    def _build_stage_card(
+        self,
+        parent: ttk.Frame,
+        *,
+        column: int,
+        title: str,
+        summary_var: tk.StringVar,
+        description: str,
+    ) -> None:
+        card = ttk.LabelFrame(parent, text=title, style="Card.TLabelframe", padding=10)
+        card.grid(row=0, column=column, sticky="nsew", padx=4, pady=4)
+        ttk.Label(
+            card,
+            textvariable=summary_var,
+            style="App.TLabel",
+            wraplength=210,
+            justify=tk.LEFT,
+        ).pack(anchor="w")
+        ttk.Label(
+            card,
+            text=description,
+            style="Muted.TLabel",
+            wraplength=210,
+            justify=tk.LEFT,
+        ).pack(anchor="w", pady=(6, 0))
+
     def _status_reference_text(self) -> str:
         return (
             "Эта вкладка показывает состояние текущей базы данных по этапам конвейера. "
@@ -1038,12 +1373,16 @@ class MangoMvpGui(tk.Tk):
             "Что означают базовые статусы:\n"
             "pending — этап еще не выполнен или запись была возвращена в очередь.\n"
             "done — этап успешно завершен.\n"
+            "in_progress — запись прямо сейчас занята воркером и обрабатывается.\n"
             "failed — последняя попытка завершилась ошибкой, но автоповтор еще возможен.\n"
             "dead — попытки исчерпаны, запись ушла в dead-letter и требует ручного вмешательства.\n"
             "manual — автоматика не уверена в результате и просит ручную проверку.\n"
             "skipped — этап осознанно пропущен по правилам пайплайна.\n\n"
             "Отдельно показывается очередь 2-го ASR: это звонки, где первый провайдер уже отработал, "
-            "а резервный еще нет.\n\n"
+            "а резервный еще нет. Для Resolve дополнительно показываются ready и blocked: blocked значит, "
+            "что звонок формально pending, но его сознательно не берут, пока не завершится 2-й ASR.\n\n"
+            "В параллельном pipeline каждая стадия захватывает звонки lease-механизмом. "
+            "Если стадия показывает in_progress, это реальные активные воркеры, а не просто pending-очередь.\n\n"
             "Важно: pending на одном этапе не означает, что звонок не обработан вообще. "
             "Это значит только то, что именно этот этап еще не завершен."
         )
@@ -1186,13 +1525,13 @@ class MangoMvpGui(tk.Tk):
 
     def _build_env(self, overrides: Optional[dict[str, str]] = None) -> dict[str, str]:
         env = os.environ.copy()
-        project = Path(self.project_dir.get()).expanduser().resolve()
+        project = Path(self.project_dir.get().strip()).expanduser().resolve()
         if self.use_project_src.get():
             env["PYTHONPATH"] = str(project / "src")
         else:
             env.pop("PYTHONPATH", None)
         env["PATH"] = f"{project / '.local' / 'bin'}:{env.get('PATH', '')}"
-        env["DATABASE_URL"] = f"sqlite:///{Path(self.database_path.get()).expanduser().resolve()}"
+        env["DATABASE_URL"] = f"sqlite:///{Path(self.database_path.get().strip()).expanduser().resolve()}"
         env["TRANSCRIPT_EXPORT_DIR"] = self.export_dir.get().strip()
         env.update(self._transcribe_mode_env())
         env["DUAL_MERGE_PROVIDER"] = self.merge_provider.get().strip()
@@ -1200,7 +1539,10 @@ class MangoMvpGui(tk.Tk):
         env["RESOLVE_DIALOGUE_MODE"] = self.resolve_dialogue_mode.get().strip()
         env["ANALYZE_PROVIDER"] = self.analyze_provider.get().strip()
         env["DUAL_MERGE_SIMILARITY_THRESHOLD"] = self.merge_similarity_threshold.get().strip()
-        env["CODEX_MERGE_MODEL"] = self.codex_merge_model.get().strip()
+        env["CODEX_MERGE_MODEL"] = self.codex_transcribe_model.get().strip()
+        env["CODEX_TRANSCRIBE_MODEL"] = self.codex_transcribe_model.get().strip()
+        env["CODEX_RESOLVE_MODEL"] = self.codex_resolve_model.get().strip()
+        env["CODEX_ANALYZE_MODEL"] = self.codex_analyze_model.get().strip()
         env["CODEX_CLI_COMMAND"] = self.codex_cli_command.get().strip()
         env["CODEX_CLI_TIMEOUT_SEC"] = self.codex_cli_timeout_sec.get().strip()
         env["CODEX_REASONING_EFFORT"] = self.codex_reasoning_effort.get().strip()
@@ -1539,6 +1881,33 @@ class MangoMvpGui(tk.Tk):
     def _pipeline_secondary_env(self) -> dict[str, str]:
         return self._pipeline_stage_env()
 
+    @staticmethod
+    def _stage_label(stage: str) -> str:
+        return {
+            "transcribe": "Whisper",
+            "backfill-second-asr": "GigaAM",
+            "resolve": "Resolve",
+            "analyze": "Analyze",
+            "sync": "Sync",
+        }.get(stage, stage)
+
+    def _env_for_stage_worker(self, stage: str) -> dict[str, str]:
+        if stage == "transcribe":
+            return self._pipeline_primary_env()
+        if stage == "backfill-second-asr":
+            return self._pipeline_secondary_env()
+        if stage == "resolve":
+            return {
+                **self._pipeline_stage_env(),
+                "RESOLVE_LLM_PROVIDER": self.resolve_llm_provider.get().strip(),
+            }
+        if stage == "analyze":
+            return {
+                **self._pipeline_stage_env(),
+                "ANALYZE_PROVIDER": self.analyze_provider.get().strip(),
+            }
+        return self._pipeline_stage_env()
+
     def _selected_pipeline_stages(self) -> list[str]:
         stages: list[str] = []
         if self.pipeline_stage_transcribe.get():
@@ -1552,6 +1921,15 @@ class MangoMvpGui(tk.Tk):
         if self.pipeline_stage_sync.get():
             stages.append("sync")
         return stages
+
+    def _parallel_workers_running(self) -> list[str]:
+        running: list[str] = []
+        for stage, proc in list(self.parallel_stage_processes.items()):
+            if proc.poll() is None:
+                running.append(stage)
+            else:
+                self.parallel_stage_processes.pop(stage, None)
+        return running
 
     def _launch_task(self, title: str, fn) -> None:
         if self.active_task and self.active_task.is_alive():
@@ -1670,13 +2048,20 @@ class MangoMvpGui(tk.Tk):
         an = payload.get("analysis_status") or {}
         sy = payload.get("sync_status") or {}
         dl = payload.get("dead_letter_stage") or {}
+        transcribe_queue = payload.get("transcribe_queue") or {}
+        resolve_queue = payload.get("resolve_queue") or {}
         secondary_backfill = payload.get("secondary_asr_backfill") or {}
+        pipeline_leases = payload.get("pipeline_stage_leases") or {}
 
         self.metric_vars["total_calls"].set(str(total))
         self.metric_vars["secondary_asr_pending"].set(
             str(int(secondary_backfill.get("pending", 0) or 0))
         )
+        self.metric_vars["secondary_asr_in_progress"].set(
+            str(int(secondary_backfill.get("in_progress", 0) or 0))
+        )
         self.metric_vars["tr_done"].set(str(int(tr.get("done", 0) or 0)))
+        self.metric_vars["tr_in_progress"].set(str(int(tr.get("in_progress", 0) or 0)))
         self.metric_vars["tr_pending"].set(str(int(tr.get("pending", 0) or 0)))
         self.metric_vars["tr_failed"].set(str(int(tr.get("failed", 0) or 0)))
         self.metric_vars["tr_dead"].set(str(int(tr.get("dead", 0) or 0)))
@@ -1684,11 +2069,17 @@ class MangoMvpGui(tk.Tk):
         self.metric_vars["rs_done"].set(str(int(rs.get("done", 0) or 0)))
         self.metric_vars["rs_skipped"].set(str(int(rs.get("skipped", 0) or 0)))
         self.metric_vars["rs_manual"].set(str(int(rs.get("manual", 0) or 0)))
+        self.metric_vars["rs_in_progress"].set(str(int(rs.get("in_progress", 0) or 0)))
+        self.metric_vars["rs_ready_pending"].set(str(int(resolve_queue.get("ready_pending", 0) or 0)))
+        self.metric_vars["rs_blocked_secondary"].set(
+            str(int(resolve_queue.get("blocked_waiting_secondary", 0) or 0))
+        )
         self.metric_vars["rs_pending"].set(str(int(rs.get("pending", 0) or 0)))
         self.metric_vars["rs_failed"].set(str(int(rs.get("failed", 0) or 0)))
         self.metric_vars["rs_dead"].set(str(int(rs.get("dead", 0) or 0)))
 
         self.metric_vars["an_done"].set(str(int(an.get("done", 0) or 0)))
+        self.metric_vars["an_in_progress"].set(str(int(an.get("in_progress", 0) or 0)))
         self.metric_vars["an_pending"].set(str(int(an.get("pending", 0) or 0)))
         self.metric_vars["an_failed"].set(str(int(an.get("failed", 0) or 0)))
         self.metric_vars["an_dead"].set(str(int(an.get("dead", 0) or 0)))
@@ -1704,6 +2095,7 @@ class MangoMvpGui(tk.Tk):
         backfill_primary = str(secondary_backfill.get("primary_provider") or "").strip() or "—"
         backfill_secondary = str(secondary_backfill.get("secondary_provider") or "").strip() or "—"
         backfill_pending = int(secondary_backfill.get("pending", 0) or 0)
+        backfill_in_progress = int(secondary_backfill.get("in_progress", 0) or 0)
         backfill_retry_pending = int(secondary_backfill.get("retry_pending", 0) or 0)
         backfill_exhausted = int(secondary_backfill.get("exhausted", 0) or 0)
         if backfill_enabled:
@@ -1711,6 +2103,7 @@ class MangoMvpGui(tk.Tk):
                 "Очередь 2-го ASR: "
                 f"{backfill_primary} -> {backfill_secondary}, "
                 f"ждут дораспознавания: {backfill_pending}, "
+                f"в работе: {backfill_in_progress}, "
                 f"повторные retry: {backfill_retry_pending}, "
                 f"исчерпаны: {backfill_exhausted}"
             )
@@ -1718,6 +2111,58 @@ class MangoMvpGui(tk.Tk):
             self.secondary_asr_summary.set(
                 "Очередь 2-го ASR: отключена для текущей конфигурации распознавания"
             )
+        active_parallel = sorted(
+            self._stage_label(str(stage))
+            for stage, count in pipeline_leases.items()
+            if int(count or 0) > 0
+        )
+        running_workers = [self._stage_label(stage) for stage in self._parallel_workers_running()]
+        if active_parallel:
+            self.parallel_pipeline_state.set(
+                "Параллельный конвейер: активны стадии "
+                + ", ".join(active_parallel)
+            )
+        elif running_workers:
+            self.parallel_pipeline_state.set(
+                "Параллельный конвейер: workers запущены для стадий "
+                + ", ".join(running_workers)
+                + ", сейчас ждут очередь"
+            )
+        else:
+            self.parallel_pipeline_state.set("Параллельный конвейер: активных stage-lease сейчас нет")
+
+        self.stage_summary_vars["transcribe"].set(
+            "Очередь: "
+            f"{int(transcribe_queue.get('ready_pending', 0) or 0)}"
+            f" · В работе: {int(tr.get('in_progress', 0) or 0)}"
+            f" · Готово: {int(tr.get('done', 0) or 0)}"
+        )
+        self.stage_summary_vars["backfill-second-asr"].set(
+            "Ждут: "
+            f"{backfill_pending}"
+            f" · В работе: {backfill_in_progress}"
+            f" · Retry: {backfill_retry_pending}"
+            f" · Exhausted: {backfill_exhausted}"
+        )
+        self.stage_summary_vars["resolve"].set(
+            "Готовы: "
+            f"{int(resolve_queue.get('ready_pending', 0) or 0)}"
+            f" · Блок 2-й ASR: {int(resolve_queue.get('blocked_waiting_secondary', 0) or 0)}"
+            f" · В работе: {int(resolve_queue.get('in_progress', 0) or 0)}"
+            f" · Done: {int(rs.get('done', 0) or 0)}"
+        )
+        self.stage_summary_vars["analyze"].set(
+            "Очередь: "
+            f"{int(an.get('pending', 0) or 0)}"
+            f" · В работе: {int(an.get('in_progress', 0) or 0)}"
+            f" · Done: {int(an.get('done', 0) or 0)}"
+        )
+        self.stage_summary_vars["sync"].set(
+            "Очередь: "
+            f"{int(sy.get('pending', 0) or 0)}"
+            f" · Fail: {int(sy.get('failed', 0) or 0)}"
+            f" · Done: {int(sy.get('done', 0) or 0)}"
+        )
 
         tr_done = int(tr.get("done", 0) or 0)
         an_done = int(an.get("done", 0) or 0)
@@ -1963,6 +2408,73 @@ class MangoMvpGui(tk.Tk):
             ),
         )
 
+    def on_parallel_pipeline_start(self) -> None:
+        stages = self._selected_pipeline_stages()
+        if not stages:
+            self._append_log("[parallel] не выбран ни один этап")
+            return
+        running = set(self._parallel_workers_running())
+        self._append_log("\n=== Параллельный pipeline старт ===")
+        for stage in stages:
+            if stage in running:
+                self._append_log(f"[parallel {stage}] уже запущен")
+                continue
+            cmd = [
+                self._backend_python_exe(),
+                "-u",
+                "-m",
+                "mango_mvp.cli",
+                "worker",
+                "--stage-limit",
+                str(self._limit_value()),
+                "--stages",
+                stage,
+                "--poll-sec",
+                self.worker_poll_sec.get().strip() or "10",
+                "--max-idle-cycles",
+                self.worker_max_idle_cycles.get().strip() or "30",
+            ]
+            env = self._build_env(self._env_for_stage_worker(stage))
+            self._append_log(f"$ {' '.join(cmd)}")
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=self.project_dir.get().strip() or str(Path.cwd()),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._append_log(f"[parallel {stage}] ошибка запуска: {exc}")
+                continue
+            self.parallel_stage_processes[stage] = proc
+
+            def _reader(worker_stage: str, worker_proc: subprocess.Popen[str]) -> None:
+                prefix = f"[parallel {self._stage_label(worker_stage)}]"
+                if worker_proc.stdout:
+                    for line in worker_proc.stdout:
+                        self._append_log(f"{prefix} {line.rstrip()}")
+                code = worker_proc.wait()
+                self._append_log(f"{prefix} завершился с кодом={code}")
+                self.parallel_stage_processes.pop(worker_stage, None)
+                self.after(0, self._refresh_stats_async, True)
+
+            threading.Thread(target=_reader, args=(stage, proc), daemon=True).start()
+        self._refresh_stats_async(silent=True)
+
+    def on_parallel_pipeline_stop(self) -> None:
+        running = self._parallel_workers_running()
+        if not running:
+            self._append_log("[parallel] нет активных stage-worker процессов")
+            return
+        for stage in running:
+            proc = self.parallel_stage_processes.get(stage)
+            if proc is None or proc.poll() is not None:
+                continue
+            proc.terminate()
+            self._append_log(f"[parallel {self._stage_label(stage)}] отправлен запрос на остановку")
+
     def on_worker_start(self) -> None:
         if self.worker_process and self.worker_process.poll() is None:
             self._append_log("[worker] уже запущен")
@@ -2062,6 +2574,22 @@ class MangoMvpGui(tk.Tk):
             lambda: self._run_cli(
                 [
                     "export-crm-fields",
+                    "--out",
+                    str(out_path),
+                    "--only-done",
+                    "--limit",
+                    "200000",
+                ]
+            ),
+        )
+
+    def on_export_sales_workbook(self) -> None:
+        out_path = Path(self.project_dir.get()) / "sales_workbook.xlsx"
+        self._launch_task(
+            "Экспорт Excel витрины",
+            lambda: self._run_cli(
+                [
+                    "export-sales-workbook",
                     "--out",
                     str(out_path),
                     "--only-done",

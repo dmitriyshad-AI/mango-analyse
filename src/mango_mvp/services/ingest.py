@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mango_mvp.models import CallRecord
+from mango_mvp.utils.filename_repair import repair_filename_display, repair_manager_name
 from mango_mvp.utils.audio import probe_audio
 from mango_mvp.utils.phone import normalize_phone
 
@@ -104,7 +105,7 @@ def parse_filename_metadata(source_filename: str) -> Dict[str, Any]:
 
     return {
         "phone": left_phone or right_phone,
-        "manager_name": manager_name,
+        "manager_name": repair_manager_name(manager_name),
         "source_call_id": suffix_call_id,
         "started_at": _parse_started_at_from_filename(date_part, time_part),
     }
@@ -173,14 +174,14 @@ def ingest_from_directory(
         )
         call = CallRecord(
             source_file=abs_path,
-            source_filename=file_path.name,
+            source_filename=repair_filename_display(file_path.name),
             source_call_id=source_call_id,
             audio_codec=audio_meta.get("codec_name"),
             sample_rate=audio_meta.get("sample_rate"),  # type: ignore[arg-type]
             channels=audio_meta.get("channels"),  # type: ignore[arg-type]
             duration_sec=audio_meta.get("duration_sec"),  # type: ignore[arg-type]
             phone=phone,
-            manager_name=manager_name,
+            manager_name=repair_manager_name(manager_name),
             direction=_pick(row, "direction", "call_direction"),
             started_at=started_at,
         )

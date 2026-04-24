@@ -11,7 +11,7 @@ from mango_mvp.services.resolve import ResolveService
 from mango_mvp.services.sync_amocrm import AmoCRMSyncService
 from mango_mvp.services.transcribe import TranscribeService
 
-PIPELINE_STAGE_ORDER = (
+AVAILABLE_PIPELINE_STAGE_ORDER = (
     "transcribe",
     "backfill-second-asr",
     "resolve",
@@ -19,10 +19,14 @@ PIPELINE_STAGE_ORDER = (
     "sync",
 )
 
+DEFAULT_PIPELINE_STAGE_ORDER = tuple(
+    stage for stage in AVAILABLE_PIPELINE_STAGE_ORDER if stage != "sync"
+)
+
 
 def normalize_pipeline_stages(stages: Optional[list[str]]) -> list[str]:
     if not stages:
-        return list(PIPELINE_STAGE_ORDER)
+        return list(DEFAULT_PIPELINE_STAGE_ORDER)
 
     aliases = {
         "backfill": "backfill-second-asr",
@@ -37,7 +41,7 @@ def normalize_pipeline_stages(stages: Optional[list[str]]) -> list[str]:
         if not stage:
             continue
         stage = aliases.get(stage, stage)
-        if stage not in PIPELINE_STAGE_ORDER:
+        if stage not in AVAILABLE_PIPELINE_STAGE_ORDER:
             invalid.append(stage)
             continue
         if stage not in requested:
@@ -46,7 +50,7 @@ def normalize_pipeline_stages(stages: Optional[list[str]]) -> list[str]:
         raise RuntimeError(
             "Unsupported worker stages: " + ", ".join(invalid)
         )
-    return [stage for stage in PIPELINE_STAGE_ORDER if stage in requested]
+    return [stage for stage in AVAILABLE_PIPELINE_STAGE_ORDER if stage in requested]
 
 
 def run_worker(

@@ -1,74 +1,145 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
 import subprocess
 import tempfile
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from openai import OpenAI
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.utils.filename_repair import repair_manager_name
 
-SYSTEM_PROMPT = """You are a sales call analyst for Russian EdTech phone calls.
-Return strict JSON only with these keys:
-- analysis_schema_version (string, always "v2")
-- history_summary (string, concise CRM-ready call history in Russian).
-  Format requirement: 3-6 sentences in Russian prose.
-  Sentence 1 MUST include call date/time and manager name if available.
-  Then include what was discussed, key constraints/objections, and exact agreement/next step.
-  Do NOT output raw dialogue or timestamped replicas.
-- structured_fields (object):
-  - people: {parent_fio: string|null, child_fio: string|null}
-  - contacts: {email: string|null, phone_from_filename: string|null, preferred_channel: string|null}
-  - student: {grade_current: string|null, school: string|null}
-  - interests: {products: string[], format: string[], subjects: string[], exam_targets: string[]}
-  - commercial: {price_sensitivity: "high"|"medium"|"low"|null, budget: string|null, discount_interest: boolean|null}
-  - objections: string[]
-  - next_step: {action: string|null, due: string|null}
-  - lead_priority: "hot"|"warm"|"cold"|null
-- evidence (array of objects): [{speaker: string|null, ts: string|null, text: string}]
-- quality_flags (object)
+SYSTEM_PROMPT_FULL = """Strict analyst for Russian EdTech phone calls.
+Return a single-line minified JSON object only. No markdown, comments, or extra keys.
 
-Also include legacy compatibility keys:
-- history_short (string)
-- crm_blocks (object, same structure as structured_fields)
-- summary (string)
-- interests (array of strings)
-- student_grade (string|null)
-- target_product (string|null)
-- personal_offer (string|null)
-- pain_points (array of strings)
-- budget (string|null)
-- timeline (string|null)
-- objections (array of strings)
-- next_step (string|null)
-- follow_up_score (integer 0..100)
-- follow_up_reason (string)
-- tags (array of strings)
+Rules:
+- Use only transcript + metadata facts. If unsupported, return null or [].
+- All text in Russian except emails and phone numbers.
+- history_summary: 3-5 factual sentences, dense CRM note, no dialogue dump, no MANAGER/CLIENT prefixes, no date/time or manager preamble.
+- For meaningful calls mention: request/topic, what the manager clarified/offered/explained, student data (grade/subject/product) when available, key constraint/objection when available, and the agreed next step when available.
+- Do not collapse a meaningful call into one generic sentence.
+- next_step.action must be in Russian.
+- target_product must be one of: "годовые курсы", "летний лагерь", "интенсив", "индивидуальные занятия", null.
+- Use non_conversation only for unanswered/voicemail/wrong-number/no meaningful human dialogue.
+- technical_call, service_call, existing_client_progress are not non_conversation.
 
-No markdown, no comments, no extra keys."""
+Return exactly these keys:
+{
+  "analysis_schema_version": "v2",
+  "history_summary": "",
+  "structured_fields": {
+    "people": {"parent_fio": null, "child_fio": null},
+    "contacts": {"email": null, "phone_from_filename": null, "preferred_channel": null},
+    "student": {"grade_current": null, "school": null},
+    "interests": {"products": [], "format": [], "subjects": [], "exam_targets": []},
+    "commercial": {"price_sensitivity": null, "budget": null, "discount_interest": null},
+    "objections": [],
+    "next_step": {"action": null, "due": null},
+    "lead_priority": null
+  },
+  "target_product": null,
+  "tags": []
+}"""
 
-NON_CONVERSATION_MARKERS = (
+SYSTEM_PROMPT_COMPACT = """Strict analyst for Russian EdTech phone calls.
+Return a single-line minified JSON object only. No markdown, comments, or extra keys.
+
+Rules:
+- Use only transcript + metadata + deterministic hints. Never invent facts.
+- All text in Russian except emails and phone numbers.
+- If unsupported, return null or [].
+- history_summary: 3-5 factual sentences, dense CRM note, no dialogue dump, no date/time or manager preamble.
+- For meaningful calls mention: request/topic, what the manager clarified/offered/explained, student data (grade/subject/product) when available, key constraint/objection when available, and the agreed next step when available.
+- Do not collapse a meaningful call into one generic sentence.
+- next_step.action must be in Russian.
+- target_product must be one of: "годовые курсы", "летний лагерь", "интенсив", "индивидуальные занятия", null.
+- Use tag non_conversation only for unanswered/voicemail/wrong-number/no meaningful human dialogue.
+- technical_call, service_call, existing_client_progress are not non_conversation.
+
+Return exactly these keys:
+{
+  "analysis_schema_version": "v2",
+  "history_summary": "",
+  "structured_fields": {
+    "people": {"parent_fio": null, "child_fio": null},
+    "contacts": {"email": null, "phone_from_filename": null, "preferred_channel": null},
+    "student": {"grade_current": null, "school": null},
+    "interests": {"products": [], "format": [], "subjects": [], "exam_targets": []},
+    "commercial": {"price_sensitivity": null, "budget": null, "discount_interest": null},
+    "objections": [],
+    "next_step": {"action": null, "due": null},
+    "lead_priority": null
+  },
+  "target_product": null,
+  "tags": []
+}"""
+
+STRONG_NON_CONVERSATION_MARKERS = (
     "продолжение следует",
     "голосовой ассистент",
     "абонент не может ответить",
     "номер недоступен",
     "оставьте сообщение",
     "после сигнала",
+)
+
+WEAK_NON_CONVERSATION_MARKERS = (
     "оставайтесь на линии",
     "дозванивайтесь",
     "дозваниваться",
 )
 
+TECHNICAL_CALL_PATTERNS = (
+    re.compile(
+        r"личн\w* кабинет|не открыва\w*|не работа\w*|ошибк\w*|ссылк\w*|подключ\w*|"
+        r"логин|парол\w*|код подтвержден\w*|смс|вебинар|zoom|зум|платформ\w*|"
+        r"доступ\w*|тест\b|онлайн[- ]?тест",
+        re.I,
+    ),
+)
+
+SERVICE_CALL_PATTERNS = (
+    re.compile(
+        r"оплат\w*|счет\w*|чек\w*|договор\w*|расписан\w*|перенос\w*|отмен\w*|возврат\w*|"
+        r"заняти\w*|урок\w*|преподавател\w*|куратор\w*|домашн\w*|пробник\w*|срез\w*|"
+        r"посещаемост\w*|доступ к урокам|доступ к материалам",
+        re.I,
+    ),
+)
+
+EXISTING_CLIENT_PROGRESS_PATTERNS = (
+    re.compile(
+        r"обратн\w* связ\w*|как проходит|как вам курс|втор\w* семестр|"
+        r"продолж\w* обучен\w*|ранее обучал\w*|уже обуча\w*|результат\w*|"
+        r"успеваемост\w*|по текущему курсу|на следующий год",
+        re.I,
+    ),
+)
+
+CALL_TYPE_TAGS = {
+    "non_conversation",
+    "technical_call",
+    "service_call",
+    "existing_client_progress",
+    "sales_call",
+}
+
 LATEST_ANALYSIS_SCHEMA_VERSION = "v2"
+ANALYZE_PROMPT_VERSION_COMPACT = "v6"
+ANALYZE_PROMPT_VERSION_FULL = "v6"
 
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 GRADE_RE = re.compile(r"\b((?:[1-9]|1[0-1]))(?:-?й)?\s*класс(?:а)?\b", re.I)
@@ -95,8 +166,9 @@ FORMAT_PATTERNS = {
 }
 PRODUCT_PATTERNS = {
     "годовые курсы": re.compile(r"годов\w* курс|на год|годов\w* программ", re.I),
-    "летний лагерь": re.compile(r"летн(?:ий|его) лаг|летн\w* смен", re.I),
+    "летний лагерь": re.compile(r"летн(?:ий|его) лаг|летн\w* смен|летн\w* школ|выездн\w* школ", re.I),
     "интенсив": re.compile(r"интенсив\w*", re.I),
+    "индивидуальные занятия": re.compile(r"индивидуал\w* занят|репетиторств|индивидуальн\w* формат", re.I),
 }
 EXAM_PATTERNS = {
     "ЕГЭ": re.compile(r"\bегэ\b", re.I),
@@ -104,27 +176,135 @@ EXAM_PATTERNS = {
     "олимпиады": re.compile(r"олимпиад\w*", re.I),
 }
 OBJECTION_PATTERNS = {
-    "цена": re.compile(r"цен\w*|стоимост\w*|дорог\w*|дешев\w*|бюджет\w*", re.I),
+    "цена": re.compile(
+        r"\bцен(?:а|е|у|ы|ой|ам|ами|ник\w*)\b|\bстоимост\w*\b|\bдорог\w*\b|\bдешев\w*\b|\bбюджет\w*\b",
+        re.I,
+    ),
     "время": re.compile(r"нет времени|занят\w*|нагрузк\w*|расписан\w*", re.I),
     "доверие": re.compile(r"кто вы|не слышал\w* о вас|отзыв\w*|гаранти", re.I),
     "неактуально": re.compile(r"не актуальн\w*|не интерес\w*|не нужно", re.I),
 }
 DIALOGUE_DUMP_LINE_RE = re.compile(r"^\[(?:~)?\d{2}:\d{2}(?:\.\d+)?\]\s*", re.M)
+ROLE_PREFIX_RE = re.compile(r"^\s*(manager|client|менеджер|клиент)\s*:\s*", re.I | re.M)
 
-ANALYSIS_PROMPT_TRANSCRIPT_MAX_CHARS = 10000
-ANALYSIS_PROMPT_TRANSCRIPT_HEAD_CHARS = 7000
-ANALYSIS_PROMPT_TRANSCRIPT_TAIL_CHARS = 2800
-
+ANALYSIS_PROMPT_TRANSCRIPT_MAX_CHARS_FULL = 10000
+ANALYSIS_PROMPT_TRANSCRIPT_HEAD_CHARS_FULL = 7000
+ANALYSIS_PROMPT_TRANSCRIPT_TAIL_CHARS_FULL = 2800
+ANALYSIS_PROMPT_TRANSCRIPT_MAX_CHARS_COMPACT = 6500
+ANALYSIS_PROMPT_TRANSCRIPT_HEAD_CHARS_COMPACT = 4600
+ANALYSIS_PROMPT_TRANSCRIPT_TAIL_CHARS_COMPACT = 1600
+PROMPT_COMPACTION_FILLER_TOKENS = {
+    "ага",
+    "алло",
+    "да",
+    "ладно",
+    "понятно",
+    "спасибо",
+    "угу",
+    "хорошо",
+    "ясно",
+}
+PROMPT_COMPACTION_REPEAT_RE = re.compile(
+    r"\b(?P<token>ага|алло|да|ладно|понятно|спасибо|угу|хорошо|ясно)\b"
+    r"(?:[\s,.;:!?-]+(?P=token)\b)+",
+    re.I,
+)
 
 class AnalyzeService:
     def __init__(self, settings: Settings):
         self._settings = settings
         self._client: Optional[OpenAI] = None
         self._ollama_client_instance: Optional[OllamaClient] = None
+        self._llm_cache = LLMResponseCache(
+            enabled=settings.llm_cache_enabled,
+            root_dir=settings.llm_cache_dir,
+        )
 
     @staticmethod
     def _utc_now() -> datetime:
         return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _analysis_worker_id() -> str:
+        return f"an-{uuid.uuid4().hex[:12]}"
+
+    def _analysis_lease_cutoff(self, now: datetime) -> datetime:
+        timeout_sec = max(60, int(self._settings.analyze_lease_timeout_sec))
+        return now - timedelta(seconds=timeout_sec)
+
+    def _release_stale_claims(self, session: Session, now: datetime) -> int:
+        cutoff = self._analysis_lease_cutoff(now)
+        result = session.execute(
+            text(
+                """
+                UPDATE call_records
+                   SET analysis_status = 'pending',
+                       analysis_worker_id = NULL,
+                       analysis_claimed_at = NULL,
+                       updated_at = :now
+                 WHERE analysis_status = 'in_progress'
+                   AND (
+                        analysis_claimed_at IS NULL
+                        OR analysis_claimed_at <= :cutoff
+                   )
+                """
+            ),
+            {"now": now, "cutoff": cutoff},
+        )
+        return int(result.rowcount or 0)
+
+    def _claim_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
+        if limit <= 0:
+            return []
+        now = self._utc_now()
+        max_attempts = max(1, self._settings.analyze_max_attempts)
+        self._release_stale_claims(session, now)
+        session.execute(
+            text(
+                """
+                UPDATE call_records
+                   SET analysis_status = 'in_progress',
+                       analysis_worker_id = :worker_id,
+                       analysis_claimed_at = :now,
+                       updated_at = :now
+                 WHERE id IN (
+                    SELECT id
+                      FROM call_records
+                     WHERE transcription_status = 'done'
+                       AND (resolve_status IN ('done', 'skipped') OR resolve_status IS NULL)
+                       AND dead_letter_stage IS NULL
+                       AND analysis_status IN ('pending', 'failed')
+                       AND analyze_attempts < :max_attempts
+                       AND (next_retry_at IS NULL OR next_retry_at <= :now)
+                     ORDER BY id ASC
+                     LIMIT :limit
+                 )
+                """
+            ),
+            {
+                "worker_id": worker_id,
+                "now": now,
+                "max_attempts": max_attempts,
+                "limit": int(limit),
+            },
+        )
+        ids = [
+            int(row[0])
+            for row in session.execute(
+                text(
+                    """
+                    SELECT id
+                      FROM call_records
+                     WHERE analysis_status = 'in_progress'
+                       AND analysis_worker_id = :worker_id
+                     ORDER BY id ASC
+                    """
+                ),
+                {"worker_id": worker_id},
+            ).all()
+        ]
+        session.commit()
+        return ids
 
     def _retry_delay(self, attempts: int) -> timedelta:
         base = max(1, self._settings.retry_base_delay_sec)
@@ -254,28 +434,42 @@ class AnalyzeService:
         return evidence
 
     @staticmethod
-    def _extract_json_payload(text: str) -> Dict[str, Any]:
+    def _parse_object_candidate(text: str) -> Optional[Dict[str, Any]]:
         raw = (text or "").strip()
         if not raw:
-            raise RuntimeError("empty response")
+            return None
         try:
             payload = json.loads(raw)
             if isinstance(payload, dict):
                 return payload
         except json.JSONDecodeError:
             pass
+        try:
+            payload = ast.literal_eval(raw)
+        except (SyntaxError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _extract_json_payload(text: str) -> Dict[str, Any]:
+        raw = (text or "").strip()
+        if not raw:
+            raise RuntimeError("empty response")
+        payload = AnalyzeService._parse_object_candidate(raw)
+        if payload is not None:
+            return payload
 
         fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL)
         if fence:
-            payload = json.loads(fence.group(1))
-            if isinstance(payload, dict):
+            payload = AnalyzeService._parse_object_candidate(fence.group(1))
+            if payload is not None:
                 return payload
 
         start = raw.find("{")
         end = raw.rfind("}")
         if start >= 0 and end > start:
-            payload = json.loads(raw[start : end + 1])
-            if isinstance(payload, dict):
+            payload = AnalyzeService._parse_object_candidate(raw[start : end + 1])
+            if payload is not None:
                 return payload
         raise RuntimeError("response does not contain JSON object")
 
@@ -306,35 +500,677 @@ class AnalyzeService:
             return False
         if DIALOGUE_DUMP_LINE_RE.search(raw):
             return True
+        if ROLE_PREFIX_RE.search(raw):
+            return True
         line_count = len([line for line in raw.splitlines() if line.strip()])
-        if line_count >= 3 and ("клиент:" in raw.lower() or "менеджер" in raw.lower()):
+        lowered = raw.lower()
+        if line_count >= 3 and (
+            "клиент:" in lowered
+            or "менеджер" in lowered
+            or "manager:" in lowered
+            or "client:" in lowered
+        ):
             return True
         return False
 
-    def _analysis_user_prompt(self, call: CallRecord, text: str) -> str:
-        started_at = self._format_started_at(call.started_at) or "unknown"
-        manager = self._clean_text(call.manager_name) or "unknown"
-        phone = self._clean_text(call.phone) or "unknown"
-        direction = self._clean_text(call.direction) or "unknown"
-        transcript = text or ""
-        if len(transcript) > ANALYSIS_PROMPT_TRANSCRIPT_MAX_CHARS:
-            head = transcript[:ANALYSIS_PROMPT_TRANSCRIPT_HEAD_CHARS].rstrip()
-            tail = transcript[-ANALYSIS_PROMPT_TRANSCRIPT_TAIL_CHARS :].lstrip()
-            transcript = (
+    @staticmethod
+    def _normalize_next_step_action(value: Optional[str]) -> Optional[str]:
+        text = (value or "").strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        mappings = (
+            (r"call back|callback|follow[\s-]?up", "Перезвонить клиенту"),
+            (r"wait for decision", "Дождаться решения клиента"),
+            (r"schedule|arrange", "Согласовать следующий контакт"),
+        )
+        for pattern, replacement in mappings:
+            if re.search(pattern, lowered):
+                return replacement
+        if re.search(r"ссылк\w*.*оплат|оплат\w*.*ссылк", lowered):
+            return "Отправить ссылку на оплату"
+        if re.search(r"(telegram|whatsapp|email|e-mail|телеграм|ватсап|вотсап|почт)", lowered) and re.search(
+            r"(написа\w*|отправ\w*|вышл\w*|пришл\w*|направ\w*|скин\w*)",
+            lowered,
+        ):
+            return "Отправить материалы"
+        return text
+
+    def _analysis_prompt_profile(self, override: Optional[str] = None) -> str:
+        profile = (override or self._settings.analyze_prompt_profile or "").strip().lower()
+        if profile not in {"compact", "full"}:
+            return "compact"
+        return profile
+
+    def _analysis_system_prompt(self, profile: Optional[str] = None) -> str:
+        normalized = self._analysis_prompt_profile(profile)
+        if normalized == "full":
+            return SYSTEM_PROMPT_FULL
+        return SYSTEM_PROMPT_COMPACT
+
+    def _analysis_prompt_version(self, profile: Optional[str] = None) -> str:
+        normalized = self._analysis_prompt_profile(profile)
+        if normalized == "full":
+            return ANALYZE_PROMPT_VERSION_FULL
+        return ANALYZE_PROMPT_VERSION_COMPACT
+
+    def _analysis_prompt_limits(self, profile: Optional[str] = None) -> tuple[int, int, int]:
+        normalized = self._analysis_prompt_profile(profile)
+        if normalized == "full":
+            return (
+                ANALYSIS_PROMPT_TRANSCRIPT_MAX_CHARS_FULL,
+                ANALYSIS_PROMPT_TRANSCRIPT_HEAD_CHARS_FULL,
+                ANALYSIS_PROMPT_TRANSCRIPT_TAIL_CHARS_FULL,
+            )
+        return (
+            ANALYSIS_PROMPT_TRANSCRIPT_MAX_CHARS_COMPACT,
+            ANALYSIS_PROMPT_TRANSCRIPT_HEAD_CHARS_COMPACT,
+            ANALYSIS_PROMPT_TRANSCRIPT_TAIL_CHARS_COMPACT,
+        )
+
+    @staticmethod
+    def _compact_prompt_filler_body(text: str) -> str:
+        compact = re.sub(r"\s+", " ", text or "").strip()
+        if not compact:
+            return ""
+        previous = None
+        while previous != compact:
+            previous = compact
+            compact = PROMPT_COMPACTION_REPEAT_RE.sub(lambda match: match.group("token"), compact)
+            compact = re.sub(r"\s+([,.;:!?])", r"\1", compact)
+            compact = re.sub(r"([,.;:!?])(?=[^\s])", r"\1 ", compact)
+            compact = re.sub(r"\s+", " ", compact).strip(" ,")
+        return compact
+
+    @staticmethod
+    def _filler_only_signature(text: str) -> Optional[str]:
+        lowered = (text or "").lower()
+        tokens = re.findall(r"[a-zа-яё0-9]+", lowered, flags=re.I)
+        if not tokens:
+            return None
+        if not all(token in PROMPT_COMPACTION_FILLER_TOKENS for token in tokens):
+            return None
+        return " ".join(tokens)
+
+    @staticmethod
+    def _prompt_speaker_label(speaker: str) -> str:
+        lowered = (speaker or "").strip().lower()
+        if "менедж" in lowered or "manager" in lowered:
+            return "Менеджер"
+        if "клиент" in lowered or "client" in lowered:
+            return "Клиент"
+        return "Спикер"
+
+    def _compact_transcript_for_prompt(
+        self,
+        text: str,
+        profile: Optional[str] = None,
+        *,
+        apply_compaction: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        normalized = self._analysis_prompt_profile(profile)
+        original = text or ""
+        use_compaction = (
+            self._settings.analyze_transcript_compaction_enabled
+            if apply_compaction is None
+            else bool(apply_compaction)
+        )
+        compacted = original
+        shortened_lines = 0
+        deduped_lines = 0
+        removed_lines = 0
+        timestamp_removed_lines = 0
+
+        if use_compaction and original:
+            compacted_lines: list[str] = []
+            prev_filler_signature: Optional[str] = None
+            prev_speaker: Optional[str] = None
+            for raw_line in original.splitlines():
+                stripped = raw_line.strip()
+                if not stripped:
+                    if compacted_lines and compacted_lines[-1] != "":
+                        compacted_lines.append("")
+                    prev_filler_signature = None
+                    prev_speaker = None
+                    continue
+
+                match = SPEAKER_LINE_RE.match(stripped)
+                speaker = None
+                body = stripped
+                prefix = ""
+                if match:
+                    speaker = self._prompt_speaker_label(self._clean_text(match.group("speaker")) or "")
+                    body = (match.group("text") or "").strip()
+                    prefix = f"{speaker}: "
+                    timestamp_removed_lines += 1
+                compact_body = self._compact_prompt_filler_body(body)
+                if compact_body != body:
+                    shortened_lines += 1
+                filler_signature = self._filler_only_signature(compact_body)
+                if (
+                    filler_signature
+                    and filler_signature == prev_filler_signature
+                    and (speaker or "") == (prev_speaker or "")
+                ):
+                    deduped_lines += 1
+                    removed_lines += 1
+                    continue
+                rendered = f"{prefix}{compact_body}".strip()
+                if rendered:
+                    compacted_lines.append(rendered)
+                prev_filler_signature = filler_signature
+                prev_speaker = speaker
+
+            compacted = "\n".join(compacted_lines).strip()
+            if not compacted:
+                compacted = original
+
+        compacted = re.sub(r"[ \t]+", " ", compacted)
+        prompt_transcript = compacted
+        max_chars, head_chars, tail_chars = self._analysis_prompt_limits(normalized)
+        truncated = False
+        if len(prompt_transcript) > max_chars:
+            head = prompt_transcript[:head_chars].rstrip()
+            tail = prompt_transcript[-tail_chars:].lstrip()
+            prompt_transcript = (
                 f"{head}\n\n"
                 "[... transcript truncated for prompt budget ...]\n\n"
                 f"{tail}"
             )
-        return (
-            "Analyze this call transcript and return JSON only.\n"
-            "Call metadata:\n"
-            f"- source_filename: {call.source_filename}\n"
-            f"- started_at: {started_at}\n"
-            f"- manager_name: {manager}\n"
-            f"- client_phone: {phone}\n"
-            f"- direction: {direction}\n\n"
-            f"Transcript:\n{transcript}"
+            truncated = True
+
+        chars_original = len(original)
+        chars_compacted = len(compacted)
+        chars_prompt = len(prompt_transcript)
+        return {
+            "profile": normalized,
+            "transcript": prompt_transcript,
+            "transcript_chars_original": chars_original,
+            "transcript_chars_compacted": chars_compacted,
+            "transcript_chars_prompt": chars_prompt,
+            "transcript_chars_saved": max(0, chars_original - chars_prompt),
+            "transcript_compacted": bool(use_compaction and chars_compacted < chars_original),
+            "transcript_truncated": truncated,
+            "transcript_compaction_removed_lines": removed_lines,
+            "transcript_compaction_shortened_lines": shortened_lines,
+            "transcript_compaction_deduped_lines": deduped_lines,
+            "transcript_prompt_timestamps_removed_lines": timestamp_removed_lines,
+        }
+
+    @staticmethod
+    def _with_analysis_prompt_quality_flags(
+        payload: Dict[str, Any],
+        *,
+        metrics: Dict[str, Any],
+        prompt_version: str,
+        cache_hit: bool,
+    ) -> Dict[str, Any]:
+        merged = dict(payload) if isinstance(payload, dict) else {}
+        raw_quality = merged.get("quality_flags")
+        quality_flags = dict(raw_quality) if isinstance(raw_quality, dict) else {}
+        quality_flags.update(
+            {
+                "analyze_prompt_profile": metrics.get("profile"),
+                "analyze_prompt_version": prompt_version,
+                "analyze_prompt_compacted": bool(metrics.get("transcript_compacted")),
+                "analyze_prompt_truncated": bool(metrics.get("transcript_truncated")),
+                "analyze_llm_cache_hit": bool(cache_hit),
+                "analyze_transcript_chars_original": int(metrics.get("transcript_chars_original", 0) or 0),
+                "analyze_transcript_chars_compacted": int(metrics.get("transcript_chars_compacted", 0) or 0),
+                "analyze_transcript_chars_prompt": int(metrics.get("transcript_chars_prompt", 0) or 0),
+                "analyze_transcript_chars_saved": int(metrics.get("transcript_chars_saved", 0) or 0),
+                "analyze_prompt_compaction_removed_lines": int(
+                    metrics.get("transcript_compaction_removed_lines", 0) or 0
+                ),
+                "analyze_prompt_compaction_shortened_lines": int(
+                    metrics.get("transcript_compaction_shortened_lines", 0) or 0
+                ),
+                "analyze_prompt_compaction_deduped_lines": int(
+                    metrics.get("transcript_compaction_deduped_lines", 0) or 0
+                ),
+                "analyze_prompt_timestamps_removed_lines": int(
+                    metrics.get("transcript_prompt_timestamps_removed_lines", 0) or 0
+                ),
+            }
         )
+        merged["quality_flags"] = quality_flags
+        return merged
+
+    @classmethod
+    def _prune_prompt_payload(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        pruned: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if isinstance(value, dict):
+                nested = cls._prune_prompt_payload(value)
+                if nested:
+                    pruned[key] = nested
+                continue
+            if isinstance(value, list):
+                cleaned_items = []
+                for item in value:
+                    if isinstance(item, dict):
+                        nested = cls._prune_prompt_payload(item)
+                        if nested:
+                            cleaned_items.append(nested)
+                    elif item not in (None, "", False):
+                        cleaned_items.append(item)
+                if cleaned_items:
+                    pruned[key] = cleaned_items
+                continue
+            if value in (None, "", False):
+                continue
+            pruned[key] = value
+        return pruned
+
+    def _analysis_prompt_context(
+        self,
+        call: CallRecord,
+        text: str,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized = self._analysis_prompt_profile(profile)
+        started_at = self._format_started_at(call.started_at) or "unknown"
+        manager = self._clean_text(call.manager_name) or "unknown"
+        phone = self._clean_text(call.phone) or "unknown"
+        direction = self._clean_text(call.direction) or "unknown"
+        transcript_meta = self._compact_transcript_for_prompt(text, normalized)
+        metadata_payload = {
+            "source_filename": call.source_filename,
+            "started_at": started_at,
+            "manager_name": manager,
+            "client_phone": phone,
+            "direction": direction,
+        }
+        prompt = (
+            "Analyze this call transcript and return JSON only.\n"
+            "Call metadata JSON:\n"
+            f"{json.dumps(metadata_payload, ensure_ascii=False, separators=(',', ':'))}\n"
+        )
+        if normalized == "compact":
+            hints_payload = self._prune_prompt_payload(self._analysis_rule_hints(call, text))
+            prompt += (
+                "\nDeterministic hints JSON (may be incomplete; use only if supported by transcript):\n"
+                f"{json.dumps(hints_payload, ensure_ascii=False, separators=(',', ':'))}\n"
+            )
+        prompt += "\n" f"Transcript:\n{transcript_meta['transcript']}"
+        system_prompt = self._analysis_system_prompt(normalized)
+        return {
+            "profile": normalized,
+            "system_prompt": system_prompt,
+            "user_prompt": prompt,
+            "llm_prompt": f"{system_prompt}\n\n{prompt}",
+            "metrics": transcript_meta,
+        }
+
+    def _candidate_next_step_action(self, text: str) -> Optional[str]:
+        lowered = (text or "").lower()
+        if "перезвон" in lowered or "созвон" in lowered or "позвон" in lowered:
+            return "Перезвонить клиенту"
+        if re.search(r"ссылк\w*.*оплат|оплат\w*.*ссылк", lowered):
+            return "Отправить ссылку на оплату"
+        if "отправ" in lowered:
+            return "Отправить материалы"
+        if "уточн" in lowered:
+            return "Уточнить информацию и сообщить клиенту"
+        return None
+
+    @staticmethod
+    def _has_explicit_sales_signal(
+        *,
+        raw_sales_signal: bool,
+        products: Optional[list[str]] = None,
+        formats: Optional[list[str]] = None,
+        exam_targets: Optional[list[str]] = None,
+    ) -> bool:
+        return bool(raw_sales_signal or products or formats or exam_targets)
+
+    def _analysis_rule_hints(self, call: CallRecord, text: str) -> Dict[str, Any]:
+        hints: Dict[str, Any] = {
+            "target_product_candidates": self._detect_from_patterns(text, PRODUCT_PATTERNS),
+            "subject_candidates": self._detect_from_patterns(text, SUBJECT_PATTERNS),
+            "format_candidates": self._detect_from_patterns(text, FORMAT_PATTERNS),
+            "exam_target_candidates": self._detect_from_patterns(text, EXAM_PATTERNS),
+            "objection_candidates": self._detect_from_patterns(text, OBJECTION_PATTERNS),
+            "grade_candidate": self._extract_grade(text),
+            "email_candidate": self._extract_email(text),
+            "preferred_channel_candidate": self._detect_preferred_channel(text),
+            "next_step_candidate": self._candidate_next_step_action(text),
+            "call_type_candidate": self._detect_call_type(text),
+            "non_conversation_candidate": self._is_non_conversation(text),
+            "phone_from_filename": self._clean_text(call.phone),
+        }
+        return hints
+
+    def _analysis_user_prompt(self, call: CallRecord, text: str, profile: Optional[str] = None) -> str:
+        return str(self._analysis_prompt_context(call, text, profile)["user_prompt"])
+
+    def _analysis_llm_prompt(self, call: CallRecord, text: str, profile: Optional[str] = None) -> str:
+        return str(self._analysis_prompt_context(call, text, profile)["llm_prompt"])
+
+    def _analysis_cache_lookup(
+        self,
+        *,
+        provider: str,
+        model: str,
+        reasoning: str,
+        prompt_version: str,
+        prompt: str,
+    ) -> Optional[Dict[str, Any]]:
+        return self._llm_cache.get(
+            namespace="analyze",
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            prompt_version=prompt_version,
+            prompt=prompt,
+        )
+
+    def _analysis_cache_store(
+        self,
+        *,
+        provider: str,
+        model: str,
+        reasoning: str,
+        prompt_version: str,
+        prompt: str,
+        response: Dict[str, Any],
+    ) -> None:
+        self._llm_cache.put(
+            namespace="analyze",
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            prompt_version=prompt_version,
+            prompt=prompt,
+            response=response,
+        )
+
+    def _should_escalate_full_profile(self, text: str, raw_analysis: Dict[str, Any]) -> bool:
+        if not self._settings.analyze_escalate_full_on_ambiguity:
+            return False
+        if self._analysis_prompt_profile() != "compact":
+            return False
+        raw = raw_analysis if isinstance(raw_analysis, dict) else {}
+        summary = self._clean_text(raw.get("history_summary")) or self._clean_text(raw.get("summary"))
+        if not summary or self._looks_like_dialogue_dump(summary):
+            return True
+        blocks = self._nested_dict(raw, "structured_fields") or self._nested_dict(raw, "crm_blocks")
+        interests = self._nested_dict(blocks, "interests")
+        next_step_block = self._nested_dict(blocks, "next_step")
+        llm_subjects = self._clean_list(interests.get("subjects"))
+        llm_products = self._clean_list(interests.get("products"))
+        llm_formats = self._clean_list(interests.get("format"))
+        llm_exam_targets = self._clean_list(interests.get("exam_targets"))
+        llm_next_step = self._clean_text(next_step_block.get("action")) or self._clean_text(raw.get("next_step"))
+        llm_target_product = self._clean_text(raw.get("target_product"))
+        heuristic_subjects = self._detect_from_patterns(text, SUBJECT_PATTERNS)
+        heuristic_products = self._detect_from_patterns(text, PRODUCT_PATTERNS)
+        heuristic_formats = self._detect_from_patterns(text, FORMAT_PATTERNS)
+        heuristic_exam_targets = self._detect_from_patterns(text, EXAM_PATTERNS)
+        heuristic_next_step = self._candidate_next_step_action(text)
+        tags = [str(item).strip().lower() for item in self._clean_list(raw.get("tags"))]
+        heuristic_call_type = self._detect_call_type(
+            text,
+            products=heuristic_products,
+            subjects=heuristic_subjects,
+            formats=heuristic_formats,
+            exam_targets=heuristic_exam_targets,
+            next_step_action=heuristic_next_step,
+        )
+        llm_call_type = self._detect_call_type(
+            text,
+            tags=tags,
+            products=llm_products + ([llm_target_product] if llm_target_product else []),
+            subjects=llm_subjects,
+            formats=llm_formats,
+            exam_targets=llm_exam_targets,
+            next_step_action=llm_next_step,
+        )
+        if heuristic_products and not (llm_target_product or llm_products):
+            return True
+        if heuristic_subjects and not llm_subjects:
+            return True
+        if heuristic_next_step and not llm_next_step:
+            return True
+        if "non_conversation" in tags and heuristic_call_type != "non_conversation":
+            return True
+        if llm_call_type == "non_conversation" and heuristic_call_type != "non_conversation":
+            return True
+        return False
+
+    def _has_meaningful_sales_signal(self, text: str) -> bool:
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        lowered = raw.lower()
+        products = self._detect_from_patterns(raw, PRODUCT_PATTERNS)
+        subjects = self._detect_from_patterns(raw, SUBJECT_PATTERNS)
+        formats = self._detect_from_patterns(raw, FORMAT_PATTERNS)
+        exam_targets = self._detect_from_patterns(raw, EXAM_PATTERNS)
+        lead_interest = bool(
+            re.search(
+                r"интерес\w*|хотел\w*|хочу|ищ\w*|рассматрива\w*|подобрат\w*|"
+                r"запис\w*|узнат\w*|подход\w*|выбрат\w*",
+                lowered,
+            )
+        )
+        needs_training = bool(
+            re.search(
+                r"нуж(?:ен|на|ны)\s+(?:курс\w*|лагер\w*|школ\w*|обучен\w*|заняти\w*|подготов\w*|программ\w*)",
+                lowered,
+            )
+        )
+        training_noun = bool(
+            re.search(r"курс\w*|лагер\w*|школ\w*|обучен\w*|заняти\w*|подготов\w*|программ\w*", lowered)
+        )
+        existing_client_context = self._matches_any_pattern(raw, TECHNICAL_CALL_PATTERNS) or self._matches_any_pattern(
+            raw, SERVICE_CALL_PATTERNS
+        ) or self._matches_any_pattern(raw, EXISTING_CLIENT_PROGRESS_PATTERNS)
+        if products:
+            return True
+        if existing_client_context and not lead_interest and not needs_training:
+            return False
+        if (lead_interest or needs_training) and (subjects or formats or exam_targets or training_noun):
+            return True
+        if subjects and formats and training_noun:
+            return True
+        if exam_targets and (subjects or training_noun or lead_interest):
+            return True
+        if subjects and self._extract_grade(raw) and (lead_interest or needs_training):
+            return True
+        return False
+
+    @staticmethod
+    def _matches_any_pattern(text: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+        raw = text or ""
+        return any(pattern.search(raw) for pattern in patterns)
+
+    def _has_substantial_dialogue(self, text: str) -> bool:
+        raw = (text or "").strip()
+        if not raw:
+            return False
+        word_count = len(re.findall(r"\w+", raw, re.U))
+        speaker_markers = len(re.findall(r"^\s*(manager|client|менеджер|клиент)\s*:", raw, re.I | re.M))
+        line_count = len([line for line in raw.splitlines() if line.strip()])
+        return word_count >= 18 and (speaker_markers >= 1 or line_count >= 3)
+
+    def _detect_call_type(
+        self,
+        text: str,
+        *,
+        tags: Optional[list[str]] = None,
+        products: Optional[list[str]] = None,
+        subjects: Optional[list[str]] = None,
+        formats: Optional[list[str]] = None,
+        exam_targets: Optional[list[str]] = None,
+        next_step_action: Optional[str] = None,
+    ) -> str:
+        raw = (text or "").strip()
+        if not raw:
+            return "non_conversation"
+        lowered = raw.lower()
+        semantic_tags = {str(item).strip().lower() for item in (tags or []) if str(item).strip()}
+        raw_sales_signal = self._has_meaningful_sales_signal(raw)
+        explicit_sales_signal = self._has_explicit_sales_signal(
+            raw_sales_signal=raw_sales_signal,
+            products=products,
+            formats=formats,
+            exam_targets=exam_targets,
+        )
+        meaningful_dialogue = self._has_substantial_dialogue(raw)
+        technical_signal = self._matches_any_pattern(raw, TECHNICAL_CALL_PATTERNS)
+        service_signal = self._matches_any_pattern(raw, SERVICE_CALL_PATTERNS)
+        progress_signal = self._matches_any_pattern(raw, EXISTING_CLIENT_PROGRESS_PATTERNS)
+        has_followup = bool(self._clean_text(next_step_action))
+        has_business_content = explicit_sales_signal or technical_signal or service_signal or progress_signal or (
+            has_followup and meaningful_dialogue
+        )
+
+        if any(marker in lowered for marker in STRONG_NON_CONVERSATION_MARKERS) and not has_business_content:
+            return "non_conversation"
+        if len(raw) <= 40 and not meaningful_dialogue and not has_business_content:
+            return "non_conversation"
+
+        if "existing_client_progress" in semantic_tags and not explicit_sales_signal:
+            return "existing_client_progress"
+        if "technical_call" in semantic_tags and not explicit_sales_signal:
+            return "technical_call"
+        if "service_call" in semantic_tags and not explicit_sales_signal:
+            return "service_call"
+
+        if progress_signal and not explicit_sales_signal:
+            return "existing_client_progress"
+        if technical_signal and not explicit_sales_signal:
+            return "technical_call"
+        if service_signal and not explicit_sales_signal:
+            return "service_call"
+
+        if "non_conversation" in semantic_tags and not raw_sales_signal and not meaningful_dialogue:
+            return "non_conversation"
+        if explicit_sales_signal:
+            return "sales_call"
+        if meaningful_dialogue:
+            if technical_signal:
+                return "technical_call"
+            if progress_signal:
+                return "existing_client_progress"
+            return "service_call"
+        if any(marker in lowered for marker in WEAK_NON_CONVERSATION_MARKERS):
+            return "non_conversation"
+        if len(re.findall(r"\w+", raw, re.U)) < 12:
+            return "non_conversation"
+        return "service_call"
+
+    def _build_review_flags(
+        self,
+        call: CallRecord,
+        *,
+        text: str,
+        call_type: str,
+        products: list[str],
+        formats: list[str],
+        exam_targets: list[str],
+        target_product: Optional[str],
+        next_step_action: Optional[str],
+        history_summary: Optional[str],
+    ) -> Dict[str, Any]:
+        reasons: list[str] = []
+        product_present = bool(products or self._clean_text(target_product))
+        summary_lower = (history_summary or "").lower()
+        technical_signal = self._matches_any_pattern(text, TECHNICAL_CALL_PATTERNS)
+        service_signal = self._matches_any_pattern(text, SERVICE_CALL_PATTERNS)
+        progress_signal = self._matches_any_pattern(text, EXISTING_CLIENT_PROGRESS_PATTERNS)
+        explicit_sales_signal = self._has_explicit_sales_signal(
+            raw_sales_signal=self._has_meaningful_sales_signal(text),
+            products=products,
+            formats=formats,
+            exam_targets=exam_targets,
+        )
+
+        if call_type == "sales_call":
+            if not product_present and not next_step_action:
+                reasons.append("sales_missing_product_and_next_step")
+            elif not product_present:
+                reasons.append("sales_missing_product")
+            elif not next_step_action:
+                reasons.append("sales_missing_next_step")
+            if (technical_signal or service_signal or progress_signal) and not product_present:
+                reasons.append("sales_service_overlap")
+
+        if call_type == "non_conversation" and float(call.duration_sec or 0.0) >= 30:
+            reasons.append("long_non_conversation")
+
+        if call_type != "non_conversation" and (
+            "нецелевой звонок" in summary_lower or "автоответчик/короткий технический дозвон" in summary_lower
+        ):
+            reasons.append("legacy_summary_conflict")
+
+        if (
+            call_type in {"service_call", "technical_call", "existing_client_progress"}
+            and explicit_sales_signal
+            and not next_step_action
+        ):
+            reasons.append("non_sales_with_sales_signal")
+
+        return {
+            "needs_review": bool(reasons),
+            "review_reasons": self._unique(reasons),
+        }
+
+    def _clean_history_summary_draft(self, call: CallRecord, draft: str) -> str:
+        cleaned = self._clean_text(draft) or ""
+        if not cleaned:
+            return ""
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        started_at = self._format_started_at(call.started_at) or ""
+        started_at_alt = ""
+        if call.started_at is not None:
+            started_at_alt = call.started_at.strftime("%d.%m.%Y в %H:%M")
+        manager_name = self._clean_text(call.manager_name) or ""
+        non_empty_sentences = [self._clean_text(sentence) for sentence in sentences if self._clean_text(sentence)]
+        pruned: list[str] = []
+        skipping_context = len(non_empty_sentences) > 1
+        for sentence in non_empty_sentences:
+            compact = self._clean_text(sentence)
+            if not compact:
+                continue
+            lowered = compact.lower()
+            has_context = bool(
+                (started_at and started_at in compact)
+                or (started_at_alt and started_at_alt in compact)
+            ) or bool(
+                manager_name and manager_name.lower() in lowered
+            )
+            if skipping_context and has_context:
+                if started_at_alt:
+                    compact = re.sub(rf"^{re.escape(started_at_alt)}\s*", "", compact, flags=re.I)
+                if started_at:
+                    compact = re.sub(rf"^{re.escape(started_at)}\s*", "", compact, flags=re.I)
+                if manager_name:
+                    compact = re.sub(
+                        rf"^(?:менеджер\s+)?{re.escape(manager_name)}[\s,:-]*",
+                        "",
+                        compact,
+                        flags=re.I,
+                    )
+                compact = compact.lstrip(" ,.-")
+                lowered = compact.lower()
+                if not compact or re.fullmatch(r"(?:менеджер\s+)?общал\w*\s+с\s+клиентом\.?", lowered):
+                    continue
+            skipping_context = False
+            pruned.append(compact)
+        return re.sub(r"\s+", " ", " ".join(pruned)).strip()
+
+    @staticmethod
+    def _summary_mentions_any(text: str, values: list[Optional[str]]) -> bool:
+        lowered = (text or "").lower()
+        if not lowered:
+            return False
+        for value in values:
+            cleaned = (value or "").strip().lower()
+            if cleaned and cleaned in lowered:
+                return True
+        return False
 
     def _compose_history_summary(
         self,
@@ -349,22 +1185,9 @@ class AnalyzeService:
         follow_up_reason: Optional[str],
     ) -> str:
         started_at = self._format_started_at(call.started_at) or "дата/время не указаны"
-        manager_name = self._clean_text(call.manager_name) or "не указан"
+        manager_name = self._clean_text(repair_manager_name(call.manager_name)) or "не указан"
         opening = f"{started_at} менеджер {manager_name} общался с клиентом."
 
-        cleaned_draft = self._clean_text(draft_history_summary)
-        if cleaned_draft and self._looks_like_dialogue_dump(cleaned_draft):
-            cleaned_draft = None
-        if cleaned_draft:
-            parts = [opening, self._sentence(cleaned_draft) or ""]
-            if next_step_action and "договор" not in cleaned_draft.lower():
-                agreement = next_step_action
-                if due:
-                    agreement = f"{agreement} (срок: {due})"
-                parts.append(f"Договорились: {agreement}.")
-            return re.sub(r"\s+", " ", " ".join(parts)).strip()
-
-        blocks: list[str] = [opening]
         people = self._nested_dict(structured_fields, "people")
         contacts = self._nested_dict(structured_fields, "contacts")
         student = self._nested_dict(structured_fields, "student")
@@ -380,14 +1203,12 @@ class AnalyzeService:
             student_bits.append(f"родитель: {parent_fio}")
         if grade:
             student_bits.append(f"класс: {grade}")
-        if student_bits:
-            blocks.append(f"Уточнили данные: {'; '.join(student_bits)}.")
 
-        topic_parts: list[str] = []
         products = self._clean_list(interests.get("products"))
         formats = self._clean_list(interests.get("format"))
         subjects = self._clean_list(interests.get("subjects"))
         exams = self._clean_list(interests.get("exam_targets"))
+        topic_parts: list[str] = []
         if products:
             topic_parts.append(f"продукты: {', '.join(products)}")
         if formats:
@@ -396,6 +1217,77 @@ class AnalyzeService:
             topic_parts.append(f"предметы: {', '.join(subjects)}")
         if exams:
             topic_parts.append(f"цели: {', '.join(exams)}")
+
+        email = self._clean_text(contacts.get("email"))
+        preferred_channel = self._clean_text(contacts.get("preferred_channel"))
+        contact_bits: list[str] = []
+        if email:
+            contact_bits.append(f"email: {email}")
+        if preferred_channel:
+            contact_bits.append(f"канал: {preferred_channel}")
+
+        cleaned_draft = self._clean_history_summary_draft(call, draft_history_summary or "")
+        if cleaned_draft and self._looks_like_dialogue_dump(cleaned_draft):
+            cleaned_draft = None
+        if cleaned_draft:
+            compact_draft = re.sub(r"\s+", " ", cleaned_draft).strip()
+            summary_sentence = self._sentence(summary)
+            draft_sentences = [item for item in re.split(r"(?<=[.!?])\s+", compact_draft) if item.strip()]
+            draft_is_sparse = len(compact_draft) < 180 or len(draft_sentences) < 2
+            parts = [opening]
+            sentence = self._sentence(compact_draft)
+            if sentence:
+                parts.append(sentence)
+            if (
+                summary_sentence
+                and not self._looks_like_dialogue_dump(summary_sentence)
+                and summary_sentence.lower() not in compact_draft.lower()
+                and compact_draft.lower() not in summary_sentence.lower()
+                and draft_is_sparse
+            ):
+                parts.append(f"Суть обращения: {summary_sentence}")
+            if student_bits and not self._summary_mentions_any(
+                compact_draft,
+                [child_fio, parent_fio, grade],
+            ):
+                parts.append(f"Уточнили данные: {'; '.join(student_bits)}.")
+            if topic_parts and not self._summary_mentions_any(
+                compact_draft,
+                products + formats + subjects + exams,
+            ):
+                parts.append(f"Обсудили: {'; '.join(topic_parts)}.")
+            elif not topic_parts:
+                if (
+                    summary_sentence
+                    and not self._looks_like_dialogue_dump(summary_sentence)
+                    and not self._summary_mentions_any(compact_draft, [summary_sentence])
+                ):
+                    parts.append(f"Суть обращения: {summary_sentence}")
+            if objections and not self._summary_mentions_any(compact_draft, objections):
+                parts.append(f"Ограничения/возражения: {', '.join(objections)}.")
+            if next_step_action and not any(
+                token in compact_draft.lower()
+                for token in ("договор", "следующ", "перезвон", "отправ", "созвон", "соедин")
+            ):
+                agreement = next_step_action
+                if due:
+                    agreement = f"{agreement} (срок: {due})"
+                parts.append(f"Договорились: {agreement}.")
+            elif follow_up_reason and not self._summary_mentions_any(compact_draft, [follow_up_reason]):
+                reason_sentence = self._sentence(follow_up_reason)
+                if reason_sentence:
+                    parts.append(f"Итог: {reason_sentence}")
+            if contact_bits and not self._summary_mentions_any(compact_draft, [email, preferred_channel]):
+                parts.append(f"Контакты: {'; '.join(contact_bits)}.")
+            compact = re.sub(r"\s+", " ", " ".join(parts)).strip()
+            if len(compact) > 32000:
+                compact = compact[:31974].rstrip() + " [обрезано по лимиту поля]"
+            return compact
+
+        blocks: list[str] = [opening]
+        if student_bits:
+            blocks.append(f"Уточнили данные: {'; '.join(student_bits)}.")
+
         if topic_parts:
             blocks.append(f"Обсудили: {'; '.join(topic_parts)}.")
         else:
@@ -416,19 +1308,12 @@ class AnalyzeService:
             if reason_sentence:
                 blocks.append(f"Итог: {reason_sentence}")
 
-        contact_bits: list[str] = []
-        email = self._clean_text(contacts.get("email"))
-        preferred_channel = self._clean_text(contacts.get("preferred_channel"))
-        if email:
-            contact_bits.append(f"email: {email}")
-        if preferred_channel:
-            contact_bits.append(f"канал: {preferred_channel}")
         if contact_bits:
             blocks.append(f"Контакты: {'; '.join(contact_bits)}.")
 
         compact = re.sub(r"\s+", " ", " ".join(blocks)).strip()
-        if len(compact) > 1100:
-            compact = compact[:1097].rstrip() + "..."
+        if len(compact) > 32000:
+            compact = compact[:31974].rstrip() + " [обрезано по лимиту поля]"
         return compact
 
     def _quality_flags_from_call(self, call: CallRecord) -> Dict[str, Any]:
@@ -523,15 +1408,23 @@ class AnalyzeService:
             or self._clean_text(raw.get("history_summary"))
             or self._clean_text(raw.get("history_short"))
         )
+        if summary and self._looks_like_dialogue_dump(summary):
+            summary = None
         if not summary:
-            summary = (text or "").strip()[:600]
+            transcript_fallback = (text or "").strip()[:600]
+            if not self._looks_like_dialogue_dump(transcript_fallback):
+                summary = transcript_fallback
         history_short = (
             self._clean_text(raw.get("history_short"))
             or self._clean_text(raw.get("history_summary"))
             or summary
             or ""
         )
+        if history_short and self._looks_like_dialogue_dump(history_short):
+            history_short = None
         raw_history_summary = self._clean_text(raw.get("history_summary")) or history_short
+        if raw_history_summary and self._looks_like_dialogue_dump(raw_history_summary):
+            raw_history_summary = None
 
         target_product = self._clean_text(raw.get("target_product"))
         legacy_interests = self._clean_list(raw.get("interests"))
@@ -555,19 +1448,31 @@ class AnalyzeService:
         )
         if not target_product and products:
             target_product = products[0]
+        if target_product and target_product not in PRODUCT_PATTERNS:
+            target_product = None
 
         grade_current = (
             self._clean_text(student.get("grade_current"))
             or self._clean_text(raw.get("student_grade"))
             or self._extract_grade(text)
         )
+        school = self._clean_text(student.get("school"))
+        parent_fio = self._clean_text(people.get("parent_fio"))
+        child_fio = self._clean_text(people.get("child_fio"))
         budget = self._clean_text(commercial.get("budget")) or self._clean_text(raw.get("budget"))
         timeline = self._clean_text(raw.get("timeline")) or self._clean_text(next_step_block.get("due"))
+        due = self._clean_text(next_step_block.get("due")) or timeline
+        phone_from_filename = self._clean_text(contacts.get("phone_from_filename")) or self._clean_text(call.phone)
+        email = self._clean_text(contacts.get("email")) or self._extract_email(text)
+        preferred_channel = self._clean_text(contacts.get("preferred_channel")) or self._detect_preferred_channel(text)
+        pain_points = self._unique(self._clean_list(raw.get("pain_points")))
+        personal_offer = self._clean_text(raw.get("personal_offer"))
 
+        price_signal = bool(OBJECTION_PATTERNS["цена"].search(text.lower()))
         raw_price_sensitivity = self._clean_text(commercial.get("price_sensitivity"))
         if raw_price_sensitivity in {"high", "medium", "low"}:
             price_sensitivity = raw_price_sensitivity
-        elif OBJECTION_PATTERNS["цена"].search(text.lower()):
+        elif price_signal:
             price_sensitivity = "high"
         else:
             price_sensitivity = None
@@ -583,10 +1488,19 @@ class AnalyzeService:
             + self._clean_list(raw.get("objections"))
             + self._detect_from_patterns(text, OBJECTION_PATTERNS)
         )
+        if not price_signal:
+            objections = [
+                item
+                for item in objections
+                if not any(token in item.lower() for token in ("цен", "стоим", "дорог", "бюджет"))
+            ]
+            if price_sensitivity == "high":
+                price_sensitivity = None
 
         next_step_action = self._clean_text(next_step_block.get("action")) or self._clean_text(
             raw.get("next_step")
         )
+        next_step_action = self._normalize_next_step_action(next_step_action)
         if (
             not next_step_action
             and ("перезвон" in text.lower() or "созвон" in text.lower() or "позвон" in text.lower())
@@ -613,42 +1527,59 @@ class AnalyzeService:
             lead_priority = self._priority_from_score(score)
 
         tags = self._unique(self._clean_list(raw.get("tags")))
-        if self._is_non_conversation(text) and "non_conversation" not in [t.lower() for t in tags]:
+        call_type = self._detect_call_type(
+            text,
+            tags=tags,
+            products=products,
+            subjects=subjects,
+            formats=formats,
+            exam_targets=exam_targets,
+            next_step_action=next_step_action,
+        )
+        tags = [item for item in tags if item.lower() not in CALL_TYPE_TAGS]
+        if call_type == "non_conversation":
             tags.append("non_conversation")
+            products = []
+            formats = []
+            subjects = []
+            exam_targets = []
+            target_product = None
+            grade_current = None
+            school = None
+            parent_fio = None
+            child_fio = None
+            email = None
+            preferred_channel = None
+            budget = None
+            timeline = None
+            price_sensitivity = None
+            discount_interest = None
+            objections = []
+            next_step_action = None
+            due = None
+            pain_points = []
+            personal_offer = None
             score = 0
             lead_priority = "cold"
-            next_step_action = None
-            objections = []
+        elif call_type != "sales_call":
+            tags.append(call_type)
 
         follow_up_reason = self._clean_text(raw.get("follow_up_reason"))
         if not follow_up_reason:
-            if self._is_non_conversation(text):
+            if call_type == "non_conversation":
                 follow_up_reason = "Нет содержательного диалога."
             elif next_step_action:
                 follow_up_reason = "Есть согласованный следующий шаг."
             else:
                 follow_up_reason = "Оценка на основе содержания звонка."
-
-        phone_from_filename = self._clean_text(contacts.get("phone_from_filename")) or self._clean_text(
-            call.phone
-        )
-        email = self._clean_text(contacts.get("email")) or self._extract_email(text)
-        preferred_channel = self._clean_text(contacts.get("preferred_channel")) or self._detect_preferred_channel(
-            text
-        )
-
-        pain_points = self._unique(self._clean_list(raw.get("pain_points")) + objections)
-        personal_offer = self._clean_text(raw.get("personal_offer"))
-        school = self._clean_text(student.get("school"))
-        parent_fio = self._clean_text(people.get("parent_fio"))
-        child_fio = self._clean_text(people.get("child_fio"))
-        due = self._clean_text(next_step_block.get("due")) or timeline
+        pain_points = self._unique(pain_points + objections)
 
         legacy_interests_out = self._unique(legacy_interests + products + formats + subjects + exam_targets)
         quality_flags = self._quality_flags_from_call(call)
         raw_quality = raw.get("quality_flags")
         if isinstance(raw_quality, dict):
             quality_flags.update(raw_quality)
+        quality_flags["call_type"] = call_type
 
         evidence: list[Dict[str, Any]] = []
         raw_evidence = raw.get("evidence")
@@ -716,6 +1647,20 @@ class AnalyzeService:
         if not history_short or self._looks_like_dialogue_dump(history_short):
             history_short = history_summary
 
+        review_flags = self._build_review_flags(
+            call,
+            text=text,
+            call_type=call_type,
+            products=products,
+            formats=formats,
+            exam_targets=exam_targets,
+            target_product=target_product,
+            next_step_action=next_step_action,
+            history_summary=history_summary,
+        )
+        quality_flags["needs_review"] = bool(review_flags["needs_review"])
+        quality_flags["review_reasons"] = review_flags["review_reasons"]
+
         normalized: Dict[str, Any] = {
             "analysis_schema_version": LATEST_ANALYSIS_SCHEMA_VERSION,
             "history_summary": history_summary,
@@ -738,6 +1683,8 @@ class AnalyzeService:
             "follow_up_score": score,
             "follow_up_reason": follow_up_reason,
             "tags": tags,
+            "needs_review": bool(review_flags["needs_review"]),
+            "review_reasons": review_flags["review_reasons"],
         }
         return normalized
 
@@ -780,13 +1727,7 @@ class AnalyzeService:
         }
 
     def _is_non_conversation(self, text: str) -> bool:
-        raw = (text or "").strip()
-        if not raw:
-            return True
-        lowered = raw.lower()
-        if len(raw) <= 40 and not self._looks_like_dialogue_dump(raw):
-            return True
-        return any(marker in lowered for marker in NON_CONVERSATION_MARKERS)
+        return self._detect_call_type(text) == "non_conversation"
 
     def _non_conversation_analysis(self) -> Dict[str, Any]:
         return {
@@ -805,18 +1746,34 @@ class AnalyzeService:
             "tags": ["non_conversation"],
         }
 
-    def _openai_analysis(self, call: CallRecord, text: str) -> Dict[str, Any]:
+    def _openai_analysis(self, call: CallRecord, text: str, profile: Optional[str] = None) -> Dict[str, Any]:
         client = self._openai_client()
+        prompt_context = self._analysis_prompt_context(call, text, profile)
+        prompt = prompt_context["llm_prompt"]
+        user_prompt = prompt_context["user_prompt"]
+        metrics = prompt_context["metrics"]
+        prompt_version = self._analysis_prompt_version(profile)
+        cached = self._analysis_cache_lookup(
+            provider="openai",
+            model=self._settings.openai_analysis_model,
+            reasoning="temperature=0.1",
+            prompt_version=prompt_version,
+            prompt=prompt,
+        )
+        if cached is not None:
+            return self._with_analysis_prompt_quality_flags(
+                cached,
+                metrics=metrics,
+                prompt_version=prompt_version,
+                cache_hit=True,
+            )
         response = client.chat.completions.create(
             model=self._settings.openai_analysis_model,
             temperature=0.1,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": self._analysis_user_prompt(call, text),
-                },
+                {"role": "system", "content": prompt_context["system_prompt"]},
+                {"role": "user", "content": user_prompt},
             ],
         )
         content = response.choices[0].message.content if response.choices else None
@@ -825,93 +1782,207 @@ class AnalyzeService:
         data = json.loads(content)
         if not isinstance(data, dict):
             raise RuntimeError("OpenAI analysis must return object JSON")
+        data = self._with_analysis_prompt_quality_flags(
+            data,
+            metrics=metrics,
+            prompt_version=prompt_version,
+            cache_hit=False,
+        )
+        self._analysis_cache_store(
+            provider="openai",
+            model=self._settings.openai_analysis_model,
+            reasoning="temperature=0.1",
+            prompt_version=prompt_version,
+            prompt=prompt,
+            response=data,
+        )
         return data
 
-    def _ollama_analysis(self, call: CallRecord, text: str) -> Dict[str, Any]:
+    def _ollama_analysis(self, call: CallRecord, text: str, profile: Optional[str] = None) -> Dict[str, Any]:
         client = self._ollama_client()
+        prompt_context = self._analysis_prompt_context(call, text, profile)
+        prompt = prompt_context["llm_prompt"]
+        user_prompt = prompt_context["user_prompt"]
+        metrics = prompt_context["metrics"]
+        prompt_version = self._analysis_prompt_version(profile)
+        reasoning = f"think={self._settings.ollama_think}"
+        cached = self._analysis_cache_lookup(
+            provider="ollama",
+            model=self._settings.ollama_model,
+            reasoning=reasoning,
+            prompt_version=prompt_version,
+            prompt=prompt,
+        )
+        if cached is not None:
+            return self._with_analysis_prompt_quality_flags(
+                cached,
+                metrics=metrics,
+                prompt_version=prompt_version,
+                cache_hit=True,
+            )
         payload = client.generate_json(
             model=self._settings.ollama_model,
             think=self._settings.ollama_think,
             temperature=self._settings.ollama_temperature,
-            system_prompt=SYSTEM_PROMPT,
-            user_prompt=self._analysis_user_prompt(call, text),
+            system_prompt=prompt_context["system_prompt"],
+            user_prompt=user_prompt,
             num_predict=max(200, int(self._settings.analyze_ollama_num_predict)),
         )
         if not isinstance(payload, dict):
             raise RuntimeError("Ollama analysis must return object JSON")
+        payload = self._with_analysis_prompt_quality_flags(
+            payload,
+            metrics=metrics,
+            prompt_version=prompt_version,
+            cache_hit=False,
+        )
+        self._analysis_cache_store(
+            provider="ollama",
+            model=self._settings.ollama_model,
+            reasoning=reasoning,
+            prompt_version=prompt_version,
+            prompt=prompt,
+            response=payload,
+        )
         return payload
 
-    def _codex_cli_analysis(self, call: CallRecord, text: str) -> Dict[str, Any]:
+    def _codex_cli_analysis(self, call: CallRecord, text: str, profile: Optional[str] = None) -> Dict[str, Any]:
         codex_bin = (self._settings.codex_cli_command or "codex").strip() or "codex"
         if shutil.which(codex_bin) is None:
             raise RuntimeError(f"codex binary is not available: {codex_bin}")
 
-        prompt = f"{SYSTEM_PROMPT}\n\n{self._analysis_user_prompt(call, text)}"
+        prompt_context = self._analysis_prompt_context(call, text, profile)
+        prompt = prompt_context["llm_prompt"]
+        metrics = prompt_context["metrics"]
+        prompt_version = self._analysis_prompt_version(profile)
         timeout_sec = max(15, int(self._settings.codex_cli_timeout_sec))
-        with tempfile.NamedTemporaryFile(prefix="mango_codex_analyze_", suffix=".txt") as out_file:
-            cmd = [
-                codex_bin,
-                "exec",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "--model",
-                self._settings.codex_merge_model,
-                "--output-last-message",
-                out_file.name,
-            ]
-            reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
-            if reasoning_effort in {"low", "medium", "high"}:
-                cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
-            cmd.append(prompt)
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout_sec,
+        retryable_marker = "no last agent message"
+        max_attempts = 5
+        last_error: Optional[str] = None
+        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        cached = self._analysis_cache_lookup(
+            provider="codex_cli",
+            model=self._settings.codex_analyze_model,
+            reasoning=reasoning_effort,
+            prompt_version=prompt_version,
+            prompt=prompt,
+        )
+        if cached is not None:
+            return self._with_analysis_prompt_quality_flags(
+                cached,
+                metrics=metrics,
+                prompt_version=prompt_version,
+                cache_hit=True,
             )
-            if proc.returncode != 0:
-                stderr_tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
-                raise RuntimeError(f"codex exec failed rc={proc.returncode}: {stderr_tail[0].strip()}")
-            raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
-        payload = self._extract_json_payload(raw)
-        if not isinstance(payload, dict):
-            raise RuntimeError("Codex analysis must return object JSON")
-        return payload
+
+        for attempt in range(1, max_attempts + 1):
+            with tempfile.NamedTemporaryFile(
+                prefix="mango_codex_analyze_",
+                suffix=".txt",
+            ) as out_file:
+                cmd = [
+                    codex_bin,
+                    "exec",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--sandbox",
+                    "read-only",
+                    "--model",
+                    self._settings.codex_analyze_model,
+                    "--output-last-message",
+                    out_file.name,
+                ]
+                if reasoning_effort in {"low", "medium", "high"}:
+                    cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+                cmd.append("-")
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_sec,
+                )
+                raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
+
+            for candidate in (raw, proc.stdout or "", proc.stderr or ""):
+                candidate = (candidate or "").strip()
+                if not candidate:
+                    continue
+                try:
+                    payload = self._extract_json_payload(candidate)
+                except RuntimeError:
+                    continue
+                if isinstance(payload, dict):
+                    payload = self._with_analysis_prompt_quality_flags(
+                        payload,
+                        metrics=metrics,
+                        prompt_version=prompt_version,
+                        cache_hit=False,
+                    )
+                    self._analysis_cache_store(
+                        provider="codex_cli",
+                        model=self._settings.codex_analyze_model,
+                        reasoning=reasoning_effort,
+                        prompt_version=prompt_version,
+                        prompt=prompt,
+                        response=payload,
+                    )
+                    return payload
+
+            stderr = (proc.stderr or "").strip()
+            if proc.returncode == 0:
+                last_error = "Codex analysis returned empty content"
+                if attempt < max_attempts:
+                    time.sleep(min(5, attempt + 1))
+                    continue
+                raise RuntimeError(last_error)
+
+            stderr_tail = stderr.splitlines()[-1:] or [""]
+            last_error = f"codex exec failed rc={proc.returncode}: {stderr_tail[0].strip()}"
+            if retryable_marker in stderr.lower() and attempt < max_attempts:
+                time.sleep(min(6, attempt * 2))
+                continue
+            raise RuntimeError(last_error)
+
+        raise RuntimeError(last_error or "Codex analysis failed")
 
     def _analyze_text(self, call: CallRecord, text: str) -> Dict[str, Any]:
         if self._is_non_conversation(text):
             return self._non_conversation_analysis()
         provider = self._settings.analyze_provider
+        profile = self._analysis_prompt_profile()
         if provider == "mock":
             return self._mock_analysis(call, text)
         if provider == "openai":
-            return self._openai_analysis(call, text)
-        if provider == "ollama":
-            return self._ollama_analysis(call, text)
-        if provider == "codex_cli":
-            return self._codex_cli_analysis(call, text)
-        raise RuntimeError(f"Unsupported ANALYZE_PROVIDER={provider}")
+            payload = self._openai_analysis(call, text, profile)
+        elif provider == "ollama":
+            payload = self._ollama_analysis(call, text, profile)
+        elif provider == "codex_cli":
+            payload = self._codex_cli_analysis(call, text, profile)
+        else:
+            raise RuntimeError(f"Unsupported ANALYZE_PROVIDER={provider}")
+        if profile == "compact" and self._should_escalate_full_profile(text, payload):
+            if provider == "openai":
+                return self._openai_analysis(call, text, "full")
+            if provider == "ollama":
+                return self._ollama_analysis(call, text, "full")
+            if provider == "codex_cli":
+                return self._codex_cli_analysis(call, text, "full")
+        return payload
 
     def run(self, session: Session, limit: int) -> Dict[str, int]:
-        now = self._utc_now()
         max_attempts = max(1, self._settings.analyze_max_attempts)
-        calls = session.scalars(
-            select(CallRecord)
-            .where(CallRecord.transcription_status == "done")
-            .where(or_(CallRecord.resolve_status.in_(["done", "skipped"]), CallRecord.resolve_status.is_(None)))
-            .where(CallRecord.dead_letter_stage.is_(None))
-            .where(CallRecord.analysis_status.in_(["pending", "failed"]))
-            .where(CallRecord.analyze_attempts < max_attempts)
-            .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
-            .order_by(CallRecord.id.asc())
-            .limit(limit)
-        ).all()
+        worker_id = self._analysis_worker_id()
+        claimed_ids = self._claim_batch(session, limit=limit, worker_id=worker_id)
         success = 0
         failed = 0
-        for call in calls:
+        for call_id in claimed_ids:
+            call = session.get(CallRecord, call_id)
+            if call is None:
+                continue
+            if call.analysis_status != "in_progress" or call.analysis_worker_id != worker_id:
+                continue
             call.analyze_attempts = int(call.analyze_attempts or 0) + 1
             attempt = call.analyze_attempts
             try:
@@ -923,6 +1994,8 @@ class AnalyzeService:
                 call.analysis_json = json.dumps(analysis, ensure_ascii=False)
                 self._export_analysis_files(call, analysis)
                 call.analysis_status = "done"
+                call.analysis_worker_id = None
+                call.analysis_claimed_at = None
                 call.sync_status = "pending"
                 call.next_retry_at = None
                 call.dead_letter_stage = None
@@ -932,12 +2005,22 @@ class AnalyzeService:
                 call.last_error = f"analyze: {exc}"
                 if attempt >= max_attempts:
                     call.analysis_status = "dead"
+                    call.analysis_worker_id = None
+                    call.analysis_claimed_at = None
                     call.dead_letter_stage = "analyze"
                     call.next_retry_at = None
                 else:
                     call.analysis_status = "failed"
+                    call.analysis_worker_id = None
+                    call.analysis_claimed_at = None
                     call.next_retry_at = self._utc_now() + self._retry_delay(attempt)
                 failed += 1
             session.add(call)
-        session.commit()
-        return {"processed": len(calls), "success": success, "failed": failed}
+            session.commit()
+        return {
+            "processed": len(claimed_ids),
+            "claimed": len(claimed_ids),
+            "success": success,
+            "failed": failed,
+            "worker_id": worker_id,
+        }

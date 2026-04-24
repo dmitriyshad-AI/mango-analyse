@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, inspect, text
+from pathlib import Path
+
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from mango_mvp.config import Settings
@@ -11,7 +14,36 @@ class Base(DeclarativeBase):
 
 
 def build_engine(settings: Settings):
-    return create_engine(settings.database_url, future=True)
+    _ensure_sqlite_parent_dir(settings.database_url)
+    connect_args = {}
+    if settings.database_url.startswith("sqlite"):
+        connect_args["timeout"] = max(1.0, settings.sqlite_busy_timeout_ms / 1000.0)
+    engine = create_engine(settings.database_url, future=True, connect_args=connect_args)
+
+    if settings.database_url.startswith("sqlite"):
+        @event.listens_for(engine, "connect")
+        def _configure_sqlite(dbapi_connection, _connection_record):  # type: ignore[no-redef]
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute(f"PRAGMA busy_timeout={max(0, int(settings.sqlite_busy_timeout_ms))}")
+                if settings.sqlite_wal_enabled and str(settings.database_url).startswith("sqlite:///"):
+                    cursor.execute("PRAGMA journal_mode=WAL")
+            finally:
+                cursor.close()
+
+    return engine
+
+
+def _ensure_sqlite_parent_dir(database_url: str) -> None:
+    if not database_url.startswith("sqlite"):
+        return
+    url = make_url(database_url)
+    database = url.database
+    if not database or database == ":memory:":
+        return
+    db_path = Path(database).expanduser()
+    if db_path.name:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def build_session_factory(settings: Settings):
@@ -45,6 +77,11 @@ def _ensure_columns(engine) -> None:
         "resolve_attempts": "INTEGER DEFAULT 0 NOT NULL",
         "analyze_attempts": "INTEGER DEFAULT 0 NOT NULL",
         "sync_attempts": "INTEGER DEFAULT 0 NOT NULL",
+        "pipeline_stage": "VARCHAR(32)",
+        "pipeline_worker_id": "VARCHAR(64)",
+        "pipeline_claimed_at": "DATETIME",
+        "analysis_worker_id": "VARCHAR(64)",
+        "analysis_claimed_at": "DATETIME",
         "resolve_status": "VARCHAR(16) DEFAULT 'pending'",
         "next_retry_at": "DATETIME",
         "dead_letter_stage": "VARCHAR(16)",
@@ -73,5 +110,35 @@ def _ensure_columns(engine) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_call_records_resolve_status "
                 "ON call_records (resolve_status)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_call_records_pipeline_stage "
+                "ON call_records (pipeline_stage)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_call_records_pipeline_worker_id "
+                "ON call_records (pipeline_worker_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_call_records_pipeline_claimed_at "
+                "ON call_records (pipeline_claimed_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_call_records_analysis_worker_id "
+                "ON call_records (analysis_worker_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_call_records_analysis_claimed_at "
+                "ON call_records (analysis_claimed_at)"
             )
         )

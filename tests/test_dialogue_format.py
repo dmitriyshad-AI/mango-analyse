@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from mango_mvp.config import Settings
 from mango_mvp.services.transcribe import TranscribeService
@@ -13,6 +16,10 @@ def make_settings(
 ) -> Settings:
     return Settings(
         database_url="sqlite:///test.db",
+        sqlite_wal_enabled=True,
+        sqlite_busy_timeout_ms=30000,
+        llm_cache_enabled=True,
+        llm_cache_dir=".cache/test-llm-responses",
         openai_api_key=openai_api_key,
         transcribe_provider="mock",
         dual_transcribe_enabled=False,
@@ -20,6 +27,9 @@ def make_settings(
         dual_merge_provider="rule",
         openai_merge_model="gpt-4o-mini",
         codex_merge_model="gpt-5-codex",
+        codex_transcribe_model="gpt-5-codex",
+        codex_resolve_model="gpt-5-codex",
+        codex_analyze_model="gpt-5-codex",
         codex_cli_command="codex",
         codex_cli_timeout_sec=120,
         codex_reasoning_effort="medium",
@@ -33,6 +43,9 @@ def make_settings(
         gigaam_device="cpu",
         gigaam_segment_sec=20,
         openai_analysis_model="gpt-4o-mini",
+        analyze_prompt_profile="compact",
+        analyze_escalate_full_on_ambiguity=True,
+        analyze_transcript_compaction_enabled=True,
         analyze_ollama_num_predict=500,
         ollama_base_url="http://127.0.0.1:11434",
         ollama_model="gpt-oss:20b",
@@ -63,9 +76,14 @@ def make_settings(
         resolve_postfilter_same_ts=True,
         resolve_risky_same_ts_threshold=2,
         resolve_aggressive_rescue_for_risky=True,
+        pipeline_lease_timeout_sec=1800,
+        analyze_lease_timeout_sec=1800,
         retry_base_delay_sec=30,
         worker_poll_sec=10,
         worker_max_idle_cycles=30,
+        ai_office_api_base_url=None,
+        ai_office_api_key=None,
+        ai_office_timeout_sec=30,
         amocrm_base_url=None,
         amocrm_access_token=None,
         amocrm_refresh_token=None,
@@ -84,6 +102,7 @@ def make_settings(
         amocrm_task_type_id=None,
         amocrm_task_responsible_user_id=None,
         sync_dry_run=True,
+        legacy_amocrm_sync_enabled=False,
         follow_up_task_threshold=70,
     )
 
@@ -289,6 +308,37 @@ class DialogueFormatTest(unittest.TestCase):
                 any("OPENAI_API_KEY missing" in msg for msg in warnings),
                 msg=f"warnings={warnings}",
             )
+
+    def test_gigaam_uses_afconvert_fallback_when_ffmpeg_missing(self) -> None:
+        service = TranscribeService(make_settings())
+
+        class FakeModel:
+            def transcribe(self, _path: str) -> str:
+                return "Привет мир"
+
+        def fake_run(cmd, capture_output, text, check):  # noqa: ANN001
+            out_path = Path(cmd[-1])
+            out_path.write_bytes(b"RIFFfake")
+
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            return Result()
+
+        with tempfile.TemporaryDirectory(prefix="mango_gigaam_test_") as td:
+            src = Path(td) / "sample.mp3"
+            src.write_bytes(b"fake-mp3")
+            with patch.object(service, "_get_gigaam_model", return_value=FakeModel()):
+                with patch("mango_mvp.services.transcribe.shutil.which") as which_mock:
+                    which_mock.side_effect = (
+                        lambda name: None if name == "ffmpeg" else "/usr/bin/afconvert"
+                    )
+                    with patch("mango_mvp.services.transcribe.subprocess.run", side_effect=fake_run):
+                        result = service._transcribe_file_gigaam(src)
+
+        self.assertEqual(result["text"], "Привет мир")
+        self.assertEqual(result["segments"][0]["start"], 0.0)
 
 
 if __name__ == "__main__":

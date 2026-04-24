@@ -8,17 +8,20 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from openai import OpenAI
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
-from mango_mvp.utils.audio import split_stereo_to_mono
+from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
+from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
 
 TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 WORD_RE = re.compile(r"\w+", re.UNICODE)
@@ -34,7 +37,7 @@ Rules:
    - selection (one of: A, B, MIX)
    - confidence (number 0..1)
    - notes (string)
-No markdown, no extra keys."""
+Return a single-line minified JSON object. No markdown, no extra keys."""
 CODEX_MERGE_PROMPT_TEMPLATE = """You merge two ASR transcript variants for the same speaker in one phone call.
 Rules:
 1) Use only information from variants A and B. Do not invent facts.
@@ -45,7 +48,7 @@ Rules:
    - selection (one of: A, B, MIX)
    - confidence (number 0..1)
    - notes (string)
-No markdown, no extra keys.
+Return a single-line minified JSON object. No markdown, no extra keys.
 
 Speaker: {speaker_label}
 
@@ -96,6 +99,7 @@ ARTIFACT_ONLY_PHRASES = {
     "продолжение следует",
 }
 SECONDARY_BACKFILL_MAX_ATTEMPTS = 2
+TRANSCRIBE_MERGE_PROMPT_VERSION = "v2"
 
 
 class TranscribeService:
@@ -104,6 +108,10 @@ class TranscribeService:
         self._client: Optional[OpenAI] = None
         self._ollama_client_instance: Optional[OllamaClient] = None
         self._gigaam_model: Any = None
+        self._llm_cache = LLMResponseCache(
+            enabled=settings.llm_cache_enabled,
+            root_dir=settings.llm_cache_dir,
+        )
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -113,6 +121,137 @@ class TranscribeService:
         base = max(1, self._settings.retry_base_delay_sec)
         multiplier = max(1, 2 ** max(0, attempts - 1))
         return timedelta(seconds=base * multiplier)
+
+    @staticmethod
+    def _pipeline_worker_id(prefix: str) -> str:
+        return f"{prefix}-{datetime.now(timezone.utc).strftime('%H%M%S%f')}"
+
+    def _claim_transcribe_batch(self, session: Session, limit: int, worker_id: str) -> list[int]:
+        if limit <= 0:
+            return []
+        now = self._utc_now()
+        max_attempts = max(1, self._settings.transcribe_max_attempts)
+        release_stale_pipeline_claims(session, self._settings, now)
+        session.execute(
+            text(
+                """
+                UPDATE call_records
+                   SET transcription_status = 'in_progress',
+                       pipeline_stage = 'transcribe',
+                       pipeline_worker_id = :worker_id,
+                       pipeline_claimed_at = :now,
+                       updated_at = :now
+                 WHERE id IN (
+                    SELECT id
+                      FROM call_records
+                     WHERE dead_letter_stage IS NULL
+                       AND transcription_status IN ('pending', 'failed')
+                       AND transcribe_attempts < :max_attempts
+                       AND (next_retry_at IS NULL OR next_retry_at <= :now)
+                       AND pipeline_stage IS NULL
+                     ORDER BY id ASC
+                     LIMIT :limit
+                 )
+                """
+            ),
+            {
+                "worker_id": worker_id,
+                "now": now,
+                "max_attempts": max_attempts,
+                "limit": int(limit),
+            },
+        )
+        ids = [
+            int(row[0])
+            for row in session.execute(
+                text(
+                    """
+                    SELECT id
+                      FROM call_records
+                     WHERE transcription_status = 'in_progress'
+                       AND pipeline_stage = 'transcribe'
+                       AND pipeline_worker_id = :worker_id
+                     ORDER BY id ASC
+                    """
+                ),
+                {"worker_id": worker_id},
+            ).all()
+        ]
+        session.commit()
+        return ids
+
+    def _claim_secondary_backfill_batch(
+        self,
+        session: Session,
+        *,
+        limit: int,
+        worker_id: str,
+        secondary_provider: str,
+    ) -> list[int]:
+        if limit <= 0:
+            return []
+        now = self._utc_now()
+        release_stale_pipeline_claims(session, self._settings, now)
+        done_calls = session.scalars(
+            select(CallRecord)
+            .where(CallRecord.dead_letter_stage.is_(None))
+            .where(CallRecord.transcription_status == "done")
+            .where(CallRecord.pipeline_stage.is_(None))
+            .order_by(CallRecord.id.asc())
+        ).all()
+
+        fresh_ids: list[int] = []
+        retry_ids: list[int] = []
+        for call in done_calls:
+            state = self._secondary_backfill_state_from_payload(
+                self._safe_json_dict(call.transcript_variants_json),
+                secondary_provider=secondary_provider,
+            )
+            if state == "fresh":
+                fresh_ids.append(call.id)
+                if len(fresh_ids) >= limit:
+                    break
+            elif state == "retry" and len(retry_ids) < limit:
+                retry_ids.append(call.id)
+
+        candidate_ids = list(fresh_ids)
+        if len(candidate_ids) < limit:
+            candidate_ids.extend(retry_ids[: limit - len(candidate_ids)])
+        if not candidate_ids:
+            return []
+
+        ids_sql = ",".join(str(int(item)) for item in candidate_ids)
+        session.execute(
+            text(
+                f"""
+                UPDATE call_records
+                   SET pipeline_stage = 'backfill-second-asr',
+                       pipeline_worker_id = :worker_id,
+                       pipeline_claimed_at = :now,
+                       updated_at = :now
+                 WHERE id IN ({ids_sql})
+                   AND pipeline_stage IS NULL
+                """
+            ),
+            {"worker_id": worker_id, "now": now},
+        )
+        ids = [
+            int(row[0])
+            for row in session.execute(
+                text(
+                    """
+                    SELECT id
+                      FROM call_records
+                     WHERE pipeline_stage = 'backfill-second-asr'
+                       AND pipeline_worker_id = :worker_id
+                     ORDER BY id ASC
+                    """
+                ),
+                {"worker_id": worker_id},
+            ).all()
+        ]
+        session.commit()
+        return ids
 
     @staticmethod
     def _safe_json_dict(raw: Any) -> Dict[str, Any]:
@@ -240,6 +379,15 @@ class TranscribeService:
         return updated
 
     @staticmethod
+    def _merge_warning_lists(existing: Any, extra: list[str]) -> list[str]:
+        merged: list[str] = []
+        if isinstance(existing, list):
+            merged.extend(str(item).strip() for item in existing if str(item).strip())
+        merged.extend(str(item).strip() for item in extra if str(item).strip())
+        # Stable de-dupe keeps older warnings first.
+        return list(dict.fromkeys(merged))
+
+    @staticmethod
     def _variant_text_for_provider(
         block: Any,
         *,
@@ -328,6 +476,14 @@ class TranscribeService:
             fp16_encoder=False,
         )
         return self._gigaam_model
+
+    @staticmethod
+    def _parse_codex_tokens_used(stderr: str) -> int | None:
+        match = re.search(r"tokens used\s*([0-9\s\u00a0]+)", stderr or "", flags=re.I)
+        if not match:
+            return None
+        digits = "".join(ch for ch in match.group(1) if ch.isdigit())
+        return int(digits) if digits else None
 
     @staticmethod
     def _looks_like_phone(value: str) -> bool:
@@ -1478,6 +1634,21 @@ class TranscribeService:
         *,
         speaker_label: str,
     ) -> Dict[str, Any]:
+        prompt = CODEX_MERGE_PROMPT_TEMPLATE.format(
+            speaker_label=speaker_label,
+            variant_a=primary_text,
+            variant_b=secondary_text,
+        )
+        cached = self._llm_cache.get(
+            namespace="transcribe_merge",
+            provider="openai",
+            model=self._settings.openai_merge_model,
+            reasoning="temperature=0.0",
+            prompt_version=TRANSCRIBE_MERGE_PROMPT_VERSION,
+            prompt=prompt,
+        )
+        if cached is not None:
+            return cached
         client = self._openai_client()
         response = client.chat.completions.create(
             model=self._settings.openai_merge_model,
@@ -1485,16 +1656,7 @@ class TranscribeService:
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": MERGE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Speaker: {speaker_label}\n\n"
-                        "Variant A:\n"
-                        f"{primary_text}\n\n"
-                        "Variant B:\n"
-                        f"{secondary_text}"
-                    ),
-                },
+                {"role": "user", "content": prompt},
             ],
         )
         content = response.choices[0].message.content if response.choices else None
@@ -1515,13 +1677,23 @@ class TranscribeService:
         except (TypeError, ValueError):
             confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
-        return {
+        result = {
             "text": merged_text,
             "selection": selection,
             "confidence": confidence,
             "notes": str(payload.get("notes", "")).strip(),
             "provider": "openai",
         }
+        self._llm_cache.put(
+            namespace="transcribe_merge",
+            provider="openai",
+            model=self._settings.openai_merge_model,
+            reasoning="temperature=0.0",
+            prompt_version=TRANSCRIBE_MERGE_PROMPT_VERSION,
+            prompt=prompt,
+            response=result,
+        )
+        return result
 
     def _merge_with_ollama(
         self,
@@ -1530,19 +1702,30 @@ class TranscribeService:
         *,
         speaker_label: str,
     ) -> Dict[str, Any]:
+        user_prompt = (
+            f"Speaker: {speaker_label}\n\n"
+            "Variant A:\n"
+            f"{primary_text}\n\n"
+            "Variant B:\n"
+            f"{secondary_text}"
+        )
+        cached = self._llm_cache.get(
+            namespace="transcribe_merge",
+            provider="ollama",
+            model=self._settings.ollama_model,
+            reasoning=f"think={self._settings.ollama_think}",
+            prompt_version=TRANSCRIBE_MERGE_PROMPT_VERSION,
+            prompt=f"{MERGE_SYSTEM_PROMPT}\n\n{user_prompt}",
+        )
+        if cached is not None:
+            return cached
         client = self._ollama_client()
         payload = client.generate_json(
             model=self._settings.ollama_model,
             think=self._settings.ollama_think,
             temperature=self._settings.ollama_temperature,
             system_prompt=MERGE_SYSTEM_PROMPT,
-            user_prompt=(
-                f"Speaker: {speaker_label}\n\n"
-                "Variant A:\n"
-                f"{primary_text}\n\n"
-                "Variant B:\n"
-                f"{secondary_text}"
-            ),
+            user_prompt=user_prompt,
             num_predict=900,
         )
         if not isinstance(payload, dict):
@@ -1559,13 +1742,23 @@ class TranscribeService:
         except (TypeError, ValueError):
             confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
-        return {
+        result = {
             "text": merged_text,
             "selection": selection,
             "confidence": confidence,
             "notes": str(payload.get("notes", "")).strip(),
             "provider": "ollama",
         }
+        self._llm_cache.put(
+            namespace="transcribe_merge",
+            provider="ollama",
+            model=self._settings.ollama_model,
+            reasoning=f"think={self._settings.ollama_think}",
+            prompt_version=TRANSCRIBE_MERGE_PROMPT_VERSION,
+            prompt=f"{MERGE_SYSTEM_PROMPT}\n\n{user_prompt}",
+            response=result,
+        )
+        return result
 
     @staticmethod
     def _extract_json_payload(text: str) -> Dict[str, Any]:
@@ -1609,6 +1802,17 @@ class TranscribeService:
             variant_a=primary_text,
             variant_b=secondary_text,
         )
+        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        cached = self._llm_cache.get(
+            namespace="transcribe_merge",
+            provider="codex_cli",
+            model=self._settings.codex_transcribe_model,
+            reasoning=reasoning_effort,
+            prompt_version=TRANSCRIBE_MERGE_PROMPT_VERSION,
+            prompt=prompt,
+        )
+        if cached is not None:
+            return cached
         timeout_sec = max(15, int(self._settings.codex_cli_timeout_sec))
         with tempfile.NamedTemporaryFile(prefix="mango_codex_merge_", suffix=".txt") as out_file:
             cmd = [
@@ -1619,14 +1823,14 @@ class TranscribeService:
                 "--sandbox",
                 "read-only",
                 "--model",
-                self._settings.codex_merge_model,
+                self._settings.codex_transcribe_model,
                 "--output-last-message",
                 out_file.name,
             ]
-            reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
             if reasoning_effort in {"low", "medium", "high"}:
                 cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
             cmd.append(prompt)
+            started_at = time.time()
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -1634,6 +1838,7 @@ class TranscribeService:
                 check=False,
                 timeout=timeout_sec,
             )
+            elapsed_sec = time.time() - started_at
             if proc.returncode != 0:
                 stderr_tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
                 raise RuntimeError(
@@ -1654,13 +1859,25 @@ class TranscribeService:
         except (TypeError, ValueError):
             confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
-        return {
+        result = {
             "text": merged_text,
             "selection": selection,
             "confidence": confidence,
             "notes": str(payload.get("notes", "")).strip(),
             "provider": "codex_cli",
+            "tokens_used_actual": self._parse_codex_tokens_used(proc.stderr or ""),
+            "duration_sec": round(elapsed_sec, 3),
         }
+        self._llm_cache.put(
+            namespace="transcribe_merge",
+            provider="codex_cli",
+            model=self._settings.codex_transcribe_model,
+            reasoning=reasoning_effort,
+            prompt_version=TRANSCRIBE_MERGE_PROMPT_VERSION,
+            prompt=prompt,
+            response=result,
+        )
+        return result
 
     def _merge_variant_pair(
         self,
@@ -1811,55 +2028,86 @@ class TranscribeService:
         }
 
     def _transcribe_file_gigaam(self, path: Path) -> Dict[str, Any]:
-        ffmpeg_bin = shutil.which("ffmpeg")
-        if ffmpeg_bin is None:
-            raise RuntimeError("ffmpeg is required for gigaam transcribe provider")
-
+        ffmpeg_bin = resolve_ffmpeg_bin()
         model = self._get_gigaam_model()
         segment_sec = max(5, self._settings.gigaam_segment_sec)
         temp_dir = Path(tempfile.mkdtemp(prefix="mango_mvp_gigaam_"))
-        pattern = temp_dir / "chunk_%03d.wav"
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-i",
-            str(path),
-            "-f",
-            "segment",
-            "-segment_time",
-            str(segment_sec),
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-acodec",
-            "pcm_s16le",
-            str(pattern),
-        ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if result.returncode != 0:
-                raise RuntimeError(f"gigaam chunking failed: {result.stderr.strip()}")
-
-            chunks = sorted(temp_dir.glob("chunk_*.wav"))
-            if not chunks:
-                raise RuntimeError("gigaam chunking produced no chunks")
-
             parts: list[str] = []
             segments: list[dict[str, Any]] = []
-            for idx, chunk in enumerate(chunks):
-                chunk_text = str(model.transcribe(str(chunk))).strip()
-                if not chunk_text:
-                    continue
-                normalized_text = " ".join(chunk_text.split())
-                parts.append(normalized_text)
-                segments.append(
-                    {
-                        "start": float(idx * segment_sec),
-                        "end": float((idx + 1) * segment_sec),
-                        "text": normalized_text,
-                    }
-                )
+            if ffmpeg_bin is not None:
+                pattern = temp_dir / "chunk_%03d.wav"
+                cmd = [
+                    ffmpeg_bin,
+                    "-y",
+                    "-i",
+                    str(path),
+                    "-f",
+                    "segment",
+                    "-segment_time",
+                    str(segment_sec),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-acodec",
+                    "pcm_s16le",
+                    str(pattern),
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if result.returncode != 0:
+                    raise RuntimeError(f"gigaam chunking failed: {result.stderr.strip()}")
+
+                chunks = sorted(temp_dir.glob("chunk_*.wav"))
+                if not chunks:
+                    raise RuntimeError("gigaam chunking produced no chunks")
+
+                for idx, chunk in enumerate(chunks):
+                    chunk_text = str(model.transcribe(str(chunk))).strip()
+                    if not chunk_text:
+                        continue
+                    normalized_text = " ".join(chunk_text.split())
+                    parts.append(normalized_text)
+                    segments.append(
+                        {
+                            "start": float(idx * segment_sec),
+                            "end": float((idx + 1) * segment_sec),
+                            "text": normalized_text,
+                        }
+                    )
+            else:
+                afconvert_bin = shutil.which("afconvert")
+                if afconvert_bin is None:
+                    raise RuntimeError(
+                        "ffmpeg is required for gigaam transcribe provider "
+                        "(or afconvert on macOS as fallback)"
+                    )
+                converted = temp_dir / "full.wav"
+                cmd = [
+                    afconvert_bin,
+                    "-f",
+                    "WAVE",
+                    "-d",
+                    "LEI16@16000",
+                    "-c",
+                    "1",
+                    str(path),
+                    str(converted),
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if result.returncode != 0:
+                    raise RuntimeError(f"gigaam transcode failed: {result.stderr.strip()}")
+                chunk_text = str(model.transcribe(str(converted))).strip()
+                if chunk_text:
+                    normalized_text = " ".join(chunk_text.split())
+                    parts.append(normalized_text)
+                    segments.append(
+                        {
+                            "start": 0.0,
+                            "end": float(segment_sec),
+                            "text": normalized_text,
+                        }
+                    )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -2316,6 +2564,84 @@ class TranscribeService:
             "transcript_variants_json": json.dumps(variants_payload, ensure_ascii=False),
         }
 
+    def _backfill_secondary_only(self, call: CallRecord, *, secondary_provider: str) -> Dict[str, Any]:
+        path = Path(call.source_file)
+        payload = self._safe_json_dict(call.transcript_variants_json)
+        if not payload:
+            raise RuntimeError("secondary backfill requires transcript_variants_json payload")
+
+        mode = str(payload.get("mode") or "").strip()
+        updated_payload = dict(payload)
+        warnings: list[str] = []
+
+        if mode == "stereo":
+            manager = payload.get("manager")
+            client = payload.get("client")
+            if not isinstance(manager, dict) or not isinstance(client, dict):
+                raise RuntimeError("secondary backfill requires stereo role payload")
+            if path.suffix.lower() not in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}:
+                raise RuntimeError("secondary backfill stereo split requires supported audio extension")
+            split = split_stereo_to_mono(path)
+            if not split:
+                raise RuntimeError("secondary backfill stereo split failed")
+            left, right, temp_dir = split
+            try:
+                manager_secondary = self._try_transcribe_file_with_meta(
+                    left, provider=secondary_provider
+                )
+                client_secondary = self._try_transcribe_file_with_meta(
+                    right, provider=secondary_provider
+                )
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+            manager_error = str(manager_secondary.get("error") or "").strip()
+            client_error = str(client_secondary.get("error") or "").strip()
+            if manager_error:
+                warnings.append(f"manager_secondary_backfill: {manager_error}")
+            if client_error:
+                warnings.append(f"client_secondary_backfill: {client_error}")
+
+            manager_block = dict(manager)
+            client_block = dict(client)
+            manager_text = str(manager_secondary.get("text") or "").strip()
+            client_text = str(client_secondary.get("text") or "").strip()
+            if manager_text:
+                manager_block["variant_b"] = manager_text
+            if client_text:
+                client_block["variant_b"] = client_text
+            updated_payload["manager"] = manager_block
+            updated_payload["client"] = client_block
+        elif mode == "mono_or_fallback":
+            full = payload.get("full")
+            if not isinstance(full, dict):
+                raise RuntimeError("secondary backfill requires mono payload")
+            full_secondary = self._try_transcribe_file_with_meta(
+                path, provider=secondary_provider
+            )
+            full_error = str(full_secondary.get("error") or "").strip()
+            if full_error:
+                warnings.append(f"full_secondary_backfill: {full_error}")
+            full_block = dict(full)
+            full_text = str(full_secondary.get("text") or "").strip()
+            if full_text:
+                full_block["variant_b"] = full_text
+            updated_payload["full"] = full_block
+        else:
+            raise RuntimeError(f"secondary backfill does not support payload mode={mode or 'empty'}")
+
+        updated_payload["secondary_provider"] = secondary_provider
+        updated_payload["warnings"] = self._merge_warning_lists(
+            payload.get("warnings"),
+            warnings,
+        )
+        return {
+            "transcript_manager": call.transcript_manager,
+            "transcript_client": call.transcript_client,
+            "transcript_text": call.transcript_text,
+            "transcript_variants_json": json.dumps(updated_payload, ensure_ascii=False),
+        }
+
     def _call_needs_secondary_backfill(
         self,
         call: CallRecord,
@@ -2354,32 +2680,28 @@ class TranscribeService:
                 "skipped_config": 1,
             }
 
-        done_calls = session.scalars(
+        claim_worker_id = self._pipeline_worker_id("bf")
+        candidate_ids = self._claim_secondary_backfill_batch(
+            session,
+            limit=limit,
+            worker_id=claim_worker_id,
+            secondary_provider=secondary_provider,
+        )
+        candidates = session.scalars(
             select(CallRecord)
-            .where(CallRecord.dead_letter_stage.is_(None))
-            .where(CallRecord.transcription_status == "done")
+            .where(CallRecord.id.in_(candidate_ids))
             .order_by(CallRecord.id.asc())
-        ).all()
+        ).all() if candidate_ids else []
 
-        fresh_candidates: list[CallRecord] = []
-        retry_candidates: list[CallRecord] = []
         scanned_done = 0
-        for call in done_calls:
-            scanned_done += 1
-            state = self._secondary_backfill_state_from_payload(
-                self._safe_json_dict(call.transcript_variants_json),
-                secondary_provider=secondary_provider,
+        scanned_done = int(
+            session.scalar(
+                select(func.count(CallRecord.id))
+                .where(CallRecord.dead_letter_stage.is_(None))
+                .where(CallRecord.transcription_status == "done")
             )
-            if state == "fresh":
-                fresh_candidates.append(call)
-                if len(fresh_candidates) >= limit:
-                    break
-            elif state == "retry" and len(retry_candidates) < limit:
-                retry_candidates.append(call)
-
-        candidates = list(fresh_candidates)
-        if len(candidates) < limit:
-            candidates.extend(retry_candidates[: limit - len(candidates)])
+            or 0
+        )
 
         success = 0
         failed = 0
@@ -2394,12 +2716,13 @@ class TranscribeService:
             call.transcript_text = result["transcript_text"]
             call.transcript_variants_json = result.get("transcript_variants_json")
             call.transcription_status = "done"
-            call.resolve_status = "pending"
-            call.resolve_attempts = 0
-            call.resolve_json = None
-            call.resolve_quality_score = None
-            call.analysis_status = "pending"
-            call.sync_status = "pending"
+            # Secondary backfill should not silently wipe downstream progress.
+            if call.resolve_status in {"failed", ""} or call.resolve_status is None:
+                call.resolve_status = "pending"
+            if call.analysis_status in {"failed", ""} or call.analysis_status is None:
+                call.analysis_status = "pending"
+            if call.sync_status in {"failed", ""} or call.sync_status is None:
+                call.sync_status = "pending"
             call.next_retry_at = None
             call.dead_letter_stage = None
 
@@ -2432,7 +2755,10 @@ class TranscribeService:
             outcome = "success"
             error_text = ""
             try:
-                result = self._transcribe_call(call)
+                result = self._backfill_secondary_only(
+                    call,
+                    secondary_provider=secondary_provider,
+                )
                 result_payload = self._safe_json_dict(result.get("transcript_variants_json"))
                 backfill_state = self._secondary_backfill_state_from_payload(
                     result_payload,
@@ -2468,6 +2794,9 @@ class TranscribeService:
                     _assign_transcribe_result(call, result)
                     call.last_error = None
                     success += 1
+                call.pipeline_stage = None
+                call.pipeline_worker_id = None
+                call.pipeline_claimed_at = None
             except Exception as exc:  # noqa: BLE001
                 is_exhausted = attempts >= SECONDARY_BACKFILL_MAX_ATTEMPTS
                 failed += 1
@@ -2485,6 +2814,9 @@ class TranscribeService:
                 # Keep existing successful transcript intact when selective backfill fails.
                 call.transcription_status = "done"
                 call.last_error = f"backfill-second-asr: {exc}"
+                call.pipeline_stage = None
+                call.pipeline_worker_id = None
+                call.pipeline_claimed_at = None
                 if is_exhausted:
                     exhausted += 1
                     outcome = "exhausted"
@@ -2504,8 +2836,7 @@ class TranscribeService:
                     "error": error_text,
                 }
             )
-
-        session.commit()
+            session.commit()
         return {
             "processed": total,
             "success": success,
@@ -2524,6 +2855,7 @@ class TranscribeService:
                 "primary_provider": primary_provider,
                 "secondary_provider": secondary_provider or None,
                 "pending": 0,
+                "in_progress": 0,
                 "retry_pending": 0,
                 "exhausted": 0,
             }
@@ -2537,6 +2869,7 @@ class TranscribeService:
         ).all()
 
         pending = 0
+        in_progress = 0
         retry_pending = 0
         exhausted = 0
         for call in done_calls:
@@ -2544,7 +2877,9 @@ class TranscribeService:
                 self._safe_json_dict(call.transcript_variants_json),
                 secondary_provider=secondary_provider,
             )
-            if state in {"fresh", "retry"}:
+            if call.pipeline_stage == "backfill-second-asr" and state in {"fresh", "retry"}:
+                in_progress += 1
+            elif state in {"fresh", "retry"}:
                 pending += 1
                 if state == "retry":
                     retry_pending += 1
@@ -2556,8 +2891,36 @@ class TranscribeService:
             "primary_provider": primary_provider,
             "secondary_provider": secondary_provider,
             "pending": pending,
+            "in_progress": in_progress,
             "retry_pending": retry_pending,
             "exhausted": exhausted,
+        }
+
+    def count_primary_queue_state(self, session: Session) -> Dict[str, int]:
+        now = self._utc_now()
+        max_attempts = max(1, self._settings.transcribe_max_attempts)
+        ready_pending = int(
+            session.scalar(
+                select(func.count(CallRecord.id))
+                .where(CallRecord.dead_letter_stage.is_(None))
+                .where(CallRecord.transcription_status.in_(["pending", "failed"]))
+                .where(CallRecord.transcribe_attempts < max_attempts)
+                .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
+                .where(CallRecord.pipeline_stage.is_(None))
+            )
+            or 0
+        )
+        in_progress = int(
+            session.scalar(
+                select(func.count(CallRecord.id))
+                .where(CallRecord.transcription_status == "in_progress")
+                .where(CallRecord.pipeline_stage == "transcribe")
+            )
+            or 0
+        )
+        return {
+            "ready_pending": ready_pending,
+            "in_progress": in_progress,
         }
 
     def run(
@@ -2566,17 +2929,18 @@ class TranscribeService:
         limit: int,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, int]:
-        now = self._utc_now()
+        worker_id = self._pipeline_worker_id("tr")
+        claimed_ids = self._claim_transcribe_batch(session, limit=limit, worker_id=worker_id)
         max_attempts = max(1, self._settings.transcribe_max_attempts)
-        calls = session.scalars(
-            select(CallRecord)
-            .where(CallRecord.dead_letter_stage.is_(None))
-            .where(CallRecord.transcription_status.in_(["pending", "failed"]))
-            .where(CallRecord.transcribe_attempts < max_attempts)
-            .where(or_(CallRecord.next_retry_at.is_(None), CallRecord.next_retry_at <= now))
-            .order_by(CallRecord.id.asc())
-            .limit(limit)
-        ).all()
+        calls = (
+            session.scalars(
+                select(CallRecord)
+                .where(CallRecord.id.in_(claimed_ids))
+                .order_by(CallRecord.id.asc())
+            ).all()
+            if claimed_ids
+            else []
+        )
 
         success = 0
         failed = 0
@@ -2602,6 +2966,8 @@ class TranscribeService:
         )
 
         for idx, call in enumerate(calls, start=1):
+            if call.transcription_status != "in_progress" or call.pipeline_stage != "transcribe":
+                continue
             call.transcribe_attempts = int(call.transcribe_attempts or 0) + 1
             attempt = call.transcribe_attempts
             outcome = "success"
@@ -2623,6 +2989,9 @@ class TranscribeService:
                 call.next_retry_at = None
                 call.dead_letter_stage = None
                 call.last_error = None
+                call.pipeline_stage = None
+                call.pipeline_worker_id = None
+                call.pipeline_claimed_at = None
                 success += 1
             except Exception as exc:  # noqa: BLE001
                 call.last_error = f"transcribe: {exc}"
@@ -2630,9 +2999,15 @@ class TranscribeService:
                     call.transcription_status = "dead"
                     call.dead_letter_stage = "transcribe"
                     call.next_retry_at = None
+                    call.resolve_status = "skipped"
+                    call.analysis_status = "failed"
+                    call.sync_status = "failed"
                 else:
                     call.transcription_status = "failed"
                     call.next_retry_at = self._utc_now() + self._retry_delay(attempt)
+                call.pipeline_stage = None
+                call.pipeline_worker_id = None
+                call.pipeline_claimed_at = None
                 failed += 1
                 outcome = "failed"
                 error_text = str(exc)
@@ -2650,6 +3025,5 @@ class TranscribeService:
                     "error": error_text,
                 }
             )
-
-        session.commit()
+            session.commit()
         return {"processed": len(calls), "success": success, "failed": failed}

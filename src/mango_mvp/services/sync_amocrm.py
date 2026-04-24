@@ -11,6 +11,12 @@ from mango_mvp.clients.amocrm import AmoCRMClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
 
+LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE = (
+    "Legacy amoCRM contact sync is disabled by default. "
+    "Use the dedicated amocrm_runtime integration for current production work. "
+    "Set LEGACY_AMOCRM_SYNC_ENABLED=true only for an explicit maintenance run."
+)
+
 
 def _clean_text(value: Any) -> str | None:
     if value is None:
@@ -171,6 +177,12 @@ def _build_note_text(call: CallRecord, analysis: Dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def ensure_legacy_amocrm_sync_enabled(settings: Settings) -> None:
+    if settings.legacy_amocrm_sync_enabled:
+        return
+    raise RuntimeError(LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE)
+
+
 class AmoCRMSyncService:
     def __init__(self, settings: Settings):
         self._settings = settings
@@ -186,6 +198,7 @@ class AmoCRMSyncService:
         return timedelta(seconds=base * multiplier)
 
     def run(self, session: Session, limit: int) -> Dict[str, int]:
+        ensure_legacy_amocrm_sync_enabled(self._settings)
         now = self._utc_now()
         max_attempts = max(1, self._settings.sync_max_attempts)
         calls = session.scalars(

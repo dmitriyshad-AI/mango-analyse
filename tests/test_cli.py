@@ -10,13 +10,42 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from mango_mvp.cli import cmd_export_pilot_bundle, cmd_prepare_resolve_pilot
+from mango_mvp.cli import cmd_export_pilot_bundle, cmd_prepare_resolve_pilot, cmd_sync
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
+from mango_mvp.services.sync_amocrm import LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE
+from mango_mvp.services.worker import normalize_pipeline_stages
 from tests.test_dialogue_format import make_settings
 
 
 class PrepareResolvePilotCliTest(unittest.TestCase):
+    def test_worker_default_stages_exclude_legacy_sync(self) -> None:
+        self.assertEqual(
+            normalize_pipeline_stages(None),
+            ["transcribe", "backfill-second-asr", "resolve", "analyze"],
+        )
+        self.assertEqual(
+            normalize_pipeline_stages(["transcribe", "sync"]),
+            ["transcribe", "sync"],
+        )
+
+    def test_cmd_sync_requires_explicit_legacy_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_sync_disabled_") as td:
+            db_path = Path(td) / "sync_disabled.db"
+            settings = make_settings()
+            settings = replace(settings, database_url=f"sqlite:///{db_path}")
+            init_db(settings)
+
+            with patch("mango_mvp.cli.get_settings", return_value=settings):
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    rc = cmd_sync(Namespace(limit=10))
+
+            self.assertEqual(rc, 2)
+            payload = json.loads(out.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertIn(LEGACY_AMOCRM_SYNC_DISABLED_MESSAGE, payload["error"])
+
     def test_prepare_resolve_pilot_selects_real_calls_only(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_prepare_resolve_pilot_") as td:
             db_path = Path(td) / "pilot.db"

@@ -64,7 +64,6 @@ mango-mvp ingest --recordings-dir /absolute/path/to/mango_export --metadata-csv 
 mango-mvp transcribe --limit 100
 mango-mvp resolve --limit 100
 mango-mvp analyze --limit 100
-mango-mvp sync --limit 100
 mango-mvp worker --stage-limit 100
 mango-mvp requeue-dead --stage all --limit 1000
 mango-mvp reset-transcribe --only-missing-variants --only-done --limit 1000
@@ -88,6 +87,9 @@ mango-mvp worker --stage-limit 100 --poll-sec 10 --max-idle-cycles 0
 ```
 
 Set `--max-idle-cycles 0` for infinite loop mode.
+
+Legacy `sync` is no longer part of the default worker or `run-all` path. The current
+production amoCRM integration lives in `src/mango_mvp/amocrm_runtime/`.
 
 ## Metadata CSV (optional)
 
@@ -335,7 +337,7 @@ mango-mvp migrate-analysis-schema --only-done --limit 10000
 
 ## amoCRM sync
 
-Current sync logic:
+Legacy sync logic:
 
 - find contact by phone (`query` with last 10 digits)
 - add AI summary as contact note
@@ -347,6 +349,13 @@ Useful custom-field mappings:
 - `AMOCRM_STUDENT_GRADE_FIELD_ID`
 - `AMOCRM_TARGET_PRODUCT_FIELD_ID`
 - `AMOCRM_PERSONAL_OFFER_FIELD_ID`
+
+This path is deprecated and disabled by default. Enable it only for explicit maintenance
+runs:
+
+```bash
+LEGACY_AMOCRM_SYNC_ENABLED=true
+```
 
 Run safe test first:
 
@@ -399,7 +408,7 @@ From UI you can:
 - pick DB file and transcript output folder
 - pick backend Python and toggle `Use project src (dev mode)`
 - configure transcribe/merge/analyze modes
-- run stage buttons (`init-db`, `ingest`, `transcribe`, `analyze`, `sync`, `stats`)
+- run stage buttons (`init-db`, `ingest`, `transcribe`, `analyze`, `stats`; legacy `sync` only for explicit maintenance)
 - start/stop background worker
 
 ## Stable standalone runtime snapshot

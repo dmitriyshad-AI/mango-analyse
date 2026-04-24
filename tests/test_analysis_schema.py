@@ -88,6 +88,48 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertEqual(analysis["follow_up_score"], 72)
         self.assertGreaterEqual(len(analysis.get("evidence") or []), 1)
 
+    def test_normalize_analysis_preserves_prompt_quality_flags(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/call_prompt_metrics.mp3",
+            source_filename="2026-02-10__13-02-47__79161042660__Леонов Алексей_34.mp3",
+            phone="+79161042660",
+            manager_name="Леонов Алексей",
+        )
+        transcript = (
+            "[00:01.2] Клиент: Да, да, да.\n"
+            "[00:02.0] Клиент: Да, да, да.\n"
+            "[00:03.8] Менеджер: Отправим программу по математике в Telegram.\n"
+        )
+        raw = {
+            "history_summary": "Клиент запросил программу по математике.",
+            "structured_fields": {
+                "people": {"parent_fio": None, "child_fio": None},
+                "contacts": {"email": None, "phone_from_filename": None, "preferred_channel": "telegram"},
+                "student": {"grade_current": None, "school": None},
+                "interests": {"products": [], "format": [], "subjects": ["математика"], "exam_targets": []},
+                "commercial": {"price_sensitivity": None, "budget": None, "discount_interest": None},
+                "objections": [],
+                "next_step": {"action": "Отправить материалы", "due": None},
+                "lead_priority": "warm",
+            },
+            "quality_flags": {
+                "analyze_prompt_profile": "compact",
+                "analyze_prompt_compacted": True,
+                "analyze_transcript_chars_original": 120,
+                "analyze_transcript_chars_prompt": 96,
+                "analyze_transcript_chars_saved": 24,
+                "analyze_prompt_timestamps_removed_lines": 3,
+            },
+            "tags": [],
+        }
+
+        analysis = service._normalize_analysis(call, transcript, raw)
+        self.assertTrue(analysis["quality_flags"]["analyze_prompt_compacted"])
+        self.assertEqual(analysis["quality_flags"]["analyze_prompt_profile"], "compact")
+        self.assertEqual(analysis["quality_flags"]["analyze_transcript_chars_saved"], 24)
+        self.assertEqual(analysis["quality_flags"]["analyze_prompt_timestamps_removed_lines"], 3)
+
     def test_history_summary_rewrites_dialogue_dump_into_crm_story(self) -> None:
         service = AnalyzeService(make_settings())
         call = CallRecord(
@@ -113,6 +155,141 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertIn("менеджер Петрова Анна", summary_text)
         self.assertIn("Договорились:", summary_text)
         self.assertNotIn("[00:01.1]", summary_text)
+
+    def test_normalize_analysis_reclassifies_false_non_conversation_service_call(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/service.mp3",
+            source_filename="2026-03-08__11-22-33__79161234567__Петрова Анна_44.mp3",
+            phone="+79161234567",
+            manager_name="Петрова Анна",
+            started_at=datetime(2026, 3, 8, 11, 22, 33),
+        )
+        transcript = (
+            "[00:01.1] Менеджер: Подскажите, по оплате и расписанию на следующую неделю все удобно?\n"
+            "[00:04.0] Клиент: Оплату внесем завтра, а одно занятие нужно перенести.\n"
+        )
+        raw = {
+            "history_summary": "Звонок без содержательного диалога.",
+            "structured_fields": {
+                "people": {},
+                "contacts": {},
+                "student": {},
+                "interests": {"products": [], "format": [], "subjects": [], "exam_targets": []},
+                "commercial": {"price_sensitivity": None, "budget": None, "discount_interest": None},
+                "objections": [],
+                "next_step": {"action": "Уточнить информацию и сообщить клиенту", "due": None},
+                "lead_priority": "cold",
+            },
+            "follow_up_score": 0,
+            "follow_up_reason": "Нет содержательного диалога.",
+            "tags": ["non_conversation"],
+        }
+
+        analysis = service._normalize_analysis(call, transcript, raw)
+        self.assertNotIn("non_conversation", analysis["tags"])
+        self.assertIn("service_call", analysis["tags"])
+        self.assertEqual(analysis["quality_flags"]["call_type"], "service_call")
+        self.assertEqual(analysis["next_step"], "Уточнить информацию и сообщить клиенту")
+
+    def test_non_conversation_clears_incompatible_fields(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/empty.mp3",
+            source_filename="2026-03-08__11-22-33__79161234567__Петрова Анна_44.mp3",
+            phone="+79161234567",
+            manager_name="Петрова Анна",
+            started_at=datetime(2026, 3, 8, 11, 22, 33),
+        )
+        transcript = "Голосовой ассистент. Оставьте сообщение после сигнала."
+        raw = {
+            "history_summary": "Автоответчик",
+            "structured_fields": {
+                "people": {},
+                "contacts": {"email": "test@example.com", "preferred_channel": "email"},
+                "student": {"grade_current": "8", "school": "Школа 1"},
+                "interests": {
+                    "products": ["летний лагерь"],
+                    "format": ["онлайн"],
+                    "subjects": ["математика"],
+                    "exam_targets": [],
+                },
+                "commercial": {"price_sensitivity": "high", "budget": "до 100000", "discount_interest": True},
+                "objections": ["цена"],
+                "next_step": {"action": "Отправить материалы", "due": "2026-03-10"},
+                "lead_priority": "hot",
+            },
+            "target_product": "летний лагерь",
+            "follow_up_score": 80,
+            "follow_up_reason": "Надо отправить материалы.",
+            "tags": ["non_conversation"],
+        }
+
+        analysis = service._normalize_analysis(call, transcript, raw)
+        self.assertEqual(analysis["quality_flags"]["call_type"], "non_conversation")
+        self.assertEqual(analysis["follow_up_score"], 0)
+        self.assertIsNone(analysis["target_product"])
+        self.assertEqual(analysis["structured_fields"]["interests"]["products"], [])
+        self.assertIsNone(analysis["structured_fields"]["next_step"]["action"])
+        self.assertEqual(analysis["tags"], ["non_conversation"])
+
+    def test_normalize_analysis_marks_sales_without_product_and_next_step_for_review(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/review.mp3",
+            source_filename="2026-03-08__11-22-33__79161234567__Петрова Анна_44.mp3",
+            phone="+79161234567",
+            manager_name="Петрова Анна",
+            started_at=datetime(2026, 3, 8, 11, 22, 33),
+            duration_sec=46.0,
+        )
+        transcript = (
+            "[00:01.1] Менеджер: Добрый день, подскажите, вас интересует обучение по математике для 8 класса?\n"
+            "[00:04.0] Клиент: Да, хотим подобрать курс, но пока просто узнаем подробности и стоимость.\n"
+        )
+        raw = {
+            "history_summary": "Клиент интересуется обучением по математике для 8 класса и узнает подробности.",
+            "structured_fields": {
+                "people": {},
+                "contacts": {},
+                "student": {"grade_current": "8", "school": None},
+                "interests": {"products": [], "format": [], "subjects": ["математика"], "exam_targets": []},
+                "commercial": {"price_sensitivity": None, "budget": None, "discount_interest": None},
+                "objections": [],
+                "next_step": {"action": None, "due": None},
+                "lead_priority": "warm",
+            },
+            "follow_up_score": 58,
+            "follow_up_reason": "Есть интерес к обучению, но конкретный продукт и следующий шаг не зафиксированы.",
+            "tags": [],
+        }
+
+        analysis = service._normalize_analysis(call, transcript, raw)
+        self.assertEqual(analysis["quality_flags"]["call_type"], "sales_call")
+        self.assertTrue(analysis["quality_flags"]["needs_review"])
+        self.assertIn("sales_missing_product_and_next_step", analysis["quality_flags"]["review_reasons"])
+        self.assertTrue(analysis["needs_review"])
+
+    def test_normalize_analysis_marks_long_non_conversation_for_review(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/long_nonconv.mp3",
+            source_filename="2026-03-08__11-22-33__79161234567__Петрова Анна_44.mp3",
+            phone="+79161234567",
+            manager_name="Петрова Анна",
+            started_at=datetime(2026, 3, 8, 11, 22, 33),
+            duration_sec=42.0,
+        )
+        transcript = "Голосовой ассистент. Оставьте сообщение после сигнала."
+        raw = {
+            "history_summary": "Нецелевой звонок: автоответчик/короткий технический дозвон.",
+            "tags": ["non_conversation"],
+        }
+
+        analysis = service._normalize_analysis(call, transcript, raw)
+        self.assertEqual(analysis["quality_flags"]["call_type"], "non_conversation")
+        self.assertTrue(analysis["quality_flags"]["needs_review"])
+        self.assertIn("long_non_conversation", analysis["quality_flags"]["review_reasons"])
 
     def test_custom_fields_fallback_to_v2_blocks(self) -> None:
         settings = replace(
@@ -275,7 +452,11 @@ class AnalysisSchemaTest(unittest.TestCase):
             self.assertIn("Нужен контакт на этой неделе", content)
 
     def test_analyze_provider_codex_cli_routes_to_codex_method(self) -> None:
-        settings = replace(make_settings(), analyze_provider="codex_cli")
+        settings = replace(
+            make_settings(),
+            analyze_provider="codex_cli",
+            analyze_escalate_full_on_ambiguity=False,
+        )
         service = AnalyzeService(settings)
         call = CallRecord(
             source_file="/tmp/codex.mp3",
@@ -291,6 +472,98 @@ class AnalysisSchemaTest(unittest.TestCase):
             payload = service._analyze_text(call, text)
         self.assertEqual(payload.get("summary"), "ok")
         mocked.assert_called_once()
+
+    def test_migrate_analysis_schema_refreshes_export_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_migrate_export_") as td:
+            root = Path(td)
+            calls_dir = root / "calls"
+            calls_dir.mkdir(parents=True, exist_ok=True)
+            source = calls_dir / "a.mp3"
+            source.write_bytes(b"")
+            export_dir = root / "transcripts"
+            db_path = root / "migrate.db"
+
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                transcript_export_dir=str(export_dir),
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+
+            with session_factory() as session:
+                session.add(
+                    CallRecord(
+                        source_file=str(source),
+                        source_filename=source.name,
+                        phone="+79990000000",
+                        manager_name="Петрова Анна",
+                        started_at=datetime(2026, 3, 8, 11, 22, 33),
+                        transcription_status="done",
+                        resolve_status="done",
+                        analysis_status="done",
+                        transcript_text=(
+                            "[00:01.0] Менеджер: Подскажите, по оплате и расписанию на следующую неделю все удобно?\n"
+                            "[00:04.0] Клиент: Оплату внесем завтра, а одно занятие нужно перенести.\n"
+                        ),
+                        analysis_json=json.dumps(
+                            {
+                                "analysis_schema_version": "v2",
+                                "history_summary": "Звонок без содержательного диалога.",
+                                "structured_fields": {
+                                    "people": {},
+                                    "contacts": {},
+                                    "student": {},
+                                    "interests": {
+                                        "products": [],
+                                        "format": [],
+                                        "subjects": [],
+                                        "exam_targets": [],
+                                    },
+                                    "commercial": {
+                                        "price_sensitivity": None,
+                                        "budget": None,
+                                        "discount_interest": None,
+                                    },
+                                    "objections": [],
+                                    "next_step": {"action": "Уточнить информацию и сообщить клиенту", "due": None},
+                                    "lead_priority": "cold",
+                                },
+                                "follow_up_score": 0,
+                                "follow_up_reason": "Нет содержательного диалога.",
+                                "tags": ["non_conversation"],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+                session.commit()
+
+            old_get_settings = cli_module.get_settings
+            try:
+                cli_module.get_settings = lambda: settings  # type: ignore[assignment]
+                code = cli_module.cmd_migrate_analysis_schema(
+                    Namespace(
+                        limit=10,
+                        target_version="v2",
+                        only_done=True,
+                        dry_run=False,
+                        force=True,
+                    )
+                )
+            finally:
+                cli_module.get_settings = old_get_settings  # type: ignore[assignment]
+
+            self.assertEqual(code, 0)
+            base = export_dir / calls_dir.name / source.stem
+            summary_path = base.with_name(f"{source.stem}_history_summary.txt")
+            structured_path = base.with_name(f"{source.stem}_structured_fields.json")
+            self.assertTrue(summary_path.exists())
+            self.assertTrue(structured_path.exists())
+            summary_text = summary_path.read_text(encoding="utf-8")
+            structured = json.loads(structured_path.read_text(encoding="utf-8"))
+            self.assertIn("Петрова Анна", summary_text)
+            self.assertEqual(structured["next_step"]["action"], "Уточнить информацию и сообщить клиенту")
 
 
 if __name__ == "__main__":

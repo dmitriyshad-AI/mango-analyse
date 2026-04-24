@@ -16,7 +16,9 @@ if [[ ! -d "${VENV_DIR}" ]]; then
 fi
 
 if [[ "${MANGO_STABLE_SMOKE_ONLY:-0}" == "1" ]]; then
-  "${VENV_DIR}/bin/python" -c "import tkinter, mango_mvp.gui, mango_mvp.cli"
+  SMOKE_PYTHON_BIN="$(command -v python3)"
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${SMOKE_PYTHON_BIN}" -c "import tkinter, mango_mvp.gui, mango_mvp.cli"
   "${SCRIPT_DIR}/run-cli.sh" --help >/dev/null
   echo "Stable snapshot smoke check passed."
   exit 0

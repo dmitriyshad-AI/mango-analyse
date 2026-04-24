@@ -9,6 +9,9 @@ __pycache__/
 .coverage
 
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.db.bak_*
 *.sqlite
 .env
@@ -21,6 +24,10 @@ dist/
 .DS_Store
 
 # Local runtime/output artifacts
+.cache/
+.codex_local/
+.codex_workers/
+_local_archive_*/
 benchmarks/
 logs/
 transcripts/
@@ -28,13 +35,55 @@ transcripts_*/
 transcripts_semi_prod_*/
 stable_runtime/runs/
 stable_runtime/venv_stable/
+stable_runtime/venv_stable.broken_*/
 stable_runtime/*.db
+stable_runtime/backups/
+stable_runtime/ab_tests/
+stable_runtime/benchmarks/
+stable_runtime/audits/
 stable_runtime/pilots/
+stable_runtime/messages*/
+stable_runtime/history_*/
+stable_runtime/overnight_*/
+stable_runtime/night_asr_*/
+stable_runtime/recent_window_*/
+stable_runtime/top*_history_wave*/
+stable_runtime/top*_core_wave*/
+stable_runtime/sales_master_export_*/
+stable_runtime/amocrm_runtime/.env.private
+stable_runtime/amocrm_runtime/amo_runtime.db
+stable_runtime/amocrm_runtime/codex_home/
+stable_runtime/amocrm_runtime/contact_writebacks/
+stable_runtime/amocrm_runtime/deal_analysis/
+stable_runtime/amocrm_runtime/deal_writebacks/
+stable_runtime/amocrm_runtime/llm_cache/
+stable_runtime/amocrm_runtime/live_audit_*.json
+stable_runtime/amocrm_runtime/amocrm_random_contact_sample_*
+stable_runtime/amocrm_runtime/logs/
+stable_runtime/amocrm_runtime/ssh/
+stable_runtime/tallanto_runtime/
+stable_runtime/tallanto_snapshot_*/
+stable_runtime/migrations/reapply_rules_*/
 pilot_exports/
+test_runs/
+test_sets/
 
 # Local source data dumps
 2026-03-05-21-06-49-ч1/
 2026-03-05-21-06-49-ч2/
+2026-03-09--26/
+messages*/
+messages(*)
+messages*.zip
+telegram_exports*/
+mango_tallanto_transfer/
+prod_runtime_transfer/
+Contacts.xls
+tallanto_postman_collection.json
+sales_workbook.xlsx
+АКТУАЛЬНО_*.xlsx
+АКТУАЛЬНО_*.json
+ОТЧЕТ_*.xlsx
 
 sample_calls/
 

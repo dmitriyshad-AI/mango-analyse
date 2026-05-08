@@ -61,6 +61,7 @@ stable_runtime/pilot_sales_moment_llm_review_*/
 stable_runtime/sales_insight_knowledge_base_*/
 stable_runtime/rop_validation_pack_*/
 stable_runtime/claude_telegram_bot_data_audit_*/
+stable_runtime/claude_telegram_bot_transcript_audit_*/
 stable_runtime/resolve_analyze_*/
 stable_runtime/ra_missing_all_*/
 stable_runtime/project_audit_*/

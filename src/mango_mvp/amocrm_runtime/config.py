@@ -85,6 +85,7 @@ class Settings:
     crm_analysis_transcript_excerpt_chars: int
     crm_analysis_write_ai_office_field: bool
     crm_amo_deal_writeback_safe_mode: bool
+    agent_runtime_enabled: bool
 
 
 def _normalize_path(value: str) -> str:
@@ -302,5 +303,9 @@ def get_settings() -> Settings:
         crm_amo_deal_writeback_safe_mode=_parse_bool(
             os.getenv("CRM_AMO_DEAL_WRITEBACK_SAFE_MODE"),
             True,
+        ),
+        agent_runtime_enabled=_parse_bool(
+            os.getenv("AI_OFFICE_AGENT_RUNTIME_ENABLED"),
+            False,
         ),
     )

@@ -1535,6 +1535,8 @@ class ResolveService:
     def _rescue_provider(self) -> str:
         configured = (self._settings.resolve_rescue_provider or "").strip().lower()
         if configured:
+            if configured in {"none", "off", "disabled", "disable", "false", "0"}:
+                return ""
             return configured
         primary = (self._settings.transcribe_provider or "").strip().lower()
         secondary = (self._settings.secondary_transcribe_provider or "").strip().lower()
@@ -1548,6 +1550,8 @@ class ResolveService:
 
     def _run_rescue_asr(self, call: CallRecord) -> Optional[Dict[str, Any]]:
         provider = self._rescue_provider()
+        if not provider:
+            return None
         dual = bool(self._settings.resolve_rescue_dual_enabled)
         cache_key = (provider, dual)
         service = self._rescue_service_cache.get(cache_key)

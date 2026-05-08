@@ -289,6 +289,17 @@ class ResolveServiceTest(unittest.TestCase):
             self.assertTrue(rescue_called["value"])
             self.assertEqual(result["rescue_used"], 1)
 
+    def test_rescue_provider_none_disables_rescue_asr(self) -> None:
+        service = ResolveService(
+            replace(
+                make_settings(),
+                resolve_rescue_provider="none",
+            )
+        )
+
+        self.assertEqual(service._rescue_provider(), "")
+        self.assertIsNone(service._run_rescue_asr(CallRecord(source_file="a.mp3", source_filename="a.mp3")))
+
     def test_llm_runs_for_risky_ordering_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_resolve_llm_risky_") as td:
             db_path = Path(td) / "resolve_llm_risky.db"

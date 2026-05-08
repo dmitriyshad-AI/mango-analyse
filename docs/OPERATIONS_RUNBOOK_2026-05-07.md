@@ -26,6 +26,28 @@ make audit
 
 Warning по LibreSSL/urllib3 не блокирует локальную работу, но для server/SaaS runtime нужен управляемый Python с OpenSSL.
 
+## Safety matrix for scripts
+
+Перед запуском незнакомого скрипта проверять:
+
+```text
+docs/SCRIPT_SAFETY_MATRIX.md
+```
+
+Короткое правило:
+
+- `SAFE_READ_ONLY`, `SAFE_REPORT_WRITES`, `NETWORK_READ_ONLY` можно запускать для диагностики, если понятен output path.
+- `CONTROLLED_DOWNLOAD` запускать только в отдельную staging/inbox/quarantine папку.
+- `PROCESSING_MUTATES_DB` принадлежит processing-диалогу.
+- `CRM_LIVE_GUARDED` по умолчанию должен работать как dry-run/preview.
+- `DANGEROUS_LEGACY` не запускать без отдельного чтения кода и подтверждения.
+
+Для live-записи в amoCRM использовать только guarded команды с явным подтверждением:
+
+```zsh
+--execute-live-write --live-confirmation WRITE_AMO_LIVE
+```
+
 ## Проверка покрытия обработки
 
 Текущий финальный отчет:

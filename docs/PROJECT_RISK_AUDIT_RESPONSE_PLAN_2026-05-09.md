@@ -64,18 +64,18 @@
 | ID | Priority | Finding | Owner | Decision / solution | Verification | Status |
 |---|---|---|---|---|---|---|
 | RA-001 | P0 | Локальные secrets, `.env`, `*.env.private`, Codex auth snapshots, SSH key лежат внутри дерева проекта. | manual security | Для внутреннего этапа это принимается как рабочая схема. Улучшение: держать secrets в ignored-файлах, не коммитить, не включать в support bundles, сократить дубли snapshot secrets после подтверждения доступа. Ротацию делать перед внешним demo/client handoff. | `git ls-files` не должен показывать secrets; `git status --ignored` можно использовать для контроля; перед demo проверить support bundle на tokens. | accepted_risk_internal |
-| RA-002 | P0 | Нужен live CRM доступ для быстрой проверки результатов. | manual security + this dialog | Live доступ сохраняется. Требование к коду: live writeback entrypoints должны требовать явного флага/подтверждения, а по умолчанию работать как dry-run/preview или отказываться. | Тесты на отказ без explicit live flag; ручной smoke только на тестовом/ограниченном batch. | open |
-| RA-003 | P0 | `scripts/write_amo_ready_contacts.py` может выполнять live AMO writes без достаточного friction. | this dialog | Добавить обязательный явный флаг для live mode, понятный dry-run default, summary preview, возможно `--i-understand-live-amo-write`. | Unit/CLI test: без live-флага запись не вызывается; с dry-run формируется preview. | open |
-| RA-004 | P0 | `scripts/write_recent_actionable_deals.py` может выполнять live AMO writeback. | this dialog | Аналогично RA-003: dry-run default, explicit live confirmation, ограничение batch, audit output. | CLI tests с mock write function; проверка, что default не вызывает write. | open |
-| RA-005 | P0 | FastAPI `/deals/writeback` и `apply_writeback` могут стать live write entrypoints. | this dialog | Добавить/усилить policy gate: live write только при safe-mode policy, auth role, explicit payload confirmation и batch limit. По умолчанию preview/refuse. | `TestClient` tests: no key/no confirmation/safe mode -> отказ; preview route работает. | open |
+| RA-002 | P0 | Нужен live CRM доступ для быстрой проверки результатов. | manual security + this dialog | Live доступ сохранен, но live write entrypoints получили явное подтверждение. По умолчанию CLI writeback делает dry-run/preview, HTTP writeback отказывается без confirmation. | `tests/test_amo_writeback_guards.py`; ручной smoke только на тестовом/ограниченном batch. | done |
+| RA-003 | P0 | `scripts/write_amo_ready_contacts.py` может выполнять live AMO writes без достаточного friction. | this dialog | Добавлен dry-run default и live gate: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. | Unit tests проверяют default dry-run и отказ без confirmation. | done |
+| RA-004 | P0 | `scripts/write_recent_actionable_deals.py` может выполнять live AMO writeback. | this dialog | Добавлен dry-run default и live gate: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. | Unit tests проверяют default dry-run и отказ без confirmation. | done |
+| RA-005 | P0 | FastAPI `/deals/writeback` и `apply_writeback` могут стать live write entrypoints. | this dialog | Добавлен HTTP policy gate: live write только при `execute_live_write=true` и `live_confirmation=WRITE_AMO_LIVE`. | `TestClient` tests на отказ без confirmation и live path с mock write. | done |
 | RA-006 | P0 | Legacy `sync_amocrm` может писать notes/fields/tasks при env-флаге. | this dialog | Не удалять, но усилить документацию и tests: default disabled, live mode явно маркирован, в runbook указать как dangerous legacy. | Existing/added tests на disabled default и explicit env gate. | open |
 | RA-007 | P1 | `scripts/` вырос до 98 файлов, каталог описывает около 49. | this dialog | Обновить `docs/CLI_AND_SCRIPTS_CATALOG_2026-05-07.md` или создать canonical `docs/CLI_AND_SCRIPTS_CATALOG.md` со всеми scripts. | Script inventory command сравнивает количество с каталогом. | open |
-| RA-008 | P1 | Нет `SCRIPT_SAFETY_MATRIX.md`. | this dialog | Создать матрицу безопасности скриптов: read-only, writes files, writes DB, network, CRM, ASR/R+A, approval required, recommended/default command. | Review matrix; выборочные `--help`; grep dangerous operations. | open |
+| RA-008 | P1 | Нет `SCRIPT_SAFETY_MATRIX.md`. | this dialog | Создана матрица безопасности скриптов: read-only, report writes, DB/runtime, network, CRM, ASR/R+A, approval required, recommended/default command. | `docs/SCRIPT_SAFETY_MATRIX.md`; targeted tests для live write gates. | done |
 | RA-009 | P1 | README упоминает auto commit/push scripts как нормальный путь. | this dialog | Обновить README: auto commit/push scripts пометить historical/dangerous, нормальный workflow через ручной commit/push. | README review; grep `autocommit_push`. | open |
-| RA-010 | P1 | Runbook говорит про safety, но live write scripts существуют отдельно. | this dialog | В runbook добавить раздел "Dangerous commands" и связать его с safety matrix. | Docs review. | open |
+| RA-010 | P1 | Runbook говорит про safety, но live write scripts существуют отдельно. | this dialog | В runbook добавлен раздел safety matrix и правило live amoCRM confirmation. | Docs review; runbook links `docs/SCRIPT_SAFETY_MATRIX.md`. | done |
 | RA-011 | P1 | Нет canonical AMO/Tallanto field mapping и writeback policy. | this dialog | Создать `docs/AMO_TALLANTO_FIELD_MAPPING_PROD.md`: поля, владелец, allowed writes, dry-run/live rollout, rollback. | Review by owner; tests for mapping helpers later. | open |
 | RA-012 | P1 | Нет canonical `docs/ARCHITECTURE_CURRENT.md` и `docs/DATA_MODEL.md`. | this dialog | Создать текущую архитектуру и data model/status docs после принятия audit response, чтобы UI/API строились на понятных контрактах. | Docs review; links from development plan/runbook. | open |
-| RA-013 | P1 | Старый `mango_office_download_recordings.py` опаснее нового guarded downloader. | this dialog | В safety matrix и runbook рекомендовать guarded `mango_office_recording_capture_download.py`; старый downloader пометить legacy/dangerous. Код не удалять без отдельного решения. | Docs + optional CLI guard later. | open |
+| RA-013 | P1 | Старый `mango_office_download_recordings.py` опаснее нового guarded downloader. | this dialog | В safety matrix рекомендован guarded `mango_office_recording_capture_download.py`; старый downloader помечен `DANGEROUS_LEGACY`. Код не удалялся. | Docs review; optional CLI guard later. | done |
 | RA-014 | P1 | `make test-smoke` может запускать `stable_runtime/rebuild_snapshot.sh`. | this dialog | Пересмотреть Makefile/test-smoke: либо исключить unsafe smoke, либо явно назвать команду dangerous/integration. | `make test-smoke` review; tests not run if unsafe. | open |
 | RA-015 | P1 | `make audit` пишет в `stable_runtime/project_audit_*`. | this dialog | Решить: оставить как explicit local audit command или перенести default output в ignored `_local_archive`/`/private/tmp`. Документировать writes. | `--help`/docs; no surprise writes. | open |
 | RA-016 | P1 | Transcript quality/processing problems найдены отдельно. | processing dialog | Оставить processing-диалогу. Этот диалог не меняет processing modules, пока второй диалог активно правит качество обработки транскрибированных звонков. | Дождаться plan/results от processing-диалога; не конфликтовать по файлам. | in_progress_elsewhere |
@@ -94,7 +94,7 @@
 
 ## Recommended next work packages for this dialog
 
-### WP-1. Script Safety Matrix
+### WP-1. Script Safety Matrix - done
 
 Цель: создать `docs/SCRIPT_SAFETY_MATRIX.md`.
 
@@ -109,9 +109,10 @@ Scope:
 Почему первым: это не конфликтует с processing-диалогом и сразу уменьшает риск
 случайного запуска опасных команд.
 
-### WP-2. AMO writeback guards
+### WP-2. AMO writeback guards - done for current entrypoints
 
-Цель: закрыть RA-003, RA-004, RA-005, RA-006.
+Цель: закрыть RA-003, RA-004, RA-005. RA-006 остается отдельным follow-up,
+потому что legacy `sync_amocrm` требует отдельного review.
 
 Scope:
 
@@ -179,9 +180,10 @@ Processing-диалог владеет:
 
 Summary:
 
-- accepted internal risk: RA-001, RA-002 policy direction;
+- accepted internal risk: RA-001;
+- done in this pass: RA-002, RA-003, RA-004, RA-005, RA-008, RA-010, RA-013;
 - in progress elsewhere: RA-016;
-- ready for this dialog: RA-003 to RA-015, RA-021, RA-022, RA-025;
+- ready for this dialog: RA-006, RA-007, RA-009, RA-011, RA-012, RA-014, RA-015, RA-021, RA-022, RA-025;
 - deferred cleanup: RA-017 to RA-020, RA-023, RA-024, RA-026 to RA-028.
 
-Recommended immediate next step: WP-1 `docs/SCRIPT_SAFETY_MATRIX.md`.
+Recommended immediate next step: WP-3 `docs/AMO_TALLANTO_FIELD_MAPPING_PROD.md`.

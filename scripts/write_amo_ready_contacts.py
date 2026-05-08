@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,19 @@ ENV_FILES = (
     PROJECT_ROOT / "stable_runtime" / "amocrm_runtime" / ".env.private",
     PROJECT_ROOT / "prod_runtime_transfer" / ".env.private",
 )
+LIVE_WRITE_CONFIRMATION = "WRITE_AMO_LIVE"
+
+
+def _live_write_enabled(args: argparse.Namespace) -> bool:
+    execute_live_write = bool(getattr(args, "execute_live_write", False))
+    confirmation = str(getattr(args, "live_confirmation", "") or "").strip()
+    if execute_live_write and confirmation != LIVE_WRITE_CONFIRMATION:
+        raise ValueError(
+            f"Live amoCRM writeback requires --live-confirmation {LIVE_WRITE_CONFIRMATION!r}."
+        )
+    if confirmation and not execute_live_write:
+        raise ValueError("--live-confirmation is only valid together with --execute-live-write.")
+    return execute_live_write
 
 
 def _safe_text(value: Any) -> str:
@@ -163,7 +177,7 @@ def _call_with_retry(fn, *args, **kwargs):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Записать АКТУАЛЬНО_AMO_ready в контакты amoCRM.")
+    parser = argparse.ArgumentParser(description="Dry-run/live writeback АКТУАЛЬНО_AMO_ready в контакты amoCRM.")
     parser.add_argument("--input", default=str(DEFAULT_INPUT_XLSX), help="Путь к .xlsx/.csv с AMO_ready.")
     parser.add_argument("--limit", type=int, default=None, help="Ограничить число строк для записи.")
     parser.add_argument(
@@ -171,7 +185,22 @@ def main() -> int:
         default=None,
         help="JSON-отчет прошлого прогона; контакты со статусом written будут пропущены.",
     )
+    parser.add_argument(
+        "--execute-live-write",
+        action="store_true",
+        help="Разрешить live-запись в amoCRM. Без этого флага скрипт делает только dry-run отчет.",
+    )
+    parser.add_argument(
+        "--live-confirmation",
+        default="",
+        help=f"Контрольная строка для live-записи: {LIVE_WRITE_CONFIRMATION}.",
+    )
     args = parser.parse_args()
+    try:
+        live_write = _live_write_enabled(args)
+    except ValueError as exc:
+        print(f"Refusing live amoCRM writeback: {exc}", file=sys.stderr)
+        return 2
 
     _load_env_files()
 
@@ -200,12 +229,14 @@ def main() -> int:
             phone = normalize_phone(_safe_text(source_row.get("Телефон клиента")))
             report_row = {
                 "row_index": index,
+                "mode": "live_write" if live_write else "dry_run",
                 "phone": phone or _safe_text(source_row.get("Телефон клиента")),
                 "status": "",
                 "reason": "",
                 "contact_id": "",
                 "contact_name": "",
                 "updated_fields": [],
+                "preview_payload": {},
             }
             if not phone:
                 report_row["status"] = "skipped"
@@ -242,6 +273,16 @@ def main() -> int:
                 contact = contacts[0]
                 contact_id = int(contact.get("id") or 0)
                 contact_name = _safe_text(contact.get("name"))
+                if not live_write:
+                    report_row["status"] = "dry_run"
+                    report_row["reason"] = "live_write_not_confirmed"
+                    report_row["contact_id"] = contact_id
+                    report_row["contact_name"] = contact_name
+                    report_row["updated_fields"] = list(payload.keys())
+                    report_row["preview_payload"] = payload
+                    report_rows.append(report_row)
+                    continue
+
                 result = _call_with_retry(
                     send_contact_custom_field_update,
                     session,
@@ -261,16 +302,20 @@ def main() -> int:
             report_rows.append(report_row)
             if index % 25 == 0 or index == total:
                 written = sum(1 for row in report_rows if row["status"] == "written")
+                dry_run = sum(1 for row in report_rows if row["status"] == "dry_run")
                 failed = sum(1 for row in report_rows if row["status"] == "failed")
-                print(f"[{index}/{total}] written={written} failed={failed}", flush=True)
+                print(f"[{index}/{total}] written={written} dry_run={dry_run} failed={failed}", flush=True)
     finally:
         session.close()
 
     summary = {
         "run_id": run_id,
+        "mode": "live_write" if live_write else "dry_run",
+        "live_write": live_write,
         "input": str(input_path),
         "total_rows": len(rows),
         "written": sum(1 for row in report_rows if row["status"] == "written"),
+        "dry_run": sum(1 for row in report_rows if row["status"] == "dry_run"),
         "skipped": sum(1 for row in report_rows if row["status"] == "skipped"),
         "failed": sum(1 for row in report_rows if row["status"] == "failed"),
         "target_fields": list(TARGET_CONTACT_FIELDS),

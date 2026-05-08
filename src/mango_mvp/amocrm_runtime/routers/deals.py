@@ -17,6 +17,25 @@ from mango_mvp.amocrm_runtime.deals import (
 )
 
 router = APIRouter(prefix="/integrations/amocrm", tags=["amoCRM deals"])
+LIVE_WRITE_CONFIRMATION = "WRITE_AMO_LIVE"
+
+
+def _require_live_write_confirmation(payload: dict, *, action: str) -> None:
+    execute_live_write = bool(payload.get("execute_live_write", False))
+    confirmation = str(payload.get("live_confirmation") or "").strip()
+    if execute_live_write and confirmation == LIVE_WRITE_CONFIRMATION:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "live_write_confirmation_required",
+            "action": action,
+            "message": (
+                "Live amoCRM writeback requires execute_live_write=true and "
+                f"live_confirmation={LIVE_WRITE_CONFIRMATION!r}."
+            ),
+        },
+    )
 
 
 @router.get(
@@ -128,6 +147,7 @@ def amo_deal_writeback(
     analysis = payload.get("analysis")
     if not isinstance(analysis, dict):
         raise HTTPException(status_code=400, detail="analysis object is required")
+    _require_live_write_confirmation(payload, action="deals/writeback")
     try:
         result = write_analysis_to_lead(db, analysis=analysis)
         db.commit()
@@ -152,6 +172,8 @@ def amo_deal_queue_build(
 ) -> dict:
     days_back = payload.get("days_back")
     apply_writeback = bool(payload.get("apply_writeback", False))
+    if apply_writeback:
+        _require_live_write_confirmation(payload, action="deals/queue/build:apply_writeback")
     max_leads = payload.get("max_leads")
     try:
         summary = build_recent_closed_queue(

@@ -665,7 +665,50 @@ class MangoMvpGui(tk.Tk):
         self._bind_scroll_descendants(content, canvas)
         return content
 
+    def _build_pipeline_quick_actions(self, parent: ttk.Frame) -> None:
+        quick = ttk.LabelFrame(
+            parent,
+            text="Быстрые действия",
+            style="Card.TLabelframe",
+            padding=10,
+        )
+        quick.pack(fill=tk.X, padx=0, pady=(0, 6))
+        for col in range(4):
+            quick.columnconfigure(col, weight=1)
+
+        ttk.Button(
+            quick,
+            text="Обновить статус",
+            command=self.on_refresh_stats,
+            style="Primary.TButton",
+        ).grid(row=0, column=0, padx=4, pady=4, sticky="ew")
+        ttk.Button(
+            quick,
+            text="Параллельный pipeline старт",
+            command=self.on_parallel_pipeline_start,
+            style="Primary.TButton",
+        ).grid(row=0, column=1, padx=4, pady=4, sticky="ew")
+        ttk.Button(
+            quick,
+            text="Параллельный pipeline стоп",
+            command=self.on_parallel_pipeline_stop,
+            style="Primary.TButton",
+        ).grid(row=0, column=2, padx=4, pady=4, sticky="ew")
+        ttk.Label(
+            quick,
+            text="Старт использует выбранные ниже этапы конвейера.",
+            style="Muted.TLabel",
+        ).grid(row=0, column=3, padx=4, pady=4, sticky="w")
+        ttk.Label(
+            quick,
+            textvariable=self.parallel_pipeline_state,
+            style="Muted.TLabel",
+            wraplength=1220,
+            justify=tk.LEFT,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 2))
+
     def _build_pipeline_tab(self, parent: ttk.Frame) -> None:
+        self._build_pipeline_quick_actions(parent)
         content = self._make_scrollable_tab(parent)
         content.columnconfigure(0, weight=1)
         content.columnconfigure(1, weight=1)

@@ -161,6 +161,125 @@ class AnalyzeServiceTest(unittest.TestCase):
         self.assertEqual(service._detect_call_type(text), "service_call")
         self.assertFalse(service._is_non_conversation(text))
 
+    def test_detect_call_type_marks_virtual_secretary_as_non_conversation(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Добрый день.\n\n"
+            "CLIENT:\n"
+            "На связи я секретарь, временно попросили отвечать на звонки. "
+            "Абонент сейчас не может ответить."
+        )
+        self.assertEqual(service._detect_call_type(text), "non_conversation")
+        self.assertTrue(service._is_non_conversation(text))
+
+    def test_normalize_analysis_attaches_transcript_quality_guardrails_high_confidence(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Добрый день.\n\n"
+            "CLIENT:\n"
+            "Звонок был перенаправлен на голосовой почтовый ящик. "
+            "Оставьте сообщение после звукового сигнала. Продолжение следует."
+        )
+        call = CallRecord(
+            source_file="/tmp/voicemail.mp3",
+            source_filename="voicemail.mp3",
+            duration_sec=25,
+            transcript_text=text,
+        )
+
+        analysis = service._normalize_analysis(call, text, {})
+        quality = analysis["quality_flags"]
+        guardrails = quality["transcript_quality_guardrails"]
+
+        self.assertEqual(guardrails["mode"], "dry_run")
+        self.assertEqual(guardrails["label"], "non_conversation_high_confidence")
+        self.assertTrue(guardrails["should_force_non_conversation"])
+        self.assertEqual(guardrails["recommended_call_type"], "non_conversation")
+        self.assertEqual(quality["transcript_quality_label"], "non_conversation_high_confidence")
+        self.assertTrue(quality["transcript_quality_should_force_non_conversation"])
+
+    def test_normalize_analysis_marks_outbound_voicemail_subtype(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Добрый день, это учебный центр Фотон. Оставляю информацию по курсу подготовки к ЕГЭ "
+            "по математике, перезвоните нам, пожалуйста.\n\n"
+            "CLIENT:\n"
+            "Абонент сейчас не может ответить на ваш звонок. Оставьте сообщение после звукового сигнала."
+        )
+        call = CallRecord(
+            source_file="/tmp/outbound_voicemail.mp3",
+            source_filename="outbound_voicemail.mp3",
+            duration_sec=45,
+            transcript_text=text,
+        )
+
+        analysis = service._normalize_analysis(call, text, {"call_type": "sales_call", "tags": ["sales_call"]})
+        guardrails = analysis["quality_flags"]["transcript_quality_guardrails"]
+
+        self.assertEqual(guardrails["label"], "non_conversation_high_confidence")
+        self.assertTrue(guardrails["should_force_non_conversation"])
+        self.assertTrue(guardrails["outbound_voicemail_marker"])
+        self.assertEqual(guardrails["recommended_contact_subtype"], "outbound_voicemail")
+        self.assertIn("outbound_voicemail", guardrails["reason_codes"])
+
+    def test_normalize_analysis_quality_guardrails_protect_live_service_words(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Добрый день, я отправлю чек на почту и завтра перезвоню.\n\n"
+            "CLIENT:\n"
+            "Да, чек нужен на почту. Оплату внесли, но ссылка на занятие не работает, "
+            "помогите с доступом и расписанием."
+        )
+        call = CallRecord(
+            source_file="/tmp/live_service.mp3",
+            source_filename="live_service.mp3",
+            duration_sec=180,
+            transcript_text=text,
+        )
+
+        analysis = service._normalize_analysis(call, text, {})
+        guardrails = analysis["quality_flags"]["transcript_quality_guardrails"]
+
+        self.assertEqual(guardrails["mode"], "dry_run")
+        self.assertEqual(guardrails["label"], "contentful_protected_live_dialogue")
+        self.assertTrue(guardrails["protected_live_dialogue"])
+        self.assertFalse(guardrails["should_force_non_conversation"])
+        self.assertNotEqual(analysis["quality_flags"]["call_type"], "non_conversation")
+
+    def test_normalize_analysis_quality_guardrails_force_clear_no_live(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Добрый день, учебный центр.\n\n"
+            "CLIENT:\n"
+            "Абонент сейчас не может ответить на ваш звонок. Попробуйте перезвонить позднее."
+        )
+        call = CallRecord(
+            source_file="/tmp/borderline.mp3",
+            source_filename="borderline.mp3",
+            duration_sec=55,
+            transcript_text=text,
+        )
+
+        analysis = service._normalize_analysis(call, text, {})
+        quality = analysis["quality_flags"]
+        guardrails = quality["transcript_quality_guardrails"]
+
+        self.assertEqual(guardrails["mode"], "dry_run")
+        self.assertEqual(guardrails["label"], "non_conversation_high_confidence")
+        self.assertFalse(guardrails["requires_manual_review"])
+        self.assertTrue(guardrails["should_force_non_conversation"])
+        self.assertEqual(guardrails["recommended_call_type"], "non_conversation")
+        self.assertEqual(guardrails["recommended_contact_subtype"], "no_live_or_voicemail")
+        self.assertEqual(quality["call_type"], "non_conversation")
+        self.assertTrue(quality["non_conversation_hard_validation_applied"])
+        self.assertIsNone(analysis["next_step"])
+        self.assertEqual(analysis["follow_up_score"], 0)
+
     def test_detect_call_type_marks_existing_client_progress_not_sales_with_subjects(self) -> None:
         service = AnalyzeService(make_settings())
         text = (

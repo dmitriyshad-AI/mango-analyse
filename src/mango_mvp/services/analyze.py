@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from mango_mvp.clients.ollama import OllamaClient
 from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
+from mango_mvp.quality.non_conversation import detect_non_conversation_signals
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.utils.filename_repair import repair_manager_name
 
@@ -90,10 +91,30 @@ Return exactly these keys:
 STRONG_NON_CONVERSATION_MARKERS = (
     "продолжение следует",
     "голосовой ассистент",
+    "голосовой помощник",
+    "я секретарь",
+    "на связи я секретарь",
+    "ассистент миа",
+    "временно попросили отвечать",
     "абонент не может ответить",
+    "абонент временно недоступен",
+    "абонент занят",
+    "вызываемый абонент",
     "номер недоступен",
+    "вне зоны действия",
+    "телефон выключен",
+    "звонок был перенаправлен",
     "оставьте сообщение",
     "после сигнала",
+    "отправить бесплатное смс",
+    "нажмите 1",
+    "вас приветствует компания",
+    "все разговоры записываются",
+    "целевые финансы",
+    "7sky",
+    "сервис резерв",
+    "актив бизнес консалт",
+    "коллекторская организация",
 )
 
 WEAK_NON_CONVERSATION_MARKERS = (
@@ -140,6 +161,7 @@ CALL_TYPE_TAGS = {
 LATEST_ANALYSIS_SCHEMA_VERSION = "v2"
 ANALYZE_PROMPT_VERSION_COMPACT = "v6"
 ANALYZE_PROMPT_VERSION_FULL = "v6"
+TRANSCRIPT_QUALITY_GUARDRAILS_VERSION = "non_conversation_v4_live_safeguards"
 
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 GRADE_RE = re.compile(r"\b((?:[1-9]|1[0-1]))(?:-?й)?\s*класс(?:а)?\b", re.I)
@@ -804,6 +826,11 @@ class AnalyzeService:
 
     def _candidate_next_step_action(self, text: str) -> Optional[str]:
         lowered = (text or "").lower()
+        signals = detect_non_conversation_signals(transcript_text=text)
+        if signals.should_force_non_conversation or (
+            signals.strong_no_live_marker and not signals.protected_live_dialogue and signals.score <= 1
+        ):
+            return None
         if "перезвон" in lowered or "созвон" in lowered or "позвон" in lowered:
             return "Перезвонить клиенту"
         if re.search(r"ссылк\w*.*оплат|оплат\w*.*ссылк", lowered):
@@ -1008,6 +1035,9 @@ class AnalyzeService:
         raw = (text or "").strip()
         if not raw:
             return "non_conversation"
+        signals = detect_non_conversation_signals(transcript_text=raw)
+        if signals.should_force_non_conversation:
+            return "non_conversation"
         lowered = raw.lower()
         semantic_tags = {str(item).strip().lower() for item in (tags or []) if str(item).strip()}
         raw_sales_signal = self._has_meaningful_sales_signal(raw)
@@ -1116,6 +1146,143 @@ class AnalyzeService:
             "needs_review": bool(reasons),
             "review_reasons": self._unique(reasons),
         }
+
+    def _transcript_quality_guardrails(
+        self,
+        call: CallRecord,
+        *,
+        text: str,
+        history_summary: Optional[str],
+        call_type: str,
+        products: list[str],
+        subjects: list[str],
+        objections: list[str],
+        next_step_action: Optional[str],
+    ) -> Dict[str, Any]:
+        signals = detect_non_conversation_signals(
+            transcript_text=text,
+            history_summary=history_summary or "",
+            call_type=call_type,
+            next_step=next_step_action or "",
+            products=products,
+            subjects=subjects,
+            objections=objections,
+            duration_sec=getattr(call, "duration_sec", None),
+        )
+        return {
+            "version": TRANSCRIPT_QUALITY_GUARDRAILS_VERSION,
+            "mode": "dry_run",
+            "label": signals.label,
+            "score": signals.score,
+            "reason_codes": list(signals.reason_codes),
+            "strong_no_live_marker": signals.strong_no_live_marker,
+            "asr_artifact_marker": signals.asr_artifact_marker,
+            "system_no_dialogue_phrase": signals.system_no_dialogue_phrase,
+            "risky_keyword_marker": signals.risky_keyword_marker,
+            "outbound_voicemail_marker": signals.outbound_voicemail_marker,
+            "protected_live_dialogue": signals.protected_live_dialogue,
+            "should_force_non_conversation": signals.should_force_non_conversation,
+            "requires_manual_review": signals.requires_manual_review,
+            "recommended_call_type": signals.recommended_call_type,
+            "recommended_contentful": signals.recommended_contentful,
+            "recommended_contact_subtype": signals.recommended_contact_subtype,
+            "manager_chars": signals.manager_chars,
+            "client_chars": signals.client_chars,
+            "transcript_chars": signals.transcript_chars,
+        }
+
+    def _non_conversation_summary(self, call: CallRecord, *, contact_subtype: Optional[str] = None) -> str:
+        started_at = self._format_started_at(call.started_at) or "дата/время не указаны"
+        manager_name = self._clean_text(repair_manager_name(call.manager_name)) or "не указан"
+        reason = "автоответчик, IVR, голосовой ассистент или технический недозвон"
+        if contact_subtype == "outbound_voicemail":
+            reason = "менеджер оставил сообщение на автоответчике, живого диалога с клиентом не было"
+        return (
+            f"{started_at} менеджер {manager_name} пытался связаться с клиентом. "
+            f"Содержательного диалога не было: {reason}."
+        )
+
+    def _apply_non_conversation_hard_validation(
+        self,
+        call: CallRecord,
+        normalized: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        quality_flags = normalized.get("quality_flags")
+        if not isinstance(quality_flags, dict):
+            quality_flags = {}
+        if quality_flags.get("call_type") != "non_conversation":
+            return normalized
+
+        existing_structured = (
+            normalized.get("structured_fields") if isinstance(normalized.get("structured_fields"), dict) else {}
+        )
+        existing_contacts = (
+            existing_structured.get("contacts") if isinstance(existing_structured.get("contacts"), dict) else {}
+        )
+        phone_from_filename = self._clean_text(existing_contacts.get("phone_from_filename")) or self._clean_text(
+            call.phone
+        )
+
+        contact_subtype = self._clean_text(quality_flags.get("transcript_quality_recommended_contact_subtype"))
+        summary = self._non_conversation_summary(call, contact_subtype=contact_subtype)
+        structured_fields = {
+            "people": {
+                "parent_fio": None,
+                "child_fio": None,
+            },
+            "contacts": {
+                "email": None,
+                "phone_from_filename": phone_from_filename,
+                "preferred_channel": None,
+            },
+            "student": {
+                "grade_current": None,
+                "school": None,
+            },
+            "interests": {
+                "products": [],
+                "format": [],
+                "subjects": [],
+                "exam_targets": [],
+            },
+            "commercial": {
+                "price_sensitivity": None,
+                "budget": None,
+                "discount_interest": None,
+            },
+            "objections": [],
+            "next_step": {
+                "action": None,
+                "due": None,
+            },
+            "lead_priority": "cold",
+        }
+
+        quality_flags["call_type"] = "non_conversation"
+        quality_flags["non_conversation_hard_validation_applied"] = True
+        normalized.update(
+            {
+                "history_summary": summary,
+                "structured_fields": structured_fields,
+                "history_short": summary,
+                "crm_blocks": structured_fields,
+                "summary": "Нет содержательного диалога менеджер-клиент для анализа продаж.",
+                "interests": [],
+                "student_grade": None,
+                "target_product": None,
+                "personal_offer": None,
+                "pain_points": [],
+                "budget": None,
+                "timeline": None,
+                "objections": [],
+                "next_step": None,
+                "follow_up_score": 0,
+                "follow_up_reason": "Нет содержательного диалога менеджер-клиент для анализа продаж.",
+                "tags": ["non_conversation"],
+                "quality_flags": quality_flags,
+            }
+        )
+        return normalized
 
     def _clean_history_summary_draft(self, call: CallRecord, draft: str) -> str:
         cleaned = self._clean_text(draft) or ""
@@ -1501,12 +1668,25 @@ class AnalyzeService:
             raw.get("next_step")
         )
         next_step_action = self._normalize_next_step_action(next_step_action)
+        next_step_signals = detect_non_conversation_signals(
+            transcript_text=text,
+            duration_sec=getattr(call, "duration_sec", None),
+        )
+        allow_heuristic_next_step = not (
+            next_step_signals.should_force_non_conversation
+            or (
+                next_step_signals.strong_no_live_marker
+                and not next_step_signals.protected_live_dialogue
+                and next_step_signals.score <= 1
+            )
+        )
         if (
             not next_step_action
+            and allow_heuristic_next_step
             and ("перезвон" in text.lower() or "созвон" in text.lower() or "позвон" in text.lower())
         ):
             next_step_action = "Перезвонить клиенту"
-        if not next_step_action and "отправ" in text.lower():
+        if not next_step_action and allow_heuristic_next_step and "отправ" in text.lower():
             next_step_action = "Отправить материалы"
 
         score = self._coerce_score(raw.get("follow_up_score"))
@@ -1647,6 +1827,38 @@ class AnalyzeService:
         if not history_short or self._looks_like_dialogue_dump(history_short):
             history_short = history_summary
 
+        transcript_quality_guardrails = self._transcript_quality_guardrails(
+            call,
+            text=text,
+            history_summary=history_summary,
+            call_type=call_type,
+            products=products,
+            subjects=subjects,
+            objections=objections,
+            next_step_action=next_step_action,
+        )
+        quality_flags["transcript_quality_guardrails"] = transcript_quality_guardrails
+        quality_flags["transcript_quality_guardrails_version"] = transcript_quality_guardrails["version"]
+        quality_flags["transcript_quality_guardrails_mode"] = transcript_quality_guardrails["mode"]
+        quality_flags["transcript_quality_label"] = transcript_quality_guardrails["label"]
+        quality_flags["transcript_quality_score"] = transcript_quality_guardrails["score"]
+        quality_flags["transcript_quality_reason_codes"] = transcript_quality_guardrails["reason_codes"]
+        quality_flags["transcript_quality_should_force_non_conversation"] = transcript_quality_guardrails[
+            "should_force_non_conversation"
+        ]
+        quality_flags["transcript_quality_requires_manual_review"] = transcript_quality_guardrails[
+            "requires_manual_review"
+        ]
+        quality_flags["transcript_quality_protected_live_dialogue"] = transcript_quality_guardrails[
+            "protected_live_dialogue"
+        ]
+        quality_flags["transcript_quality_recommended_call_type"] = transcript_quality_guardrails[
+            "recommended_call_type"
+        ]
+        quality_flags["transcript_quality_recommended_contact_subtype"] = transcript_quality_guardrails[
+            "recommended_contact_subtype"
+        ]
+
         review_flags = self._build_review_flags(
             call,
             text=text,
@@ -1686,7 +1898,7 @@ class AnalyzeService:
             "needs_review": bool(review_flags["needs_review"]),
             "review_reasons": review_flags["review_reasons"],
         }
-        return normalized
+        return self._apply_non_conversation_hard_validation(call, normalized)
 
     @staticmethod
     def analysis_schema_version(payload: Dict[str, Any]) -> str:
@@ -1729,7 +1941,9 @@ class AnalyzeService:
     def _is_non_conversation(self, text: str) -> bool:
         return self._detect_call_type(text) == "non_conversation"
 
-    def _non_conversation_analysis(self) -> Dict[str, Any]:
+    def _non_conversation_analysis(self, signals: Optional[Any] = None) -> Dict[str, Any]:
+        reason_codes = list(getattr(signals, "reason_codes", ()) or ())
+        contact_subtype = getattr(signals, "recommended_contact_subtype", None)
         return {
             "summary": "Нецелевой звонок: автоответчик/короткий технический дозвон.",
             "interests": [],
@@ -1744,6 +1958,18 @@ class AnalyzeService:
             "follow_up_score": 0,
             "follow_up_reason": "Нет содержательного диалога менеджер-клиент для анализа продаж.",
             "tags": ["non_conversation"],
+            "quality_flags": {
+                "pre_llm_non_conversation_gate": bool(signals is not None),
+                "transcript_quality_guardrails_version": TRANSCRIPT_QUALITY_GUARDRAILS_VERSION,
+                "transcript_quality_label": getattr(signals, "label", None),
+                "transcript_quality_score": getattr(signals, "score", None),
+                "transcript_quality_reason_codes": reason_codes,
+                "transcript_quality_should_force_non_conversation": bool(
+                    getattr(signals, "should_force_non_conversation", False)
+                ),
+                "transcript_quality_recommended_call_type": getattr(signals, "recommended_call_type", None),
+                "transcript_quality_recommended_contact_subtype": contact_subtype,
+            },
         }
 
     def _openai_analysis(self, call: CallRecord, text: str, profile: Optional[str] = None) -> Dict[str, Any]:
@@ -1948,6 +2174,12 @@ class AnalyzeService:
         raise RuntimeError(last_error or "Codex analysis failed")
 
     def _analyze_text(self, call: CallRecord, text: str) -> Dict[str, Any]:
+        signals = detect_non_conversation_signals(
+            transcript_text=text,
+            duration_sec=getattr(call, "duration_sec", None),
+        )
+        if signals.should_force_non_conversation:
+            return self._non_conversation_analysis(signals)
         if self._is_non_conversation(text):
             return self._non_conversation_analysis()
         provider = self._settings.analyze_provider

@@ -233,6 +233,51 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertIsNone(analysis["structured_fields"]["next_step"]["action"])
         self.assertEqual(analysis["tags"], ["non_conversation"])
 
+    def test_non_conversation_hard_validation_rewrites_invented_sales_payload(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/voicemail.mp3",
+            source_filename="2026-03-08__11-22-33__79161234567__Петрова Анна_44.mp3",
+            phone="+79161234567",
+            manager_name="Петрова Анна",
+            started_at=datetime(2026, 3, 8, 11, 22, 33),
+            duration_sec=24.0,
+        )
+        transcript = (
+            "MANAGER:\n"
+            "Добрый день, это Фотон, хотели рассказать про летний лагерь.\n\n"
+            "CLIENT:\n"
+            "Абонент сейчас не может ответить на ваш звонок. Оставьте сообщение после звукового сигнала."
+        )
+        raw = {
+            "history_summary": "Клиент заинтересовался летним лагерем и попросил отправить ссылку на оплату.",
+            "structured_fields": {
+                "people": {"parent_fio": "Иванова Анна", "child_fio": "Петр"},
+                "contacts": {"email": "test@example.com", "preferred_channel": "telegram"},
+                "student": {"grade_current": "7", "school": "Школа 1"},
+                "interests": {"products": ["летний лагерь"], "format": [], "subjects": ["математика"], "exam_targets": []},
+                "commercial": {"price_sensitivity": "high", "budget": "до 100000", "discount_interest": True},
+                "objections": ["цена"],
+                "next_step": {"action": "Отправить ссылку на оплату", "due": "завтра"},
+                "lead_priority": "hot",
+            },
+            "target_product": "летний лагерь",
+            "follow_up_score": 90,
+            "tags": ["sales_call"],
+        }
+
+        analysis = service._normalize_analysis(call, transcript, raw)
+
+        self.assertEqual(analysis["quality_flags"]["call_type"], "non_conversation")
+        self.assertTrue(analysis["quality_flags"]["non_conversation_hard_validation_applied"])
+        self.assertNotIn("летний лагерь", analysis["history_summary"].lower())
+        self.assertNotIn("ссылку на оплату", analysis["history_summary"].lower())
+        self.assertEqual(analysis["follow_up_score"], 0)
+        self.assertIsNone(analysis["next_step"])
+        self.assertEqual(analysis["structured_fields"]["interests"]["products"], [])
+        self.assertEqual(analysis["structured_fields"]["objections"], [])
+        self.assertEqual(analysis["structured_fields"]["contacts"]["phone_from_filename"], "+79161234567")
+
     def test_normalize_analysis_marks_sales_without_product_and_next_step_for_review(self) -> None:
         service = AnalyzeService(make_settings())
         call = CallRecord(
@@ -472,6 +517,35 @@ class AnalysisSchemaTest(unittest.TestCase):
             payload = service._analyze_text(call, text)
         self.assertEqual(payload.get("summary"), "ok")
         mocked.assert_called_once()
+
+    def test_analyze_text_pre_llm_gate_skips_codex_for_no_live_call(self) -> None:
+        settings = replace(
+            make_settings(),
+            analyze_provider="codex_cli",
+            analyze_escalate_full_on_ambiguity=True,
+        )
+        service = AnalyzeService(settings)
+        call = CallRecord(
+            source_file="/tmp/voicemail.mp3",
+            source_filename="voicemail.mp3",
+            manager_name="Смирнов Иван",
+            duration_sec=18.0,
+        )
+        text = (
+            "MANAGER:\n"
+            "Добрый день, это учебный центр Фотон.\n\n"
+            "CLIENT:\n"
+            "Абонент сейчас не может ответить на ваш звонок. Оставьте сообщение после звукового сигнала."
+        )
+
+        with patch.object(service, "_codex_cli_analysis", return_value={"summary": "should not be called"}) as mocked:
+            payload = service._analyze_text(call, text)
+
+        mocked.assert_not_called()
+        self.assertEqual(payload["tags"], ["non_conversation"])
+        self.assertEqual(payload["follow_up_score"], 0)
+        self.assertTrue(payload["quality_flags"]["pre_llm_non_conversation_gate"])
+        self.assertTrue(payload["quality_flags"]["transcript_quality_should_force_non_conversation"])
 
     def test_migrate_analysis_schema_refreshes_export_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_migrate_export_") as td:

@@ -7,6 +7,7 @@ from mango_mvp.insights.pilot_extraction import (
     infer_customer_signal,
     infer_hidden_sales_stage,
     parse_role_blocks,
+    sales_moment_exclusion_reason,
     score_manager_response,
     select_calls_for_client,
     split_sentences,
@@ -113,3 +114,52 @@ def test_ideal_reaction_for_next_year_interest_mentions_follow_up() -> None:
 
     assert "следующий год" in reaction
     assert "следующий учебный год" in template
+
+
+def test_sales_moment_exclusion_filters_no_live_technical_call() -> None:
+    call = {
+        "source_filename": "no_live.mp3",
+        "phone": "79990000000",
+        "started_at": "2026-04-14 16:11:16",
+        "manager_name": "Менеджер",
+        "call_type": "technical_call",
+        "history_summary": "Абонент сейчас не может ответить на звонок, живого диалога не было.",
+    }
+    db_record = {
+        "duration_sec": 14.4,
+        "transcript_text": (
+            "MANAGER: Продолжение следует...\n"
+            "CLIENT: Абонент сейчас не может ответить на ваш звонок. Его телефон занят. "
+            "Попробуйте перезвонить позднее."
+        ),
+        "analysis_json": "{}",
+    }
+
+    exclusion = sales_moment_exclusion_reason({"final_outcome_label": "open_sales_potential"}, call, db_record)
+
+    assert exclusion is not None
+    assert exclusion["exclusion_reason"] == "no_live_or_voicemail_not_safe_for_sales_kb"
+
+
+def test_sales_moment_exclusion_keeps_bridge_artifact_with_live_dialogue() -> None:
+    call = {
+        "source_filename": "bridge_live.mp3",
+        "phone": "79990000000",
+        "started_at": "2026-03-28 12:38:50",
+        "manager_name": "Менеджер",
+        "call_type": "sales_call",
+        "history_summary": "Клиент спросил про курс, формат, расписание и стоимость; менеджер предложил варианты.",
+        "products": "летняя школа",
+        "subjects": "математика",
+    }
+    db_record = {
+        "duration_sec": 180,
+        "transcript_text": (
+            "MANAGER: Продолжаем дозваниваться. Оставайтесь на линии. Алло, добрый день, учебный центр.\n"
+            "CLIENT: Здравствуйте, интересует летняя школа по математике, какой формат и сколько стоит?\n"
+            "MANAGER: Расскажу варианты, расписание и стоимость, затем отправлю материалы."
+        ),
+        "analysis_json": "{}",
+    }
+
+    assert sales_moment_exclusion_reason({"final_outcome_label": "open_sales_potential"}, call, db_record) is None

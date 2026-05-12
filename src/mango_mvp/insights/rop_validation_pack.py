@@ -29,6 +29,16 @@ REVIEW_COLUMNS = [
     "Вопрос клиента",
     "Ответ менеджера",
     "Идеальный ответ",
+    "Идеальный ответ для менеджера",
+    "Безопасный ответ для бота",
+    "Статус sanitizer",
+    "Флаги sanitizer",
+    "Риск бренда",
+    "Риск цены/скидки",
+    "Риск рассрочки",
+    "Риск договора/возврата",
+    "Риск срока/обещания",
+    "Риск персональных данных",
     "Что хорошо",
     "Что упущено",
     "Риски",
@@ -53,21 +63,24 @@ def build_rop_validation_pack(config: ROPValidationPackConfig) -> dict[str, Any]
     out_root = config.out_root.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     enriched = read_csv(config.kb_root / "enriched_reviews.csv")
+    reviewable = [row for row in enriched if is_reviewable_business_row(row)]
+    excluded_from_validation = [row for row in enriched if not is_reviewable_business_row(row)]
 
     top_answers = select_diverse_rows(
-        [row for row in enriched if clean(row.get("commercial_usefulness")) == "playbook_candidate"],
+        [row for row in reviewable if clean(row.get("commercial_usefulness")) == "playbook_candidate"],
         limit=config.top_answers_limit,
         caps={"signal_ru": 12, "answer_pattern_ru": 22, "manager_name": 12},
     )
-    revenue_risks = sorted_revenue_risks([row for row in enriched if clean(row.get("commercial_usefulness")) == "revenue_leakage_risk"])
-    process_problems = sorted_rows([row for row in enriched if clean(row.get("commercial_usefulness")) == "process_fix_needed"], ascending=True)
+    revenue_risks = sorted_revenue_risks([row for row in reviewable if clean(row.get("commercial_usefulness")) == "revenue_leakage_risk"])
+    process_problems = sorted_rows([row for row in reviewable if clean(row.get("commercial_usefulness")) == "process_fix_needed"], ascending=True)
     bot_seeds = select_diverse_rows(
         [
             row
-            for row in enriched
+            for row in reviewable
             if clean(row.get("bot_seed_status")) in {"ready_for_bot_draft", "needs_rop_validation"}
             and clean(row.get("answer_pattern")) != "no_live_contact_or_voicemail"
-            and clean(row.get("ideal_answer_example"))
+            and clean(row.get("bot_safe_answer"))
+            and clean(row.get("bot_safety_status")) != "blocked_unresolved_safety_risk"
         ],
         limit=config.bot_seeds_limit,
         caps={"signal_ru": 14, "answer_pattern_ru": 28, "manager_name": 18},
@@ -87,6 +100,7 @@ def build_rop_validation_pack(config: ROPValidationPackConfig) -> dict[str, Any]
         "Риски потери выручки": [validation_row(row, "Риск потери выручки") for row in revenue_risks],
         "Процессные проблемы": [validation_row(row, "Процессная проблема") for row in process_problems],
         "Черновики для бота": [validation_row(row, "Черновик для бота") for row in bot_seeds],
+        "Исключено из проверки": [excluded_row(row) for row in excluded_from_validation],
         "Сводка": summary_rows(enriched, top_answers, revenue_risks, process_problems, bot_seeds),
     }
 
@@ -107,6 +121,8 @@ def build_rop_validation_pack(config: ROPValidationPackConfig) -> dict[str, Any]
         "kb_root": str(config.kb_root.resolve()),
         "totals": {
             "source_reviews": len(enriched),
+            "reviewable_business_rows": len(reviewable),
+            "excluded_from_validation": len(excluded_from_validation),
             "top_answers_for_validation": len(top_answers),
             "revenue_risks_for_validation": len(revenue_risks),
             "process_problems_for_validation": len(process_problems),
@@ -122,6 +138,45 @@ def build_rop_validation_pack(config: ROPValidationPackConfig) -> dict[str, Any]
     }
     (out_root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
+
+
+def is_reviewable_business_row(row: dict[str, Any]) -> bool:
+    trust_status = clean(row.get("review_trust_status"))
+    if trust_status and trust_status != "trusted_llm_review":
+        return False
+    return not is_no_dialogue_or_artifact(row)
+
+
+def is_no_dialogue_or_artifact(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            clean(row.get("answer_pattern")),
+            clean(row.get("answer_pattern_ru")),
+            clean(row.get("customer_question")),
+            clean(row.get("manager_answer")),
+            clean(row.get("ideal_answer_example")),
+            clean(row.get("what_manager_missed")),
+            clean(row.get("risk_flags")),
+        ]
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "no_live_contact_or_voicemail",
+            "не было живого контакта",
+            "автоответчик",
+            "недозвон",
+            "абонент недоступен",
+            "voicemail",
+            "asr-мусор",
+            "asr мусор",
+            "продолжение следует",
+            "субтитры сделал",
+            "редактор субтитров",
+            "thank you for watching",
+            "norske lagerforskning",
+        )
+    )
 
 
 def instruction_rows(
@@ -176,6 +231,19 @@ def build_combined_review_rows(groups: list[tuple[str, list[dict[str, Any]]]]) -
     return [validation_row(row, " / ".join(categories[clean(row.get("moment_id"))])) for row in ranked]
 
 
+def excluded_row(row: dict[str, Any]) -> dict[str, Any]:
+    if clean(row.get("review_trust_status")) and clean(row.get("review_trust_status")) != "trusted_llm_review":
+        reason = "Нужен live LLM-refresh"
+    elif is_no_dialogue_or_artifact(row):
+        reason = "Нет живого диалога / автоответчик / ASR-артефакт"
+    else:
+        reason = "Не подходит для текущей проверки РОПа"
+    payload = validation_row(row, "Исключено из проверки")
+    payload["Приоритет"] = "P3 исключено"
+    payload["Что сделать РОПу"] = reason
+    return payload
+
+
 def validation_row(row: dict[str, Any], category: str) -> dict[str, Any]:
     payload = {
         "Решение РОПа": "",
@@ -194,9 +262,19 @@ def validation_row(row: dict[str, Any], category: str) -> dict[str, Any]:
         "Менеджер": row.get("manager_name", ""),
         "Телефон": row.get("phone", ""),
         "Дата звонка": row.get("started_at", ""),
-        "Вопрос клиента": row.get("customer_question", ""),
+        "Вопрос клиента": row.get("customer_question_sanitized", row.get("customer_question", "")),
         "Ответ менеджера": row.get("manager_answer", ""),
-        "Идеальный ответ": row.get("ideal_answer_example", ""),
+        "Идеальный ответ": row.get("ideal_answer_manager_sanitized", row.get("ideal_answer_example", "")),
+        "Идеальный ответ для менеджера": row.get("ideal_answer_manager_sanitized", row.get("ideal_answer_example", "")),
+        "Безопасный ответ для бота": row.get("bot_safe_answer", ""),
+        "Статус sanitizer": row.get("bot_safety_status_ru", ""),
+        "Флаги sanitizer": row.get("sanitizer_flags", ""),
+        "Риск бренда": row.get("brand_risk_flag", ""),
+        "Риск цены/скидки": row.get("money_or_discount_flag", ""),
+        "Риск рассрочки": row.get("installment_flag", ""),
+        "Риск договора/возврата": row.get("legal_or_refund_flag", ""),
+        "Риск срока/обещания": row.get("deadline_or_promise_flag", ""),
+        "Риск персональных данных": row.get("personal_data_flag", ""),
         "Что хорошо": row.get("what_manager_did_well", ""),
         "Что упущено": row.get("what_manager_missed", ""),
         "Риски": row.get("risk_flags", ""),
@@ -222,6 +300,8 @@ def summary_rows(
         {"Раздел": "Объем", "Метрика": "Риски потери выручки", "Значение": len(revenue_risks), "Комментарий": "Все строки commercial_usefulness = revenue_leakage_risk."},
         {"Раздел": "Объем", "Метрика": "Процессные проблемы", "Значение": len(process_problems), "Комментарий": "Все строки commercial_usefulness = process_fix_needed."},
         {"Раздел": "Объем", "Метрика": "Черновики для бота", "Значение": len(bot_seeds), "Комментарий": "Диверсифицированная выборка ready/needs validation."},
+        {"Раздел": "Sanitizer", "Метрика": "Bot-safe ответы с заменами", "Значение": sum(1 for row in bot_seeds if clean(row.get("sanitizer_flags"))), "Комментарий": "В этих строках цены/сроки/бренд/PII заменены безопасными формулировками."},
+        {"Раздел": "Sanitizer", "Метрика": "Safety flags", "Значение": top_counter(sanitizer_flag_counter(enriched)), "Комментарий": "Какие типы замен сработали в исходном KB."},
     ]
     for label, counter in (
         ("Сигналы ТОП ответов", Counter(clean(row.get("signal_ru")) for row in top_answers if clean(row.get("signal_ru")))),
@@ -231,6 +311,16 @@ def summary_rows(
     ):
         rows.append({"Раздел": "Распределение", "Метрика": label, "Значение": top_counter(counter), "Комментарий": ""})
     return rows
+
+
+def sanitizer_flag_counter(rows: Iterable[dict[str, Any]]) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for row in rows:
+        for flag in clean(row.get("sanitizer_flags")).split("|"):
+            flag = flag.strip()
+            if flag:
+                counter[flag] += 1
+    return counter
 
 
 def select_diverse_rows(rows: list[dict[str, Any]], *, limit: int, caps: dict[str, int]) -> list[dict[str, Any]]:
@@ -413,6 +503,7 @@ def safe_name(value: str) -> str:
         "Риски потери выручки": "revenue_leakage_risks",
         "Процессные проблемы": "process_problems",
         "Черновики для бота": "bot_knowledge_drafts",
+        "Исключено из проверки": "excluded_from_validation",
         "Сводка": "summary",
     }.get(value, "sheet")
 

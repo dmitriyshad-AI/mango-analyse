@@ -11,6 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from mango_mvp.insights.sanitizers import (
+    flag_booleans,
+    flags_to_text,
+    has_any_safety_risk,
+    sanitize_answer,
+    sanitize_customer_text,
+)
+
 
 POSITIVE_OUTCOMES = {"won_paid_or_active", "payment_pending"}
 OPPORTUNITY_OUTCOMES = {"reopen_or_follow_up_opportunity", "in_progress_or_undecided", "known_student_or_lead"}
@@ -101,6 +109,8 @@ BOT_STATUS_LABELS_RU = {
     "ready_for_bot_draft": "Можно брать как черновик для бота",
     "needs_rop_validation": "Нужна проверка РОПом",
     "not_ready": "Пока не готово",
+    "not_ready_needs_llm_refresh": "Пока не готово: нужен live LLM-refresh",
+    "not_ready_sanitizer_blocked": "Пока не готово: sanitizer нашел риск",
     "exclude_no_dialogue": "Исключить: не было диалога",
     "manager_process_only": "Только процесс менеджера, не база бота",
 }
@@ -110,8 +120,21 @@ USEFULNESS_LABELS_RU = {
     "service_retention_learning": "Урок для удержания/сервиса",
     "process_fix_needed": "Нужна правка процесса",
     "coaching_needed": "Нужен разбор с менеджером",
+    "needs_llm_refresh": "Нужно живое LLM-ревью",
     "useful_context": "Полезный контекст",
 }
+REVIEW_TRUST_LABELS_RU = {
+    "trusted_llm_review": "Доверенное live/GPT-ревью",
+    "needs_live_llm_refresh": "Нужен live LLM-refresh перед использованием",
+}
+BOT_SAFETY_LABELS_RU = {
+    "safe_no_changes": "Безопасно без замен",
+    "safe_with_placeholders": "Безопасно после sanitization",
+    "blocked_unresolved_safety_risk": "Заблокировано: остался safety-риск",
+    "fixpoint_not_reached": "Заблокировано: sanitizer не достиг стабильного результата",
+    "empty": "Пустой ответ",
+}
+BOT_BLOCKING_SAFETY_STATUSES = {"blocked_unresolved_safety_risk", "fixpoint_not_reached"}
 
 
 @dataclass(frozen=True)
@@ -127,15 +150,17 @@ def build_sales_insight_knowledge_base(config: KnowledgeBaseConfig) -> dict[str,
     out_root = config.out_root.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     reviews = [enrich_review_row(row) for row in read_csv(config.reviews_csv)]
+    trusted_reviews = [row for row in reviews if is_trusted_llm_review(row)]
 
     summary = build_summary(config, reviews)
-    signal_summary = build_signal_summary(reviews)
-    pattern_matrix = build_pattern_matrix(reviews, config.min_group_count)
-    best_answers = build_best_answer_candidates(reviews, config.top_examples)
-    rop_coaching = build_rop_coaching_queue(reviews, config.top_examples)
-    bot_seeds = build_bot_knowledge_seeds(reviews, config.top_examples)
-    manager_summary = build_manager_summary(reviews)
-    outcome_lens = build_outcome_lens(reviews)
+    signal_summary = build_signal_summary(trusted_reviews)
+    pattern_matrix = build_pattern_matrix(trusted_reviews, config.min_group_count)
+    best_answers = build_best_answer_candidates(trusted_reviews, config.top_examples)
+    rop_coaching = build_rop_coaching_queue(trusted_reviews, config.top_examples)
+    bot_seeds = build_bot_knowledge_seeds(trusted_reviews, config.top_examples)
+    manager_summary = build_manager_summary(trusted_reviews)
+    outcome_lens = build_outcome_lens(trusted_reviews)
+    llm_refresh_queue = build_llm_refresh_queue(reviews)
     rop_brief = build_rop_brief(summary, signal_summary, pattern_matrix, rop_coaching, bot_seeds, manager_summary)
 
     outputs = write_outputs(
@@ -149,6 +174,7 @@ def build_sales_insight_knowledge_base(config: KnowledgeBaseConfig) -> dict[str,
         bot_seeds,
         manager_summary,
         outcome_lens,
+        llm_refresh_queue,
         reviews,
     )
     summary["outputs"] = {key: str(path) for key, path in outputs.items()}
@@ -162,13 +188,45 @@ def enrich_review_row(row: dict[str, Any]) -> dict[str, Any]:
     signal = clean(row.get("llm_customer_signal_type")) or "unknown"
     stage = clean(row.get("llm_hidden_sales_stage")) or "unknown"
     outcome = clean(row.get("final_outcome_label")) or "unknown"
+    trusted = is_trusted_llm_review(row)
+    manager_answer = sanitize_answer(row.get("ideal_answer_example"), mode="manager")
+    bot_answer = sanitize_answer(row.get("ideal_answer_example"), mode="bot")
+    customer_question = sanitize_customer_text(row.get("customer_question"))
+    customer_quote = sanitize_customer_text(row.get("customer_quote"))
+    manager_quote = sanitize_customer_text(row.get("manager_quote"))
+    sanitizer_flags = tuple(
+        dict.fromkeys((*manager_answer.flags, *bot_answer.flags, *customer_question.flags, *customer_quote.flags, *manager_quote.flags))
+    )
     enriched["overall_quality_score"] = score
     enriched["quality_band"] = quality_band(score)
     enriched["outcome_group"] = outcome_group(outcome)
     enriched["answer_pattern"] = classify_answer_pattern(row)
-    enriched["commercial_usefulness"] = commercial_usefulness(row, score, outcome)
-    enriched["rop_action"] = rop_action_for_row(row, score)
-    enriched["bot_seed_status"] = bot_seed_status(row, score)
+    enriched["review_trust_status"] = "trusted_llm_review" if trusted else "needs_live_llm_refresh"
+    enriched["ideal_answer_manager_sanitized"] = manager_answer.text
+    enriched["bot_safe_answer"] = bot_answer.text
+    enriched["customer_question_sanitized"] = customer_question.text
+    enriched["customer_quote_sanitized"] = customer_quote.text
+    enriched["manager_quote_sanitized"] = manager_quote.text
+    enriched["sanitizer_flags"] = flags_to_text(sanitizer_flags)
+    enriched.update(flag_booleans(sanitizer_flags))
+    enriched["bot_safety_status"] = bot_answer.status
+    enriched["bot_sanitizer_pass_count"] = bot_answer.pass_count
+    enriched["bot_sanitizer_fixpoint_reached"] = "Да" if bot_answer.fixpoint_reached else "Нет"
+    enriched["bot_safety_blocked"] = "Да" if has_any_safety_risk(bot_answer.text) else "Нет"
+    if trusted:
+        enriched["commercial_usefulness"] = commercial_usefulness(row, score, outcome)
+        enriched["rop_action"] = rop_action_for_row(row, score)
+        enriched["bot_seed_status"] = bot_seed_status(
+            row,
+            score,
+            bot_answer=bot_answer.text,
+            bot_safety_status=bot_answer.status,
+            sanitizer_flags=sanitizer_flags,
+        )
+    else:
+        enriched["commercial_usefulness"] = "needs_llm_refresh"
+        enriched["rop_action"] = "Сначала запустить live LLM-refresh; до этого не использовать строку как пример для РОПа или бота."
+        enriched["bot_seed_status"] = "not_ready_needs_llm_refresh"
     enriched["signal_ru"] = signal_label_ru(signal)
     enriched["stage_ru"] = stage_label_ru(stage)
     enriched["outcome_group_ru"] = outcome_group_label_ru(enriched["outcome_group"])
@@ -176,10 +234,22 @@ def enrich_review_row(row: dict[str, Any]) -> dict[str, Any]:
     enriched["answer_pattern_ru"] = answer_pattern_label_ru(enriched["answer_pattern"])
     enriched["commercial_usefulness_ru"] = usefulness_label_ru(enriched["commercial_usefulness"])
     enriched["bot_seed_status_ru"] = bot_status_label_ru(enriched["bot_seed_status"])
+    enriched["review_trust_status_ru"] = review_trust_label_ru(enriched["review_trust_status"])
+    enriched["bot_safety_status_ru"] = bot_safety_label_ru(enriched["bot_safety_status"])
     enriched["data_scope_note"] = "Оценка только по звонкам: мессенджеры и почта в этом слое не учтены."
     enriched["signal_stage_key"] = f"{signal}::{stage}"
     enriched["signal_pattern_key"] = f"{signal}::{enriched['answer_pattern']}"
     return enriched
+
+
+def is_trusted_llm_review(row: dict[str, Any]) -> bool:
+    provider = clean(row.get("provider"))
+    review_source = clean(row.get("review_source"))
+    if provider == "dry_run":
+        return False
+    if "deterministic_fallback" in review_source or "needs_llm_refresh" in review_source:
+        return False
+    return bool(provider)
 
 
 def quality_band(score: int) -> str:
@@ -213,7 +283,11 @@ def classify_answer_pattern(row: dict[str, Any]) -> str:
     missed = clean(row.get("what_manager_missed"))
     text = " ".join([answer, risk, missed, clean(row.get("what_manager_did_well"))]).lower()
 
-    if re.search(r"абонент|недозвон|автоответчик|нет живого|контакт не состоя|не было диалога|voicemail|no_live", text):
+    if re.search(
+        r"абонент|недозвон|автоответчик|нет живого|контакт не состоя|не было диалога|voicemail|no_live|"
+        r"продолжение следует|субтитры сделал|редактор субтитров|thank you for watching|norske lagerforskning",
+        text,
+    ):
         return "no_live_contact_or_voicemail"
     if re.search(r"перев[её]л|соедин|передал[аи]?|коллег|администратор|другой менеджер", text):
         return "handoff_or_transfer"
@@ -245,6 +319,8 @@ def classify_answer_pattern(row: dict[str, Any]) -> str:
 def commercial_usefulness(row: dict[str, Any], score: int, outcome: Any) -> str:
     group = outcome_group(outcome)
     pattern = classify_answer_pattern(row)
+    if pattern == "no_live_contact_or_voicemail":
+        return "process_fix_needed"
     if score >= 75 and group in {"paid_or_payment_path", "follow_up_opportunity"}:
         return "playbook_candidate"
     if score < 55 and group in {"lost_or_churn", "follow_up_opportunity"}:
@@ -276,13 +352,24 @@ def rop_action_for_row(row: dict[str, Any], score: int) -> str:
     return "Проверить с менеджером: что было потребностью клиента и какой следующий шаг должен быть в CRM."
 
 
-def bot_seed_status(row: dict[str, Any], score: int) -> str:
+def bot_seed_status(
+    row: dict[str, Any],
+    score: int,
+    *,
+    bot_answer: str | None = None,
+    bot_safety_status: str | None = None,
+    sanitizer_flags: tuple[str, ...] | list[str] = (),
+) -> str:
     signal = clean(row.get("llm_customer_signal_type"))
-    ideal = clean(row.get("ideal_answer_example"))
+    ideal = clean(bot_answer if bot_answer is not None else row.get("ideal_answer_example"))
     confidence = clamp_float(row.get("extraction_confidence"), 0.0, 1.0, 0.0)
     pattern = classify_answer_pattern(row)
     if pattern == "no_live_contact_or_voicemail":
         return "exclude_no_dialogue"
+    if bot_safety_status in BOT_BLOCKING_SAFETY_STATUSES:
+        return "not_ready_sanitizer_blocked"
+    if sanitizer_flags:
+        return "needs_rop_validation" if score >= 60 and len(ideal) >= 60 else "not_ready"
     if signal in {"callback_request", "materials_request"} and score < 65:
         return "manager_process_only"
     if score >= 75 and confidence >= 0.65 and len(ideal) >= 80:
@@ -294,6 +381,10 @@ def bot_seed_status(row: dict[str, Any], score: int) -> str:
 
 def build_summary(config: KnowledgeBaseConfig, reviews: list[dict[str, Any]]) -> dict[str, Any]:
     scores = [clamp_int(row.get("overall_quality_score"), 0, 100, 0) for row in reviews]
+    trusted_count = sum(1 for row in reviews if is_trusted_llm_review(row))
+    needs_refresh_count = len(reviews) - trusted_count
+    bot_ready_rows = [row for row in reviews if row.get("bot_seed_status") in {"ready_for_bot_draft", "needs_rop_validation"}]
+    bot_safe_rows = [row for row in bot_ready_rows if clean(row.get("bot_safe_answer")) and row.get("bot_safety_status") not in BOT_BLOCKING_SAFETY_STATUSES]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "input_reviews_csv": str(config.reviews_csv.resolve()),
@@ -313,15 +404,35 @@ def build_summary(config: KnowledgeBaseConfig, reviews: list[dict[str, Any]]) ->
             "high_quality_count": sum(1 for score in scores if score >= 75),
             "low_quality_count": sum(1 for score in scores if score < 55),
         },
+        "llm_review": {
+            "trusted_llm_reviews": trusted_count,
+            "needs_live_llm_refresh": needs_refresh_count,
+            "trusted_share": round(trusted_count / len(reviews), 4) if reviews else 0,
+            "by_provider": dict(Counter(clean(row.get("provider")) for row in reviews).most_common()),
+            "by_review_source": dict(Counter(clean(row.get("review_source")) for row in reviews).most_common()),
+            "by_review_trust_status": dict(Counter(clean(row.get("review_trust_status")) for row in reviews).most_common()),
+        },
+        "sanitizer": {
+            "bot_ready_or_validation_rows": len(bot_ready_rows),
+            "bot_safe_answer_rows": len(bot_safe_rows),
+            "bot_safety_blocked": sum(1 for row in reviews if row.get("bot_safety_status") in BOT_BLOCKING_SAFETY_STATUSES),
+            "by_bot_safety_status": dict(Counter(clean(row.get("bot_safety_status")) for row in reviews).most_common()),
+            "by_bot_sanitizer_pass_count": dict(Counter(str(row.get("bot_sanitizer_pass_count") or "") for row in reviews).most_common()),
+            "bot_fixpoint_not_reached": sum(1 for row in reviews if row.get("bot_sanitizer_fixpoint_reached") == "Нет"),
+            "by_sanitizer_flag": dict(sanitizer_flag_counter(reviews).most_common()),
+        },
         "counts": {
             "by_signal": dict(Counter(clean(row.get("llm_customer_signal_type")) for row in reviews).most_common()),
             "by_answer_pattern": dict(Counter(clean(row.get("answer_pattern")) for row in reviews).most_common()),
             "by_outcome_group": dict(Counter(clean(row.get("outcome_group")) for row in reviews).most_common()),
             "by_bot_seed_status": dict(Counter(clean(row.get("bot_seed_status")) for row in reviews).most_common()),
             "by_commercial_usefulness": dict(Counter(clean(row.get("commercial_usefulness")) for row in reviews).most_common()),
+            "by_bot_safety_status": dict(Counter(clean(row.get("bot_safety_status")) for row in reviews).most_common()),
         },
         "audit_notes": [
             "Это агрегаты по live LLM-review выбранных sales moments; использовать как управленческую аналитику и материал для ручной проверки РОПом.",
+            "Лучшие ответы, черновики бота, паттерны и очередь РОПа строятся только из доверенных live/GPT-ревью; строки dry_run/fallback вынесены в очередь LLM-refresh.",
+            "Bot-safe ответы проходят deterministic sanitizer: брендовые ASR-артефакты, цены, скидки, сроки, возвраты, рассрочки и персональные данные заменяются безопасными формулировками.",
             "Важно: здесь учтены только звонки. Мессенджеры и почта не включены, поэтому слабый следующий шаг в звонке может быть закрыт менеджером в другом канале.",
             "Итог сделки показывает корреляцию/контекст, не причинность: нужен контроль источника, менеджера, курса и сезонности.",
             "Черновики для бота не являются готовой базой знаний: перед применением в Telegram-боте нужна ручная проверка РОПа/методиста.",
@@ -375,8 +486,9 @@ def build_pattern_matrix(reviews: list[dict[str, Any]], min_group_count: int) ->
                 "Высокое качество": sum(1 for score in scores if score >= 75),
                 "Низкое качество": sum(1 for score in scores if score < 55),
                 "Лучший пример: оценка": example.get("overall_quality_score", ""),
-                "Лучший пример вопрос": example.get("customer_question", ""),
-                "Лучший идеальный ответ": example.get("ideal_answer_example", ""),
+                "Лучший пример вопрос": example.get("customer_question_sanitized", example.get("customer_question", "")),
+                "Лучший идеальный ответ": example.get("ideal_answer_manager_sanitized", example.get("ideal_answer_example", "")),
+                "Лучший безопасный ответ для бота": example.get("bot_safe_answer", ""),
                 "Что делать": pattern_level_recommendation(pattern, outcome, avg(scores)),
             }
         )
@@ -387,9 +499,10 @@ def build_best_answer_candidates(reviews: list[dict[str, Any]], limit: int) -> l
     candidates = [
         row
         for row in reviews
-        if clamp_int(row.get("overall_quality_score"), 0, 100, 0) >= 75
+        if is_trusted_llm_review(row)
+        and clamp_int(row.get("overall_quality_score"), 0, 100, 0) >= 75
         and row.get("answer_pattern") != "no_live_contact_or_voicemail"
-        and clean(row.get("ideal_answer_example"))
+        and clean(row.get("ideal_answer_manager_sanitized"))
     ]
     candidates = sorted(candidates, key=lambda row: (-clamp_int(row.get("overall_quality_score"), 0, 100, 0), clean(row.get("llm_customer_signal_type")), clean(row.get("moment_id"))))
     return [example_row(row) for row in candidates[:limit]]
@@ -399,8 +512,11 @@ def build_rop_coaching_queue(reviews: list[dict[str, Any]], limit: int) -> list[
     candidates = [
         row
         for row in reviews
-        if clamp_int(row.get("overall_quality_score"), 0, 100, 0) < 60
-        or row.get("answer_pattern") in {"vague_or_missing_next_step", "service_answer_without_closure", "price_payment_answer_too_weak"}
+        if is_trusted_llm_review(row)
+        and (
+            clamp_int(row.get("overall_quality_score"), 0, 100, 0) < 60
+            or row.get("answer_pattern") in {"vague_or_missing_next_step", "service_answer_without_closure", "price_payment_answer_too_weak"}
+        )
     ]
     candidates = sorted(candidates, key=lambda row: (clamp_int(row.get("overall_quality_score"), 0, 100, 0), clean(row.get("manager_name")), clean(row.get("moment_id"))))
     return [coaching_row(row) for row in candidates[:limit]]
@@ -410,8 +526,11 @@ def build_bot_knowledge_seeds(reviews: list[dict[str, Any]], limit: int) -> list
     candidates = [
         row
         for row in reviews
-        if row.get("bot_seed_status") in {"ready_for_bot_draft", "needs_rop_validation"}
+        if is_trusted_llm_review(row)
+        and row.get("bot_seed_status") in {"ready_for_bot_draft", "needs_rop_validation"}
         and row.get("answer_pattern") != "no_live_contact_or_voicemail"
+        and clean(row.get("bot_safe_answer"))
+        and row.get("bot_safety_status") not in BOT_BLOCKING_SAFETY_STATUSES
     ]
     candidates = sorted(candidates, key=lambda row: (row.get("bot_seed_status") != "ready_for_bot_draft", -clamp_int(row.get("overall_quality_score"), 0, 100, 0), clean(row.get("llm_customer_signal_type"))))
     seen: set[tuple[str, str]] = set()
@@ -430,20 +549,58 @@ def build_bot_knowledge_seeds(reviews: list[dict[str, Any]], limit: int) -> list
                 "Стадия": row.get("stage_ru", ""),
                 "Паттерн ответа": row.get("answer_pattern_ru", ""),
                 "Код паттерна": row.get("answer_pattern", ""),
-                "Пример вопроса клиента": row.get("customer_question", ""),
-                "Черновик идеального ответа": row.get("ideal_answer_example", ""),
+                "Пример вопроса клиента": row.get("customer_question_sanitized", row.get("customer_question", "")),
+                "Черновик идеального ответа": row.get("bot_safe_answer", ""),
+                "Безопасный ответ для бота": row.get("bot_safe_answer", ""),
+                "Идеальный ответ для менеджера": row.get("ideal_answer_manager_sanitized", ""),
+                "Статус sanitizer": row.get("bot_safety_status_ru", ""),
+                "Флаги sanitizer": row.get("sanitizer_flags", ""),
+                "Риск бренда": row.get("brand_risk_flag", ""),
+                "Риск цены/скидки": row.get("money_or_discount_flag", ""),
+                "Риск рассрочки": row.get("installment_flag", ""),
+                "Риск договора/возврата": row.get("legal_or_refund_flag", ""),
+                "Риск срока/обещания": row.get("deadline_or_promise_flag", ""),
+                "Риск персональных данных": row.get("personal_data_flag", ""),
                 "Когда не использовать": row.get("avoid_using_when", ""),
                 "Оценка": row.get("overall_quality_score", ""),
                 "Итог сделки": row.get("final_outcome_ru", ""),
                 "Код итога": row.get("final_outcome_label", ""),
-                "Цитата клиента": row.get("customer_quote", ""),
-                "Цитата менеджера": row.get("manager_quote", ""),
+                "Цитата клиента": row.get("customer_quote_sanitized", row.get("customer_quote", "")),
+                "Цитата менеджера": row.get("manager_quote_sanitized", row.get("manager_quote", "")),
                 "Ограничение данных": row.get("data_scope_note", ""),
                 "ID момента": row.get("moment_id", ""),
             }
         )
         if len(rows) >= limit:
             break
+    return rows
+
+
+def build_llm_refresh_queue(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in reviews:
+        if is_trusted_llm_review(row):
+            continue
+        rows.append(
+            {
+                "Статус проверки": row.get("review_trust_status_ru", ""),
+                "Провайдер текущей строки": row.get("provider", ""),
+                "Источник ревью": row.get("review_source", ""),
+                "ID момента": row.get("moment_id", ""),
+                "Телефон": row.get("phone", ""),
+                "Дата звонка": row.get("started_at", ""),
+                "Менеджер": row.get("manager_name", ""),
+                "Тип звонка": row.get("call_type", ""),
+                "Use case": row.get("extraction_use_case", ""),
+                "Сигнал клиента": row.get("signal_ru", ""),
+                "Стадия": row.get("stage_ru", ""),
+                "Итог сделки": row.get("final_outcome_ru", ""),
+                "Вопрос клиента": row.get("customer_question", ""),
+                "Ответ менеджера": row.get("manager_answer", ""),
+                "Причина": "Нужно повторить live LLM-review перед использованием в KB/боте/коучинге.",
+                "Файл звонка": row.get("source_filename", ""),
+            }
+        )
     return rows
 
 
@@ -516,6 +673,18 @@ def build_rop_brief(
         },
         {
             "Раздел": "Ключевые показатели",
+            "Показатель": "Доверенных live/GPT-ревью",
+            "Значение": summary.get("llm_review", {}).get("trusted_llm_reviews", 0),
+            "Комментарий": "Только эти строки используются для лучших ответов, бота, паттернов и очереди РОПа.",
+        },
+        {
+            "Раздел": "Ключевые показатели",
+            "Показатель": "Ждут live LLM-refresh",
+            "Значение": summary.get("llm_review", {}).get("needs_live_llm_refresh", 0),
+            "Комментарий": "Эти строки не попадают в базу бота и лучшие ответы до повторного live-ревью.",
+        },
+        {
+            "Раздел": "Ключевые показатели",
             "Показатель": "Среднее качество ответа",
             "Значение": summary.get("quality", {}).get("avg_quality_score", 0),
             "Комментарий": "Средняя оценка ИИ по рубрике качества продаж/сервиса.",
@@ -537,6 +706,12 @@ def build_rop_brief(
             "Показатель": "Черновики для базы ответов бота",
             "Значение": bot_status.get("ready_for_bot_draft", 0),
             "Комментарий": "Черновики ответов для будущей базы Telegram-бота.",
+        },
+        {
+            "Раздел": "Ключевые показатели",
+            "Показатель": "Безопасных bot-safe ответов",
+            "Значение": summary.get("sanitizer", {}).get("bot_safe_answer_rows", 0),
+            "Комментарий": "Ответы, где sanitizer убрал брендовые/финансовые/сроковые/персональные риски.",
         },
     ]
     for pattern, count in sorted(pattern_counts.items(), key=lambda item: (-int(item[1]), str(item[0])))[:7]:
@@ -581,7 +756,7 @@ def build_rop_brief(
                 "Раздел": "Черновики для бота",
                 "Показатель": row.get("Сигнал клиента", ""),
                 "Значение": row.get("Оценка", ""),
-                "Комментарий": row.get("Черновик идеального ответа", ""),
+                "Комментарий": row.get("Безопасный ответ для бота", row.get("Черновик идеального ответа", "")),
             }
         )
     if pattern_matrix:
@@ -607,9 +782,19 @@ def example_row(row: dict[str, Any]) -> dict[str, Any]:
         "Код итога": row.get("final_outcome_label", ""),
         "Оценка": row.get("overall_quality_score", ""),
         "Менеджер": row.get("manager_name", ""),
-        "Вопрос клиента": row.get("customer_question", ""),
+        "Вопрос клиента": row.get("customer_question_sanitized", row.get("customer_question", "")),
         "Ответ менеджера": row.get("manager_answer", ""),
-        "Идеальный ответ": row.get("ideal_answer_example", ""),
+        "Идеальный ответ": row.get("ideal_answer_manager_sanitized", row.get("ideal_answer_example", "")),
+        "Идеальный ответ для менеджера": row.get("ideal_answer_manager_sanitized", ""),
+        "Безопасный ответ для бота": row.get("bot_safe_answer", ""),
+        "Статус sanitizer": row.get("bot_safety_status_ru", ""),
+        "Флаги sanitizer": row.get("sanitizer_flags", ""),
+        "Риск бренда": row.get("brand_risk_flag", ""),
+        "Риск цены/скидки": row.get("money_or_discount_flag", ""),
+        "Риск рассрочки": row.get("installment_flag", ""),
+        "Риск договора/возврата": row.get("legal_or_refund_flag", ""),
+        "Риск срока/обещания": row.get("deadline_or_promise_flag", ""),
+        "Риск персональных данных": row.get("personal_data_flag", ""),
         "Что хорошо": row.get("what_manager_did_well", ""),
         "Риски": row.get("risk_flags", ""),
         "Ограничение данных": row.get("data_scope_note", ""),
@@ -634,9 +819,19 @@ def coaching_row(row: dict[str, Any]) -> dict[str, Any]:
         "Риски": row.get("risk_flags", ""),
         "Что сделать РОПу": row.get("rop_action", ""),
         "Ограничение данных": row.get("data_scope_note", ""),
-        "Вопрос клиента": row.get("customer_question", ""),
+        "Вопрос клиента": row.get("customer_question_sanitized", row.get("customer_question", "")),
         "Ответ менеджера": row.get("manager_answer", ""),
-        "Идеальный ответ": row.get("ideal_answer_example", ""),
+        "Идеальный ответ": row.get("ideal_answer_manager_sanitized", row.get("ideal_answer_example", "")),
+        "Идеальный ответ для менеджера": row.get("ideal_answer_manager_sanitized", ""),
+        "Безопасный ответ для бота": row.get("bot_safe_answer", ""),
+        "Статус sanitizer": row.get("bot_safety_status_ru", ""),
+        "Флаги sanitizer": row.get("sanitizer_flags", ""),
+        "Риск бренда": row.get("brand_risk_flag", ""),
+        "Риск цены/скидки": row.get("money_or_discount_flag", ""),
+        "Риск рассрочки": row.get("installment_flag", ""),
+        "Риск договора/возврата": row.get("legal_or_refund_flag", ""),
+        "Риск срока/обещания": row.get("deadline_or_promise_flag", ""),
+        "Риск персональных данных": row.get("personal_data_flag", ""),
         "ID момента": row.get("moment_id", ""),
         "Файл звонка": row.get("source_filename", ""),
     }
@@ -653,6 +848,7 @@ def write_outputs(
     bot_seeds: list[dict[str, Any]],
     manager_summary: list[dict[str, Any]],
     outcome_lens: list[dict[str, Any]],
+    llm_refresh_queue: list[dict[str, Any]],
     enriched_reviews: list[dict[str, Any]],
 ) -> dict[str, Path]:
     outputs = {
@@ -663,6 +859,7 @@ def write_outputs(
         "bot_seeds_csv": out_root / "bot_knowledge_seeds.csv",
         "manager_summary_csv": out_root / "manager_summary.csv",
         "outcome_lens_csv": out_root / "outcome_lens.csv",
+        "llm_refresh_queue_csv": out_root / "llm_refresh_queue.csv",
         "enriched_reviews_csv": out_root / "enriched_reviews.csv",
     }
     write_csv(outputs["signal_summary_csv"], signal_summary)
@@ -672,6 +869,7 @@ def write_outputs(
     write_csv(outputs["bot_seeds_csv"], bot_seeds)
     write_csv(outputs["manager_summary_csv"], manager_summary)
     write_csv(outputs["outcome_lens_csv"], outcome_lens)
+    write_csv(outputs["llm_refresh_queue_csv"], llm_refresh_queue)
     write_csv(outputs["enriched_reviews_csv"], enriched_reviews)
     xlsx_path = out_root / "sales_insight_knowledge_base.xlsx"
     write_xlsx(
@@ -685,6 +883,7 @@ def write_outputs(
         bot_seeds,
         manager_summary,
         outcome_lens,
+        llm_refresh_queue,
         enriched_reviews,
     )
     outputs["xlsx"] = xlsx_path
@@ -702,6 +901,7 @@ def write_xlsx(
     bot_seeds: list[dict[str, Any]],
     manager_summary: list[dict[str, Any]],
     outcome_lens: list[dict[str, Any]],
+    llm_refresh_queue: list[dict[str, Any]],
     enriched_reviews: list[dict[str, Any]],
 ) -> None:
     import pandas as pd
@@ -710,6 +910,14 @@ def write_xlsx(
     for section in ("totals", "quality"):
         for key, value in summary.get(section, {}).items():
             summary_rows.append({"Раздел": summary_section_label_ru(section), "Метрика": summary_metric_label_ru(key), "Значение": value})
+    for key, value in summary.get("llm_review", {}).items():
+        if isinstance(value, dict):
+            continue
+        summary_rows.append({"Раздел": summary_section_label_ru("llm_review"), "Метрика": summary_metric_label_ru(key), "Значение": value})
+    for key, value in summary.get("sanitizer", {}).items():
+        if isinstance(value, dict):
+            continue
+        summary_rows.append({"Раздел": summary_section_label_ru("sanitizer"), "Метрика": summary_metric_label_ru(key), "Значение": value})
     for group, counts in summary.get("counts", {}).items():
         for label, count in counts.items():
             summary_rows.append({"Раздел": summary_section_label_ru(group), "Метрика": summary_count_label_ru(group, label), "Значение": count})
@@ -726,6 +934,7 @@ def write_xlsx(
         pd.DataFrame(bot_seeds).to_excel(writer, sheet_name="Черновики бота", index=False)
         pd.DataFrame(manager_summary).to_excel(writer, sheet_name="Менеджеры", index=False)
         pd.DataFrame(outcome_lens).to_excel(writer, sheet_name="Итоги сделок", index=False)
+        pd.DataFrame(llm_refresh_queue).to_excel(writer, sheet_name="LLM refresh", index=False)
         pd.DataFrame(enriched_reviews).to_excel(writer, sheet_name="Исходные строки", index=False)
         style_workbook(writer.book)
 
@@ -842,6 +1051,16 @@ def top_labeled_values(values: Iterable[Any], label_func: Any, limit: int) -> st
     return " | ".join(f"{label_func(key)}: {count}" for key, count in counter.most_common(limit))
 
 
+def sanitizer_flag_counter(rows: list[dict[str, Any]]) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for row in rows:
+        for flag in clean(row.get("sanitizer_flags")).split("|"):
+            flag = flag.strip()
+            if flag:
+                counter[flag] += 1
+    return counter
+
+
 def summary_count_label_ru(group: str, label: str) -> str:
     if group == "by_signal":
         return signal_label_ru(label)
@@ -853,6 +1072,8 @@ def summary_count_label_ru(group: str, label: str) -> str:
         return bot_status_label_ru(label)
     if group == "by_commercial_usefulness":
         return usefulness_label_ru(label)
+    if group == "by_bot_safety_status":
+        return bot_safety_label_ru(label)
     return clean(label)
 
 
@@ -861,6 +1082,8 @@ def summary_section_label_ru(value: Any) -> str:
     return {
         "totals": "Общие итоги",
         "quality": "Качество ответов",
+        "llm_review": "Доверенность LLM-ревью",
+        "sanitizer": "Sanitizer для бота/РОПа",
         "by_signal": "Сигналы клиентов",
         "by_answer_pattern": "Паттерны ответов",
         "by_outcome_group": "Итоги сделок",
@@ -880,6 +1103,12 @@ def summary_metric_label_ru(value: Any) -> str:
         "avg_quality_score": "Средняя оценка качества",
         "high_quality_count": "Ответов высокого качества",
         "low_quality_count": "Ответов низкого качества",
+        "trusted_llm_reviews": "Доверенных live/GPT-ревью",
+        "needs_live_llm_refresh": "Нужно повторить live LLM-refresh",
+        "trusted_share": "Доля доверенных LLM-ревью",
+        "bot_ready_or_validation_rows": "Bot-ready / needs validation строк",
+        "bot_safe_answer_rows": "Строк с безопасным ответом для бота",
+        "bot_safety_blocked": "Заблокировано sanitizer-ом",
     }.get(code, code)
 
 
@@ -916,6 +1145,16 @@ def bot_status_label_ru(value: Any) -> str:
 def usefulness_label_ru(value: Any) -> str:
     code = clean(value) or "useful_context"
     return USEFULNESS_LABELS_RU.get(code, code)
+
+
+def review_trust_label_ru(value: Any) -> str:
+    code = clean(value) or "needs_live_llm_refresh"
+    return REVIEW_TRUST_LABELS_RU.get(code, code)
+
+
+def bot_safety_label_ru(value: Any) -> str:
+    code = clean(value) or "empty"
+    return BOT_SAFETY_LABELS_RU.get(code, code)
 
 
 def share(rows: list[dict[str, Any]], key: str, value: str) -> float:
@@ -1007,4 +1246,5 @@ __all__ = [
     "outcome_group",
     "parse_args",
     "quality_band",
+    "sanitizer_flag_counter",
 ]

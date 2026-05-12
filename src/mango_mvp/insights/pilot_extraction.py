@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from mango_mvp.quality.non_conversation import detect_non_conversation_signals
+
 
 CONTENTFUL_FALSE_VALUES = {"", "false", "0", "no", "нет"}
 ROLE_BLOCK_RE = re.compile(r"(?ims)^\s*(MANAGER|CLIENT|МЕНЕДЖЕР|КЛИЕНТ)\s*:\s*(.*?)(?=^\s*(?:MANAGER|CLIENT|МЕНЕДЖЕР|КЛИЕНТ)\s*:|\Z)")
@@ -62,21 +64,26 @@ def build_pilot_sales_moments(config: PilotExtractionConfig) -> dict[str, Any]:
     db_cache: dict[str, sqlite3.Connection] = {}
     moments: list[dict[str, Any]] = []
     llm_inputs: list[dict[str, Any]] = []
+    excluded_candidates: list[dict[str, Any]] = []
     try:
-        for idx, call in enumerate(selected_calls, start=1):
+        for call in selected_calls:
             chain = _chain_for_call(call, pilot_rows)
             db_record = load_call_record(project_root, call, db_cache)
             if db_record is None:
                 continue
-            moment = extract_sales_moment(idx, chain, call, db_record)
+            exclusion = sales_moment_exclusion_reason(chain, call, db_record)
+            if exclusion:
+                excluded_candidates.append(exclusion)
+                continue
+            moment = extract_sales_moment(len(moments) + 1, chain, call, db_record)
             moments.append(moment)
             llm_inputs.append(build_llm_input(moment, chain, call, db_record, config.transcript_chars_for_llm))
     finally:
         for con in db_cache.values():
             con.close()
 
-    summary = build_summary(config, pilot_rows, selected_calls, moments, client_sequences)
-    outputs = write_outputs(out_root, summary, moments, client_sequences, llm_inputs)
+    summary = build_summary(config, pilot_rows, selected_calls, moments, client_sequences, excluded_candidates)
+    outputs = write_outputs(out_root, summary, moments, client_sequences, llm_inputs, excluded_candidates)
     summary["outputs"] = {key: str(path) for key, path in outputs.items()}
     (out_root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
@@ -150,6 +157,52 @@ def load_call_record(project_root: Path, call: dict[str, Any], db_cache: dict[st
     if row is None:
         return None
     return {name: row[name] for name in row.keys()}
+
+
+def sales_moment_exclusion_reason(
+    chain: dict[str, Any],
+    call: dict[str, Any],
+    db_record: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Exclude narrow no-live artifacts from sales KB extraction while preserving protected live calls."""
+
+    analysis = _safe_json(db_record.get("analysis_json"))
+    structured = _dict(analysis.get("structured_fields")) or _dict(analysis.get("crm_blocks"))
+    interests = _dict(structured.get("interests"))
+    history = _clean(call.get("history_summary")) or _clean(analysis.get("history_summary"))
+    signals = detect_non_conversation_signals(
+        transcript_text=str(db_record.get("transcript_text") or ""),
+        history_summary=history,
+        call_type=str(call.get("call_type") or ""),
+        next_step=_clean(call.get("next_step")) or _clean(_dict(structured.get("next_step")).get("action")),
+        products=interests.get("products") or call.get("products") or "",
+        subjects=interests.get("subjects") or call.get("subjects") or "",
+        objections=structured.get("objections") or call.get("objections") or "",
+        duration_sec=db_record.get("duration_sec") or call.get("duration_sec"),
+    )
+    if signals.protected_live_dialogue:
+        return None
+
+    live_evidence_codes = {"history_live_evidence", "transcript_live_evidence", "structured_fields_present"}
+    has_live_evidence = bool(set(signals.reason_codes) & live_evidence_codes)
+    no_live_without_live_evidence = signals.strong_no_live_marker and signals.score <= -3 and not has_live_evidence
+    if not (signals.should_force_non_conversation or no_live_without_live_evidence):
+        return None
+
+    return {
+        "source_filename": call.get("source_filename", ""),
+        "phone": call.get("phone", ""),
+        "started_at": call.get("started_at", ""),
+        "manager_name": call.get("manager_name", ""),
+        "call_type": call.get("call_type", ""),
+        "final_outcome_label": chain.get("final_outcome_label", ""),
+        "extraction_use_case": chain.get("extraction_use_case", ""),
+        "exclusion_reason": "no_live_or_voicemail_not_safe_for_sales_kb",
+        "guardrail_label": signals.label,
+        "guardrail_score": signals.score,
+        "guardrail_reason_codes": "|".join(signals.reason_codes),
+        "recommended_contact_subtype": signals.recommended_contact_subtype or "",
+    }
 
 
 def extract_sales_moment(moment_index: int, chain: dict[str, Any], call: dict[str, Any], db_record: dict[str, Any]) -> dict[str, Any]:
@@ -471,7 +524,9 @@ def build_summary(
     selected_calls: list[dict[str, Any]],
     moments: list[dict[str, Any]],
     client_sequences: list[dict[str, Any]],
+    excluded_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    excluded_candidates = excluded_candidates or []
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "readiness_root": str(config.readiness_root.resolve()),
@@ -484,6 +539,7 @@ def build_summary(
         "totals": {
             "pilot_clients": len(pilot_rows),
             "selected_calls": len(selected_calls),
+            "excluded_no_live_sales_moment_candidates": len(excluded_candidates),
             "sales_moments": len(moments),
             "client_sequences": len(client_sequences),
             "unique_phones_in_moments": len({row["phone"] for row in moments if row.get("phone")}),
@@ -495,6 +551,7 @@ def build_summary(
             "by_hidden_stage": dict(Counter(row["hidden_sales_stage"] for row in moments).most_common()),
             "by_quality_band": dict(Counter(row["manager_response_quality_band"] for row in moments).most_common()),
             "top_managers": dict(Counter(row["manager_name"] for row in moments if row.get("manager_name")).most_common(30)),
+            "excluded_by_reason": dict(Counter(row["exclusion_reason"] for row in excluded_candidates).most_common()),
         },
         "notes": [
             "This is deterministic pilot extraction. It is suitable for triage and LLM input preparation, not final expert scoring.",
@@ -510,15 +567,19 @@ def write_outputs(
     moments: list[dict[str, Any]],
     client_sequences: list[dict[str, Any]],
     llm_inputs: list[dict[str, Any]],
+    excluded_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
+    excluded_candidates = excluded_candidates or []
     paths = {
         "sales_moments_csv": out_root / "sales_moments.csv",
         "client_stage_sequences_csv": out_root / "client_stage_sequences.csv",
+        "excluded_sales_moment_candidates_csv": out_root / "excluded_sales_moment_candidates.csv",
         "llm_input_jsonl": out_root / "llm_sales_moment_input.jsonl",
         "summary_json": out_root / "summary.json",
     }
     _write_csv(paths["sales_moments_csv"], moments)
     _write_csv(paths["client_stage_sequences_csv"], client_sequences)
+    _write_csv(paths["excluded_sales_moment_candidates_csv"], excluded_candidates)
     with paths["llm_input_jsonl"].open("w", encoding="utf-8") as fh:
         for item in llm_inputs:
             fh.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -756,6 +817,7 @@ __all__ = [
     "infer_hidden_sales_stage",
     "parse_args",
     "parse_role_blocks",
+    "sales_moment_exclusion_reason",
     "score_manager_response",
     "select_calls_for_client",
     "split_sentences",

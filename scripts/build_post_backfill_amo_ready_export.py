@@ -47,7 +47,8 @@ DEFAULT_STAGE15_SUMMARY = (
     / "transcript_quality_stage15_export_gate_20260510_v11_frozen_gate"
     / "summary.json"
 )
-DEFAULT_OUT_ROOT = PROJECT_ROOT / "stable_runtime" / "sales_master_export_20260510_after_quality_backfill_v1"
+DEFAULT_OUT_ROOT_PARENT = PROJECT_ROOT / "stable_runtime"
+DEFAULT_OUT_ROOT_PREFIX = "sales_master_export_post_backfill"
 DEFAULT_TENANT_CONFIG = (
     PROJECT_ROOT
     / "_local_archive_mango_api_downloads_20260507"
@@ -191,12 +192,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--canonical-db", default=str(DEFAULT_CANONICAL_DB))
     parser.add_argument("--client-chains-csv", default=str(DEFAULT_CLIENT_CHAINS))
     parser.add_argument("--stage15-summary", default=str(DEFAULT_STAGE15_SUMMARY))
-    parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
+    parser.add_argument(
+        "--out-root",
+        default="",
+        help="Output folder. Defaults to a new timestamped stable_runtime/sales_master_export_post_backfill_* folder.",
+    )
     parser.add_argument("--fresh-from", default="2025-01-01")
     parser.add_argument("--fresh-to", default="2026-05-31")
     parser.add_argument("--analysis-date", default=date.today().isoformat())
     parser.add_argument("--tenant-config", default=str(DEFAULT_TENANT_CONFIG) if DEFAULT_TENANT_CONFIG.exists() else "")
     return parser.parse_args()
+
+
+def _default_out_root() -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+    return DEFAULT_OUT_ROOT_PARENT / f"{DEFAULT_OUT_ROOT_PREFIX}_{stamp}"
 
 
 def _safe_text(value: Any) -> str:
@@ -1109,7 +1119,11 @@ def main() -> int:
     canonical_db = Path(args.canonical_db).expanduser().resolve()
     client_chains_csv = Path(args.client_chains_csv).expanduser().resolve()
     stage15_summary = Path(args.stage15_summary).expanduser().resolve()
-    out_root = Path(args.out_root).expanduser().resolve()
+    out_root = (
+        Path(args.out_root).expanduser().resolve()
+        if args.out_root
+        else _default_out_root().resolve()
+    )
     analysis_date = (_parse_dt(args.analysis_date) or datetime.strptime(args.analysis_date, "%Y-%m-%d")).date()
     tenant_config_result = load_tenant_config(args.tenant_config) if args.tenant_config else None
     out_root.mkdir(parents=True, exist_ok=True)

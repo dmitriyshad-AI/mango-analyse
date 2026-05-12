@@ -17,8 +17,10 @@ fi
 
 exec ssh \
   -o IdentitiesOnly=yes \
-  -o ServerAliveInterval=30 \
-  -o ServerAliveCountMax=3 \
+  -o ConnectTimeout=10 \
+  -o TCPKeepAlive=yes \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=2 \
   -o ExitOnForwardFailure=yes \
   -o StrictHostKeyChecking=accept-new \
   -i "${KEY_PATH}" \

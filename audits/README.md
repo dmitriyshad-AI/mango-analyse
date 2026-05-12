@@ -18,4 +18,6 @@ This folder is the formal handoff surface between Codex and Claude Code.
 9. If a new issue class appears, classify it as known class or future threat-model class.
 10. Keep audits focused: verify the pack and previous findings, do not expand scope endlessly.
 
-Last audit: none yet.
+Last Claude Code audit: none yet.
+
+Historical Claude/Cowork audit packages exist under `stable_runtime/claude_stage15*`; those are reference artifacts, not results of this in-repo Claude Code workflow.

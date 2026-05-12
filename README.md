@@ -5,7 +5,7 @@ Working MVP scaffold to process exported Mango call recordings in batch:
 1. ingest audio files
 2. transcribe calls
 3. extract sales insights
-4. sync notes/custom fields/tasks to amoCRM contacts
+4. prepare CRM-ready reports and guarded amoCRM runtime writeback
 
 This repo is intentionally simple and safe for first launch:
 - SQLite by default
@@ -18,7 +18,8 @@ This repo is intentionally simple and safe for first launch:
 - `ffprobe` and `ffmpeg` in PATH (recommended for metadata and channel split)
   - if `ffprobe` is missing on macOS, ingest now falls back to `afinfo` for duration/rate/channels
 - OpenAI API key (if using `openai` providers)
-- amoCRM OAuth credentials (if disabling `SYNC_DRY_RUN`)
+- amoCRM OAuth credentials for guarded runtime integrations; legacy sync requires
+  an explicit maintenance opt-in
 
 ## Quick start
 
@@ -41,15 +42,24 @@ If `mango-mvp` is not in PATH, use:
 python3 -m mango_mvp.cli <command>
 ```
 
-## Git + CI/CD (auto deploy)
+## Git + CI/CD
 
 The project includes Git/bootstrap and deployment automation:
 
 - bootstrap remote and first push: `scripts/git_bootstrap.sh`
-- optional auto commit/push loop: `scripts/start_autocommit_push.sh` and `scripts/stop_autocommit_push.sh`
 - CI workflow: `.github/workflows/ci.yml`
 - auto deploy workflow: `.github/workflows/deploy-server.yml`
 - server rebuild script: `deploy/server_rebuild.sh`
+
+Historical auto commit/push helpers still exist:
+
+- `scripts/start_autocommit_push.sh`
+- `scripts/stop_autocommit_push.sh`
+- `scripts/autocommit_push_loop.sh`
+
+They are marked `DANGEROUS_LEGACY` in `docs/SCRIPT_SAFETY_MATRIX.md` and are
+not the normal workflow. Use explicit `git add`, `git diff --cached --check`,
+tests, `git commit`, and `git push`.
 
 Setup guide:
 
@@ -337,6 +347,12 @@ mango-mvp migrate-analysis-schema --only-done --limit 10000
 
 ## amoCRM sync
 
+Current production-oriented amoCRM work lives in `src/mango_mvp/amocrm_runtime/`
+and uses explicit dry-run/live gates. See:
+
+- `docs/SCRIPT_SAFETY_MATRIX.md`
+- `docs/AMO_TALLANTO_FIELD_MAPPING_PROD.md`
+
 Legacy sync logic:
 
 - find contact by phone (`query` with last 10 digits)
@@ -350,20 +366,21 @@ Useful custom-field mappings:
 - `AMOCRM_TARGET_PRODUCT_FIELD_ID`
 - `AMOCRM_PERSONAL_OFFER_FIELD_ID`
 
-This path is deprecated and disabled by default. Enable it only for explicit maintenance
-runs:
+This path is deprecated and disabled by default. Enable it only for explicit
+maintenance runs:
 
 ```bash
 LEGACY_AMOCRM_SYNC_ENABLED=true
 ```
 
-Run safe test first:
+Even after enabling legacy sync, run a dry-run first:
 
 ```bash
 SYNC_DRY_RUN=true
 ```
 
-Then switch to production:
+Live legacy sync is not the recommended product path. If it is needed for
+maintenance, switch only after a reviewed batch:
 
 ```bash
 SYNC_DRY_RUN=false
@@ -480,6 +497,11 @@ Run basic operational checks:
 ```bash
 make test-smoke
 ```
+
+`make test-smoke` includes `stable_runtime/rebuild_snapshot.sh` only in
+`MANGO_STABLE_SMOKE_ONLY=1` mode. `make audit` writes audit artifacts under
+`stable_runtime/project_audit_<timestamp>/`; use `make audit-fast` when you only
+need the report without the full test run.
 
 ## Suggested next improvements
 

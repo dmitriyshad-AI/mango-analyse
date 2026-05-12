@@ -37,6 +37,7 @@ This initial scaffold is the only exception: Codex creates the empty `audits/_re
 Agents communicate only through formal artifacts:
 
 - `docs/THREAT_MODEL.md`
+- current Stage15 / frozen-corpus / fixpoint summaries referenced by the pack
 - audit packs in `audits/_inbox/`
 - `CLAUDE_REAUDIT_RESULT.md`
 - `findings.csv`
@@ -98,6 +99,17 @@ Claude Code must not:
 - mutate `stable_runtime/`;
 - edit implementation files;
 - edit tests;
+
+## Current Release References
+
+As of 2026-05-10, the current transcript-quality release references are:
+
+- Stage15: `stable_runtime/transcript_quality_stage15_export_gate_20260510_v11_frozen_gate/summary.json`
+- Frozen corpus: `stable_runtime/bot_safety_frozen_corpus_20260510_v3_frozen_gate/bot_safety_adversarial_cases.jsonl`
+- Frozen validation: `stable_runtime/bot_safety_frozen_corpus_validation_20260510_v4_frozen_gate/summary.json`
+- Canonical post-backfill DB: `stable_runtime/canonical_master_20260510_after_quality_backfill_v1/canonical_calls_master.db`
+
+CRM/writeback audits must verify that new inputs are derived from this post-backfill layer and not from the old April `sales_master_export_*` pointer.
 - edit docs outside `audits/_results/`.
 
 Codex must not:

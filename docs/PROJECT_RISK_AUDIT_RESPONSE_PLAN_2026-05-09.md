@@ -68,16 +68,16 @@
 | RA-003 | P0 | `scripts/write_amo_ready_contacts.py` может выполнять live AMO writes без достаточного friction. | this dialog | Добавлен dry-run default и live gate: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. | Unit tests проверяют default dry-run и отказ без confirmation. | done |
 | RA-004 | P0 | `scripts/write_recent_actionable_deals.py` может выполнять live AMO writeback. | this dialog | Добавлен dry-run default и live gate: `--execute-live-write --live-confirmation WRITE_AMO_LIVE`. | Unit tests проверяют default dry-run и отказ без confirmation. | done |
 | RA-005 | P0 | FastAPI `/deals/writeback` и `apply_writeback` могут стать live write entrypoints. | this dialog | Добавлен HTTP policy gate: live write только при `execute_live_write=true` и `live_confirmation=WRITE_AMO_LIVE`. | `TestClient` tests на отказ без confirmation и live path с mock write. | done |
-| RA-006 | P0 | Legacy `sync_amocrm` может писать notes/fields/tasks при env-флаге. | this dialog | Не удалять, но усилить документацию и tests: default disabled, live mode явно маркирован, в runbook указать как dangerous legacy. | Existing/added tests на disabled default и explicit env gate. | open |
-| RA-007 | P1 | `scripts/` вырос до 98 файлов, каталог описывает около 49. | this dialog | Обновить `docs/CLI_AND_SCRIPTS_CATALOG_2026-05-07.md` или создать canonical `docs/CLI_AND_SCRIPTS_CATALOG.md` со всеми scripts. | Script inventory command сравнивает количество с каталогом. | open |
+| RA-006 | P0 | Legacy `sync_amocrm` может писать notes/fields/tasks при env-флаге. | this dialog | Legacy sync оставлен только как explicit maintenance path: default disabled, README маркирует deprecated path, добавлен service-level guard test. | `tests/test_legacy_amocrm_sync_guard.py`; existing CLI test на отказ без opt-in. | done |
+| RA-007 | P1 | `scripts/` вырос до 98 файлов, каталог описывает около 49. | this dialog | Каталог обновлен до фактических `101` scripts, с owner/status/safety class. | `docs/CLI_AND_SCRIPTS_CATALOG_2026-05-07.md`; `find scripts -maxdepth 1 -type f`. | done |
 | RA-008 | P1 | Нет `SCRIPT_SAFETY_MATRIX.md`. | this dialog | Создана матрица безопасности скриптов: read-only, report writes, DB/runtime, network, CRM, ASR/R+A, approval required, recommended/default command. | `docs/SCRIPT_SAFETY_MATRIX.md`; targeted tests для live write gates. | done |
-| RA-009 | P1 | README упоминает auto commit/push scripts как нормальный путь. | this dialog | Обновить README: auto commit/push scripts пометить historical/dangerous, нормальный workflow через ручной commit/push. | README review; grep `autocommit_push`. | open |
+| RA-009 | P1 | README упоминает auto commit/push scripts как нормальный путь. | this dialog | README обновлен: auto commit/push helpers помечены historical/`DANGEROUS_LEGACY`; нормальный workflow через ручной commit/test/push. | README review; grep `autocommit_push`. | done |
 | RA-010 | P1 | Runbook говорит про safety, но live write scripts существуют отдельно. | this dialog | В runbook добавлен раздел safety matrix и правило live amoCRM confirmation. | Docs review; runbook links `docs/SCRIPT_SAFETY_MATRIX.md`. | done |
-| RA-011 | P1 | Нет canonical AMO/Tallanto field mapping и writeback policy. | this dialog | Создать `docs/AMO_TALLANTO_FIELD_MAPPING_PROD.md`: поля, владелец, allowed writes, dry-run/live rollout, rollback. | Review by owner; tests for mapping helpers later. | open |
-| RA-012 | P1 | Нет canonical `docs/ARCHITECTURE_CURRENT.md` и `docs/DATA_MODEL.md`. | this dialog | Создать текущую архитектуру и data model/status docs после принятия audit response, чтобы UI/API строились на понятных контрактах. | Docs review; links from development plan/runbook. | open |
+| RA-011 | P1 | Нет canonical AMO/Tallanto field mapping и writeback policy. | this dialog | Создан `docs/AMO_TALLANTO_FIELD_MAPPING_PROD.md`: поля, владелец, allowed writes, dry-run/live rollout, rollback. | Docs review; existing AMO guard tests. | done |
+| RA-012 | P1 | Нет canonical `docs/ARCHITECTURE_CURRENT.md` и `docs/DATA_MODEL.md`. | this dialog | Созданы `docs/ARCHITECTURE_CURRENT.md` и `docs/DATA_MODEL.md`; новая dashboard-фича спланирована в `docs/NEXT_FEATURE_APPLIANCE_DASHBOARD_PLAN_2026-05-09.md`. | Docs review; `git diff --check`. | done |
 | RA-013 | P1 | Старый `mango_office_download_recordings.py` опаснее нового guarded downloader. | this dialog | В safety matrix рекомендован guarded `mango_office_recording_capture_download.py`; старый downloader помечен `DANGEROUS_LEGACY`. Код не удалялся. | Docs review; optional CLI guard later. | done |
-| RA-014 | P1 | `make test-smoke` может запускать `stable_runtime/rebuild_snapshot.sh`. | this dialog | Пересмотреть Makefile/test-smoke: либо исключить unsafe smoke, либо явно назвать команду dangerous/integration. | `make test-smoke` review; tests not run if unsafe. | open |
-| RA-015 | P1 | `make audit` пишет в `stable_runtime/project_audit_*`. | this dialog | Решить: оставить как explicit local audit command или перенести default output в ignored `_local_archive`/`/private/tmp`. Документировать writes. | `--help`/docs; no surprise writes. | open |
+| RA-014 | P1 | `make test-smoke` может запускать `stable_runtime/rebuild_snapshot.sh`. | this dialog | Makefile теперь явно предупреждает, что smoke включает `stable_runtime/rebuild_snapshot.sh` только в `MANGO_STABLE_SMOKE_ONLY=1` mode. | Makefile review. | done |
+| RA-015 | P1 | `make audit` пишет в `stable_runtime/project_audit_*`. | this dialog | Makefile теперь явно предупреждает, что `audit`/`audit-fast` пишут в `stable_runtime/project_audit_<timestamp>/`. | Makefile review; `project_audit.py --help`. | done |
 | RA-016 | P1 | Transcript quality/processing problems найдены отдельно. | processing dialog | Оставить processing-диалогу. Этот диалог не меняет processing modules, пока второй диалог активно правит качество обработки транскрибированных звонков. | Дождаться plan/results от processing-диалога; не конфликтовать по файлам. | in_progress_elsewhere |
 | RA-017 | P2 | Большие runtime/data folders внутри repo tree: audio, stable_runtime, Telegram exports, local archives. | later cleanup | Не удалять. Сначала сделать manifest, подтвердить владельца данных, затем план переноса в data volume/archive. | Manifest + size report; backup before move. | deferred |
 | RA-018 | P2 | `.git` раздута до примерно 2.4G. | later cleanup | Не переписывать историю сейчас. Позже проверить large tracked history и необходимость git gc/filter-repo только после backup. | `git count-objects -vH`, `git-sizer` if available. | deferred |
@@ -123,7 +123,7 @@ Scope:
 
 Перед началом: проверить, не меняет ли processing-диалог эти же файлы.
 
-### WP-3. Canonical writeback policy docs
+### WP-3. Canonical writeback policy docs - done
 
 Цель: закрыть RA-011.
 
@@ -181,9 +181,9 @@ Processing-диалог владеет:
 Summary:
 
 - accepted internal risk: RA-001;
-- done in this pass: RA-002, RA-003, RA-004, RA-005, RA-008, RA-010, RA-013;
+- done in this pass: RA-002, RA-003, RA-004, RA-005, RA-006, RA-007, RA-008, RA-009, RA-010, RA-011, RA-012, RA-013, RA-014, RA-015;
 - in progress elsewhere: RA-016;
-- ready for this dialog: RA-006, RA-007, RA-009, RA-011, RA-012, RA-014, RA-015, RA-021, RA-022, RA-025;
+- ready for this dialog: RA-021, RA-022, RA-025;
 - deferred cleanup: RA-017 to RA-020, RA-023, RA-024, RA-026 to RA-028.
 
-Recommended immediate next step: WP-3 `docs/AMO_TALLANTO_FIELD_MAPPING_PROD.md`.
+Recommended immediate next step: implement Appliance Dashboard v1 from `docs/NEXT_FEATURE_APPLIANCE_DASHBOARD_PLAN_2026-05-09.md`.

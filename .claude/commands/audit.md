@@ -9,12 +9,17 @@ Read:
 - `CLAUDE.md`
 - `docs/AI_WORKFLOW.md`
 - `docs/THREAT_MODEL.md`
+- current formal release artifacts referenced by the audit package, especially Stage15 and frozen-corpus summaries
 - audit package at `$ARGUMENTS`
 - previous results in `audits/_results/`, if relevant to the package
 
 ## Scope
 
-Цель - проверить, что в финальном `bot_export_allowlist.csv` из audit package не нарушен ни один класс из `docs/THREAT_MODEL.md`, и что предыдущие findings устранены.
+Цель зависит от типа пакета:
+
+- для bot/allowlist пакета: проверить, что финальный `bot_export_allowlist.csv` не нарушает классы из `docs/THREAT_MODEL.md`, и что предыдущие findings устранены;
+- для CRM/AMO/writeback пакета: проверить, что transcript-derived история общения, AMO-ready строки и dry-run/offline-preview payload безопасны, не используют старый export pointer, не содержат очевидно несодержательные/wrong-number/no-dialogue кейсы и не пишут protected fields;
+- для ROP/internal пакета: проверить полноту, отсутствие искусственного обрезания и корректное отделение internal-only данных от bot-safe/CRM-safe данных.
 
 Не расширяй scope на бесконечный поиск новых классов. Если находишь новую проблему, классифицируй ее:
 
@@ -56,10 +61,10 @@ Write:
 
 ## Required Verdict
 
-Final verdict must answer:
+Final verdict must answer the relevant question for the package:
 
 ```text
-Can the controlled allowlist be considered safe enough until the next architecture iteration?
+Can this package safely proceed to the next staged step?
 ```
 
 Use one of:
@@ -105,6 +110,8 @@ Decision values:
 - `allow`
 - `block`
 - `needs_review`
+
+For CRM/AMO packages, `allow` means “safe for the next staged dry-run/live pilot under existing writeback guards”, not permission for unrestricted full live writeback.
 
 ## Result Markdown Structure
 

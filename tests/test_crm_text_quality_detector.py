@@ -221,6 +221,34 @@ def test_empty_auto_history_readback_is_blocking() -> None:
     assert has_blocking_crm_text_quality_risk(row) is True
 
 
+def test_cross_field_duplicate_information_is_blocking() -> None:
+    repeated = (
+        "Клиент интересуется летним лагерем, уточняет стоимость и просит отправить материалы "
+        "для согласования с семьей."
+    )
+    row = {
+        "Последняя AI-сводка": repeated,
+        "Авто история общения": f"Сводка клиента: {repeated}",
+        "AI-рекомендованный следующий шаг": "Отправить материалы и перезвонить 15.05.2026",
+    }
+
+    risks = _risk_types(row)
+
+    assert "cross_field_duplicate_information" in risks
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_distinct_contact_fields_do_not_trigger_cross_field_duplication() -> None:
+    row = {
+        "AI-краткая сводка клиента": "Семья выбирает летний лагерь для ученика 8 класса, интерес теплый.",
+        "AI-история общения": "27.04 обсудили даты. 29.04 клиент попросил отправить программу и условия оплаты.",
+        "AI-рекомендованный следующий шаг": "Отправить программу и перезвонить 15.05.2026",
+        "AI-учебный контекст Tallanto": "В Tallanto активных занятий и списаний по этому продукту пока нет.",
+    }
+
+    assert "cross_field_duplicate_information" not in _risk_types(row)
+
+
 def test_allows_compact_actionable_crm_card() -> None:
     row = {
         "Авто история общения": (

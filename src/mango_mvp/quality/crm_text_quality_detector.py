@@ -21,6 +21,12 @@ class CrmTextQualityFinding:
 TARGET_CRM_TEXT_FIELDS = (
     "Авто история общения",
     "Последняя AI-сводка",
+    "AI-краткая сводка клиента",
+    "AI-история общения",
+    "AI-активные сделки клиента",
+    "AI-учебный контекст Tallanto",
+    "AI-финансы Tallanto",
+    "AI-важные риски клиента",
     "Краткая история общения",
     "Хронология общения (последние 5 касаний)",
     "Краткое резюме последнего свежего звонка",
@@ -28,6 +34,14 @@ TARGET_CRM_TEXT_FIELDS = (
     "Возражения",
     "Следующий шаг",
     "AI-рекомендованный следующий шаг",
+    "AI-сводка по сделке",
+    "AI-история по сделке",
+    "AI-фактический статус сделки",
+    "AI-актуальные возражения",
+    "AI-основание рекомендации",
+    "AI-качество привязки к сделке",
+    "AI-предупреждение по сделке",
+    "AI-Tallanto статус по сделке",
 )
 AUTO_HISTORY_FIELDS = ("Авто история общения", "auto_history", "autoHistory")
 OBJECTION_FIELDS = (
@@ -200,6 +214,7 @@ def detect_crm_text_quality_risks(
         )
     )
     findings.extend(_detect_empty_auto_history(payload))
+    findings.extend(_detect_cross_field_duplicate_information(payload))
 
     return [finding for finding in findings if finding.severity in allowed]
 
@@ -582,6 +597,30 @@ def _detect_empty_auto_history(payload: object) -> list[CrmTextQualityFinding]:
     return []
 
 
+def _detect_cross_field_duplicate_information(payload: object) -> list[CrmTextQualityFinding]:
+    if not isinstance(payload, Mapping):
+        return []
+
+    fields = [(field, value) for field, value in _iter_target_text_fields(payload) if len(value) >= 60]
+    result: list[CrmTextQualityFinding] = []
+    for index, (left_field, left_text) in enumerate(fields):
+        for right_field, right_text in fields[index + 1 :]:
+            duplicate = _cross_field_duplicate_reason(left_text, right_text)
+            if not duplicate:
+                continue
+            result.append(
+                CrmTextQualityFinding(
+                    class_id="Q7",
+                    risk_type="cross_field_duplicate_information",
+                    severity="P2",
+                    field=f"{left_field} <-> {right_field}",
+                    matched_text=duplicate,
+                    reason="Different CRM AI fields must carry unique information, not repeat the same manager-facing text",
+                )
+            )
+    return _dedupe_findings(result)
+
+
 def _iter_target_text_fields(payload: object) -> Iterable[tuple[str, str]]:
     if isinstance(payload, Mapping):
         seen: set[str] = set()
@@ -762,6 +801,77 @@ def _dedupe_findings(findings: Iterable[CrmTextQualityFinding]) -> list[CrmTextQ
         seen.add(key)
         result.append(finding)
     return result
+
+
+def _cross_field_duplicate_reason(left: str, right: str) -> str:
+    left_clean = _normalize_for_similarity(left)
+    right_clean = _normalize_for_similarity(right)
+    if not left_clean or not right_clean:
+        return ""
+
+    smaller_text, larger_text = (left_clean, right_clean) if len(left_clean) <= len(right_clean) else (right_clean, left_clean)
+    if len(smaller_text) >= 90 and smaller_text in larger_text:
+        return _snippet(smaller_text, 0, min(len(smaller_text), 180), radius=0)
+
+    for sentence in _significant_sentences(smaller_text):
+        if sentence in larger_text:
+            return _snippet(sentence, 0, min(len(sentence), 180), radius=0)
+
+    left_tokens = _significant_tokens(left_clean)
+    right_tokens = _significant_tokens(right_clean)
+    if len(left_tokens) < 12 or len(right_tokens) < 12:
+        return ""
+    smaller_tokens, larger_tokens = (
+        (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
+    )
+    containment = len(smaller_tokens & larger_tokens) / max(len(smaller_tokens), 1)
+    if containment >= 0.82:
+        return _snippet(smaller_text, 0, min(len(smaller_text), 180), radius=0)
+    return ""
+
+
+def _normalize_for_similarity(value: str) -> str:
+    text = _safe_text(value).casefold()
+    text = re.sub(r"\[[a-zа-я0-9_ -]+\]", " ", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[\u2013\u2014]", "-", text)
+    text = re.sub(r"[^а-яa-z0-9ё.?!;: -]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _significant_sentences(value: str) -> list[str]:
+    result: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+|[;\n\r]+", value):
+        text = sentence.strip(" .:-")
+        if len(text) >= 70 and len(_significant_tokens(text)) >= 10:
+            result.append(text)
+    return result
+
+
+def _significant_tokens(value: str) -> set[str]:
+    stopwords = {
+        "клиент",
+        "клиента",
+        "клиенту",
+        "клиентка",
+        "менеджер",
+        "звонок",
+        "общение",
+        "сделка",
+        "сделке",
+        "следующий",
+        "текущий",
+        "актуальный",
+        "последний",
+        "история",
+        "сводка",
+    }
+    return {
+        token
+        for token in re.findall(r"[а-яa-z0-9ё]{4,}", value.casefold())
+        if token not in stopwords and not token.isdigit()
+    }
 
 
 def _with_row_index(finding: CrmTextQualityFinding, row_index: int) -> CrmTextQualityFinding:

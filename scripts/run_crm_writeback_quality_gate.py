@@ -149,6 +149,7 @@ def main() -> int:
                 "passive_customer_next_step_conflict",
                 "explicit_no_next_step_conflict",
                 "completed_payment_next_step_conflict",
+                "cross_field_duplicate_information",
             )
         )})
 
@@ -226,6 +227,7 @@ def main() -> int:
                 "passive_customer_next_step_conflict",
                 "explicit_no_next_step_conflict",
                 "completed_payment_next_step_conflict",
+                "cross_field_duplicate_information",
             ],
         },
         "c12_history_duplication": c12_summary,

@@ -108,6 +108,7 @@
 | `mango_office_demo_tenant.py` | productization | `SAFE_REPORT_WRITES` | Создает обезличенный demo product root. | Безопасно для демо и UI smoke. |
 | `mango_office_demo_pilot_playbook.py` | productization | `SAFE_REPORT_WRITES` | Пишет demo/pilot playbook из product-safe данных. | Не читает runtime DB и не пишет CRM. |
 | `mango_office_download_recordings.py` | productization | `DANGEROUS_LEGACY` | Старый путь скачивания записей. | Предпочитать guarded downloader ниже. |
+| `mango_office_mail_archive.py` | productization | `NETWORK_READ_ONLY` | Read-only IMAP ingest через `BODY.PEEK[]`; пишет локальный mail archive/matching artifacts, не отправляет, не удаляет, не двигает письма, не пишет CRM/Tallanto. | Запускать малыми pilot batch; output держать в ignored `_external_handoffs/`. |
 | `mango_office_manager_identity_map.py` | productization | `SAFE_REPORT_WRITES` | Пишет manager identity map. | Безопасно. |
 | `mango_office_payload_archive.py` | productization | `SAFE_REPORT_WRITES` | Архивирует raw payload локально. | Не включать secrets в bundle. |
 | `mango_office_pipeline_bridge_dry_run.py` | productization | `SAFE_REPORT_WRITES` | Dry-run bridge. | Безопасно. |

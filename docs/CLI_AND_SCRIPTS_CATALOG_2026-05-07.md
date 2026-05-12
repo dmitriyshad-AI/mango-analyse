@@ -94,6 +94,7 @@ find scripts -maxdepth 1 -type f -print | sort
 | `scripts/mango_office_demo_tenant.py` | productization | canonical | `SAFE_REPORT_WRITES` | Builds anonymized demo product root |
 | `scripts/mango_office_demo_pilot_playbook.py` | productization | canonical | `SAFE_REPORT_WRITES` | Builds demo/pilot playbook from product-safe data |
 | `scripts/mango_office_download_recordings.py` | productization | legacy | `DANGEROUS_LEGACY` | Prefer guarded downloader |
+| `scripts/mango_office_mail_archive.py` | productization | canonical | `NETWORK_READ_ONLY` | Read-only IMAP archive and Tallanto identity matching |
 | `scripts/mango_office_manager_identity_map.py` | productization | canonical | `SAFE_REPORT_WRITES` | Manager identity map |
 | `scripts/mango_office_payload_archive.py` | productization | canonical | `SAFE_REPORT_WRITES` | Raw payload archive |
 | `scripts/mango_office_pipeline_bridge_dry_run.py` | productization | canonical | `SAFE_REPORT_WRITES` | Bridge dry-run |

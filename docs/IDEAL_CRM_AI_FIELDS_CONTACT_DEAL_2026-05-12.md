@@ -10,6 +10,17 @@ Deal card = only context and next action for one specific sale/deal.
 
 If a fact belongs to the student/family overall, it belongs in contact-level AI fields. If it changes what the manager should do in one AMO deal, it belongs in deal-level AI fields.
 
+Each AI field must answer its own question. Do not duplicate the same paragraph, sentence, or full set of facts across several fields. Repetition is a product defect because a manager has to reread the same information several times.
+
+Field uniqueness policy:
+
+- summary fields: state and conclusion only;
+- history fields: timeline only, without copying the summary paragraph;
+- next-step fields: one concrete action only, without history;
+- priority/status fields: short label only;
+- Tallanto fields: study/finance facts only;
+- warning/risk fields: only the reason to be careful.
+
 ## Contact-level AI fields
 
 ### Minimum production fields
@@ -119,6 +130,7 @@ The following fields already exist in AMO leads/deals and can support the first 
 - Do not treat an active student as a cold lead.
 - Do not recommend an old campaign if the client was moved to next academic year/perspective.
 - Do not duplicate full contact history inside every deal.
+- Do not duplicate the same manager-facing text across summary, history, next-step, Tallanto, and risk fields.
 - Do not write service/current-student facts into a new-sales deal unless that deal is explicitly about renewal/upsell.
 - Do not overwrite non-empty deal AI fields in live mode until readback and audit gates are green.
 

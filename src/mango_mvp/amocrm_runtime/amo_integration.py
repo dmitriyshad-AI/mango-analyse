@@ -798,7 +798,13 @@ def _normalize_field_value_for_meta(meta: dict[str, Any], value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_field_value_for_meta(meta, item) for item in value]
     if isinstance(value, str) and field_type == "text" and len(value) > 255:
-        return value[:252].rstrip() + "..."
+        suffix = " [сжато]"
+        budget = max(20, 255 - len(suffix))
+        candidate = value[:budget].rstrip()
+        word_boundary = max(candidate.rfind(" "), candidate.rfind(","), candidate.rfind(";"), candidate.rfind("."))
+        if word_boundary >= int(budget * 0.55):
+            candidate = candidate[:word_boundary].rstrip(" ,;.")
+        return f"{candidate}{suffix}"
     return value
 
 
@@ -1159,12 +1165,23 @@ def get_amo_connection_status(session: Session) -> dict[str, Any]:
     env_base = _normalize_base_url(settings.crm_amo_base_url)
     env_token = str(settings.crm_amo_api_token or "").strip()
     env_connected = bool(env_base and env_token)
+    connection_status = connection.status if connection is not None else None
+    token_stale = _token_is_stale(connection) if connection is not None else False
+    connection_can_sync_lead_fields = bool(
+        connection is not None
+        and connection.access_token
+        and connection_status == "active"
+        and not token_stale
+    )
     lead_fields: list[dict[str, Any]] = []
     lead_field_error: Optional[str] = None
-    try:
-        lead_fields = fetch_lead_field_catalog(session)
-    except Exception as exc:
-        lead_field_error = str(exc)
+    if env_connected or connection_can_sync_lead_fields:
+        try:
+            lead_fields = fetch_lead_field_catalog(session)
+        except Exception as exc:
+            lead_field_error = str(exc)
+    else:
+        lead_field_error = "skipped: amoCRM connection is not active"
     lead_field_names = {str(item.get("name") or "").strip() for item in lead_fields if isinstance(item, dict)}
     required_lead_present = [
         field_name for field_name in DEFAULT_REQUIRED_AMO_LEAD_FIELDS if field_name in lead_field_names
@@ -1206,11 +1223,12 @@ def get_amo_connection_status(session: Session) -> dict[str, Any]:
     required_missing = [
         field_name for field_name in DEFAULT_REQUIRED_AMO_CONTACT_FIELDS if field_name not in field_names
     ]
-    token_stale = _token_is_stale(connection)
-    connection_status = connection.status
     connected = bool(connection.access_token) and not token_stale and connection_status not in {
         "reauthorization_required",
         "refresh_error",
+        "awaiting_callback",
+        "awaiting_secrets",
+        "pending",
     }
     if token_stale and connection_status == "active":
         connection_status = "token_stale"

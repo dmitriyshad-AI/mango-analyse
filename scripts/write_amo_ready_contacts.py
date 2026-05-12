@@ -1,16 +1,33 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
+import math
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
+from mango_mvp.quality.crm_text_quality_detector import (
+    detect_crm_text_quality_risks,
+    has_blocking_crm_text_findings,
+)
 from mango_mvp.utils.phone import normalize_phone
+
+try:
+    import pandas as pd
+except ImportError:  # pragma: no cover - optional runtime dependency
+    pd = None
+
+try:
+    import xlsxwriter
+except ImportError:  # pragma: no cover - optional runtime dependency
+    xlsxwriter = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -23,11 +40,82 @@ TARGET_CONTACT_FIELDS = (
     "Последняя AI-сводка",
     "Авто история общения",
 )
+REQUIRED_TEXTAREA_CONTACT_FIELDS = (
+    "AI-рекомендованный следующий шаг",
+    "Последняя AI-сводка",
+    "Авто история общения",
+)
 ENV_FILES = (
     PROJECT_ROOT / "stable_runtime" / "amocrm_runtime" / ".env.private",
     PROJECT_ROOT / "prod_runtime_transfer" / ".env.private",
 )
 LIVE_WRITE_CONFIRMATION = "WRITE_AMO_LIVE"
+TEXT_COMPACTION_SUFFIX = " [сжато]"
+MAX_AMO_TEXT_FIELD_CHARS = 240
+MAX_NEXT_STEP_CHARS = 800
+MAX_LAST_SUMMARY_CHARS = 1200
+MAX_AUTO_HISTORY_CHARS = 1600
+
+
+def _quality_gate_summary_passed(path_value: str | None) -> bool:
+    path_text = _safe_text(path_value)
+    if not path_text:
+        raise ValueError("Live amoCRM writeback requires --quality-gate-summary with Stage15 passed summary.json.")
+    path = Path(path_text).expanduser().resolve()
+    if not path.exists():
+        raise ValueError(f"Quality gate summary does not exist: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Quality gate summary is not valid JSON: {path}") from exc
+    if not bool(payload.get("passed")):
+        raise ValueError("Quality gate summary is not passed.")
+    readiness = payload.get("readiness") or {}
+    if not bool(readiness.get("crm_quality_writeback_ready")):
+        raise ValueError("Quality gate summary does not allow CRM quality writeback.")
+    return True
+
+
+def _crm_writeback_quality_summary_passed(
+    path_value: str | None,
+    *,
+    expected_input: str | None = None,
+) -> bool:
+    path_text = _safe_text(path_value)
+    if not path_text:
+        raise ValueError("Live amoCRM writeback requires --crm-writeback-quality-summary from run_crm_writeback_quality_gate.py.")
+    path = Path(path_text).expanduser().resolve()
+    if not path.exists():
+        raise ValueError(f"CRM writeback quality summary does not exist: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"CRM writeback quality summary is not valid JSON: {path}") from exc
+    if not bool(payload.get("passed")):
+        raise ValueError("CRM writeback quality summary is not passed.")
+    expected_input_text = _safe_text(expected_input)
+    summary_input_text = _safe_text(payload.get("input"))
+    if expected_input_text:
+        if not summary_input_text:
+            raise ValueError("CRM writeback quality summary is missing input path.")
+        expected_input_path = Path(expected_input_text).expanduser().resolve()
+        summary_input_path = Path(summary_input_text).expanduser().resolve()
+        if summary_input_path != expected_input_path:
+            raise ValueError(
+                "CRM writeback quality summary input does not match --input: "
+                f"{summary_input_path} != {expected_input_path}"
+            )
+    population = payload.get("population_recall") or {}
+    if population and not bool(population.get("passed_for_live")):
+        raise ValueError("CRM writeback population recall gate does not allow live writeback.")
+    crm_text_quality = payload.get("crm_text_quality")
+    if not isinstance(crm_text_quality, dict):
+        raise ValueError("CRM writeback quality summary is missing crm_text_quality gate.")
+    if not bool(crm_text_quality.get("passed_for_live")):
+        raise ValueError("CRM text quality gate does not allow live writeback.")
+    if int(crm_text_quality.get("blocking_rows") or 0) != 0:
+        raise ValueError("CRM text quality gate has blocking rows.")
+    return True
 
 
 def _live_write_enabled(args: argparse.Namespace) -> bool:
@@ -37,6 +125,12 @@ def _live_write_enabled(args: argparse.Namespace) -> bool:
         raise ValueError(
             f"Live amoCRM writeback requires --live-confirmation {LIVE_WRITE_CONFIRMATION!r}."
         )
+    if execute_live_write:
+        _quality_gate_summary_passed(getattr(args, "quality_gate_summary", ""))
+        _crm_writeback_quality_summary_passed(
+            getattr(args, "crm_writeback_quality_summary", ""),
+            expected_input=getattr(args, "input", ""),
+        )
     if confirmation and not execute_live_write:
         raise ValueError("--live-confirmation is only valid together with --execute-live-write.")
     return execute_live_write
@@ -45,7 +139,7 @@ def _live_write_enabled(args: argparse.Namespace) -> bool:
 def _safe_text(value: Any) -> str:
     if value is None:
         return ""
-    if isinstance(value, float) and pd.isna(value):
+    if isinstance(value, float) and (math.isnan(value) or (pd is not None and pd.isna(value))):
         return ""
     return str(value).strip()
 
@@ -69,11 +163,11 @@ def _load_env_files() -> None:
 def _compose_last_summary(row: dict[str, Any]) -> str:
     summary = _safe_text(row.get("Краткое резюме последнего свежего звонка"))
     if summary:
-        return summary
+        return _compact_without_ellipsis(summary, limit=MAX_LAST_SUMMARY_CHARS)
     history = _safe_text(row.get("Краткая история общения"))
     if not history:
         return ""
-    return history if len(history) <= 252 else history[:252].rstrip() + "..."
+    return _compact_without_ellipsis(history, limit=MAX_LAST_SUMMARY_CHARS)
 
 
 def _compose_auto_history(row: dict[str, Any]) -> str:
@@ -92,8 +186,9 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
 
     if history:
         blocks.append("Сводка клиента:\n" + history)
-    if chronology:
-        blocks.append("Хронология общения (последние 5 касаний):\n" + chronology)
+    chronology_block = ""
+    if chronology and not _is_redundant_history_block(history, chronology):
+        chronology_block = "Хронология общения (последние 5 касаний):\n" + chronology
 
     facts: list[str] = []
     if product:
@@ -116,27 +211,184 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
     if tallanto_history:
         blocks.append("История общения Tallanto:\n" + tallanto_history)
 
+    if chronology_block:
+        with_chronology = "\n\n".join([*blocks[:1], chronology_block, *blocks[1:]]).strip()
+        if len(with_chronology) <= MAX_AUTO_HISTORY_CHARS:
+            return with_chronology
+        blocks.append("Хронология: есть в полной рабочей таблице; в карточке оставлена компактная сводка.")
+
     return "\n\n".join(block for block in blocks if block.strip()).strip()
+
+
+def _compact_without_ellipsis(text: Any, *, limit: int) -> str:
+    value = _safe_text(text)
+    if len(value) <= limit:
+        return value
+    budget = max(20, limit - len(TEXT_COMPACTION_SUFFIX))
+    candidate = value[:budget].rstrip()
+    word_boundary = max(candidate.rfind(" "), candidate.rfind(","), candidate.rfind(";"), candidate.rfind("."))
+    if word_boundary >= int(budget * 0.55):
+        candidate = candidate[:word_boundary].rstrip(" ,;.")
+    return f"{candidate}{TEXT_COMPACTION_SUFFIX}"
+
+
+def _token_set(value: str) -> set[str]:
+    return {token for token in re.findall(r"[а-яa-z0-9]{4,}", value.casefold()) if token}
+
+
+def _is_redundant_history_block(history: str, chronology: str) -> bool:
+    history_tokens = _token_set(history)
+    chronology_tokens = _token_set(chronology)
+    if len(chronology_tokens) < 5 or not history_tokens:
+        return False
+    return len(history_tokens & chronology_tokens) / max(len(chronology_tokens), 1) >= 0.8
+
+
+SERVICE_CONTEXT_CALL_TYPES = {"service_call", "existing_client_progress", "technical_call"}
+
+
+def _split_ids(value: Any) -> list[str]:
+    text = _safe_text(value)
+    if not text:
+        return []
+    return [part for part in re.split(r"[|,;\s]+", text) if part.strip()]
+
+
+def _expected_amo_contact_ids(row: dict[str, Any]) -> set[str]:
+    return {part for part in _split_ids(row.get("AMO contact IDs")) if part.isdigit()}
+
+
+def _contact_id_mismatch_reason(row: dict[str, Any], contact_id: int) -> str:
+    expected_ids = _expected_amo_contact_ids(row)
+    if expected_ids and str(contact_id) not in expected_ids:
+        return "contact_id_mismatch_with_source_amo_contact_ids"
+    return ""
+
+
+def _contact_row_guard_reasons(row: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    ready = _safe_text(row.get("Готово к записи в AMO")).casefold()
+    if ready not in {"да", "yes", "true", "1"}:
+        reasons.append("row_not_marked_amo_ready")
+    call_type = _safe_text(row.get("Тип последнего свежего звонка")).casefold()
+    if call_type in SERVICE_CONTEXT_CALL_TYPES:
+        reasons.append(f"service_or_existing_client_context:{call_type}")
+    amo_ids = _split_ids(row.get("AMO contact IDs"))
+    if len(amo_ids) != 1:
+        reasons.append("missing_amo_contact_id" if not amo_ids else "multiple_amo_contact_ids")
+    policy = _safe_text(row.get("CRM writeback policy"))
+    if policy and policy != "live_update_ready":
+        reasons.append(f"crm_writeback_policy:{policy}")
+    blockers = _safe_text(row.get("CRM writeback blockers"))
+    if blockers:
+        reasons.append(f"crm_writeback_blockers:{blockers}")
+    return reasons
+
+
+def _find_catalog_field(field_catalog: list[dict[str, Any]], field_name: str) -> dict[str, Any] | None:
+    normalized = field_name.strip().casefold()
+    for item in field_catalog:
+        if str(item.get("name") or "").strip().casefold() == normalized:
+            return item
+    return None
+
+
+def _contact_field_catalog_guard_reasons(field_catalog: list[dict[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+    for field_name in TARGET_CONTACT_FIELDS:
+        meta = _find_catalog_field(field_catalog, field_name)
+        if meta is None or meta.get("id") is None:
+            reasons.append(f"missing_contact_field:{field_name}")
+            continue
+        field_type = _safe_text(meta.get("type")).casefold()
+        if field_name in REQUIRED_TEXTAREA_CONTACT_FIELDS:
+            if field_type != "textarea":
+                reasons.append(f"contact_field_not_textarea:{field_name}:{field_type or '<missing>'}")
+            if bool(meta.get("is_api_only")):
+                reasons.append(f"contact_field_api_only_not_supported:{field_name}")
+            if not _safe_text(meta.get("group_id")):
+                reasons.append(f"contact_field_missing_group:{field_name}")
+    return reasons
 
 
 def _build_contact_payload(row: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "Статус матчинга": _safe_text(row.get("Статус матчинга Tallanto")),
         "AI-приоритет": _safe_text(row.get("Приоритет лида")),
-        "AI-рекомендованный следующий шаг": _safe_text(row.get("Следующий шаг")),
+        "AI-рекомендованный следующий шаг": _compact_without_ellipsis(
+            row.get("Следующий шаг"),
+            limit=MAX_NEXT_STEP_CHARS,
+        ),
         "Последняя AI-сводка": _compose_last_summary(row),
         "Авто история общения": _compose_auto_history(row),
     }
     return {key: value for key, value in payload.items() if value}
 
 
+def _payload_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _read_rows(path: Path) -> list[dict[str, Any]]:
     if path.suffix.lower() == ".csv":
-        frame = pd.read_csv(path)
-    else:
-        frame = pd.read_excel(path)
-    frame = frame.fillna("")
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            return [dict(row) for row in csv.DictReader(fh)]
+    if pd is None:
+        raise RuntimeError("Reading .xlsx input requires pandas/openpyxl. Use CSV input in this runtime.")
+    frame = pd.read_excel(path).fillna("")
     return frame.to_dict(orient="records")
+
+
+def _write_report_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    headers: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key in seen:
+                continue
+            seen.add(key)
+            headers.append(key)
+    with path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            safe_row = {}
+            for key in headers:
+                value = row.get(key, "")
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False)
+                safe_row[key] = value
+            writer.writerow(safe_row)
+
+
+def _write_report_xlsx(path: Path, rows: list[dict[str, Any]]) -> None:
+    if pd is not None:
+        pd.DataFrame(rows).to_excel(path, index=False)
+        return
+    if xlsxwriter is None:
+        return
+    headers: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key in seen:
+                continue
+            seen.add(key)
+            headers.append(key)
+    workbook = xlsxwriter.Workbook(str(path), {"constant_memory": True})
+    worksheet = workbook.add_worksheet("report")
+    wrap = workbook.add_format({"text_wrap": True, "valign": "top"})
+    for col, header in enumerate(headers):
+        worksheet.write(0, col, header, wrap)
+        worksheet.set_column(col, col, min(max(len(header) + 2, 12), 60))
+    for row_idx, row in enumerate(rows, start=1):
+        for col, header in enumerate(headers):
+            value = row.get(header, "")
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            worksheet.write(row_idx, col, _safe_text(value), wrap)
+    workbook.close()
 
 
 def _load_skip_phones(report_path: Path | None) -> set[str]:
@@ -176,6 +428,16 @@ def _call_with_retry(fn, *args, **kwargs):
             raise
 
 
+def _preflight_runtime_db(session: Any) -> tuple[bool, str]:
+    try:
+        from sqlalchemy import text
+
+        session.execute(text("SELECT 1"))
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Dry-run/live writeback АКТУАЛЬНО_AMO_ready в контакты amoCRM.")
     parser.add_argument("--input", default=str(DEFAULT_INPUT_XLSX), help="Путь к .xlsx/.csv с AMO_ready.")
@@ -191,24 +453,52 @@ def main() -> int:
         help="Разрешить live-запись в amoCRM. Без этого флага скрипт делает только dry-run отчет.",
     )
     parser.add_argument(
+        "--offline-preview",
+        action="store_true",
+        help=(
+            "Не подключаться к amoCRM и не искать контакты; только собрать payload preview. "
+            "Используется, когда DB tunnel/OAuth runtime недоступен."
+        ),
+    )
+    parser.add_argument(
         "--live-confirmation",
         default="",
         help=f"Контрольная строка для live-записи: {LIVE_WRITE_CONFIRMATION}.",
     )
+    parser.add_argument(
+        "--quality-gate-summary",
+        default="",
+        help="Путь к Stage15 summary.json с passed=true и crm_quality_writeback_ready=true.",
+    )
+    parser.add_argument(
+        "--crm-writeback-quality-summary",
+        default="",
+        help="Путь к summary.json от run_crm_writeback_quality_gate.py; обязателен для live-записи.",
+    )
+    parser.add_argument("--expected-written", type=int, default=None, help="Fail if live written count differs.")
+    parser.add_argument("--expected-dry-run", type=int, default=None, help="Fail if dry-run count differs.")
     args = parser.parse_args()
+    if args.offline_preview and args.execute_live_write:
+        print("Refusing live amoCRM writeback: --offline-preview cannot be combined with --execute-live-write.", file=sys.stderr)
+        return 2
     try:
         live_write = _live_write_enabled(args)
     except ValueError as exc:
         print(f"Refusing live amoCRM writeback: {exc}", file=sys.stderr)
         return 2
 
-    _load_env_files()
+    search_contacts_by_phone = None
+    send_contact_custom_field_update = None
+    SessionLocal = None
+    if not args.offline_preview:
+        _load_env_files()
 
-    from mango_mvp.amocrm_runtime.amo_integration import (
-        search_contacts_by_phone,
-        send_contact_custom_field_update,
-    )
-    from mango_mvp.amocrm_runtime.db import SessionLocal
+        from mango_mvp.amocrm_runtime.amo_integration import (
+            fetch_contact_field_catalog,
+            search_contacts_by_phone,
+            send_contact_custom_field_update,
+        )
+        from mango_mvp.amocrm_runtime.db import SessionLocal
 
     input_path = Path(args.input).resolve()
     rows = _read_rows(input_path)
@@ -221,9 +511,65 @@ def main() -> int:
     run_dir = REPORT_ROOT / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    session = SessionLocal()
+    session = SessionLocal() if SessionLocal is not None else None
     report_rows: list[dict[str, Any]] = []
     try:
+        if session is not None:
+            ok, error = _preflight_runtime_db(session)
+            if not ok:
+                summary = {
+                    "run_id": run_id,
+                    "mode": "live_write" if live_write else "dry_run",
+                    "live_write": live_write,
+                    "offline_preview": bool(args.offline_preview),
+                    "input": str(input_path),
+                    "total_rows": len(rows),
+                    "written": 0,
+                    "dry_run": 0,
+                    "offline_preview_rows": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "preflight_failed": True,
+                    "preflight_error": error,
+                    "target_fields": list(TARGET_CONTACT_FIELDS),
+                    "report_dir": str(run_dir),
+                }
+                (run_dir / "contact_writeback_summary.json").write_text(
+                    json.dumps(summary, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                (run_dir / "runtime_preflight_error.txt").write_text(error, encoding="utf-8")
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+                return 2
+            field_catalog = fetch_contact_field_catalog(session, force_refresh=True)
+            catalog_guard_reasons = _contact_field_catalog_guard_reasons(field_catalog)
+            if catalog_guard_reasons:
+                summary = {
+                    "run_id": run_id,
+                    "mode": "live_write" if live_write else "dry_run",
+                    "live_write": live_write,
+                    "offline_preview": bool(args.offline_preview),
+                    "input": str(input_path),
+                    "total_rows": len(rows),
+                    "written": 0,
+                    "dry_run": 0,
+                    "offline_preview_rows": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "preflight_failed": True,
+                    "preflight_error": "AMO contact field catalog is not safe for writeback: "
+                    + " | ".join(catalog_guard_reasons),
+                    "field_catalog_guard_reasons": catalog_guard_reasons,
+                    "target_fields": list(TARGET_CONTACT_FIELDS),
+                    "report_dir": str(run_dir),
+                }
+                (run_dir / "contact_writeback_summary.json").write_text(
+                    json.dumps(summary, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                (run_dir / "runtime_preflight_error.txt").write_text(summary["preflight_error"], encoding="utf-8")
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+                return 2
         total = len(rows)
         for index, source_row in enumerate(rows, start=1):
             phone = normalize_phone(_safe_text(source_row.get("Телефон клиента")))
@@ -237,6 +583,7 @@ def main() -> int:
                 "contact_name": "",
                 "updated_fields": [],
                 "preview_payload": {},
+                "payload_sha256": "",
             }
             if not phone:
                 report_row["status"] = "skipped"
@@ -249,14 +596,41 @@ def main() -> int:
                 report_rows.append(report_row)
                 continue
 
+            guard_reasons = _contact_row_guard_reasons(source_row)
+            if live_write and guard_reasons:
+                report_row["status"] = "skipped"
+                report_row["reason"] = "live_guard:" + " | ".join(guard_reasons)
+                report_rows.append(report_row)
+                continue
+
             payload = _build_contact_payload(source_row)
             if not payload:
                 report_row["status"] = "skipped"
                 report_row["reason"] = "empty_payload"
                 report_rows.append(report_row)
                 continue
+            report_row["preview_payload"] = payload
+            report_row["payload_sha256"] = _payload_sha256(payload)
+            payload_text_findings = detect_crm_text_quality_risks(payload, min_severity="P2")
+            if live_write and has_blocking_crm_text_findings(payload_text_findings):
+                report_row["status"] = "skipped"
+                report_row["reason"] = "live_guard:crm_text_quality:" + " | ".join(
+                    sorted({finding.risk_type for finding in payload_text_findings})
+                )
+                report_row["updated_fields"] = list(payload.keys())
+                report_rows.append(report_row)
+                continue
+            if args.offline_preview:
+                report_row["status"] = "offline_preview"
+                report_row["reason"] = "amo_lookup_not_executed"
+                report_row["updated_fields"] = list(payload.keys())
+                report_rows.append(report_row)
+                continue
 
             try:
+                assert session is not None
+                assert search_contacts_by_phone is not None
+                assert send_contact_custom_field_update is not None
                 contacts = _call_with_retry(search_contacts_by_phone, session, phone=phone, limit=10)
                 if not contacts:
                     report_row["status"] = "skipped"
@@ -273,13 +647,20 @@ def main() -> int:
                 contact = contacts[0]
                 contact_id = int(contact.get("id") or 0)
                 contact_name = _safe_text(contact.get("name"))
+                mismatch_reason = _contact_id_mismatch_reason(source_row, contact_id)
+                if mismatch_reason:
+                    report_row["status"] = "skipped"
+                    report_row["reason"] = mismatch_reason
+                    report_row["contact_id"] = contact_id
+                    report_row["contact_name"] = contact_name
+                    report_rows.append(report_row)
+                    continue
                 if not live_write:
                     report_row["status"] = "dry_run"
                     report_row["reason"] = "live_write_not_confirmed"
                     report_row["contact_id"] = contact_id
                     report_row["contact_name"] = contact_name
                     report_row["updated_fields"] = list(payload.keys())
-                    report_row["preview_payload"] = payload
                     report_rows.append(report_row)
                     continue
 
@@ -306,35 +687,45 @@ def main() -> int:
                 failed = sum(1 for row in report_rows if row["status"] == "failed")
                 print(f"[{index}/{total}] written={written} dry_run={dry_run} failed={failed}", flush=True)
     finally:
-        session.close()
+        if session is not None:
+            session.close()
 
     summary = {
         "run_id": run_id,
         "mode": "live_write" if live_write else "dry_run",
         "live_write": live_write,
+        "offline_preview": bool(args.offline_preview),
         "input": str(input_path),
         "total_rows": len(rows),
         "written": sum(1 for row in report_rows if row["status"] == "written"),
         "dry_run": sum(1 for row in report_rows if row["status"] == "dry_run"),
+        "offline_preview_rows": sum(1 for row in report_rows if row["status"] == "offline_preview"),
         "skipped": sum(1 for row in report_rows if row["status"] == "skipped"),
         "failed": sum(1 for row in report_rows if row["status"] == "failed"),
+        "expected_written": args.expected_written,
+        "expected_dry_run": args.expected_dry_run,
+        "expected_count_mismatch": False,
         "target_fields": list(TARGET_CONTACT_FIELDS),
         "report_dir": str(run_dir),
     }
+    if args.expected_written is not None and summary["written"] != args.expected_written:
+        summary["expected_count_mismatch"] = True
+    if args.expected_dry_run is not None and summary["dry_run"] != args.expected_dry_run:
+        summary["expected_count_mismatch"] = True
 
     (run_dir / "contact_writeback_report.json").write_text(
         json.dumps({"summary": summary, "rows": report_rows}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    pd.DataFrame(report_rows).to_csv(run_dir / "contact_writeback_report.csv", index=False, encoding="utf-8-sig")
-    pd.DataFrame(report_rows).to_excel(run_dir / "contact_writeback_report.xlsx", index=False)
+    _write_report_csv(run_dir / "contact_writeback_report.csv", report_rows)
+    _write_report_xlsx(run_dir / "contact_writeback_report.xlsx", report_rows)
     (run_dir / "contact_writeback_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0 if summary["failed"] == 0 else 1
+    return 0 if summary["failed"] == 0 and not summary["expected_count_mismatch"] else 1
 
 
 if __name__ == "__main__":

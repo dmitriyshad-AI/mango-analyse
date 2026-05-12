@@ -395,7 +395,8 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         values = amo_integration.build_custom_fields_values(payload, catalog)
         by_id = {item["field_id"]: item["values"][0]["value"] for item in values}
         self.assertEqual(len(by_id[1]), 255)
-        self.assertTrue(str(by_id[1]).endswith("..."))
+        self.assertTrue(str(by_id[1]).endswith(" [сжато]"))
+        self.assertNotIn("...", str(by_id[1]))
         self.assertEqual(len(by_id[2]), 255)
         self.assertEqual(by_id[3], "reopen_recommended")
 
@@ -598,6 +599,31 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
             payload = amo_integration.get_amo_connection_status(SimpleNamespace())
         self.assertFalse(payload["connected"])
         self.assertEqual(payload["status"], "token_stale")
+
+    def test_status_does_not_refresh_amo_when_connection_is_awaiting_callback(self) -> None:
+        connection = SimpleNamespace(
+            access_token="old-token",
+            refresh_token="old-refresh",
+            client_id="cid",
+            client_secret="secret",
+            account_base_url="https://educent.amocrm.ru",
+            account_subdomain="educent",
+            authorized_at=None,
+            expires_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+            last_error=None,
+            contact_field_catalog=[],
+            contact_field_catalog_synced_at=None,
+            status="awaiting_callback",
+        )
+        with patch.object(amo_integration, "get_active_connection", return_value=connection), patch.object(
+            amo_integration, "build_external_oauth_setup", return_value={}
+        ), patch.object(amo_integration, "fetch_lead_field_catalog") as fetch_mock:
+            payload = amo_integration.get_amo_connection_status(SimpleNamespace())
+
+        fetch_mock.assert_not_called()
+        self.assertFalse(payload["connected"])
+        self.assertEqual(payload["status"], "awaiting_callback")
+        self.assertEqual(payload["lead_field_sync_error"], "skipped: amoCRM connection is not active")
 
     def test_fetch_recent_leads_applies_closed_from_filter(self) -> None:
         with patch.object(

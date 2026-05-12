@@ -20,6 +20,25 @@ ACTIONABLE_VERDICTS = {'reopen_recommended', 'closed_too_early', 'follow_up_need
 LIVE_WRITE_CONFIRMATION = 'WRITE_AMO_LIVE'
 
 
+def _quality_gate_summary_passed(path_value: str | None) -> bool:
+    path_text = _safe_text(path_value)
+    if not path_text:
+        raise ValueError('Live amoCRM writeback requires --quality-gate-summary with Stage15 passed summary.json.')
+    path = Path(path_text).expanduser().resolve()
+    if not path.exists():
+        raise ValueError(f'Quality gate summary does not exist: {path}')
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f'Quality gate summary is not valid JSON: {path}') from exc
+    if not bool(payload.get('passed')):
+        raise ValueError('Quality gate summary is not passed.')
+    readiness = payload.get('readiness') or {}
+    if not bool(readiness.get('crm_quality_writeback_ready')):
+        raise ValueError('Quality gate summary does not allow CRM quality writeback.')
+    return True
+
+
 def _live_write_enabled(args: argparse.Namespace) -> bool:
     execute_live_write = bool(getattr(args, 'execute_live_write', False))
     confirmation = str(getattr(args, 'live_confirmation', '') or '').strip()
@@ -27,6 +46,8 @@ def _live_write_enabled(args: argparse.Namespace) -> bool:
         raise ValueError(
             f"Live amoCRM writeback requires --live-confirmation {LIVE_WRITE_CONFIRMATION!r}."
         )
+    if execute_live_write:
+        _quality_gate_summary_passed(getattr(args, 'quality_gate_summary', ''))
     if confirmation and not execute_live_write:
         raise ValueError('--live-confirmation is only valid together with --execute-live-write.')
     return execute_live_write
@@ -88,6 +109,11 @@ def main() -> int:
         '--live-confirmation',
         default='',
         help=f'Контрольная строка для live-записи: {LIVE_WRITE_CONFIRMATION}.',
+    )
+    parser.add_argument(
+        '--quality-gate-summary',
+        default='',
+        help='Путь к Stage15 summary.json с passed=true и crm_quality_writeback_ready=true.',
     )
     args = parser.parse_args()
     try:

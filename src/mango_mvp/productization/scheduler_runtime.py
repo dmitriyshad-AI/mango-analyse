@@ -7,8 +7,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from mango_mvp.productization.mango_live_shadow_poll import build_mango_live_shadow_poll_report
+from mango_mvp.productization.capture import CapturePlanner, InMemorySeenCallStore
+from mango_mvp.productization.contracts import TenantRef
+from mango_mvp.productization.mango_live_shadow_poll import (
+    build_mango_live_shadow_poll_report,
+    decision_to_dict,
+    read_seen_event_keys,
+    summarize_decisions,
+)
+from mango_mvp.productization.mango_office import MangoOfficePayloadMapper
 from mango_mvp.productization.mango_office_client import DEFAULT_MANGO_BASE_URL
+from mango_mvp.productization.payload_archive import load_source_payload_rows
 from mango_mvp.productization.product_db import (
     PRODUCT_DB_ADMIN_SCHEMA_VERSION,
     audit_product_db,
@@ -469,6 +478,8 @@ def execute_claimed_job(
                 input_payload = validate_live_shadow_poll_input(input_payload, product_root)
             else:
                 input_payload = validate_shadow_poll_input(input_payload, product_root)
+                input_payload = dict(input_payload)
+                input_payload["product_db_path"] = current_sqlite_database_path(con)
         except ValueError as exc:
             return finish_job_blocked(con, job, str(exc))
         job_executor = executor or default_executor_for_mode(mode)
@@ -528,6 +539,13 @@ def validate_shadow_poll_input(input_payload: Mapping[str, Any], product_root: P
     return normalized
 
 
+def current_sqlite_database_path(con: sqlite3.Connection) -> str:
+    row = con.execute("PRAGMA database_list").fetchone()
+    if row is None:
+        return ""
+    return clean(row[2] if len(row) > 2 else "")
+
+
 def validate_live_shadow_poll_input(input_payload: Mapping[str, Any], product_root: Path) -> Mapping[str, Any]:
     tenant_id = clean(input_payload.get("tenant_id"))
     if not tenant_id:
@@ -577,6 +595,7 @@ def default_executor_for_mode(mode: str) -> Callable[[Mapping[str, Any]], Mappin
 def execute_shadow_poll_dry_run_job(input_payload: Mapping[str, Any]) -> Mapping[str, Any]:
     raw_payload_path = Path(clean(input_payload.get("raw_payload_path"))).resolve(strict=False)
     stats = payload_file_stats(raw_payload_path)
+    replay = replay_shadow_poll_archive(input_payload, raw_payload_path) if stats.get("exists") else None
     return {
         "schema_version": SCHEDULER_RUNTIME_SCHEMA_VERSION,
         "job_type": "shadow_poll",
@@ -585,6 +604,7 @@ def execute_shadow_poll_dry_run_job(input_payload: Mapping[str, Any]) -> Mapping
         "provider": clean(input_payload.get("provider")) or "mango",
         "window_hours": input_payload.get("window_hours"),
         "raw_payload_stats": stats,
+        "replay": replay,
         "actions": {
             "would_poll_provider": True,
             "download_audio": False,
@@ -594,6 +614,52 @@ def execute_shadow_poll_dry_run_job(input_payload: Mapping[str, Any]) -> Mapping
             "write_runtime_db": False,
         },
         "validation_ok": bool(stats.get("exists")),
+    }
+
+
+def replay_shadow_poll_archive(
+    input_payload: Mapping[str, Any],
+    raw_payload_path: Path,
+) -> Mapping[str, Any]:
+    """Replay archived Mango rows through the same mapper/planner as live poll.
+
+    This makes the dry-run useful without Mango credentials: it validates raw
+    payload shape, duplicate handling and enqueue/no-recording decisions while
+    keeping provider polling, downloads, ASR and CRM writes disabled.
+    """
+
+    tenant = TenantRef(clean(input_payload.get("tenant_id")) or "tenant")
+    product_db_path = Path(clean(input_payload.get("product_db_path"))).resolve(strict=False)
+    allow_metadata_only = bool(input_payload.get("allow_metadata_only"))
+    source_rows = load_source_payload_rows(raw_payload_path)
+    mapper = MangoOfficePayloadMapper()
+    events = []
+    errors = []
+    for index, row in enumerate(source_rows):
+        raw_payload = row.get("raw_payload") if isinstance(row, Mapping) else None
+        if not isinstance(raw_payload, Mapping):
+            raw_payload = row
+        try:
+            events.append(mapper.from_payload(tenant=tenant, payload=raw_payload))
+        except Exception as exc:
+            errors.append({"index": index, "error": str(exc), "provider_call_id": clean(row.get("provider_call_id"))})
+    seen_keys = read_seen_event_keys(product_db_path)
+    planner = CapturePlanner(
+        seen_store=InMemorySeenCallStore(seen_keys),
+        require_recording=not allow_metadata_only,
+    )
+    decisions = planner.plan_batch(events)
+    counts = summarize_decisions(decisions)
+    return {
+        "schema_version": "shadow_poll_archive_replay_v1",
+        "source_rows": len(source_rows),
+        "normalized_events": len(events),
+        "normalization_errors": len(errors),
+        "seen_event_keys": len(seen_keys),
+        "action_counts": counts,
+        "sample_decisions": [decision_to_dict(decision) for decision in decisions[:20]],
+        "normalization_error_sample": errors[:20],
+        "validation_ok": len(errors) == 0,
     }
 
 

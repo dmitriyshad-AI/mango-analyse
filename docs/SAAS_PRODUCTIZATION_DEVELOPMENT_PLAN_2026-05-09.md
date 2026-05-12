@@ -719,6 +719,237 @@ Commit:
 - тесты productization/insight/agent runtime проходят;
 - ветка запушена на GitHub и готова к review.
 
+## Phase completion update 2026-05-09
+
+Фазы 1-3 закрыты для текущего read-only appliance baseline.
+
+Completion report:
+
+```text
+docs/SAAS_PHASE_1_2_3_COMPLETION_REPORT_2026-05-09.md
+```
+
+Фаза 1 закрыта через audit response plan, script safety, AMO writeback guards,
+legacy sync guard, README/Makefile/runbook hardening и canonical architecture/data
+model docs.
+
+Фаза 2 закрыта через read-only Product API HTTP layer, health/readiness,
+mutation blocking и новый агрегированный endpoint:
+
+```text
+GET /dashboard/appliance
+```
+
+Фаза 3 закрыта как первый read-only UI shell:
+
+```text
+GET /dashboard
+```
+
+Дальше roadmap продолжается с Фазы 4: Mango capture from shadow to controlled
+ingest. Dashboard v1 не заменяет план A-C и 10 фаз, а закрывает ближайший
+implementation package внутри Фаз 2-3.
+
+## Phase 4-6 completion update 2026-05-09
+
+Фазы 4-6 закрыты для безопасного productization baseline без включения Phase 7.
+
+Completion report:
+
+```text
+docs/SAAS_PHASE_4_5_6_COMPLETION_REPORT_2026-05-09.md
+```
+
+Фаза 4 закрыта через controlled capture ingest:
+
+- read-only plan для Mango shadow poll reports;
+- opt-in apply только в product DB capture inbox;
+- delayed/no-recording/duplicate/policy classifications;
+- no audio download, no ASR/R+A, no runtime DB writes, no CRM writes.
+
+Фаза 5 закрыта через processing lifecycle bridge:
+
+- lifecycle report from capture inbox to ASR handoff readiness;
+- duplicate `provider_call_id`, `recording_id`, `queue_item_id` checks;
+- worker handoff остается dry-run and approval-gated.
+
+Фаза 6 закрыта через CRM writeback preview contract:
+
+- AMO preview diff;
+- staged queue `batch_10 -> batch_50 -> batch_300 -> full`;
+- policy gates and rollback plan;
+- Product API `/writeback/previews` returns structured preview;
+- live write remains disabled by default.
+
+Дальше не переходим к Фазе 7, пока processing диалог не стабилизирует качество
+обработки разговоров. Ближайшая разумная работа после этого прохода: CRM entity
+resolver для preview, demo dataset/dashboard polish, затем Phase 7 knowledge/ROP
+layer.
+
+## CRM entity resolver update 2026-05-09
+
+Следующий Phase 6 шаг закрыт: добавлен read-only CRM entity resolver.
+
+Новые артефакты:
+
+```text
+src/mango_mvp/productization/crm_entity_resolver.py
+scripts/mango_office_crm_entity_resolver.py
+docs/SAAS_CRM_ENTITY_RESOLVER_STAGE6_AUDIT_2026-05-09.md
+```
+
+Resolver работает по локальному CRM snapshot под product root и не делает live
+CRM calls. Он снимает blocker `missing_crm_entity_id` там, где есть единственный
+точный match по телефону, и блокирует ambiguous/no-match cases.
+
+Дальше до Phase 7 можно безопасно развивать:
+
+1. read-only AMO snapshot exporter в product root;
+2. demo tenant and anonymized sample dataset;
+3. dashboard polish for capture/lifecycle/writeback panels;
+4. appliance config wizard/checklist;
+5. backup/restore and local operations hardening.
+
+## Appliance hardening update 2026-05-09
+
+Следующий безопасный блок до Phase 7 закрывает client-hosted основу, не завися
+от качества обработки транскриптов.
+
+Новые артефакты:
+
+```text
+src/mango_mvp/productization/amo_snapshot_exporter.py
+src/mango_mvp/productization/demo_tenant.py
+src/mango_mvp/productization/appliance_config_wizard.py
+src/mango_mvp/productization/product_ops.py
+src/mango_mvp/productization/scheduler_health.py
+scripts/mango_office_amo_snapshot_export.py
+scripts/mango_office_demo_tenant.py
+scripts/mango_office_appliance_config_wizard.py
+scripts/mango_office_product_ops.py
+scripts/mango_office_scheduler_health.py
+```
+
+Что добавлено:
+
+1. `mango_office_amo_snapshot_export.py` читает amoCRM contacts/leads и пишет
+   только локальный `crm_snapshots/amocrm_entities.json` под product root.
+2. `mango_office_demo_tenant.py` создает обезличенный demo product root с fake
+   calls, product DB, CRM snapshot и dashboard-ready данными.
+3. `/dashboard` получил панели Capture, Scheduler Health, Lifecycle,
+   Writeback/CRM Preview, Safety, Knowledge и Settings.
+4. `mango_office_appliance_config_wizard.py` проверяет пути, Mango credentials,
+   CRM snapshot, product DB, retention и backup dir.
+5. `mango_office_product_ops.py` дает healthcheck, backup, verify backup и
+   restore dry-run для SQLite product DB.
+6. `mango_office_scheduler_health.py` показывает due/failed/locked/stale jobs,
+   чтобы локальный scheduler стал наблюдаемым.
+
+Все действия остаются в безопасной зоне: AMO snapshot делает только read-only
+CRM API calls, demo использует fake data, backup/restore работает только под
+product root, dashboard/Product API не запускают ASR/R+A и не пишут в CRM.
+
+## Stages 1-4 productization update 2026-05-09
+
+Следующий проход закрывает первые четыре глобальных этапа, которые не зависят от
+качества обработки звонков:
+
+1. Client-hosted appliance: добавлен единый command surface/runbook report.
+2. Dashboard product UI: добавлены фильтры capture/scheduler и query contracts.
+3. CRM/Tallanto read-only layer: добавлен локальный mapping preview по snapshots.
+4. Supervisor/scheduler: добавлен control-plane report с recommended actions.
+
+Новые entrypoints:
+
+```text
+scripts/mango_office_appliance.py
+scripts/mango_office_crm_tallanto_mapping_preview.py
+scripts/mango_office_scheduler_control_plane.py
+```
+
+Новые Product API endpoints:
+
+```text
+GET /crm/mapping-preview
+GET /scheduler/control-plane
+```
+
+Dashboard остается read-only: фильтры только меняют выборку, CRM/Tallanto writes
+и ASR/R+A execution по-прежнему недоступны из UI.
+
+## Sanitized real demo update 2026-05-09
+
+Fake demo остается полезным для тестов и публичной песочницы, но продающий B2B
+сценарий должен опираться на реальные данные в обезличенном виде.
+
+Добавлено:
+
+```text
+src/mango_mvp/productization/sanitized_real_demo.py
+scripts/mango_office_sanitized_real_demo.py
+tests/test_productization_sanitized_real_demo.py
+```
+
+Новый режим берет существующий product DB и локальные CRM snapshots, создает
+отдельный `sanitized_real_demo_appliance`, сохраняет реальные даты, статусы,
+количество звонков, lifecycle/scheduler/capture структуру, но маскирует:
+
+- телефоны;
+- имена менеджеров и CRM owners;
+- provider call ids/event keys;
+- recording ids/audio refs/recording URLs;
+- raw payload refs/source refs;
+- CRM/Tallanto entity ids and names.
+
+Этот режим не читает runtime DB, не копирует audio, не запускает ASR/R+A и не
+пишет в AMO/Tallanto/CRM.
+
+Self-audit hardening:
+
+- demo root должен быть отдельным каталогом и не может совпадать или
+  пересекаться с source product root;
+- `--replace` применяется только к отдельной demo product DB;
+- лишние source DB columns не копируются в demo DB, а фиксируются в отчете.
+
+## Pre-processing 8-phase implementation pass 2026-05-09
+
+Цель прохода: закрыть все SaaS/productization задачи, которые можно делать до
+улучшения качества обработки звонков в отдельном processing-диалоге.
+
+Закрыто:
+
+1. Sanitized real demo теперь поддерживает AMO/Tallanto snapshots в
+   JSON/JSONL/CSV и маскирует snapshot entities.
+2. Dashboard получил demo-readiness contract: required panels, snapshot files,
+   demo artifacts and read-only safety.
+3. Appliance config wizard добавляет config templates и install profile для
+   client-hosted модели.
+4. Product ops получил diagnostics bundle: healthcheck, scheduler health,
+   config wizard, demo readiness.
+5. Service pack генерирует launchd/systemd templates without installing or
+   starting services.
+6. Tenant isolation report проверяет tenant-scoped rows and optional scaffold.
+7. Demo/pilot playbook генерирует markdown/json сценарий показа и пилота.
+8. Processing acceptance gates фиксируют внешний blocker:
+   `PROCESSING_QUALITY_EXTERNAL_READY`.
+
+Новые артефакты:
+
+```text
+src/mango_mvp/productization/saas_demo_contracts.py
+src/mango_mvp/productization/appliance_service_pack.py
+src/mango_mvp/productization/tenant_isolation.py
+src/mango_mvp/productization/demo_pilot_playbook.py
+src/mango_mvp/productization/processing_acceptance_gates.py
+scripts/mango_office_appliance_service_pack.py
+scripts/mango_office_tenant_isolation.py
+scripts/mango_office_demo_pilot_playbook.py
+scripts/mango_office_processing_acceptance_gates.py
+```
+
+Все фазы остаются в product-safe зоне: runtime DB/audio/transcripts не меняются,
+ASR/R+A не запускается, AMO/Tallanto writes недоступны.
+
 ## Self-audit log
 
 ### Audit 1. Проверка полноты

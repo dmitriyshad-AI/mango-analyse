@@ -104,6 +104,26 @@ def test_processing_handoff_blocks_checksum_mismatch(tmp_path: Path) -> None:
     assert "checksum_sha256_mismatch" in report["items"][0]["blocked_reasons"]
 
 
+def test_processing_handoff_blocks_duplicate_provider_call_ids(tmp_path: Path) -> None:
+    product_root, asset_db = build_asset_db(tmp_path, count=2)
+    with sqlite3.connect(asset_db) as con:
+        con.execute("UPDATE captured_recording_assets SET provider_call_id = 'CALL-1' WHERE event_key = 'foton:mango:CALL-2'")
+        con.commit()
+
+    report = build_processing_handoff_dry_run(
+        asset_db_path=asset_db,
+        product_root=product_root,
+        out_dir=product_root / "processing_handoff_stage12",
+        manifest_path=product_root / "processing_handoff_stage12" / "asr_handoff_manifest.jsonl",
+    )
+
+    assert report["summary"]["validation_ok"] is False
+    assert report["summary"]["blocked"] == 2
+    assert report["idempotency"]["provider_call_id_duplicate_groups"] == 1
+    assert report["action_counts"] == {"BLOCK_ASR_HANDOFF": 2}
+    assert all("duplicate_provider_call_id" in item["blocked_reasons"] for item in report["items"])
+
+
 def test_processing_handoff_refuses_runtime_and_outside_paths(tmp_path: Path) -> None:
     product_root, asset_db = build_asset_db(tmp_path, count=1)
 

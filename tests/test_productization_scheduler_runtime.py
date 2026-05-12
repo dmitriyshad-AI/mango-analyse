@@ -23,6 +23,36 @@ def write_raw_payload(product_root: Path) -> Path:
     return raw
 
 
+def write_valid_mango_raw_payload(product_root: Path) -> Path:
+    raw = product_root / "raw_payload_archive" / "shadow_valid.jsonl"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "schema_version": "mango_shadow_poll_raw_payload_v1",
+            "raw_payload": {
+                "entry_id": "CALL-4",
+                "start": "1778133600",
+                "finish": "1778133900",
+                "records": "rec-4",
+                "from_number": "+79990000000",
+                "to_extension": "101",
+            },
+        },
+        {
+            "schema_version": "mango_shadow_poll_raw_payload_v1",
+            "raw_payload": {
+                "entry_id": "CALL-5",
+                "start": "1778133600",
+                "finish": "1778133900",
+                "from_number": "+79990000000",
+                "to_extension": "101",
+            },
+        },
+    ]
+    raw.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return raw
+
+
 def test_scheduler_plans_ticks_and_audits_shadow_poll(tmp_path: Path) -> None:
     product_root, product_db, _tenant_config = bootstrap_sample_product_db(tmp_path)
     raw = write_raw_payload(product_root)
@@ -47,6 +77,28 @@ def test_scheduler_plans_ticks_and_audits_shadow_poll(tmp_path: Path) -> None:
     assert (product_root / "plan.json").exists()
     assert (product_root / "tick.json").exists()
     assert (product_root / "scheduler_audit.json").exists()
+
+
+def test_scheduler_dry_run_replays_archived_mango_payload_without_provider_call(tmp_path: Path) -> None:
+    product_root, product_db, _tenant_config = bootstrap_sample_product_db(tmp_path)
+    raw = write_valid_mango_raw_payload(product_root)
+    schedule_shadow_poll_job(product_db, product_root, "foton", raw, product_root / "scheduler_outputs")
+
+    tick = run_scheduler_tick(product_db, product_root, worker_id="test-worker")
+    replay = tick["results"][0]["result"]["replay"]
+
+    assert tick["summary"]["succeeded"] == 1
+    assert replay["schema_version"] == "shadow_poll_archive_replay_v1"
+    assert replay["source_rows"] == 2
+    assert replay["normalized_events"] == 2
+    assert replay["normalization_errors"] == 0
+    assert replay["action_counts"] == {
+        "ENQUEUE_SHADOW_CAPTURE": 1,
+        "SKIP_DUPLICATE": 0,
+        "SKIP_NO_RECORDING": 1,
+    }
+    assert tick["results"][0]["result"]["actions"]["download_audio"] is False
+    assert tick["results"][0]["result"]["actions"]["write_crm"] is False
 
 
 def test_scheduler_retries_failed_shadow_poll(tmp_path: Path) -> None:

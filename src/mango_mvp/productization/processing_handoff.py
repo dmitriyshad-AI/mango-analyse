@@ -66,6 +66,7 @@ def build_processing_handoff_dry_run(
     assets = read_recording_assets(asset_db_path, package_ref=package_ref, limit=limit)
     items = [plan_handoff_item(asset, product_root=product_root, out_dir=out_dir, verify_checksum=verify_checksum) for asset in assets]
     items = apply_queue_duplicate_blocks(items)
+    duplicate_checks = handoff_duplicate_checks(items)
     manifest_rows = [manifest_item(item) for item in items if item["action"] == "PLAN_ASR_HANDOFF"]
     write_jsonl(manifest_path, manifest_rows)
     manifest_sha = sha256_file(manifest_path)
@@ -95,6 +96,7 @@ def build_processing_handoff_dry_run(
         "action_counts": action_counts,
         "items": items,
         "manifest_samples": manifest_rows[:20],
+        "idempotency": duplicate_checks,
         "contract": asr_handoff_contract(),
         "safety": {
             "product_db_writes": False,
@@ -251,17 +253,46 @@ def validate_audio_for_handoff(audio_path: Path, product_root: Path) -> list[str
 
 def apply_queue_duplicate_blocks(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     counts = Counter(clean(item.get("queue_item_id")) for item in items if clean(item.get("queue_item_id")))
+    provider_counts = Counter(clean(item.get("provider_call_id")) for item in items if clean(item.get("provider_call_id")))
+    recording_counts = Counter(clean(item.get("recording_id")) for item in items if clean(item.get("recording_id")))
     result: list[dict[str, Any]] = []
     for source in items:
         item = dict(source)
-        if item["action"] == "PLAN_ASR_HANDOFF" and counts.get(clean(item.get("queue_item_id")), 0) > 1:
-            blocked = list(item.get("blocked_reasons") or [])
+        if item["action"] != "PLAN_ASR_HANDOFF":
+            result.append(item)
+            continue
+        blocked = list(item.get("blocked_reasons") or [])
+        if counts.get(clean(item.get("queue_item_id")), 0) > 1:
             blocked.append("duplicate_queue_item_id")
+        if provider_counts.get(clean(item.get("provider_call_id")), 0) > 1:
+            blocked.append("duplicate_provider_call_id")
+        if recording_counts.get(clean(item.get("recording_id")), 0) > 1:
+            blocked.append("duplicate_recording_id")
+        if blocked:
             item["blocked_reasons"] = sorted(set(blocked))
             item["action"] = "BLOCK_ASR_HANDOFF"
             item["reason"] = ",".join(item["blocked_reasons"])
         result.append(item)
     return result
+
+
+def handoff_duplicate_checks(items: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    provider_counts = duplicate_counts(items, "provider_call_id")
+    recording_counts = duplicate_counts(items, "recording_id")
+    queue_counts = duplicate_counts(items, "queue_item_id")
+    return {
+        "provider_call_id_duplicates": provider_counts,
+        "recording_id_duplicates": recording_counts,
+        "queue_item_id_duplicates": queue_counts,
+        "provider_call_id_duplicate_groups": len(provider_counts),
+        "recording_id_duplicate_groups": len(recording_counts),
+        "queue_item_id_duplicate_groups": len(queue_counts),
+    }
+
+
+def duplicate_counts(items: Sequence[Mapping[str, Any]], key: str) -> Mapping[str, int]:
+    counts = Counter(clean(item.get(key)) for item in items if clean(item.get(key)))
+    return dict(sorted((value, count) for value, count in counts.items() if count > 1))
 
 
 def manifest_item(item: Mapping[str, Any]) -> Mapping[str, Any]:

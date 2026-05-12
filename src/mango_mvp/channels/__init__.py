@@ -28,6 +28,12 @@ from mango_mvp.channels.contracts import (
     dedupe_channel_messages,
     stable_message_idempotency_key,
 )
+from mango_mvp.channels.demo import (
+    CHANNEL_DEMO_SCHEMA_VERSION,
+    build_channel_demo_workspace,
+    build_demo_messages,
+    channel_demo_safety_contract,
+)
 from mango_mvp.channels.feedback import (
     CHANNEL_FEEDBACK_SCHEMA_VERSION,
     FEEDBACK_ACTION_ACCEPTED,
@@ -62,6 +68,13 @@ from mango_mvp.channels.preview_service import (
     ChannelPreviewService,
     build_channel_draft_preview,
     stable_draft_id,
+)
+from mango_mvp.channels.persistence import (
+    CHANNEL_SQLITE_SCHEMA_VERSION,
+    ChannelSQLiteOpenResult,
+    ChannelSQLiteStore,
+    channel_sqlite_safety_contract,
+    guard_channel_sqlite_path,
 )
 from mango_mvp.channels.signals import (
     CHANNEL_SIGNALS_SCHEMA_VERSION,
@@ -134,6 +147,13 @@ from mango_mvp.channels.web_chat_adapter import (
     normalize_web_chat_channel,
     web_chat_adapter_safety_contract,
 )
+from mango_mvp.channels.workspace import (
+    CHANNEL_WORKSPACE_SCHEMA_VERSION,
+    ChannelWorkspaceInboxItem,
+    ChannelWorkspaceSummary,
+    build_channel_workspace_summary,
+    channel_workspace_safety_contract,
+)
 
 __all__ = [
     "ACTION_CREATE_FOLLOW_UP_TASK",
@@ -151,8 +171,11 @@ __all__ = [
     "ACTION_STATUS_REJECTED",
     "BotReply",
     "CHANNEL_FEEDBACK_SCHEMA_VERSION",
+    "CHANNEL_DEMO_SCHEMA_VERSION",
     "CHANNEL_SIGNALS_SCHEMA_VERSION",
+    "CHANNEL_SQLITE_SCHEMA_VERSION",
     "CHANNEL_STORAGE_SCHEMA_VERSION",
+    "CHANNEL_WORKSPACE_SCHEMA_VERSION",
     "CRM_CHAT_CHANNEL",
     "ChannelActionPolicy",
     "ChannelActionRecord",
@@ -169,8 +192,12 @@ __all__ = [
     "ChannelHistoryEvent",
     "ChannelMemoryStore",
     "ChannelPreviewStoreResult",
+    "ChannelSQLiteOpenResult",
+    "ChannelSQLiteStore",
     "ChannelStore",
     "ChannelStoreWriteResult",
+    "ChannelWorkspaceInboxItem",
+    "ChannelWorkspaceSummary",
     "CustomerSignal",
     "DRAFT_STATUS_APPROVED",
     "DRAFT_STATUS_FAILED",
@@ -222,22 +249,29 @@ __all__ = [
     "ChannelDraftPreview",
     "ChannelPreviewService",
     "build_and_store_channel_draft_preview",
+    "build_channel_demo_workspace",
     "build_action_feedback_event",
     "build_channel_draft_preview",
     "build_channel_recommended_actions",
     "build_channel_signal_decision",
+    "build_channel_workspace_summary",
+    "build_demo_messages",
     "build_decision_feedback_event",
     "build_feedback_loop_report",
     "build_manager_visible_context",
     "build_manager_draft_feedback_event",
     "build_read_only_lead_outcome_event",
     "channel_action_policy",
+    "channel_demo_safety_contract",
+    "channel_sqlite_safety_contract",
     "channel_store_safety_contract",
+    "channel_workspace_safety_contract",
     "default_channel_action_policy_map",
     "default_signal_policy_map",
     "dedupe_channel_messages",
     "extract_customer_signals",
     "feedback_loop_safety_contract",
+    "guard_channel_sqlite_path",
     "normalize_web_chat_channel",
     "recommended_action_to_agent_proposal",
     "recommended_actions_to_agent_proposals",

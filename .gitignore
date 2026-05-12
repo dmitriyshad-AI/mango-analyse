@@ -136,6 +136,7 @@ test_runs/
 test_sets/
 
 # Local source data dumps
+product_data/channel_archive/
 2026-03-05-21-06-49-ч1/
 2026-03-05-21-06-49-ч2/
 2026-03-09--26/

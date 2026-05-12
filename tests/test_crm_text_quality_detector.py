@@ -163,12 +163,69 @@ def test_explicit_no_next_step_conflicts_with_active_callback() -> None:
     assert "explicit_no_next_step_conflict" in _risk_types(row)
 
 
+def test_wrong_person_identity_mismatch_blocks_writeback() -> None:
+    row = {
+        "Авто история общения": (
+            "Контакт не подтвердился: менеджер звонил по поводу летней школы, "
+            "но в разговоре выяснилась путаница с именем и на линии была не та Светлана. "
+            "Обсуждение программы не состоялось."
+        ),
+        "Следующий шаг": "Отправить материалы",
+        "Приоритет лида": "warm",
+    }
+
+    assert "wrong_person_or_identity_mismatch" in _risk_types(row)
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_active_client_loss_reason_requires_entity_resolution() -> None:
+    row = {
+        "AMO причина отказа": "Действующий клиент",
+        "AI-фактический статус сделки": "похоже на отказ или потерю интереса",
+        "AI-рекомендованный следующий шаг": "Перезвонить клиенту и предложить годовой курс",
+        "AI-приоритет сделки": "warm",
+    }
+
+    assert "active_client_loss_reason_requires_entity_resolution" in _risk_types(row)
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_regular_loss_reason_does_not_trigger_active_client_resolution() -> None:
+    row = {
+        "AMO причина отказа": "Дорого",
+        "AI-рекомендованный следующий шаг": "Вернуться к клиенту при новой акции",
+        "AI-приоритет сделки": "review",
+    }
+
+    assert "active_client_loss_reason_requires_entity_resolution" not in _risk_types(row)
+
+
 def test_completed_payment_conflicts_with_collect_payment_next_step() -> None:
     row = {
         "Авто история общения": "Клиент уже прислал чек об оплате, сделка закрыта успешно.",
         "Следующий шаг": "Прислать оплату и подписанный договор по электронной почте",
         "Приоритет лида": "warm",
         "Вероятность продажи, %": "65",
+    }
+
+    assert "completed_payment_next_step_conflict" in _risk_types(row)
+
+
+def test_completed_payment_receipt_amount_conflicts_with_active_materials_step() -> None:
+    row = {
+        "Авто история общения": "Менеджер проверил почту и подтвердил наличие чека и ответа по оплате на сумму 82 700.",
+        "Следующий шаг": "Отправить материалы",
+        "Приоритет лида": "warm",
+    }
+
+    assert "completed_payment_next_step_conflict" in _risk_types(row)
+
+
+def test_paid_invoice_wording_conflicts_with_active_materials_step() -> None:
+    row = {
+        "Авто история общения": "Клиентка уточняла порядок оформления после оплаты: платежку оплатили 29-го числа.",
+        "Следующий шаг": "Отправить материалы",
+        "Приоритет лида": "warm",
     }
 
     assert "completed_payment_next_step_conflict" in _risk_types(row)
@@ -192,6 +249,54 @@ def test_stale_followup_date_equal_to_analysis_date_is_reported() -> None:
     }
 
     assert "stale_uniform_followup_date" in _risk_types(row, analysis_date="2026-05-10")
+
+
+def test_relative_tomorrow_next_step_must_match_followup_date() -> None:
+    row = {
+        "Следующий шаг": "Перезвонить в первой половине дня завтра",
+        "Рекомендуемая дата следующего контакта": "2026-05-12",
+    }
+
+    assert "relative_next_step_date_mismatch" in _risk_types(row, analysis_date="2026-05-12")
+
+
+def test_relative_year_next_step_must_not_default_to_today() -> None:
+    row = {
+        "Следующий шаг": "Вернуться к контакту через год и уточнить готовность к обучению",
+        "Рекомендуемая дата следующего контакта": "2026-05-12",
+    }
+
+    assert "relative_next_step_date_mismatch" in _risk_types(row, analysis_date="2026-05-12")
+
+
+def test_old_source_call_blocks_fresh_materials_next_step() -> None:
+    row = {
+        "Дата последнего свежего звонка": "2026-01-30 10:49:13",
+        "Следующий шаг": "Отправить материалы",
+        "Рекомендуемая дата следующего контакта": "2026-05-12",
+    }
+
+    assert "stale_source_next_step" in _risk_types(row, analysis_date="2026-05-12")
+
+
+def test_old_source_call_blocks_broad_active_next_step_family() -> None:
+    row = {
+        "Дата последнего свежего звонка": "2026-04-05 13:10:00",
+        "Следующий шаг": "Перезвонить родителям",
+        "Рекомендуемая дата следующего контакта": "2026-05-15",
+    }
+
+    assert "stale_source_next_step" in _risk_types(row, analysis_date="2026-05-12")
+
+
+def test_very_old_source_call_blocks_any_non_empty_next_step() -> None:
+    row = {
+        "Дата последнего свежего звонка": "2025-08-26 13:10:00",
+        "Следующий шаг": "Уточнить наличие очных занятий в Жуковском",
+        "Рекомендуемая дата следующего контакта": "2026-05-12",
+    }
+
+    assert "stale_source_next_step" in _risk_types(row, analysis_date="2026-05-12")
 
 
 def test_concrete_next_step_date_does_not_trigger_stale_followup() -> None:

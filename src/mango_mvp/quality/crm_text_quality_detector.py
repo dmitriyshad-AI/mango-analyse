@@ -64,8 +64,20 @@ FOLLOWUP_DATE_FIELDS = (
     "recommended_followup_date",
     "follow_up_due_at",
 )
+LAST_CALL_DATE_FIELDS = (
+    "Дата последнего свежего звонка",
+    "Дата последнего звонка",
+    "last_call_at",
+    "latest_call_at",
+)
 PRIORITY_FIELDS = ("Приоритет лида", "AI-приоритет", "priority", "lead_priority")
 PROBABILITY_FIELDS = ("Вероятность продажи, %", "sale_probability_pct", "probability")
+LOSS_REASON_FIELDS = (
+    "Причина отказа (лид)",
+    "Причина отказа (B2C)",
+    "AMO причина отказа",
+    "loss_reason",
+)
 
 ELLIPSIS_RE = re.compile(r"\.\.\.|…")
 COUNTED_LABEL_RE = re.compile(r"^(?P<label>[^:|]{1,90}?)\s*:\s*(?P<count>\d{1,5})(?:\s+\w+)?$", re.I)
@@ -127,8 +139,11 @@ LOST_LEAD_SIGNAL_RE = re.compile(
     r"(?:у\s+)?конкур\w+"
     r"|(?:выбрал[аи]?|выбрали|остановил[аи]?сь|остановились)\s+на\s+"
     r"(?:друг\w+|ин\w+)\s+(?:лагер\w+|школ\w+|центр\w+|курс\w+|программ\w+)"
+    r"|(?:уже\s+)?выбрал[а-я]*\s+друг\w+\s+школ\w+"
+    r"|от\s+запис\w+\s+отказал[а-я]*"
     r"|интерес\s+закрыт\s+покупк\w+\s+у\s+конкур\w+"
     r"|дальнейш\w+\s+продолжени\w+\s+сделк\w+\s+не\s+требует\w+"
+    r"|дальнейш\w+\s+(?:действи\w+|контакт\w+)[^.]{0,80}не\s+согласован\w+"
     r"|потребност\w+[^.]{0,120}не\s+актуальн\w+[^.]{0,80}покупк\w+"
     r")\b",
     re.I,
@@ -147,6 +162,11 @@ PASSIVE_CUSTOMER_SIGNAL_RE = re.compile(
     r")\b",
     re.I,
 )
+ACTIVE_CLIENT_LOSS_REASON_RE = re.compile(
+    r"\b(?:действующ\w+\s+клиент\w*|текущ\w+\s+клиент\w*|"
+    r"действующ\w+\s+ученик\w*|текущ\w+\s+ученик\w*|уже\s+учит\w+|уже\s+занима\w+)\b",
+    re.I,
+)
 EXPLICIT_NO_NEXT_STEP_SIGNAL_RE = re.compile(
     r"\b(?:"
     r"договор[её]нност\w+\s+о\s+следующ\w+\s+шаг\w+\s+не\s+был\w+"
@@ -159,12 +179,36 @@ EXPLICIT_NO_NEXT_STEP_SIGNAL_RE = re.compile(
     r")\b",
     re.I,
 )
+WRONG_PERSON_SIGNAL_RE = re.compile(
+    r"\b(?:"
+    r"контакт\s+не\s+подтвердил[а-я]*"
+    r"|путаниц\w+\s+с\s+имен\w+"
+    r"|на\s+лини[и]\s+был[ао]?\s+не\s+т[ао]т"
+    r"|не\s+тот\s+клиент"
+    r"|не\s+та\s+(?:светлана|клиентка|родительница|мама|женщина)"
+    r"|обсуждени\w+\s+программ\w+[^.]{0,80}не\s+состоял\w+"
+    r")\b",
+    re.I,
+)
 COMPLETED_PAYMENT_SIGNAL_RE = re.compile(
     r"\b(?:"
     r"(?:чек|квитанц\w+|подтверждени\w+\s+оплат\w+)\s+(?:уже\s+)?(?:прислан\w*|отправлен\w*|получен\w*)"
+    r"|(?:наличи\w+\s+)?чек\w+[^.]{0,80}(?:оплат\w+|сумм\w+|\d[\d\s]{3,})"
+    r"|плат[её]жк\w+\s+оплатил[а-я]*"
+    r"|оплатил[а-я]*\s+за\s+[А-ЯЁA-Zа-яёa-z0-9 -]{3,80}"
+    r"|оплат\w+[^.]{0,80}(?:на\s+сумм\w+|\d[\d\s]{3,})"
     r"|(?:оплат\w+|плат[её]ж\w+)\s+(?:уже\s+)?(?:внес[её]н\w*|поступил\w*|получен\w*|подтвержд[её]н\w*)"
     r"|сделк\w+\s+(?:закрыт\w+|успешн\w+\s+закрыт\w+|оплачен\w+)"
     r"|запис\w+\s+(?:подтвержден\w+|подтверждена)\s+после\s+оплат\w+"
+    r")\b",
+    re.I,
+)
+RELATIVE_STALE_NEXT_STEP_RE = re.compile(
+    r"\b(?:"
+    r"завтра"
+    r"|через\s+(?:полтора|пару|несколько|\d{1,2})\s+(?:час\w+|дн\w+|недел\w+|месяц\w+|год\w+)"
+    r"|через\s+год"
+    r"|до\s+конца\s+(?:дня|недели|месяца)"
     r")\b",
     re.I,
 )
@@ -172,6 +216,13 @@ PAYMENT_COLLECTION_NEXT_STEP_RE = re.compile(
     r"\b(?:"
     r"оплат\w+|прислать\s+оплат\w+|отправить\s+чек|прислать\s+чек|"
     r"подписать\s+договор\s+и\s+отправить\s+чек|дождаться\s+оплат\w+|получить\s+оплат\w+"
+    r")\b",
+    re.I,
+)
+ACTIVE_STALE_NEXT_STEP_RE = re.compile(
+    r"\b(?:"
+    r"перезвон\w+|связ\w+|отправ\w+|уточн\w+|соедин\w+|направ\w+|"
+    r"подать\s+заявк\w+|провер\w+|выслать|прислать|передать|сообщить"
     r")\b",
     re.I,
 )
@@ -204,6 +255,8 @@ def detect_crm_text_quality_risks(
     findings.extend(_detect_lost_lead_next_step_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_passive_customer_next_step_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_no_next_step_conflict(_payload_text(payload), next_step, priority, probability))
+    findings.extend(_detect_wrong_person_conflict(_payload_text(payload), next_step, priority, probability))
+    findings.extend(_detect_active_client_loss_reason_conflict(payload, next_step, priority, probability))
     findings.extend(_detect_completed_payment_next_step_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_stale_followup_date(payload, analysis_date=analysis_date, next_step=next_step))
     findings.extend(
@@ -502,6 +555,50 @@ def _detect_no_next_step_conflict(
     ]
 
 
+def _detect_wrong_person_conflict(
+    text: str,
+    next_step: str,
+    priority: str,
+    probability: str,
+) -> list[CrmTextQualityFinding]:
+    wrong_person_signal = WRONG_PERSON_SIGNAL_RE.search(text)
+    if not wrong_person_signal:
+        return []
+    return [
+        CrmTextQualityFinding(
+            class_id="Q4h",
+            risk_type="wrong_person_or_identity_mismatch",
+            severity="P1",
+            field="Авто история общения",
+            matched_text=wrong_person_signal.group(0),
+            reason="Wrong-person or identity-mismatch signal must not produce active sales CRM writeback",
+        )
+    ]
+
+
+def _detect_active_client_loss_reason_conflict(
+    payload: object,
+    next_step: str,
+    priority: str,
+    probability: str,
+) -> list[CrmTextQualityFinding]:
+    row = payload if isinstance(payload, Mapping) else None
+    reason = _safe_text(_first_mapping_value(row, LOSS_REASON_FIELDS)) if row else ""
+    signal = ACTIVE_CLIENT_LOSS_REASON_RE.search(reason)
+    if not signal:
+        return []
+    return [
+        CrmTextQualityFinding(
+            class_id="Q4j",
+            risk_type="active_client_loss_reason_requires_entity_resolution",
+            severity="P1",
+            field=_first_present_field(row, LOSS_REASON_FIELDS),
+            matched_text=signal.group(0),
+            reason="AMO loss reason says the person is an active client; do not treat this closed lead as a lost sale or active sales target",
+        )
+    ]
+
+
 def _detect_completed_payment_next_step_conflict(
     text: str,
     next_step: str,
@@ -535,8 +632,35 @@ def _detect_stale_followup_date(
     followup_raw = _first_mapping_value(row, FOLLOWUP_DATE_FIELDS) if row else _extract_labeled_value(_payload_text(payload), FOLLOWUP_DATE_FIELDS)
     followup_date = _normalize_date(followup_raw)
     analysis_date_text = _normalize_date(analysis_date)
+    stale_source = _stale_source_next_step(payload, analysis_date_text=analysis_date_text, next_step=next_step)
+    if stale_source:
+        return [stale_source]
     if not followup_date or not analysis_date_text or followup_date != analysis_date_text:
+        relative = RELATIVE_STALE_NEXT_STEP_RE.search(next_step)
+        if relative and not _relative_followup_date_matches(next_step, followup_date, analysis_date_text):
+            return [
+                CrmTextQualityFinding(
+                    class_id="Q4b",
+                    risk_type="relative_next_step_date_mismatch",
+                    severity="P2",
+                    field=_first_present_field(row, FOLLOWUP_DATE_FIELDS) if row else "Рекомендуемая дата следующего контакта",
+                    matched_text=f"{relative.group(0)} / {followup_date or 'empty'}",
+                    reason="Relative next-step wording must align with the recommended follow-up date or be rewritten",
+                )
+            ]
         return []
+    relative = RELATIVE_STALE_NEXT_STEP_RE.search(next_step)
+    if relative and not _relative_followup_date_matches(next_step, followup_date, analysis_date_text):
+        return [
+            CrmTextQualityFinding(
+                class_id="Q4b",
+                risk_type="relative_next_step_date_mismatch",
+                severity="P2",
+                field=_first_present_field(row, FOLLOWUP_DATE_FIELDS) if row else "Рекомендуемая дата следующего контакта",
+                matched_text=f"{relative.group(0)} / {followup_date}",
+                reason="Relative next-step wording conflicts with the recommended follow-up date",
+            )
+        ]
     if _has_concrete_date(next_step) or _mentions_today(next_step):
         return []
     if not (CLOSURE_NEXT_STEP_RE.search(next_step) or VAGUE_NEXT_STEP_RE.search(next_step)):
@@ -551,6 +675,58 @@ def _detect_stale_followup_date(
             reason="Recommended follow-up date equals the analysis date without next-step date semantics",
         )
     ]
+
+
+def _stale_source_next_step(
+    payload: object,
+    *,
+    analysis_date_text: str,
+    next_step: str,
+) -> CrmTextQualityFinding | None:
+    if not isinstance(payload, Mapping) or not analysis_date_text or not next_step:
+        return None
+    last_call_date = _normalize_date(_first_mapping_value(payload, LAST_CALL_DATE_FIELDS))
+    if not last_call_date:
+        return None
+    try:
+        analysis_day = datetime.strptime(analysis_date_text, "%Y-%m-%d").date()
+        last_call_day = datetime.strptime(last_call_date, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    age_days = (analysis_day - last_call_day).days
+    if age_days < 30:
+        return None
+    if age_days < 90 and not ACTIVE_STALE_NEXT_STEP_RE.search(next_step):
+        return None
+    return CrmTextQualityFinding(
+        class_id="Q4b",
+        risk_type="stale_source_next_step",
+        severity="P2",
+        field=_first_present_field(payload, LAST_CALL_DATE_FIELDS),
+        matched_text=f"{last_call_date} ({age_days}d) -> {next_step}",
+        reason="Old source call cannot produce a fresh active sales next step without reactivation/manual review policy",
+    )
+
+
+def _relative_followup_date_matches(next_step: str, followup_date: str, analysis_date_text: str) -> bool:
+    if not followup_date or not analysis_date_text:
+        return False
+    if re.search(r"\bзавтра\b", next_step, re.I):
+        try:
+            expected = datetime.strptime(analysis_date_text, "%Y-%m-%d").date() + date.resolution
+            return followup_date == expected.isoformat()
+        except ValueError:
+            return False
+    if re.search(r"\bчерез\s+год\b", next_step, re.I):
+        try:
+            current = datetime.strptime(analysis_date_text, "%Y-%m-%d").date()
+            followup = datetime.strptime(followup_date, "%Y-%m-%d").date()
+            return (followup - current).days >= 300
+        except ValueError:
+            return False
+    if re.search(r"\bчерез\s+(?:полтора|пару|несколько|\d{1,2})\s+час", next_step, re.I):
+        return followup_date == analysis_date_text
+    return False
 
 
 def _detect_verbose_manager_ux(

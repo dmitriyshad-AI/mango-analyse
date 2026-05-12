@@ -148,7 +148,11 @@ def main() -> int:
                 "lost_lead_next_step_conflict",
                 "passive_customer_next_step_conflict",
                 "explicit_no_next_step_conflict",
+                "wrong_person_or_identity_mismatch",
+                "active_client_loss_reason_requires_entity_resolution",
                 "completed_payment_next_step_conflict",
+                "relative_next_step_date_mismatch",
+                "stale_source_next_step",
                 "cross_field_duplicate_information",
             )
         )})
@@ -226,7 +230,11 @@ def main() -> int:
                 "lost_lead_next_step_conflict",
                 "passive_customer_next_step_conflict",
                 "explicit_no_next_step_conflict",
+                "wrong_person_or_identity_mismatch",
+                "active_client_loss_reason_requires_entity_resolution",
                 "completed_payment_next_step_conflict",
+                "relative_next_step_date_mismatch",
+                "stale_source_next_step",
                 "cross_field_duplicate_information",
             ],
         },

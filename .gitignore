@@ -23,6 +23,22 @@ dist/
 
 .DS_Store
 
+# Local office/export deliverables
+*.xls
+*.xlsx
+*.docx
+*.zip
+
+# Local audit exchange artifacts
+audits/_inbox/*
+!audits/_inbox/.gitkeep
+audits/_results/*
+!audits/_results/.gitkeep
+
+# Local cleanup/workflow scratch
+_cleanup_quarantine_*/
+_external_handoffs/
+
 # Local runtime/output artifacts
 .cache/
 .codex_local/
@@ -73,6 +89,22 @@ stable_runtime/jun_jul_aug_*/
 stable_runtime/oct_nov_*/
 stable_runtime/sep2025_*/
 stable_runtime/mar2026_*/
+stable_runtime/CURRENT_RUNTIME.json
+stable_runtime/amo_*/
+stable_runtime/bot_*/
+stable_runtime/call_processing_readiness_*/
+stable_runtime/canonical_master_*/
+stable_runtime/claude_stage15_*/
+stable_runtime/crm_writeback_quality_gate_*/
+stable_runtime/fixpoint_sanitizer_*/
+stable_runtime/kc_knowledge_base_*/
+stable_runtime/non_conversation_*/
+stable_runtime/operator_status_*/
+stable_runtime/project_cleanup_manifest_*/
+stable_runtime/project_inventory_*/
+stable_runtime/runtime_artifact_index_*/
+stable_runtime/tallanto_*/
+stable_runtime/transcript_quality_*/
 stable_runtime/codex_home_worker/
 stable_runtime/*.prepare.log
 stable_runtime/*_prepare.log

@@ -73,7 +73,8 @@ def build_current_runtime_contract(
     )
     product_root = project_root / "_local_archive_mango_api_downloads_20260507" / "product_appliance"
     product_db = product_root / "mango_product_appliance.sqlite"
-    quarantine_manifest = project_root / "_cleanup_quarantine_20260510_stage2" / "MANIFEST.csv"
+    default_quarantine_manifest = project_root / "_cleanup_quarantine_20260510_stage2" / "MANIFEST.csv"
+    quarantine_manifest = default_quarantine_manifest if default_quarantine_manifest.exists() else None
 
     readiness = build_call_processing_readiness_report(
         project_root=project_root,
@@ -180,7 +181,7 @@ def _contract_gates(**kwargs: Any) -> list[Mapping[str, Any]]:
     amo_queue_summary_path: Optional[Path] = kwargs["amo_queue_summary_path"]
     product_root: Path = kwargs["product_root"]
     product_db: Path = kwargs["product_db"]
-    quarantine_manifest: Path = kwargs["quarantine_manifest"]
+    quarantine_manifest: Optional[Path] = kwargs["quarantine_manifest"]
     readiness_summary: Mapping[str, Any] = kwargs["readiness_summary"]
     active_name = active_export_root.name if active_export_root else ""
     return [
@@ -196,7 +197,16 @@ def _contract_gates(**kwargs: Any) -> list[Mapping[str, Any]]:
         _gate("CALL_PROCESSING_READINESS_GREEN", bool(readiness_summary.get("validation_ok")), "Call-processing readiness gate is green.", "block"),
         _gate("PRODUCT_ROOT_EXISTS", product_root.exists(), "Product appliance root exists.", "warn"),
         _gate("PRODUCT_DB_EXISTS", product_db.exists(), "Product appliance SQLite DB exists.", "warn"),
-        _gate("CLEANUP_QUARANTINE_RESTORE_MANIFEST", quarantine_manifest.exists(), "Cleanup quarantine restore manifest exists.", "warn"),
+        _gate(
+            "CLEANUP_QUARANTINE_CLOSED_OR_RESTORE_MANIFEST",
+            quarantine_manifest is None or quarantine_manifest.exists(),
+            (
+                "Cleanup quarantine is closed; restore manifest is no longer expected."
+                if quarantine_manifest is None
+                else "Cleanup quarantine restore manifest exists."
+            ),
+            "warn",
+        ),
     ]
 
 

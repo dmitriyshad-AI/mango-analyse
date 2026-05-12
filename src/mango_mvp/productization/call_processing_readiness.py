@@ -82,10 +82,11 @@ def build_call_processing_readiness_report(
         project_root,
         amo_queue_summary_path or _find_latest_amo_queue_summary(project_root, export_summary),
     )
-    quarantine_manifest_path = _resolve_optional(
-        project_root,
-        quarantine_manifest_path or Path("_cleanup_quarantine_20260510_stage2/MANIFEST.csv"),
-    )
+    if quarantine_manifest_path is None:
+        default_quarantine_manifest = project_root / "_cleanup_quarantine_20260510_stage2" / "MANIFEST.csv"
+        quarantine_manifest_path = default_quarantine_manifest if default_quarantine_manifest.exists() else None
+    else:
+        quarantine_manifest_path = _resolve_optional(project_root, quarantine_manifest_path)
 
     canonical_summary = _load_json(canonical_summary_path) if canonical_summary_path else {}
     stage15_summary = _load_json(stage15_summary_path) if stage15_summary_path else {}
@@ -276,9 +277,13 @@ def _build_gates(**kwargs: Any) -> list[Mapping[str, Any]]:
             "block",
         ),
         _gate(
-            "QUARANTINE_MANIFEST_EXISTS",
-            bool(quarantine_manifest_path and quarantine_manifest_path.exists()),
-            "Stage2 cleanup quarantine has a restore manifest.",
+            "QUARANTINE_CLOSED_OR_MANIFEST_EXISTS",
+            quarantine_manifest_path is None or quarantine_manifest_path.exists(),
+            (
+                "Stage2 cleanup quarantine is closed; restore manifest is no longer expected."
+                if quarantine_manifest_path is None
+                else "Stage2 cleanup quarantine has a restore manifest."
+            ),
             "warn",
         ),
         _gate("READ_ONLY_GATE", True, "This readiness command does not mutate runtime or CRM.", "block"),
@@ -297,7 +302,7 @@ def _next_actions(gates: list[Mapping[str, Any]], *, safe_pending: int) -> list[
         gate_id = str(gate["gate"])
         if gate_id == "NO_SAFE_WRITEBACK_PENDING" and safe_pending > 0:
             actions.append("Build a staged dry-run/live/readback pack for the remaining safe AMO rows.")
-        elif gate_id == "QUARANTINE_MANIFEST_EXISTS":
+        elif gate_id in {"QUARANTINE_MANIFEST_EXISTS", "QUARANTINE_CLOSED_OR_MANIFEST_EXISTS"}:
             actions.append("Create or restore Stage2 cleanup quarantine manifest before physical cleanup continues.")
         elif gate_id == "READBACK_EXPECTED_COUNTS_PASSED":
             actions.append("Run post-writeback readback with expected-count guard for every live stage.")

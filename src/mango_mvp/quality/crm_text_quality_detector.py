@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping, Sequence
 
+from mango_mvp.quality.amo_loss_reason_policy import ACTIVE_CLIENT_LOSS_REASON_RE, classify_amo_loss_reason
+
 
 @dataclass(frozen=True)
 class CrmTextQualityFinding:
@@ -44,6 +46,9 @@ TARGET_CRM_TEXT_FIELDS = (
     "AI-Tallanto статус по сделке",
 )
 AUTO_HISTORY_FIELDS = ("Авто история общения", "auto_history", "autoHistory")
+NON_WRITEBACK_SOURCE_HISTORY_FIELDS = {
+    "Хронология общения (последние 5 касаний)",
+}
 OBJECTION_FIELDS = (
     "Возражения",
     "Ограничения/возражения",
@@ -77,6 +82,17 @@ LOSS_REASON_FIELDS = (
     "Причина отказа (B2C)",
     "AMO причина отказа",
     "loss_reason",
+)
+STATUS_FIELDS = (
+    "Статус сделки",
+    "AMO статус сделки",
+    "status_name",
+    "lead_status",
+)
+STATUS_ID_FIELDS = (
+    "AMO status_id",
+    "status_id",
+    "lead_status_id",
 )
 
 ELLIPSIS_RE = re.compile(r"\.\.\.|…")
@@ -162,11 +178,6 @@ PASSIVE_CUSTOMER_SIGNAL_RE = re.compile(
     r")\b",
     re.I,
 )
-ACTIVE_CLIENT_LOSS_REASON_RE = re.compile(
-    r"\b(?:действующ\w+\s+клиент\w*|текущ\w+\s+клиент\w*|"
-    r"действующ\w+\s+ученик\w*|текущ\w+\s+ученик\w*|уже\s+учит\w+|уже\s+занима\w+)\b",
-    re.I,
-)
 EXPLICIT_NO_NEXT_STEP_SIGNAL_RE = re.compile(
     r"\b(?:"
     r"договор[её]нност\w+\s+о\s+следующ\w+\s+шаг\w+\s+не\s+был\w+"
@@ -226,6 +237,7 @@ ACTIVE_STALE_NEXT_STEP_RE = re.compile(
     r")\b",
     re.I,
 )
+TERMINAL_LOST_STATUS_RE = re.compile(r"\bзакрыт\w+\s+и\s+не\s+реализован\w+\b|closed\s+lost", re.I)
 
 
 def detect_crm_text_quality_risks(
@@ -257,6 +269,8 @@ def detect_crm_text_quality_risks(
     findings.extend(_detect_no_next_step_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_wrong_person_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_active_client_loss_reason_conflict(payload, next_step, priority, probability))
+    findings.extend(_detect_terminal_loss_reason_policy(payload))
+    findings.extend(_detect_terminal_lost_without_reason(payload))
     findings.extend(_detect_completed_payment_next_step_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_stale_followup_date(payload, analysis_date=analysis_date, next_step=next_step))
     findings.extend(
@@ -599,6 +613,52 @@ def _detect_active_client_loss_reason_conflict(
     ]
 
 
+def _detect_terminal_loss_reason_policy(payload: object) -> list[CrmTextQualityFinding]:
+    row = payload if isinstance(payload, Mapping) else None
+    reason = _safe_text(_first_mapping_value(row, LOSS_REASON_FIELDS)) if row else ""
+    if not reason:
+        return []
+    field = _first_present_field(row, LOSS_REASON_FIELDS)
+    findings: list[CrmTextQualityFinding] = []
+    for policy in classify_amo_loss_reason(reason):
+        if policy.risk_type == "active_client_loss_reason_requires_entity_resolution":
+            continue
+        findings.append(
+            CrmTextQualityFinding(
+                class_id=policy.class_id,
+                risk_type=policy.risk_type,
+                severity=policy.severity,
+                field=field,
+                matched_text=policy.matched_text,
+                reason=policy.reason,
+            )
+        )
+    return findings
+
+
+def _detect_terminal_lost_without_reason(payload: object) -> list[CrmTextQualityFinding]:
+    row = payload if isinstance(payload, Mapping) else None
+    if not row:
+        return []
+    reason = _safe_text(_first_mapping_value(row, LOSS_REASON_FIELDS))
+    if reason:
+        return []
+    status_text = _safe_text(_first_mapping_value(row, STATUS_FIELDS))
+    status_id = _safe_text(_first_mapping_value(row, STATUS_ID_FIELDS))
+    if status_id != "143" and not TERMINAL_LOST_STATUS_RE.search(status_text):
+        return []
+    return [
+        CrmTextQualityFinding(
+            class_id="Q4v",
+            risk_type="terminal_lost_without_loss_reason_requires_manual_review",
+            severity="P2",
+            field=_first_present_field(row, STATUS_FIELDS) or _first_present_field(row, STATUS_ID_FIELDS),
+            matched_text=status_text or status_id,
+            reason="Terminal lost AMO deal has no extracted loss reason; do not infer sales action without manual review",
+        )
+    ]
+
+
 def _detect_completed_payment_next_step_conflict(
     text: str,
     next_step: str,
@@ -777,7 +837,11 @@ def _detect_cross_field_duplicate_information(payload: object) -> list[CrmTextQu
     if not isinstance(payload, Mapping):
         return []
 
-    fields = [(field, value) for field, value in _iter_target_text_fields(payload) if len(value) >= 60]
+    fields = [
+        (field, value)
+        for field, value in _iter_target_text_fields(payload)
+        if len(value) >= 60 and field not in NON_WRITEBACK_SOURCE_HISTORY_FIELDS
+    ]
     result: list[CrmTextQualityFinding] = []
     for index, (left_field, left_text) in enumerate(fields):
         for right_field, right_text in fields[index + 1 :]:

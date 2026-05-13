@@ -17,6 +17,7 @@ from mango_mvp.quality.crm_text_quality_detector import (
     detect_crm_text_quality_risks,
     has_blocking_crm_text_findings,
 )
+from mango_mvp.quality.tenant_text_normalizer import normalize_manager_text
 from mango_mvp.utils.phone import normalize_phone
 
 try:
@@ -173,22 +174,18 @@ def _compose_last_summary(row: dict[str, Any]) -> str:
 def _compose_auto_history(row: dict[str, Any]) -> str:
     blocks: list[str] = []
 
-    history = _safe_text(row.get("Краткая история общения"))
-    chronology = _safe_text(row.get("Хронология общения (последние 5 касаний)"))
-    objections = _safe_text(row.get("Возражения"))
-    next_step = _safe_text(row.get("Следующий шаг"))
+    history = normalize_manager_text(row.get("Краткая история общения"))
+    objections = normalize_manager_text(row.get("Возражения"))
+    next_step = normalize_manager_text(row.get("Следующий шаг"))
     follow_up = _safe_text(row.get("Рекомендуемая дата следующего контакта"))
     priority = _safe_text(row.get("Приоритет лида"))
     probability = _safe_text(row.get("Вероятность продажи, %"))
-    product = _safe_text(row.get("Рекомендуемый продукт"))
-    products = _safe_text(row.get("Продукты интереса"))
-    tallanto_history = _safe_text(row.get("История общения Tallanto"))
+    product = normalize_manager_text(row.get("Рекомендуемый продукт"))
+    products = normalize_manager_text(row.get("Продукты интереса"))
+    tallanto_history = normalize_manager_text(row.get("История общения Tallanto"))
 
     if history:
         blocks.append("Сводка клиента:\n" + history)
-    chronology_block = ""
-    if chronology and not _is_redundant_history_block(history, chronology):
-        chronology_block = "Хронология общения (последние 5 касаний):\n" + chronology
 
     facts: list[str] = []
     if product:
@@ -211,17 +208,11 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
     if tallanto_history:
         blocks.append("История общения Tallanto:\n" + tallanto_history)
 
-    if chronology_block:
-        with_chronology = "\n\n".join([*blocks[:1], chronology_block, *blocks[1:]]).strip()
-        if len(with_chronology) <= MAX_AUTO_HISTORY_CHARS:
-            return with_chronology
-        blocks.append("Хронология: есть в полной рабочей таблице; в карточке оставлена компактная сводка.")
-
     return "\n\n".join(block for block in blocks if block.strip()).strip()
 
 
 def _compact_without_ellipsis(text: Any, *, limit: int) -> str:
-    value = _safe_text(text)
+    value = normalize_manager_text(text)
     if len(value) <= limit:
         return value
     budget = max(20, limit - len(TEXT_COMPACTION_SUFFIX))

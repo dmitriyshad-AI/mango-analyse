@@ -19,6 +19,13 @@ from mango_mvp.quality.crm_text_quality_detector import (
     has_blocking_crm_text_findings,
 )
 from mango_mvp.quality.crm_writeback_quality_detector import detect_crm_writeback_quality_risks
+from mango_mvp.quality.tenant_text_normalizer import (
+    format_product_list,
+    normalize_manager_text,
+    normalize_objection_label,
+    normalize_product_label,
+    objection_key,
+)
 from mango_mvp.services.export_excel import call_to_row
 from mango_mvp.utils.phone import normalize_phone
 
@@ -247,7 +254,7 @@ def _sanitize_crm_text(value: Any) -> str:
     text = _safe_text(value)
     if not text:
         return ""
-    return PHONE_IN_CRM_TEXT_RE.sub(_redact_phone_match, text)
+    return normalize_manager_text(PHONE_IN_CRM_TEXT_RE.sub(_redact_phone_match, text))
 
 
 def _sanitize_crm_text_fields(row: dict[str, Any], fields: Iterable[str]) -> dict[str, Any]:
@@ -387,6 +394,48 @@ def _unique_parts_with_counts(values: Iterable[Any], *, limit: int | None = None
     return " | ".join(result)
 
 
+def _unique_plain_labels(values: Iterable[Any], *, limit: int | None = None) -> str:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for part in _safe_text(raw).replace("\n", " | ").split("|"):
+            value = part.strip(" ,;")
+            if not value:
+                continue
+            label, _count = _split_counted_label(value)
+            key = _label_key(label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(label)
+            if limit is not None and len(result) >= limit:
+                return " | ".join(result)
+    return " | ".join(result)
+
+
+def _unique_product_labels(values: Iterable[Any], *, limit: int | None = None) -> str:
+    return format_product_list(values, max_items=limit)
+
+
+def _unique_subject_labels(values: Iterable[Any], *, limit: int | None = None) -> str:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        for part in _safe_text(raw).replace("\n", " | ").split("|"):
+            value = normalize_manager_text(part.strip(" ,;"))
+            if not value:
+                continue
+            label, _count = _split_counted_label(value)
+            key = _label_key(label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            result.append(label)
+            if limit is not None and len(result) >= limit:
+                return " | ".join(result)
+    return " | ".join(result)
+
+
 def _split_counted_label(value: str) -> tuple[str, str]:
     match = COUNTED_LABEL_RE.match(value.strip())
     if not match:
@@ -431,7 +480,7 @@ def _is_low_value_for_crm(flat: dict[str, Any]) -> bool:
     return bool(detect_crm_writeback_quality_risks(text))
 
 
-def _call_gist(row: dict[str, Any]) -> str:
+def _call_gist(row: dict[str, Any], *, limit: int = 420) -> str:
     summary = _safe_text(row.get("Краткое резюме разговора"))
     next_step = _safe_text(row.get("Следующий шаг"))
     objections = _safe_text(row.get("Возражения"))
@@ -441,7 +490,7 @@ def _call_gist(row: dict[str, Any]) -> str:
         summary = f"Возражение: {objections}"
     if next_step and next_step.casefold() not in summary.casefold():
         summary = f"{summary} Следующий шаг: {next_step}".strip()
-    return _compact_without_ellipsis(_sanitize_crm_text(summary), limit=220)
+    return _compact_without_ellipsis(_sanitize_crm_text(summary), limit=limit)
 
 
 def _history_line(row: dict[str, Any]) -> str:
@@ -454,17 +503,7 @@ def _history_line(row: dict[str, Any]) -> str:
         prefix += f" — {manager}"
     if call_type:
         prefix += f" ({call_type})"
-    bits = [
-        _safe_text(row.get("Рекомендуемый продукт")),
-        _safe_text(row.get("Предметы интереса")),
-        f"возражения: {_safe_text(row.get('Возражения'))}" if _safe_text(row.get("Возражения")) else "",
-        f"следующий шаг: {_safe_text(row.get('Следующий шаг'))}" if _safe_text(row.get("Следующий шаг")) else "",
-    ]
-    gist = _unique_parts(bits, limit=4)
-    if not gist:
-        gist = _call_gist(row)
-    if len(gist) > 220:
-        gist = _compact_without_ellipsis(gist, limit=220)
+    gist = _call_gist(row, limit=520)
     return f"{prefix}: {gist}" if gist else prefix
 
 
@@ -576,41 +615,40 @@ def _build_contact_summary(contentful_desc: list[dict[str, Any]], chain: dict[st
     earliest_dt = _parse_dt(earliest.get("Дата и время звонка"))
     period_start = earliest_dt.strftime("%d.%m.%Y") if earliest_dt else _safe_text(earliest.get("Дата и время звонка"))[:10]
     period_end = latest_dt.strftime("%d.%m.%Y") if latest_dt else _safe_text(latest.get("Дата и время звонка"))[:10]
-    managers = _unique_parts((row.get("Менеджер") for row in contentful_desc), limit=6)
-    products = _unique_parts_with_counts(
+    managers = _unique_parts((row.get("Менеджер") for row in contentful_desc), limit=4)
+    products = _unique_product_labels(
         list(row.get("Рекомендуемый продукт") for row in contentful_desc)
         + list(row.get("Продукты интереса") for row in contentful_desc)
         + [_safe_text(chain.get("products_top"))],
-        limit=8,
+        limit=5,
     )
-    subjects = _unique_parts_with_counts(
+    subjects = _unique_subject_labels(
         list(row.get("Предметы интереса") for row in contentful_desc) + [_safe_text(chain.get("subjects_top"))],
-        limit=8,
+        limit=5,
     )
     objections = _format_contact_objections(contentful_desc, limit_current=5, limit_historical=3)
     next_step = next((_safe_text(row.get("Следующий шаг")) for row in contentful_desc if _safe_text(row.get("Следующий шаг"))), "")
     parts = [
-        f"Контакт в истории с {period_start} по {period_end}. Содержательных звонков: {len(contentful_desc)}.",
+        f"Клиент в истории с {period_start} по {period_end}; содержательных звонков: {len(contentful_desc)}.",
     ]
-    if managers:
-        parts.append(f"Менеджеры: {managers}.")
     if products:
-        parts.append(f"Интерес/продукты: {products}.")
+        parts.append(f"Основной интерес: {products}.")
     if subjects:
-        parts.append(f"Предметы: {subjects}.")
+        parts.append(f"Предметы/направления: {subjects}.")
+    latest_status_bits = []
+    latest_product = normalize_product_label(latest.get("Рекомендуемый продукт")) or normalize_product_label(
+        latest.get("Продукты интереса")
+    )
+    if latest_product:
+        latest_status_bits.append(f"обсуждается {latest_product}")
+    if latest_status_bits:
+        parts.append(f"Текущая ситуация: {'; '.join(latest_status_bits)}.")
     if objections:
-        parts.append(f"Ограничения/возражения: {objections}.")
-    latest_call_type = _safe_text(latest.get("Тип звонка"))
-    latest_next_step = _safe_text(latest.get("Следующий шаг"))
-    latest_marker = latest_dt.strftime("%d.%m.%Y") if latest_dt else _safe_text(latest.get("Дата и время звонка"))[:10]
-    if latest_marker or latest_call_type:
-        parts.append(
-            "Последний содержательный контакт: "
-            + _unique_parts([latest_marker, latest_call_type, f"следующий шаг: {latest_next_step}" if latest_next_step else ""], limit=3)
-            + "."
-        )
+        parts.append("Есть актуальные ограничения/возражения; подробности вынесены в отдельный блок.")
     if next_step:
-        parts.append(f"Текущий следующий шаг: {next_step}.")
+        parts.append(f"Следующий шаг: {next_step}.")
+    if managers:
+        parts.append(f"С клиентом работали: {managers}.")
     return _excel_safe_text(_sanitize_crm_text(" ".join(part for part in parts if part)))
 
 
@@ -623,17 +661,18 @@ def _format_contact_objections(
     current: list[str] = []
     historical: list[str] = []
     current_seen: set[str] = set()
-    historical_seen: set[str] = set()
+    historical_seen: set[tuple[str, str]] = set()
     recent_rows = contentful_desc[:3]
     for row in recent_rows:
         for objection in _split_parts(row.get("Возражения")):
-            key = _label_key(objection)
+            objection = normalize_objection_label(objection)
+            key = objection_key(objection)
             if not key or key in WEAK_OBJECTION_LABELS:
                 continue
             if key in STRONG_NEGATIVE_LABELS or any(label in key for label in STRONG_NEGATIVE_LABELS):
                 date_text = (_parse_dt(row.get("Дата и время звонка")) or datetime.min).strftime("%d.%m.%Y")
                 item = f"{date_text}: {objection}"
-                hist_key = _label_key(item)
+                hist_key = (date_text, key)
                 if hist_key not in historical_seen:
                     historical_seen.add(hist_key)
                     historical.append(item)
@@ -643,12 +682,14 @@ def _format_contact_objections(
                 current.append(objection)
     for row in contentful_desc[3:]:
         for objection in _split_parts(row.get("Возражения")):
-            key = _label_key(objection)
+            objection = normalize_objection_label(objection)
+            key = objection_key(objection)
             if not key or key in WEAK_OBJECTION_LABELS:
                 continue
-            if key not in historical_seen:
-                historical_seen.add(key)
-                date_text = (_parse_dt(row.get("Дата и время звонка")) or datetime.min).strftime("%d.%m.%Y")
+            date_text = (_parse_dt(row.get("Дата и время звонка")) or datetime.min).strftime("%d.%m.%Y")
+            hist_key = (date_text, key)
+            if hist_key not in historical_seen:
+                historical_seen.add(hist_key)
                 historical.append(f"{date_text}: {objection}")
             if len(historical) >= limit_historical:
                 break
@@ -670,10 +711,8 @@ def _build_contact_history(calls_desc: list[dict[str, Any]], chain: dict[str, st
     contentful_desc = [row for row in calls_desc if row.get("Содержательный звонок") == "Да"]
     if not contentful_desc:
         return ("", "")
-    if len(contentful_desc) == 1:
-        return (_build_contact_summary(contentful_desc, chain), "")
-    latest_5_chronological = list(reversed(contentful_desc[:5]))
-    chronology = "\n".join(_history_line(row) for row in latest_5_chronological)
+    all_chronological = list(reversed(contentful_desc))
+    chronology = "\n".join(_history_line(row) for row in all_chronological)
     return (_build_contact_summary(contentful_desc, chain), _excel_safe_text(_sanitize_crm_text(chronology)))
 
 
@@ -993,11 +1032,11 @@ def _build_contact_rows(
             "ФИО родителя": _safe_text(latest_contentful.get("ФИО родителя")),
             "ФИО ребенка": _safe_text(latest_contentful.get("ФИО ребенка")),
             "Email": _safe_text(latest_contentful.get("Email")),
-            "Продукты интереса": _unique_parts_with_counts(
+            "Продукты интереса": _unique_product_labels(
                 [row.get("Продукты интереса") for row in contentful_desc] + [_safe_text(chain.get("products_top"))],
                 limit=8,
             ),
-            "Рекомендуемый продукт": _safe_text(latest_contentful.get("Рекомендуемый продукт")),
+            "Рекомендуемый продукт": normalize_product_label(latest_contentful.get("Рекомендуемый продукт")),
             "Возражения": _format_contact_objections(contentful_desc, limit_current=6, limit_historical=4),
             "Следующий шаг": _safe_text(latest_contentful.get("Следующий шаг")),
             "Рекомендуемая дата следующего контакта": adjusted_follow_up,

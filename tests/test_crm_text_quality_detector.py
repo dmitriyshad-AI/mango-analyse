@@ -200,6 +200,53 @@ def test_regular_loss_reason_does_not_trigger_active_client_resolution() -> None
     assert "active_client_loss_reason_requires_entity_resolution" not in _risk_types(row)
 
 
+def test_duplicate_loss_reason_requires_entity_resolution() -> None:
+    row = {"AMO причина отказа": "Дубль | Дубль (объединены карточки)"}
+
+    assert "duplicate_loss_reason_requires_entity_resolution" in _risk_types(row)
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_terminal_loss_reason_taxonomy_blocks_or_routes_closed_deals() -> None:
+    cases = {
+        "Не оставлял заявку": "no_application_loss_reason_blocks_sales_writeback",
+        "Спам": "invalid_or_test_loss_reason_blocks_writeback",
+        "Тест": "invalid_or_test_loss_reason_blocks_writeback",
+        "Дорого": "terminal_lost_reason_blocks_active_sales_writeback",
+        "Не актуально | Выбрали репетитора": "terminal_lost_reason_blocks_active_sales_writeback",
+        "Архив (нет связи)": "no_contact_archive_loss_reason_requires_no_action",
+        "Перспектива (не подошло расписание)": "future_prospect_loss_reason_requires_reactivation_policy",
+        "Закрыли группу (мы)": "company_side_loss_reason_requires_review",
+        "Возврат": "refund_or_postsale_loss_reason_requires_service_review",
+        "Выпускник": "graduate_loss_reason_requires_alumni_policy",
+        "Не квал": "not_qualified_or_out_of_scope_loss_reason_requires_review",
+        "Другое": "ambiguous_loss_reason_requires_manual_review",
+    }
+
+    for reason, expected_risk in cases.items():
+        assert expected_risk in _risk_types({"AMO причина отказа": reason})
+
+
+def test_terminal_lost_without_loss_reason_requires_manual_review() -> None:
+    row = {
+        "AMO статус сделки": "Закрыто и не реализовано",
+        "AMO причина отказа": "",
+        "AI-рекомендованный следующий шаг": "Перезвонить клиенту",
+    }
+
+    assert "terminal_lost_without_loss_reason_requires_manual_review" in _risk_types(row)
+
+
+def test_non_terminal_without_loss_reason_is_allowed_by_loss_reason_policy() -> None:
+    row = {
+        "AMO статус сделки": "В работе",
+        "AMO причина отказа": "",
+        "AI-рекомендованный следующий шаг": "Перезвонить 15.05.2026",
+    }
+
+    assert "terminal_lost_without_loss_reason_requires_manual_review" not in _risk_types(row)
+
+
 def test_completed_payment_conflicts_with_collect_payment_next_step() -> None:
     row = {
         "Авто история общения": "Клиент уже прислал чек об оплате, сделка закрыта успешно.",
@@ -341,6 +388,21 @@ def test_cross_field_duplicate_information_is_blocking() -> None:
 
     assert "cross_field_duplicate_information" in risks
     assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_source_chronology_is_not_treated_as_writeback_field_duplicate() -> None:
+    latest = (
+        "Клиент интересуется летним лагерем, уточняет стоимость и просит отправить материалы "
+        "для согласования с семьей."
+    )
+    row = {
+        "Краткое резюме последнего свежего звонка": latest,
+        "Краткая история общения": "Клиент выбирает летний лагерь. Следующий шаг: отправить материалы.",
+        "Хронология общения (последние 5 касаний)": f"12.05.2026 — менеджер: {latest}",
+        "Следующий шаг": "Отправить материалы и перезвонить 15.05.2026",
+    }
+
+    assert "cross_field_duplicate_information" not in _risk_types(row)
 
 
 def test_distinct_contact_fields_do_not_trigger_cross_field_duplication() -> None:

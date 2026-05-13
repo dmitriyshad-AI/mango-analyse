@@ -89,6 +89,7 @@ class ChannelPreviewService:
         context_payload = dict(context or {})
         draft_id = stable_draft_id(message)
         draft_text = build_safe_draft_text(message, context=context_payload, default_text=self.default_draft_text)
+        catalog_context_used = bool(context_payload.get("question_catalog_answer") or context_payload.get("approved_question_answer"))
         actions = build_channel_recommended_actions(
             message=message,
             session=resolved_session,
@@ -101,17 +102,23 @@ class ChannelPreviewService:
             recommended_actions=actions,
             confidence=0.35,
             requires_approval=True,
-            safety_flags=(
+            safety_flags=tuple(
+                flag
+                for flag in (
                 "draft_only",
                 "requires_manager_approval",
                 "live_send_disabled",
                 "no_llm_used",
                 "no_rag_used",
+                "question_catalog_context_used" if catalog_context_used else "",
+                )
+                if flag
             ),
             metadata={
                 "draft_id": draft_id,
                 "source_message_idempotency_key": message.idempotency_key,
                 "preview_mode": "deterministic_safe_draft",
+                "question_catalog_context_used": catalog_context_used,
             },
         )
         return ChannelDraftPreview(
@@ -125,6 +132,7 @@ class ChannelPreviewService:
             metadata={
                 "context_keys": tuple(sorted(str(key) for key in context_payload.keys())),
                 "preview_mode": "deterministic_safe_draft",
+                "question_catalog_context_used": catalog_context_used,
             },
         )
 
@@ -147,6 +155,15 @@ def build_safe_draft_text(
     override = str(context.get("safe_draft_text") or "").strip()
     if override:
         return override
+    catalog_answer = context.get("question_catalog_answer") or context.get("approved_question_answer")
+    if isinstance(catalog_answer, Mapping):
+        final_answer = str(catalog_answer.get("final_approved_answer") or "").strip()
+        approved_for_bot = catalog_answer.get("approved_for_bot") is True or str(catalog_answer.get("approved_for_bot")).lower() == "yes"
+        required_fact_keys = tuple(str(item).strip() for item in catalog_answer.get("required_fact_keys") or () if str(item).strip())
+        facts_fresh = context.get("question_catalog_facts_fresh") is True
+        if approved_for_bot and final_answer and (not required_fact_keys or facts_fresh):
+            return final_answer
+        return "Здравствуйте! Спасибо за вопрос. Передадим его менеджеру и вернемся с проверенным ответом."
     if message.attachments and not message.text:
         return "Здравствуйте! Получили вложение. Проверим детали и вернемся с ответом."
     if "?" in message.text or any(marker in message.text.lower() for marker in ("подскаж", "сколько", "можно", "как ")):

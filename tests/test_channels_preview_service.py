@@ -114,6 +114,41 @@ def test_build_preview_uses_context_safe_draft_override() -> None:
     assert preview.reply.recommended_actions[0].payload["context_keys"] == ("safe_draft_text",)
 
 
+def test_build_preview_uses_only_approved_question_catalog_answer() -> None:
+    message = inbound_message("Сколько стоит курс?")
+    preview = build_channel_draft_preview(
+        message,
+        context={
+            "question_catalog_answer": {
+                "approved_for_bot": True,
+                "final_approved_answer": "Здравствуйте! Актуальная стоимость указана в утвержденном прайсе.",
+                "required_fact_keys": (),
+            }
+        },
+    )
+
+    assert preview.reply.text == "Здравствуйте! Актуальная стоимость указана в утвержденном прайсе."
+    assert "question_catalog_context_used" in preview.reply.safety_flags
+    assert preview.reply.metadata["question_catalog_context_used"] is True
+
+
+def test_build_preview_blocks_unapproved_question_catalog_answer() -> None:
+    message = inbound_message("Сколько стоит курс?")
+    preview = build_channel_draft_preview(
+        message,
+        context={
+            "question_catalog_answer": {
+                "approved_for_bot": False,
+                "final_approved_answer": "Нельзя использовать без РОПа.",
+                "required_fact_keys": (),
+            }
+        },
+    )
+
+    assert preview.reply.text == "Здравствуйте! Спасибо за вопрос. Передадим его менеджеру и вернемся с проверенным ответом."
+    assert preview.reply.requires_approval is True
+
+
 def test_build_preview_includes_follow_up_action_when_message_requests_callback() -> None:
     message = inbound_message("Пожалуйста, перезвоните мне завтра")
 

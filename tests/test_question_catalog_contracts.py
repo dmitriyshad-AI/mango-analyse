@@ -7,8 +7,10 @@ import pytest
 
 from mango_mvp.question_catalog import (
     ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT,
+    BOT_PERMISSION_DRAFT_ONLY,
     BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK,
     SOURCE_CALL,
+    ApprovedQuestionAnswerDraft,
     CurrentFactSource,
     QuestionClass,
     QuestionItem,
@@ -102,3 +104,42 @@ def test_current_fact_source_and_safety_contract() -> None:
     assert_question_catalog_safety_contract(question_catalog_safety_contract())
     inventory = question_catalog_contract_inventory()
     assert "template_ready_needs_current_fact" in inventory["answer_statuses"]
+    assert "not_customer_question" in inventory["answer_statuses"]
+
+
+def test_approval_draft_never_auto_approves() -> None:
+    draft = ApprovedQuestionAnswerDraft(
+        tenant_id="foton",
+        question_class_id="question_class:abc",
+        canonical_question="стоимость",
+        count_total=10,
+        draft_template_text="Проверить актуальную цену и показать менеджеру.",
+        bot_permission=BOT_PERMISSION_DRAFT_ONLY,
+    )
+
+    assert draft.approval_record_id.startswith("approved_question_answer:")
+    assert draft.approved_for_bot is False
+    assert draft.auto_approved is False
+    assert draft.can_autosend is False
+    assert draft.requires_manager_review is True
+    assert draft.runtime_bot_permission == "not_allowed"
+
+    with pytest.raises(ValueError, match="never be auto-approved"):
+        ApprovedQuestionAnswerDraft(
+            tenant_id="foton",
+            question_class_id="question_class:abc",
+            canonical_question="стоимость",
+            count_total=10,
+            draft_template_text="Проверить актуальную цену.",
+            auto_approved=True,
+        )
+
+    with pytest.raises(ValueError, match="never allow autosend"):
+        ApprovedQuestionAnswerDraft(
+            tenant_id="foton",
+            question_class_id="question_class:abc",
+            canonical_question="стоимость",
+            count_total=10,
+            draft_template_text="Проверить актуальную цену.",
+            can_autosend=True,
+        )

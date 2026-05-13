@@ -16,10 +16,13 @@ from mango_mvp.question_catalog.contracts import (
     ANSWER_STATUS_DRAFT_NEEDS_REVIEW,
     ANSWER_STATUS_MANAGER_ONLY,
     ANSWER_STATUS_NEEDS_ROP_ANSWER,
+    ANSWER_STATUS_NOT_CUSTOMER_QUESTION,
     ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT,
     BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK,
     BOT_PERMISSION_DRAFT_ONLY,
     BOT_PERMISSION_MANAGER_ONLY,
+    BOT_PERMISSION_NOT_ALLOWED,
+    ApprovedQuestionAnswerDraft,
     CurrentFactSource,
     QuestionClass,
     QuestionItem,
@@ -285,10 +288,21 @@ def write_outputs(
         "fact_requirements_csv": out_root / "fact_requirements.csv",
         "fact_registry_json": out_root / "current_fact_source_registry.json",
         "rop_review_xlsx": out_root / "rop_question_review_pack.xlsx",
+        "approved_answers_xlsx": out_root / "approved_question_answers_draft.xlsx",
+        "approved_answers_csv": out_root / "approved_question_answers_draft.csv",
+        "approved_answers_json": out_root / "approved_question_answers_draft.json",
+        "rop_priority_top100_xlsx": out_root / "rop_review_priority_top100.xlsx",
+        "rop_priority_top100_csv": out_root / "rop_review_priority_top100.csv",
+        "answer_quality_audit_json": out_root / "answer_quality_check_report.json",
+        "answer_quality_audit_md": out_root / "answer_quality_check_report.md",
+        "channel_preview_context_pack_json": out_root / "channel_preview_approved_context_pack.json",
         "unanswered_csv": out_root / "unanswered_questions.csv",
         "source_coverage_md": out_root / "source_coverage_report.md",
         "summary_json": out_root / "question_catalog_summary.json",
     }
+    approval_drafts = build_approved_answer_drafts(classes, templates)
+    priority_rows = build_rop_priority_rows(classes, templates, limit=100)
+    quality_audit = build_answer_quality_audit(classes, templates, approval_drafts)
     write_jsonl(outputs["items_jsonl"], [item.to_json_dict() for item in items])
     write_csv(outputs["classes_csv"], [flatten_class(item) for item in classes])
     write_csv(outputs["templates_csv"], [flatten_template(item) for item in templates])
@@ -318,6 +332,28 @@ def write_outputs(
     write_csv(outputs["unanswered_csv"], unanswered)
     write_classes_xlsx(outputs["classes_xlsx"], classes)
     write_rop_review_xlsx(outputs["rop_review_xlsx"], classes)
+    write_csv(outputs["approved_answers_csv"], [flatten_approval_draft(item) for item in approval_drafts])
+    write_xlsx(outputs["approved_answers_xlsx"], "approved_answers_draft", [flatten_approval_draft(item) for item in approval_drafts])
+    outputs["approved_answers_json"].write_text(
+        json.dumps(
+            {
+                "schema_version": CATALOG_SCHEMA_VERSION,
+                "safety_note": "Черновик для РОПа. В этом файле нет автоматически утвержденных ответов.",
+                "records": [item.to_json_dict() for item in approval_drafts],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    write_csv(outputs["rop_priority_top100_csv"], priority_rows)
+    write_xlsx(outputs["rop_priority_top100_xlsx"], "rop_priority_top100", priority_rows)
+    outputs["answer_quality_audit_json"].write_text(json.dumps(quality_audit, ensure_ascii=False, indent=2), encoding="utf-8")
+    outputs["answer_quality_audit_md"].write_text(render_answer_quality_audit(quality_audit), encoding="utf-8")
+    outputs["channel_preview_context_pack_json"].write_text(
+        json.dumps(build_channel_preview_context_pack(approval_drafts), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     outputs["source_coverage_md"].write_text(render_source_coverage(source_reports, summary), encoding="utf-8")
     return outputs
 
@@ -348,6 +384,8 @@ def write_classes_xlsx(path: Path, classes: Sequence[QuestionClass]) -> None:
 def write_rop_review_xlsx(path: Path, classes: Sequence[QuestionClass]) -> None:
     rows = []
     for item in classes:
+        if item.answer_status == ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
+            continue
         if item.rop_review_priority in {"critical", "high", "medium"}:
             rows.append(
                 {
@@ -448,6 +486,181 @@ def fact_requirement_rows(classes: Sequence[QuestionClass]) -> list[Mapping[str,
                 }
             )
     return rows
+
+
+def build_approved_answer_drafts(
+    classes: Sequence[QuestionClass],
+    templates: Sequence[AnswerTemplate],
+) -> list[ApprovedQuestionAnswerDraft]:
+    templates_by_class = {template.question_class_id: template for template in templates}
+    drafts: list[ApprovedQuestionAnswerDraft] = []
+    for item in sorted(classes, key=lambda row: (-_priority_score(row), -row.count_total, row.canonical_question)):
+        if item.answer_status == ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
+            continue
+        template = templates_by_class.get(item.question_class_id)
+        draft_text = template.template_text if template else _template_text_for_class(item)
+        drafts.append(
+            ApprovedQuestionAnswerDraft(
+                tenant_id=item.tenant_id,
+                question_class_id=item.question_class_id,
+                canonical_question=item.canonical_question,
+                count_total=item.count_total,
+                draft_template_text=draft_text,
+                required_fact_keys=item.required_fact_keys,
+                fact_source_refs=item.fact_source_refs,
+                bot_permission=item.bot_permission,
+                rop_decision=_default_rop_decision(item),
+                final_approved_answer="",
+                rop_comment="",
+                approved_for_bot=False,
+                auto_approved=False,
+            )
+        )
+    return drafts
+
+
+def flatten_approval_draft(item: ApprovedQuestionAnswerDraft) -> Mapping[str, Any]:
+    return {
+        "approval_record_id": item.approval_record_id,
+        "question_class_id": item.question_class_id,
+        "canonical_question": item.canonical_question,
+        "count_total": item.count_total,
+        "draft_template_text": item.draft_template_text,
+        "required_fact_keys": " | ".join(item.required_fact_keys),
+        "fact_source_refs": " | ".join(item.fact_source_refs),
+        "bot_permission": item.bot_permission,
+        "runtime_bot_permission": item.runtime_bot_permission,
+        "rop_decision": item.rop_decision,
+        "approved_for_bot": "yes" if item.approved_for_bot else "no",
+        "auto_approved": "yes" if item.auto_approved else "no",
+        "can_autosend": "yes" if item.can_autosend else "no",
+        "requires_manager_review": "yes" if item.requires_manager_review else "no",
+        "final_approved_answer": item.final_approved_answer,
+        "rop_comment": item.rop_comment,
+    }
+
+
+def build_rop_priority_rows(
+    classes: Sequence[QuestionClass],
+    templates: Sequence[AnswerTemplate],
+    *,
+    limit: int,
+) -> list[Mapping[str, Any]]:
+    templates_by_class = {template.question_class_id: template for template in templates}
+    rows: list[Mapping[str, Any]] = []
+    for rank, item in enumerate(sorted(classes, key=lambda row: (-_priority_score(row), -row.count_total, row.canonical_question))[:limit], start=1):
+        if item.answer_status == ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
+            continue
+        template = templates_by_class.get(item.question_class_id)
+        rows.append(
+            {
+                "rank": rank,
+                "priority_score": _priority_score(item),
+                "rop_review_priority": item.rop_review_priority,
+                "canonical_question": item.canonical_question,
+                "count_total": item.count_total,
+                "count_calls": item.count_calls,
+                "count_telegram": item.count_telegram,
+                "count_email": item.count_email,
+                "answer_status": item.answer_status,
+                "bot_permission": item.bot_permission,
+                "required_fact_keys": " | ".join(item.required_fact_keys),
+                "why_priority": _priority_reason(item),
+                "examples_redacted": " | ".join(item.examples_redacted[:3]),
+                "draft_template_text": template.template_text if template else _template_text_for_class(item),
+                "rop_decision": "",
+                "final_approved_answer": "",
+                "rop_comment": "",
+            }
+        )
+    return rows
+
+
+def build_answer_quality_audit(
+    classes: Sequence[QuestionClass],
+    templates: Sequence[AnswerTemplate],
+    approval_drafts: Sequence[ApprovedQuestionAnswerDraft],
+) -> Mapping[str, Any]:
+    templates_by_class = {template.question_class_id: template for template in templates}
+    findings: list[Mapping[str, Any]] = []
+    prompt_checks: list[Mapping[str, Any]] = []
+    for item in classes:
+        template = templates_by_class.get(item.question_class_id)
+        template_text = template.template_text if template else ""
+        if item.answer_status == ANSWER_STATUS_MANAGER_ONLY and item.bot_permission != BOT_PERMISSION_MANAGER_ONLY:
+            findings.append(_quality_finding(item, "p0", "manager_only_permission_mismatch"))
+        if item.required_fact_keys and "свеж" not in template_text.lower():
+            findings.append(_quality_finding(item, "p1", "dynamic_fact_template_missing_freshness_warning"))
+        if item.required_fact_keys and item.bot_permission == BOT_PERMISSION_DRAFT_ONLY:
+            findings.append(_quality_finding(item, "p1", "dynamic_fact_class_left_as_draft_only"))
+        if item.bot_permission == BOT_PERMISSION_NOT_ALLOWED and item.answer_status != ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
+            findings.append(_quality_finding(item, "p1", "not_allowed_without_noise_status"))
+        if not item.examples_redacted:
+            findings.append(_quality_finding(item, "p2", "missing_examples"))
+        for prompt in _synthetic_prompts_for_class(item)[:3]:
+            prompt_checks.append(
+                {
+                    "question_class_id": item.question_class_id,
+                    "canonical_question": item.canonical_question,
+                    "test_prompt": prompt,
+                    "expected_behavior": _expected_behavior(item),
+                    "must_not_do": _must_not_do(item),
+                }
+            )
+    approval_errors = [
+        item.approval_record_id
+        for item in approval_drafts
+        if item.auto_approved or item.approved_for_bot or item.final_approved_answer or item.can_autosend or item.runtime_bot_permission != BOT_PERMISSION_NOT_ALLOWED
+    ]
+    severity_counts = Counter(str(item["severity"]) for item in findings)
+    return {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "verdict": "pass" if not approval_errors and not severity_counts.get("p0") else "blocked",
+        "classes_checked": len(classes),
+        "templates_checked": len(templates),
+        "approval_drafts_checked": len(approval_drafts),
+        "auto_approval_errors": approval_errors,
+        "findings_by_severity": dict(sorted(severity_counts.items())),
+        "findings": findings,
+        "synthetic_prompt_checks": prompt_checks[:300],
+        "safety_note": "Проверка не вызывает LLM и не отправляет сообщения; это deterministic dry-run.",
+    }
+
+
+def render_answer_quality_audit(audit: Mapping[str, Any]) -> str:
+    lines = [
+        "# Проверка качества шаблонов ответов",
+        "",
+        f"Вердикт: {audit.get('verdict')}",
+        f"Проверено классов: {audit.get('classes_checked')}",
+        f"Проверено шаблонов: {audit.get('templates_checked')}",
+        f"Черновиков утверждения: {audit.get('approval_drafts_checked')}",
+        f"Ошибок автоутверждения: {len(audit.get('auto_approval_errors') or [])}",
+        "",
+        "## Находки по серьезности",
+        "",
+    ]
+    for severity, count in dict(audit.get("findings_by_severity") or {}).items():
+        lines.append(f"- {severity}: {count}")
+    lines.extend(["", "## Ограничения", "", str(audit.get("safety_note") or ""), ""])
+    return "\n".join(lines)
+
+
+def build_channel_preview_context_pack(approval_drafts: Sequence[ApprovedQuestionAnswerDraft]) -> Mapping[str, Any]:
+    approved = [item for item in approval_drafts if item.approved_for_bot and item.final_approved_answer and not item.auto_approved]
+    return {
+        "schema_version": CATALOG_SCHEMA_VERSION,
+        "context_pack_type": "channel_preview_approved_answers",
+        "approved_answers": [item.to_json_dict() for item in approved],
+        "pending_rop_review_count": len(approval_drafts) - len(approved),
+        "approved_count": len(approved),
+        "safety": {
+            "approved_only": True,
+            "live_send": False,
+            "requires_channel_preview_manager_approval": True,
+        },
+        "note": "Текущая сборка не содержит автоутвержденных ответов. Предпросмотр может использовать только записи, утвержденные РОПом.",
+    }
 
 
 def build_summary(
@@ -573,6 +786,84 @@ def _priority_for_class(items: Sequence[QuestionItem], required_fact_keys: Seque
     if len(items) >= 5:
         return "medium"
     return "low"
+
+
+def _priority_score(item: QuestionClass) -> int:
+    score = min(item.count_total, 500)
+    if item.required_fact_keys:
+        score += 140
+    if item.bot_permission == BOT_PERMISSION_MANAGER_ONLY:
+        score += 70
+    if item.count_telegram:
+        score += min(item.count_telegram, 80)
+    if item.count_email:
+        score += min(item.count_email, 80)
+    if item.rop_review_priority == "critical":
+        score += 250
+    elif item.rop_review_priority == "high":
+        score += 120
+    elif item.rop_review_priority == "medium":
+        score += 40
+    return score
+
+
+def _priority_reason(item: QuestionClass) -> str:
+    reasons: list[str] = []
+    if item.count_total >= 25:
+        reasons.append("частый вопрос")
+    if item.required_fact_keys:
+        reasons.append("нужен актуальный факт")
+    if item.bot_permission == BOT_PERMISSION_MANAGER_ONLY:
+        reasons.append("рискованный вопрос для менеджера")
+    if item.count_telegram or item.count_email:
+        reasons.append("приходит из текстовых каналов")
+    return "; ".join(reasons) or "низкая частота"
+
+
+def _default_rop_decision(item: QuestionClass) -> str:
+    if item.answer_status == ANSWER_STATUS_MANAGER_ONLY:
+        return "manager_only_pending_confirmation"
+    if item.required_fact_keys:
+        return "needs_current_fact_approval"
+    if item.answer_status == ANSWER_STATUS_NEEDS_ROP_ANSWER:
+        return "needs_rop_answer"
+    return "pending_rop_review"
+
+
+def _quality_finding(item: QuestionClass, severity: str, code: str) -> Mapping[str, Any]:
+    return {
+        "severity": severity,
+        "code": code,
+        "question_class_id": item.question_class_id,
+        "canonical_question": item.canonical_question,
+        "count_total": item.count_total,
+    }
+
+
+def _synthetic_prompts_for_class(item: QuestionClass) -> tuple[str, ...]:
+    prompts = [
+        f"Подскажите, пожалуйста: {item.canonical_question}?",
+        f"Хочу уточнить про {item.canonical_question.lower()}",
+    ]
+    if item.examples_redacted:
+        prompts.insert(0, item.examples_redacted[0])
+    return tuple(dict.fromkeys(prompts))
+
+
+def _expected_behavior(item: QuestionClass) -> str:
+    if item.bot_permission == BOT_PERMISSION_MANAGER_ONLY:
+        return "не отвечать самостоятельно, передать менеджеру"
+    if item.required_fact_keys:
+        return "дать ответ только после проверки актуального файла фактов"
+    return "показать менеджеру черновик ответа, не отправлять live"
+
+
+def _must_not_do(item: QuestionClass) -> str:
+    if item.required_fact_keys:
+        return "не выдумывать цену, расписание, адрес, скидку, документы или программу"
+    if item.bot_permission == BOT_PERMISSION_MANAGER_ONLY:
+        return "не обещать клиенту решение без менеджера"
+    return "не отправлять клиенту без утверждения"
 
 
 def _fact_source_refs(required_fact_keys: Sequence[str]) -> tuple[str, ...]:

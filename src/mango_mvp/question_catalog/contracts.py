@@ -24,6 +24,7 @@ ANSWER_STATUS_TIME_SENSITIVE = "outdated_or_time_sensitive"
 ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT = "template_ready_needs_current_fact"
 ANSWER_STATUS_FACT_MISSING_OR_STALE = "fact_missing_or_stale"
 ANSWER_STATUS_NOT_ENOUGH_CONTEXT = "not_enough_context"
+ANSWER_STATUS_NOT_CUSTOMER_QUESTION = "not_customer_question"
 
 BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK = "allowed_after_fact_check"
 BOT_PERMISSION_DRAFT_ONLY = "draft_only_needs_review"
@@ -51,6 +52,7 @@ _ALLOWED_STATUSES = {
     ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT,
     ANSWER_STATUS_FACT_MISSING_OR_STALE,
     ANSWER_STATUS_NOT_ENOUGH_CONTEXT,
+    ANSWER_STATUS_NOT_CUSTOMER_QUESTION,
 }
 _ALLOWED_BOT_PERMISSIONS = {
     BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK,
@@ -149,6 +151,16 @@ def stable_answer_template_id(*, tenant_id: str, question_class_id: str, templat
             "tenant_id": normalize_key(tenant_id, "tenant_id"),
             "question_class_id": require_text(question_class_id, "question_class_id"),
             "template_text": require_text(template_text, "template_text"),
+        },
+    )
+
+
+def stable_approval_record_id(*, tenant_id: str, question_class_id: str) -> str:
+    return stable_prefixed_id(
+        "approved_question_answer",
+        {
+            "tenant_id": normalize_key(tenant_id, "tenant_id"),
+            "question_class_id": require_text(question_class_id, "question_class_id"),
         },
     )
 
@@ -396,6 +408,62 @@ class AnswerTemplate:
 
 
 @dataclass(frozen=True)
+class ApprovedQuestionAnswerDraft:
+    tenant_id: str
+    question_class_id: str
+    canonical_question: str
+    count_total: int
+    draft_template_text: str
+    required_fact_keys: Sequence[str] = field(default_factory=tuple)
+    fact_source_refs: Sequence[str] = field(default_factory=tuple)
+    bot_permission: str = BOT_PERMISSION_DRAFT_ONLY
+    rop_decision: str = "pending_rop_review"
+    final_approved_answer: str = ""
+    rop_comment: str = ""
+    approved_for_bot: bool = False
+    auto_approved: bool = False
+    runtime_bot_permission: str = BOT_PERMISSION_NOT_ALLOWED
+    can_autosend: bool = False
+    requires_manager_review: bool = True
+    approval_record_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        tenant_id = normalize_key(self.tenant_id, "tenant_id")
+        class_id = require_text(self.question_class_id, "question_class_id")
+        if self.count_total < 0:
+            raise ValueError("count_total must not be negative")
+        record_id = optional_text(self.approval_record_id) or stable_approval_record_id(
+            tenant_id=tenant_id,
+            question_class_id=class_id,
+        )
+        object.__setattr__(self, "tenant_id", tenant_id)
+        object.__setattr__(self, "question_class_id", class_id)
+        object.__setattr__(self, "canonical_question", require_text(self.canonical_question, "canonical_question"))
+        object.__setattr__(self, "draft_template_text", require_text(self.draft_template_text, "draft_template_text"))
+        object.__setattr__(self, "required_fact_keys", normalize_sequence(self.required_fact_keys, "required_fact_keys"))
+        object.__setattr__(self, "fact_source_refs", normalize_sequence(self.fact_source_refs, "fact_source_refs"))
+        object.__setattr__(self, "bot_permission", normalize_bot_permission(self.bot_permission))
+        object.__setattr__(self, "rop_decision", normalize_key(self.rop_decision, "rop_decision"))
+        object.__setattr__(self, "final_approved_answer", str(self.final_approved_answer or "").strip())
+        object.__setattr__(self, "rop_comment", str(self.rop_comment or "").strip())
+        object.__setattr__(self, "runtime_bot_permission", normalize_bot_permission(self.runtime_bot_permission))
+        object.__setattr__(self, "approval_record_id", record_id)
+        if self.auto_approved:
+            raise ValueError("question answer drafts must never be auto-approved")
+        if self.can_autosend:
+            raise ValueError("question answer drafts must never allow autosend")
+        if not self.requires_manager_review:
+            raise ValueError("question answer drafts require manager review")
+        if self.runtime_bot_permission != BOT_PERMISSION_NOT_ALLOWED:
+            raise ValueError("runtime_bot_permission must stay not_allowed until ROP import")
+        if self.approved_for_bot and not self.final_approved_answer:
+            raise ValueError("approved_for_bot requires final_approved_answer")
+
+    def to_json_dict(self) -> Mapping[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class CurrentFactSource:
     source_id: str
     fact_types: Sequence[str]
@@ -404,6 +472,9 @@ class CurrentFactSource:
     last_updated_at: Optional[str] = None
     freshness_policy: str = "manual_check_required_before_bot_answer"
     usable_for_bot: bool = False
+    approval_status: str = "manual_review_required"
+    approved_by: Optional[str] = None
+    approved_at: Optional[str] = None
     notes: str = ""
 
     def __post_init__(self) -> None:
@@ -413,6 +484,9 @@ class CurrentFactSource:
         object.__setattr__(self, "owner", require_text(self.owner, "owner"))
         object.__setattr__(self, "last_updated_at", optional_text(self.last_updated_at))
         object.__setattr__(self, "freshness_policy", require_text(self.freshness_policy, "freshness_policy"))
+        object.__setattr__(self, "approval_status", normalize_key(self.approval_status, "approval_status"))
+        object.__setattr__(self, "approved_by", optional_text(self.approved_by))
+        object.__setattr__(self, "approved_at", optional_text(self.approved_at))
         object.__setattr__(self, "notes", str(self.notes or "").strip())
 
     def to_json_dict(self) -> Mapping[str, Any]:

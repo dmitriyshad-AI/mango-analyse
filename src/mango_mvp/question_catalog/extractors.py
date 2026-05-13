@@ -19,6 +19,7 @@ from mango_mvp.question_catalog.contracts import (
 )
 from mango_mvp.question_catalog.normalization import (
     clean_text,
+    detect_noise_reason,
     infer_question_metadata,
     is_question_like,
     split_candidate_questions,
@@ -131,6 +132,7 @@ def extract_telegram_questions(
     skipped_before_since = 0
     skipped_not_question = 0
     skipped_non_user = 0
+    skipped_noise = 0
     for row in messages:
         if row.get("out") is True:
             continue
@@ -142,6 +144,9 @@ def extract_telegram_questions(
             skipped_before_since += 1
             continue
         text = clean_text(row.get("text") or row.get("raw_text"))
+        if detect_noise_reason(text):
+            skipped_noise += 1
+            continue
         candidates = split_candidate_questions(text, max_parts=2)
         if not candidates:
             skipped_not_question += 1
@@ -175,6 +180,7 @@ def extract_telegram_questions(
         "skipped_before_since": skipped_before_since,
         "skipped_non_user": skipped_non_user,
         "skipped_not_question": skipped_not_question,
+        "skipped_noise": skipped_noise,
         "period_from": since.isoformat(),
     }
 
@@ -197,6 +203,7 @@ def extract_mail_questions(
     skipped_before_since = 0
     skipped_sent = 0
     skipped_service_or_not_question = 0
+    skipped_noise = 0
     for archive_path in archive_paths:
         archive_count = 0
         try:
@@ -228,6 +235,9 @@ def extract_mail_questions(
             text = _read_text_if_safe(text_path, max_chars=max_chars_per_message)
             subject = clean_text(row.get("subject"))
             combined = _preprocess_mail_text(f"{subject}. {text}".strip())
+            if detect_noise_reason(combined):
+                skipped_noise += 1
+                continue
             candidates = split_candidate_questions(combined, max_parts=3)
             if not candidates:
                 skipped_service_or_not_question += 1
@@ -272,6 +282,7 @@ def extract_mail_questions(
         "skipped_before_since": skipped_before_since,
         "skipped_sent": skipped_sent,
         "skipped_service_or_not_question": skipped_service_or_not_question,
+        "skipped_noise": skipped_noise,
         "archives": archive_reports,
         "period_from": since.isoformat(),
     }
@@ -394,6 +405,26 @@ def _preprocess_mail_text(text: str) -> str:
                 "bitrix/admin",
                 "для добавления в стоп-лист",
                 "для просмотра сессии",
+                "если у вас остались вопросы",
+                "вы можете задать их",
+                "написав в telegram",
+                "написав в whatsapp",
+                "с уважением",
+                "команда фотон",
+                "nbsp",
+                "zwnj",
+                "compose",
+                "mime-version",
+                "content-type",
+                "vlagere",
+                "заявка в обработке",
+                "статус не менялся",
+                "сутокздравствуйте",
+                "недельздравствуйте",
+                "пересланное письмо",
+                "все пришло, спасибо",
+                "спасибо, пришла смс",
+                "спасибо большое",
                 "useragent",
                 "посетитель -",
                 "сессия -",

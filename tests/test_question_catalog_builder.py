@@ -113,5 +113,19 @@ def test_build_customer_question_catalog_e2e(tmp_path: Path) -> None:
     assert (out / "customer_question_items.jsonl").exists()
     assert (out / "customer_question_classes.xlsx").exists()
     assert (out / "rop_question_review_pack.xlsx").exists()
+    assert (out / "approved_question_answers_draft.xlsx").exists()
+    assert (out / "approved_question_answers_draft.csv").exists()
+    assert (out / "approved_question_answers_draft.json").exists()
+    assert (out / "rop_review_priority_top100.xlsx").exists()
+    assert (out / "answer_quality_check_report.json").exists()
+    assert (out / "channel_preview_approved_context_pack.json").exists()
     assert (out / "current_fact_source_registry.json").exists()
     assert "50000" not in (out / "customer_question_items.jsonl").read_text(encoding="utf-8")
+
+    approved = json.loads((out / "approved_question_answers_draft.json").read_text(encoding="utf-8"))
+    assert approved["records"]
+    assert all(record["auto_approved"] is False for record in approved["records"])
+
+    quality = json.loads((out / "answer_quality_check_report.json").read_text(encoding="utf-8"))
+    assert quality["verdict"] == "pass"
+    assert quality["auto_approval_errors"] == []

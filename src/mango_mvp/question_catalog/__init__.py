@@ -6,6 +6,7 @@ from mango_mvp.question_catalog.contracts import (
     ANSWER_STATUS_MANAGER_ONLY,
     ANSWER_STATUS_NEEDS_ROP_ANSWER,
     ANSWER_STATUS_NOT_ENOUGH_CONTEXT,
+    ANSWER_STATUS_NOT_CUSTOMER_QUESTION,
     ANSWER_STATUS_SOURCE_CONFLICT,
     ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT,
     ANSWER_STATUS_TIME_SENSITIVE,
@@ -17,6 +18,7 @@ from mango_mvp.question_catalog.contracts import (
     SOURCE_EMAIL,
     SOURCE_TELEGRAM,
     AnswerTemplate,
+    ApprovedQuestionAnswerDraft,
     CurrentFactSource,
     QuestionClass,
     QuestionItem,
@@ -26,10 +28,12 @@ from mango_mvp.question_catalog.contracts import (
 )
 from mango_mvp.question_catalog.normalization import (
     classify_question,
+    detect_noise_reason,
     infer_question_metadata,
     is_question_like,
     split_candidate_questions,
 )
+from mango_mvp.question_catalog.preview_context import build_question_catalog_channel_context
 from mango_mvp.question_catalog.safety import (
     assert_public_text_safe,
     guard_question_catalog_output_path,
@@ -43,6 +47,7 @@ __all__ = [
     "ANSWER_STATUS_MANAGER_ONLY",
     "ANSWER_STATUS_NEEDS_ROP_ANSWER",
     "ANSWER_STATUS_NOT_ENOUGH_CONTEXT",
+    "ANSWER_STATUS_NOT_CUSTOMER_QUESTION",
     "ANSWER_STATUS_SOURCE_CONFLICT",
     "ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT",
     "ANSWER_STATUS_TIME_SENSITIVE",
@@ -54,6 +59,7 @@ __all__ = [
     "SOURCE_EMAIL",
     "SOURCE_TELEGRAM",
     "AnswerTemplate",
+    "ApprovedQuestionAnswerDraft",
     "CatalogBuildConfig",
     "CurrentFactSource",
     "QuestionClass",
@@ -62,6 +68,8 @@ __all__ = [
     "assert_question_catalog_safety_contract",
     "build_customer_question_catalog",
     "classify_question",
+    "detect_noise_reason",
+    "build_question_catalog_channel_context",
     "guard_question_catalog_output_path",
     "infer_question_metadata",
     "is_question_like",

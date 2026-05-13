@@ -34,6 +34,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_questio
 | `product_data/question_catalog/fact_requirements.csv` | Список классов, где нужны актуальные цены, расписание, документы, адреса, скидки |
 | `product_data/question_catalog/current_fact_source_registry.json` | Найденные файлы-кандидаты для актуальных фактов |
 | `product_data/question_catalog/unanswered_questions.csv` | Вопросы, по которым не хватает надежного ответа |
+| `product_data/question_catalog/approved_question_answers_draft.xlsx` | Черновик утверждения ответов РОПом: ни одна строка не утверждается автоматически |
+| `product_data/question_catalog/rop_review_priority_top100.xlsx` | Первые 100 классов для проверки РОПом по приоритету |
+| `product_data/question_catalog/answer_quality_check_report.json` | Автоматическая проверка шаблонов, статусов и запрета автоутверждения |
+| `product_data/question_catalog/channel_preview_approved_context_pack.json` | Безопасный пакет для предпросмотра бота: только утвержденные РОПом ответы |
 | `product_data/question_catalog/source_coverage_report.md` | Отчет, какие источники были обработаны |
 | `product_data/question_catalog/question_catalog_summary.json` | Машиночитаемая сводка сборки |
 | `product_data/question_catalog/customer_question_items.jsonl` | Детальный список очищенных вопросов |
@@ -56,7 +60,8 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_questio
 4. Для каждого класса выбрать решение: бот может отвечать, только менеджер, нужен факт, нужен новый ответ.
 5. Для классов с ценой и расписанием указать, из какого актуального файла брать факт.
 6. Запретить классы, где ответ зависит от сложной личной ситуации клиента.
-7. После правок собрать вторую версию каталога и подключать только утвержденные классы в предпросмотр ответа бота.
+7. Заполнить `approved_question_answers_draft.xlsx`: решение РОПа, финальный текст, комментарий.
+8. После правок собрать вторую версию каталога и подключать только утвержденные классы в предпросмотр ответа бота.
 
 ## Что нельзя делать на основе текущих файлов
 
@@ -64,7 +69,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_questio
 
 Нельзя брать цены и расписание из старых сообщений менеджеров без проверки свежести. Вопросы с такими темами специально помечены как требующие актуального факта.
 
-Нельзя считать класс `общий вопрос` готовым. Это большой остаточный класс, который нужно дробить следующим проходом.
+Класс `общий вопрос` уже сокращен до 292 элементов, но это все еще остаточный класс. Его можно проверять позже, после топ-100 приоритетных классов.
 
 ## Когда пересобирать
 
@@ -84,3 +89,5 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_questio
 4. В выходных текстовых файлах нет телефонов и email клиентов.
 5. Все классы с ценами и расписанием требуют актуальный источник фактов.
 6. `rop_question_review_pack.xlsx` открывается и содержит понятные статусы.
+7. `answer_quality_check_report.json` имеет вердикт `pass`.
+8. `channel_preview_approved_context_pack.json` не содержит автоутвержденных ответов.

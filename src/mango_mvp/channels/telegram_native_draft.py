@@ -77,7 +77,7 @@ class TelegramNativeDraftConfig:
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "TelegramNativeDraftConfig":
-        source = env or os.environ
+        source = os.environ if env is None else env
         return cls(
             enabled=env_bool(source, "CHANNEL_TELEGRAM_NATIVE_DRAFTS_ENABLED", default=False),
             kill_switch=env_bool(source, "CHANNEL_TELEGRAM_NATIVE_DRAFT_KILL_SWITCH", default=True),

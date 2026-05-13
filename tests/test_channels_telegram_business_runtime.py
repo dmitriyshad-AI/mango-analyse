@@ -74,6 +74,29 @@ def test_business_connection_record_preserves_64_bit_ids_and_status() -> None:
     assert result.messages == ()
 
 
+def test_disabled_business_connection_is_record_only_and_safe() -> None:
+    runtime = TelegramBusinessRuntime(clock=StepClock())
+    result = runtime.process_update(
+        {
+            "update_id": 9002,
+            "business_connection": {
+                "id": "bc-disabled",
+                "user": {"id": LARGE_CHAT_ID},
+                "user_chat_id": LARGE_CHAT_ID,
+                "date": START_TS,
+                "can_reply": False,
+                "is_enabled": False,
+            },
+        }
+    )
+
+    assert result.messages == ()
+    assert result.update_record.connection is not None
+    assert result.update_record.connection.is_enabled is False
+    assert result.update_record.connection.can_reply is False
+    assert result.to_json_dict()["safety"]["live_send"] is False
+
+
 def test_business_message_bridges_to_channel_message_and_store_idempotently() -> None:
     runtime = TelegramBusinessRuntime(clock=StepClock())
     update = business_message_update()
@@ -99,6 +122,23 @@ def test_business_message_bridges_to_channel_message_and_store_idempotently() ->
     assert preview.session.channel_thread_id == message.channel_thread_id
     assert store.summary()["messages"] == 1
     assert store.summary()["drafts"] == 1
+
+
+def test_same_message_id_in_different_business_connection_or_chat_does_not_collide() -> None:
+    runtime = TelegramBusinessRuntime(clock=StepClock())
+    first = runtime.process_update(business_message_update(update_id=1001, message_id=77)).messages[0]
+    second_update = business_message_update(update_id=1002, message_id=77)
+    second_update["business_message"]["business_connection_id"] = "bc-other"
+    second = runtime.process_update(second_update).messages[0]
+    third_update = business_message_update(update_id=1003, message_id=77)
+    third_update["business_message"]["chat"]["id"] = LARGE_CHAT_ID - 1
+    third_update["business_message"]["from"]["id"] = LARGE_CHAT_ID - 1
+    third = runtime.process_update(third_update).messages[0]
+
+    assert first.channel_message_id == "bc-123:77"
+    assert second.channel_message_id == "bc-other:77"
+    assert third.channel_message_id == "bc-123:77"
+    assert len({first.idempotency_key, second.idempotency_key, third.idempotency_key}) == 3
 
 
 def test_edited_business_message_has_distinct_message_key_from_original() -> None:
@@ -143,6 +183,21 @@ def test_deleted_business_messages_create_tombstone_update_without_channel_messa
     assert result.update_record.chat_id == str(LARGE_CHAT_ID)
     assert result.update_record.message_ids == ("77", "78")
     assert result.update_record.metadata["deleted_message_count"] == 2
+
+
+def test_deleted_business_messages_rejects_non_sequence_message_ids() -> None:
+    runtime = TelegramBusinessRuntime(clock=StepClock())
+    with pytest.raises(ValueError, match="message_ids must be a sequence"):
+        runtime.process_update(
+            {
+                "update_id": 1004,
+                "deleted_business_messages": {
+                    "business_connection_id": "bc-123",
+                    "chat": {"id": LARGE_CHAT_ID, "type": "private"},
+                    "message_ids": "77,78",
+                },
+            }
+        )
 
 
 def test_runtime_memory_store_dedupes_update_records() -> None:

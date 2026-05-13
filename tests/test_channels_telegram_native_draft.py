@@ -65,6 +65,38 @@ def enabled_config(*, kill_switch: bool = False, allowed_chat_ids: tuple[str, ..
     return TelegramNativeDraftConfig(enabled=True, kill_switch=kill_switch, allowed_chat_ids=allowed_chat_ids)
 
 
+def test_native_draft_config_from_env_uses_explicit_env_and_redacts_presence(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHANNEL_TELEGRAM_NATIVE_DRAFTS_ENABLED", "true")
+    monkeypatch.setenv("CHANNEL_TELEGRAM_NATIVE_DRAFT_KILL_SWITCH", "false")
+    monkeypatch.setenv("TDLIB_API_HASH", "real-env-secret")
+
+    explicit_empty = TelegramNativeDraftConfig.from_env({})
+    explicit_values = TelegramNativeDraftConfig.from_env(
+        {
+            "CHANNEL_TELEGRAM_NATIVE_DRAFTS_ENABLED": "true",
+            "CHANNEL_TELEGRAM_NATIVE_DRAFT_KILL_SWITCH": "false",
+            "CHANNEL_TELEGRAM_NATIVE_DRAFT_ALLOWED_CHAT_IDS": "555, 777",
+            "TDLIB_API_ID": "123",
+            "TDLIB_API_HASH": "secret-hash",
+            "TDLIB_DATABASE_ENCRYPTION_KEY": "secret-key",
+            "TDLIB_PHONE_NUMBER": "+79990000000",
+            "TDLIB_DATABASE_DIR": "/secure/tdlib",
+        }
+    )
+
+    assert explicit_empty.enabled is False
+    assert explicit_empty.kill_switch is True
+    assert explicit_empty.api_hash_present is False
+    assert explicit_values.enabled is True
+    assert explicit_values.kill_switch is False
+    assert explicit_values.allowed_chat_ids == ("555", "777")
+    exported = explicit_values.to_json_dict()
+    assert exported["api_hash_present"] is True
+    assert exported["database_encryption_key_present"] is True
+    assert "secret-hash" not in str(exported)
+    assert "+79990000000" not in str(exported)
+
+
 def test_native_draft_intent_validates_text_operation_and_stable_key() -> None:
     intent = TelegramNativeDraftIntent(
         operation=NATIVE_DRAFT_OPERATION_SAVE,

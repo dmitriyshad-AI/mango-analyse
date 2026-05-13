@@ -47,18 +47,19 @@
 - `Хронология общения (последние 5 касаний)` технически оставлена под старым названием для совместимости, но теперь содержит все содержательные звонки по телефону, каждый нормальным предложением.
 - `Авто история общения` при записи в AMO больше не вставляет полную хронологию внутрь карточки, чтобы не заставлять сотрудника читать одно и то же несколько раз.
 - Проверка `cross_field_duplicate_information` больше не считает рабочую хронологию writeback-полем, потому что она не пишется в AMO как отдельное поле.
+- Добавлен tenant-normalizer: `МПК/НПК/ОМПК/ВНПК/МНПК МФТИ` нормализуются в `УНПК МФТИ`; ASR-ошибка `летние ночные школы` нормализуется в `летние очные школы`; продуктовые счетчики и синонимы схлопываются.
 
 Новый review-pack для РОП:
 
-`stable_runtime/student_card_manual_review_next50_20260513_v2/student_card_manual_review_next50_for_rop.xlsx`
+`stable_runtime/student_card_manual_review_next50_20260513_v5/student_card_manual_review_next50_for_rop.xlsx`
 
 Новый пересобранный AMO/export слой для проверки новой истории:
 
-`stable_runtime/sales_master_export_20260513_human_history_v4/`
+`stable_runtime/sales_master_export_20260513_human_history_v7/`
 
 ## Почему новый human-history export пока не переключен как active runtime
 
-`stable_runtime/sales_master_export_20260513_human_history_v4/amo_export_ready_ru.csv` содержит 54 потенциально готовые строки, но новый CRM quality gate `stable_runtime/crm_writeback_quality_gate_20260513_human_history_v2/summary.json` заблокировал 46 из них по причине `stale_source_next_step`: последние звонки старые относительно 2026-05-13, а следующий шаг был рассчитан из исторического звонка.
+`stable_runtime/sales_master_export_20260513_human_history_v7/amo_export_ready_ru.csv` содержит 54 потенциально готовые строки, но новый CRM quality gate `stable_runtime/crm_writeback_quality_gate_20260513_human_history_v3/summary.json` заблокировал 46 из них по причине `stale_source_next_step`: последние звонки старые относительно 2026-05-13, а следующий шаг был рассчитан из исторического звонка.
 
 Это правильное поведение. Нельзя автоматически писать в CRM старые рекомендации без учета текущих сделок, оплат, задач AMO и статуса клиента.
 
@@ -66,7 +67,7 @@
 
 `stable_runtime/CANONICAL_EXPORT.txt -> sales_master_export_20260510_after_quality_backfill_v5_crm_text_quality_strict`
 
-Этот слой не старый апрельский полуфабрикат; он собран из актуальной canonical-базы, но его текстовая история менее человекочитаемая, чем новая v4.
+Этот слой не старый апрельский полуфабрикат; он собран из актуальной canonical-базы, но его текстовая история менее человекочитаемая, чем новая v7.
 
 ## Что считать устаревшими полуфабрикатами
 

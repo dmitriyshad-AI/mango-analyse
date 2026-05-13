@@ -13,6 +13,8 @@ def test_question_detection_handles_requests_without_question_mark() -> None:
     assert is_question_like("Пришлите, пожалуйста, курсы по математике для 6 класса")
     assert is_question_like("Сколько стоит подготовка к ЕГЭ?")
     assert not is_question_like("Письмо сгенерировано автоматически. Отписаться от рассылки.")
+    assert not is_question_like("Будьте в курсе всех новостей и интересных событий!")
+    assert not is_question_like("Счёт: 30101810400000000225 ИНН: 7700000000 КПП: 770001001")
 
 
 def test_split_candidate_questions_keeps_narrow_parts() -> None:

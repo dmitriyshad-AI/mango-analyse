@@ -511,7 +511,7 @@ def render_source_coverage(source_reports: Sequence[Mapping[str, Any]], summary:
         "",
         f"- Отдельных вопросов: {summary['totals']['question_items']}",
         f"- Классов вопросов: {summary['totals']['question_classes']}",
-        f"- Классов с актуальными фактами: {summary['totals']['dynamic_fact_classes']}",
+        f"- Классов, требующих актуальных фактов: {summary['totals']['dynamic_fact_classes']}",
         "",
         "## Источники",
         "",

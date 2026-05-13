@@ -128,3 +128,66 @@ def test_extract_mail_questions_from_read_only_sqlite(tmp_path: Path) -> None:
     assert items[0].source_channel == "email"
     assert items[0].price_related is True
     assert "client@example.com" not in items[0].customer_text_redacted
+
+
+def test_extract_mail_questions_skips_bank_and_marketing_noise(tmp_path: Path) -> None:
+    archive_root = tmp_path / "mail"
+    folder = archive_root / "regru_edu" / "folder_inbox"
+    text_dir = folder / "extracted_text"
+    text_dir.mkdir(parents=True)
+    bank_text = text_dir / "bank.txt"
+    news_text = text_dir / "news.txt"
+    bank_text.write_text("Счёт: 30101810400000000225 ИНН: 7700000000 КПП: 770001001", encoding="utf-8")
+    news_text.write_text("Будьте в курсе всех новостей и интересных событий!", encoding="utf-8")
+    db_path = folder / "mail_archive.sqlite"
+    with sqlite3.connect(db_path) as con:
+        con.execute(
+            """
+            CREATE TABLE messages (
+              sha256 TEXT PRIMARY KEY,
+              message_date_iso TEXT,
+              subject TEXT,
+              from_header TEXT,
+              to_header TEXT,
+              mailbox TEXT NOT NULL,
+              mailbox_raw TEXT NOT NULL,
+              message_kind TEXT NOT NULL,
+              extracted_text_path TEXT,
+              extracted_text_chars INTEGER
+            )
+            """
+        )
+        con.executemany(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "bank",
+                    "2026-05-01T10:00:00+00:00",
+                    "Реквизиты",
+                    "client@example.com",
+                    "edu@kmipt.ru",
+                    "INBOX",
+                    "INBOX",
+                    "external",
+                    str(bank_text),
+                    70,
+                ),
+                (
+                    "news",
+                    "2026-05-01T11:00:00+00:00",
+                    "Новости",
+                    "client@example.com",
+                    "edu@kmipt.ru",
+                    "INBOX",
+                    "INBOX",
+                    "external",
+                    str(news_text),
+                    55,
+                ),
+            ],
+        )
+
+    items, report = extract_mail_questions(archive_root, tenant_id="foton")
+
+    assert items == []
+    assert report["items_extracted"] == 0

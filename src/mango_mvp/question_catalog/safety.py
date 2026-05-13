@@ -11,7 +11,9 @@ from mango_mvp.insights.sanitizers import (
 
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
-PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\s()\-]*){10,15}(?!\d)")
+PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\s().\-]*){10,15}(?!\d)")
+URL_RE = re.compile(r"\b(?:https?\s*:\s*//|www\.)\S+", re.I)
+LONG_NUMBER_RE = re.compile(r"(?<!\d)(?:\d[\s().\-]*){10,}(?!\d)")
 
 
 def is_stable_runtime_path(path: Path | str) -> bool:
@@ -33,23 +35,36 @@ def guard_question_catalog_output_path(path: Path | str, *, project_root: Path |
 def redact_public_text(value: Any, *, max_chars: int = 500) -> tuple[str, tuple[str, ...]]:
     source = str(value or "").strip()
     sanitized = sanitize_answer(value, mode="bot")
-    text = sanitized.text.strip()
+    text, extra_flags = _redact_extra_public_risks(sanitized.text.strip())
     if source and not text:
         return "[очищено: исходный текст полностью состоял из небезопасных данных]", tuple(
-            dict.fromkeys((*sanitized.flags, "empty_after_public_redaction"))
+            dict.fromkeys((*sanitized.flags, *extra_flags, "empty_after_public_redaction"))
         )
     if max_chars > 0 and len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "..."
     if has_any_safety_risk(text) or contains_raw_contact(text):
         return "[очищено: потенциальные персональные или изменяемые данные]", tuple(
-            dict.fromkeys((*sanitized.flags, "blocked_unresolved_public_risk"))
+            dict.fromkeys((*sanitized.flags, *extra_flags, "blocked_unresolved_public_risk"))
         )
-    return text, tuple(sanitized.flags)
+    return text, tuple(dict.fromkeys((*sanitized.flags, *extra_flags)))
 
 
 def contains_raw_contact(value: Any) -> bool:
     text = str(value or "")
-    return bool(EMAIL_RE.search(text) or PHONE_RE.search(text))
+    return bool(EMAIL_RE.search(text) or PHONE_RE.search(text) or URL_RE.search(text) or LONG_NUMBER_RE.search(text))
+
+
+def _redact_extra_public_risks(value: str) -> tuple[str, tuple[str, ...]]:
+    text = value
+    flags: list[str] = []
+    if URL_RE.search(text):
+        text = URL_RE.sub("ссылка", text)
+        flags.append("url_redacted")
+    if LONG_NUMBER_RE.search(text):
+        text = LONG_NUMBER_RE.sub("служебный номер", text)
+        flags.append("long_number_redacted")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text, tuple(flags)
 
 
 def assert_public_text_safe(value: Any, *, field_name: str = "text") -> None:

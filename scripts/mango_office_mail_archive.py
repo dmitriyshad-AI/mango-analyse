@@ -11,10 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -110,6 +112,7 @@ def run_preflight(args: argparse.Namespace) -> int:
             out_dir=Path(args.out_dir or default_ingest_out_dir(args.account_label)),
             mailbox=args.mailbox,
             since_days=args.since_days,
+            before_days=args.before_days,
             max_messages=args.max_messages,
             account_label=args.account_label,
             host=host,
@@ -134,11 +137,13 @@ def run_ingest(args: argparse.Namespace) -> int:
     host = args.host or os.environ.get("MAIL_IMAP_HOST", DEFAULT_HOST)
     port = resolve_port(args.port)
     out_dir = Path(args.out_dir or default_ingest_out_dir(args.account_label))
+    excluded_sha256s = load_excluded_message_sha256s(args.exclude_archive_db or [])
     preflight = build_mail_archive_preflight(
         MailArchivePreflightConfig(
             out_dir=out_dir,
             mailbox=args.mailbox,
             since_days=args.since_days,
+            before_days=args.before_days,
             max_messages=args.max_messages,
             account_label=args.account_label,
             host=host,
@@ -171,10 +176,12 @@ def run_ingest(args: argparse.Namespace) -> int:
                 mailbox=args.mailbox,
                 mailbox_label=args.mailbox_label or args.mailbox.strip('"'),
                 since_days=args.since_days,
+                before_days=args.before_days,
                 max_messages=args.max_messages,
                 account_label=args.account_label,
                 internal_domains=tuple(args.internal_domain or []),
                 extracted_text_max_chars=args.extracted_text_max_chars,
+                exclude_message_sha256s=tuple(excluded_sha256s),
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -349,10 +356,14 @@ def print_summary(report: Mapping[str, object]) -> None:
         "account_label",
         "mailbox",
         "since_days",
+        "before_days",
+        "window_days",
+        "search_criteria",
         "max_messages",
         "messages_found_since",
         "messages_attempted",
         "messages_inserted_or_seen",
+        "messages_excluded_by_sha256",
         "raw_eml_written",
         "attachments_written",
         "text_files_written",
@@ -405,6 +416,23 @@ def load_dotenv_file(path: Path) -> None:
         os.environ[key] = value
 
 
+def load_excluded_message_sha256s(paths: Sequence[str]) -> set[str]:
+    values: set[str] = set()
+    for raw_path in paths:
+        path = Path(raw_path)
+        uri = f"file:{quote(str(path.resolve(strict=False)), safe='/:')}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as con:
+            for row in con.execute("SELECT sha256 FROM messages"):
+                sha256 = str(row[0] or "").strip()
+                if is_full_sha256(sha256):
+                    values.add(sha256)
+    return values
+
+
+def is_full_sha256(value: str) -> bool:
+    return len(value) == 64 and all(ch in "0123456789abcdef" for ch in value)
+
+
 def resolve_port(arg_port: int | None) -> int:
     if arg_port:
         return int(arg_port)
@@ -442,6 +470,7 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     preflight.add_argument("--mailbox", default="INBOX")
     preflight.add_argument("--out-dir")
     preflight.add_argument("--since-days", type=int, default=3)
+    preflight.add_argument("--before-days", type=int)
     preflight.add_argument("--max-messages", type=int, default=1)
     preflight.add_argument("--identity-db")
     preflight.add_argument(
@@ -465,6 +494,7 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     ingest.add_argument("--mailbox-label")
     ingest.add_argument("--out-dir")
     ingest.add_argument("--since-days", type=int, default=3)
+    ingest.add_argument("--before-days", type=int)
     ingest.add_argument("--max-messages", type=int, default=1)
     ingest.add_argument(
         "--allow-large-batch",
@@ -473,6 +503,11 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     )
     ingest.add_argument("--internal-domain", action="append", default=["kmipt.ru"])
     ingest.add_argument("--extracted-text-max-chars", type=int, default=250_000)
+    ingest.add_argument(
+        "--exclude-archive-db",
+        action="append",
+        help="Read message sha256 values from an existing archive DB and skip those messages.",
+    )
 
     verify = subparsers.add_parser("verify-pilot", help="Verify a completed mail archive pilot.")
     verify.add_argument("--archive-dir", required=True)

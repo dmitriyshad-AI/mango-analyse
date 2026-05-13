@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import sqlite3
 from email.message import EmailMessage
@@ -297,6 +298,43 @@ def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
     assert (tmp_path / "archive" / "mail_archive_verification.json").exists()
 
 
+def test_mail_archive_ingest_can_exclude_control_message_sha256s(tmp_path: Path) -> None:
+    raw = _raw_message()
+    excluded_sha256 = hashlib.sha256(raw).hexdigest()
+    fake_imap = FakeImapClient([raw])
+
+    report = build_mail_archive_ingest(
+        credentials=MailImapCredentials(
+            host="mail.example.test",
+            port=993,
+            email_address="school@kmipt.ru",
+            password="not-written",
+        ),
+        config=MailArchiveIngestConfig(
+            out_dir=tmp_path / "archive",
+            mailbox="INBOX",
+            mailbox_label="INBOX",
+            since_days=7,
+            max_messages=10,
+            account_label="test",
+            internal_domains=("kmipt.ru",),
+            exclude_message_sha256s=(excluded_sha256,),
+        ),
+        client=fake_imap,
+    )
+
+    assert report["messages_attempted"] == 1
+    assert report["messages_excluded_by_sha256"] == 1
+    assert report["messages_inserted_or_seen"] == 0
+    assert report["raw_eml_written"] == 0
+    assert report["attachments_written"] == 0
+    assert report["text_files_written"] == 0
+    assert not list((tmp_path / "archive" / "raw_eml").glob("**/*.eml"))
+    with sqlite3.connect(tmp_path / "archive" / "mail_archive.sqlite") as con:
+        assert con.execute("select count(*) from messages").fetchone()[0] == 0
+        assert con.execute("select count(*) from message_sources").fetchone()[0] == 0
+
+
 def test_mail_archive_zero_max_messages_fetches_nothing(tmp_path: Path) -> None:
     fake_imap = FakeImapClient([_raw_message()])
 
@@ -339,7 +377,7 @@ def test_mail_archive_preflight_blocks_missing_secret_and_unsafe_limits(tmp_path
     assert report["preflight_pass"] is False
     assert "missing_or_invalid_mailbox_email" in report["blocking_risks"]
     assert "missing_password_env" in report["blocking_risks"]
-    assert "pilot_since_days_must_be_1_to_7" in report["blocking_risks"]
+    assert "pilot_window_days_must_be_1_to_7" in report["blocking_risks"]
     assert "pilot_max_messages_must_be_1_to_5" in report["blocking_risks"]
     assert "out_dir_not_git_ignored" in report["blocking_risks"]
     assert report["safety"]["network_calls"] is False
@@ -410,6 +448,63 @@ def test_mail_archive_preflight_passes_for_explicit_large_ignored_batch(
     assert report["batch_mode"] == "approved_large_batch"
     assert report["blocking_risks"] == []
     assert "--allow-large-batch" in report["recommended_command"]
+
+
+def test_mail_archive_preflight_and_ingest_support_older_date_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.git_check_ignored",
+        lambda _path: True,
+    )
+    identity_db = tmp_path / "_external_handoffs" / "identity.sqlite"
+    identity_db.parent.mkdir(parents=True)
+    identity_db.write_bytes(b"sqlite placeholder")
+
+    preflight = build_mail_archive_preflight(
+        MailArchivePreflightConfig(
+            out_dir=tmp_path / "_external_handoffs" / "older_batch",
+            email_address="school@kmipt.ru",
+            password_env_present=True,
+            since_days=60,
+            before_days=30,
+            max_messages=100,
+            identity_db_path=identity_db,
+            allow_large_batch=True,
+        )
+    )
+
+    assert preflight["preflight_pass"] is True
+    assert preflight["requested_pilot"]["window_days"] == 30
+    assert "--before-days 30" in preflight["recommended_command"]
+
+    fake_imap = FakeImapClient([_raw_message()])
+    ingest = build_mail_archive_ingest(
+        credentials=MailImapCredentials(
+            host="mail.example.test",
+            port=993,
+            email_address="school@kmipt.ru",
+            password="not-written",
+        ),
+        config=MailArchiveIngestConfig(
+            out_dir=tmp_path / "_external_handoffs" / "older_batch",
+            mailbox="Sent Messages",
+            mailbox_label="Sent Messages",
+            since_days=60,
+            before_days=30,
+            max_messages=1,
+            account_label="test",
+            internal_domains=("kmipt.ru",),
+        ),
+        client=fake_imap,
+    )
+
+    assert ingest["before_days"] == 30
+    assert ingest["window_days"] == 30
+    assert fake_imap.search_criteria
+    assert fake_imap.search_criteria[0][0] == "SINCE"
+    assert fake_imap.search_criteria[0][2] == "BEFORE"
 
 
 def test_mail_archive_preflight_sanitizes_invalid_password_env_name(tmp_path: Path) -> None:
@@ -1019,6 +1114,7 @@ class FakeImapClient:
         self.messages = messages
         self.selected_readonly: list[tuple[str, bool]] = []
         self.fetch_queries: list[str] = []
+        self.search_criteria: list[tuple[str, ...]] = []
 
     def login(self, user: str, password: str) -> tuple[str, Sequence[bytes]]:
         assert user == "school@kmipt.ru"
@@ -1035,6 +1131,7 @@ class FakeImapClient:
     def search(self, charset: str | None, *criteria: str) -> tuple[str, Sequence[bytes]]:
         assert charset is None
         assert criteria[0] == "SINCE"
+        self.search_criteria.append(tuple(criteria))
         return "OK", [b" ".join(str(index).encode("ascii") for index in range(1, len(self.messages) + 1))]
 
     def fetch(self, message_set: bytes | str, message_parts: str) -> tuple[str, Sequence[Any]]:

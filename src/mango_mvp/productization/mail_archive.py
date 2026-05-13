@@ -94,10 +94,12 @@ class MailArchiveIngestConfig:
     mailbox: str = "INBOX"
     mailbox_label: str = "INBOX"
     since_days: int = 30
+    before_days: Optional[int] = None
     max_messages: int = 25
     account_label: str = "regru_edu"
     internal_domains: Sequence[str] = DEFAULT_INTERNAL_DOMAINS
     extracted_text_max_chars: int = 250_000
+    exclude_message_sha256s: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,7 @@ class MailArchivePreflightConfig:
     out_dir: Path
     mailbox: str = "INBOX"
     since_days: int = 3
+    before_days: Optional[int] = None
     max_messages: int = 1
     account_label: str = "regru_edu"
     host: str = "mail.hosting.reg.ru"
@@ -378,16 +381,28 @@ def build_mail_archive_preflight(config: MailArchivePreflightConfig) -> Mapping[
         blocking_risks.append("missing_imap_host")
     if int(config.port or 0) <= 0:
         blocking_risks.append("invalid_imap_port")
-    since_min, since_max = (
+    window_min, window_max = (
         LARGE_BATCH_SINCE_DAYS_RANGE if config.allow_large_batch else PILOT_SINCE_DAYS_RANGE
     )
     messages_min, messages_max = (
         LARGE_BATCH_MAX_MESSAGES_RANGE if config.allow_large_batch else PILOT_MAX_MESSAGES_RANGE
     )
-    if not (since_min <= int(config.since_days) <= since_max):
+    since_days = int(config.since_days)
+    before_days = int(config.before_days) if config.before_days is not None else None
+    if before_days is None:
+        window_days = since_days
+    elif before_days < 0:
+        window_days = 0
+        blocking_risks.append("before_days_must_be_non_negative")
+    elif before_days >= since_days:
+        window_days = 0
+        blocking_risks.append("before_days_must_be_less_than_since_days")
+    else:
+        window_days = since_days - before_days
+    if not (window_min <= window_days <= window_max):
         blocking_risks.append(
-            f"{'batch' if config.allow_large_batch else 'pilot'}_since_days_must_be_"
-            f"{since_min}_to_{since_max}"
+            f"{'batch' if config.allow_large_batch else 'pilot'}_window_days_must_be_"
+            f"{window_min}_to_{window_max}"
         )
     if not (messages_min <= int(config.max_messages) <= messages_max):
         blocking_risks.append(
@@ -426,7 +441,9 @@ def build_mail_archive_preflight(config: MailArchivePreflightConfig) -> Mapping[
             "port": config.port,
             "email_present": bool(email_normalized),
             "mailbox": config.mailbox,
-            "since_days": int(config.since_days),
+            "since_days": since_days,
+            "before_days": before_days,
+            "window_days": window_days,
             "max_messages": int(config.max_messages),
         },
         "checks": {
@@ -454,7 +471,9 @@ def build_mail_archive_preflight(config: MailArchivePreflightConfig) -> Mapping[
         "recommended_command": (
             "python3 scripts/mango_office_mail_archive.py ingest "
             f"--email <redacted> --mailbox {shell_safe_token(config.mailbox)} "
-            f"--since-days {int(config.since_days)} --max-messages {int(config.max_messages)} "
+            f"--since-days {since_days} "
+            f"{f'--before-days {before_days} ' if before_days is not None else ''}"
+            f"--max-messages {int(config.max_messages)} "
             f"--out-dir {shell_safe_token(str(config.out_dir))}"
             f"{' --allow-large-batch' if config.allow_large_batch else ''}"
         ),
@@ -495,7 +514,15 @@ def build_mail_archive_ingest(
     since_days = max(1, int(config.since_days))
     since_dt = (datetime.now(timezone.utc) - timedelta(days=since_days)).date()
     since_imap = since_dt.strftime("%d-%b-%Y")
+    before_days = int(config.before_days) if config.before_days is not None else None
+    before_imap = ""
+    if before_days is not None:
+        before_dt = (datetime.now(timezone.utc) - timedelta(days=max(0, before_days))).date()
+        before_imap = before_dt.strftime("%d-%b-%Y")
     max_messages = max(0, int(config.max_messages))
+    search_criteria = ["SINCE", since_imap]
+    if before_imap:
+        search_criteria.extend(["BEFORE", before_imap])
 
     report: dict[str, Any] = {
         "schema_version": MAIL_ARCHIVE_SCHEMA_VERSION,
@@ -508,6 +535,10 @@ def build_mail_archive_ingest(
         "mailbox_raw": config.mailbox,
         "since_days": since_days,
         "since_imap": since_imap,
+        "before_days": before_days,
+        "before_imap": before_imap,
+        "window_days": since_days - before_days if before_days is not None else since_days,
+        "search_criteria": search_criteria,
         "max_messages": max_messages,
         "safety": {
             "readonly_select": True,
@@ -526,6 +557,7 @@ def build_mail_archive_ingest(
         "messages_found_since": 0,
         "messages_attempted": 0,
         "messages_inserted_or_seen": 0,
+        "messages_excluded_by_sha256": 0,
         "raw_eml_written": 0,
         "attachments_written": 0,
         "text_files_written": 0,
@@ -549,7 +581,7 @@ def build_mail_archive_ingest(
         report["mailbox_total_messages"] = int(select_data[0]) if select_data and select_data[0] else 0
         if select_status != "OK":
             raise RuntimeError(f"IMAP SELECT failed for {config.mailbox}: {select_status}")
-        search_status, search_data = imap.search(None, "SINCE", since_imap)
+        search_status, search_data = imap.search(None, *search_criteria)
         report["search_status"] = search_status
         message_ids = parse_search_ids(search_status, search_data)
         report["messages_found_since"] = len(message_ids)
@@ -568,10 +600,13 @@ def build_mail_archive_ingest(
                     attachment_dir=attachment_dir,
                     text_dir=text_dir,
                 )
-                report["messages_inserted_or_seen"] += 1
-                report["raw_eml_written"] += int(bool(fetched["raw_eml_written"]))
-                report["attachments_written"] += int(fetched["attachments_written"])
-                report["text_files_written"] += int(bool(fetched["text_file_written"]))
+                if fetched.get("excluded_by_sha256"):
+                    report["messages_excluded_by_sha256"] += 1
+                else:
+                    report["messages_inserted_or_seen"] += 1
+                    report["raw_eml_written"] += int(bool(fetched["raw_eml_written"]))
+                    report["attachments_written"] += int(fetched["attachments_written"])
+                    report["text_files_written"] += int(bool(fetched["text_file_written"]))
             except Exception as exc:  # noqa: BLE001
                 report["errors"].append(
                     {
@@ -1807,6 +1842,14 @@ def ingest_one_message(
     if not raw:
         raise RuntimeError("IMAP FETCH returned empty payload")
     raw_sha256 = hashlib.sha256(raw).hexdigest()
+    if raw_sha256 in set(config.exclude_message_sha256s):
+        return {
+            "sha256": raw_sha256,
+            "excluded_by_sha256": True,
+            "raw_eml_written": False,
+            "text_file_written": False,
+            "attachments_written": 0,
+        }
     raw_path = raw_message_path(raw_dir, raw_sha256)
     raw_written = write_bytes_once(raw_path, raw)
 
@@ -1854,6 +1897,7 @@ def ingest_one_message(
 
     return {
         "sha256": raw_sha256,
+        "excluded_by_sha256": False,
         "raw_eml_written": raw_written,
         "text_file_written": text_written,
         "attachments_written": attachments_written,

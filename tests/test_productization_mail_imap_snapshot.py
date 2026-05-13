@@ -13,6 +13,7 @@ from mango_mvp.productization.mail_imap_snapshot import (
     build_mail_imap_snapshot,
     decode_imap_modified_utf7,
     parse_mailbox_list_line,
+    quote_imap_mailbox_name,
 )
 from scripts import mango_office_mail_imap_snapshot
 
@@ -91,6 +92,13 @@ def test_parse_mailbox_list_line_keeps_raw_name_and_decodes_display_name() -> No
     assert parsed["name"] == "ЛВШ"
     assert parsed["flags"] == ["\\HasNoChildren", "\\UnMarked"]
     assert parsed["delimiter"] == "."
+
+
+def test_quote_imap_mailbox_name_quotes_spaces_and_escapes_quotes() -> None:
+    assert quote_imap_mailbox_name("INBOX") == "INBOX"
+    assert quote_imap_mailbox_name('"&BBsEEgQo-"') == '"&BBsEEgQo-"'
+    assert quote_imap_mailbox_name("Sent Messages") == '"Sent Messages"'
+    assert quote_imap_mailbox_name('Тариф "Премиум 10"') == '"Тариф \\"Премиум 10\\""'
 
 
 def test_build_mail_imap_snapshot_is_read_only_and_header_only(tmp_path: Path) -> None:

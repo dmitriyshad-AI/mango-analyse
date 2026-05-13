@@ -61,7 +61,7 @@ class ImapLibClient:
         return self._imap.list()
 
     def select(self, mailbox: str, readonly: bool = False) -> tuple[str, Sequence[bytes]]:
-        return self._imap.select(mailbox, readonly=readonly)
+        return self._imap.select(quote_imap_mailbox_name(mailbox), readonly=readonly)
 
     def search(self, charset: Optional[str], *criteria: str) -> tuple[str, Sequence[bytes]]:
         return self._imap.search(charset, *criteria)
@@ -298,6 +298,15 @@ def unquote_imap_name(value: str) -> str:
     return text.replace(r"\"", '"')
 
 
+def quote_imap_mailbox_name(value: str) -> str:
+    text = value.strip()
+    if text.upper() == "INBOX":
+        return "INBOX"
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', r"\"") + '"'
+
+
 def decode_imap_modified_utf7(value: str) -> str:
     def replace_token(match: re.Match[str]) -> str:
         token = match.group(1)
@@ -323,4 +332,5 @@ __all__ = [
     "build_mail_imap_snapshot",
     "decode_imap_modified_utf7",
     "parse_mailbox_list_line",
+    "quote_imap_mailbox_name",
 ]

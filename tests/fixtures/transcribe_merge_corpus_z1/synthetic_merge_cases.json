@@ -1,0 +1,128 @@
+[
+  {
+    "case_id": "z1-0001",
+    "primary": "Здравствуйте мусор мусор мусор мусор мусор мусор мусор мусор мусор стоимость курса",
+    "secondary": "Здравствуйте стоимость курса",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0002",
+    "primary": "Здравствуйте стоимость курса",
+    "secondary": "Здравствуйте мусор мусор мусор мусор мусор мусор мусор мусор мусор стоимость курса",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0003",
+    "primary": "Добрый день, подскажите класс ученика",
+    "secondary": "Добрый день, подскажите класс ребенка",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0004",
+    "primary": "Менеджер уточнил расписание и формат занятий",
+    "secondary": "Менеджер уточнил расписание формат занятий",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0005",
+    "primary": "Клиент спросил про летнюю школу в июне",
+    "secondary": "Клиент спросил про очную школу в июне",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0006",
+    "primary": "Нужно отправить документы на почту",
+    "secondary": "Нужно отправить договор на почту",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0007",
+    "primary": "Клиент готов оплатить после консультации",
+    "secondary": "Клиент готов оплатить после звонка",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0008",
+    "primary": "Менеджер предложил перезвонить завтра утром",
+    "secondary": "Менеджер предложил перезвонить завтра",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0009",
+    "primary": "Клиент уточняет адрес филиала",
+    "secondary": "Клиент уточняет адрес офиса",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0010",
+    "primary": "Обсудили подготовку к экзаменам и диагностику",
+    "secondary": "Обсудили подготовку к экзаменам",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0011",
+    "primary": "Клиент просит прислать ссылку на оплату",
+    "secondary": "Клиент просит ссылку на оплату",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0012",
+    "primary": "Менеджер объяснил условия рассрочки",
+    "secondary": "Менеджер объяснил условия оплаты",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0013",
+    "primary": "Клиент сомневается и хочет посоветоваться",
+    "secondary": "Клиент хочет посоветоваться с семьей",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0014",
+    "primary": "Заявка по математике для девятого класса",
+    "secondary": "Заявка по математике для 9 класса",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0015",
+    "primary": "Уточнили уровень подготовки и цель обучения",
+    "secondary": "Уточнили уровень и цель обучения",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0016",
+    "primary": "Менеджер рассказал про пробное занятие",
+    "secondary": "Менеджер рассказал про первое занятие",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0017",
+    "primary": "Клиент хочет начать обучение в следующем месяце",
+    "secondary": "Клиент хочет начать в следующем месяце",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0018",
+    "primary": "Обсудили группу, расписание и преподавателя",
+    "secondary": "Обсудили группу и преподавателя",
+    "expect_suspicious_drops": true
+  },
+  {
+    "case_id": "z1-0019",
+    "primary": "Менеджер зафиксировал интерес к физике",
+    "secondary": "Менеджер зафиксировал интерес к информатике",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0020",
+    "primary": "Клиент попросил написать в мессенджер",
+    "secondary": "Клиент попросил написать в телеграм",
+    "expect_suspicious_drops": false
+  },
+  {
+    "case_id": "z1-0021",
+    "primary": "Добрый день оплата прошла",
+    "secondary": "Добрый день шум шум шум шум шум шум шум шум шум оплата прошла",
+    "expect_suspicious_drops": true
+  }
+]

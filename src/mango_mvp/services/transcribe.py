@@ -1265,6 +1265,76 @@ class TranscribeService:
         return merged_text
 
     @staticmethod
+    def _zero_suspicious_drops() -> Dict[str, Any]:
+        return {"count": 0, "total_chars": 0, "samples": []}
+
+    @classmethod
+    def _normalize_suspicious_drops(cls, value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return cls._zero_suspicious_drops()
+        try:
+            count = int(value.get("count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        try:
+            total_chars = int(value.get("total_chars", 0) or 0)
+        except (TypeError, ValueError):
+            total_chars = 0
+        samples_raw = value.get("samples", [])
+        samples: list[str] = []
+        if isinstance(samples_raw, list):
+            for sample in samples_raw[:5]:
+                sample_text = str(sample or "").strip()
+                if not sample_text:
+                    continue
+                samples.append(sample_text[:200])
+        return {
+            "count": max(0, count),
+            "total_chars": max(0, total_chars),
+            "samples": samples,
+        }
+
+    def _count_suspicious_drops_in_merge(
+        self,
+        primary_text: str,
+        secondary_text: str,
+    ) -> Dict[str, Any]:
+        primary_text = (primary_text or "").strip()
+        secondary_text = (secondary_text or "").strip()
+        if not primary_text or not secondary_text:
+            return self._zero_suspicious_drops()
+
+        primary_tokens = self._tokenize(primary_text)
+        secondary_tokens = self._tokenize(secondary_text)
+        if not primary_tokens or not secondary_tokens:
+            return self._zero_suspicious_drops()
+
+        primary_norm = [self._normalize_token(t) for t in primary_tokens]
+        secondary_norm = [self._normalize_token(t) for t in secondary_tokens]
+        matcher = difflib.SequenceMatcher(a=primary_norm, b=secondary_norm, autojunk=False)
+        count = 0
+        total_chars = 0
+        samples: list[str] = []
+        for tag, a0, a1, b0, b1 in matcher.get_opcodes():
+            chunk: list[str]
+            if tag == "delete":
+                chunk = primary_tokens[a0:a1]
+            elif tag == "insert":
+                chunk = secondary_tokens[b0:b1]
+            else:
+                continue
+            if not self._is_suspicious_chunk(chunk):
+                continue
+            sample = self._detokenize(chunk).strip()
+            if not sample:
+                continue
+            count += 1
+            total_chars += len(sample)
+            if len(samples) < 5:
+                samples.append(sample[:200])
+        return {"count": count, "total_chars": total_chars, "samples": samples}
+
+    @staticmethod
     def _similarity_ratio(a: str, b: str) -> float:
         a_norm = " ".join((a or "").lower().split())
         b_norm = " ".join((b or "").lower().split())
@@ -1895,6 +1965,7 @@ class TranscribeService:
                 "confidence": 1.0 if a else 0.0,
                 "provider": "primary",
                 "notes": "secondary_empty",
+                "suspicious_drops": self._zero_suspicious_drops(),
                 "similarity": 0.0,
             }
         if not a:
@@ -1904,6 +1975,7 @@ class TranscribeService:
                 "confidence": 0.6,
                 "provider": "secondary_only",
                 "notes": "primary_empty",
+                "suspicious_drops": self._zero_suspicious_drops(),
                 "similarity": 0.0,
             }
 
@@ -1916,6 +1988,7 @@ class TranscribeService:
                 "confidence": 0.95,
                 "provider": "skip_high_similarity",
                 "notes": f"similarity={similarity:.4f}",
+                "suspicious_drops": self._zero_suspicious_drops(),
                 "similarity": similarity,
             }
 
@@ -1929,10 +2002,12 @@ class TranscribeService:
                 "confidence": 0.7,
                 "provider": "primary",
                 "notes": "dual_merge_provider=primary",
+                "suspicious_drops": self._zero_suspicious_drops(),
                 "similarity": similarity,
             }
         if merge_provider == "rule":
             merged = self._merge_texts(a, b)
+            suspicious_drops = self._count_suspicious_drops_in_merge(a, b)
             choice = "MIX"
             if merged == a:
                 choice = "A"
@@ -1944,6 +2019,7 @@ class TranscribeService:
                 "confidence": 0.75,
                 "provider": "rule",
                 "notes": "",
+                "suspicious_drops": suspicious_drops,
                 "similarity": similarity,
             }
         if merge_provider == "ollama":
@@ -1952,9 +2028,12 @@ class TranscribeService:
                     primary_text=a, secondary_text=b, speaker_label=speaker_label
                 )
                 merged["similarity"] = similarity
+                merged["notes"] = str(merged.get("notes", "")).strip()
+                merged["suspicious_drops"] = self._normalize_suspicious_drops(merged.get("suspicious_drops"))
                 return merged
             except Exception as exc:  # noqa: BLE001
                 merged = self._merge_texts(a, b)
+                suspicious_drops = self._count_suspicious_drops_in_merge(a, b)
                 choice = "MIX"
                 if merged == a:
                     choice = "A"
@@ -1966,6 +2045,7 @@ class TranscribeService:
                     "confidence": 0.6,
                     "provider": "rule_fallback",
                     "notes": f"ollama_merge_failed: {exc}",
+                    "suspicious_drops": suspicious_drops,
                     "similarity": similarity,
                 }
         if merge_provider == "codex_cli":
@@ -1974,9 +2054,12 @@ class TranscribeService:
                     primary_text=a, secondary_text=b, speaker_label=speaker_label
                 )
                 merged["similarity"] = similarity
+                merged["notes"] = str(merged.get("notes", "")).strip()
+                merged["suspicious_drops"] = self._normalize_suspicious_drops(merged.get("suspicious_drops"))
                 return merged
             except Exception as exc:  # noqa: BLE001
                 merged = self._merge_texts(a, b)
+                suspicious_drops = self._count_suspicious_drops_in_merge(a, b)
                 choice = "MIX"
                 if merged == a:
                     choice = "A"
@@ -1988,6 +2071,7 @@ class TranscribeService:
                     "confidence": 0.6,
                     "provider": "rule_fallback",
                     "notes": f"codex_cli_merge_failed: {exc}",
+                    "suspicious_drops": suspicious_drops,
                     "similarity": similarity,
                 }
 
@@ -1996,10 +2080,13 @@ class TranscribeService:
                 primary_text=a, secondary_text=b, speaker_label=speaker_label
             )
             merged["similarity"] = similarity
+            merged["notes"] = str(merged.get("notes", "")).strip()
+            merged["suspicious_drops"] = self._normalize_suspicious_drops(merged.get("suspicious_drops"))
             return merged
         except Exception as exc:  # noqa: BLE001
             # In batch mode we should not fail a call if merge LLM is transiently unavailable.
             merged = self._merge_texts(a, b)
+            suspicious_drops = self._count_suspicious_drops_in_merge(a, b)
             choice = "MIX"
             if merged == a:
                 choice = "A"
@@ -2011,6 +2098,7 @@ class TranscribeService:
                 "confidence": 0.6,
                 "provider": "rule_fallback",
                 "notes": f"openai_merge_failed: {exc}",
+                "suspicious_drops": suspicious_drops,
                 "similarity": similarity,
             }
 

@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from mango_mvp.productization.tenant_config import load_tenant_config, tenant_config_summary
+from mango_mvp.productization.tenant_config_pinning import (
+    check_tenant_config_pin,
+    tenant_config_pin_check_off,
+)
 from mango_mvp.quality.crm_writeback_frozen_corpus import (
     CrmWritebackCorpusValidationConfig,
     validate_crm_writeback_frozen_corpus,
@@ -49,6 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--detector-min-severity", default="P2")
     parser.add_argument("--fail-on-blocking-rows", action="store_true", default=True)
     parser.add_argument("--tenant-config", default="")
+    parser.add_argument("--tenant-config-pin-mode", choices=("off", "warn", "strict"), default="warn")
     parser.add_argument("--population-recall-mode", choices=("observe", "fail-live"), default="observe")
     parser.add_argument("--population-high-precision-uncovered-max", type=int, default=0)
     parser.add_argument("--analysis-date", default=date.today().isoformat())
@@ -61,6 +66,12 @@ def main() -> int:
     out_root.mkdir(parents=True, exist_ok=True)
     input_path = Path(args.input).expanduser().resolve()
     tenant_config_result = load_tenant_config(args.tenant_config) if args.tenant_config else None
+    tenant_summary = tenant_config_summary(tenant_config_result)
+    pin_summary = (
+        tenant_config_pin_check_off()
+        if args.tenant_config_pin_mode == "off"
+        else check_tenant_config_pin(tenant_config_result)
+    )
 
     rows = _read_csv(input_path)
     report_rows: list[dict[str, Any]] = []
@@ -201,15 +212,19 @@ def main() -> int:
         args.population_recall_mode == "observe"
         or bool((population_result.get("summary") or {}).get("passed_for_live"))
     )
+    pin_passes_mode = args.tenant_config_pin_mode != "strict" or bool(pin_summary.get("passed"))
     passed = (
         len(blocking) == 0
         and (corpus_summary is None or bool(corpus_summary.get("passed")))
         and population_passes_mode
+        and pin_passes_mode
     )
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "input": str(input_path),
-        "tenant_config": tenant_config_summary(tenant_config_result),
+        "tenant_config": tenant_summary,
+        "tenant_config_pin": pin_summary,
+        "tenant_config_pin_mode": args.tenant_config_pin_mode,
         "detector_min_severity": args.detector_min_severity,
         "population_recall_mode": args.population_recall_mode,
         "rows": len(rows),

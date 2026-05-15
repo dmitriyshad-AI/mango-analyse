@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -188,6 +189,11 @@ def build_deal_text_preview(paths: DealTextPaths) -> dict[str, Any]:
             row_findings=row_findings,
             quality_passed=quality_passed,
         )
+        structured_objections = build_structured_objections(full_calls, candidate)
+        objections_json, objections_truncated = serialize_structured_objections(structured_objections)
+        base_preview["structured_objections_json"] = objections_json
+        base_preview["structured_objections_count"] = len(structured_objections)
+        base_preview["objections_truncated"] = "Да" if objections_truncated else "Нет"
         preview_rows.append(base_preview)
         payload_rows.append(
             {
@@ -198,6 +204,8 @@ def build_deal_text_preview(paths: DealTextPaths) -> dict[str, Any]:
                 "crm_text_quality_passed": "Да" if quality_passed else "Нет",
                 "quality_risk_types": " | ".join(risk_types),
                 "payload": payload,
+                "structured_objections": structured_objections,
+                "objections_truncated": objections_truncated,
             }
         )
         quality_findings.extend(findings_to_rows(base_preview["review_id"], deal_id, row_findings))
@@ -668,21 +676,116 @@ def build_priority(
 
 
 def build_objections(calls: list[dict[str, str]], candidate: dict[str, str]) -> str:
-    items: list[str] = []
-    for row in calls:
+    structured = build_structured_objections(calls, candidate)
+    if not structured:
+        return "Актуальные возражения в релевантных звонках не выделены."
+    return "Актуальные: " + "; ".join(item["text"] for item in structured[:8]) + "."
+
+
+def build_structured_objections(calls_sorted: list[dict[str, str]], candidate: dict[str, str]) -> list[dict[str, str]]:
+    latest_call_id = safe_text(calls_sorted[-1].get("call_id") or calls_sorted[-1].get("source_filename")) if calls_sorted else ""
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for rank, row in enumerate(reversed(calls_sorted), start=1):
+        source_call_id = safe_text(row.get("call_id") or row.get("source_filename") or row.get("recording_id"))
+        started_at = safe_text(row.get("started_at"))
+        manager = safe_text(row.get("manager_name"))
+        evidence = short_evidence(row)
         for part in split_pipe(safe_text(row.get("objections"))):
             normalized = normalize_objection(part)
-            if normalized:
-                items.append(normalized)
-    if not items:
-        for part in split_pipe(safe_text(candidate.get("latest_call_summary"))):
-            normalized = normalize_objection(part)
-            if normalized:
-                items.append(normalized)
-    deduped = dedupe_preserve_order(items)
-    if not deduped:
-        return "Актуальные возражения в релевантных звонках не выделены."
-    return "Актуальные: " + "; ".join(deduped[:8]) + "."
+            if not normalized:
+                continue
+            key = objection_key(normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(
+                {
+                    "objection_id": stable_objection_id(source_call_id, started_at, normalized),
+                    "text": normalized,
+                    "normalized_text": key,
+                    "source_call_id": source_call_id,
+                    "source_started_at": started_at,
+                    "source_manager": manager,
+                    "source_rank": str(rank),
+                    "is_latest": "Да" if source_call_id and source_call_id == latest_call_id else "Нет",
+                    "evidence": evidence,
+                    "category": classify_objection_category(normalized),
+                }
+            )
+    if result:
+        return result
+    fallback_items = []
+    for part in split_pipe(safe_text(candidate.get("latest_call_summary"))):
+        normalized = normalize_objection(part)
+        if normalized:
+            fallback_items.append(normalized)
+    for index, normalized in enumerate(dedupe_preserve_order(fallback_items), start=1):
+        key = objection_key(normalized)
+        result.append(
+            {
+                "objection_id": stable_objection_id(safe_text(candidate.get("selected_deal_id")), str(index), normalized),
+                "text": normalized,
+                "normalized_text": key,
+                "source_call_id": "",
+                "source_started_at": safe_text(candidate.get("last_call_at")),
+                "source_manager": "",
+                "source_rank": str(index),
+                "is_latest": "Нет",
+                "evidence": safe_text(candidate.get("latest_call_summary"))[:160],
+                "category": classify_objection_category(normalized),
+            }
+        )
+    return result
+
+
+def stable_objection_id(source_call_id: str, source_started_at: str, normalized: str) -> str:
+    raw = "|".join([safe_text(source_call_id), safe_text(source_started_at), safe_text(normalized)])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def objection_key(value: Any) -> str:
+    return re.sub(r"\s+", " ", safe_text(value).casefold()).strip(" .;,")
+
+
+def classify_objection_category(value: Any) -> str:
+    text = objection_key(value)
+    if re.search(r"\b(?:стоимост|цен|дорог|скидк|рассроч)\w*", text):
+        return "цена"
+    if re.search(r"\b(?:дат|врем|расписан|смен|перенос)\w*", text):
+        return "расписание"
+    if re.search(r"\b(?:очно|онлайн|формат|дистанц)\w*", text):
+        return "формат"
+    if re.search(r"\b(?:договор|справк|документ|чек|сертификат)\w*", text):
+        return "документы"
+    if re.search(r"\b(?:сомнен|довер|не\s+уверен|подума)\w*", text):
+        return "сомнение"
+    if re.search(r"\b(?:оплат|плат[её]ж|счет|сч[её]т)\w*", text):
+        return "оплата"
+    return "other"
+
+
+def short_evidence(row: dict[str, str]) -> str:
+    text = safe_text(row.get("call_summary"))
+    if len(text) <= 160:
+        return text
+    return text[:151].rstrip() + " [сжато]"
+
+
+def serialize_structured_objections(
+    rows: list[dict[str, str]],
+    *,
+    max_items: int = 50,
+    max_chars: int = 12000,
+) -> tuple[str, bool]:
+    selected = rows[:max_items]
+    truncated = len(rows) > len(selected)
+    payload = json.dumps(selected, ensure_ascii=False, sort_keys=True)
+    while len(payload) > max_chars and selected:
+        selected = selected[:-1]
+        truncated = True
+        payload = json.dumps(selected, ensure_ascii=False, sort_keys=True)
+    return payload, truncated
 
 
 def build_recommendation_reason(

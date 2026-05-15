@@ -1,0 +1,6 @@
+src/mango_mvp/deal_aware/deal_text_builder.py
+tests/test_deal_aware_structured_objections.py
+docs/CURRENT_STATE.md
+docs/DECISIONS_LOG.md
+docs/ROADMAP.md
+audits/_inbox/block_c_structured_objections_20260515_163415/

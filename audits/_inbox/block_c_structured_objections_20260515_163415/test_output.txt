@@ -1,0 +1,46 @@
+# Test Output
+
+## Structured objections + related deal-aware tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_deal_aware_structured_objections.py tests/test_deal_aware_commercial_payload.py tests/test_deal_aware_stage6_writeback.py tests/test_deal_aware_amo_rollback.py tests/test_deal_aware_stage4_preview.py
+```
+
+Result:
+
+```text
+........................................                                 [100%]
+40 passed in 0.28s
+```
+
+## Existing writeback guards
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_amo_writeback_guards.py::test_deal_writeback_script_defaults_to_dry_run tests/test_amo_writeback_guards.py::test_deal_writeback_script_requires_live_confirmation tests/test_amo_writeback_guards.py::test_deal_writeback_script_accepts_explicit_live_confirmation_and_quality_gate
+```
+
+Result:
+
+```text
+...                                                                      [100%]
+3 passed in 0.72s
+```
+
+## Final staged check
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_deal_aware_structured_objections.py tests/test_deal_aware_commercial_payload.py tests/test_deal_aware_stage6_writeback.py tests/test_deal_aware_amo_rollback.py tests/test_deal_aware_stage4_preview.py tests/test_amo_writeback_guards.py::test_deal_writeback_script_defaults_to_dry_run tests/test_amo_writeback_guards.py::test_deal_writeback_script_requires_live_confirmation tests/test_amo_writeback_guards.py::test_deal_writeback_script_accepts_explicit_live_confirmation_and_quality_gate
+```
+
+Result:
+
+```text
+...........................................                              [100%]
+43 passed in 0.76s
+```

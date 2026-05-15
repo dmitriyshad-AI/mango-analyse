@@ -79,6 +79,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--delay-ms", type=int, default=750)
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--resume-from-report", default="")
+    parser.add_argument("--require-commercial-fields", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     return parser.parse_args(argv)
 
@@ -105,6 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             delay_ms=args.delay_ms,
             max_retries=args.max_retries,
             resume_from_report=Path(args.resume_from_report).expanduser().resolve() if args.resume_from_report else None,
+            require_commercial_fields=args.require_commercial_fields,
             fail_fast=args.fail_fast,
         )
 
@@ -116,6 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             out_root=out_root,
             analysis_date=args.analysis_date,
             stage20_size=args.stage20_size,
+            require_commercial_fields=args.require_commercial_fields,
         )
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -137,6 +140,7 @@ def run_live_write(
     delay_ms: int = 750,
     max_retries: int = 3,
     resume_from_report: Path | None = None,
+    require_commercial_fields: bool = False,
     fail_fast: bool = False,
     session_factory=None,
     preflight_func=None,
@@ -172,7 +176,7 @@ def run_live_write(
     out_root.mkdir(parents=True, exist_ok=True)
     field_catalog_payload = load_json(field_catalog_cache)
     field_catalog = field_catalog_payload.get("fields") if isinstance(field_catalog_payload.get("fields"), list) else []
-    field_guard = validate_field_catalog(field_catalog)
+    field_guard = validate_field_catalog(field_catalog, require_commercial_fields=require_commercial_fields)
     rows = read_csv(input_csv)
     input_sha256 = sha256_file(input_csv)
     batch_id = out_root.name
@@ -222,6 +226,7 @@ def run_live_write(
                 field_catalog=field_catalog,
                 field_guard=field_guard,
                 analysis_date=analysis_date,
+                require_commercial_fields=require_commercial_fields,
             )
             report_row = {
                 "row_index": index,

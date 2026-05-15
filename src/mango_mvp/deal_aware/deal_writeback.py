@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mango_mvp.amocrm_runtime.amo_integration import build_custom_fields_values
-from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
+from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS, DEAL_AI_OPTIONAL_FIELDS, DEAL_AI_REQUIRED_FIELDS, DISCOUNT_PROMISE_RE
 from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
 from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 
@@ -36,6 +36,7 @@ class DealAwareStage6Paths:
     out_root: Path
     analysis_date: str = "2026-05-13"
     stage20_size: int = 20
+    require_commercial_fields: bool = False
 
 
 def run_deal_aware_stage6_preflight(paths: DealAwareStage6Paths) -> dict[str, Any]:
@@ -45,7 +46,7 @@ def run_deal_aware_stage6_preflight(paths: DealAwareStage6Paths) -> dict[str, An
     field_catalog_payload = load_json(paths.field_catalog_cache_json)
     field_catalog = field_catalog_payload.get("fields") if isinstance(field_catalog_payload.get("fields"), list) else []
 
-    field_guard = validate_field_catalog(field_catalog)
+    field_guard = validate_field_catalog(field_catalog, require_commercial_fields=paths.require_commercial_fields)
     stage5_guard = validate_stage5_summary(stage5_summary, paths.input_csv)
 
     report_rows: list[dict[str, Any]] = []
@@ -53,11 +54,12 @@ def run_deal_aware_stage6_preflight(paths: DealAwareStage6Paths) -> dict[str, An
     for index, row in enumerate(input_rows, start=1):
         report_row, row_findings = build_dry_run_row(
             row,
-            row_index=index,
-            field_catalog=field_catalog,
-            field_guard=field_guard,
-            analysis_date=paths.analysis_date,
-        )
+                row_index=index,
+                field_catalog=field_catalog,
+                field_guard=field_guard,
+                analysis_date=paths.analysis_date,
+                require_commercial_fields=paths.require_commercial_fields,
+            )
         report_rows.append(report_row)
         findings.extend(row_findings)
 
@@ -107,10 +109,18 @@ def build_dry_run_row(
     field_catalog: list[dict[str, Any]],
     field_guard: dict[str, Any],
     analysis_date: str,
+    require_commercial_fields: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     review_id = safe_text(row.get("review_id"))
     lead_id = safe_text(row.get("selected_deal_id"))
-    payload = {field: safe_text(row.get(field)) for field in DEAL_AI_FIELDS if safe_text(row.get(field))}
+    by_name = {safe_text(item.get("name")): item for item in field_catalog}
+    payload = {field: safe_text(row.get(field)) for field in DEAL_AI_REQUIRED_FIELDS if safe_text(row.get(field))}
+    optional_payload = {
+        field: safe_text(row.get(field))
+        for field in DEAL_AI_OPTIONAL_FIELDS
+        if safe_text(row.get(field)) and (field in by_name or require_commercial_fields)
+    }
+    payload.update(optional_payload)
     findings: list[dict[str, Any]] = []
     status = "dry_run"
     reason = "live_write_not_confirmed"
@@ -124,7 +134,7 @@ def build_dry_run_row(
         status = "blocked"
         reason = "missing_selected_deal_id"
         findings.append(finding(row_index, review_id, lead_id, "missing_selected_deal_id", "P1", "selected_deal_id", lead_id))
-    missing_payload_fields = [field for field in DEAL_AI_FIELDS if not safe_text(row.get(field))]
+    missing_payload_fields = [field for field in DEAL_AI_REQUIRED_FIELDS if not safe_text(row.get(field))]
     if missing_payload_fields:
         status = "blocked"
         reason = "missing_deal_ai_fields"
@@ -142,8 +152,27 @@ def build_dry_run_row(
         status = "blocked"
         reason = "api_only_amo_lead_fields"
         findings.append(finding(row_index, review_id, lead_id, "api_only_amo_lead_fields", "P1", "field_catalog", " | ".join(field_guard["api_only_fields"])))
+    if field_guard.get("missing_optional_fields_blocking"):
+        status = "blocked"
+        reason = "missing_optional_commercial_fields"
+        findings.append(finding(row_index, review_id, lead_id, "missing_optional_commercial_fields", "P1", "field_catalog", " | ".join(field_guard["missing_optional_fields_blocking"])))
+    if safe_text(payload.get("AI-интерес к скидке")).casefold() == "yes" and DISCOUNT_PROMISE_RE.search(safe_text(payload.get("AI-рекомендованный следующий шаг"))):
+        status = "blocked"
+        reason = "discount_promise_without_policy"
+        findings.append(
+            finding(
+                row_index,
+                review_id,
+                lead_id,
+                "discount_promise_without_policy",
+                "P1",
+                "AI-рекомендованный следующий шаг",
+                safe_text(payload.get("AI-рекомендованный следующий шаг")),
+                "discount interest is a customer signal, not permission to promise a discount",
+            )
+        )
 
-    text_payload = {field: payload.get(field, "") for field in DEAL_AI_FIELDS}
+    text_payload = {field: payload.get(field, "") for field in DEAL_AI_REQUIRED_FIELDS + DEAL_AI_OPTIONAL_FIELDS}
     crm_findings = detect_crm_text_quality_risks(text_payload, analysis_date=analysis_date, min_severity="P2")
     for crm_finding in crm_findings:
         status = "blocked"
@@ -176,7 +205,11 @@ def build_dry_run_row(
         "stage6_status": status,
         "stage6_reason": reason,
         "lead_id": lead_id,
-        "updated_fields": " | ".join(DEAL_AI_FIELDS),
+        "updated_fields": " | ".join(payload.keys()),
+        "optional_commercial_fields_present": " | ".join(field for field in DEAL_AI_OPTIONAL_FIELDS if safe_text(payload.get(field))),
+        "optional_commercial_fields_missing_in_catalog": " | ".join(
+            field for field in DEAL_AI_OPTIONAL_FIELDS if safe_text(row.get(field)) and field not in by_name
+        ),
         "preview_payload": json.dumps(payload, ensure_ascii=False, sort_keys=True),
         "custom_fields_values_preview": json.dumps(custom_fields_values, ensure_ascii=False, sort_keys=True),
         "stage6_finding_types": " | ".join(sorted({safe_text(item.get("risk_type")) for item in findings if safe_text(item.get("risk_type"))})),
@@ -203,17 +236,27 @@ def choose_stage20_candidates(rows: list[dict[str, Any]], *, limit: int) -> list
     return result
 
 
-def validate_field_catalog(field_catalog: list[dict[str, Any]]) -> dict[str, Any]:
+def validate_field_catalog(field_catalog: list[dict[str, Any]], *, require_commercial_fields: bool = False) -> dict[str, Any]:
     by_name = {safe_text(item.get("name")): item for item in field_catalog}
-    missing = [field for field in DEAL_AI_FIELDS if field not in by_name]
-    api_only = [field for field in DEAL_AI_FIELDS if bool((by_name.get(field) or {}).get("is_api_only"))]
-    field_types = {field: safe_text((by_name.get(field) or {}).get("type")) for field in DEAL_AI_FIELDS if field in by_name}
+    missing = [field for field in DEAL_AI_REQUIRED_FIELDS if field not in by_name]
+    missing_optional = [field for field in DEAL_AI_OPTIONAL_FIELDS if field not in by_name]
+    missing_optional_blocking = missing_optional if require_commercial_fields else []
+    api_only = [field for field in DEAL_AI_REQUIRED_FIELDS if bool((by_name.get(field) or {}).get("is_api_only"))]
+    optional_api_only = [field for field in DEAL_AI_OPTIONAL_FIELDS if bool((by_name.get(field) or {}).get("is_api_only"))]
+    field_types = {field: safe_text((by_name.get(field) or {}).get("type")) for field in DEAL_AI_REQUIRED_FIELDS if field in by_name}
+    optional_field_types = {field: safe_text((by_name.get(field) or {}).get("type")) for field in DEAL_AI_OPTIONAL_FIELDS if field in by_name}
     return {
-        "required_fields": list(DEAL_AI_FIELDS),
+        "required_fields": list(DEAL_AI_REQUIRED_FIELDS),
+        "optional_fields": list(DEAL_AI_OPTIONAL_FIELDS),
         "missing_fields": missing,
+        "missing_optional_fields": missing_optional,
+        "missing_optional_fields_blocking": missing_optional_blocking,
         "api_only_fields": api_only,
+        "optional_api_only_fields": optional_api_only,
         "field_types": field_types,
-        "passed": not missing and not api_only,
+        "optional_field_types": optional_field_types,
+        "require_commercial_fields": require_commercial_fields,
+        "passed": not missing and not api_only and not missing_optional_blocking,
     }
 
 
@@ -293,6 +336,7 @@ def build_summary(
         },
         "stage5_guard": stage5_guard,
         "target_fields": list(DEAL_AI_FIELDS),
+        "optional_target_fields": list(DEAL_AI_OPTIONAL_FIELDS),
         "readiness": {
             "stage6_dry_run_built": True,
             "passed_for_stage20_preflight": passed_for_stage20_preflight,

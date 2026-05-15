@@ -19,7 +19,7 @@ from mango_mvp.quality.crm_text_quality_detector import (
 
 SCHEMA_VERSION = "deal_aware_stage4_preview_v1"
 
-DEAL_AI_FIELDS = (
+DEAL_AI_REQUIRED_FIELDS = (
     "AI-сводка по сделке",
     "AI-история по сделке",
     "AI-рекомендованный следующий шаг",
@@ -32,6 +32,25 @@ DEAL_AI_FIELDS = (
     "AI-предупреждение по сделке",
     "AI-Tallanto статус по сделке",
     "AI-дата обновления сделки",
+)
+DEAL_AI_OPTIONAL_FIELDS = (
+    "AI-бюджет диапазон",
+    "AI-бюджет комментарий",
+    "AI-чувствительность к цене",
+    "AI-интерес к скидке",
+)
+DEAL_AI_FIELDS = DEAL_AI_REQUIRED_FIELDS
+
+BUDGET_RANGES = (
+    "unknown",
+    "under_30k",
+    "30k_50k",
+    "50k_100k",
+    "100k_150k",
+    "over_150k",
+    "matcapital_or_certificate",
+    "installment_needed",
+    "not_applicable",
 )
 
 BLOCKING_QUALITY_SEVERITIES = {"P0", "P1", "P2"}
@@ -67,6 +86,13 @@ CUSTOMER_SIDE_WAIT_RE = re.compile(
 PAYMENT_DEADLINE_RE = re.compile(
     r"\b(?:до|к)\s+\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\b|"
     r"\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b",
+    re.I,
+)
+DISCOUNT_INTEREST_RE = re.compile(r"\b(?:скидк\w*|рассрочк\w*|акци\w*|промокод\w*|льгот\w*)\b", re.I)
+DISCOUNT_PROMISE_RE = re.compile(r"\b(?:обеща\w*|гарантир\w*|точно|дадим|дать|предостав\w*)\b.{0,40}\bскидк\w*", re.I)
+COURSE_PRICE_CONTEXT_RE = re.compile(
+    r"\b(?:стоимость|цена|стоит)\s+(?:курс\w*|программ\w*|заняти\w*|обучени\w*)|"
+    r"\b(?:курс\w*|программ\w*|заняти\w*|обучени\w*)\s+(?:стоит|стоимость|цена)",
     re.I,
 )
 VAGUE_NEXT_STEP_RE = re.compile(
@@ -179,7 +205,7 @@ def build_deal_text_preview(paths: DealTextPaths) -> dict[str, Any]:
             blocked_quality.append(base_preview)
 
     batch_findings = detect_crm_text_quality_batch_risks(
-        [quality_payload(row, {field: row.get(field, "") for field in DEAL_AI_FIELDS}) for row in preview_rows],
+        [quality_payload(row, {field: row.get(field, "") for field in DEAL_AI_REQUIRED_FIELDS + DEAL_AI_OPTIONAL_FIELDS}) for row in preview_rows],
         analysis_date=paths.analysis_date,
         min_severity="P3",
     )
@@ -235,6 +261,159 @@ def build_deal_text_preview(paths: DealTextPaths) -> dict[str, Any]:
     return summary
 
 
+def first_nonempty(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = safe_text(row.get(key))
+        if value:
+            return value
+    return ""
+
+
+def classify_budget_range(raw_budget: Any, context: str = "") -> str:
+    text = safe_text(raw_budget)
+    combined = " ".join([text, safe_text(context)])
+    if not text:
+        return ""
+    if COURSE_PRICE_CONTEXT_RE.search(combined):
+        return "not_applicable"
+    lowered = text.casefold()
+    if re.search(r"\b(?:маткапитал|материнск\w+\s+капитал|сертификат)\b", lowered):
+        return "matcapital_or_certificate"
+    if "рассроч" in lowered:
+        return "installment_needed"
+    numbers = extract_money_numbers(text)
+    if not numbers:
+        return "unknown"
+    amount = max(numbers)
+    if amount < 30000:
+        return "under_30k"
+    if amount <= 50000:
+        return "30k_50k"
+    if amount <= 100000:
+        return "50k_100k"
+    if amount <= 150000:
+        return "100k_150k"
+    return "over_150k"
+
+
+def extract_money_numbers(text: str) -> list[int]:
+    values = []
+    for match in re.finditer(r"(?<!\d)(\d[\d\s]{1,8})(?:[,.]\d+)?\s*(к|тыс\.?|т\.?р\.?|руб(?:\.|лей|ля|ль)?)?", text, re.I):
+        raw = re.sub(r"\s+", "", match.group(1))
+        if not raw.isdigit():
+            continue
+        value = int(raw)
+        suffix = safe_text(match.group(2)).casefold()
+        if suffix.startswith(("к", "тыс", "т")) and value < 1000:
+            value *= 1000
+        if value >= 1000:
+            values.append(value)
+    return values
+
+
+def normalize_price_sensitivity(value: Any, context: str = "") -> str:
+    text = " ".join([safe_text(value), safe_text(context)]).casefold()
+    explicit = safe_text(value).casefold()
+    if explicit in {"high", "medium", "low", "unknown"}:
+        return explicit
+    if not text:
+        return ""
+    if re.search(r"\b(?:дорого|цена\s+высокая|не\s+потян\w*|нет\s+денег|дороговат\w*)\b", text):
+        return "high"
+    if re.search(r"\b(?:сравнива\w+\s+цен|важна\s+цена|зависит\s+от\s+цен)\b", text):
+        return "medium"
+    if re.search(r"\b(?:цена\s+устраивает|по\s+цене\s+ок|бюджет\s+есть)\b", text):
+        return "low"
+    return "unknown" if explicit else ""
+
+
+def normalize_discount_interest(value: Any, context: str = "") -> str:
+    text = " ".join([safe_text(value), safe_text(context)]).casefold()
+    explicit = safe_text(value).casefold()
+    if explicit in {"yes", "да", "true", "1", "интересуется", "нужна"}:
+        return "yes"
+    if explicit in {"no", "нет", "false", "0"}:
+        return "no"
+    if DISCOUNT_INTEREST_RE.search(text):
+        return "yes"
+    return "unknown" if explicit else ""
+
+
+def build_commercial_payload(calls_sorted: list[dict[str, str]], candidate: dict[str, str]) -> dict[str, str]:
+    rows = list(reversed(calls_sorted)) + [candidate]
+    latest_budget = ""
+    budget_context = ""
+    latest_price_sensitivity = ""
+    latest_discount_interest = ""
+    seen_budget_ranges: set[str] = set()
+    for row in rows:
+        context = " ".join(
+            [
+                safe_text(row.get("call_summary") or row.get("latest_call_summary")),
+                safe_text(row.get("next_step") or row.get("latest_call_next_step")),
+                safe_text(row.get("objections") or row.get("latest_call_objections")),
+            ]
+        )
+        budget = first_nonempty(
+            row,
+            (
+                "budget",
+                "client_budget",
+                "budget_text",
+                "commercial_budget",
+                "Бюджет",
+                "Бюджет клиента",
+                "Коммерческий бюджет",
+            ),
+        )
+        if budget:
+            budget_range = classify_budget_range(budget, context)
+            if budget_range:
+                seen_budget_ranges.add(budget_range)
+            if not latest_budget:
+                latest_budget = budget
+                budget_context = context
+        if not latest_price_sensitivity:
+            latest_price_sensitivity = first_nonempty(
+                row,
+                (
+                    "price_sensitivity",
+                    "price_objection",
+                    "Чувствительность к цене",
+                    "Ценовая чувствительность",
+                ),
+            )
+        if not latest_discount_interest:
+            latest_discount_interest = first_nonempty(
+                row,
+                (
+                    "discount_interest",
+                    "installment_interest",
+                    "Интерес к скидке",
+                    "Интерес к рассрочке",
+                ),
+            )
+        if latest_budget and latest_price_sensitivity and latest_discount_interest:
+            break
+    conflict = len({item for item in seen_budget_ranges if item not in {"unknown", "not_applicable"}}) > 1
+    payload: dict[str, str] = {}
+    if latest_budget:
+        budget_range = classify_budget_range(latest_budget, budget_context)
+        payload["AI-бюджет диапазон"] = budget_range or "unknown"
+        if budget_range in {"unknown", "matcapital_or_certificate", "installment_needed"} or conflict:
+            comment = latest_budget
+            if conflict:
+                comment = f"{comment}; есть разные бюджетные сигналы в истории"
+            payload["AI-бюджет комментарий"] = comment
+    price_sensitivity = normalize_price_sensitivity(latest_price_sensitivity)
+    if price_sensitivity:
+        payload["AI-чувствительность к цене"] = price_sensitivity
+    discount_interest = normalize_discount_interest(latest_discount_interest, " ".join(safe_text(row.get("call_summary")) for row in rows))
+    if discount_interest:
+        payload["AI-интерес к скидке"] = discount_interest
+    return payload
+
+
 def build_deal_payload(
     candidate: dict[str, str],
     policy_rows: list[dict[str, str]],
@@ -258,6 +437,7 @@ def build_deal_payload(
     all_call_text = " ".join(
         " ".join([safe_text(row.get("call_summary")), safe_text(row.get("next_step"))]) for row in calls_sorted
     )
+    commercial_payload = build_commercial_payload(calls_sorted, candidate)
     has_completed_payment_evidence = bool(
         COMPLETED_PAYMENT_EVIDENCE_RE.search(all_call_text)
     )
@@ -315,6 +495,7 @@ def build_deal_payload(
         "AI-Tallanto статус по сделке": safe_text(tallanto_context.get("text")),
         "AI-дата обновления сделки": generated_at,
     }
+    payload.update(commercial_payload)
     return {field: fit_text(normalize_manager_text(value), field_limit(field)) for field, value in payload.items()}
 
 

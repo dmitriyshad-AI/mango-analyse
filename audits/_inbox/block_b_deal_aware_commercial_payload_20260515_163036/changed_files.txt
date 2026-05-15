@@ -1,0 +1,8 @@
+src/mango_mvp/deal_aware/deal_text_builder.py
+src/mango_mvp/deal_aware/deal_writeback.py
+scripts/write_deal_aware_amo_fields.py
+tests/test_deal_aware_commercial_payload.py
+docs/CURRENT_STATE.md
+docs/DECISIONS_LOG.md
+docs/ROADMAP.md
+audits/_inbox/block_b_deal_aware_commercial_payload_20260515_163036/

@@ -1421,8 +1421,8 @@ class ResolveService:
 
         llm_provider = (self._settings.resolve_llm_provider or "").strip().lower()
         if llm_provider not in {"ollama", "openai", "codex_cli"}:
-            llm_provider = "rule"
-        contextual_provider = f"{llm_provider}_contextual" if llm_provider != "rule" else "rule"
+            return None
+        contextual_provider = f"{llm_provider}_contextual"
 
         if mode == "stereo":
             dialogue_candidate = self._resolve_dialogue_with_llm(call, payload)

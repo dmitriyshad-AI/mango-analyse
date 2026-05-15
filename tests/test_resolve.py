@@ -313,7 +313,7 @@ class ResolveServiceTest(unittest.TestCase):
                 make_settings(),
                 database_url=f"sqlite:///{db_path}",
                 transcript_export_dir=str(export_dir),
-                resolve_llm_provider="off",
+                resolve_llm_provider="codex_cli",
                 resolve_llm_for_risky=True,
                 resolve_llm_trigger_score=75,
                 resolve_accept_score=50,
@@ -387,6 +387,81 @@ class ResolveServiceTest(unittest.TestCase):
             self.assertEqual(result["failed"], 0)
             self.assertTrue(llm_called["value"])
             self.assertEqual(result["llm_used"], 1)
+
+    def test_resolve_llm_provider_off_returns_none_immediately(self) -> None:
+        service = ResolveService(replace(make_settings(), resolve_llm_provider="off"))
+        call = CallRecord(
+            source_file="a.mp3",
+            source_filename="a.mp3",
+            transcript_text="MANAGER:\nДобрый день\n\nCLIENT:\nЗдравствуйте",
+            transcript_manager="Добрый день",
+            transcript_client="Здравствуйте",
+        )
+        payload = {
+            "mode": "mono_or_fallback",
+            "full": {
+                "variant_a": "Добрый день. Здравствуйте.",
+                "variant_b": "Добрый день, здравствуйте.",
+                "final": "Добрый день. Здравствуйте.",
+            },
+        }
+
+        self.assertIsNone(service._resolve_with_llm(call, payload))
+
+    def test_resolve_llm_off_does_not_increment_llm_used(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_resolve_llm_off_") as td:
+            db_path = Path(td) / "resolve_llm_off.db"
+            settings = replace(
+                make_settings(),
+                database_url=f"sqlite:///{db_path}",
+                resolve_llm_provider="off",
+                resolve_llm_trigger_score=101,
+                resolve_accept_score=0,
+                resolve_rescue_provider="off",
+                resolve_aggressive_rescue_for_risky=False,
+            )
+            init_db(settings)
+            session_factory = build_session_factory(settings)
+            with session_factory() as session:
+                session.add(
+                    CallRecord(
+                        source_file=str(Path(td) / "off.mp3"),
+                        source_filename="off.mp3",
+                        duration_sec=180.0,
+                        transcription_status="done",
+                        resolve_status="pending",
+                        analysis_status="pending",
+                        transcript_text="MANAGER:\nДобрый день\n\nCLIENT:\nЗдравствуйте",
+                        transcript_manager="Добрый день",
+                        transcript_client="Здравствуйте",
+                        transcript_variants_json=json.dumps(
+                            {
+                                "mode": "stereo",
+                                "warnings": [],
+                                "manager": {
+                                    "variant_a": "Добрый день",
+                                    "variant_b": "Добрый, день",
+                                    "final": "Добрый день",
+                                },
+                                "client": {
+                                    "variant_a": "Здравствуйте",
+                                    "variant_b": "Здравствуйте",
+                                    "final": "Здравствуйте",
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+                session.commit()
+
+            service = ResolveService(settings)
+            with session_factory() as session:
+                result = service.run(session, limit=10)
+
+            self.assertEqual(result["processed"], 1)
+            self.assertEqual(result["llm_used"], 0)
+            self.assertEqual(result["failed"], 0)
 
     def test_score_candidate_does_not_fallback_to_export_for_missing_dialogue_lines(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_resolve_no_export_fallback_") as td:

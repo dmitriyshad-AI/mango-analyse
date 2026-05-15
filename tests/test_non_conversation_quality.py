@@ -126,6 +126,38 @@ def test_detects_virtual_secretary_and_third_party_ivr_markers() -> None:
         assert result.recommended_call_type == "non_conversation"
 
 
+def test_compliance_preamble_with_live_sales_dialogue_is_not_forced_non_conversation() -> None:
+    text = (
+        "MANAGER:\n"
+        "Вас приветствует компания Фотон, все разговоры записываются. "
+        "Подскажите, какой курс вам интересен?\n\n"
+        "CLIENT:\n"
+        "Да, здравствуйте. Интересует курс по математике для 9 класса, "
+        "какая стоимость, расписание и можно ли оплатить частями?"
+    )
+
+    result = detect_non_conversation_signals(text, call_type="sales_call", duration_sec=120)
+
+    assert result.should_force_non_conversation is False
+    assert result.system_no_dialogue_phrase is False
+    assert result.protected_live_dialogue is True
+
+
+def test_pure_ivr_still_forces_non_conversation() -> None:
+    text = (
+        "MANAGER:\n"
+        "Добрый день.\n\n"
+        "CLIENT:\n"
+        "Вас приветствует компания Сервис Резерв. Для соединения нажмите 1."
+    )
+
+    result = detect_non_conversation_signals(text, duration_sec=20)
+
+    assert result.label == LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+    assert result.should_force_non_conversation is True
+    assert result.recommended_call_type == "non_conversation"
+
+
 def test_detects_bank_collector_and_mts_ivr_even_with_business_words() -> None:
     examples = [
         (

@@ -468,12 +468,57 @@ class AnalyzeServiceTest(unittest.TestCase):
 
         self.assertLess(compacted["transcript_chars_prompt"], baseline["transcript_chars_prompt"])
         self.assertTrue(compacted["transcript_compacted"])
-        self.assertGreater(compacted["transcript_compaction_removed_lines"], 0)
+        self.assertEqual(compacted["transcript_compaction_removed_lines"], 0)
+        self.assertGreater(compacted["transcript_compaction_shortened_lines"], 0)
         self.assertGreater(compacted["transcript_prompt_timestamps_removed_lines"], 0)
         self.assertIn("летний лагерь", compacted["transcript"])
         self.assertIn("ссылку на оплату", compacted["transcript"])
         self.assertNotIn("[00:00.1]", compacted["transcript"])
-        self.assertEqual(compacted["transcript"].count("Клиент: Да"), 1)
+        self.assertEqual(compacted["transcript"].count("Клиент: Да"), 2)
+
+    def test_non_conversation_llm_sales_signal_adds_soft_warning_without_preserving_fields(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="voicemail.mp3",
+            source_filename="voicemail.mp3",
+            manager_name="Иван",
+            phone="+79990000000",
+            direction="outbound",
+            duration_sec=20,
+        )
+        text = (
+            "MANAGER:\n"
+            "Добрый день, это учебный центр Фотон.\n\n"
+            "CLIENT:\n"
+            "Абонент сейчас не может ответить на ваш звонок. "
+            "Оставьте сообщение после звукового сигнала."
+        )
+        raw = {
+            "history_summary": "Клиент интересуется курсом.",
+            "structured_fields": {
+                "interests": {"products": ["летний лагерь"]},
+                "objections": ["цена"],
+                "next_step": {"action": "Отправить ссылку на оплату"},
+            },
+            "target_product": "летний лагерь",
+        }
+
+        result = service._normalize_analysis(call, text, raw)
+        quality_flags = result["quality_flags"]
+        structured_fields = result["structured_fields"]
+
+        self.assertEqual(quality_flags["call_type"], "non_conversation")
+        self.assertTrue(quality_flags["non_conversation_soft_warning_llm_sales_signal"])
+        self.assertEqual(
+            quality_flags["non_conversation_soft_warning_sources"],
+            ["interests.products", "target_product", "next_step.action", "objections"],
+        )
+        self.assertTrue(quality_flags["needs_review"])
+        self.assertIn("non_conversation_llm_sales_signal_soft_warning", quality_flags["review_reasons"])
+        self.assertEqual(structured_fields["interests"]["products"], [])
+        self.assertIsNone(structured_fields["next_step"]["action"])
+        self.assertEqual(structured_fields["objections"], [])
+        self.assertIsNone(result["target_product"])
 
     def test_prompt_compaction_can_be_disabled(self) -> None:
         settings = replace(make_settings(), analyze_transcript_compaction_enabled=False)

@@ -37,8 +37,13 @@ SYSTEM_NO_DIALOGUE_RE = re.compile(
     r"(?:сбербанк[^.]{0,60}(?:голосов|помощник)|(?:голосов|помощник)[^.]{0,60}сбербанк)|"
     r"целевые\s+финансы|7\s*sky|сервис\s+резерв|актив\s+бизнес\s+консалт|коллекторск\w+\s+организац|"
     r"групп[ауы]\s+компан(?:ии|ий)\s+мтс|ооо\s+пко|действующ\w+\s+в\s+интересах|"
-    r"вас\s+приветствует\s+компан|все\s+разговоры\s+записываются|"
     r"отправ(?:ить|ьте)\s+бесплатн\w+\s+смс|нажмите\s+(?:1|2|один|два|цифру)",
+    re.I,
+)
+
+COMPLIANCE_PREAMBLE_RE = re.compile(
+    r"вас\s+приветствует\s+компан|все\s+разговоры\s+записываются|"
+    r"ваш\s+звонок\s+очень\s+важен|звонок\s+может\s+быть\s+записан",
     re.I,
 )
 
@@ -198,6 +203,20 @@ CLIENT_HUMAN_RESPONSE_RE = re.compile(
     re.I,
 )
 
+
+def _has_live_education_context(combined: str, client_text: str) -> bool:
+    return (
+        bool(CLIENT_HUMAN_RESPONSE_RE.search(client_text))
+        and bool(BUSINESS_TERM_RE.search(combined) or EDTECH_KEYWORD_RE.search(combined))
+        and not bool(
+            re.search(
+                r"голосов\w+\s+помощник|нажмите|кредитн\w+|коллекторск\w+|секретар[ьяь]",
+                client_text,
+                re.I,
+            )
+        )
+    )
+
 SPEAKER_LINE_RE = re.compile(
     r"^\s*(?:\[[^\]]+\]\s*)?"
     r"(?P<speaker>MANAGER|CLIENT|Менеджер|Клиент|Оператор)\s*:?\s*"
@@ -280,7 +299,8 @@ def detect_non_conversation_signals(
         and len(client_text) >= 80
         and not bool(re.search(r"вас\s+приветствует|голосов\w+\s+помощник|нажмите|кредитн\w+|коллекторск\w+", client_text, re.I))
     )
-    third_party_ivr = third_party_ivr_raw and not live_payment_context
+    live_education_context = third_party_ivr_raw and _has_live_education_context(combined, client_text)
+    third_party_ivr = third_party_ivr_raw and not (live_payment_context or live_education_context)
     repeated_loop = _has_repeated_phrase_loop(transcript)
     strong_no_live = bool(NO_LIVE_RE.search(combined))
     hard_no_live = bool(HARD_NO_LIVE_RE.search(combined))

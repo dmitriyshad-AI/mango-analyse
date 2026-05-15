@@ -233,7 +233,7 @@ def get_settings() -> Settings:
         resolve_min_duration_sec=_int_env("RESOLVE_MIN_DURATION_SEC", 30),
         resolve_llm_trigger_score=_int_env("RESOLVE_LLM_TRIGGER_SCORE", 75),
         resolve_accept_score=_int_env("RESOLVE_ACCEPT_SCORE", 75),
-        resolve_llm_provider=os.getenv("RESOLVE_LLM_PROVIDER", "codex_cli").strip().lower(),
+        resolve_llm_provider=os.getenv("RESOLVE_LLM_PROVIDER", "off").strip().lower(),
         resolve_dialogue_mode=(
             os.getenv("RESOLVE_DIALOGUE_MODE", "dialogue").strip().lower() or "dialogue"
         ),

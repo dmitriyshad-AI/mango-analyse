@@ -27,7 +27,7 @@ SYSTEM_PROMPT_FULL = """Strict analyst for Russian EdTech phone calls.
 Return a single-line minified JSON object only. No markdown, comments, or extra keys.
 
 Rules:
-- Use only transcript + metadata facts. If unsupported, return null or [].
+- Use only transcript + metadata + deterministic hints when supported by transcript facts. Never invent facts from hints; if unsupported, return null or [].
 - All text in Russian except emails and phone numbers.
 - history_summary: 3-5 factual sentences, dense CRM note, no dialogue dump, no MANAGER/CLIENT prefixes, no date/time or manager preamble.
 - For meaningful calls mention: request/topic, what the manager clarified/offered/explained, student data (grade/subject/product) when available, key constraint/objection when available, and the agreed next step when available.
@@ -108,8 +108,6 @@ STRONG_NON_CONVERSATION_MARKERS = (
     "после сигнала",
     "отправить бесплатное смс",
     "нажмите 1",
-    "вас приветствует компания",
-    "все разговоры записываются",
     "целевые финансы",
     "7sky",
     "сервис резерв",
@@ -160,7 +158,7 @@ CALL_TYPE_TAGS = {
 
 LATEST_ANALYSIS_SCHEMA_VERSION = "v2"
 ANALYZE_PROMPT_VERSION_COMPACT = "v6"
-ANALYZE_PROMPT_VERSION_FULL = "v6"
+ANALYZE_PROMPT_VERSION_FULL = "v7"
 TRANSCRIPT_QUALITY_GUARDRAILS_VERSION = "non_conversation_v4_live_safeguards"
 
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
@@ -226,6 +224,7 @@ PROMPT_COMPACTION_FILLER_TOKENS = {
     "хорошо",
     "ясно",
 }
+PROMPT_COMPACTION_COMMITMENT_TOKENS = {"да", "спасибо"}
 PROMPT_COMPACTION_REPEAT_RE = re.compile(
     r"\b(?P<token>ага|алло|да|ладно|понятно|спасибо|угу|хорошо|ясно)\b"
     r"(?:[\s,.;:!?-]+(?P=token)\b)+",
@@ -612,6 +611,10 @@ class AnalyzeService:
             return None
         if not all(token in PROMPT_COMPACTION_FILLER_TOKENS for token in tokens):
             return None
+        if len(tokens) == 1:
+            return None
+        if any(token in PROMPT_COMPACTION_COMMITMENT_TOKENS for token in tokens):
+            return None
         return " ".join(tokens)
 
     @staticmethod
@@ -808,7 +811,7 @@ class AnalyzeService:
             "Call metadata JSON:\n"
             f"{json.dumps(metadata_payload, ensure_ascii=False, separators=(',', ':'))}\n"
         )
-        if normalized == "compact":
+        if normalized in {"compact", "full"}:
             hints_payload = self._prune_prompt_payload(self._analysis_rule_hints(call, text))
             prompt += (
                 "\nDeterministic hints JSON (may be incomplete; use only if supported by transcript):\n"
@@ -1339,6 +1342,49 @@ class AnalyzeService:
                 return True
         return False
 
+    @staticmethod
+    def _is_empty_budget_value(value: Optional[str]) -> bool:
+        lowered = (value or "").strip().lower()
+        return not lowered or lowered in {"не указан", "не указано", "нет", "none", "null", "-"}
+
+    def _build_commercial_lines(self, structured_fields: Dict[str, Any]) -> list[str]:
+        commercial = self._nested_dict(structured_fields, "commercial")
+        price_sensitivity = self._clean_text(commercial.get("price_sensitivity"))
+        budget = self._clean_text(commercial.get("budget"))
+        discount_interest = commercial.get("discount_interest")
+        price_labels = {
+            "high": "высокая",
+            "medium": "средняя",
+            "low": "низкая",
+        }
+        bits: list[str] = []
+        if price_sensitivity in price_labels:
+            bits.append(f"чувствительность к цене: {price_labels[price_sensitivity]}")
+        if not self._is_empty_budget_value(budget):
+            bits.append(f"бюджет: {budget}")
+        if discount_interest is True:
+            bits.append("интересуется скидками")
+        if not bits:
+            return []
+        return [f"Коммерческий контекст: {'; '.join(bits)}."]
+
+    def _build_school_line(self, structured_fields: Dict[str, Any]) -> Optional[str]:
+        student = self._nested_dict(structured_fields, "student")
+        school = self._clean_text(student.get("school"))
+        if not school:
+            return None
+        return f"Школа: {school}."
+
+    def _build_lead_priority_line(self, structured_fields: Dict[str, Any]) -> Optional[str]:
+        priority = self._clean_text(structured_fields.get("lead_priority"))
+        labels = {
+            "hot": "горячий",
+            "warm": "теплый",
+        }
+        if priority not in labels:
+            return None
+        return f"Приоритет лида: {labels[priority]}."
+
     def _compose_history_summary(
         self,
         call: CallRecord,
@@ -1375,6 +1421,9 @@ class AnalyzeService:
         formats = self._clean_list(interests.get("format"))
         subjects = self._clean_list(interests.get("subjects"))
         exams = self._clean_list(interests.get("exam_targets"))
+        school_line = self._build_school_line(structured_fields)
+        commercial_lines = self._build_commercial_lines(structured_fields)
+        lead_priority_line = self._build_lead_priority_line(structured_fields)
         topic_parts: list[str] = []
         if products:
             topic_parts.append(f"продукты: {', '.join(products)}")
@@ -1432,6 +1481,12 @@ class AnalyzeService:
                     parts.append(f"Суть обращения: {summary_sentence}")
             if objections and not self._summary_mentions_any(compact_draft, objections):
                 parts.append(f"Ограничения/возражения: {', '.join(objections)}.")
+            for extra_line in [school_line, *commercial_lines, lead_priority_line]:
+                if not extra_line:
+                    continue
+                current_text = " ".join(parts)
+                if not self._summary_mentions_any(current_text, [extra_line]):
+                    parts.append(extra_line)
             if next_step_action and not any(
                 token in compact_draft.lower()
                 for token in ("договор", "следующ", "перезвон", "отправ", "созвон", "соедин")
@@ -1464,6 +1519,10 @@ class AnalyzeService:
 
         if objections:
             blocks.append(f"Ограничения/возражения: {', '.join(objections)}.")
+
+        for extra_line in [school_line, *commercial_lines, lead_priority_line]:
+            if extra_line:
+                blocks.append(extra_line)
 
         if next_step_action:
             agreement = next_step_action
@@ -1569,6 +1628,17 @@ class AnalyzeService:
         interests = self._nested_dict(blocks, "interests")
         commercial = self._nested_dict(blocks, "commercial")
         next_step_block = self._nested_dict(blocks, "next_step")
+        llm_sales_signal_sources: list[str] = []
+        if self._clean_list(interests.get("products")):
+            llm_sales_signal_sources.append("interests.products")
+        if self._clean_text(raw.get("target_product")):
+            llm_sales_signal_sources.append("target_product")
+        if self._clean_text(next_step_block.get("action")) or (
+            not isinstance(raw.get("next_step"), dict) and self._clean_text(raw.get("next_step"))
+        ):
+            llm_sales_signal_sources.append("next_step.action")
+        if self._clean_list(blocks.get("objections")) or self._clean_list(raw.get("objections")):
+            llm_sales_signal_sources.append("objections")
 
         summary = (
             self._clean_text(raw.get("summary"))
@@ -1717,6 +1787,9 @@ class AnalyzeService:
             next_step_action=next_step_action,
         )
         tags = [item for item in tags if item.lower() not in CALL_TYPE_TAGS]
+        non_conversation_soft_warning_sources = (
+            self._unique(llm_sales_signal_sources) if call_type == "non_conversation" else []
+        )
         if call_type == "non_conversation":
             tags.append("non_conversation")
             products = []
@@ -1870,8 +1943,17 @@ class AnalyzeService:
             next_step_action=next_step_action,
             history_summary=history_summary,
         )
-        quality_flags["needs_review"] = bool(review_flags["needs_review"])
-        quality_flags["review_reasons"] = review_flags["review_reasons"]
+        review_reasons = list(review_flags["review_reasons"])
+        needs_review = bool(review_flags["needs_review"])
+        if non_conversation_soft_warning_sources:
+            quality_flags["non_conversation_soft_warning_llm_sales_signal"] = True
+            quality_flags["non_conversation_soft_warning_sources"] = non_conversation_soft_warning_sources
+            review_reasons = self._unique(
+                review_reasons + ["non_conversation_llm_sales_signal_soft_warning"]
+            )
+            needs_review = True
+        quality_flags["needs_review"] = needs_review
+        quality_flags["review_reasons"] = review_reasons
 
         normalized: Dict[str, Any] = {
             "analysis_schema_version": LATEST_ANALYSIS_SCHEMA_VERSION,
@@ -1895,8 +1977,8 @@ class AnalyzeService:
             "follow_up_score": score,
             "follow_up_reason": follow_up_reason,
             "tags": tags,
-            "needs_review": bool(review_flags["needs_review"]),
-            "review_reasons": review_flags["review_reasons"],
+            "needs_review": needs_review,
+            "review_reasons": review_reasons,
         }
         return self._apply_non_conversation_hard_validation(call, normalized)
 

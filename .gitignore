@@ -14,6 +14,9 @@ __pycache__/
 *.db-journal
 *.db.bak_*
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
 .env
 .amocrm_tokens.json
 
@@ -118,6 +121,9 @@ stable_runtime/merge-*.sh
 stable_runtime/watch-*.sh
 stable_runtime/dedupe-*.py
 stable_runtime/amocrm_runtime/.env.private
+
+# Local customer timeline sample builds
+product_data/customer_timeline/deal_aware_sample_*/
 stable_runtime/amocrm_runtime/amo_runtime.db
 stable_runtime/amocrm_runtime/codex_home/
 stable_runtime/amocrm_runtime/contact_writebacks/

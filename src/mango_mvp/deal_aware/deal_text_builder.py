@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from mango_mvp.customer_timeline.context_provider import get_customer_context_for_phone
 from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
 from mango_mvp.quality.crm_text_quality_detector import (
     CrmTextQualityFinding,
@@ -125,7 +126,12 @@ class DealTextPaths:
     analysis_date: str = "2026-05-13"
 
 
-def build_deal_text_preview(paths: DealTextPaths) -> dict[str, Any]:
+def build_deal_text_preview(
+    paths: DealTextPaths,
+    *,
+    timeline_db: Path | None = None,
+    include_timeline_context: bool = False,
+) -> dict[str, Any]:
     paths.out_root.mkdir(parents=True, exist_ok=True)
 
     candidates = read_csv(paths.stage3_deal_state_root / "deal_stage4_deal_candidates.csv")
@@ -188,6 +194,12 @@ def build_deal_text_preview(paths: DealTextPaths) -> dict[str, Any]:
             tallanto_context=tallanto_context,
             row_findings=row_findings,
             quality_passed=quality_passed,
+            timeline_context=build_candidate_timeline_context(
+                candidate,
+                full_calls,
+                timeline_db=timeline_db,
+                enabled=include_timeline_context,
+            ),
         )
         structured_objections = build_structured_objections(full_calls, candidate)
         objections_json, objections_truncated = serialize_structured_objections(structured_objections)
@@ -967,10 +979,11 @@ def build_preview_row(
     tallanto_context: dict[str, Any],
     row_findings: list[CrmTextQualityFinding],
     quality_passed: bool,
+    timeline_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     risk_types = sorted({finding.risk_type for finding in row_findings})
     severities = sorted({finding.severity for finding in row_findings})
-    return {
+    row = {
         "review_id": f"deal-stage4-{index:05d}",
         "selected_deal_id": safe_text(candidate.get("selected_deal_id")),
         "selected_deal_name": safe_text(candidate.get("selected_deal_name")),
@@ -993,6 +1006,38 @@ def build_preview_row(
         "writeback_blocker": "Stage 4 is preview-only; requires audit pack and live preflight.",
         **payload,
     }
+    if timeline_context is not None:
+        row.update(
+            {
+                "customer_timeline_source": safe_text(timeline_context.get("source")),
+                "customer_timeline_found": "Да" if timeline_context.get("found") else "Нет",
+                "customer_timeline_fallback_used": "Да" if timeline_context.get("fallback_used") else "Нет",
+                "customer_timeline_event_count": str(len(timeline_context.get("timeline", {}).get("items", []))),
+                "customer_timeline_summary": safe_text(timeline_context.get("summary")),
+                "customer_timeline_warnings": " | ".join(safe_text(item) for item in timeline_context.get("warnings", [])),
+            }
+        )
+    return row
+
+
+def build_candidate_timeline_context(
+    candidate: dict[str, str],
+    calls: list[dict[str, str]],
+    *,
+    timeline_db: Path | None,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    phones = split_pipe(safe_text(candidate.get("phones")))
+    primary_phone = phones[0] if phones else ""
+    fallback_rows = []
+    for row in calls:
+        fallback = dict(row)
+        fallback["phones"] = safe_text(candidate.get("phones"))
+        fallback_rows.append(fallback)
+    fallback_rows.append(candidate)
+    return get_customer_context_for_phone(primary_phone, timeline_db=timeline_db, fallback_rows=fallback_rows)
 
 
 def quality_payload(candidate: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:

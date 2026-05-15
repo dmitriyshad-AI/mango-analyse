@@ -157,6 +157,29 @@ G -> A -> PBF -> B -> C -> D -> E
 - `D` - связь каталога вопросов и deal-aware gate;
 - `E` - customer timeline как read-only источник истории клиента.
 
+## Customer Timeline Coverage
+
+Безопасный read-only отчет покрытия:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/audit_customer_timeline_coverage.py \
+  --deal-aware-candidates <path/to/deal_stage4_deal_candidates.csv> \
+  --timeline-db <path/to/customer_timeline.sqlite> \
+  --out-root <path/to/audit_output>
+```
+
+Нельзя писать output в `stable_runtime` без отдельного подтверждения.
+
+Stage 4 preview может читать customer timeline только по явному флагу:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_deal_aware_stage4_preview.py \
+  --customer-timeline-db <path/to/customer_timeline.sqlite> \
+  --enable-customer-timeline-context
+```
+
+Этот контекст остается только в preview/report полях и не попадает в AMO payload.
+
 ## Навыки Codex
 
 Для security-аудита использовать skills:

@@ -1,0 +1,21 @@
+Commands:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_timeline_context_provider.py tests/test_customer_timeline_read_api.py tests/test_deal_aware_stage4_preview.py tests/test_deal_aware_stage6_writeback.py
+
+Result:
+24 passed in 0.41s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_deal_aware_amo_rollback.py tests/test_post_backfill_amo_ready_export.py tests/test_deal_aware_commercial_payload.py tests/test_deal_aware_structured_objections.py tests/test_question_catalog_deal_aware_bridge.py tests/test_customer_timeline_context_provider.py tests/test_customer_timeline_read_api.py tests/test_deal_aware_stage4_preview.py tests/test_deal_aware_stage6_writeback.py
+
+Result:
+76 passed in 0.85s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+
+Result:
+1325 tests collected in 2.03s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile src/mango_mvp/customer_timeline/context_provider.py src/mango_mvp/deal_aware/deal_text_builder.py scripts/audit_customer_timeline_coverage.py scripts/build_deal_aware_stage4_preview.py
+
+Result:
+passed

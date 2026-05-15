@@ -711,6 +711,8 @@ def _build_contact_history(calls_desc: list[dict[str, Any]], chain: dict[str, st
     contentful_desc = [row for row in calls_desc if row.get("Содержательный звонок") == "Да"]
     if not contentful_desc:
         return ("", "")
+    if len(contentful_desc) == 1:
+        return (_build_contact_summary(contentful_desc, chain), "")
     all_chronological = list(reversed(contentful_desc))
     chronology = "\n".join(_history_line(row) for row in all_chronological)
     return (_build_contact_summary(contentful_desc, chain), _excel_safe_text(_sanitize_crm_text(chronology)))

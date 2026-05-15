@@ -250,6 +250,46 @@ def test_contact_summary_does_not_embed_full_latest_summary() -> None:
     assert contacts[0]["Хронология общения (последние 5 касаний)"] == ""
 
 
+def test_contact_history_keeps_chronology_for_multiple_contentful_calls() -> None:
+    rows = [
+        {
+            "Дата и время звонка": "2026-05-02 10:00:00",
+            "Телефон клиента": "+79990000000",
+            "Менеджер": "Менеджер 2",
+            "Свежий период": "Да",
+            "Статус Analyze": "done",
+            "Содержательный звонок": "Да",
+            "Нужна ручная проверка": "Нет",
+            "Краткое резюме разговора": "Клиент уточнил расписание летней школы.",
+            "Тип звонка": "sales_call",
+            "Следующий шаг": "Отправить расписание",
+        },
+        {
+            "Дата и время звонка": "2026-05-01 10:00:00",
+            "Телефон клиента": "+79990000000",
+            "Менеджер": "Менеджер 1",
+            "Свежий период": "Да",
+            "Статус Analyze": "done",
+            "Содержательный звонок": "Да",
+            "Нужна ручная проверка": "Нет",
+            "Краткое резюме разговора": "Клиент интересуется летней школой.",
+            "Тип звонка": "sales_call",
+            "Следующий шаг": "Перезвонить",
+        },
+    ]
+
+    contacts, _, _ = builder._build_contact_rows(
+        call_rows=rows,
+        chains_by_phone={"+79990000000": {"amo_contact_ids": "123"}},
+        analysis_date=date(2026, 5, 10),
+    )
+
+    chronology = contacts[0]["Хронология общения (последние 5 касаний)"]
+    assert "Клиент интересуется летней школой" in chronology
+    assert "Клиент уточнил расписание" in chronology
+    assert chronology.index("01.05.2026") < chronology.index("02.05.2026")
+
+
 def test_history_line_compacts_without_ellipsis() -> None:
     line = builder._history_line(
         {

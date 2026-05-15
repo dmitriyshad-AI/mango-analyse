@@ -1,0 +1,14 @@
+{"case_id":"brand-0001","class_id":"tenant_brand_alias","input":"Занятия проходят в МПК МФТИ.","expected_text":"Занятия проходят в УНПК МФТИ.","not_contains":["МПК МФТИ"]}
+{"case_id":"brand-0002","class_id":"tenant_brand_alias","input":"Клиент спрашивал про НПК МФТИ.","expected_text":"Клиент спрашивал про УНПК МФТИ.","not_contains":[],"not_regex":["(?<!У)НПК МФТИ"]}
+{"case_id":"brand-0003","class_id":"tenant_brand_alias","input":"Программа ОМПК МФТИ подходит для ребенка.","expected_text":"Программа УНПК МФТИ подходит для ребенка.","not_contains":["ОМПК МФТИ"]}
+{"case_id":"brand-0004","class_id":"tenant_brand_alias","input":"ВНПК МФТИ прислал письмо.","expected_text":"УНПК МФТИ прислал письмо.","not_contains":["ВНПК МФТИ"]}
+{"case_id":"brand-0005","class_id":"tenant_brand_alias","input":"МНПК МФТИ указан в расшифровке.","expected_text":"УНПК МФТИ указан в расшифровке.","not_contains":["МНПК МФТИ"]}
+{"case_id":"brand-0006","class_id":"tenant_brand_alias","input":"Запрос на летний лагерь УНИПК МФП.","expected_text":"Запрос на летний лагерь УНПК МФТИ.","not_contains":["УНИПК МФП"]}
+{"case_id":"brand-0007","class_id":"tenant_brand_alias","input":"Клиент спрашивал про УНПК МФП.","expected_text":"Клиент спрашивал про УНПК МФТИ.","not_contains":["УНПК МФП"]}
+{"case_id":"brand-0008","class_id":"tenant_brand_alias","input":"Менеджер сказал МПК МФП вместо правильного названия.","expected_text":"Менеджер сказал УНПК МФТИ вместо правильного названия.","not_contains":["МПК МФП"]}
+{"case_id":"brand-negative-0001","class_id":"negative_guard","input":"УНПК МФТИ уже написано правильно.","expected_text":"УНПК МФТИ уже написано правильно.","not_contains":["МПК МФТИ"]}
+{"case_id":"product-0001","class_id":"summer_school_alias","input":"летний лагерь (8 касаний) | летняя очная школа (1 касаний) | летняя школа (1 касаний) | индивидуальные занятия (1 касаний)","expected_products":"летний лагерь | летняя очная школа | индивидуальные занятия","not_contains":["касаний",": 1",": 8"]}
+{"case_id":"product-0002","class_id":"summer_night_school_asr_artifact","input":"Клиент интересовался летними ночными школами.","expected_text":"Клиент интересовался летними очными школами.","not_contains":["ночн"]}
+{"case_id":"product-0003","class_id":"summer_night_school_asr_artifact","input":"Нужна летняя ночная школа в июне.","expected_text":"Нужна летняя очная школа в июне.","not_contains":["ночн"]}
+{"case_id":"objection-0001","class_id":"objection_dedupe","input":"нужно, чтобы муж прочитал договор | не обсудили с мужем | нужен июньский заезд","expected_objections":"нужно согласовать договор с мужем | нужен июньский заезд","not_contains":["не обсудили с мужем"]}
+{"case_id":"objection-0002","class_id":"objection_dedupe","input":"30.04.2026: неактуально | 30.04.2026: неактуально","expected_objections":"неактуально","not_contains":[]}

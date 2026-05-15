@@ -21,6 +21,23 @@ def test_public_text_assertion_blocks_raw_contacts() -> None:
         assert_public_text_safe("Позвоните +7 900 123-45-67")
 
 
+def test_question_catalog_safety_allows_result_percent_context() -> None:
+    text, flags = redact_public_text("У учеников 100% результат по итоговой диагностике")
+
+    assert "100% результат" in text
+    assert "актуальные варианты" not in text
+    assert "percent_redacted" not in flags
+    assert_public_text_safe("У учеников 100% результат по итоговой диагностике")
+
+
+def test_question_catalog_safety_still_redacts_discount_percent() -> None:
+    text, flags = redact_public_text("Скидка 15% действует по акции")
+
+    assert "15%" not in text
+    assert "актуальные варианты" in text
+    assert "percent_redacted" in flags or "discount_terms_redacted" in flags
+
+
 def test_redact_public_text_removes_urls_and_long_service_numbers() -> None:
     text, flags = redact_public_text(
         "Посмотрите https://example.com/ticket?fn=7381440901039584 и счет 30101810400000000225"

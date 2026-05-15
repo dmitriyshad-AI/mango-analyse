@@ -1,0 +1,17 @@
+docs/CURRENT_DEVELOPMENT_BOUNDARIES_2026-05-15.md
+docs/CURRENT_STATE.md
+docs/DECISIONS_LOG.md
+docs/ROADMAP.md
+docs/RUNBOOK.md
+docs/TOP3_PRIORITY_FIXES_TZ_2026-05-15.md
+src/mango_mvp/deal_aware/__init__.py
+src/mango_mvp/deal_aware/amo_rollback.py
+src/mango_mvp/deal_aware/deal_text_builder.py
+src/mango_mvp/deal_aware/deal_writeback.py
+src/mango_mvp/deal_aware/stage1_snapshot.py
+scripts/readback_deal_aware_amo_fields.py
+scripts/write_deal_aware_amo_fields.py
+scripts/rollback_deal_aware_amo_fields.py
+tests/test_deal_aware_stage6_writeback.py
+tests/test_deal_aware_amo_rollback.py
+audits/_inbox/block_g_a_amo_snapshot_rollback_20260515_161507/

@@ -1,0 +1,25 @@
+Branch: codex/git-order-20260513
+Captured before Block A implementation on 2026-05-15.
+
+Summary from read-only G inspection:
+
+- 154 git-status entries.
+- 22 modified files.
+- 132 untracked paths.
+- About 506 untracked files total, most of them runtime artifacts.
+- About 399 untracked files are under stable_runtime.
+
+Main groups:
+
+- deal-aware code/tests/scripts;
+- question catalog / ROP bot policy;
+- customer timeline / channels / Telegram-history;
+- mail archive;
+- CRM text quality / AMO runtime shared files;
+- docs / audit packs;
+- stable_runtime artifacts;
+- dependency files.
+
+Boundary document:
+
+docs/CURRENT_DEVELOPMENT_BOUNDARIES_2026-05-15.md

@@ -1,0 +1,70 @@
+# Test Output
+
+## Targeted A-block tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_deal_aware_amo_rollback.py tests/test_deal_aware_stage6_writeback.py tests/test_amo_writeback_guards.py::test_deal_writeback_script_defaults_to_dry_run tests/test_amo_writeback_guards.py::test_deal_writeback_script_requires_live_confirmation tests/test_amo_writeback_guards.py::test_deal_writeback_script_accepts_explicit_live_confirmation_and_quality_gate
+```
+
+Result:
+
+```text
+....................                                                     [100%]
+20 passed in 0.66s
+```
+
+## Full collect-only
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+```
+
+Result:
+
+```text
+1290 tests collected in 2.52s
+1 warning: urllib3 NotOpenSSLWarning from local Python/LibreSSL.
+```
+
+## Syntax check
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile src/mango_mvp/deal_aware/amo_rollback.py scripts/write_deal_aware_amo_fields.py scripts/rollback_deal_aware_amo_fields.py tests/test_deal_aware_amo_rollback.py
+```
+
+Result:
+
+```text
+passed
+```
+
+## Broad deal-aware check
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_deal_aware_*.py
+```
+
+Result:
+
+```text
+55 passed, 1 failed in 0.95s
+```
+
+Failure:
+
+```text
+tests/test_deal_aware_confidence_recalibration.py::test_confidence_thresholds_fit_real_phase1_linked_distribution
+assert 0.2552666540140444 <= 0.25
+```
+
+Assessment:
+
+This is outside Block A. The failing test reads local Phase1 runtime artifacts when they exist and checks a historical confidence distribution threshold. Snapshot/rollback targeted tests passed. The failure should be handled separately only if this real-data calibration test is still part of the intended gate.

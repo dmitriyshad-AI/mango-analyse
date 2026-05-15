@@ -1,0 +1,10 @@
+src/mango_mvp/question_catalog/extractors.py
+src/mango_mvp/question_catalog/source_index.py
+src/mango_mvp/deal_aware/deal_quality_gate.py
+scripts/build_question_catalog_source_index.py
+scripts/run_deal_aware_stage5_quality_gate.py
+tests/test_question_catalog_deal_aware_bridge.py
+docs/CURRENT_STATE.md
+docs/DECISIONS_LOG.md
+docs/ROADMAP.md
+audits/_inbox/block_d_question_catalog_deal_aware_bridge_20260515_164011/

@@ -1,0 +1,45 @@
+# Test Output
+
+## Bridge tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_question_catalog_deal_aware_bridge.py
+```
+
+Result:
+
+```text
+.......                                                                  [100%]
+7 passed in 0.33s
+```
+
+## Related tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_deal_aware_stage5_quality_gate.py tests/test_question_catalog_extractors.py tests/test_question_catalog_deal_aware_bridge.py
+```
+
+Result:
+
+```text
+...............                                                          [100%]
+15 passed in 0.30s
+```
+
+## Syntax check
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile src/mango_mvp/question_catalog/source_index.py src/mango_mvp/deal_aware/deal_quality_gate.py scripts/build_question_catalog_source_index.py scripts/run_deal_aware_stage5_quality_gate.py tests/test_question_catalog_deal_aware_bridge.py
+```
+
+Result:
+
+```text
+passed
+```

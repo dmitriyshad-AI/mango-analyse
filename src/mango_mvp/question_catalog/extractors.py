@@ -92,6 +92,13 @@ def extract_call_questions(
             answer_source="sales_insight_knowledge_base",
             metadata={
                 "row_index": row_index,
+                "call_id": clean_text(row.get("call_id")),
+                "recording_id": clean_text(row.get("recording_id")),
+                "moment_id": clean_text(row.get("moment_id")),
+                "source_row_index": row_index,
+                "source_kind": "call",
+                "source_table": "enriched_reviews.csv",
+                "source_id_raw": source_id,
                 "signal": clean_text(row.get("llm_customer_signal_type")),
                 "stage": clean_text(row.get("llm_hidden_sales_stage")),
                 "answer_pattern": clean_text(row.get("answer_pattern")),

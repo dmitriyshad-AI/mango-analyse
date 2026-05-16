@@ -8,6 +8,19 @@
 
 Проект находится между исследовательской стадией и первым внутренним рабочим запуском. Распознавание и анализ звонков в целом доведены до сильного состояния. Главный риск сейчас не ASR, а безопасная запись результата в AMO, единая история клиента, порядок в git и управляемость runtime-артефактов.
 
+На 2026-05-16 основной runtime звонков обновлён после Mango-дозагрузки:
+
+- активный export: `stable_runtime/sales_master_export_20260516_after_mango_update_v1`;
+- canonical DB: `stable_runtime/canonical_master_20260516_after_mango_update_v1/canonical_calls_master.db`;
+- actionable звонков: `65 100`;
+- missing ASR: `0`;
+- missing Resolve+Analyze: `0`;
+- телефонов в phone-chain слое: `16 002`;
+- AMO-ready после CRM quality gate: `6`;
+- safe writeback pending: `0`.
+
+Ключевое решение этого обновления: старые и новые звонки собраны в новую версионированную runtime-базу, но live-запись в AMO/Tallanto не выполнялась.
+
 Текущий правильный фокус:
 
 1. Закрыть качество понимания клиентских вопросов для Telegram-пилота.
@@ -81,7 +94,9 @@
 
 - `stable_runtime/CURRENT_RUNTIME.json`
 - `stable_runtime/CANONICAL_EXPORT.txt`
-- `docs/WORKING_BASES_STATUS_2026-05-13.md`
+- `stable_runtime/canonical_master_20260516_after_mango_update_v1/summary.json`
+- `stable_runtime/insight_readiness_report_after_mango_update_20260516_v1/summary.json`
+- `stable_runtime/sales_master_export_20260516_after_mango_update_v1/summary.json`
 
 `stable_runtime` читать можно, но не менять без отдельного подтверждения.
 

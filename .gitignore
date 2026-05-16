@@ -37,6 +37,7 @@ audits/_inbox/*
 !audits/_inbox/.gitkeep
 audits/_results/*
 !audits/_results/.gitkeep
+audits/for_claude_*/
 
 # Local cleanup/workflow scratch
 _cleanup_quarantine_*/
@@ -99,10 +100,12 @@ stable_runtime/call_processing_readiness_*/
 stable_runtime/canonical_master_*/
 stable_runtime/claude_stage15_*/
 stable_runtime/crm_writeback_quality_gate_*/
+stable_runtime/deal_aware_*/
 stable_runtime/fixpoint_sanitizer_*/
 stable_runtime/kc_knowledge_base_*/
 stable_runtime/non_conversation_*/
 stable_runtime/operator_status_*/
+stable_runtime/tenant_text_normalizer_gate_*/
 stable_runtime/project_cleanup_manifest_*/
 stable_runtime/project_inventory_*/
 stable_runtime/runtime_artifact_index_*/
@@ -124,6 +127,7 @@ stable_runtime/amocrm_runtime/.env.private
 
 # Local customer timeline sample builds
 product_data/customer_timeline/deal_aware_sample_*/
+product_data/customer_timeline/contact_control_sample_*/
 stable_runtime/amocrm_runtime/amo_runtime.db
 stable_runtime/amocrm_runtime/codex_home/
 stable_runtime/amocrm_runtime/contact_writebacks/

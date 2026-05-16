@@ -21,6 +21,11 @@ def safe_text(value: Any) -> str:
 
 
 def split_tokens(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        result: list[str] = []
+        for item in value:
+            result.extend(split_tokens(item))
+        return list(dict.fromkeys(result))
     text = safe_text(value)
     if not text:
         return []

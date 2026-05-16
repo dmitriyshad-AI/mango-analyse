@@ -6,7 +6,7 @@ from pathlib import Path
 from mango_mvp.deal_aware.deal_quality_gate import evaluate_row
 from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
 from mango_mvp.question_catalog.extractors import extract_call_questions
-from mango_mvp.question_catalog.source_index import build_source_index
+from mango_mvp.question_catalog.source_index import build_source_index, load_source_index, write_source_index
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
@@ -83,6 +83,26 @@ def test_source_index_maps_call_id_to_theme_id(tmp_path: Path) -> None:
 
     assert "call-raw-1" in index
     assert index["call-raw-1"]["theme_ids"] or index["call-raw-1"]["service_ids"]
+
+
+def test_source_index_json_roundtrip_preserves_manager_only_mode(tmp_path: Path) -> None:
+    rows = [
+        {
+            "call_id": "call-1",
+            "theme_ids": "theme:009_refund",
+            "service_ids": "",
+            "policy_statuses": "manager_only",
+            "bot_allowed_modes": "manager_only",
+            "risk_flags": "manager_only",
+        }
+    ]
+
+    output = write_source_index(tmp_path, rows)
+    index = load_source_index(Path(output["json"]))
+
+    assert index["call-1"]["theme_ids"] == ["theme:009_refund"]
+    assert index["call-1"]["bot_allowed_modes"] == ["manager_only"]
+    assert index["call-1"]["risk_flags"] == ["manager_only"]
 
 
 def test_deal_quality_gate_without_catalog_index_is_backward_compatible() -> None:

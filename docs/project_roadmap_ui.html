@@ -1,0 +1,1183 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Дорожная карта Mango Analyse</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f4;
+      --panel: #ffffff;
+      --panel-soft: #f1f5f1;
+      --text: #242824;
+      --muted: #697168;
+      --line: #dce3dc;
+      --green: #0f766e;
+      --green-soft: #dff4ef;
+      --amber: #a16207;
+      --amber-soft: #fff1c2;
+      --red: #b42318;
+      --red-soft: #ffe1dc;
+      --blue: #2563eb;
+      --blue-soft: #e2ebff;
+      --violet: #6d28d9;
+      --violet-soft: #efe7ff;
+      --shadow: 0 18px 42px rgba(38, 48, 38, 0.10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    a {
+      color: var(--green);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 340px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 24px 18px;
+      border-right: 1px solid var(--line);
+      background: #fbfcfa;
+    }
+
+    .brand {
+      margin-bottom: 18px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+      font-weight: 760;
+    }
+
+    .brand p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .search {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      outline: none;
+      font-size: 14px;
+    }
+
+    .search:focus {
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0 18px;
+    }
+
+    .filter {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .filter.active {
+      color: var(--green);
+      border-color: rgba(15, 118, 110, 0.35);
+      background: var(--green-soft);
+      font-weight: 700;
+    }
+
+    .stage-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .stage-button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+      transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+    }
+
+    .stage-button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(15, 118, 110, 0.35);
+    }
+
+    .stage-button.active {
+      border-color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .stage-button .top {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .stage-button .title {
+      font-weight: 720;
+      font-size: 14px;
+    }
+
+    .stage-button .period {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .status-done {
+      color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .status-partial {
+      color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .status-active {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .status-next {
+      color: var(--violet);
+      background: var(--violet-soft);
+    }
+
+    .status-risk {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .main {
+      min-width: 0;
+      padding: 28px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.7fr);
+      gap: 18px;
+      align-items: stretch;
+      margin-bottom: 18px;
+    }
+
+    .hero-panel,
+    .metric,
+    .content-panel,
+    .road-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-panel {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 240px;
+    }
+
+    .hero-panel h2 {
+      margin: 0;
+      max-width: 860px;
+      font-size: 34px;
+      line-height: 1.08;
+      font-weight: 800;
+    }
+
+    .hero-panel p {
+      margin: 14px 0 0;
+      max-width: 820px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    .action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .action.primary {
+      border-color: var(--green);
+      background: var(--green);
+      color: white;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      padding: 14px;
+      box-shadow: none;
+    }
+
+    .metric .value {
+      display: block;
+      font-size: 24px;
+      line-height: 1.1;
+      font-weight: 820;
+    }
+
+    .metric .label {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin: 0 0 14px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    .tab {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 12px;
+      background: var(--panel);
+      color: var(--muted);
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .tab.active {
+      background: var(--text);
+      color: white;
+      border-color: var(--text);
+    }
+
+    .content-panel {
+      padding: 22px;
+    }
+
+    .stage-head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .stage-head h2 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.15;
+      font-weight: 820;
+    }
+
+    .stage-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .section-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .wide {
+      grid-column: 1 / -1;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 17px;
+      line-height: 1.25;
+    }
+
+    .copy {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    ul.clean {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    ul.clean li {
+      margin: 7px 0;
+    }
+
+    .road-card {
+      padding: 16px;
+      box-shadow: none;
+    }
+
+    .evidence-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .evidence-item {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 9px 10px;
+      border-radius: 8px;
+      background: var(--panel-soft);
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    .evidence-item span {
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 54px;
+      padding-top: 2px;
+    }
+
+    .timeline {
+      margin-top: 18px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .timeline-row {
+      display: grid;
+      grid-template-columns: 130px minmax(0, 1fr) 160px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .timeline-row strong {
+      display: block;
+      line-height: 1.25;
+    }
+
+    .timeline-row small {
+      color: var(--muted);
+    }
+
+    .future-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .decision-list {
+      counter-reset: item;
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .decision-list li {
+      counter-increment: item;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      padding: 12px;
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .decision-list li::before {
+      content: counter(item);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--green-soft);
+      color: var(--green);
+      font-weight: 800;
+    }
+
+    .empty {
+      padding: 18px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: var(--panel);
+    }
+
+    @media (max-width: 1040px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: relative;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .stage-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .main {
+        padding: 18px;
+      }
+
+      .hero-panel h2 {
+        font-size: 28px;
+      }
+
+      .section-grid,
+      .future-grid,
+      .stage-list,
+      .metric-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .timeline-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>Дорожная карта Mango Analyse</h1>
+        <p>История работ, текущий статус и путь к внутреннему ИИ-сотруднику.</p>
+      </div>
+      <input id="search" class="search" type="search" placeholder="Найти этап, дату, файл или риск">
+      <div id="filters" class="filters"></div>
+      <div id="stageList" class="stage-list"></div>
+    </aside>
+
+    <main class="main">
+      <section class="hero">
+        <div class="hero-panel">
+          <div>
+            <h2>От распознавания звонков к рабочему ИИ-сотруднику</h2>
+            <p>Экран показывает, что уже построено, что находится в работе и какие шаги нужны, чтобы систему можно было внедрить внутри компании и позже показывать другим организациям.</p>
+          </div>
+          <div class="hero-actions">
+            <button class="action primary" data-tab-target="stage">Открыть выбранный этап</button>
+            <button class="action" data-tab-target="future">Что делаем дальше</button>
+            <a class="action" href="PROJECT_HISTORY_AND_PRODUCT_ROADMAP_2026-05-13.md">Открыть исходный документ</a>
+          </div>
+        </div>
+        <div class="metric-grid" aria-label="Ключевые числа">
+          <div class="metric"><span class="value">64 832</span><span class="label">содержательных звонка обработано</span></div>
+          <div class="metric"><span class="value">15 924</span><span class="label">уникальных клиентских телефонов</span></div>
+          <div class="metric"><span class="value">1 013</span><span class="label">классов вопросов клиентов</span></div>
+          <div class="metric"><span class="value">0</span><span class="label">утвержденных автоответов без РОПа</span></div>
+        </div>
+      </section>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="stage">Выбранный этап</button>
+        <button class="tab" data-tab="timeline">Вся хронология</button>
+        <button class="tab" data-tab="future">Дальнейший путь</button>
+        <button class="tab" data-tab="demo">Для показа компаниям</button>
+        <button class="tab" data-tab="decisions">Решения</button>
+      </div>
+
+      <section id="content" class="content-panel"></section>
+    </main>
+  </div>
+
+  <script>
+    const stages = [
+      {
+        id: 1,
+        title: "Изначальная цель и первый фундамент",
+        period: "2026-03-07 - 2026-03-10",
+        status: "Сделано",
+        statusClass: "status-done",
+        result: "Поставлена задача массовой обработки звонков и создан первый рабочий контур.",
+        value: "Звонки перестали быть просто аудио: появилась база для анализа и CRM.",
+        substeps: [
+          "Описано первое техническое задание.",
+          "Добавлен импорт аудио и разбор имени Mango-файла.",
+          "Появился первичный контур распознавания и объединения вариантов.",
+          "Создан первый стабильный снимок проекта."
+        ],
+        evidence: [
+          ["docs", "ROADMAP_2026-03-07.md"],
+          ["docs", "TZ_UPDATED_2026-03-09.md"],
+          ["git", "2026-03-10 chore: initial project snapshot"]
+        ],
+        risk: "На этом этапе еще не было зрелой CRM-записи и контроля качества.",
+        next: "Использовать как историческое основание, но не как текущую архитектуру."
+      },
+      {
+        id: 2,
+        title: "Интерфейс, диалоги и первые проверки качества",
+        period: "2026-03-10 - 2026-03-22",
+        status: "Сделано",
+        statusClass: "status-done",
+        result: "Появились локальный интерфейс, восстановление диалога и первые аудиты.",
+        value: "Система стала управляемее и начала отличать хорошие диалоги от проблемных.",
+        substeps: [
+          "Добавлена рабочая студия для запуска обработки.",
+          "Сделаны Resolve и Analyze.",
+          "Введена версия схемы анализа.",
+          "Проведены проверки на 1000 звонков."
+        ],
+        evidence: [
+          ["docs", "DIALOGUE_RESOLVE_TECH_DESIGN_2026-03-13.md"],
+          ["docs", "AUDIT_ANALYZE_1000_2026-03-22.md"],
+          ["docs", "FINAL_AUDIT_2026-03-22.md"]
+        ],
+        risk: "Первые проверки выявили шум: пустые звонки, автоответчики и неверную очередность реплик.",
+        next: "Опыт этапа использован в большом блоке качества на майских данных."
+      },
+      {
+        id: 3,
+        title: "История по телефонам и первые CRM-выгрузки",
+        period: "2026-03-23 - 2026-04-24",
+        status: "Сделано частично",
+        statusClass: "status-partial",
+        result: "Собраны большие волны клиентской истории и первые выгрузки для продаж.",
+        value: "Появилось понимание цепочек общения по номерам телефонов.",
+        substeps: [
+          "Запущены волны messages28 - messages35.",
+          "Собирались истории по телефонам.",
+          "Появились первые sales_master_export.",
+          "Началась стабилизация CRM-логики."
+        ],
+        evidence: [
+          ["runtime", "../stable_runtime/messages28_phone_history_llm_wave_20260409/"],
+          ["runtime", "../stable_runtime/messages35_asr_only_20260506/"],
+          ["git", "2026-04-24 Stabilize sales pipeline and CRM exports"]
+        ],
+        risk: "Старые выгрузки слишком агрегированные и не подходят как текущий источник истины.",
+        next: "Оставлять только как исторический слой и доказательство эволюции проекта."
+      },
+      {
+        id: 4,
+        title: "Закрытие хвостов обработки",
+        period: "2026-05-01 - 2026-05-07",
+        status: "Сделано",
+        statusClass: "status-done",
+        result: "Закрыты пропуски распознавания и подготовлена основа для продуктовых слоев.",
+        value: "Проект перестал быть набором отдельных прогонов и стал ближе к управляемой системе.",
+        substeps: [
+          "Добраны пропущенные периоды.",
+          "Построены отчеты покрытия.",
+          "Собраны первые пакеты для РОПа.",
+          "Сформулирован переход к продуктовой логике."
+        ],
+        evidence: [
+          ["docs", "SAAS_AND_INSIGHT_ROADMAP_2026-05-07.md"],
+          ["docs", "SALES_INSIGHT_KNOWLEDGE_BASE_PLAN_2026-05-07.md"],
+          ["runtime", "../stable_runtime/final_processing_coverage_report_20260507_v5/"]
+        ],
+        risk: "Одного распознавания недостаточно: нужна польза для менеджера и РОПа.",
+        next: "Строить не отчеты ради отчетов, а рабочие очереди и подсказки."
+      },
+      {
+        id: 5,
+        title: "Основа будущего сервиса",
+        period: "2026-05-07 - 2026-05-09",
+        status: "Сделано",
+        statusClass: "status-done",
+        result: "Отделены историческая обработка и продуктовый контур.",
+        value: "Появился путь к переносимому сервису без риска сломать текущие данные.",
+        substeps: [
+          "Зафиксированы границы stable_runtime.",
+          "Начат слой приема данных Mango API.",
+          "Создана отдельная продуктовая база.",
+          "Описаны будущие экраны и безопасные проверки."
+        ],
+        evidence: [
+          ["docs", "SAAS_PRODUCTIZATION_ARCHITECTURE_2026-05-07.md"],
+          ["docs", "ARCHITECTURE_CURRENT.md"],
+          ["docs", "DATA_MODEL.md"],
+          ["docs", "SAAS_READY_CONTOURS_2026-05-11.md"]
+        ],
+        risk: "Рано переносить все в тяжелую инфраструктуру до внутренней пользы.",
+        next: "Сначала доказать регулярное использование внутри компании."
+      },
+      {
+        id: 6,
+        title: "Качество распознанных разговоров",
+        period: "2026-05-09 - 2026-05-10",
+        status: "Сделано",
+        statusClass: "status-done",
+        result: "Создан строгий слой качества и актуальная canonical-база.",
+        value: "CRM и будущий бот защищены от мусорных звонков и опасных выводов.",
+        substeps: [
+          "Отсеяны автоответчики, недозвоны и технический шум.",
+          "Создан Stage15 frozen gate.",
+          "Собрана актуальная canonical-база.",
+          "Разделены требования для CRM и будущего бота."
+        ],
+        evidence: [
+          ["docs", "TRANSCRIPT_QUALITY_STAGE15_EXPORT_GATE_REPORT_2026-05-10.md"],
+          ["runtime", "../stable_runtime/canonical_master_20260510_after_quality_backfill_v1/"],
+          ["runtime", "../stable_runtime/transcript_quality_stage15_export_gate_20260510_v11_frozen_gate/summary.json"]
+        ],
+        risk: "Автономный бот все еще должен быть строже, чем внутренний CRM-текст.",
+        next: "Использовать только проверенные слои для CRM и подсказок."
+      },
+      {
+        id: 7,
+        title: "CRM, AMO, Tallanto и защищенная запись",
+        period: "2026-05-10 - 2026-05-12",
+        status: "Сделано",
+        statusClass: "status-done",
+        result: "Доказана безопасная ограниченная запись в AMO с проверкой результата.",
+        value: "Система умеет улучшать CRM, но только через проверки и ручные границы.",
+        substeps: [
+          "Создан строгий CRM-экспорт.",
+          "Проведены staged-записи в AMO.",
+          "Добавлен readback после записи.",
+          "Выделены дубли и ручные очереди."
+        ],
+        evidence: [
+          ["docs", "AMO_WRITEBACK_STAGE40_READBACK_REPORT_2026-05-10.md"],
+          ["docs", "AMO_WRITEBACK_PRODUCTION_LOOP_2026-05-10.md"],
+          ["runtime", "../stable_runtime/amo_writeback_queue_20260510_v2_production/"]
+        ],
+        risk: "Нельзя писать следующий шаг по старому звонку без учета текущей сделки.",
+        next: "Перейти от истории по телефону к сделочной логике."
+      },
+      {
+        id: 8,
+        title: "Каналы, почта, Telegram и единая история",
+        period: "2026-05-12 - 2026-05-13",
+        status: "Сделано частично",
+        statusClass: "status-partial",
+        result: "Начато объединение звонков, писем и сообщений в единую историю клиента.",
+        value: "Будущий менеджер увидит не разрозненные источники, а одну понятную картину.",
+        substeps: [
+          "Добавлен read-only почтовый архив.",
+          "Описана единая лента клиента.",
+          "Добавлены контракты customer_timeline.",
+          "Создан общий слой сообщений и Telegram-черновиков."
+        ],
+        evidence: [
+          ["docs", "MAIL_ARCHIVE_RUNBOOK_2026-05-12.md"],
+          ["docs", "UNIFIED_CUSTOMER_TIMELINE_ARCHITECTURE_2026-05-12.md"],
+          ["docs", "CHANNEL_RUNTIME_ARCHITECTURE_2026-05-09.md"],
+          ["src", "../src/mango_mvp/customer_timeline/"]
+        ],
+        risk: "История клиента полезна только после связи с текущими сделками и действиями.",
+        next: "Связать каналы с активными сделками, оплатами и задачами."
+      },
+      {
+        id: 9,
+        title: "Каталог вопросов клиентов",
+        period: "2026-05-13",
+        status: "Сделано частично",
+        statusClass: "status-partial",
+        result: "Собраны реальные вопросы клиентов из звонков, почты и Telegram.",
+        value: "Будущий бот и менеджеры будут опираться на реальные вопросы, а не на догадки.",
+        substeps: [
+          "Собрано 6 907 вопросов и сигналов.",
+          "Сформировано 1 013 классов вопросов.",
+          "Подготовлен top-100 для РОПа.",
+          "Автоответы запрещены до утверждения."
+        ],
+        evidence: [
+          ["docs", "CUSTOMER_QUESTION_CATALOG_ARCHITECTURE_2026-05-13.md"],
+          ["docs", "CUSTOMER_QUESTION_CATALOG_STAGE1_7_COMPLETION_AUDIT_2026-05-13.md"],
+          ["src", "../src/mango_mvp/question_catalog/"]
+        ],
+        risk: "Нет утвержденных ответов РОПом, поэтому автоматическая отправка запрещена.",
+        next: "Утвердить первые 20-50 ответов и подключить их к предпросмотру."
+      },
+      {
+        id: 10,
+        title: "Слой сделок и актуального состояния",
+        period: "2026-05-13",
+        status: "В работе",
+        statusClass: "status-active",
+        result: "Идет переход от общей телефонной истории к пониманию конкретных сделок.",
+        value: "Подсказки станут безопаснее: система не будет реанимировать закрытые или чужие сделки.",
+        substeps: [
+          "Читается текущий снимок AMO-сделок.",
+          "Звонки привязываются к сделкам.",
+          "Классифицируется состояние сделки.",
+          "Добавляется защита от устаревшего следующего шага."
+        ],
+        evidence: [
+          ["docs", "DEAL_AWARE_LAYER_TZ_2026-05-13.md"],
+          ["src", "../src/mango_mvp/deal_aware/"],
+          ["runtime", "../stable_runtime/deal_aware_stage3_deal_state_20260513_v1/"]
+        ],
+        risk: "Пока слой в работе, новый human-history export нельзя делать активным источником записи.",
+        next: "Довести deal-aware preview до качества, пригодного для РОПа и менеджера."
+      },
+      {
+        id: 11,
+        title: "Внутренний запуск и будущий продукт",
+        period: "Следующий этап",
+        status: "Следующий фокус",
+        statusClass: "status-next",
+        result: "Нужно превратить разработку в ежедневную работу сотрудников.",
+        value: "Только после внутреннего использования систему можно уверенно продавать другим компаниям.",
+        substeps: [
+          "Выбрать первого менеджера и один канал.",
+          "Показывать подсказки без автоматической отправки.",
+          "Собирать принятие, правки и отклонения.",
+          "Сделать рабочее место менеджера и панель РОПа."
+        ],
+        evidence: [
+          ["docs", "PROJECT_HISTORY_AND_PRODUCT_ROADMAP_2026-05-13.md"],
+          ["docs", "CHANNEL_BOT_STRATEGIC_PLAN_2026-05-09.md"],
+          ["docs", "CUSTOMER_QUESTION_CATALOG_RUNBOOK_2026-05-13.md"]
+        ],
+        risk: "Главный риск сейчас не техника, а то, начнут ли сотрудники пользоваться системой каждый день.",
+        next: "Запустить один простой внутренний сценарий и измерять пользу."
+      }
+    ];
+
+    const futureBlocks = [
+      {
+        title: "Внутренний ИИ-сотрудник",
+        items: [
+          "Один канал и один менеджер.",
+          "Черновик ответа без автоотправки.",
+          "Единая история клиента в карточке.",
+          "Сбор принятия, правок и отказов."
+        ]
+      },
+      {
+        title: "Рабочее место менеджера",
+        items: [
+          "Открыть клиента по телефону или ссылке.",
+          "Увидеть звонки, письма, Telegram, AMO и Tallanto.",
+          "Получить подсказку ответа.",
+          "Понять, что требует РОПа или актуального факта."
+        ]
+      },
+      {
+        title: "Панель РОПа",
+        items: [
+          "Top-100 вопросов.",
+          "Утверждение ответов.",
+          "Рискованные сделки.",
+          "Дубли и неоднозначные карточки."
+        ]
+      },
+      {
+        title: "CRM второго поколения",
+        items: [
+          "Разделить контактную и сделочную сводку.",
+          "Учитывать статусы, оплаты, задачи и причины отказа.",
+          "Писать только через проверки.",
+          "Проверять результат после записи."
+        ]
+      },
+      {
+        title: "Демонстрация другим компаниям",
+        items: [
+          "Обезличенные данные.",
+          "История до и после.",
+          "Примеры подсказок менеджеру.",
+          "Понятный журнал безопасности."
+        ]
+      },
+      {
+        title: "Будущий сервис",
+        items: [
+          "Настройки отдельной компании.",
+          "Правила CRM-полей.",
+          "Разделение данных компаний.",
+          "Резервные копии и мониторинг."
+        ]
+      }
+    ];
+
+    const decisions = [
+      "Кто будет первым менеджером-пользователем.",
+      "Какой канал берем первым: Telegram, форма сайта или почта.",
+      "Кто из РОПов утверждает первые 100 ответов.",
+      "Какие CRM-поля разрешено писать на следующем этапе.",
+      "Какие источники цен и расписания считаются актуальными.",
+      "Когда считать внутренний запуск успешным.",
+      "Когда можно начинать показывать продукт другим компаниям."
+    ];
+
+    const filters = [
+      ["all", "Все"],
+      ["Сделано", "Сделано"],
+      ["Сделано частично", "Частично"],
+      ["В работе", "В работе"],
+      ["Следующий фокус", "Дальше"]
+    ];
+
+    let selectedStageId = 10;
+    let activeFilter = "all";
+    let activeTab = "stage";
+
+    const stageList = document.getElementById("stageList");
+    const filtersNode = document.getElementById("filters");
+    const content = document.getElementById("content");
+    const search = document.getElementById("search");
+
+    function statusClass(status) {
+      if (status === "Сделано") return "status-done";
+      if (status === "Сделано частично") return "status-partial";
+      if (status === "В работе") return "status-active";
+      if (status === "Следующий фокус") return "status-next";
+      return "status-risk";
+    }
+
+    function evidenceHref(label, path) {
+      if (label === "docs") return path;
+      return path;
+    }
+
+    function matchesStage(stage, query) {
+      const haystack = [
+        stage.title,
+        stage.period,
+        stage.status,
+        stage.result,
+        stage.value,
+        stage.risk,
+        stage.next,
+        ...stage.substeps,
+        ...stage.evidence.flat()
+      ].join(" ").toLowerCase();
+      return haystack.includes(query.toLowerCase());
+    }
+
+    function filteredStages() {
+      const query = search.value.trim();
+      return stages.filter((stage) => {
+        const byFilter = activeFilter === "all" || stage.status === activeFilter;
+        const bySearch = !query || matchesStage(stage, query);
+        return byFilter && bySearch;
+      });
+    }
+
+    function renderFilters() {
+      filtersNode.innerHTML = filters.map(([key, label]) => (
+        `<button class="filter ${activeFilter === key ? "active" : ""}" data-filter="${key}">${label}</button>`
+      )).join("");
+
+      filtersNode.querySelectorAll("[data-filter]").forEach((button) => {
+        button.addEventListener("click", () => {
+          activeFilter = button.dataset.filter;
+          renderAll();
+        });
+      });
+    }
+
+    function renderStageList() {
+      const items = filteredStages();
+      if (!items.length) {
+        stageList.innerHTML = `<div class="empty">Ничего не найдено. Попробуй другой запрос.</div>`;
+        return;
+      }
+
+      stageList.innerHTML = items.map((stage) => `
+        <button class="stage-button ${stage.id === selectedStageId ? "active" : ""}" data-stage="${stage.id}">
+          <div class="top">
+            <span class="title">Этап ${stage.id}. ${stage.title}</span>
+            <span class="badge ${stage.statusClass}">${stage.status}</span>
+          </div>
+          <div class="period">${stage.period}</div>
+        </button>
+      `).join("");
+
+      stageList.querySelectorAll("[data-stage]").forEach((button) => {
+        button.addEventListener("click", () => {
+          selectedStageId = Number(button.dataset.stage);
+          activeTab = "stage";
+          renderAll();
+        });
+      });
+    }
+
+    function currentStage() {
+      return stages.find((stage) => stage.id === selectedStageId) || stages[0];
+    }
+
+    function renderStage(stage) {
+      content.innerHTML = `
+        <div class="stage-head">
+          <div>
+            <h2>Этап ${stage.id}. ${stage.title}</h2>
+            <div class="stage-meta">
+              <span class="badge ${stage.statusClass}">${stage.status}</span>
+              <span class="badge status-partial">${stage.period}</span>
+            </div>
+          </div>
+        </div>
+        <div class="section-grid">
+          <article class="road-card">
+            <h3>Главный результат</h3>
+            <p class="copy">${stage.result}</p>
+          </article>
+          <article class="road-card">
+            <h3>Польза</h3>
+            <p class="copy">${stage.value}</p>
+          </article>
+          <article class="road-card wide">
+            <h3>Подэтапы</h3>
+            <ul class="clean">${stage.substeps.map((item) => `<li>${item}</li>`).join("")}</ul>
+          </article>
+          <article class="road-card">
+            <h3>Риск</h3>
+            <p class="copy">${stage.risk}</p>
+          </article>
+          <article class="road-card">
+            <h3>Следующее действие</h3>
+            <p class="copy">${stage.next}</p>
+          </article>
+          <article class="road-card wide">
+            <h3>Доказательства</h3>
+            <div class="evidence-list">
+              ${stage.evidence.map(([label, path]) => `
+                <a class="evidence-item" href="${evidenceHref(label, path)}">
+                  <span>${label}</span>
+                  <strong>${path}</strong>
+                </a>
+              `).join("")}
+            </div>
+          </article>
+        </div>
+      `;
+    }
+
+    function renderTimeline() {
+      content.innerHTML = `
+        <div class="stage-head">
+          <div>
+            <h2>Вся хронология</h2>
+            <div class="stage-meta">
+              <span class="badge status-done">11 этапов</span>
+              <span class="badge status-active">март - май 2026</span>
+            </div>
+          </div>
+        </div>
+        <div class="timeline">
+          ${stages.map((stage) => `
+            <button class="timeline-row" data-stage-jump="${stage.id}">
+              <small>${stage.period}</small>
+              <span><strong>Этап ${stage.id}. ${stage.title}</strong><small>${stage.result}</small></span>
+              <span class="badge ${stage.statusClass}">${stage.status}</span>
+            </button>
+          `).join("")}
+        </div>
+      `;
+
+      content.querySelectorAll("[data-stage-jump]").forEach((button) => {
+        button.addEventListener("click", () => {
+          selectedStageId = Number(button.dataset.stageJump);
+          activeTab = "stage";
+          renderAll();
+        });
+      });
+    }
+
+    function renderFuture() {
+      content.innerHTML = `
+        <div class="stage-head">
+          <div>
+            <h2>Дальнейший путь</h2>
+            <div class="stage-meta">
+              <span class="badge status-active">внутренний запуск</span>
+              <span class="badge status-next">затем продукт</span>
+            </div>
+          </div>
+        </div>
+        <div class="future-grid">
+          ${futureBlocks.map((block) => `
+            <article class="road-card">
+              <h3>${block.title}</h3>
+              <ul class="clean">${block.items.map((item) => `<li>${item}</li>`).join("")}</ul>
+            </article>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderDemo() {
+      content.innerHTML = `
+        <div class="stage-head">
+          <div>
+            <h2>Как показывать модель другим компаниям</h2>
+            <div class="stage-meta">
+              <span class="badge status-partial">показывать аккуратно</span>
+              <span class="badge status-risk">не обещать автономию</span>
+            </div>
+          </div>
+        </div>
+        <div class="section-grid">
+          <article class="road-card">
+            <h3>Что уже можно показывать</h3>
+            <ul class="clean">
+              <li>Путь от звонков к истории клиента.</li>
+              <li>Контроль качества перед CRM-записью.</li>
+              <li>Каталог реальных вопросов клиентов.</li>
+              <li>Будущую карточку менеджера и РОПа.</li>
+            </ul>
+          </article>
+          <article class="road-card">
+            <h3>Что пока нельзя обещать</h3>
+            <ul class="clean">
+              <li>Автоматическую отправку ответов клиентам.</li>
+              <li>Мгновенный перенос на любую CRM.</li>
+              <li>Полностью готовый сервис для многих компаний.</li>
+              <li>Ответы без утверждения РОПом и актуальных фактов.</li>
+            </ul>
+          </article>
+          <article class="road-card wide">
+            <h3>Лучший рассказ</h3>
+            <p class="copy">Сильная идея проекта не в том, что он распознает звонки. Сильная идея в том, что он собирает реальную историю общения, понимает текущую сделку, помогает менеджеру ответить клиенту и безопасно улучшает CRM.</p>
+          </article>
+        </div>
+      `;
+    }
+
+    function renderDecisions() {
+      content.innerHTML = `
+        <div class="stage-head">
+          <div>
+            <h2>Решения, которые нужно принять</h2>
+            <div class="stage-meta">
+              <span class="badge status-next">следующий управленческий шаг</span>
+            </div>
+          </div>
+        </div>
+        <ol class="decision-list">
+          ${decisions.map((item) => `<li>${item}</li>`).join("")}
+        </ol>
+      `;
+    }
+
+    function renderContent() {
+      if (activeTab === "timeline") return renderTimeline();
+      if (activeTab === "future") return renderFuture();
+      if (activeTab === "demo") return renderDemo();
+      if (activeTab === "decisions") return renderDecisions();
+      return renderStage(currentStage());
+    }
+
+    function renderTabs() {
+      document.querySelectorAll("[data-tab]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === activeTab);
+      });
+    }
+
+    function renderAll() {
+      renderFilters();
+      renderStageList();
+      renderTabs();
+      renderContent();
+    }
+
+    document.querySelectorAll("[data-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        activeTab = button.dataset.tab;
+        renderAll();
+      });
+    });
+
+    document.querySelectorAll("[data-tab-target]").forEach((button) => {
+      button.addEventListener("click", () => {
+        activeTab = button.dataset.tabTarget;
+        renderAll();
+      });
+    });
+
+    search.addEventListener("input", renderAll);
+    renderAll();
+  </script>
+</body>
+</html>

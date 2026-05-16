@@ -222,6 +222,37 @@ def test_sales_call_with_single_amo_contact_id_stays_live_ready_even_if_tallanto
     assert manual_review == []
 
 
+def test_stale_source_next_step_is_blocked_before_amo_ready_export() -> None:
+    rows = [
+        {
+            "Дата и время звонка": "2026-03-30 10:00:00",
+            "Телефон клиента": "+79990000000",
+            "Менеджер": "Менеджер",
+            "Свежий период": "Да",
+            "Статус Analyze": "done",
+            "Содержательный звонок": "Да",
+            "Нужна ручная проверка": "Нет",
+            "Краткое резюме разговора": "Клиент интересуется летней школой по физике.",
+            "Тип звонка": "sales_call",
+            "Следующий шаг": "Перезвонить клиенту",
+            "Рекомендуемая дата следующего контакта": "2026-05-18",
+            "Приоритет лида": "cold",
+            "Вероятность продажи, %": "30",
+        }
+    ]
+
+    contacts, amo_rows, manual_review = builder._build_contact_rows(
+        call_rows=rows,
+        chains_by_phone={"+79990000000": {"amo_contact_ids": "123"}},
+        analysis_date=date(2026, 5, 16),
+    )
+
+    assert contacts[0]["Готово к записи в AMO"] == "Нет"
+    assert "stale_source_next_step" in contacts[0]["Причина статуса AMO"]
+    assert amo_rows == []
+    assert len(manual_review) == 1
+
+
 def test_contact_summary_does_not_embed_full_latest_summary() -> None:
     rows = [
         {

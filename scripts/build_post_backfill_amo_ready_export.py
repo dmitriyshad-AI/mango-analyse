@@ -1095,8 +1095,12 @@ def _build_contact_rows(
             contact["Причина статуса AMO"] = amo_reason
             contact["Нужна ручная проверка"] = "Да"
         if amo_ready == "Да":
+            quality_payload = {
+                **contact,
+                "Дата последнего свежего звонка": contact.get("Последний свежий звонок", ""),
+            }
             crm_text_findings = detect_crm_text_quality_risks(
-                contact,
+                quality_payload,
                 min_severity="P2",
                 analysis_date=analysis_date,
             )

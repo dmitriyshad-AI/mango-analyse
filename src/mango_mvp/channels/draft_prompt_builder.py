@@ -33,6 +33,12 @@ _ALLOWED_CONTEXT_KEYS = {
     "topic_id",
     "topic_name",
     "topic_confidence",
+    "confidence_theme",
+    "confidence_group",
+    "message_type",
+    "broad_group",
+    "alternative_themes",
+    "risk_level",
     "route",
     "rop_policy",
     "question_catalog_answer",
@@ -46,11 +52,20 @@ _ALLOWED_CONTEXT_KEYS = {
     "missing_facts",
     "facts_fresh",
     "schedule_fact_available",
+    "recent_messages",
+    "client_identity",
+    "amo_context",
+    "facts_context",
+    "context_quality",
+    "context_warnings",
+    "manager_checklist",
     "knowledge_snippets",
     "customer_context_summary",
     "crm_context_summary",
     "tallanto_context_summary",
+    "tallanto_context",
     "timeline_context_summary",
+    "timeline_context",
     "risk_flags",
 }
 
@@ -98,8 +113,14 @@ def build_draft_prompt(
         "- Любая отправка клиенту запрещена: safety_flags всегда должны включать manager_approval_required и no_auto_send.\n\n"
         "JSON-схема ответа:\n"
         "{\n"
+        '  "message_type": "question",\n'
+        '  "broad_group": "commercial",\n'
         '  "topic_id": "theme:013_schedule",\n'
+        '  "alternative_themes": ["theme:001_pricing"],\n'
+        '  "confidence_group": 0.9,\n'
+        '  "confidence_theme": 0.82,\n'
         '  "topic_confidence": 0.82,\n'
+        '  "risk_level": "medium",\n'
         '  "route": "draft_for_manager",\n'
         '  "draft_text": "Здравствуйте! ...",\n'
         '  "manager_checklist": ["Проверить филиал"],\n'
@@ -108,8 +129,16 @@ def build_draft_prompt(
         '  "crm_recommendations": [{"target":"AMO","action":"note_suggestion","text":"...","requires_manager_approval":true}],\n'
         '  "manager_followup_required": false,\n'
         '  "manager_followup_deadline": null,\n'
-        '  "safety_flags": ["manager_approval_required", "no_auto_send"]\n'
+        '  "safety_flags": ["manager_approval_required", "no_auto_send"],\n'
+        '  "context_used": ["recent_messages", "rop_policy"],\n'
+        '  "context_warnings": []\n'
         "}\n\n"
+        "Тип сообщения выбирай честно: question, non_question, context_update, wait_for_more или manager_only. "
+        "Если клиент прислал обрывок, уточнение, благодарность или продолжение без самостоятельного вопроса, "
+        "не пытайся насильно выбирать тему: используй подходящий message_type и маршрут manager_only.\n"
+        "Если в сообщении несколько тем, укажи главную в topic_id, а остальные в alternative_themes.\n"
+        "Для возврата, оплаты, материнского капитала, налогового вычета, документов, скидок, жалоб "
+        "и юридических вопросов не обещай решение, скидку, возврат, место в группе или запись в CRM.\n\n"
         "Правило РОПа и короткий проверенный контекст:\n"
         f"{json.dumps(context_payload, ensure_ascii=False, indent=2, sort_keys=True)}\n\n"
         "<client_message>\n"
@@ -147,10 +176,18 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
     _copy_clean_list(compact, "required_fact_keys", source.get("required_fact_keys"), max_items=8, max_chars=80)
     _copy_clean_list(compact, "missing_facts", source.get("missing_facts"), max_items=8, max_chars=160)
     _copy_clean_list(compact, "risk_flags", source.get("risk_flags"), max_items=8, max_chars=120)
+    _copy_clean_list(compact, "recent_messages", source.get("recent_messages"), max_items=10, max_chars=500)
+    _copy_clean_list(compact, "alternative_themes", source.get("alternative_themes"), max_items=5, max_chars=120)
+    _copy_clean_list(compact, "context_warnings", source.get("context_warnings"), max_items=10, max_chars=120)
+    _copy_clean_list(compact, "manager_checklist", source.get("manager_checklist"), max_items=10, max_chars=240)
 
     confirmed = _compact_mapping(source.get("confirmed_facts"), max_items=10, max_chars=300)
     if confirmed:
         compact["confirmed_facts"] = confirmed
+    for key in ("client_identity", "amo_context", "tallanto_context", "timeline_context", "facts_context", "context_quality"):
+        value = _compact_mapping(source.get(key), max_items=14, max_chars=300)
+        if value:
+            compact[key] = value
     snippets = _clean_text_list(source.get("knowledge_snippets"), max_items=_MAX_CHUNKS, max_chars=_MAX_CHUNK_TEXT)
     if snippets:
         compact["knowledge_snippets"] = snippets

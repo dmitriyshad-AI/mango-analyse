@@ -1,0 +1,13 @@
+scripts/telegram_manager_draft_pilot.py
+src/mango_mvp/channels/__init__.py
+src/mango_mvp/channels/draft_prompt_builder.py
+src/mango_mvp/channels/pilot_context.py
+src/mango_mvp/channels/preview_service.py
+src/mango_mvp/channels/subscription_llm.py
+src/mango_mvp/channels/telegram_manager_inbox.py
+tests/test_draft_prompt_builder.py
+tests/test_pilot_context.py
+tests/test_subscription_llm_draft_provider.py
+tests/test_telegram_bot_polling.py
+tests/test_telegram_manager_draft_pilot_script.py
+tests/test_telegram_manager_inbox.py

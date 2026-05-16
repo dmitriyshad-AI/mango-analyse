@@ -10,6 +10,9 @@ from mango_mvp.channels.telegram_bot_polling import (
     TelegramBotPollingRuntime,
     telegram_bot_polling_safety_contract,
 )
+from mango_mvp.channels.pilot_context import build_pilot_context
+from mango_mvp.channels.preview_service import LlmChannelPreviewService
+from mango_mvp.channels.subscription_llm import FakeDraftProvider
 
 
 START = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
@@ -129,3 +132,42 @@ def test_polling_safety_contract_blocks_live_side_effects() -> None:
     assert safety["write_crm"] is False
     assert safety["write_tallanto"] is False
     assert safety["run_asr"] is False
+
+
+def test_debounce_flush_can_use_contextual_llm_preview_service() -> None:
+    clock = MutableClock()
+    provider = FakeDraftProvider(
+        {
+            "message_type": "question",
+            "broad_group": "commercial",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.88,
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Уточните, пожалуйста, класс и формат обучения.",
+            "safety_flags": ["manager_approval_required", "no_auto_send"],
+            "context_used": ["recent_messages", "rop_policy"],
+        }
+    )
+    preview_service = LlmChannelPreviewService(
+        draft_provider=provider,
+        context_builder=lambda message: build_pilot_context(
+            message,
+            recent_messages=("Здравствуйте", message.text),
+            client_identity={"channel_user_id": message.channel_user_id},
+            rop_policy={"bot_permission": "draft_for_manager"},
+        ).to_prompt_context(),
+    )
+    runtime = TelegramBotPollingRuntime(config=enabled_config(), clock=clock, preview_service=preview_service)
+
+    runtime.process_update(tg_update(1, 1, "Какая цена?"))
+    clock.advance(8)
+    drafts = runtime.flush_due()
+
+    assert len(drafts) == 1
+    preview = drafts[0].preview
+    assert preview.reply.text.startswith("Здравствуйте")
+    assert preview.reply.metadata["preview_mode"] == "subscription_llm_draft"
+    assert preview.reply.metadata["subscription_llm_result"]["message_type"] == "question"
+    assert preview.metadata["context_quality"]["customer_identity_found"] is True
+    assert "llm_used" in preview.reply.safety_flags
+    assert provider.prompts and "context_quality" in provider.prompts[0]

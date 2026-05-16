@@ -9,6 +9,7 @@ from mango_mvp.channels.draft_prompt_builder import (
     build_safe_schedule_payload,
     route_from_rop_policy,
 )
+from mango_mvp.channels.pilot_context import build_pilot_context
 
 
 def test_prompt_contains_rop_policy_and_forbids() -> None:
@@ -56,3 +57,23 @@ def test_safe_schedule_template_requires_manager_followup() -> None:
     assert payload["manager_followup_required"] is True
     assert payload["manager_followup_deadline"] == "2026-05-17T18:00:00+00:00"
 
+
+def test_prompt_requests_contextual_classification_fields() -> None:
+    context = build_pilot_context(
+        "Какая цена?",
+        recent_messages=("Здравствуйте", "Нужна подготовка к ЕГЭ"),
+        client_identity={"phone": "+79000000000"},
+        amo_context={"deal_status": "new_lead"},
+        rop_policy={"bot_permission": "draft_for_manager"},
+        facts_context={"missing": True},
+    ).to_prompt_context()
+
+    prompt = build_draft_prompt("Какая цена?", context=context)
+
+    assert '"message_type": "question"' in prompt
+    assert '"broad_group": "commercial"' in prompt
+    assert '"alternative_themes"' in prompt
+    assert '"confidence_theme"' in prompt
+    assert "recent_messages" in prompt
+    assert "context_quality" in prompt
+    assert "Если в сообщении несколько тем" in prompt

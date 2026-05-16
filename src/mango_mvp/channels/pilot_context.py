@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Sequence
+
+from mango_mvp.channels.contracts import ChannelMessage
+
+
+PILOT_CONTEXT_SCHEMA_VERSION = "telegram_pilot_context_v1_2026_05_17"
+
+
+@dataclass(frozen=True)
+class PilotContextQuality:
+    customer_identity_found: bool = False
+    phone_found: bool = False
+    amo_context_found: bool = False
+    tallanto_context_found: bool = False
+    timeline_context_found: bool = False
+    amo_tallanto_conflict: bool = False
+    family_phone: bool = False
+    multiple_students: bool = False
+    multiple_deals: bool = False
+    facts_stale: bool = False
+    facts_missing: bool = False
+
+    @property
+    def context_found_rate(self) -> float:
+        checks = (
+            self.customer_identity_found,
+            self.amo_context_found,
+            self.tallanto_context_found,
+            self.timeline_context_found,
+        )
+        return round(sum(1 for item in checks if item) / len(checks), 3)
+
+    @property
+    def requires_manager_review(self) -> bool:
+        return any(
+            (
+                self.amo_tallanto_conflict,
+                self.family_phone,
+                self.multiple_students,
+                self.multiple_deals,
+                self.facts_stale,
+                self.facts_missing,
+            )
+        )
+
+    def to_json_dict(self) -> Mapping[str, Any]:
+        return {
+            "schema_version": PILOT_CONTEXT_SCHEMA_VERSION,
+            "customer_identity_found": self.customer_identity_found,
+            "phone_found": self.phone_found,
+            "amo_context_found": self.amo_context_found,
+            "tallanto_context_found": self.tallanto_context_found,
+            "timeline_context_found": self.timeline_context_found,
+            "amo_tallanto_conflict": self.amo_tallanto_conflict,
+            "family_phone": self.family_phone,
+            "multiple_students": self.multiple_students,
+            "multiple_deals": self.multiple_deals,
+            "facts_stale": self.facts_stale,
+            "facts_missing": self.facts_missing,
+            "context_found_rate": self.context_found_rate,
+            "requires_manager_review": self.requires_manager_review,
+        }
+
+
+@dataclass(frozen=True)
+class PilotContext:
+    current_message: str
+    recent_messages: Sequence[str] = field(default_factory=tuple)
+    client_identity: Mapping[str, Any] = field(default_factory=dict)
+    customer_summary: str = ""
+    amo_context: Mapping[str, Any] = field(default_factory=dict)
+    tallanto_context: Mapping[str, Any] = field(default_factory=dict)
+    timeline_context: Mapping[str, Any] = field(default_factory=dict)
+    rop_policy: Mapping[str, Any] = field(default_factory=dict)
+    facts_context: Mapping[str, Any] = field(default_factory=dict)
+    risk_flags: Sequence[str] = field(default_factory=tuple)
+    context_quality: PilotContextQuality = field(default_factory=PilotContextQuality)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "current_message", clean_text(self.current_message, max_chars=1200))
+        object.__setattr__(
+            self,
+            "recent_messages",
+            tuple(clean_text(item, max_chars=500) for item in self.recent_messages if clean_text(item, max_chars=500)),
+        )
+        object.__setattr__(self, "client_identity", compact_mapping(self.client_identity, max_items=12, max_chars=200))
+        object.__setattr__(self, "customer_summary", clean_text(self.customer_summary, max_chars=900))
+        object.__setattr__(self, "amo_context", compact_mapping(self.amo_context, max_items=16, max_chars=300))
+        object.__setattr__(self, "tallanto_context", compact_mapping(self.tallanto_context, max_items=16, max_chars=300))
+        object.__setattr__(self, "timeline_context", compact_mapping(self.timeline_context, max_items=16, max_chars=300))
+        object.__setattr__(self, "rop_policy", compact_mapping(self.rop_policy, max_items=16, max_chars=300))
+        object.__setattr__(self, "facts_context", compact_mapping(self.facts_context, max_items=16, max_chars=300))
+        object.__setattr__(self, "risk_flags", tuple(dedupe(clean_text(item, max_chars=120) for item in self.risk_flags)))
+
+    def to_prompt_context(self) -> Mapping[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": PILOT_CONTEXT_SCHEMA_VERSION,
+            "recent_messages": list(self.recent_messages),
+            "client_identity": dict(self.client_identity),
+            "customer_context_summary": self.customer_summary,
+            "amo_context": dict(self.amo_context),
+            "tallanto_context": dict(self.tallanto_context),
+            "timeline_context": dict(self.timeline_context),
+            "rop_policy": dict(self.rop_policy),
+            "facts_context": dict(self.facts_context),
+            "risk_flags": list(self.risk_flags),
+            "context_quality": self.context_quality.to_json_dict(),
+            "context_warnings": context_warnings(self.context_quality),
+            "pilot_context_safety": pilot_context_safety_contract(),
+        }
+        return {key: value for key, value in payload.items() if value not in ({}, [], "", None)}
+
+    def to_json_dict(self) -> Mapping[str, Any]:
+        return {
+            "schema_version": PILOT_CONTEXT_SCHEMA_VERSION,
+            "current_message": self.current_message,
+            **dict(self.to_prompt_context()),
+        }
+
+
+def build_pilot_context(
+    message: ChannelMessage | str,
+    *,
+    recent_messages: Sequence[str] = (),
+    client_identity: Mapping[str, Any] | None = None,
+    customer_summary: str = "",
+    amo_context: Mapping[str, Any] | None = None,
+    tallanto_context: Mapping[str, Any] | None = None,
+    timeline_context: Mapping[str, Any] | None = None,
+    rop_policy: Mapping[str, Any] | None = None,
+    facts_context: Mapping[str, Any] | None = None,
+    risk_flags: Sequence[str] = (),
+) -> PilotContext:
+    current_message = message.text if isinstance(message, ChannelMessage) else str(message or "")
+    client = dict(client_identity or {})
+    if isinstance(message, ChannelMessage):
+        client.setdefault("channel", message.channel)
+        client.setdefault("channel_thread_id", message.channel_thread_id)
+        client.setdefault("channel_user_id", message.channel_user_id)
+    amo = dict(amo_context or {})
+    tallanto = dict(tallanto_context or {})
+    timeline = dict(timeline_context or {})
+    facts = dict(facts_context or {})
+    quality = PilotContextQuality(
+        customer_identity_found=bool(client.get("phone") or client.get("channel_user_id") or client.get("customer_id")),
+        phone_found=bool(client.get("phone")),
+        amo_context_found=bool(amo),
+        tallanto_context_found=bool(tallanto),
+        timeline_context_found=bool(timeline.get("found") or timeline.get("summary")),
+        amo_tallanto_conflict=truthy(amo.get("tallanto_conflict") or tallanto.get("amo_tallanto_conflict")),
+        family_phone=truthy(amo.get("family_phone") or tallanto.get("family_phone")),
+        multiple_students=int_or_zero(tallanto.get("students_count") or tallanto.get("student_count")) > 1,
+        multiple_deals=int_or_zero(amo.get("deals_count") or amo.get("deal_count")) > 1,
+        facts_stale=truthy(facts.get("stale") or facts.get("facts_stale")),
+        facts_missing=truthy(facts.get("missing") or facts.get("facts_missing")),
+    )
+    merged_risks = list(risk_flags)
+    merged_risks.extend(context_warnings(quality))
+    return PilotContext(
+        current_message=current_message,
+        recent_messages=recent_messages,
+        client_identity=client,
+        customer_summary=customer_summary,
+        amo_context=amo,
+        tallanto_context=tallanto,
+        timeline_context=timeline,
+        rop_policy=rop_policy or {},
+        facts_context=facts,
+        risk_flags=tuple(merged_risks),
+        context_quality=quality,
+    )
+
+
+def context_warnings(quality: PilotContextQuality) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if quality.amo_tallanto_conflict:
+        warnings.append("amo_tallanto_conflict")
+    if quality.family_phone:
+        warnings.append("family_phone")
+    if quality.multiple_students:
+        warnings.append("multiple_students")
+    if quality.multiple_deals:
+        warnings.append("multiple_deals")
+    if quality.facts_stale:
+        warnings.append("facts_stale")
+    if quality.facts_missing:
+        warnings.append("facts_missing")
+    return tuple(warnings)
+
+
+def pilot_context_safety_contract() -> Mapping[str, bool]:
+    return {
+        "read_amo": True,
+        "read_tallanto": True,
+        "read_customer_timeline": True,
+        "write_amo": False,
+        "write_crm": False,
+        "write_tallanto": False,
+        "write_customer_timeline_db": False,
+        "send_client_message": False,
+        "run_asr": False,
+        "run_ra": False,
+        "requires_manager_approval": True,
+    }
+
+
+def compact_mapping(value: Mapping[str, Any] | None, *, max_items: int, max_chars: int) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        clean_key = clean_text(key, max_chars=80)
+        if not clean_key:
+            continue
+        if isinstance(item, Mapping):
+            result[clean_key] = compact_mapping(item, max_items=8, max_chars=max_chars)
+        elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
+            result[clean_key] = [clean_text(part, max_chars=max_chars) for part in item if clean_text(part, max_chars=max_chars)][:8]
+        elif isinstance(item, (str, int, float, bool)) or item is None:
+            result[clean_key] = clean_text(item, max_chars=max_chars) if isinstance(item, str) else item
+        if len(result) >= max_items:
+            break
+    return result
+
+
+def clean_text(value: Any, *, max_chars: int) -> str:
+    text = " ".join(str(value or "").strip().split())
+    return text[:max_chars]
+
+
+def dedupe(values: Sequence[str]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return tuple(result)
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "истина", "есть"}
+
+
+def int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0

@@ -76,8 +76,16 @@ from mango_mvp.channels.feedback import (
 from mango_mvp.channels.preview_service import (
     ChannelDraftPreview,
     ChannelPreviewService,
+    LlmChannelPreviewService,
     build_channel_draft_preview,
     stable_draft_id,
+)
+from mango_mvp.channels.pilot_context import (
+    PILOT_CONTEXT_SCHEMA_VERSION,
+    PilotContext,
+    PilotContextQuality,
+    build_pilot_context,
+    pilot_context_safety_contract,
 )
 from mango_mvp.channels.draft_prompt_builder import (
     DRAFT_PROMPT_SCHEMA_VERSION,
@@ -411,6 +419,7 @@ __all__ = [
     "WebChatReadOnlyAdapter",
     "ChannelDraftPreview",
     "ChannelPreviewService",
+    "LlmChannelPreviewService",
     "build_and_store_channel_draft_preview",
     "build_channel_demo_workspace",
     "build_action_feedback_event",
@@ -485,6 +494,9 @@ __all__ = [
     "DraftGenerationResult",
     "DraftPromptInput",
     "IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES",
+    "PILOT_CONTEXT_SCHEMA_VERSION",
+    "PilotContext",
+    "PilotContextQuality",
     "SAFE_SCHEDULE_TEMPLATE",
     "SAFE_FALLBACK_DRAFT_TEXT",
     "SAFE_SCHEDULE_TEMPLATE_TEXT",
@@ -498,6 +510,7 @@ __all__ = [
     "build_codex_exec_command",
     "build_codex_exec_env",
     "build_draft_prompt",
+    "build_pilot_context",
     "build_prompt_context",
     "build_safe_schedule_payload",
     "contains_bot_identity_disclosure",
@@ -507,6 +520,7 @@ __all__ = [
     "guard_identity_disclosure",
     "normalize_subscription_draft_payload",
     "parse_llm_json",
+    "pilot_context_safety_contract",
     "route_from_rop_policy",
     "safe_fallback_draft",
     "safe_schedule_template",

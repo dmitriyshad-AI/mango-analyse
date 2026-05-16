@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from scripts.telegram_manager_draft_pilot import run_dry_run, run_long_polling
+from scripts.telegram_manager_draft_pilot import build_preview_service_from_env, run_dry_run, run_long_polling
 
 
 def test_telegram_manager_draft_pilot_dry_run_builds_manager_payload(capsys) -> None:
@@ -24,3 +24,13 @@ def test_telegram_manager_draft_pilot_dry_run_builds_manager_payload(capsys) -> 
 def test_telegram_manager_draft_pilot_long_polling_requires_explicit_confirmation() -> None:
     with pytest.raises(SystemExit, match="Long polling не запущен"):
         run_long_polling("")
+
+
+def test_preview_service_from_env_uses_llm_when_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_PILOT_LLM_ENABLED", "1")
+    monkeypatch.setenv("TELEGRAM_PILOT_CODEX_REASONING_EFFORT", "xhigh")
+
+    service = build_preview_service_from_env()
+
+    assert service is not None
+    assert service.draft_provider.reasoning_effort == "xhigh"

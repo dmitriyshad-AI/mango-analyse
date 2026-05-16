@@ -7,6 +7,9 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.pilot_context import build_pilot_context
+from mango_mvp.channels.preview_service import LlmChannelPreviewService
+from mango_mvp.channels.subscription_llm import SubscriptionLlmDraftProvider
 from mango_mvp.channels.telegram_bot_polling import (
     TelegramBotDraftResult,
     TelegramBotPollingConfig,
@@ -22,6 +25,9 @@ from mango_mvp.channels.telegram_manager_inbox import (
 
 
 LONG_POLLING_CONFIRMATION = "YES_MANAGER_DRAFT_ONLY"
+TELEGRAM_PILOT_LLM_ENABLED_ENV = "TELEGRAM_PILOT_LLM_ENABLED"
+TELEGRAM_PILOT_CODEX_MODEL_ENV = "TELEGRAM_PILOT_CODEX_MODEL"
+TELEGRAM_PILOT_CODEX_REASONING_ENV = "TELEGRAM_PILOT_CODEX_REASONING_EFFORT"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -118,9 +124,34 @@ def run_long_polling(confirmation: str) -> int:
                 reply_markup=build_live_reply_markup(delivery.message.buttons),
             )
 
-    runtime = TelegramBotPollingRuntime(config=config)
+    runtime = TelegramBotPollingRuntime(config=config, preview_service=build_preview_service_from_env())
     runtime.start_long_polling(on_drafts_ready=deliver_manager_drafts)
     return 0
+
+
+def build_preview_service_from_env() -> Any:
+    if os.environ.get(TELEGRAM_PILOT_LLM_ENABLED_ENV) not in {"1", "true", "TRUE", "yes", "YES"}:
+        return None
+    provider = SubscriptionLlmDraftProvider(
+        model=os.environ.get(TELEGRAM_PILOT_CODEX_MODEL_ENV, "gpt-5.5"),
+        reasoning_effort=os.environ.get(TELEGRAM_PILOT_CODEX_REASONING_ENV, "xhigh"),
+        timeout_sec=120,
+        cache_dir=".codex_local/telegram_pilot/llm_cache",
+    )
+    return LlmChannelPreviewService(
+        draft_provider=provider,
+        context_builder=lambda message: build_pilot_context(
+            message,
+            recent_messages=(message.text,),
+            client_identity={
+                "channel": message.channel,
+                "channel_thread_id": message.channel_thread_id,
+                "channel_user_id": message.channel_user_id,
+            },
+            rop_policy={"bot_permission": "draft_for_manager"},
+            risk_flags=("manager_approval_required", "no_auto_send"),
+        ).to_prompt_context(),
+    )
 
 
 def build_manager_bot(token: str | None) -> Any:

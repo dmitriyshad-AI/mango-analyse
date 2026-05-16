@@ -24,7 +24,37 @@ DEFAULT_CODEX_REASONING_EFFORT = "medium"
 SAFE_FALLBACK_DRAFT_TEXT = "Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
 
 ALLOWED_ROUTES = {"draft_for_manager", "manager_only", "blocked"}
+ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for_more", "manager_only"}
 BASE_SAFETY_FLAGS = ("manager_approval_required", "no_auto_send")
+HIGH_RISK_THEME_IDS = {
+    "theme:003_payment_status",
+    "theme:005_discounts",
+    "theme:007_matkap_payment",
+    "theme:008_tax_deduction",
+    "theme:009_refund",
+    "theme:012_certificates",
+    "theme:019b_negative_feedback",
+    "theme:029_legal_question",
+}
+HIGH_RISK_MARKERS = (
+    "refund",
+    "matkap",
+    "tax",
+    "legal",
+    "negative",
+    "payment_status",
+    "documents",
+    "discount",
+    "возврат",
+    "маткап",
+    "налог",
+    "юрид",
+    "жалоб",
+    "подтверждение оплаты",
+    "статус оплаты",
+    "документ",
+    "скид",
+)
 _RETRYABLE_MARKERS = (
     "no last agent message",
     "temporarily unavailable",
@@ -45,8 +75,13 @@ _Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 @dataclass(frozen=True)
 class SubscriptionDraftResult:
+    message_type: str = "question"
+    broad_group: str = ""
     topic_id: str = "service:S2_unclear"
     topic_confidence: float = 0.0
+    confidence_group: float = 0.0
+    alternative_themes: tuple[str, ...] = field(default_factory=tuple)
+    risk_level: str = "unknown"
     route: str = "manager_only"
     draft_text: str = SAFE_FALLBACK_DRAFT_TEXT
     manager_checklist: tuple[str, ...] = field(default_factory=tuple)
@@ -54,6 +89,8 @@ class SubscriptionDraftResult:
     forbidden_promises_detected: tuple[str, ...] = field(default_factory=tuple)
     crm_recommendations: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     safety_flags: tuple[str, ...] = BASE_SAFETY_FLAGS
+    context_used: tuple[str, ...] = field(default_factory=tuple)
+    context_warnings: tuple[str, ...] = field(default_factory=tuple)
     manager_followup_required: bool = False
     manager_followup_deadline: Optional[str] = None
     provider: str = "codex_exec"
@@ -67,11 +104,19 @@ class SubscriptionDraftResult:
         if route not in ALLOWED_ROUTES:
             route = "manager_only"
         text = str(self.draft_text or "").strip() or SAFE_FALLBACK_DRAFT_TEXT
+        message_type = str(self.message_type or "question").strip()
+        if message_type not in ALLOWED_MESSAGE_TYPES:
+            message_type = "manager_only"
         flags = tuple(dict.fromkeys([*BASE_SAFETY_FLAGS, *(_clean_list(self.safety_flags, max_items=16, max_chars=80))]))
+        object.__setattr__(self, "message_type", message_type)
+        object.__setattr__(self, "broad_group", str(self.broad_group or "").strip()[:80])
         object.__setattr__(self, "route", route)
         object.__setattr__(self, "draft_text", text)
         object.__setattr__(self, "topic_id", str(self.topic_id or "service:S2_unclear").strip() or "service:S2_unclear")
         object.__setattr__(self, "topic_confidence", _clamp_float(self.topic_confidence))
+        object.__setattr__(self, "confidence_group", _clamp_float(self.confidence_group))
+        object.__setattr__(self, "alternative_themes", tuple(_clean_list(self.alternative_themes, max_items=5, max_chars=120)))
+        object.__setattr__(self, "risk_level", str(self.risk_level or "unknown").strip()[:80] or "unknown")
         object.__setattr__(self, "manager_checklist", tuple(_clean_list(self.manager_checklist, max_items=12, max_chars=240)))
         object.__setattr__(self, "missing_facts", tuple(_clean_list(self.missing_facts, max_items=12, max_chars=160)))
         object.__setattr__(
@@ -81,14 +126,22 @@ class SubscriptionDraftResult:
         )
         object.__setattr__(self, "crm_recommendations", tuple(_clean_crm_recommendations(self.crm_recommendations)))
         object.__setattr__(self, "safety_flags", flags)
+        object.__setattr__(self, "context_used", tuple(_clean_list(self.context_used, max_items=12, max_chars=100)))
+        object.__setattr__(self, "context_warnings", tuple(_clean_list(self.context_warnings, max_items=12, max_chars=120)))
         object.__setattr__(self, "metadata", dict(self.metadata))
 
     def to_json_dict(self, *, include_raw_response: bool = False) -> Mapping[str, Any]:
         payload = {
             "schema_version": self.schema_version,
             "provider": self.provider,
+            "message_type": self.message_type,
+            "broad_group": self.broad_group,
             "topic_id": self.topic_id,
             "topic_confidence": self.topic_confidence,
+            "confidence_theme": self.topic_confidence,
+            "confidence_group": self.confidence_group,
+            "alternative_themes": list(self.alternative_themes),
+            "risk_level": self.risk_level,
             "route": self.route,
             "draft_text": self.draft_text,
             "manager_checklist": list(self.manager_checklist),
@@ -98,6 +151,8 @@ class SubscriptionDraftResult:
             "manager_followup_required": self.manager_followup_required,
             "manager_followup_deadline": self.manager_followup_deadline,
             "safety_flags": list(self.safety_flags),
+            "context_used": list(self.context_used),
+            "context_warnings": list(self.context_warnings),
             "error": self.error,
             "metadata": dict(self.metadata),
         }
@@ -331,8 +386,13 @@ def normalize_subscription_draft_payload(payload: Mapping[str, Any] | Subscripti
             schedule.get("manager_followup_deadline") or schedule.get("deadline_at")
         )
     result = SubscriptionDraftResult(
+        message_type=str(payload.get("message_type") or "question"),
+        broad_group=str(payload.get("broad_group") or ""),
         topic_id=str(payload.get("topic_id") or "service:S2_unclear"),
-        topic_confidence=_clamp_float(payload.get("topic_confidence")),
+        topic_confidence=_clamp_float(payload.get("confidence_theme", payload.get("topic_confidence"))),
+        confidence_group=_clamp_float(payload.get("confidence_group")),
+        alternative_themes=tuple(_clean_list(payload.get("alternative_themes"), max_items=5, max_chars=120)),
+        risk_level=str(payload.get("risk_level") or "unknown"),
         route=str(payload.get("route") or "manager_only"),
         draft_text=str(payload.get("draft_text") or SAFE_FALLBACK_DRAFT_TEXT),
         manager_checklist=tuple(_clean_list(payload.get("manager_checklist"), max_items=12, max_chars=240)),
@@ -340,16 +400,19 @@ def normalize_subscription_draft_payload(payload: Mapping[str, Any] | Subscripti
         forbidden_promises_detected=tuple(_clean_list(payload.get("forbidden_promises_detected"), max_items=12, max_chars=160)),
         crm_recommendations=tuple(_clean_crm_recommendations(payload.get("crm_recommendations"))),
         safety_flags=tuple(_clean_list(payload.get("safety_flags"), max_items=16, max_chars=80)),
+        context_used=tuple(_clean_list(payload.get("context_used"), max_items=12, max_chars=100)),
+        context_warnings=tuple(_clean_list(payload.get("context_warnings"), max_items=12, max_chars=120)),
         manager_followup_required=manager_followup_required,
         manager_followup_deadline=manager_followup_deadline,
         raw_response=raw_response,
     )
-    return guard_identity_disclosure(result)
+    return guard_identity_disclosure(apply_subscription_policy_guards(result))
 
 
 def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = None) -> SubscriptionDraftResult:
     extra_flags = ("codex_exec_timeout",) if reason == "timeout" else ()
     return SubscriptionDraftResult(
+        message_type="manager_only",
         route="manager_only",
         draft_text=SAFE_FALLBACK_DRAFT_TEXT,
         manager_checklist=("Проверить вопрос вручную.",),
@@ -408,6 +471,57 @@ def guard_identity_disclosure(result: SubscriptionDraftResult) -> SubscriptionDr
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, "identity_disclosure_guarded", "bot_identity_disclosure", "llm_fallback"])),
         error=result.error or "identity_disclosure_guarded",
     )
+
+
+def apply_subscription_policy_guards(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    route = result.route
+    flags = list(result.safety_flags)
+    manager_checklist = list(result.manager_checklist)
+    metadata = dict(result.metadata)
+
+    if result.topic_confidence < 0.70:
+        route = "manager_only"
+        flags.append("low_confidence_manager_only")
+        manager_checklist.append("Модель не уверена в теме: проверить вручную.")
+        metadata["forced_route_low_confidence"] = True
+
+    if is_high_risk_result(result):
+        route = "manager_only"
+        flags.append("high_risk_manager_only")
+        manager_checklist.append("Высокорисковая тема: не отправлять клиенту без ручной проверки.")
+        metadata["forced_route_high_risk"] = True
+
+    if result.message_type in {"non_question", "context_update", "wait_for_more", "manager_only"}:
+        route = "manager_only"
+        flags.append(f"message_type_{result.message_type}")
+        metadata["forced_route_message_type"] = result.message_type
+
+    if route == result.route and tuple(flags) == result.safety_flags and tuple(manager_checklist) == result.manager_checklist:
+        return result
+    return replace(
+        result,
+        route=route,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=tuple(dict.fromkeys(manager_checklist)),
+        metadata=metadata,
+    )
+
+
+def is_high_risk_result(result: SubscriptionDraftResult) -> bool:
+    topic = result.topic_id.strip()
+    if topic in HIGH_RISK_THEME_IDS:
+        return True
+    haystack = " ".join(
+        [
+            topic,
+            result.broad_group,
+            result.risk_level,
+            *result.alternative_themes,
+            *result.safety_flags,
+            *result.context_warnings,
+        ]
+    ).casefold()
+    return any(marker.casefold() in haystack for marker in HIGH_RISK_MARKERS)
 
 
 DraftGenerationResult = SubscriptionDraftResult

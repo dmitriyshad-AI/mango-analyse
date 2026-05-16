@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from mango_mvp.channels import (
@@ -78,6 +79,8 @@ def client_update() -> dict:
 def manager_context() -> dict:
     return {
         "found_topic": "Стоимость обучения и порядок оплаты",
+        "message_type": "question",
+        "context_quality": {"customer_identity_found": True, "family_phone": False},
         "rop_decision": (
             "Можно отвечать только по утвержденным ценам, без обещаний скидки."
         ),
@@ -146,6 +149,8 @@ def test_manager_draft_message_contains_required_sections() -> None:
         "Откуда пришел клиент",
         "Текст клиента",
         "Найденная тема",
+        "Тип сообщения",
+        "Качество контекста",
         "Решение РОПа",
         "Что бот обязан спросить",
         "Черновик ответа",
@@ -161,6 +166,32 @@ def test_manager_draft_message_contains_required_sections() -> None:
     assert delivery.rendered_payload is not None
     assert delivery.rendered_payload["telegram_api_called"] is False
     assert delivery.rendered_payload["client_send_enabled"] is False
+
+
+def test_manager_draft_message_uses_preview_metadata_context_quality() -> None:
+    service, _, _ = service_with_allowed_manager()
+    preview, _ = stored_telegram_draft()
+    preview = replace(
+        preview,
+        metadata={
+            **dict(preview.metadata),
+            "message_type": "question",
+            "context_quality": {"customer_identity_found": True, "family_phone": True},
+        },
+    )
+
+    delivery = service.build_delivery(
+        preview,
+        context={
+            "rop_decision": "Пилотный режим: черновик только менеджеру.",
+        },
+    )
+
+    assert delivery.message is not None
+    assert "Тип сообщения" in delivery.message.text
+    assert "question" in delivery.message.text
+    assert "Качество контекста" in delivery.message.text
+    assert "family_phone" in delivery.message.text
 
 
 def test_unauthorized_manager_chat_blocked() -> None:

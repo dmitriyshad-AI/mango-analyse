@@ -1,0 +1,87 @@
+Focused tests:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
+  tests/test_pilot_context.py \
+  tests/test_draft_prompt_builder.py \
+  tests/test_subscription_llm_draft_provider.py \
+  tests/test_telegram_bot_polling.py \
+  tests/test_telegram_manager_inbox.py \
+  tests/test_telegram_manager_draft_pilot_script.py
+
+Result:
+35 passed in 0.36s
+
+Extended related tests:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
+  tests/test_customer_context_for_draft.py \
+  tests/test_question_catalog_preview_context.py \
+  tests/test_channels_conversation_orchestrator.py \
+  tests/test_telegram_pilot_metrics.py \
+  tests/test_telegram_pilot_store.py \
+  tests/test_telegram_pilot_eval_pack.py
+
+Result:
+18 passed in 0.59s
+
+Dry-run smoke:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/telegram_manager_draft_pilot.py --dry-run --manager-chat-id 700100
+
+Extracted result:
+- mode: dry_run
+- inbound_status: accepted
+- deliveries: 1
+- delivery_status: ready_for_manager_chat
+- client_send_enabled: False
+- telegram_api_called: False
+- bot_client_send: False
+
+Collect-only:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+
+Result:
+1397 tests collected in 2.77s
+
+Compile check:
+
+python3 -m compileall -q \
+  src/mango_mvp/channels/pilot_context.py \
+  src/mango_mvp/channels/draft_prompt_builder.py \
+  src/mango_mvp/channels/subscription_llm.py \
+  src/mango_mvp/channels/preview_service.py \
+  src/mango_mvp/channels/telegram_manager_inbox.py \
+  scripts/telegram_manager_draft_pilot.py
+
+Result:
+passed
+
+Diff whitespace check:
+
+git diff --check
+
+Result:
+passed
+
+Historical Telegram eval pack smoke:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_telegram_pilot_eval_pack.py \
+  --messages-jsonl "telegram_exports (2)/local_vm_2024-04-01/messages.jsonl" \
+  --out-dir .codex_local/telegram_pilot/eval_packs/20260517_contextual_layer_smoke \
+  --seed 20260517 \
+  --sample-size 20 \
+  --run-count 1 \
+  --min-messages 4
+
+Result:
+- eligible_dialogs: 707
+- dialogs_selected_total: 20
+- messages_selected_total: 219
+- private_manual_review_path: .codex_local/telegram_pilot/eval_packs/20260517_contextual_layer_smoke/private_manual_review.csv
+- public_summary_path: .codex_local/telegram_pilot/eval_packs/20260517_contextual_layer_smoke/public_summary.json
+- network_calls: false
+- live_send: false
+- write_crm: false
+- write_tallanto: false
+- write_stable_runtime: false

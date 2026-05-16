@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Protocol
 
 from mango_mvp.channels.actions import build_channel_recommended_actions
 from mango_mvp.channels.contracts import (
@@ -12,6 +12,16 @@ from mango_mvp.channels.contracts import (
     ChannelSession,
     stable_digest,
 )
+
+
+class DraftProvider(Protocol):
+    def build_draft(
+        self,
+        client_message: str,
+        *,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> Any:
+        """Return an object compatible with SubscriptionDraftResult."""
 
 
 CHANNEL_PREVIEW_SCHEMA_VERSION = "channel_preview_v1"
@@ -133,6 +143,103 @@ class ChannelPreviewService:
                 "context_keys": tuple(sorted(str(key) for key in context_payload.keys())),
                 "preview_mode": "deterministic_safe_draft",
                 "question_catalog_context_used": catalog_context_used,
+            },
+        )
+
+
+class LlmChannelPreviewService(ChannelPreviewService):
+    def __init__(
+        self,
+        *,
+        draft_provider: DraftProvider,
+        context_builder: Optional[Callable[[ChannelMessage], Mapping[str, Any]]] = None,
+    ) -> None:
+        super().__init__()
+        self.draft_provider = draft_provider
+        self.context_builder = context_builder or (lambda _message: {})
+
+    def build_preview(
+        self,
+        message: ChannelMessage,
+        *,
+        session: Optional[ChannelSession] = None,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> ChannelDraftPreview:
+        if message.direction != ChannelDirection.INBOUND:
+            raise ValueError("channel draft preview supports inbound messages only")
+        resolved_session = session or ChannelSession.from_message(message)
+        context_payload = {
+            **dict(self.context_builder(message)),
+            **dict(context or {}),
+        }
+        draft = self.draft_provider.build_draft(message.text, context=context_payload)
+        draft_payload = draft.to_json_dict() if hasattr(draft, "to_json_dict") else {}
+        draft_text = str(draft_payload.get("draft_text") or getattr(draft, "draft_text", "") or DEFAULT_DRAFT_TEXT)
+        draft_id = stable_draft_id(message)
+        actions = build_channel_recommended_actions(
+            message=message,
+            session=resolved_session,
+            draft_id=draft_id,
+            draft_text=draft_text,
+            context={
+                **context_payload,
+                "crm_recommendations": draft_payload.get("crm_recommendations") or context_payload.get("crm_recommendations"),
+            },
+        )
+        safety_flags = tuple(
+            str(item).strip()
+            for item in (
+                *(draft_payload.get("safety_flags") or ()),
+                "draft_only",
+                "requires_manager_approval",
+                "live_send_disabled",
+                "llm_used",
+            )
+            if str(item).strip()
+        )
+        confidence_raw = draft_payload.get("topic_confidence")
+        confidence = confidence_raw if isinstance(confidence_raw, (int, float)) else None
+        reply = BotReply(
+            text=draft_text,
+            recommended_actions=actions,
+            confidence=float(confidence) if confidence is not None else None,
+            requires_approval=True,
+            safety_flags=safety_flags,
+            metadata={
+                "draft_id": draft_id,
+                "source_message_idempotency_key": message.idempotency_key,
+                "preview_mode": "subscription_llm_draft",
+                "subscription_llm_result": draft_payload,
+            },
+        )
+        route = str(draft_payload.get("route") or "manager_only")
+        return ChannelDraftPreview(
+            draft_id=draft_id,
+            idempotency_key=stable_preview_idempotency_key(message),
+            source_message=message,
+            session=resolved_session,
+            reply=reply,
+            blocked_reasons=tuple(
+                dict.fromkeys(
+                    [
+                        "live_send_disabled",
+                        "manager_approval_required",
+                        f"route:{route}",
+                    ]
+                )
+            ),
+            safety={
+                **default_preview_safety(),
+                "llm_calls": True,
+                "rag_used": bool(context_payload),
+            },
+            metadata={
+                "context_keys": tuple(sorted(str(key) for key in context_payload.keys())),
+                "preview_mode": "subscription_llm_draft",
+                "route": route,
+                "message_type": draft_payload.get("message_type"),
+                "topic_id": draft_payload.get("topic_id"),
+                "context_quality": context_payload.get("context_quality"),
             },
         )
 

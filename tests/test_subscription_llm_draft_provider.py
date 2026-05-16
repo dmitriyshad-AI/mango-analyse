@@ -23,10 +23,21 @@ def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -
 
 
 def test_provider_parses_valid_json() -> None:
-    result = parse_llm_json('{"route":"draft_for_manager","draft_text":"Здравствуйте! Уточним детали.","topic_id":"theme:001_pricing","topic_confidence":0.7}')
+    result = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"Здравствуйте! Уточним детали.",'
+        '"message_type":"question","broad_group":"commercial","topic_id":"theme:001_pricing",'
+        '"confidence_theme":0.8,"confidence_group":0.9,"alternative_themes":["theme:002_payment_method"],'
+        '"risk_level":"low","context_used":["recent_messages"],"context_warnings":[]}'
+    )
 
     assert result.route == "draft_for_manager"
     assert result.topic_id == "theme:001_pricing"
+    assert result.message_type == "question"
+    assert result.broad_group == "commercial"
+    assert result.topic_confidence == 0.8
+    assert result.confidence_group == 0.9
+    assert result.alternative_themes == ("theme:002_payment_method",)
+    assert result.to_json_dict()["confidence_theme"] == 0.8
 
 
 def test_provider_falls_back_on_invalid_json() -> None:
@@ -54,6 +65,37 @@ def test_draft_text_does_not_disclose_bot_identity() -> None:
     assert contains_bot_identity_disclosure("Я бот и нейросеть")
     for phrase in ("я бот", "как ИИ", "нейросеть", "искусственный интеллект", "GPT", "Claude", "Codex"):
         assert contains_bot_identity_disclosure(f"Тест: {phrase}")
+
+
+def test_low_confidence_forces_manager_only() -> None:
+    result = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"Здравствуйте!","message_type":"question",'
+        '"topic_id":"theme:001_pricing","confidence_theme":0.55}'
+    )
+
+    assert result.route == "manager_only"
+    assert "low_confidence_manager_only" in result.safety_flags
+
+
+def test_high_risk_theme_forces_manager_only() -> None:
+    result = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"Вернем деньги.","message_type":"question",'
+        '"topic_id":"theme:009_refund","confidence_theme":0.91}'
+    )
+
+    assert result.route == "manager_only"
+    assert "high_risk_manager_only" in result.safety_flags
+    assert any("Высокорисковая" in item for item in result.manager_checklist)
+
+
+def test_non_question_message_type_forces_manager_only() -> None:
+    result = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"Спасибо!","message_type":"context_update",'
+        '"topic_id":"service:S1_non_question","confidence_theme":0.9}'
+    )
+
+    assert result.route == "manager_only"
+    assert "message_type_context_update" in result.safety_flags
 
 
 def test_fake_provider_records_prompt() -> None:

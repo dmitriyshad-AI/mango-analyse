@@ -658,8 +658,16 @@ def format_manager_draft_text(
     if not isinstance(preview, ChannelDraftPreview):
         raise TypeError("preview must be ChannelDraftPreview")
     context_payload = dict(context or {})
+    llm_result = preview.reply.metadata.get("subscription_llm_result")
+    llm_payload = dict(llm_result) if isinstance(llm_result, Mapping) else {}
     message = preview.source_message
-    topic = first_context_value(context_payload, "found_topic", "question_topic", "topic", "theme")
+    topic = first_context_value(context_payload, "found_topic", "question_topic", "topic", "theme", "topic_id") or llm_payload.get("topic_id")
+    message_type = first_context_value(context_payload, "message_type") or llm_payload.get("message_type") or preview.metadata.get("message_type")
+    context_quality = (
+        first_context_value(context_payload, "context_quality")
+        or llm_payload.get("context_quality")
+        or preview.metadata.get("context_quality")
+    )
     rop_decision = first_context_value(
         context_payload,
         "rop_decision",
@@ -699,6 +707,8 @@ def format_manager_draft_text(
         ("Откуда пришел клиент", format_list(source_lines)),
         ("Текст клиента", message.text or "Текст отсутствует, есть вложение."),
         ("Найденная тема", format_value(topic, empty="Тема не определена.")),
+        ("Тип сообщения", format_value(message_type, empty="Тип сообщения не определен.")),
+        ("Качество контекста", format_value(context_quality, empty="Качество контекста не передано.")),
         (
             "Решение РОПа",
             format_value(rop_decision, empty="Решение РОПа не найдено в контексте."),

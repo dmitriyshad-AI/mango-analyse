@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 from mango_mvp.question_catalog import (
-    BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK,
-    BOT_PERMISSION_MANAGER_ONLY,
-    BOT_PERMISSION_NOT_ALLOWED,
     classify_question,
     detect_noise_reason,
     infer_question_metadata,
     is_question_like,
     split_candidate_questions,
 )
+from mango_mvp.question_catalog.normalization import is_outbound_system_text
+from mango_mvp.question_catalog.safety import compress_mask_runs, score_example_readability
 
 
 def test_question_detection_handles_requests_without_question_mark() -> None:
@@ -19,6 +18,24 @@ def test_question_detection_handles_requests_without_question_mark() -> None:
     assert not is_question_like("Будьте в курсе всех новостей и интересных событий!")
     assert not is_question_like("Счёт: 30101810400000000225 ИНН: 7700000000 КПП: 770001001")
     assert detect_noise_reason("Если у вас остались вопросы, вы можете задать их в Telegram")
+    assert detect_noise_reason("возражение/ограничение: время")
+    assert detect_noise_reason("Содержательный запрос не сформулирован: клиент только сказал «алло»")
+    assert is_outbound_system_text("Ваше расписание занятий в 2026 учебном году")
+    assert not is_question_like("Менеджер пообещала направить лицензию письмом")
+    assert detect_noise_reason("Re: Возврат д/с.")
+    assert detect_noise_reason("Изменения в расписании: уведомление о закрытии группы по математике.")
+    assert detect_noise_reason("-------- Пересылаемое сообщение -------- От кого: Учебный центр")
+    assert detect_noise_reason("kmipt. ru: заполнена web-форма [1] Записаться на курсы.")
+
+
+def test_readable_example_helpers_downrank_heavy_masks() -> None:
+    noisy = (
+        "действующие правила изменения или отмены услуги действующие правила изменения или отмены услуги "
+        "актуальное окно записи актуальное окно записи"
+    )
+
+    assert compress_mask_runs(noisy).count("действующие правила изменения или отмены услуги") == 1
+    assert score_example_readability(noisy) < score_example_readability("Сколько стоит летняя школа в июне?")
 
 
 def test_split_candidate_questions_keeps_narrow_parts() -> None:
@@ -27,58 +44,56 @@ def test_split_candidate_questions_keeps_narrow_parts() -> None:
     assert parts == ["Сколько стоит математика?", "Где проходят занятия очно?"]
 
 
-def test_infer_metadata_for_price_ege_math_grade() -> None:
-    meta = infer_question_metadata("Стоимость подготовки к ЕГЭ по профильной математике для 11 класса")
+def test_infer_metadata_returns_v2_contract() -> None:
+    meta = infer_question_metadata("Стоимость подготовки к ЕГЭ по профильной математике для 11 класса онлайн")
 
-    assert meta.intent == "price"
-    assert meta.product == "ЕГЭ"
-    assert meta.subject == "математика"
-    assert meta.grade == "11 класс"
-    assert meta.dynamic_fact_types == ("price",)
-    assert meta.required_fact_keys == ("price.current",)
-    assert meta.bot_permission == BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK
-    assert "стоимость" in meta.canonical_question
-
-
-def test_classify_question_uses_fallback_signal() -> None:
-    payload = classify_question("Расскажите подробнее", fallback_signal="schedule_question")
-
-    assert payload["intent"] == "schedule"
-    assert payload["required_fact_keys"] == ("schedule.current",)
+    assert meta.theme_id == "theme:001_pricing"
+    assert meta.extracted_params["product"] == "регулярный_курс"
+    assert meta.extracted_params["subject"] == "математика"
+    assert meta.extracted_params["grade"] == "11_класс"
+    assert meta.extracted_params["format"] == "онлайн"
+    assert 0 <= meta.confidence_hint <= 1
+    assert meta.classification_method.startswith("rule_stub_")
 
 
-def test_general_question_split_intents_are_narrow() -> None:
+def test_infer_metadata_no_longer_exposes_legacy_class_key_fields() -> None:
+    meta = infer_question_metadata("Сколько стоит подготовка к ЕГЭ?")
+
+    assert not hasattr(meta, "intent")
+    assert not hasattr(meta, "subclass_key")
+    assert not hasattr(meta, "class_key")
+    assert not hasattr(meta, "canonical_question")
+
+
+def test_classify_question_uses_fallback_signal_with_v2_result() -> None:
+    result = classify_question("Расскажите подробнее", fallback_signal="schedule_question")
+
+    assert result.theme_id == "theme:013_schedule"
+    assert result.required_facts == ("schedule.current",)
+    assert result.classification_method == "rule_stub_intent_override"
+
+
+def test_obvious_questions_map_to_allowed_v2_themes_or_services() -> None:
     cases = {
-        "По какому поводу вы звонили?": "call_reason",
-        "Мне ничего не пришло на почту": "message_not_received",
-        "Можно ли вернуть оплату и получить чек?": "payment_service",
-        "Как оформить письмо для налоговой за прошлый год?": "documents_letter",
-        "Детей везут до лагеря на автобусах?": "transport_logistics",
-        "Ребенок не поедет на летнюю смену": "camp_trip",
-        "У нас слишком легкие задания, можно дать обратную связь?": "quality_feedback",
-        "Пока неактуально, мы сами наберем": "no_interest",
-        "Нужно обсудить, продолжать ли обучение в следующем году": "continuation_decision",
-        "Ребята распределяются по уровню подготовки?": "age_or_level_fit",
-        "Это ваш сайт или другой?": "site_confusion",
-        "Подскажите пожалуйста, вы готовите детей к ВПР?": "program",
-        "Что дальше делать?": "general_next_step",
-        "Появилась ли информация?": "status_followup",
-        "Как смотреть повторы?": "technical_access",
-        "Нужно ли распечатывать справку в поликлинике и ставить печать?": "documents_letter",
-        "А про это?": "incomplete_context",
-        "Можно еще вопрос?": "general_consultation",
-        "К кому обратиться по бытовому вопросу?": "camp_living_conditions",
-        "Ребенка отметите заранее?": "attendance_absence",
+        "Сколько стоит подготовка к ЕГЭ?": "theme:001_pricing",
+        "Итого 71 250 руб.?": "theme:003_payment_status",
+        "Оплата материнским капиталом возможна?": "theme:007_matkap_payment",
+        "Если деньги придут к вам позже, вы нам вернете эти пятьдесят семь тысяч?": "theme:009_refund",
+        "Где проходят занятия очно?": "theme:015_address",
+        "Когда занятия?": "theme:013_schedule",
+        "Не пришла ссылка на личный кабинет": "theme:025_missing_links_access",
+        "Детей везут до лагеря на автобусах?": "theme:028_transport_logistics",
+        "ыфвпролд": "service:S2_unclear",
     }
 
-    for text, expected_intent in cases.items():
-        assert infer_question_metadata(text).intent == expected_intent
+    for text, expected_theme in cases.items():
+        assert classify_question(text).theme_id == expected_theme
 
 
-def test_manager_only_and_noise_permissions() -> None:
-    payment = infer_question_metadata("Можно ли вернуть оплату и получить чек?")
-    assert payment.bot_permission == BOT_PERMISSION_MANAGER_ONLY
+def test_short_context_uses_service_bucket_not_legacy_fallback_bucket() -> None:
+    result = classify_question("Это он и есть?")
 
-    noise = infer_question_metadata("С уважением, команда Фотон")
-    assert noise.intent == "not_customer_question"
-    assert noise.bot_permission == BOT_PERMISSION_NOT_ALLOWED
+    assert result.theme_id.startswith("service:")
+    assert "manual_review" not in result.theme_id
+    assert "mixed_context" not in result.theme_id
+    assert "conversation_summary" not in result.theme_id

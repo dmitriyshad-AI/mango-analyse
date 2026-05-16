@@ -1,0 +1,45 @@
+schema_version: question_catalog_parameters_registry_schema_v1
+description: >
+  Validation contract for Question Catalog v2 parameter registry. Parameter
+  values are closed lists. Regex extraction must be deterministic and must not
+  call an LLM.
+
+expected_counts:
+  parameters: 8
+
+top_level_required_fields:
+  - schema_version
+  - source_documents
+  - expected_counts
+  - allowed_extraction_methods
+  - parameters
+
+parameter_required_fields:
+  - parameter_id
+  - values
+  - fallback_value
+  - extraction_method
+  - priority
+  - extraction_patterns
+
+required_parameter_ids:
+  - product
+  - subject
+  - grade
+  - format
+  - customer_status
+  - urgency
+  - sentiment
+  - document_type
+
+allowed_extraction_methods:
+  - regex
+  - external_lookup
+
+required_missing_value: не_указано
+
+normalization_alias_prefixes:
+  - normalization.PRODUCT_PATTERNS.
+  - normalization.SUBJECT_PATTERNS.
+  - normalization.INTENT_PATTERNS.
+  - normalization.INTENT_SUBCLASS_PATTERNS.

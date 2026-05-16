@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -9,7 +10,24 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
 from mango_mvp.question_catalog.contracts import (
+    ANSWER_STATUS_DRAFT_NEEDS_REVIEW,
+    ANSWER_STATUS_MANAGER_ONLY,
+    ANSWER_STATUS_NOT_CUSTOMER_QUESTION,
+    ANSWER_STATUS_NOT_ENOUGH_CONTEXT,
     ANSWER_STATUS_NEEDS_ROP_ANSWER,
+    ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT,
+    BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK,
+    BOT_PERMISSION_DRAFT_ONLY,
+    BOT_PERMISSION_MANAGER_ONLY,
+    BOT_PERMISSION_NOT_ALLOWED,
+    FACT_TYPE_DISCOUNT,
+    FACT_TYPE_DOCUMENTS,
+    FACT_TYPE_INSTALLMENT,
+    FACT_TYPE_LOCATION,
+    FACT_TYPE_PRICE,
+    FACT_TYPE_PROGRAM,
+    FACT_TYPE_SCHEDULE,
+    FACT_TYPE_TRIAL,
     SOURCE_CALL,
     SOURCE_EMAIL,
     SOURCE_TELEGRAM,
@@ -17,14 +35,14 @@ from mango_mvp.question_catalog.contracts import (
     stable_digest,
     stable_question_class_id,
 )
+from mango_mvp.question_catalog.classifier import classify_question
 from mango_mvp.question_catalog.normalization import (
     clean_text,
     detect_noise_reason,
-    infer_question_metadata,
     is_question_like,
     split_candidate_questions,
 )
-from mango_mvp.question_catalog.safety import redact_public_text
+from mango_mvp.question_catalog.safety import redact_public_text, redact_review_text
 
 
 SINCE_DEFAULT = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -73,6 +91,9 @@ def extract_call_questions(
             continue
         question_raw = clean_text(row.get("customer_question_sanitized") or row.get("customer_question") or row.get("customer_quote_sanitized") or row.get("customer_quote"))
         if not question_raw:
+            skipped_empty += 1
+            continue
+        if detect_noise_reason(question_raw):
             skipped_empty += 1
             continue
         if not is_question_like(question_raw) and clean_text(row.get("llm_customer_signal_type")) not in _SIGNALS_ALLOWED_WITHOUT_MARKER:
@@ -242,6 +263,14 @@ def extract_mail_questions(
             text = _read_text_if_safe(text_path, max_chars=max_chars_per_message)
             subject = clean_text(row.get("subject"))
             combined = _preprocess_mail_text(f"{subject}. {text}".strip())
+            if _outbound_notice_reason(
+                subject=subject,
+                text=combined,
+                from_header=clean_text(row.get("from_header")),
+                to_header=clean_text(row.get("to_header")),
+            ):
+                skipped_service_or_not_question += 1
+                continue
             if detect_noise_reason(combined):
                 skipped_noise += 1
                 continue
@@ -307,14 +336,25 @@ def build_question_item(
     answer_source: str | None = None,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> QuestionItem:
-    meta = infer_question_metadata(question_raw, fallback_signal=fallback_signal)
+    classified = classify_question(
+        question_raw,
+        source=source_channel,
+        metadata={**dict(metadata or {}), "fallback_signal": fallback_signal or ""},
+        fallback_signal=fallback_signal,
+    )
+    params = classified.extracted_params
+    required_facts = classified.required_facts
+    legacy_fact_types = _legacy_dynamic_fact_types(required_facts)
+    bot_permission = _legacy_bot_permission(classified.default_bot_permission)
+    answer_status = _answer_status_for_classification(classified.theme_id, required_facts, bot_permission)
     customer_text, customer_flags = redact_public_text(question_raw)
+    customer_review_text, customer_review_flags = redact_review_text(question_raw)
     manager_text = None
     manager_flags: tuple[str, ...] = ()
     if clean_text(manager_raw):
         manager_text, manager_flags = redact_public_text(manager_raw, max_chars=700)
-    question_class_id = stable_question_class_id(tenant_id=tenant_id, class_key=meta.class_key)
-    safety_flags = tuple(dict.fromkeys((*customer_flags, *manager_flags)))
+    question_class_id = stable_question_class_id(tenant_id=tenant_id, class_key=classified.theme_id)
+    safety_flags = tuple(dict.fromkeys((*customer_flags, *customer_review_flags, *manager_flags)))
     return QuestionItem(
         tenant_id=tenant_id,
         source_channel=source_channel,
@@ -323,22 +363,113 @@ def build_question_item(
         customer_text_redacted=customer_text,
         manager_text_redacted=manager_text,
         question_class_id=question_class_id,
-        intent=meta.intent,
-        product=meta.product,
-        grade=meta.grade,
-        subject=meta.subject,
-        format=meta.format,
-        price_related="price" in meta.dynamic_fact_types,
-        schedule_related="schedule" in meta.dynamic_fact_types,
-        documents_related="documents" in meta.dynamic_fact_types,
+        intent=classified.theme_id,
+        product=_param_or_none(params.get("product")),
+        grade=_param_or_none(params.get("grade")),
+        subject=_param_or_none(params.get("subject")),
+        format=_param_or_none(params.get("format")),
+        price_related=classified.theme_id == "theme:001_pricing" or any(fact.startswith("prices.") for fact in required_facts),
+        schedule_related=classified.theme_id == "theme:013_schedule" or any(fact.startswith("schedule.") for fact in required_facts),
+        documents_related=_has_document_fact(required_facts),
         safety_flags=safety_flags,
-        answer_evidence_status=meta.answer_status if answer_source else ANSWER_STATUS_NEEDS_ROP_ANSWER,
+        answer_evidence_status=answer_status if answer_source else ANSWER_STATUS_NEEDS_ROP_ANSWER,
         answer_source=answer_source,
-        requires_dynamic_facts=bool(meta.dynamic_fact_types),
-        dynamic_fact_types=meta.dynamic_fact_types,
-        fact_freshness_required=meta.fact_freshness_policy,
-        metadata=dict(metadata or {}),
+        requires_dynamic_facts=bool(required_facts),
+        dynamic_fact_types=legacy_fact_types,
+        fact_freshness_required=_fact_freshness_policy(required_facts),
+        metadata={
+            **dict(metadata or {}),
+            "theme_id": classified.theme_id,
+            "theme_name": classified.theme_name,
+            "business_block": classified.business_block,
+            "extracted_params": dict(params),
+            "confidence_hint": classified.confidence,
+            "classification_method": classified.classification_method,
+            "parent_question_class": classified.business_block,
+            "question_subclass": classified.theme_name,
+            "question_subclass_key": classified.theme_id,
+            "canonical_question": classified.theme_name,
+            "narrow_scope": f"Вопрос клиента отнесен к теме «{classified.theme_name}».",
+            "exclusions": "Не смешивать с другими темами и персональным контекстом без проверки.",
+            "answer_status": answer_status,
+            "bot_permission": bot_permission,
+            "manager_handoff_reason": _manager_reason_for_classification(classified.theme_id, bot_permission, required_facts),
+            "required_fact_keys": required_facts,
+            "fact_freshness_policy": _fact_freshness_policy(required_facts),
+            "fallback_when_fact_missing": "Не называть конкретные условия, передать менеджеру." if required_facts else None,
+            "customer_text_for_rop": customer_review_text,
+        },
     )
+
+
+def _param_or_none(value: Any) -> str | None:
+    text = clean_text(value)
+    return None if text in {"", "не_указано", "нейтральный", "низкая"} else text
+
+
+def _legacy_bot_permission(permission: str) -> str:
+    if permission == "answer_after_fact_check":
+        return BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK
+    if permission == "manager_only":
+        return BOT_PERMISSION_MANAGER_ONLY
+    if permission == "bot_self":
+        return BOT_PERMISSION_DRAFT_ONLY
+    return BOT_PERMISSION_DRAFT_ONLY
+
+
+def _answer_status_for_classification(theme_id: str, required_facts: Sequence[str], bot_permission: str) -> str:
+    if theme_id == "service:S1_non_question":
+        return ANSWER_STATUS_NOT_CUSTOMER_QUESTION
+    if theme_id == "service:S2_unclear":
+        return ANSWER_STATUS_NOT_ENOUGH_CONTEXT
+    if bot_permission == BOT_PERMISSION_MANAGER_ONLY:
+        return ANSWER_STATUS_MANAGER_ONLY
+    if required_facts:
+        return ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT
+    return ANSWER_STATUS_DRAFT_NEEDS_REVIEW
+
+
+def _manager_reason_for_classification(theme_id: str, bot_permission: str, required_facts: Sequence[str]) -> str | None:
+    if theme_id.startswith("service:"):
+        return "Служебная категория: не отправлять автономный содержательный ответ."
+    if bot_permission == BOT_PERMISSION_MANAGER_ONLY:
+        return "Нужен менеджер: вопрос зависит от персонального контекста или ручного решения."
+    if required_facts:
+        return "Нужна проверка актуальных фактов перед клиентским ответом."
+    return None
+
+
+def _fact_freshness_policy(required_facts: Sequence[str]) -> str | None:
+    return "Нужны актуальные факты из v2 fact-source registry." if required_facts else None
+
+
+def _has_document_fact(required_facts: Sequence[str]) -> bool:
+    markers = ("document", "contract", "license", "matkap", "tax", "payment", "receipt")
+    return any(any(marker in fact for marker in markers) for fact in required_facts)
+
+
+def _legacy_dynamic_fact_types(required_facts: Sequence[str]) -> tuple[str, ...]:
+    """Keep v1 QuestionItem.dynamic_fact_types compact while v2 metadata stores exact fact keys."""
+    result: list[str] = []
+    for fact in required_facts:
+        lowered = fact.lower()
+        if lowered.startswith("prices.") or "price" in lowered:
+            result.append(FACT_TYPE_PRICE)
+        elif lowered.startswith("schedule.") or "availability" in lowered:
+            result.append(FACT_TYPE_SCHEDULE)
+        elif lowered.startswith("addresses.") or "address" in lowered or "location" in lowered:
+            result.append(FACT_TYPE_LOCATION)
+        elif "discount" in lowered:
+            result.append(FACT_TYPE_DISCOUNT)
+        elif "installment" in lowered:
+            result.append(FACT_TYPE_INSTALLMENT)
+        elif "trial" in lowered:
+            result.append(FACT_TYPE_TRIAL)
+        elif any(marker in lowered for marker in ("document", "contract", "license", "matkap", "tax", "payment", "receipt")):
+            result.append(FACT_TYPE_DOCUMENTS)
+        elif "program" in lowered:
+            result.append(FACT_TYPE_PROGRAM)
+    return tuple(dict.fromkeys(result))
 
 
 def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -402,9 +533,14 @@ def _preprocess_mail_text(text: str) -> str:
             continue
         if lower.startswith(("от:", "from:", "кому:", "to:", "cc:", "subject:", "тема:", "дата:", "sent:")):
             continue
+        if lower.startswith(("от кого:", "кому отправлено:", "-------- пересылаемое", "пересылаемое сообщение")):
+            continue
         if any(
             marker in lower
             for marker in (
+                "отправлено из mail",
+                "отправлено из почты mail",
+                "пересылаемое сообщение",
                 "unsubscribe",
                 "отписаться от рассылки",
                 "mail_link_tracker",
@@ -466,6 +602,38 @@ def _preprocess_mail_text(text: str) -> str:
     if "--- part ---" in text:
         text = text.split("--- part ---", 1)[0]
     return clean_text(text)
+
+
+def _outbound_notice_reason(*, subject: str, text: str, from_header: str, to_header: str) -> str | None:
+    blob = clean_text(f"{subject}. {text}").casefold()
+    from_lower = from_header.casefold()
+    tenant_sender = any(marker in from_lower for marker in ("@kmipt.ru", "@cdpofoton.ru", "@foton", "фотон", "кмипт"))
+    has_direct_customer_question = bool(
+        re.search(
+            r"\b(?:подскажите|уточните|можно\s+ли|скажите|сколько|как\s+мне|что\s+нужно|хотел[аи]\s+бы|прошу|пожалуйста\s+помогите)\b",
+            blob,
+            re.I,
+        )
+    )
+    notice_markers = (
+        r"ваше\s+расписание\s+занятий",
+        r"вы\s+записаны\s+на",
+        r"перенос\s+заняти[йя]",
+        r"заняти[ея]\s+переносятся",
+        r"чек\s+по\s+оплате",
+        r"оплата\s+принята",
+        r"участие\s+в\s+пробном\s+(?:огэ|егэ)",
+        r"ознакомиться\s+с\s+форматом\s+экзамена",
+        r"обучающие\s+курсы.+переносятся",
+        r"подготовительные\s+курсы.+учебн\w+\s+год",
+        r"напоминаем,\s+что\s+заняти",
+        r"изменени[ея]\s+в\s+расписании",
+        r"уведомление\s+о\s+закрытии\s+группы",
+        r"вы\s+записаны\s+онлайн",
+    )
+    if any(re.search(marker, blob, re.I) for marker in notice_markers) and (tenant_sender or not has_direct_customer_question):
+        return "outbound_notice_or_receipt"
+    return None
 
 
 def _short_hash(value: str, *, length: int = 12) -> str:

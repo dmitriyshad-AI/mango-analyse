@@ -26,8 +26,8 @@ from mango_mvp.question_catalog.contracts import (
     question_catalog_contract_inventory,
     question_catalog_safety_contract,
 )
+from mango_mvp.question_catalog.classifier import classify_question
 from mango_mvp.question_catalog.normalization import (
-    classify_question,
     detect_noise_reason,
     infer_question_metadata,
     is_question_like,

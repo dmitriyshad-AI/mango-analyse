@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -13,11 +14,16 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from mango_mvp.question_catalog.contracts import (
+    ANSWER_STATUS_APPROVED,
     ANSWER_STATUS_DRAFT_NEEDS_REVIEW,
+    ANSWER_STATUS_FACT_MISSING_OR_STALE,
     ANSWER_STATUS_MANAGER_ONLY,
     ANSWER_STATUS_NEEDS_ROP_ANSWER,
+    ANSWER_STATUS_NOT_ENOUGH_CONTEXT,
     ANSWER_STATUS_NOT_CUSTOMER_QUESTION,
+    ANSWER_STATUS_SOURCE_CONFLICT,
     ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT,
+    ANSWER_STATUS_TIME_SENSITIVE,
     BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK,
     BOT_PERMISSION_DRAFT_ONLY,
     BOT_PERMISSION_MANAGER_ONLY,
@@ -42,11 +48,62 @@ from mango_mvp.question_catalog.normalization import infer_question_metadata
 from mango_mvp.question_catalog.safety import (
     assert_public_text_safe,
     guard_question_catalog_output_path,
+    score_example_readability,
 )
 
 
 CATALOG_SCHEMA_VERSION = "customer_question_catalog_v1"
+BROAD_BASE_SUBCLASS_KEYS = frozenset({"base_schedule", "base_price", "base_payment_question"})
+BROAD_BASE_SUBCLASS_MIN_COUNT = 50
+# TODO(question-catalog-v2-stage-e): this is a legacy guard for v1 subclass buckets.
+# New v2 items write `question_subclass_key=theme_id`; keep this compatibility guard
+# only for old catalog CSVs until the E/F export migration removes v1 fallback buckets.
+BROAD_MANUAL_REVIEW_SUBCLASS_SUFFIXES = (
+    "_manual_review",
+    "_short_context",
+    "_conversation_summary",
+    "_mixed_context",
+    "_status_context",
+)
 
+
+ANSWER_STATUS_LABELS_RU = {
+    ANSWER_STATUS_APPROVED: "утвержденный ответ есть",
+    ANSWER_STATUS_DRAFT_NEEDS_REVIEW: "есть черновик, нужна проверка",
+    ANSWER_STATUS_NEEDS_ROP_ANSWER: "нужен ответ РОПа",
+    ANSWER_STATUS_MANAGER_ONLY: "только менеджер",
+    ANSWER_STATUS_SOURCE_CONFLICT: "конфликт источников",
+    ANSWER_STATUS_TIME_SENSITIVE: "устарело или зависит от даты",
+    ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT: "шаблон готов, нужен актуальный факт",
+    ANSWER_STATUS_FACT_MISSING_OR_STALE: "факт отсутствует или устарел",
+    ANSWER_STATUS_NOT_ENOUGH_CONTEXT: "недостаточно контекста",
+    ANSWER_STATUS_NOT_CUSTOMER_QUESTION: "не вопрос клиента",
+}
+
+BOT_PERMISSION_LABELS_RU = {
+    BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK: "можно после проверки актуальных фактов",
+    BOT_PERMISSION_DRAFT_ONLY: "только черновик, нужна проверка",
+    BOT_PERMISSION_MANAGER_ONLY: "только менеджер",
+    BOT_PERMISSION_NOT_ALLOWED: "нельзя",
+}
+
+ROP_PRIORITY_LABELS_RU = {
+    "critical": "критический",
+    "high": "высокий",
+    "medium": "средний",
+    "low": "низкий",
+}
+
+FACT_KEY_LABELS_RU = {
+    "price.current": "актуальные цены",
+    "schedule.current": "актуальное расписание",
+    "location.current": "актуальные адреса и площадки",
+    "discount.current": "актуальные скидки и акции",
+    "installment.current": "актуальные условия рассрочки",
+    "trial.current": "актуальные условия пробного занятия",
+    "documents.current": "актуальные документы и правила",
+    "program.current": "актуальные программы и курсы",
+}
 
 @dataclass(frozen=True)
 class CatalogBuildConfig:
@@ -146,21 +203,39 @@ def build_question_classes(items: Sequence[QuestionItem], *, tenant_id: str) -> 
     classes: list[QuestionClass] = []
     for class_id, class_items in sorted(grouped.items(), key=lambda pair: (-len(pair[1]), pair[0])):
         sample = class_items[0]
-        metadata = infer_question_metadata(
+        inferred_metadata = infer_question_metadata(
             sample.customer_text_redacted,
             fallback_signal=str(sample.metadata.get("signal") or ""),
         )
+        sample_metadata = sample.metadata
+        theme_id = str(sample_metadata.get("theme_id") or inferred_metadata.theme_id)
+        canonical_question = str(sample_metadata.get("theme_name") or sample_metadata.get("canonical_question") or theme_id)
+        narrow_scope = str(sample_metadata.get("narrow_scope") or f"Вопрос клиента отнесен к теме «{canonical_question}».")
+        class_key = theme_id
+        exclusions = str(sample_metadata.get("exclusions") or "Не смешивать с другими темами и персональным контекстом без проверки.")
+        parent_question_class = str(sample_metadata.get("business_block") or sample_metadata.get("parent_question_class") or "Question Catalog v2")
+        question_subclass = str(sample_metadata.get("question_subclass") or canonical_question)
+        question_subclass_key = str(sample_metadata.get("question_subclass_key") or theme_id)
+        metadata_answer_status = str(sample_metadata.get("answer_status") or ANSWER_STATUS_NEEDS_ROP_ANSWER)
+        metadata_bot_permission = str(sample_metadata.get("bot_permission") or BOT_PERMISSION_DRAFT_ONLY)
+        metadata_required_fact_keys = tuple(sample_metadata.get("required_fact_keys") or ())
+        metadata_fact_freshness_policy = sample_metadata.get("fact_freshness_policy")
+        metadata_fallback_when_fact_missing = sample_metadata.get("fallback_when_fact_missing")
+        metadata_manager_reason = sample_metadata.get("manager_handoff_reason")
         source_counts = Counter(item.source_channel for item in class_items)
         dates = sorted(item.occurred_at for item in class_items if item.occurred_at)
-        examples = _unique([item.customer_text_redacted for item in class_items if item.customer_text_redacted], limit=5)
+        examples_for_rop = _select_examples_for_rop(class_items, limit=5)
+        safety_examples = _unique([item.customer_text_redacted for item in class_items if item.customer_text_redacted], limit=5)
         products = _unique([item.product for item in class_items if item.product], limit=8)
         grades = _unique([item.grade for item in class_items if item.grade], limit=8)
         subjects = _unique([item.subject for item in class_items if item.subject], limit=8)
-        answer_status = metadata.answer_status
-        bot_permission = metadata.bot_permission
-        if answer_status == ANSWER_STATUS_MANAGER_ONLY:
+        answer_status = metadata_answer_status
+        bot_permission = metadata_bot_permission
+        if answer_status in {ANSWER_STATUS_NOT_CUSTOMER_QUESTION, ANSWER_STATUS_NOT_ENOUGH_CONTEXT}:
+            bot_permission = BOT_PERMISSION_NOT_ALLOWED
+        elif answer_status == ANSWER_STATUS_MANAGER_ONLY:
             bot_permission = BOT_PERMISSION_MANAGER_ONLY
-        elif metadata.dynamic_fact_types:
+        elif metadata_required_fact_keys:
             answer_status = ANSWER_STATUS_TEMPLATE_NEEDS_CURRENT_FACT
             bot_permission = BOT_PERMISSION_ALLOWED_AFTER_FACT_CHECK
         elif any(item.manager_text_redacted for item in class_items):
@@ -169,16 +244,16 @@ def build_question_classes(items: Sequence[QuestionItem], *, tenant_id: str) -> 
         else:
             answer_status = ANSWER_STATUS_NEEDS_ROP_ANSWER
             bot_permission = BOT_PERMISSION_DRAFT_ONLY
-        priority = _priority_for_class(class_items, metadata.required_fact_keys)
+        priority = _priority_for_class(class_items, metadata_required_fact_keys)
         classes.append(
             QuestionClass(
                 tenant_id=tenant_id,
                 question_class_id=class_id,
-                canonical_question=metadata.canonical_question,
-                narrow_scope=metadata.narrow_scope,
-                class_key=metadata.class_key,
-                exclusions=metadata.exclusions,
-                examples_redacted=examples,
+                canonical_question=canonical_question,
+                narrow_scope=narrow_scope,
+                class_key=class_key,
+                exclusions=exclusions,
+                examples_redacted=examples_for_rop,
                 count_total=len(class_items),
                 count_calls=source_counts.get("call", 0),
                 count_telegram=source_counts.get("telegram", 0),
@@ -189,16 +264,24 @@ def build_question_classes(items: Sequence[QuestionItem], *, tenant_id: str) -> 
                 grades=grades,
                 subjects=subjects,
                 answer_status=answer_status,
-                required_fact_keys=metadata.required_fact_keys,
-                fact_source_refs=_fact_source_refs(metadata.required_fact_keys),
-                fact_freshness_policy=metadata.fact_freshness_policy,
-                fallback_when_fact_missing=metadata.fallback_when_fact_missing,
+                required_fact_keys=metadata_required_fact_keys,
+                fact_source_refs=_fact_source_refs(metadata_required_fact_keys),
+                fact_freshness_policy=metadata_fact_freshness_policy,
+                fallback_when_fact_missing=metadata_fallback_when_fact_missing,
                 bot_permission=bot_permission,
-                manager_handoff_reason=metadata.manager_handoff_reason,
+                manager_handoff_reason=metadata_manager_reason,
                 rop_review_priority=priority,
                 metadata={
                     "intents": sorted(Counter(item.intent for item in class_items)),
                     "dynamic_fact_types": sorted({fact for item in class_items for fact in item.dynamic_fact_types}),
+                    "theme_id": theme_id,
+                    "extracted_params": sample_metadata.get("extracted_params") or dict(inferred_metadata.extracted_params),
+                    "confidence_hint": sample_metadata.get("confidence_hint") or inferred_metadata.confidence_hint,
+                    "classification_method": sample_metadata.get("classification_method") or inferred_metadata.classification_method,
+                    "parent_question_class": parent_question_class,
+                    "question_subclass": question_subclass,
+                    "question_subclass_key": question_subclass_key,
+                    "safety_examples_redacted": " | ".join(safety_examples),
                 },
             )
         )
@@ -234,8 +317,21 @@ def build_answer_templates(classes: Sequence[QuestionClass], *, tenant_id: str) 
 
 
 def attach_template_ids(classes: Sequence[QuestionClass], templates: Sequence[AnswerTemplate]) -> list[QuestionClass]:
-    by_class = {template.question_class_id: template.answer_template_id for template in templates}
-    return [replace(item, answer_template_id=by_class.get(item.question_class_id)) for item in classes]
+    by_class = {template.question_class_id: template for template in templates}
+    attached: list[QuestionClass] = []
+    for item in classes:
+        template = by_class.get(item.question_class_id)
+        metadata = dict(item.metadata)
+        if template:
+            metadata["answer_template_text"] = template.template_text
+        attached.append(
+            replace(
+                item,
+                answer_template_id=template.answer_template_id if template else None,
+                metadata=metadata,
+            )
+        )
+    return attached
 
 
 def discover_fact_sources(roots: Sequence[Path]) -> list[CurrentFactSource]:
@@ -287,6 +383,7 @@ def write_outputs(
         "templates_csv": out_root / "answer_templates.csv",
         "fact_requirements_csv": out_root / "fact_requirements.csv",
         "fact_registry_json": out_root / "current_fact_source_registry.json",
+        "rop_review_csv": out_root / "rop_question_review_pack.csv",
         "rop_review_xlsx": out_root / "rop_question_review_pack.xlsx",
         "approved_answers_xlsx": out_root / "approved_question_answers_draft.xlsx",
         "approved_answers_csv": out_root / "approved_question_answers_draft.csv",
@@ -301,6 +398,7 @@ def write_outputs(
         "summary_json": out_root / "question_catalog_summary.json",
     }
     approval_drafts = build_approved_answer_drafts(classes, templates)
+    rop_review_rows = build_rop_review_rows(classes, templates)
     priority_rows = build_rop_priority_rows(classes, templates, limit=100)
     quality_audit = build_answer_quality_audit(classes, templates, approval_drafts)
     write_jsonl(outputs["items_jsonl"], [item.to_json_dict() for item in items])
@@ -330,8 +428,9 @@ def write_outputs(
         }
     ]
     write_csv(outputs["unanswered_csv"], unanswered)
-    write_classes_xlsx(outputs["classes_xlsx"], classes)
-    write_rop_review_xlsx(outputs["rop_review_xlsx"], classes)
+    write_classes_xlsx(outputs["classes_xlsx"], classes, templates)
+    write_csv(outputs["rop_review_csv"], rop_review_rows)
+    write_xlsx(outputs["rop_review_xlsx"], "rop_review", rop_review_rows)
     write_csv(outputs["approved_answers_csv"], [flatten_approval_draft(item) for item in approval_drafts])
     write_xlsx(outputs["approved_answers_xlsx"], "approved_answers_draft", [flatten_approval_draft(item) for item in approval_drafts])
     outputs["approved_answers_json"].write_text(
@@ -376,36 +475,48 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def write_classes_xlsx(path: Path, classes: Sequence[QuestionClass]) -> None:
-    rows = [flatten_class(item) for item in classes]
+def write_classes_xlsx(path: Path, classes: Sequence[QuestionClass], templates: Sequence[AnswerTemplate]) -> None:
+    templates_by_class = {template.question_class_id: template for template in templates}
+    rows = [
+        flatten_class_for_human(item, templates_by_class.get(item.question_class_id))
+        for item in sorted(classes, key=_class_context_sort_key)
+    ]
     write_xlsx(path, "question_classes", rows)
 
 
-def write_rop_review_xlsx(path: Path, classes: Sequence[QuestionClass]) -> None:
-    rows = []
-    for item in classes:
-        if item.answer_status == ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
-            continue
-        if item.rop_review_priority in {"critical", "high", "medium"}:
-            rows.append(
-                {
-                    "Приоритет": item.rop_review_priority,
-                    "Класс вопроса": item.canonical_question,
-                    "Примеры": " | ".join(item.examples_redacted[:3]),
-                    "Частота всего": item.count_total,
-                    "Звонки": item.count_calls,
-                    "Telegram": item.count_telegram,
-                    "Почта": item.count_email,
-                    "Статус ответа": item.answer_status,
-                    "Можно ли боту": item.bot_permission,
-                    "Нужные актуальные факты": " | ".join(item.required_fact_keys),
-                    "Что делать без факта": item.fallback_when_fact_missing or "",
-                    "Идеальный ответ РОПа": "",
-                    "Решение РОПа": "",
-                    "Комментарий": "",
-                }
-            )
-    write_xlsx(path, "rop_review", rows)
+def build_rop_review_rows(classes: Sequence[QuestionClass], templates: Sequence[AnswerTemplate]) -> list[Mapping[str, Any]]:
+    templates_by_class = {template.question_class_id: template for template in templates}
+    rows: list[Mapping[str, Any]] = []
+    for item in sorted(classes, key=_class_context_sort_key):
+        template = templates_by_class.get(item.question_class_id)
+        rows.append(
+            {
+                "Проверять РОПу": _rop_review_needed_label(item),
+                "Приоритет": _priority_label(item.rop_review_priority),
+                "Крупный класс вопроса": _parent_class_label(item),
+                "Подкласс вопроса": _subclass_label(item),
+                "Класс вопроса": item.canonical_question,
+                "Черновик шаблона ответа": template.template_text if template else _template_text_for_class(item),
+                "Можно ли утверждать сейчас": _approval_gate_label(item),
+                "Причина блокировки утверждения": _approval_block_reason(item),
+                "Что делать РОПу": _rop_action_for_class(item),
+                "Примеры подсценариев для дробления": "",
+                "Примеры для РОПа": " | ".join(item.examples_redacted[:3]),
+                "Безопасные примеры": item.metadata.get("safety_examples_redacted", ""),
+                "Частота всего": item.count_total,
+                "Звонки": item.count_calls,
+                "Telegram": item.count_telegram,
+                "Почта": item.count_email,
+                "Статус ответа": _answer_status_label(item.answer_status),
+                "Можно ли боту": _bot_permission_label(item.bot_permission),
+                "Нужные актуальные факты": _fact_keys_label(item.required_fact_keys),
+                "Что делать без факта": item.fallback_when_fact_missing or "",
+                "Идеальный ответ РОПа": "",
+                "Решение РОПа": "",
+                "Комментарий": "",
+            }
+        )
+    return rows
 
 
 def write_xlsx(path: Path, sheet_name: str, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -434,10 +545,13 @@ def write_xlsx(path: Path, sheet_name: str, rows: Sequence[Mapping[str, Any]]) -
 def flatten_class(item: QuestionClass) -> Mapping[str, Any]:
     return {
         "question_class_id": item.question_class_id,
+        "parent_question_class": _parent_class_label(item),
+        "question_subclass": _subclass_label(item),
         "canonical_question": item.canonical_question,
         "narrow_scope": item.narrow_scope,
         "exclusions": item.exclusions,
-        "examples_redacted": " | ".join(item.examples_redacted),
+        "examples_for_rop": " | ".join(item.examples_redacted),
+        "examples_redacted": item.metadata.get("safety_examples_redacted", " | ".join(item.examples_redacted)),
         "count_total": item.count_total,
         "count_calls": item.count_calls,
         "count_telegram": item.count_telegram,
@@ -449,6 +563,7 @@ def flatten_class(item: QuestionClass) -> Mapping[str, Any]:
         "subjects": " | ".join(item.subjects),
         "answer_status": item.answer_status,
         "answer_template_id": item.answer_template_id or "",
+        "answer_template_text": item.metadata.get("answer_template_text", ""),
         "required_fact_keys": " | ".join(item.required_fact_keys),
         "fact_source_refs": " | ".join(item.fact_source_refs),
         "fact_freshness_policy": item.fact_freshness_policy or "",
@@ -457,6 +572,156 @@ def flatten_class(item: QuestionClass) -> Mapping[str, Any]:
         "manager_handoff_reason": item.manager_handoff_reason or "",
         "rop_review_priority": item.rop_review_priority,
     }
+
+
+def flatten_class_for_human(item: QuestionClass, template: AnswerTemplate | None = None) -> Mapping[str, Any]:
+    return {
+        "Технический ID класса": item.question_class_id,
+        "Крупный класс вопроса": _parent_class_label(item),
+        "Подкласс вопроса": _subclass_label(item),
+        "Класс вопроса": item.canonical_question,
+        "Черновик шаблона ответа": template.template_text if template else _template_text_for_class(item),
+        "Что входит в этот класс": item.narrow_scope,
+        "Что не смешивать с этим классом": item.exclusions,
+        "Примеры для РОПа": " | ".join(item.examples_redacted),
+        "Безопасные примеры для авто-проверок": item.metadata.get("safety_examples_redacted", ""),
+        "Всего вопросов": item.count_total,
+        "Звонки": item.count_calls,
+        "Telegram": item.count_telegram,
+        "Почта": item.count_email,
+        "Первое появление": item.first_seen_at.isoformat() if item.first_seen_at else "",
+        "Последнее появление": item.last_seen_at.isoformat() if item.last_seen_at else "",
+        "Продукты": " | ".join(item.products),
+        "Классы обучения": " | ".join(item.grades),
+        "Предметы": " | ".join(item.subjects),
+        "Статус ответа": _answer_status_label(item.answer_status),
+        "Технический ID шаблона ответа": item.answer_template_id or "",
+        "Нужные актуальные факты": _fact_keys_label(item.required_fact_keys),
+        "Где искать актуальные факты": _fact_source_refs_label(item.fact_source_refs),
+        "Правило свежести фактов": item.fact_freshness_policy or "",
+        "Что делать без актуального факта": item.fallback_when_fact_missing or "",
+        "Можно ли боту отвечать": _bot_permission_label(item.bot_permission),
+        "Почему нужен менеджер": item.manager_handoff_reason or "",
+        "Приоритет проверки РОПом": _priority_label(item.rop_review_priority),
+    }
+
+
+def _answer_status_label(value: str) -> str:
+    return ANSWER_STATUS_LABELS_RU.get(value, value)
+
+
+def _bot_permission_label(value: str) -> str:
+    return BOT_PERMISSION_LABELS_RU.get(value, value)
+
+
+def _priority_label(value: str) -> str:
+    return ROP_PRIORITY_LABELS_RU.get(value, value)
+
+
+def _parent_class_label(item: QuestionClass) -> str:
+    return str(item.metadata.get("parent_question_class") or item.canonical_question).strip()
+
+
+def _subclass_label(item: QuestionClass) -> str:
+    return str(item.metadata.get("question_subclass") or "основной подкласс").strip()
+
+
+def _rop_review_needed_label(item: QuestionClass) -> str:
+    if item.answer_status in {ANSWER_STATUS_NOT_CUSTOMER_QUESTION, ANSWER_STATUS_NOT_ENOUGH_CONTEXT}:
+        return "нет, служебная строка"
+    if item.answer_status == ANSWER_STATUS_MANAGER_ONLY:
+        return "да, подтвердить запрет автоответа"
+    if item.required_fact_keys:
+        return "да, проверить шаблон и источник фактов"
+    return "да, проверить черновик ответа"
+
+
+def _is_wide_class(item: QuestionClass) -> bool:
+    if item.answer_status in {ANSWER_STATUS_NOT_CUSTOMER_QUESTION, ANSWER_STATUS_NOT_ENOUGH_CONTEXT}:
+        return False
+    parent = _parent_class_label(item).casefold()
+    subclass = _subclass_label(item).casefold()
+    wide_subclass = subclass in {"без уточненного подкласса", "основной подкласс"}
+    known_wide_parent = parent == "общий вопрос" and subclass in {
+        "без уточненного подкласса",
+        "основной подкласс",
+        "общий запрос информации",
+    }
+    return item.count_total >= 10 and (wide_subclass or known_wide_parent)
+
+
+def _is_thematic_fallback_class(item: QuestionClass) -> bool:
+    if item.answer_status in {ANSWER_STATUS_NOT_CUSTOMER_QUESTION, ANSWER_STATUS_NOT_ENOUGH_CONTEXT}:
+        return False
+    if item.count_total < 10:
+        return False
+    subclass = _subclass_label(item).casefold()
+    subclass_key = str(item.metadata.get("question_subclass_key") or "").casefold()
+    broad_base_bucket = subclass_key in BROAD_BASE_SUBCLASS_KEYS and item.count_total >= BROAD_BASE_SUBCLASS_MIN_COUNT
+    broad_manual_bucket = (
+        item.count_total >= BROAD_BASE_SUBCLASS_MIN_COUNT
+        and any(subclass_key.endswith(suffix) for suffix in BROAD_MANUAL_REVIEW_SUBCLASS_SUFFIXES)
+    )
+    return subclass.startswith("общий вопрос") or subclass_key.startswith("general_") or broad_base_bucket or broad_manual_bucket
+
+
+def _split_block_reason(item: QuestionClass) -> str:
+    if _is_wide_class(item):
+        return "wide_class_no_subclass"
+    if _is_thematic_fallback_class(item):
+        return "thematic_fallback_needs_split"
+    return ""
+
+
+def _needs_split_before_approval(item: QuestionClass) -> bool:
+    return bool(_split_block_reason(item))
+
+
+def _approval_gate_label(item: QuestionClass) -> str:
+    return "нет, сначала дробить" if _needs_split_before_approval(item) else "да, проверить черновик"
+
+
+def _approval_block_reason(item: QuestionClass) -> str:
+    return _split_block_reason(item)
+
+
+def _rop_action_for_class(item: QuestionClass) -> str:
+    if _is_wide_class(item):
+        return "дать 3-5 коротких подсценариев; до этого ответ не утверждать"
+    if _is_thematic_fallback_class(item):
+        return "разбить общий тематический класс на конкретные вопросы клиента; до этого ответ не утверждать"
+    return "проверить черновик и заполнить итоговый утвержденный ответ"
+
+
+def _class_context_sort_key(item: QuestionClass) -> tuple[Any, ...]:
+    return (
+        _parent_class_label(item).casefold(),
+        _subclass_label(item).casefold(),
+        item.products[0].casefold() if item.products else "",
+        item.subjects[0].casefold() if item.subjects else "",
+        item.grades[0].casefold() if item.grades else "",
+        -item.count_total,
+        item.canonical_question.casefold(),
+    )
+
+
+def _fact_key_label(value: str) -> str:
+    return FACT_KEY_LABELS_RU.get(value, value)
+
+
+def _fact_keys_label(values: Sequence[str]) -> str:
+    return " | ".join(_fact_key_label(value) for value in values)
+
+
+def _fact_source_refs_label(values: Sequence[str]) -> str:
+    labels: list[str] = []
+    prefix = "current_fact_source_registry:"
+    for value in values:
+        if value.startswith(prefix):
+            labels.append(f"реестр актуальных фактов: {_fact_key_label(value[len(prefix):])}")
+        else:
+            labels.append(value)
+    return " | ".join(labels)
 
 
 def flatten_template(item: AnswerTemplate) -> Mapping[str, Any]:
@@ -495,7 +760,7 @@ def build_approved_answer_drafts(
     templates_by_class = {template.question_class_id: template for template in templates}
     drafts: list[ApprovedQuestionAnswerDraft] = []
     for item in sorted(classes, key=lambda row: (-_priority_score(row), -row.count_total, row.canonical_question)):
-        if item.answer_status == ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
+        if item.answer_status in {ANSWER_STATUS_NOT_CUSTOMER_QUESTION, ANSWER_STATUS_NOT_ENOUGH_CONTEXT}:
             continue
         template = templates_by_class.get(item.question_class_id)
         draft_text = template.template_text if template else _template_text_for_class(item)
@@ -549,28 +814,36 @@ def build_rop_priority_rows(
     templates_by_class = {template.question_class_id: template for template in templates}
     rows: list[Mapping[str, Any]] = []
     for rank, item in enumerate(sorted(classes, key=lambda row: (-_priority_score(row), -row.count_total, row.canonical_question))[:limit], start=1):
-        if item.answer_status == ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
+        if item.answer_status in {ANSWER_STATUS_NOT_CUSTOMER_QUESTION, ANSWER_STATUS_NOT_ENOUGH_CONTEXT}:
             continue
         template = templates_by_class.get(item.question_class_id)
         rows.append(
             {
-                "rank": rank,
-                "priority_score": _priority_score(item),
-                "rop_review_priority": item.rop_review_priority,
-                "canonical_question": item.canonical_question,
-                "count_total": item.count_total,
-                "count_calls": item.count_calls,
-                "count_telegram": item.count_telegram,
-                "count_email": item.count_email,
-                "answer_status": item.answer_status,
-                "bot_permission": item.bot_permission,
-                "required_fact_keys": " | ".join(item.required_fact_keys),
-                "why_priority": _priority_reason(item),
-                "examples_redacted": " | ".join(item.examples_redacted[:3]),
-                "draft_template_text": template.template_text if template else _template_text_for_class(item),
-                "rop_decision": "",
-                "final_approved_answer": "",
-                "rop_comment": "",
+                "Место": rank,
+                "ID класса": item.question_class_id,
+                "Приоритетный балл": _priority_score(item),
+                "Приоритет проверки РОПом": _priority_label(item.rop_review_priority),
+                "Крупный класс вопроса": _parent_class_label(item),
+                "Подкласс вопроса": _subclass_label(item),
+                "Класс вопроса": item.canonical_question,
+                "Черновик шаблона ответа": template.template_text if template else _template_text_for_class(item),
+                "Можно ли утверждать сейчас": _approval_gate_label(item),
+                "Причина блокировки утверждения": _approval_block_reason(item),
+                "Что делать РОПу": _rop_action_for_class(item),
+                "Примеры подсценариев для дробления": "",
+                "Всего вопросов": item.count_total,
+                "Звонки": item.count_calls,
+                "Telegram": item.count_telegram,
+                "Почта": item.count_email,
+                "Статус ответа": _answer_status_label(item.answer_status),
+                "Можно ли боту отвечать": _bot_permission_label(item.bot_permission),
+                "Нужные актуальные факты": _fact_keys_label(item.required_fact_keys),
+                "Почему в приоритете": _priority_reason(item),
+                "Примеры вопросов для РОПа": " | ".join(item.examples_redacted[:3]),
+                "Безопасные примеры": item.metadata.get("safety_examples_redacted", ""),
+                "Решение РОПа": "",
+                "Итоговый утвержденный ответ": "",
+                "Комментарий РОПа": "",
             }
         )
     return rows
@@ -589,14 +862,18 @@ def build_answer_quality_audit(
         template_text = template.template_text if template else ""
         if item.answer_status == ANSWER_STATUS_MANAGER_ONLY and item.bot_permission != BOT_PERMISSION_MANAGER_ONLY:
             findings.append(_quality_finding(item, "p0", "manager_only_permission_mismatch"))
-        if item.required_fact_keys and "свеж" not in template_text.lower():
+        if item.required_fact_keys and not any(marker in template_text.lower() for marker in ("свеж", "актуаль")):
             findings.append(_quality_finding(item, "p1", "dynamic_fact_template_missing_freshness_warning"))
         if item.required_fact_keys and item.bot_permission == BOT_PERMISSION_DRAFT_ONLY:
             findings.append(_quality_finding(item, "p1", "dynamic_fact_class_left_as_draft_only"))
-        if item.bot_permission == BOT_PERMISSION_NOT_ALLOWED and item.answer_status != ANSWER_STATUS_NOT_CUSTOMER_QUESTION:
+        if item.bot_permission == BOT_PERMISSION_NOT_ALLOWED and item.answer_status not in {ANSWER_STATUS_NOT_CUSTOMER_QUESTION, ANSWER_STATUS_NOT_ENOUGH_CONTEXT}:
             findings.append(_quality_finding(item, "p1", "not_allowed_without_noise_status"))
         if not item.examples_redacted:
             findings.append(_quality_finding(item, "p2", "missing_examples"))
+        if _is_wide_class(item):
+            findings.append(_quality_finding(item, "p1", "wide_class_block_until_split"))
+        elif _is_thematic_fallback_class(item):
+            findings.append(_quality_finding(item, "p1", "thematic_fallback_needs_split"))
         for prompt in _synthetic_prompts_for_class(item)[:3]:
             prompt_checks.append(
                 {
@@ -613,9 +890,10 @@ def build_answer_quality_audit(
         if item.auto_approved or item.approved_for_bot or item.final_approved_answer or item.can_autosend or item.runtime_bot_permission != BOT_PERMISSION_NOT_ALLOWED
     ]
     severity_counts = Counter(str(item["severity"]) for item in findings)
+    has_blocking_findings = bool(severity_counts.get("p0") or severity_counts.get("p1"))
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,
-        "verdict": "pass" if not approval_errors and not severity_counts.get("p0") else "blocked",
+        "verdict": "blocked" if approval_errors or has_blocking_findings else "pass",
         "classes_checked": len(classes),
         "templates_checked": len(templates),
         "approval_drafts_checked": len(approval_drafts),
@@ -675,6 +953,7 @@ def build_summary(
     by_source = Counter(item.source_channel for item in items)
     by_status = Counter(item.answer_status for item in classes)
     dynamic_classes = [item for item in classes if item.required_fact_keys]
+    size_distribution = _class_size_distribution(classes)
     return {
         "schema_version": CATALOG_SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -692,6 +971,7 @@ def build_summary(
         "counts": {
             "items_by_source": dict(sorted(by_source.items())),
             "classes_by_answer_status": dict(sorted(by_status.items())),
+            "class_size_distribution": size_distribution,
             "top_classes": [
                 {
                     "question_class_id": item.question_class_id,
@@ -709,6 +989,47 @@ def build_summary(
             "Почта и Telegram не читаются live в этом проходе.",
             "Цены, расписание, скидки и наборы требуют отдельной проверки свежести фактов перед ответом бота.",
             "Все примеры в выходных файлах должны быть очищены от прямых контактов и персональных данных.",
+        ],
+    }
+
+
+def _class_size_distribution(classes: Sequence[QuestionClass]) -> dict[str, Any]:
+    buckets = {
+        "1": 0,
+        "2_5": 0,
+        "6_9": 0,
+        "10_49": 0,
+        "50_99": 0,
+        "100_plus": 0,
+    }
+    manual_or_fallback_50_plus = 0
+    for item in classes:
+        if item.count_total <= 1:
+            buckets["1"] += 1
+        elif item.count_total <= 5:
+            buckets["2_5"] += 1
+        elif item.count_total <= 9:
+            buckets["6_9"] += 1
+        elif item.count_total <= 49:
+            buckets["10_49"] += 1
+        elif item.count_total <= 99:
+            buckets["50_99"] += 1
+        else:
+            buckets["100_plus"] += 1
+        if item.count_total >= BROAD_BASE_SUBCLASS_MIN_COUNT and _is_thematic_fallback_class(item):
+            manual_or_fallback_50_plus += 1
+    return {
+        "buckets": buckets,
+        "manual_or_fallback_classes_50_plus": manual_or_fallback_50_plus,
+        "largest_classes": [
+            {
+                "question_class_id": item.question_class_id,
+                "canonical_question": item.canonical_question,
+                "count_total": item.count_total,
+                "question_subclass_key": str(item.metadata.get("question_subclass_key") or ""),
+                "answer_status": item.answer_status,
+            }
+            for item in sorted(classes, key=lambda row: (-row.count_total, row.canonical_question))[:10]
         ],
     }
 
@@ -780,6 +1101,53 @@ def _unique(values: Sequence[Any], *, limit: int) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _select_examples_for_rop(items: Sequence[QuestionItem], *, limit: int) -> tuple[str, ...]:
+    candidates: list[tuple[float, str, str, str]] = []
+    for item in items:
+        text = str(item.metadata.get("customer_text_for_rop") or item.customer_text_redacted or "").strip()
+        if not text:
+            continue
+        score = score_example_readability(text)
+        if score < 0.25:
+            continue
+        source = item.source_channel
+        normalized = _example_dedupe_key(text)
+        candidates.append((score, source, normalized, text))
+    candidates.sort(key=lambda row: (-row[0], row[1], len(row[3])))
+    result: list[str] = []
+    seen_sources: set[str] = set()
+    seen_normalized: set[str] = set()
+    for prefer_new_source in (True, False):
+        for _, source, normalized, text in candidates:
+            if normalized in seen_normalized:
+                continue
+            if prefer_new_source and source in seen_sources:
+                continue
+            result.append(text)
+            seen_sources.add(source)
+            seen_normalized.add(normalized)
+            if len(result) >= limit:
+                return tuple(result)
+    if result:
+        return tuple(result)
+    return _unique(
+        [
+            str(item.metadata.get("customer_text_for_rop") or item.customer_text_redacted)
+            for item in items
+            if item.metadata.get("customer_text_for_rop") or item.customer_text_redacted
+        ],
+        limit=limit,
+    )
+
+
+def _example_dedupe_key(value: str) -> str:
+    text = value.casefold()
+    text = re.sub(r"\[[^\]]+\]", "", text)
+    text = re.sub(r"\b(?:актуальн\w+|действующ\w+|услови\w+|менеджер\w+|клиент\w+)\b", "", text)
+    text = re.sub(r"[^a-zа-яё0-9]+", " ", text, flags=re.I)
+    return " ".join(text.split())[:180]
+
+
 def _priority_for_class(items: Sequence[QuestionItem], required_fact_keys: Sequence[str]) -> str:
     if len(items) >= 25 or required_fact_keys:
         return "high"
@@ -821,6 +1189,8 @@ def _priority_reason(item: QuestionClass) -> str:
 
 
 def _default_rop_decision(item: QuestionClass) -> str:
+    if _needs_split_before_approval(item):
+        return "block_until_split"
     if item.answer_status == ANSWER_STATUS_MANAGER_ONLY:
         return "manager_only_pending_confirmation"
     if item.required_fact_keys:
@@ -841,12 +1211,13 @@ def _quality_finding(item: QuestionClass, severity: str, code: str) -> Mapping[s
 
 
 def _synthetic_prompts_for_class(item: QuestionClass) -> tuple[str, ...]:
-    prompts = [
-        f"Подскажите, пожалуйста: {item.canonical_question}?",
-        f"Хочу уточнить про {item.canonical_question.lower()}",
-    ]
-    if item.examples_redacted:
-        prompts.insert(0, item.examples_redacted[0])
+    prompts = list(item.examples_redacted[:3])
+    if not prompts:
+        prompts.append(item.canonical_question)
+    if _is_wide_class(item):
+        prompts.append("Клиент задал широкий или неполный вопрос; ассистент должен запросить уточнение и не угадывать ответ.")
+    elif _is_thematic_fallback_class(item):
+        prompts.append("Клиент задал общий тематический вопрос; ассистент должен запросить конкретику и не подставлять универсальный ответ.")
     return tuple(dict.fromkeys(prompts))
 
 
@@ -871,20 +1242,118 @@ def _fact_source_refs(required_fact_keys: Sequence[str]) -> tuple[str, ...]:
 
 
 def _template_text_for_class(item: QuestionClass) -> str:
-    if item.required_fact_keys:
-        placeholders = ", ".join("{" + key.replace(".current", "") + "}" for key in item.required_fact_keys)
+    parent = _parent_class_label(item).lower()
+    subclass = _subclass_label(item).lower()
+    placeholders = ", ".join("{" + key.replace(".current", "") + "}" for key in item.required_fact_keys)
+    fresh_fact_note = (
+        f"Перед отправкой обязательно подставить актуальные данные из {placeholders}."
+        if placeholders
+        else "Перед отправкой РОП должен проверить, что формулировка соответствует текущим правилам."
+    )
+    if item.bot_permission == BOT_PERMISSION_MANAGER_ONLY:
         return (
-            f"По вопросу «{item.canonical_question}» ориентируемся на актуальные данные: {placeholders}. "
-            "Перед ответом нужно проверить свежий файл фактов. Если данные не подтверждены, передаем менеджеру."
+            f"Этот вопрос относится к зоне менеджера: «{item.canonical_question}». "
+            "Бот не должен самостоятельно обещать условия, возврат, перерасчет, документы или индивидуальное решение. "
+            "Безопасный черновик для первого ответа: «Передам вопрос менеджеру, потому что здесь важны ваши конкретные данные и актуальные правила. "
+            "Менеджер проверит ситуацию и вернется с точным ответом». "
+            f"{fresh_fact_note}"
         )
-    if item.answer_status == ANSWER_STATUS_MANAGER_ONLY:
+    if item.bot_permission == BOT_PERMISSION_NOT_ALLOWED:
         return (
-            f"По вопросу «{item.canonical_question}» бот не отвечает сам. "
-            "Нужно передать менеджеру и зафиксировать, какие данные требуется уточнить."
+            f"Не готовить клиентский ответ по строке «{item.canonical_question}». "
+            "Это служебный шум, неполный контекст или не вопрос клиента. РОП может только подтвердить исключение из базы ответов."
+        )
+    if "стоимость" in parent:
+        return (
+            f"Клиент спрашивает про стоимость: «{item.canonical_question}». "
+            "Ответ должен назвать цену только после проверки актуального файла цен и соответствия программы, класса, предмета и формата. "
+            "Черновик: «Стоимость зависит от выбранной программы и формата. По актуальным условиям для вашего варианта: {price}. "
+            "Если хотите, менеджер поможет подобрать подходящий вариант и проверить скидки или рассрочку». "
+            f"{fresh_fact_note}"
+        )
+    if "расписание" in parent:
+        return (
+            f"Клиент спрашивает про расписание: «{item.canonical_question}». "
+            "Ответ должен назвать даты, дни недели или время только из актуального расписания. "
+            "Черновик: «По вашему направлению актуальное расписание такое: {schedule}. "
+            "Если нужно, менеджер подберет группу по удобным дням и формату». "
+            f"{fresh_fact_note}"
+        )
+    if "адрес" in parent or "площадка" in parent:
+        return (
+            f"Клиент уточняет место проведения: «{item.canonical_question}». "
+            "Ответ должен указать только подтвержденный адрес, формат площадки и, если есть, ориентир по метро/проезду. "
+            "Черновик: «Занятия по этому варианту проходят здесь: {location}. "
+            "Если нужно, менеджер уточнит корпус, кабинет и удобный маршрут». "
+            f"{fresh_fact_note}"
+        )
+    if "формат" in parent:
+        return (
+            f"Клиент уточняет формат обучения: «{item.canonical_question}». "
+            "Ответ должен объяснить, доступен ли онлайн, очный или смешанный вариант именно для выбранной программы. "
+            "Черновик: «Для этого направления сейчас доступен такой формат: {program}. "
+            "Если выбираете между онлайн и очно, менеджер поможет сравнить варианты по расписанию и уровню группы». "
+            f"{fresh_fact_note}"
+        )
+    if "программа" in parent or "лагерь" in parent:
+        return (
+            f"Клиент спрашивает про содержание программы: «{item.canonical_question}». "
+            "Ответ должен кратко объяснить, что входит в обучение, кому подходит программа и какой следующий шаг записи. "
+            "Черновик: «По этой программе актуальное описание такое: {program}. "
+            "Чтобы подобрать точнее, уточните класс ученика, предмет и цель обучения». "
+            f"{fresh_fact_note}"
+        )
+    if "скид" in parent or "рассроч" in parent:
+        return (
+            f"Клиент спрашивает про финансовые условия: «{item.canonical_question}». "
+            "Ответ должен отдельно проверить скидку, рассрочку и ограничения по срокам действия предложения. "
+            "Черновик: «По текущим условиям возможны такие варианты: {discount} {installment}. "
+            "Менеджер проверит, какие из них применимы именно к вашей программе». "
+            f"{fresh_fact_note}"
+        )
+    if "запись" in parent:
+        return (
+            f"Клиент спрашивает про запись: «{item.canonical_question}». "
+            "Ответ должен подтвердить наличие мест, ближайшие даты и какие данные нужны для записи. "
+            "Черновик: «Проверим наличие мест и ближайшее окно записи: {schedule}. "
+            "Для записи обычно нужны данные ученика, класс, предмет и удобный формат обучения». "
+            f"{fresh_fact_note}"
+        )
+    if "документ" in parent or "справ" in parent or "письм" in parent:
+        return (
+            f"Клиент спрашивает про документы: «{item.canonical_question}». "
+            "Ответ должен называть только утвержденный список документов и не обещать выдачу справки без проверки. "
+            "Черновик: «По этому вопросу нужен такой комплект или порядок действий: {documents}. "
+            "Если документ нужен для налоговой, оплаты, лагеря или договора, менеджер проверит детали по вашей ситуации». "
+            f"{fresh_fact_note}"
+        )
+    if "технический" in parent or "доступ" in parent:
+        return (
+            f"Клиент сообщает о проблеме доступа: «{item.canonical_question}». "
+            "Ответ должен быстро собрать данные для проверки: какая ссылка, какой личный кабинет, что именно не открывается, у какого ученика. "
+            "Черновик: «Понял проблему с доступом. Пришлите, пожалуйста, что именно не открывается и на каком устройстве. "
+            "Передам менеджеру/техподдержке, чтобы проверили доступы». "
+            "Не отправлять клиенту новые ссылки без проверки."
+        )
+    if "обратная связь" in parent or "качество" in parent:
+        return (
+            f"Клиент дает обратную связь или просит связаться: «{item.canonical_question}». "
+            "Черновик: «Спасибо, зафиксировал. Передам менеджеру, чтобы он разобрал ситуацию и вернулся с ответом». "
+            "Если это просьба перезвонить, нужно уточнить удобное время. Если это жалоба, бот не должен спорить или оценивать преподавателя. "
+            f"{fresh_fact_note}"
+        )
+    if "общий вопрос" in parent or "без уточненного подкласса" in subclass:
+        return (
+            f"Вопрос пока слишком широкий: «{item.canonical_question}». "
+            "Черновик: «Подскажите, пожалуйста, что именно хотите уточнить: стоимость, расписание, формат, программу, документы или запись? "
+            "Я помогу с общим вопросом или передам менеджеру». "
+            "РОПу нужно решить, можно ли дробить этот класс на более узкие сценарии. "
+            f"{fresh_fact_note}"
         )
     return (
-        f"По вопросу «{item.canonical_question}» дать короткий ответ по утвержденной базе знаний, "
-        "затем задать один уточняющий вопрос и предложить помощь менеджера."
+        f"Клиентский вопрос: «{item.canonical_question}». "
+        "Черновик ответа должен быть коротким: ответить по сути, не обещать неподтвержденные условия, задать один уточняющий вопрос "
+        "и предложить помощь менеджера, если нужны персональные данные или актуальные условия."
     )
 
 

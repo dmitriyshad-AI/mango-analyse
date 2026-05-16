@@ -1,0 +1,369 @@
+schema_version: question_catalog_parameters_registry_v2_2026_05_14
+
+source_documents:
+  taxonomy: /Users/dmitrijfabarisov/Claude Projects/Foton/Mango_Analyse_Question_Catalog_Taxonomy_DRAFT_2026-05-14.md
+  rebuild_tz: /Users/dmitrijfabarisov/Claude Projects/Foton/Mango_Analyse_Question_Catalog_Rebuild_TZ_FOR_CODEX_2026-05-14.md
+  legacy_regex_source: src/mango_mvp/question_catalog/normalization.py
+
+expected_counts:
+  parameters: 8
+
+allowed_extraction_methods:
+  - regex
+  - external_lookup
+
+parameters:
+  - parameter_id: product
+    values:
+      - регулярный_курс
+      - летняя_школа
+      - лагерь
+      - интенсив
+      - олимпиады
+      - индивидуальные
+      - пробное
+      - не_указано
+    fallback_value: не_указано
+    extraction_method: regex
+    priority: 100
+    extraction_order:
+      - пробное
+      - индивидуальные
+      - интенсив
+      - лагерь
+      - летняя_школа
+      - олимпиады
+      - регулярный_курс
+    extraction_patterns:
+      регулярный_курс:
+        aliases:
+          - normalization.PRODUCT_PATTERNS.ege
+          - normalization.PRODUCT_PATTERNS.oge
+          - normalization.PRODUCT_PATTERNS.zvsh
+          - normalization.PRODUCT_PATTERNS.ovsh
+          - normalization.PRODUCT_PATTERNS.winter_school
+        patterns:
+          - '\b(?:регулярн\w+\s+курс|продукт:\s*регулярн\w+\s+курс|онлайн\s+курс\w*|годов\w+\s+курс|учебн\w+\s+год|на\s+год|подготовк\w+\s+к\s+(?:егэ|огэ))\b'
+      летняя_школа:
+        aliases:
+          - normalization.PRODUCT_PATTERNS.summer_school
+          - normalization.INTENT_SUBCLASS_PATTERNS.camp_trip.summer_camp
+        patterns:
+          - '\b(?:лвш|летн\w+\s+(?:школ\w*|выездн\w+\s+школ\w*))\b'
+      лагерь:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.camp_trip.camp_place_or_trip
+          - normalization.INTENT_SUBCLASS_PATTERNS.camp_trip.camp_participation
+        patterns:
+          - '\b(?:лагер\w*|смен[ауы]|поездк\w*|путевк\w*|кампус|вожат\w*)\b'
+      интенсив:
+        aliases: []
+        patterns:
+          - '\b(?:интенсив\w*|марафон\w*|экспресс[-\s]?курс)\b'
+      олимпиады:
+        aliases:
+          - normalization.PRODUCT_PATTERNS.olympiad
+        patterns:
+          - '\b(?:вош|олимпиад\w*|бви)\b'
+      индивидуальные:
+        aliases: []
+        patterns:
+          - '\b(?:индивидуальн\w+|репетитор\w*|1\s*[- ]?\s*на\s*[- ]?\s*1|один\s+на\s+один|персональн\w+\s+заняти\w*)\b'
+      пробное:
+        aliases: []
+        patterns:
+          - '\b(?:пробн\w+\s+заняти\w*|тестов\w{0,8}\s+заняти\w*|пробн\w+\s+урок)\b'
+
+  - parameter_id: subject
+    values:
+      - математика
+      - физика
+      - химия
+      - биология
+      - информатика
+      - русский
+      - английский
+      - обществознание
+      - история
+      - литература
+      - общее
+      - не_указано
+    fallback_value: не_указано
+    extraction_method: regex
+    priority: 90
+    extraction_patterns:
+      математика:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.math
+        patterns:
+          - '\b(?:профильн\w+\s+математик\w*|проф\.?\s*мат|алгебр\w*|геометр\w*)\b'
+      физика:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.physics
+        patterns: []
+      химия:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.chemistry
+        patterns:
+          - '\bхимбио\b'
+      биология:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.biology
+        patterns:
+          - '\bхимбио\b'
+      информатика:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.informatics
+        patterns:
+          - '\b(?:инфа|егэ\s+по\s+информатик\w*)\b'
+      русский:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.russian
+        patterns:
+          - '\bрусский\s+язык\b'
+      английский:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.english
+        patterns:
+          - '\bанглийский\s+язык\b'
+      обществознание:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.social
+        patterns:
+          - '\bобщество\b'
+      история:
+        aliases: []
+        patterns:
+          - '\bистори[яию]\b'
+      литература:
+        aliases:
+          - normalization.SUBJECT_PATTERNS.literature
+        patterns: []
+      общее:
+        aliases: []
+        patterns:
+          - '\b(?:несколько\s+предметов|все\s+предметы|предметы\s+в\s+целом|общее\s+направление)\b'
+
+  - parameter_id: grade
+    values:
+      - 1_4_класс
+      - 5_8_класс
+      - 9_класс
+      - 10_класс
+      - 11_класс
+      - взрослый
+      - не_указано
+    fallback_value: не_указано
+    extraction_method: regex
+    priority: 80
+    extraction_order:
+      - 10_класс
+      - 9_класс
+      - 11_класс
+      - 5_8_класс
+      - 1_4_класс
+      - взрослый
+    extraction_patterns:
+      1_4_класс:
+        aliases: []
+        patterns:
+          - '\b(?:[1-4]\s*(?:класс|кл\.?|класса|классе)|перв\w+\s+класс|втор\w+\s+класс|треть\w+\s+класс|четверт\w+\s+класс|начальн\w+\s+класс\w*)\b'
+      5_8_класс:
+        aliases: []
+        patterns:
+          - '\b(?:[5-8]\s*(?:класс|кл\.?|класса|классе)|пят\w+\s+класс|шест\w+\s+класс|седьм\w+\s+класс|восьм\w+\s+класс|средн\w+\s+класс\w*)\b'
+      9_класс:
+        aliases: []
+        patterns:
+          - '\b(?:9\s*(?:класс|кл\.?|класса|классе)|девят\w+\s+класс|огэ)\b'
+      10_класс:
+        aliases: []
+        patterns:
+          - '\b(?:10\s*(?:класс|кл\.?|класса|классе)|десят\w+\s+класс)\b'
+      11_класс:
+        aliases: []
+        patterns:
+          - '\b(?:11\s*(?:класс|кл\.?|класса|классе)|одиннадцат\w+\s+класс|егэ)\b'
+      взрослый:
+        aliases: []
+        patterns:
+          - '\b(?:взросл\w+|для\s+себя|родител[ья]\s+хоч\w+\s+учиться)\b'
+
+  - parameter_id: format
+    values:
+      - онлайн
+      - очно
+      - гибрид
+      - запись
+      - не_указано
+    fallback_value: не_указано
+    extraction_method: regex
+    priority: 70
+    extraction_order:
+      - гибрид
+      - запись
+      - онлайн
+      - очно
+    extraction_patterns:
+      онлайн:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.format.online
+        patterns:
+          - '\b(?:дистанц\w+|удаленн\w+|zoom|зум|вебинар|онлайн)\b'
+      очно:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.format.offline
+        patterns:
+          - '\b(?:очно|очная\s+форма|офлайн|на\s+площадк\w+|в\s+центре)\b'
+      гибрид:
+        aliases: []
+        patterns:
+          - '\b(?:гибрид\w+|смешанн\w+|онлайн.{0,40}очн|очн.{0,40}онлайн)\b'
+      запись:
+        aliases: []
+        patterns:
+          - '\b(?:в\s+запис[ьи]|запись\s+(?:урока|заняти\w*|вебинара)|можно\s+посмотреть\s+запись|записанн\w+\s+урок)\b'
+
+  - parameter_id: customer_status
+    values:
+      - новый
+      - действующий
+      - выпускник
+      - бывший
+      - не_указано
+    fallback_value: не_указано
+    extraction_method: external_lookup
+    priority: 60
+    extraction_patterns: {}
+    external_lookup:
+      owner_layer: conversation_orchestrator
+      lookup_sources:
+        - AMO
+        - Tallanto
+      timeout_seconds: 5
+      fallback_value: не_указано
+
+  - parameter_id: urgency
+    values:
+      - низкая
+      - средняя
+      - высокая
+      - критическая
+      - не_указано
+    fallback_value: низкая
+    extraction_method: regex
+    priority: 50
+    extraction_order:
+      - низкая
+      - критическая
+      - высокая
+      - средняя
+    extraction_patterns:
+      низкая:
+        aliases: []
+        patterns:
+          - '\b(?:не\s+срочно|не\s+критичн\w*|когда\s+будет\s+удобно|в\s+любое\s+время|как\s+сможете|позже)\b'
+      средняя:
+        aliases: []
+        patterns:
+          - '\b(?:на\s+этой\s+неделе|в\s+ближайшие\s+дни|скоро|до\s+выходных)\b'
+      высокая:
+        aliases: []
+        patterns:
+          - '\b(?:сегодня|до\s+конца\s+дня|как\s+можно\s+скорее|побыстрее|завтра\s+утром)\b'
+      критическая:
+        aliases: []
+        patterns:
+          - '\b(?:срочно|немедленно|сейчас\s+же|прямо\s+сейчас|критичн\w+|очень\s+срочно)\b'
+
+  - parameter_id: sentiment
+    values:
+      - нейтральный
+      - позитивный
+      - негативный
+      - не_указано
+    fallback_value: нейтральный
+    extraction_method: regex
+    priority: 40
+    extraction_order:
+      - негативный
+      - позитивный
+      - нейтральный
+    extraction_patterns:
+      нейтральный:
+        aliases: []
+        patterns:
+          - '\b(?:подскажите|уточните|скажите|можно\s+узнать|интересует)\b'
+      позитивный:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.quality_feedback.progress_feedback
+        patterns:
+          - '\b(?:спасибо|благодар\w+|нравится|понравилось|довол\w+|рады|восторг|отличн\w+|хорош\w+)\b'
+      негативный:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.quality_feedback.general_complaint
+          - normalization.INTENT_SUBCLASS_PATTERNS.service_feedback.complaint_or_service
+        patterns:
+          - '\bне\s+(?:довол\w+|рад\w+|благодар\w+|нравит\w+|понрав\w+|восторг\w*|отличн\w+|хорош\w+)\b'
+          - '\b(?:жалоб\w*|недовол\w*|ужасн\w*|претензи\w*|плохо|не\s+нравится|разочарован\w*|некорректн\w*)\b'
+
+  - parameter_id: document_type
+    values:
+      - договор
+      - справка
+      - акт
+      - счёт
+      - квитанция
+      - лицензия
+      - форма
+      - не_указано
+    fallback_value: не_указано
+    extraction_method: regex
+    priority: 30
+    extraction_order:
+      - квитанция
+      - счёт
+      - договор
+      - справка
+      - лицензия
+      - форма
+      - акт
+    extraction_patterns:
+      договор:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.documents.contract_documents
+          - normalization.INTENT_SUBCLASS_PATTERNS.documents_letter.contract_copy
+        patterns:
+          - '\b(?:договор\w*|оферт\w*)\b'
+      справка:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.documents.tax_documents
+          - normalization.INTENT_SUBCLASS_PATTERNS.documents_letter.certificate_or_form
+        patterns:
+          - '\b(?:справк\w*|подтверждающ\w+\s+документ\w*)\b'
+      акт:
+        aliases: []
+        patterns:
+          - '\b(?:акт\w+\s+(?:оказанн\w+\s+услуг|выполненн\w+\s+работ)|акт\s+сверки|акт)\b'
+      счёт:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.payment_service.receipt_or_invoice
+          - normalization.INTENT_SUBCLASS_PATTERNS.legal_partner.payment_legal_entity
+        patterns:
+          - '\b(?:сч[её]т|счет|инвойс|invoice)\b'
+      квитанция:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.payment_service.payment_receipt_search
+          - normalization.INTENT_SUBCLASS_PATTERNS.payment_service.receipt_or_invoice
+        patterns:
+          - '\b(?:квитанц\w*|чек\w*)\b'
+      лицензия:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.documents_letter.contract_copy
+        patterns:
+          - '\bлицензи\w*\b'
+      форма:
+        aliases:
+          - normalization.INTENT_SUBCLASS_PATTERNS.documents_letter.certificate_or_form
+        patterns:
+          - '\b(?:форм[ауеы]|бланк\w*)\b'

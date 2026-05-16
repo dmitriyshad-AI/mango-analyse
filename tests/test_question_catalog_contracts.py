@@ -72,9 +72,9 @@ def test_question_item_rejects_unknown_source_and_naive_date() -> None:
 def test_question_class_tracks_dynamic_fact_requirements() -> None:
     klass = QuestionClass(
         tenant_id="foton",
-        canonical_question="стоимость / ЕГЭ / математика / 11 класс",
+        canonical_question="Стоимость обучения",
         narrow_scope="Цена ЕГЭ по математике для 11 класса.",
-        class_key="intent=price|product=ege|subject=math|grade=11|format=any",
+        class_key="theme:001_pricing",
         examples_redacted=("Сколько стоит ЕГЭ по математике?",),
         count_total=3,
         count_calls=1,

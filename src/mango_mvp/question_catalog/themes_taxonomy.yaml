@@ -1,0 +1,1104 @@
+schema_version: question_catalog_themes_taxonomy_v2_2026_05_14
+source_documents:
+  taxonomy: /Users/dmitrijfabarisov/Claude Projects/Foton/Mango_Analyse_Question_Catalog_Taxonomy_DRAFT_2026-05-14.md
+  rebuild_tz: /Users/dmitrijfabarisov/Claude Projects/Foton/Mango_Analyse_Question_Catalog_Rebuild_TZ_FOR_CODEX_2026-05-14.md
+  rop_policy: product_data/question_catalog/rop_bot_policy_questionnaire_APPROVED_2026-05-15.xlsx
+expected_counts:
+  semantic_themes: 32
+  service_categories: 5
+  total_categories: 37
+allowed_parameters:
+- product
+- subject
+- grade
+- format
+- customer_status
+- urgency
+- sentiment
+- document_type
+allowed_bot_permissions:
+- bot_self
+- answer_after_fact_check
+- draft_for_manager
+- manager_only
+themes:
+- theme_id: theme:001_pricing
+  theme_name: Стоимость обучения
+  business_block: Финансы и оплата
+  short_description: Клиент спрашивает, сколько стоит обучение.
+  not_this_theme:
+  - Статус его конкретного платежа -> theme:003_payment_status
+  - Скидки -> theme:005_discounts
+  - Рассрочка -> theme:006_installment
+  - Оплата маткапиталом -> theme:007_matkap_payment
+  example_phrasings:
+  - Сколько стоит подготовка к ЕГЭ по математике?
+  - Цена за регулярный курс?
+  - Сколько в месяц занятия по профилю?
+  relevant_parameters:
+  - product
+  - subject
+  - grade
+  - format
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - prices.current
+  forbidden_promises:
+  - Не называть цены, которых нет в свежем прайсе
+  - Не обещать как в прошлом году
+  escalation_rule: Менеджер, если прайс отсутствует или клиент торгуется.
+  legacy_parent_mapping:
+  - стоимость
+  - оплата / возврат / чек
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Стоимость {продукт} по {предмет} для {класс} класса в {формат} : {цена} за {период}. На 2й и последующие
+    предметы действует скидка {скидка}. Точные условия согласуем с менеджером индивидуально.'
+  rop_mandatory_data: Продукт (регулярный курс / летняя школа / интенсив / олимпиады / индивидуальные / пробное), предмет,
+    класс ребёнка, желаемый формат (онлайн/очно).
+  rop_forbids_extra: Не называть цену без проверки в актуальном прайсе; не обещать «как было в прошлом году»; не давать диапазон
+    без подтверждения; не комментировать конкурентов.
+  rop_handoff_target: Менеджер группы (если прайс отсутствует, клиент торгуется или запрос непонятен).
+  rop_comment: Обязательная проверка свежести прайса (не старше 30 дней).
+- theme_id: theme:002_payment_method
+  theme_name: Способ оплаты
+  business_block: Финансы и оплата
+  short_description: Клиент спрашивает, как технически провести оплату.
+  not_this_theme:
+  - Оплата маткапиталом -> theme:007_matkap_payment
+  - Статус прошедшего платежа -> theme:003_payment_status
+  example_phrasings:
+  - Как оплатить?
+  - Куда переводить?
+  - Есть ссылка на оплату?
+  - Можно ли картой?
+  relevant_parameters:
+  - product
+  - customer_status
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - payment_methods.current
+  forbidden_promises:
+  - Не давать произвольные номера карт или счетов
+  escalation_rule: Менеджер при нестандартных способах оплаты.
+  legacy_parent_mapping:
+  - оплата / возврат / чек
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: Оплатить можно банковской картой, переводом по реквизитам или через СБП. Подскажите, пожалуйста,
+    как вам удобнее оплатить? После подтверждения деталей менеджер пришлет всю необходимую информацию.
+  rop_mandatory_data: Какой курс/продукт оплачивается, ФИО ребёнка (для назначения платежа).
+  rop_forbids_extra: Не давать конкретные реквизиты счёта в чат; не обещать ссылку «прямо сейчас» без подтверждения менеджера.
+  rop_handoff_target: Менеджер группы (нестандартные способы — наличные, маткапитал → тема 7, рассрочка → тема 6, юрлицо).
+  rop_comment: ''
+- theme_id: theme:003_payment_status
+  theme_name: Статус платежа и подтверждение
+  business_block: Финансы и оплата
+  short_description: Клиент уже платил и спрашивает, прошло ли, просит чек, квитанцию, счет или подтверждение.
+  not_this_theme:
+  - Способ оплаты -> theme:002_payment_method
+  - Возврат денег -> theme:009_refund
+  example_phrasings:
+  - Оплатил, прошло?
+  - Пришлите чек
+  - Где квитанция?
+  - Не вижу подтверждения
+  relevant_parameters:
+  - product
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - customer_payment_history.dynamic
+  forbidden_promises:
+  - Не подтверждать оплату без сверки
+  - Не обещать чек без проверки доступности
+  escalation_rule: Менеджер всегда, требуется доступ к платежной системе.
+  legacy_parent_mapping:
+  - оплата / возврат / чек
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Принято. Уточняю статус платежа у менеджера — он свяжется с вами в течение рабочего дня и пришлёт
+    подтверждение.
+  rop_mandatory_data: ФИО плательщика, ФИО ребёнка, сумма, дата платежа, способ оплаты (карта / перевод / СБП).
+  rop_forbids_extra: Не подтверждать оплату без сверки; не обещать чек без проверки доступности; не озвучивать суммы прошлых
+    платежей по памяти.
+  rop_handoff_target: Менеджер группы всегда — требуется доступ к платёжной системе и AMO.
+  rop_comment: ''
+- theme_id: theme:004_payment_schedule
+  theme_name: Срок и график оплаты
+  business_block: Финансы и оплата
+  short_description: Клиент спрашивает, когда нужно платить, до какой даты или с какой периодичностью.
+  not_this_theme:
+  - Рассрочка -> theme:006_installment
+  - Задолженность или индивидуальный перенос оплаты -> theme:009_refund
+  example_phrasings:
+  - До какого числа платить?
+  - Когда следующий платеж?
+  - Сколько раз в месяц списывается?
+  relevant_parameters:
+  - product
+  - format
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - payment_schedule.current
+  forbidden_promises:
+  - Не обещать перенос даты оплаты
+  escalation_rule: Менеджер при индивидуальных условиях.
+  legacy_parent_mapping:
+  - оплата / возврат / чек
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Оплата по {продукт} производится {периодичность} до {дата}. Следующий платёж: {дата_следующего}.'
+  rop_mandatory_data: Какой продукт, ФИО ребёнка (для уточнения индивидуальных условий).
+  rop_forbids_extra: Не обещать перенос даты оплаты; не сдвигать срок без менеджера.
+  rop_handoff_target: Менеджер группы (индивидуальные условия, рассрочка, задолженность).
+  rop_comment: Для действующих клиентов — обязательная сверка в AMO/Tallanto перед ответом.
+- theme_id: theme:005_discounts
+  theme_name: Скидки и условия
+  business_block: Финансы и оплата
+  short_description: Клиент спрашивает про общие правила скидок, акции, промокоды или льготы.
+  not_this_theme:
+  - Рассрочка -> theme:006_installment
+  example_phrasings:
+  - Есть ли скидки?
+  - Многодетным дают?
+  - А промокод?
+  relevant_parameters:
+  - product
+  - customer_status
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - discounts.current
+  forbidden_promises:
+  - Не обещать индивидуальную скидку
+  - Не называть устаревшие акции
+  escalation_rule: Менеджер при просьбе об индивидуальной скидке.
+  legacy_parent_mapping:
+  - скидки
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'У нас действуют скидки: {список_акций}. Для многодетных семей: {условия}. Подробности по конкретному
+    курсу уточнит менеджер.'
+  rop_mandatory_data: Какой продукт, статус клиента (новый/действующий), наличие соц. категории (многодетные, опекунство).
+  rop_forbids_extra: Не обещать индивидуальную скидку; не называть скидки, которых нет в утверждённом списке; не комментировать
+    конкурентов.
+  rop_handoff_target: Менеджер группы (просьба индивидуальной скидки, торг).
+  rop_comment: Список акций обновлять минимум раз в месяц.
+- theme_id: theme:006_installment
+  theme_name: Рассрочка
+  business_block: Финансы и оплата
+  short_description: Клиент спрашивает про возможность платить по частям, условия рассрочки или банк-партнер.
+  not_this_theme:
+  - Обычный график оплаты -> theme:004_payment_schedule
+  - Частичная оплата как факт прошлого -> theme:009_refund
+  example_phrasings:
+  - Есть рассрочка?
+  - Можно частями?
+  - Каков процент?
+  relevant_parameters:
+  - product
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - installment_terms.current
+  forbidden_promises:
+  - Не обещать одобрение рассрочки
+  escalation_rule: Менеджер для оформления.
+  legacy_parent_mapping:
+  - рассрочка
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Рассрочка возможна на {условия}. Банк-партнёр: {название}. Оформление заявки — через менеджера.'
+  rop_mandatory_data: Какой продукт, желаемое количество платежей.
+  rop_forbids_extra: Не обещать одобрение рассрочки; не комментировать решение банка-партнёра.
+  rop_handoff_target: Менеджер группы (оформление заявки).
+  rop_comment: Рассрочка только на организации "Фотон"
+- theme_id: theme:007_matkap_payment
+  theme_name: Оплата маткапиталом
+  business_block: Финансы и оплата
+  short_description: Клиент спрашивает про процедуру использования материнского капитала для оплаты обучения.
+  not_this_theme:
+  - Документы для маткапитала как отдельный операционный запрос -> theme:012_certificates
+  - Обычный способ оплаты -> theme:002_payment_method
+  example_phrasings:
+  - Можно маткапиталом?
+  - Какие документы для маткапитала?
+  - Как оформить через ПФР?
+  relevant_parameters:
+  - product
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - matkap_procedure.current
+  - matkap_documents.current
+  forbidden_promises:
+  - Не обещать сроки одобрения
+  - Не давать юридические гарантии
+  escalation_rule: Менеджер всегда.
+  legacy_parent_mapping:
+  - оплата / возврат / чек
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: По маткапиталу оплата возможна. Менеджер пришлёт перечень документов и поможет с оформлением через
+    ПФР.
+  rop_mandatory_data: 'ФИО ребёнка, какой курс,какой период обучения, семестр/год, контакт для связи, тип материнского капитала:
+    региональный/федеральный'
+  rop_forbids_extra: Не обещать сроки одобрения ПФР; не давать юридические гарантии; не комментировать остаток на сертификате.
+  rop_handoff_target: Менеджер группы всегда — юридически чувствительная процедура.
+  rop_comment: Процедуру согласовать с бухгалтерией заранее. Мы раюотаем только с федеральным материнским капиталом
+- theme_id: theme:008_tax_deduction
+  theme_name: Налоговый вычет
+  business_block: Финансы и оплата
+  short_description: Клиент спрашивает про процедуру получения налогового вычета за обучение или нужные справки.
+  not_this_theme:
+  - Возврат денег за услугу -> theme:009_refund
+  - Договор -> theme:011_contract
+  example_phrasings:
+  - Можно получить налоговый вычет?
+  - Дайте справку для налоговой
+  - Какая лицензия у вас?
+  relevant_parameters:
+  - customer_status
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - tax_deduction_procedure.current
+  - license_documents.current
+  forbidden_promises:
+  - Не консультировать по налоговому законодательству
+  escalation_rule: Менеджер при сложных случаях, например несколько детей или разные годы.
+  legacy_parent_mapping:
+  - налоговый вычет / справки
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Налоговый вычет за обучение возможен — у нас есть лицензия. Для получения справки нужно будет заполнить
+    заявление и прикрепить чеки/ выписки из банка/ квитанции из банка об оплате образовательных услуг за тот год, за который
+    хотите получить справку.
+  rop_mandatory_data: За какой период нужна справка, ФИО плательщика, ФИО ребёнка.
+  rop_forbids_extra: Не консультировать по налоговому законодательству; не обещать конкретную сумму вычета.
+  rop_handoff_target: Менеджер группы при сложных случаях (несколько детей, прошлые годы, нестандартные ситуации).
+  rop_comment: Типовая справка готовится за 3 рабочих дня.
+- theme_id: theme:009_refund
+  theme_name: Возврат денег / отказ от обучения
+  business_block: Возвраты и изменения
+  short_description: Клиент хочет вернуть оплату, отказаться от услуги или расторгнуть договор.
+  not_this_theme:
+  - Перенос или изменение условий -> theme:010_change_terms
+  - Налоговый вычет -> theme:008_tax_deduction
+  example_phrasings:
+  - Хочу вернуть деньги
+  - Отказываюсь от обучения
+  - Расторгните договор
+  - Перерасчет за пропуски
+  relevant_parameters:
+  - product
+  default_bot_permission: manager_only
+  required_facts:
+  - refund_policy.current
+  forbidden_promises:
+  - Не обещать возврат
+  - Не называть конкретные суммы возврата
+  - Не комментировать штрафы
+  escalation_rule: Менеджер всегда, P0 приоритет.
+  legacy_parent_mapping:
+  - изменение / отмена услуги
+  - оплата / возврат / чек
+  rop_decision: Только менеджер
+  rop_approved_phrasing: Принято. Передаю запрос менеджеру — он свяжется с вами для оформления процедуры в течение рабочего
+    дня.
+  rop_mandatory_data: ФИО, какой курс, причина (свободная форма), контакт для связи.
+  rop_forbids_extra: Не обещать возврат; не называть конкретные суммы возврата; не комментировать штрафы или удержания; не
+    извиняться за «недостатки» услуги.
+  rop_handoff_target: Менеджер группы всегда, P0 приоритет (срочно).
+  rop_comment: Фиксируем причину для статистики; РОП получает копию запроса в течение часа.
+- theme_id: theme:010_change_terms
+  theme_name: Перенос / изменение условий
+  business_block: Возвраты и изменения
+  short_description: Клиент просит перенос на другую группу, смену формата, изменение расписания или перенос смены лагеря.
+  not_this_theme:
+  - Возврат денег -> theme:009_refund
+  - Отмена записи на следующий год -> theme:021_continuation
+  example_phrasings:
+  - Можно перенести на следующий месяц?
+  - Хочу в другую группу
+  - С очного на онлайн?
+  relevant_parameters:
+  - product
+  - format
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - group_availability.dynamic
+  forbidden_promises:
+  - Не обещать конкретную группу или слот
+  - Не подтверждать без сверки
+  escalation_rule: Менеджер всегда.
+  legacy_parent_mapping:
+  - изменение / отмена услуги
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Принято. Уточню возможность переноса у менеджера — он свяжется с вами с вариантами.
+  rop_mandatory_data: ФИО ребёнка, на какой курс/группу перенос, желаемая дата, причина (опционально).
+  rop_forbids_extra: Не обещать конкретную группу или слот; не подтверждать без сверки с расписанием.
+  rop_handoff_target: Менеджер группы всегда.
+  rop_comment: Конфликты по группе разрешает менеджер.
+- theme_id: theme:011_contract
+  theme_name: Договор и его экземпляры
+  business_block: Документы
+  short_description: Клиент спрашивает про получение договора, копию, подписание, переподписание или отправку экземпляра.
+  not_this_theme:
+  - Справки для налоговой -> theme:012_certificates
+  - Договор как юридический спор -> theme:029_legal_question
+  example_phrasings:
+  - Можно копию договора?
+  - Где подписать?
+  - Не пришел договор
+  - Распечатать?
+  relevant_parameters:
+  - customer_status
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - contract_template.current
+  - customer_contract_status.dynamic
+  forbidden_promises:
+  - Не обещать сроки отправки
+  - Не подменять оригиналы
+  escalation_rule: Менеджер всегда.
+  legacy_parent_mapping:
+  - документы / договор
+  - оплата / договор / документы
+  - письма / справки / подтверждающие документы
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Договор пришлёт менеджер. Уточняю детали — он направит экземпляр в течение рабочего дня.
+  rop_mandatory_data: ФИО плательщика, ФИО ребёнка, какой курс, email для отправки.
+  rop_forbids_extra: Не отправлять договор сам; не обещать сроки без подтверждения; не подменять оригиналы копиями без согласования.
+  rop_handoff_target: Менеджер группы всегда.
+  rop_comment: ''
+- theme_id: theme:012_certificates
+  theme_name: Справки и подтверждающие документы
+  business_block: Документы
+  short_description: Клиент просит справку, форму, бланк или другой подтверждающий документ.
+  not_this_theme:
+  - Договор -> theme:011_contract
+  - Документы для маткапитала -> theme:007_matkap_payment
+  example_phrasings:
+  - Нужна справка для работы
+  - Дайте подтверждение оплаты на бланке
+  - Где скачать форму?
+  relevant_parameters:
+  - customer_status
+  - document_type
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - document_templates.current
+  forbidden_promises:
+  - Не обещать конкретные сроки выдачи
+  - Не выдавать персональные данные в шаблоне
+  escalation_rule: Менеджер всегда.
+  legacy_parent_mapping:
+  - письма / справки / подтверждающие документы
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Принято. Менеджер подготовит справку и пришлёт в течение 3 рабочих дней.
+  rop_mandatory_data: Тип справки (для работы / для налоговой / иная), ФИО ребенка, какой курс, период, формат (бумажная /
+    электронная), куда направить.
+  rop_forbids_extra: Не обещать конкретные сроки выдачи без подтверждения; не выдавать персональные данные в шаблоне.
+  rop_handoff_target: Менеджер группы всегда.
+  rop_comment: Типовые справки готовятся быстрее.
+- theme_id: theme:013_schedule
+  theme_name: Расписание занятий
+  business_block: Расписание, формат, адрес
+  short_description: Клиент спрашивает, когда занятия, в какие дни, во сколько, когда начало или конец периода обучения.
+  not_this_theme:
+  - Формат обучения -> theme:014_format
+  - Адрес очной площадки -> theme:015_address
+  - Перенос -> theme:010_change_terms
+  example_phrasings:
+  - Когда занятия?
+  - По каким дням?
+  - Расписание на 11 класс?
+  - Когда летняя школа?
+  relevant_parameters:
+  - product
+  - subject
+  - grade
+  - format
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - schedule.current
+  forbidden_promises:
+  - Не обещать конкретный слот
+  - Не называть устаревшее расписание
+  escalation_rule: Менеджер при индивидуальных запросах.
+  legacy_parent_mapping:
+  - расписание
+  - состоится ли занятие
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Расписание {продукт} по {предмет} для {класс} класса: {расписание}. Период: {период}.'
+  rop_mandatory_data: Продукт, предмет, класс ребёнка, формат (онлайн/очно).
+  rop_forbids_extra: Не обещать конкретный слот без подтверждения; не называть устаревшее расписание (старше актуальной версии).
+  rop_handoff_target: Менеджер группы (индивидуальные запросы).
+  rop_comment: Расписание обновляется к началу каждого семестра.
+- theme_id: theme:014_format
+  theme_name: Формат обучения
+  business_block: Расписание, формат, адрес
+  short_description: Клиент спрашивает, онлайн это, очно, гибрид, запись или прямой эфир.
+  not_this_theme:
+  - Расписание -> theme:013_schedule
+  - Адрес очной площадки -> theme:015_address
+  example_phrasings:
+  - Это онлайн?
+  - Можно очно?
+  - Есть запись урока?
+  - Нужен ли VPN?
+  relevant_parameters:
+  - product
+  - subject
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - formats.current
+  forbidden_promises:
+  - Не обещать конкретный формат для будущего курса
+  escalation_rule: Менеджер при особых требованиях.
+  legacy_parent_mapping:
+  - формат обучения
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: '{Продукт} проводится в формате: {формат}. Если онлайн — на платформе МТС линк, есть запись урока.
+    Если очно — адрес уточним отдельно.'
+  rop_mandatory_data: Продукт, предмет.
+  rop_forbids_extra: Не обещать конкретный формат для будущего курса; не обещать смену формата.
+  rop_handoff_target: 'Менеджер группы (особые требования: доступная среда, специфическое оборудование).'
+  rop_comment: ''
+- theme_id: theme:015_address
+  theme_name: Адрес очной площадки
+  business_block: Расписание, формат, адрес
+  short_description: Клиент спрашивает, где проходят очные занятия, как добраться, какая аудитория, метро или схема прохода.
+  not_this_theme:
+  - Транспорт лагеря -> theme:028_transport_logistics
+  - Формат обучения -> theme:014_format
+  example_phrasings:
+  - Где проходят занятия?
+  - Адрес КПМ?
+  - Какая аудитория?
+  - Как пройти от метро?
+  relevant_parameters:
+  - product
+  - format
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - addresses.current
+  forbidden_promises:
+  - Не давать произвольные адреса
+  - Не обещать парковку без подтверждения
+  escalation_rule: Менеджер при особых случаях, например доступная среда.
+  legacy_parent_mapping:
+  - адрес / очная площадка
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Очные занятия по {продукт} проходят по адресу: {адрес}. Метро: {метро}. На месте Вас встретит наш
+    сотрудник и подскажет в какую аудиторию идти ребенку'
+  rop_mandatory_data: Продукт, для какого класса/группы (если несколько площадок).
+  rop_forbids_extra: Не давать произвольные адреса; не обещать парковку без подтверждения; не комментировать доступную среду
+    без сверки.
+  rop_handoff_target: Менеджер группы (особые случаи — доступная среда).
+  rop_comment: ''
+- theme_id: theme:016_program
+  theme_name: Программа курса
+  business_block: Программа и качество
+  short_description: Клиент спрашивает, что изучают, какие темы, какая глубина, какой результат и к чему готовит курс.
+  not_this_theme:
+  - Материалы и домашка -> theme:018_materials_homework
+  - Качество или обратная связь -> theme:019a_positive_feedback или theme:019b_negative_feedback
+  - Уровень или класс -> theme:022_age_level_testing
+  example_phrasings:
+  - Что в программе?
+  - Какие темы по физике?
+  - Готовит ли к ЕГЭ?
+  - Изучаем ли производные?
+  relevant_parameters:
+  - product
+  - subject
+  - grade
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - programs.current
+  forbidden_promises:
+  - Не обещать конкретный балл или результат
+  escalation_rule: Менеджер при просьбе детального плана.
+  legacy_parent_mapping:
+  - программа курса
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Программа {продукт} по {предмет} для {класс} класса: {краткое описание тем + результат}. Готовит
+    к: {ЕГЭ/ОГЭ/олимпиады}.'
+  rop_mandatory_data: Продукт, предмет, класс ребёнка, цель (ЕГЭ / олимпиады / общий уровень).
+  rop_forbids_extra: Не обещать конкретный балл/результат; не сравнивать с конкурентами.
+  rop_handoff_target: Менеджер группы (просьба детального плана урок-за-уроком).
+  rop_comment: ''
+- theme_id: theme:017_teacher_method
+  theme_name: Преподаватель / методика
+  business_block: Программа и качество
+  short_description: Клиент спрашивает, кто преподает, какая квалификация, методика или стиль преподавания.
+  not_this_theme:
+  - Программа курса -> theme:016_program
+  - Пробное занятие -> theme:023_trial_class
+  example_phrasings:
+  - Кто преподаватель?
+  - Какой опыт?
+  - Можно ли поменять преподавателя?
+  relevant_parameters:
+  - product
+  - subject
+  - format
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - teachers.current
+  forbidden_promises:
+  - Не публиковать персональные данные преподавателей
+  - Не обещать смену преподавателя
+  escalation_rule: Менеджер всегда.
+  legacy_parent_mapping:
+  - преподаватель
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Преподаватели из МФТИ, МГУ,ВШЭ и других топовых вузов с большим опытом работы. Конкретного преподавателя
+    по вашему запросу подскажет менеджер. Если вашему ребенку не понравится педагог, можно будет перейти в другую группу,
+    к другому преподавателю
+  rop_mandatory_data: Продукт, предмет, формат, что именно интересует (квалификация / опыт / методика).
+  rop_forbids_extra: Не публиковать персональные данные преподавателей; не обещать смену преподавателя; не комментировать
+    конкретных людей.
+  rop_handoff_target: Менеджер группы всегда (репутационно чувствительно).
+  rop_comment: ''
+- theme_id: theme:018_materials_homework
+  theme_name: Материалы / домашние задания
+  business_block: Программа и качество
+  short_description: Клиент спрашивает про учебники, методички, домашние задания, материалы урока или проверку работ.
+  not_this_theme:
+  - Программа курса -> theme:016_program
+  - Доступ к материалам -> theme:025_missing_links_access
+  example_phrasings:
+  - Какие учебники?
+  - Кто проверяет домашку?
+  - Есть ли методички?
+  relevant_parameters:
+  - product
+  - subject
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - materials.current
+  forbidden_promises:
+  - Не обещать персональную проверку
+  escalation_rule: Менеджер при просьбах об индивидуальных материалах.
+  legacy_parent_mapping:
+  - материалы урока / домашние задания
+  - материалы / программа
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: По {продукт} есть {методички / учебники / онлайн-материалы}. Домашние задания проверяет преподаватель.
+    Дополнительные материалы преподаватель выкладывает в чат группы или на платформу.
+  rop_mandatory_data: Продукт, предмет, формат.
+  rop_forbids_extra: Не обещать персональную проверку каждой работы; не обещать индивидуальные материалы.
+  rop_handoff_target: Менеджер группы (просьбы об индивидуальных материалах).
+  rop_comment: ''
+- theme_id: theme:019a_positive_feedback
+  theme_name: Положительная обратная связь / благодарность
+  business_block: Программа и качество
+  short_description: Клиент благодарит, хвалит преподавателя, менеджера, программу или делится позитивным впечатлением.
+  not_this_theme:
+  - Жалоба -> theme:019b_negative_feedback
+  - Запрос о прогрессе ребенка -> theme:032_student_progress_inquiry
+  - Вопрос про качество обучения как информация о программе -> theme:016_program
+  example_phrasings:
+  - Спасибо за работу
+  - Очень нравится преподаватель
+  - Ребенок в восторге
+  - Мы довольны
+  relevant_parameters:
+  - customer_status
+  default_bot_permission: bot_self
+  required_facts: []
+  forbidden_promises:
+  - Не приписывать конкретные слова сотрудникам без подтверждения
+  - Не давать персональные обещания скидок или бонусов за лояльность
+  - Не использовать благодарность как повод для агрессивной допродажи
+  escalation_rule: Передавать менеджеру только если клиент сам просит конкретное действие, например записать еще ребенка или
+    перейти на курс.
+  legacy_parent_mapping:
+  - обратная связь
+  - обратная связь по обучению
+  - качество обучения / обратная связь
+  rop_decision: Бот отвечает сам
+  rop_approved_phrasing: Спасибо за тёплые слова! Очень рады, что {что хвалят / ребёнку нравится}. Если будет интерес к продолжению
+    или другим направлениям — обязательно подскажем.
+  rop_mandatory_data: 'Ничего обязательного. Опционально: если клиент сам упомянул конкретный интерес — бот может уточнить.'
+  rop_forbids_extra: Не приписывать конкретные слова сотрудникам без подтверждения; не давать персональные обещания скидок/бонусов
+    «за лояльность»; не использовать благодарность как повод для агрессивной допродажи.
+  rop_handoff_target: Менеджер группы только если клиент сам просит конкретное действие (записать ещё ребёнка, перейти на
+    курс) — как «горячий лид».
+  rop_comment: ''
+- theme_id: theme:019b_negative_feedback
+  theme_name: Негативная обратная связь / жалоба / конфликт
+  business_block: Программа и качество
+  short_description: Клиент недоволен, жалуется на преподавателя, менеджера, программу, услугу или выражает претензию.
+  not_this_theme:
+  - Запрос возврата денег как операционная просьба -> theme:009_refund
+  - Благодарность -> theme:019a_positive_feedback
+  - Технический баг -> theme:024_account_access
+  example_phrasings:
+  - Не нравится, как ведет занятия
+  - Менеджер не отвечает
+  - Ужасная организация
+  - Жалуюсь на преподавателя
+  relevant_parameters:
+  - customer_status
+  - sentiment
+  - urgency
+  default_bot_permission: manager_only
+  required_facts: []
+  forbidden_promises:
+  - Не извиняться от лица компании без согласования с менеджером
+  - Не обещать наказание сотрудника
+  - Не комментировать действия конкретного преподавателя или менеджера
+  - Не вступать в дискуссию по существу претензии
+  escalation_rule: Менеджер всегда; при сильном негативе РОП P0 в течение часа.
+  legacy_parent_mapping:
+  - обратная связь
+  - обратная связь по обучению
+  - качество обучения / обратная связь
+  rop_decision: Только менеджер
+  rop_approved_phrasing: Спасибо, что обратились. Передаю ваш отзыв ответственному менеджеру — он свяжется с вами в ближайшее
+    время.
+  rop_mandatory_data: ФИО, какой курс/преподаватель/менеджер, краткое описание ситуации.
+  rop_forbids_extra: Не извиняться от лица компании без согласования с менеджером; не обещать наказание сотрудника; не комментировать
+    действия конкретного преподавателя/менеджера; не вступать в дискуссию по существу претензии.
+  rop_handoff_target: Менеджер группы всегда; при сильном негативе — РОП P0 в течение часа.
+  rop_comment: 'Триггеры на РОП P0: «возврат», «жалоба в роспотребнадзор», «суд», «отзыв в интернете», эмоциональный негатив.'
+- theme_id: theme:020_enrollment
+  theme_name: Запись на обучение
+  business_block: Запись, продолжение, уровень
+  short_description: Клиент хочет записаться впервые или спрашивает условия записи.
+  not_this_theme:
+  - Продолжение на следующий год -> theme:021_continuation
+  - Пробное занятие -> theme:023_trial_class
+  example_phrasings:
+  - Хочу записать ребенка
+  - Как поступить?
+  - Запишите в группу
+  relevant_parameters:
+  - product
+  - grade
+  - subject
+  - format
+  default_bot_permission: draft_for_manager
+  required_facts: []
+  forbidden_promises:
+  - Не подтверждать запись без менеджера
+  escalation_rule: Менеджер всегда; бот может только собрать ФИО, класс, предмет и формат.
+  legacy_parent_mapping:
+  - запись на обучение
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: 'Спасибо за интерес! Чтобы записать ребёнка, нужно несколько уточнений: {обязательные данные ниже}.
+    Менеджер свяжется в течение рабочего дня для подтверждения.'
+  rop_mandatory_data: ФИО родителя, телефон родителя, e-mail родителя, ФИО ребёнка, класс, предмет(ы), желаемый формат (онлайн/очно),
+    желаемый период начала.
+  rop_forbids_extra: Не подтверждать запись без менеджера; не обещать конкретное место в группе.
+  rop_handoff_target: Менеджер группы всегда.
+  rop_comment: ''
+- theme_id: theme:021_continuation
+  theme_name: Продолжение обучения на следующий период
+  business_block: Запись, продолжение, уровень
+  short_description: Действующий клиент решает, продолжать ли обучение или перейти на новую программу или класс.
+  not_this_theme:
+  - Новая запись -> theme:020_enrollment
+  - Отказ от обучения -> theme:009_refund
+  example_phrasings:
+  - Будем ли продолжать?
+  - Записать на следующий год?
+  - Переходим в 10 класс, что дальше?
+  relevant_parameters:
+  - product
+  - grade
+  - customer_status
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - customer_current_program.dynamic
+  forbidden_promises:
+  - Не обещать конкретную группу
+  escalation_rule: Менеджер всегда.
+  legacy_parent_mapping:
+  - продолжение обучения / решение семьи
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Рады, что хотите продолжить! Менеджер подберёт оптимальный курс с учётом прогресса ребёнка и пришлёт
+    варианты.
+  rop_mandatory_data: ФИО ребёнка (для lookup истории), текущий класс/предмет, на что хотите перейти.
+  rop_forbids_extra: Не обещать конкретную группу; не комментировать стоимость продолжения без сверки.
+  rop_handoff_target: Менеджер группы всегда.
+  rop_comment: ''
+- theme_id: theme:022_age_level_testing
+  theme_name: Возраст / класс / уровень / тестирование
+  business_block: Запись, продолжение, уровень
+  short_description: Клиент спрашивает, подходит ли возраст, в какой класс или группу, нужно ли тестирование и как распределяют.
+  not_this_theme:
+  - Программа курса -> theme:016_program
+  - Пробное занятие -> theme:023_trial_class
+  example_phrasings:
+  - Подойдет ли для 7 класса?
+  - Берете 5 классов?
+  - Нужно ли проходить тест?
+  relevant_parameters:
+  - grade
+  - subject
+  - product
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - age_levels.current
+  - placement_test.current
+  forbidden_promises:
+  - Не обещать конкретный класс без тестирования
+  escalation_rule: Менеджер для распределения.
+  legacy_parent_mapping:
+  - возраст / класс / уровень
+  - подходит ли уровень
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: '{Продукт} рассчитан на учеников {диапазон классов}. После небольшого тестирования (бесплатное, ~30
+    минут) делим учеников на группы по классу и уровню знаний, чтобы всем было комфортно и полезно'
+  rop_mandatory_data: Класс ребёнка, предмет, продукт.
+  rop_forbids_extra: Не обещать конкретный класс/группу без тестирования.
+  rop_handoff_target: Менеджер группы (запись на тестирование и распределение).
+  rop_comment: ''
+- theme_id: theme:023_trial_class
+  theme_name: Пробное занятие
+  business_block: Запись, продолжение, уровень
+  short_description: Клиент хочет попробовать обучение или спрашивает условия пробного занятия.
+  not_this_theme:
+  - Обычная запись -> theme:020_enrollment
+  example_phrasings:
+  - Есть ли пробное?
+  - Можно ли попробовать?
+  - Как записаться на пробное?
+  relevant_parameters:
+  - product
+  - subject
+  - grade
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - trial_class.current
+  forbidden_promises:
+  - Не обещать конкретный слот
+  escalation_rule: Менеджер для подтверждения слота.
+  legacy_parent_mapping:
+  - пробное занятие
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Пробное занятие возможно. {Условия: бесплатное / стоимость / длительность}. Запись через менеджера.'
+  rop_mandatory_data: ФИО ребёнка, класс, предмет, формат (онлайн/очно), удобные дни/время.
+  rop_forbids_extra: Не обещать конкретный слот; не обещать конкретного преподавателя.
+  rop_handoff_target: Менеджер группы (подтверждение слота).
+  rop_comment: пробный период возможен только в онлайн формате. В очном такого нет
+- theme_id: theme:024_account_access
+  theme_name: Личный кабинет / логин / пароль
+  business_block: Доступ и техника
+  short_description: Клиент не может войти, забыл пароль, просит восстановить доступ или сообщает о техническом баге с личным
+    кабинетом.
+  not_this_theme:
+  - Ссылка не пришла -> theme:025_missing_links_access
+  - Общие технические вопросы про формат -> theme:014_format
+  example_phrasings:
+  - Не могу войти
+  - Сбросьте пароль
+  - Где личный кабинет?
+  relevant_parameters:
+  - customer_status
+  default_bot_permission: draft_for_manager
+  required_facts: []
+  forbidden_promises:
+  - Не запрашивать пароли в чате
+  escalation_rule: Менеджер или техподдержка.
+  legacy_parent_mapping:
+  - доступ / технический вопрос
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Помогу восстановить доступ. Уточняю данные у менеджера — он пришлёт инструкцию по сбросу пароля или
+    решит вопрос напрямую.
+  rop_mandatory_data: ФИО (родителя или ребёнка), email, который использовали при регистрации.
+  rop_forbids_extra: НЕ запрашивать пароли в чате; не пересылать пароли в чат; не обещать конкретный срок восстановления.
+  rop_handoff_target: Менеджер группы или техподдержка.
+  rop_comment: ''
+- theme_id: theme:025_missing_links_access
+  theme_name: Ссылки / письма / доступ к материалам не пришли
+  business_block: Доступ и техника
+  short_description: Клиент пишет, что не пришла ссылка на занятие, письмо, запись урока или доступ к материалам.
+  not_this_theme:
+  - Личный кабинет -> theme:024_account_access
+  - Статус оплаты -> theme:003_payment_status
+  example_phrasings:
+  - Не пришла ссылка на Zoom
+  - Где запись урока?
+  - Письмо не пришло
+  relevant_parameters:
+  - product
+  - format
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - zoom_links.current
+  forbidden_promises:
+  - Не давать произвольные ссылки
+  escalation_rule: Менеджер всегда.
+  legacy_parent_mapping:
+  - письмо / ссылка / доступ не пришли
+  - письма / справки / подтверждающие документы
+  - доступ / технический вопрос
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Проверим. Уточняю у менеджера — продублируем корректную ссылку или письмо в ближайшее время.
+  rop_mandatory_data: ФИО ребёнка, какой курс/занятие, какой канал ожидали (Zoom / email / личный кабинет).
+  rop_forbids_extra: Не давать произвольные ссылки; не обещать «прямо сейчас» без подтверждения.
+  rop_handoff_target: Менеджер группы всегда.
+  rop_comment: ''
+- theme_id: theme:026_camp_general
+  theme_name: Лагерь / выездная школа
+  business_block: Лагерь и логистика
+  short_description: Клиент спрашивает, что такое лагерь или летняя школа, какие смены, программа, даты, локация или общие
+    условия.
+  not_this_theme:
+  - Бытовые условия -> theme:027_camp_living_conditions
+  - Транспорт -> theme:028_transport_logistics
+  - Цена или оплата -> theme:001_pricing, theme:002_payment_method, theme:003_payment_status, theme:004_payment_schedule,
+    theme:005_discounts, theme:006_installment, theme:007_matkap_payment
+  example_phrasings:
+  - Что за летняя школа?
+  - Какие смены?
+  - Где будет лагерь?
+  relevant_parameters:
+  - product
+  - grade
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - camp.current
+  forbidden_promises:
+  - Не подтверждать персональное место
+  escalation_rule: Менеджер для бронирования.
+  legacy_parent_mapping:
+  - лагерь / смена / поездка
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'Летняя школа / лагерь {название смены}: {даты}, {направления}, {место проведения}, программа: {краткое
+    описание}. Возраст: {диапазон}.'
+  rop_mandatory_data: Класс ребёнка, какая смена интересует, формат участия, интересующие направления.
+  rop_forbids_extra: Не подтверждать персональное место; не обещать конкретную группу/корпус.
+  rop_handoff_target: Менеджер группы (бронирование места).
+  rop_comment: ''
+- theme_id: theme:027_camp_living_conditions
+  theme_name: Бытовые условия лагеря
+  business_block: Лагерь и логистика
+  short_description: Клиент спрашивает про заселение, выезд, проживание, питание, душ, белье, общежитие или режим дня.
+  not_this_theme:
+  - Программа лагеря -> theme:026_camp_general
+  - Транспорт -> theme:028_transport_logistics
+  example_phrasings:
+  - Когда заселение?
+  - Какое питание?
+  - Сколько человек в комнате?
+  relevant_parameters: []
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - camp_logistics.current
+  forbidden_promises:
+  - Не обещать конкретную комнату
+  escalation_rule: Менеджер для особых случаев.
+  legacy_parent_mapping:
+  - бытовые условия лагеря
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: '{Тип проживания (комнаты на N человек / корпус)}. Питание {N-разовое}. заезд {время}, выезд {время}.
+    Что взять с собой — полная памятка от менеджера.'
+  rop_mandatory_data: Какая смена (если параметры различаются).
+  rop_forbids_extra: Не обещать конкретную комнату/соседей; не обещать особые условия (диета, аллергии) без согласования.
+  rop_handoff_target: Менеджер группы (особые случаи — диета, медицинские особенности, аллергии).
+  rop_comment: ''
+- theme_id: theme:028_transport_logistics
+  theme_name: Транспорт / логистика
+  business_block: Лагерь и логистика
+  short_description: Клиент спрашивает, как доехать до лагеря, есть ли организованный трансфер, где точка сбора или проводы.
+  not_this_theme:
+  - Адрес очной площадки -> theme:015_address
+  example_phrasings:
+  - Как добираться?
+  - Есть ли автобус?
+  - Где собираемся?
+  relevant_parameters: []
+  default_bot_permission: answer_after_fact_check
+  required_facts:
+  - transport.current
+  forbidden_promises: []
+  escalation_rule: Менеджер.
+  legacy_parent_mapping:
+  - транспорт / логистика
+  rop_decision: Бот отвечает после проверки актуального факта
+  rop_approved_phrasing: 'До лагеря добраться можно: {способы}. Организованный трансфер: {информация}. Точка сбора: {место
+    и время}.'
+  rop_mandatory_data: С какого города/района.
+  rop_forbids_extra: —
+  rop_handoff_target: Менеджер группы (индивидуальные вопросы транспорта).
+  rop_comment: ''
+- theme_id: theme:029_legal_question
+  theme_name: Юридический вопрос
+  business_block: Юридическое и партнерское
+  short_description: Клиент спрашивает про права, обязанности, штрафы, споры или расторжение договора как юридический акт.
+  not_this_theme:
+  - Возврат денег как операционная просьба -> theme:009_refund
+  - Договор как документ -> theme:011_contract
+  example_phrasings:
+  - Какие у нас права?
+  - Можем ли мы судиться?
+  - Нарушаете договор
+  relevant_parameters: []
+  default_bot_permission: manager_only
+  required_facts: []
+  forbidden_promises:
+  - Не давать юридические консультации
+  - Не комментировать судебные перспективы
+  escalation_rule: Менеджер всегда; серьезные случаи РОП или юрист P0.
+  legacy_parent_mapping:
+  - юридические / партнерские вопросы
+  rop_decision: Только менеджер
+  rop_approved_phrasing: Принято. По этому вопросу свяжется ответственный сотрудник.
+  rop_mandatory_data: ФИО, краткая суть вопроса (для маршрутизации).
+  rop_forbids_extra: Не давать юридические консультации; не комментировать судебные перспективы; не цитировать договор без
+    сверки.
+  rop_handoff_target: Менеджер группы всегда; серьёзные случаи (упоминание суда, прокуратуры, роспотребнадзора) — РОП/юрист
+    P0.
+  rop_comment: Триггер на P0-эскалацию — упоминание правовых органов.
+- theme_id: theme:030_partnership_b2b
+  theme_name: Партнерство / B2B-предложение
+  business_block: Юридическое и партнерское
+  short_description: Клиент или организация предлагает B2B-партнерство, сотрудничество, интеграцию или коммерческое предложение.
+  not_this_theme:
+  - Юридические вопросы клиента -> theme:029_legal_question
+  example_phrasings:
+  - Хотим сотрудничать
+  - Есть ли партнерская программа?
+  - Мы школа, можем интегрироваться
+  relevant_parameters: []
+  default_bot_permission: manager_only
+  required_facts: []
+  forbidden_promises:
+  - Не обещать условия партнерства
+  escalation_rule: РОП или маркетинг.
+  legacy_parent_mapping:
+  - юридические / партнерские вопросы
+  rop_decision: Только менеджер
+  rop_approved_phrasing: Спасибо за интерес к сотрудничеству! Передам ваш запрос — ответственный сотрудник свяжется с вами
+    в течение рабочего дня.
+  rop_mandatory_data: Название организации/проекта, ФИО контактного лица, телефон для связи, суть предложения.
+  rop_forbids_extra: Не обещать условия партнёрства; не комментировать конкурентов.
+  rop_handoff_target: РОП или маркетинг.
+  rop_comment: ''
+- theme_id: theme:032_student_progress_inquiry
+  theme_name: Запрос статуса / прогресса ученика
+  business_block: Индивидуальный прогресс ученика
+  short_description: Родитель спрашивает, как успехи ребенка, как он занимается, какие отметки, есть ли пропуски или что нужно
+    подтянуть.
+  not_this_theme:
+  - Программа курса -> theme:016_program
+  - Материалы и домашка -> theme:018_materials_homework
+  - Благодарность или жалоба о преподавателе -> theme:019a_positive_feedback или theme:019b_negative_feedback
+  - Статус оплаты -> theme:003_payment_status
+  example_phrasings:
+  - Как успехи моего ребенка?
+  - Сколько занятий пропустил?
+  - Какие у него отметки?
+  - Что нужно подтянуть?
+  - Готов ли к экзамену?
+  relevant_parameters:
+  - customer_status
+  default_bot_permission: draft_for_manager
+  required_facts:
+  - student_progress.dynamic
+  forbidden_promises:
+  - Не оценивать ребенка без данных
+  - Не давать прогнозы успешности
+  - Не обещать конкретный балл или оценку
+  - Не делать выводы о способностях ученика
+  - Не сравнивать с другими учениками
+  escalation_rule: Менеджер всегда; при сложных запросах преподаватель курса.
+  legacy_parent_mapping:
+  - качество обучения / обратная связь
+  - посещение / отсутствие / отметки
+  rop_decision: Бот только собирает данные и передает менеджеру
+  rop_approved_phrasing: Уточняю у преподавателя/менеджера данные по ребёнку. Свяжемся с вами с подробной информацией.
+  rop_mandatory_data: ФИО ребёнка, какой курс/группа, что конкретно интересует (отметки / посещаемость / готовность к экзамену
+    / общая динамика).
+  rop_forbids_extra: Не оценивать ребёнка без данных; не давать прогнозы успешности; не обещать конкретный балл/оценку; не
+    делать выводы о способностях ученика; не сравнивать с другими учениками; не комментировать преподавателя.
+  rop_handoff_target: Менеджер группы всегда; при сложных запросах (готовность к экзамену, рекомендации) — преподавателю курса.
+  rop_comment: Требуется lookup в Tallanto (посещения, отметки, последнее занятие).
+service_categories:
+- service_id: service:S1_non_question
+  service_name: Нет клиентского вопроса
+  service_process: Повторная проверка распознавания или ручная проверка неясного фрагмента.
+  short_description: Обрывок без вопроса, развернутый пересказ разговора или описание процедуры менеджером.
+  routing_rule: Не классифицировать как тему; если источник звонок, отправить на повторную проверку распознавания или в unclear
+    для человека.
+  example_phrasings:
+  - Обрывок без клиентского вопроса
+  - Развернутый пересказ разговора
+  - Описание процедуры менеджером
+  default_bot_permission: draft_for_manager
+  required_facts: []
+  forbidden_promises:
+  - Не превращать пересказ в тему для РОПа
+  escalation_rule: Ручная проверка, если нельзя восстановить вопрос клиента.
+  legacy_parent_mapping:
+  - обрывок без клиентского вопроса
+- service_id: service:S2_unclear
+  service_name: Непонятный или неполный вопрос
+  service_process: Уточняющий вопрос клиенту или передача менеджеру.
+  short_description: Слишком короткий контекст, неполное сообщение или вопрос, который нельзя надежно отнести к теме.
+  routing_rule: Бот задает мягкий уточняющий вопрос; если клиент не уточняет, передает менеджеру.
+  example_phrasings:
+  - Уточните, пожалуйста, вопрос про оплату?
+  - Неполный контекст
+  - Короткий обрывок внутри темы
+  default_bot_permission: bot_self
+  required_facts: []
+  forbidden_promises:
+  - Не угадывать тему при недостатке контекста
+  escalation_rule: Менеджер, если после уточнения тема не стала понятной.
+  legacy_parent_mapping:
+  - неполный контекст / уточнение предыдущего сообщения
+  - уточнение причины звонка
+- service_id: service:S3_out_of_scope
+  service_name: Неактуально или вне темы
+  service_process: Корректное закрытие диалога без передачи менеджеру, если нет нового интереса.
+  short_description: Клиент отказывается, пишет, что неактуально, ошибся номером, прислал спам или обращается к конкуренту.
+  routing_rule: Бот корректно закрывает диалог и не передает менеджеру, если нет признаков нового интереса.
+  example_phrasings:
+  - Уже неактуально
+  - Ошиблись номером
+  - Нам это не нужно
+  default_bot_permission: bot_self
+  required_facts: []
+  forbidden_promises:
+  - Не продолжать продажу при явном отказе
+  escalation_rule: Не передавать менеджеру, кроме случаев явного нового запроса.
+  legacy_parent_mapping:
+  - отказ / неактуально
+- service_id: service:S4_status_request
+  service_name: Статус запроса / ожидание ответа
+  service_process: Передача менеджеру с пометкой, что клиент ожидает статус.
+  short_description: Клиент спрашивает, когда ответят, есть ли результат, есть ли новости или какой следующий шаг.
+  routing_rule: Бот не отвечает по сути, а передает менеджеру с пометкой статус ожидает.
+  example_phrasings:
+  - Когда ответят?
+  - Есть новости?
+  - Какой следующий шаг?
+  default_bot_permission: draft_for_manager
+  required_facts: []
+  forbidden_promises:
+  - Не обещать срок ответа без подтверждения менеджера
+  escalation_rule: Менеджер с пометкой статус ожидает.
+  legacy_parent_mapping:
+  - статус запроса / ожидает ответа
+  - следующий шаг / порядок действий
+- service_id: service:S5_general_consultation
+  service_name: Общая консультация
+  service_process: Сбор базовых данных и передача менеджеру.
+  short_description: Клиент просит общую консультацию или помощь без конкретной темы.
+  routing_rule: Бот собирает, что интересует, для кого, какой класс и предмет, затем передает менеджеру.
+  example_phrasings:
+  - Нужна консультация
+  - Подскажите, что выбрать
+  - Хочу узнать про ваши курсы
+  default_bot_permission: draft_for_manager
+  required_facts: []
+  forbidden_promises:
+  - Не подменять консультацию менеджера произвольной рекомендацией
+  escalation_rule: Менеджер после сбора базовых данных.
+  legacy_parent_mapping:
+  - общая консультация / нужна помощь
+  - общий вопрос
+  - сайт / источник информации
+rop_policy_schema_version: question_catalog_rop_policy_v2_2026_05_15
+allowed_rop_decisions:
+- Бот отвечает сам
+- Бот отвечает после проверки актуального факта
+- Бот только собирает данные и передает менеджеру
+- Только менеджер
+- Тему нужно раздробить на более узкие случаи

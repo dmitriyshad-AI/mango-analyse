@@ -28,7 +28,7 @@ def test_extract_call_questions_from_enriched_reviews(tmp_path: Path) -> None:
             {
                 "moment_id": "m1",
                 "started_at": "2026-05-01T10:00:00+00:00",
-                "customer_question": "Сколько стоит ЕГЭ по математике для 11 класса?",
+                "customer_question": "Сколько стоит ЕГЭ по математике для 11 класса 10 июня?",
                 "manager_answer": "Стоимость 50000 рублей, отправлю ссылку.",
                 "llm_customer_signal_type": "price_question",
                 "llm_hidden_sales_stage": "price_discussion",
@@ -44,6 +44,7 @@ def test_extract_call_questions_from_enriched_reviews(tmp_path: Path) -> None:
     assert report["items_extracted"] == 1
     assert items[0].source_channel == "call"
     assert items[0].price_related is True
+    assert "10 июня" in str(items[0].metadata["customer_text_for_rop"])
     assert "50000" not in (items[0].manager_text_redacted or "")
 
 
@@ -137,8 +138,10 @@ def test_extract_mail_questions_skips_bank_and_marketing_noise(tmp_path: Path) -
     text_dir.mkdir(parents=True)
     bank_text = text_dir / "bank.txt"
     news_text = text_dir / "news.txt"
+    notice_text = text_dir / "notice.txt"
     bank_text.write_text("Счёт: 30101810400000000225 ИНН: 7700000000 КПП: 770001001", encoding="utf-8")
     news_text.write_text("Будьте в курсе всех новостей и интересных событий!", encoding="utf-8")
+    notice_text.write_text("Вы записаны на Подготовительные курсы. Ваше расписание занятий в 2026 учебном году.", encoding="utf-8")
     db_path = folder / "mail_archive.sqlite"
     with sqlite3.connect(db_path) as con:
         con.execute(
@@ -183,6 +186,18 @@ def test_extract_mail_questions_skips_bank_and_marketing_noise(tmp_path: Path) -
                     "external",
                     str(news_text),
                     55,
+                ),
+                (
+                    "notice",
+                    "2026-05-01T12:00:00+00:00",
+                    "Вы записаны на Подготовительные курсы",
+                    "edu@kmipt.ru",
+                    "client@example.com",
+                    "INBOX",
+                    "INBOX",
+                    "external",
+                    str(notice_text),
+                    90,
                 ),
             ],
         )

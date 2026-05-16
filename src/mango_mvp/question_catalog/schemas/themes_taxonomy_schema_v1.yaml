@@ -1,0 +1,124 @@
+schema_version: question_catalog_themes_taxonomy_schema_v1
+description: >
+  Validation contract for Question Catalog v2 themes taxonomy. This schema is a
+  lightweight repository-native contract; loader tests should enforce the
+  required fields, counts, allowed permissions, and allowed parameters.
+
+expected_counts:
+  semantic_themes: 32
+  service_categories: 5
+  total_categories: 37
+
+top_level_required_fields:
+  - schema_version
+  - source_documents
+  - expected_counts
+  - allowed_parameters
+  - allowed_bot_permissions
+  - allowed_rop_decisions
+  - themes
+  - service_categories
+
+theme_required_fields:
+  - theme_id
+  - theme_name
+  - business_block
+  - short_description
+  - not_this_theme
+  - example_phrasings
+  - relevant_parameters
+  - default_bot_permission
+  - required_facts
+  - forbidden_promises
+  - escalation_rule
+  - legacy_parent_mapping
+  - rop_decision
+  - rop_approved_phrasing
+  - rop_mandatory_data
+  - rop_forbids_extra
+  - rop_handoff_target
+  - rop_comment
+
+service_required_fields:
+  - service_id
+  - service_name
+  - service_process
+  - short_description
+  - routing_rule
+  - example_phrasings
+  - default_bot_permission
+  - required_facts
+  - forbidden_promises
+  - escalation_rule
+  - legacy_parent_mapping
+
+allowed_parameters:
+  - product
+  - subject
+  - grade
+  - format
+  - customer_status
+  - urgency
+  - sentiment
+  - document_type
+
+allowed_bot_permissions:
+  - bot_self
+  - answer_after_fact_check
+  - draft_for_manager
+  - manager_only
+
+allowed_rop_decisions:
+  - Бот отвечает сам
+  - Бот отвечает после проверки актуального факта
+  - Бот только собирает данные и передает менеджеру
+  - Только менеджер
+  - Тему нужно раздробить на более узкие случаи
+
+forbidden_legacy_bucket_markers:
+  - manual_review
+  - conversation_summary
+  - mixed_context
+  - short_context
+  - status_context
+
+required_theme_ids:
+  - theme:001_pricing
+  - theme:002_payment_method
+  - theme:003_payment_status
+  - theme:004_payment_schedule
+  - theme:005_discounts
+  - theme:006_installment
+  - theme:007_matkap_payment
+  - theme:008_tax_deduction
+  - theme:009_refund
+  - theme:010_change_terms
+  - theme:011_contract
+  - theme:012_certificates
+  - theme:013_schedule
+  - theme:014_format
+  - theme:015_address
+  - theme:016_program
+  - theme:017_teacher_method
+  - theme:018_materials_homework
+  - theme:019a_positive_feedback
+  - theme:019b_negative_feedback
+  - theme:020_enrollment
+  - theme:021_continuation
+  - theme:022_age_level_testing
+  - theme:023_trial_class
+  - theme:024_account_access
+  - theme:025_missing_links_access
+  - theme:026_camp_general
+  - theme:027_camp_living_conditions
+  - theme:028_transport_logistics
+  - theme:029_legal_question
+  - theme:030_partnership_b2b
+  - theme:032_student_progress_inquiry
+
+required_service_ids:
+  - service:S1_non_question
+  - service:S2_unclear
+  - service:S3_out_of_scope
+  - service:S4_status_request
+  - service:S5_general_consultation

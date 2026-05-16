@@ -24,9 +24,22 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.productization.mail_archive import (  # noqa: E402
+    DEFAULT_ATTACHMENT_PARSE_ALLOW_EXTENSIONS,
+    DEFAULT_ATTACHMENT_IMAGE_OCR_EXTENSIONS,
+    DEFAULT_ATTACHMENT_PARSE_REVIEW_EXTENSIONS,
+    DEFAULT_ATTACHMENT_PDF_EXTRACT_EXTENSIONS,
+    DEFAULT_ATTACHMENT_TEXT_EXTRACT_EXTENSIONS,
     MailArchiveIngestConfig,
     MailArchivePreflightConfig,
     MailArchiveVerificationConfig,
+    MailAttachmentImageOcrPlanConfig,
+    MailAttachmentOcrPreflightConfig,
+    MailAttachmentOcrPilotConfig,
+    MailAttachmentParsePlanConfig,
+    MailAttachmentPdfExtractConfig,
+    MailAttachmentStage6PlanConfig,
+    MailAttachmentTextExtractConfig,
+    MailAttachmentTextIndexConfig,
     MailCustomerHistoryHandoffConfig,
     MailMangoBridgePreviewConfig,
     MailPhoneLiftPreviewConfig,
@@ -35,6 +48,14 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     TallantoIdentityMapConfig,
     build_mail_archive_ingest,
     build_mail_archive_preflight,
+    build_mail_attachment_image_ocr_plan,
+    build_mail_attachment_ocr_preflight,
+    build_mail_attachment_ocr_pilot,
+    build_mail_attachment_parse_plan,
+    build_mail_attachment_pdf_extract,
+    build_mail_attachment_stage6_plan,
+    build_mail_attachment_text_extract,
+    build_mail_attachment_text_index,
     build_mail_customer_history_handoff,
     build_mail_mango_bridge_preview,
     build_mail_phone_lift_preview,
@@ -81,6 +102,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return run_mango_phone_index_preview(args)
     if args.command == "phone-lift-preview":
         return run_phone_lift_preview(args)
+    if args.command == "attachment-parse-plan":
+        return run_attachment_parse_plan(args)
+    if args.command == "attachment-text-extract":
+        return run_attachment_text_extract(args)
+    if args.command == "attachment-pdf-extract":
+        return run_attachment_pdf_extract(args)
+    if args.command == "attachment-image-ocr-plan":
+        return run_attachment_image_ocr_plan(args)
+    if args.command == "attachment-text-index":
+        return run_attachment_text_index(args)
+    if args.command == "attachment-stage6-plan":
+        return run_attachment_stage6_plan(args)
+    if args.command == "attachment-ocr-preflight":
+        return run_attachment_ocr_preflight(args)
+    if args.command == "attachment-ocr-pilot":
+        return run_attachment_ocr_pilot(args)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 
@@ -301,6 +338,180 @@ def run_phone_lift_preview(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_attachment_parse_plan(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_parse_plan(
+            MailAttachmentParsePlanConfig(
+                archive_db_paths=[Path(path) for path in args.archive_db],
+                out_dir=Path(args.out_dir),
+                max_size_bytes=args.max_size_bytes,
+                allow_extensions=tuple(args.allow_extension or []),
+                review_extensions=tuple(args.review_extension or []),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment parse plan failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_attachment_text_extract(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_text_extract(
+            MailAttachmentTextExtractConfig(
+                archive_db_paths=[Path(path) for path in args.archive_db],
+                parse_plan_db_path=Path(args.parse_plan_db),
+                out_dir=Path(args.out_dir),
+                stage_extensions=tuple(args.stage_extension or DEFAULT_ATTACHMENT_TEXT_EXTRACT_EXTENSIONS),
+                max_attachment_bytes=args.max_attachment_bytes,
+                max_text_chars_per_attachment=args.max_text_chars_per_attachment,
+                max_csv_rows=args.max_csv_rows,
+                max_csv_columns=args.max_csv_columns,
+                max_xlsx_sheets=args.max_xlsx_sheets,
+                max_xlsx_rows_per_sheet=args.max_xlsx_rows_per_sheet,
+                max_xlsx_columns_per_sheet=args.max_xlsx_columns_per_sheet,
+                max_zip_members=args.max_zip_members,
+                max_zip_uncompressed_bytes=args.max_zip_uncompressed_bytes,
+                max_attachments=args.max_attachments,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment text extract failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_attachment_pdf_extract(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_pdf_extract(
+            MailAttachmentPdfExtractConfig(
+                archive_db_paths=[Path(path) for path in args.archive_db],
+                parse_plan_db_path=Path(args.parse_plan_db),
+                out_dir=Path(args.out_dir),
+                stage_extensions=tuple(args.stage_extension or DEFAULT_ATTACHMENT_PDF_EXTRACT_EXTENSIONS),
+                max_attachment_bytes=args.max_attachment_bytes,
+                max_pdf_pages=args.max_pdf_pages,
+                max_text_chars_per_attachment=args.max_text_chars_per_attachment,
+                max_page_text_chars=args.max_page_text_chars,
+                max_pdf_objects_to_scan=args.max_pdf_objects_to_scan,
+                pdf_timeout_seconds=args.pdf_timeout_seconds,
+                max_attachments=args.max_attachments,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment PDF extract failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_attachment_image_ocr_plan(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_image_ocr_plan(
+            MailAttachmentImageOcrPlanConfig(
+                archive_db_paths=[Path(path) for path in args.archive_db],
+                parse_plan_db_path=Path(args.parse_plan_db),
+                out_dir=Path(args.out_dir),
+                stage_extensions=tuple(args.stage_extension or DEFAULT_ATTACHMENT_IMAGE_OCR_EXTENSIONS),
+                max_attachment_bytes=args.max_attachment_bytes,
+                max_image_dimension=args.max_image_dimension,
+                max_image_pixels=args.max_image_pixels,
+                inspect_headers=args.inspect_headers,
+                max_attachments=args.max_attachments,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment image OCR plan failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_attachment_text_index(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_text_index(
+            MailAttachmentTextIndexConfig(
+                out_dir=Path(args.out_dir),
+                text_extract_db_paths=[Path(path) for path in (args.text_extract_db or [])],
+                pdf_extract_db_paths=[Path(path) for path in (args.pdf_extract_db or [])],
+                image_ocr_plan_db_paths=[Path(path) for path in (args.image_ocr_plan_db or [])],
+                parse_plan_db_path=Path(args.parse_plan_db) if args.parse_plan_db else None,
+                max_rows=args.max_rows,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment text index failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_attachment_stage6_plan(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_stage6_plan(
+            MailAttachmentStage6PlanConfig(
+                parse_plan_db_path=Path(args.parse_plan_db),
+                text_index_db_path=Path(args.text_index_db),
+                out_dir=Path(args.out_dir),
+                ocr_pilot_limit=args.ocr_pilot_limit,
+                min_pilot_attachment_bytes=args.min_pilot_attachment_bytes,
+                max_pilot_attachment_bytes=args.max_pilot_attachment_bytes,
+                pilot_extensions=tuple(args.pilot_extension or DEFAULT_ATTACHMENT_IMAGE_OCR_EXTENSIONS),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment stage 6 plan failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_attachment_ocr_preflight(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_ocr_preflight(
+            MailAttachmentOcrPreflightConfig(
+                archive_db_paths=[Path(path) for path in args.archive_db],
+                stage6_plan_db_path=Path(args.stage6_plan_db),
+                out_dir=Path(args.out_dir),
+                max_candidates=args.max_candidates,
+                max_attachment_bytes=args.max_attachment_bytes,
+                verify_sha256=not args.skip_sha256,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment OCR preflight failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_attachment_ocr_pilot(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_attachment_ocr_pilot(
+            MailAttachmentOcrPilotConfig(
+                archive_db_paths=[Path(path) for path in args.archive_db],
+                ocr_preflight_db_path=Path(args.ocr_preflight_db),
+                out_dir=Path(args.out_dir),
+                max_candidates=args.max_candidates,
+                max_attachment_bytes=args.max_attachment_bytes,
+                languages=args.languages,
+                page_segmentation_mode=args.psm,
+                tesseract_timeout_seconds=args.tesseract_timeout_seconds,
+                max_text_chars_per_attachment=args.max_text_chars_per_attachment,
+                workers=args.workers,
+                tesseract_thread_limit=args.tesseract_thread_limit,
+                reuse_existing_ocr_text=args.reuse_existing_ocr_text,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL attachment OCR pilot failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
 def print_summary(report: Mapping[str, object]) -> None:
     safe_keys = (
         "schema_version",
@@ -345,8 +556,39 @@ def print_summary(report: Mapping[str, object]) -> None:
         "by_original_match_class",
         "lift_class_counts",
         "potential_lift",
+        "attachment_count",
+        "parse_plan_counts",
+        "risk_level_counts",
+        "risk_reason_counts",
+        "parse_plan_queue_count",
+        "stage_supported_queue_count",
+        "stage_skipped_queue_count",
+        "status_counts",
+        "status_reason_counts",
+        "parser_counts",
+        "warning_counts",
+        "image_format_counts",
+        "top_extensions",
+        "top_declared_content_types",
+        "top_stage_extensions",
         "text_access_counts",
         "source_file_counts",
+        "source_db_count",
+        "source_text_extract_count",
+        "source_pdf_extract_count",
+        "source_image_ocr_plan_count",
+        "source_stage_counts",
+        "source_status_counts",
+        "text_status_counts",
+        "coverage_counts",
+        "gap_count",
+        "gap_extension_counts",
+        "gap_class_counts",
+        "gap_action_counts",
+        "ocr_pilot",
+        "selected_candidate_count",
+        "extension_counts",
+        "ocr",
         "phone_index_counts",
         "artifact_counts",
         "artifact_integrity",
@@ -560,6 +802,133 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     phone_lift.add_argument("--identity-db", required=True)
     phone_lift.add_argument("--out-dir", required=True)
     phone_lift.add_argument("--max-text-chars-per-message", type=int, default=250_000)
+
+    attachment_plan = subparsers.add_parser(
+        "attachment-parse-plan",
+        help="Build a safe metadata-only attachment parsing queue without opening files.",
+    )
+    attachment_plan.add_argument("--archive-db", action="append", required=True)
+    attachment_plan.add_argument("--out-dir", required=True)
+    attachment_plan.add_argument("--max-size-bytes", type=int, default=20_000_000)
+    attachment_plan.add_argument(
+        "--allow-extension",
+        action="append",
+        default=list(DEFAULT_ATTACHMENT_PARSE_ALLOW_EXTENSIONS),
+    )
+    attachment_plan.add_argument(
+        "--review-extension",
+        action="append",
+        default=list(DEFAULT_ATTACHMENT_PARSE_REVIEW_EXTENSIONS),
+    )
+
+    attachment_text = subparsers.add_parser(
+        "attachment-text-extract",
+        help="Extract text from safe allowlisted attachment formats using an existing parse plan.",
+    )
+    attachment_text.add_argument("--archive-db", action="append", required=True)
+    attachment_text.add_argument("--parse-plan-db", required=True)
+    attachment_text.add_argument("--out-dir", required=True)
+    attachment_text.add_argument(
+        "--stage-extension",
+        action="append",
+    )
+    attachment_text.add_argument("--max-attachment-bytes", type=int, default=10_000_000)
+    attachment_text.add_argument("--max-text-chars-per-attachment", type=int, default=100_000)
+    attachment_text.add_argument("--max-csv-rows", type=int, default=200)
+    attachment_text.add_argument("--max-csv-columns", type=int, default=50)
+    attachment_text.add_argument("--max-xlsx-sheets", type=int, default=5)
+    attachment_text.add_argument("--max-xlsx-rows-per-sheet", type=int, default=100)
+    attachment_text.add_argument("--max-xlsx-columns-per-sheet", type=int, default=50)
+    attachment_text.add_argument("--max-zip-members", type=int, default=2_000)
+    attachment_text.add_argument("--max-zip-uncompressed-bytes", type=int, default=50_000_000)
+    attachment_text.add_argument("--max-attachments", type=int, default=0)
+
+    attachment_pdf = subparsers.add_parser(
+        "attachment-pdf-extract",
+        help="Extract text from safe PDF attachments using an existing parse plan.",
+    )
+    attachment_pdf.add_argument("--archive-db", action="append", required=True)
+    attachment_pdf.add_argument("--parse-plan-db", required=True)
+    attachment_pdf.add_argument("--out-dir", required=True)
+    attachment_pdf.add_argument(
+        "--stage-extension",
+        action="append",
+    )
+    attachment_pdf.add_argument("--max-attachment-bytes", type=int, default=20_000_000)
+    attachment_pdf.add_argument("--max-pdf-pages", type=int, default=10)
+    attachment_pdf.add_argument("--max-text-chars-per-attachment", type=int, default=100_000)
+    attachment_pdf.add_argument("--max-page-text-chars", type=int, default=25_000)
+    attachment_pdf.add_argument("--max-pdf-objects-to-scan", type=int, default=10_000)
+    attachment_pdf.add_argument("--pdf-timeout-seconds", type=int, default=10)
+    attachment_pdf.add_argument("--max-attachments", type=int, default=0)
+
+    attachment_image = subparsers.add_parser(
+        "attachment-image-ocr-plan",
+        help="Plan image OCR candidates without running OCR, decoding full images, or writing thumbnails.",
+    )
+    attachment_image.add_argument("--archive-db", action="append", required=True)
+    attachment_image.add_argument("--parse-plan-db", required=True)
+    attachment_image.add_argument("--out-dir", required=True)
+    attachment_image.add_argument(
+        "--stage-extension",
+        action="append",
+    )
+    attachment_image.add_argument("--max-attachment-bytes", type=int, default=20_000_000)
+    attachment_image.add_argument("--max-image-dimension", type=int, default=20_000)
+    attachment_image.add_argument("--max-image-pixels", type=int, default=50_000_000)
+    attachment_image.add_argument("--inspect-headers", action="store_true")
+    attachment_image.add_argument("--max-attachments", type=int, default=0)
+
+    attachment_text_index = subparsers.add_parser(
+        "attachment-text-index",
+        help="Build a metadata-only unified index over attachment text extract outputs.",
+    )
+    attachment_text_index.add_argument("--text-extract-db", action="append")
+    attachment_text_index.add_argument("--pdf-extract-db", action="append")
+    attachment_text_index.add_argument("--image-ocr-plan-db", action="append")
+    attachment_text_index.add_argument("--parse-plan-db")
+    attachment_text_index.add_argument("--out-dir", required=True)
+    attachment_text_index.add_argument("--max-rows", type=int, default=0)
+
+    attachment_stage6 = subparsers.add_parser(
+        "attachment-stage6-plan",
+        help="Build a metadata-only Stage 6 gap report and gated OCR pilot plan.",
+    )
+    attachment_stage6.add_argument("--parse-plan-db", required=True)
+    attachment_stage6.add_argument("--text-index-db", required=True)
+    attachment_stage6.add_argument("--out-dir", required=True)
+    attachment_stage6.add_argument("--ocr-pilot-limit", type=int, default=15)
+    attachment_stage6.add_argument("--min-pilot-attachment-bytes", type=int, default=0)
+    attachment_stage6.add_argument("--max-pilot-attachment-bytes", type=int, default=5_000_000)
+    attachment_stage6.add_argument("--pilot-extension", action="append")
+
+    attachment_ocr_preflight = subparsers.add_parser(
+        "attachment-ocr-preflight",
+        help="Verify selected OCR pilot attachment bytes and hashes without running OCR.",
+    )
+    attachment_ocr_preflight.add_argument("--archive-db", action="append", required=True)
+    attachment_ocr_preflight.add_argument("--stage6-plan-db", required=True)
+    attachment_ocr_preflight.add_argument("--out-dir", required=True)
+    attachment_ocr_preflight.add_argument("--max-candidates", type=int, default=15)
+    attachment_ocr_preflight.add_argument("--max-attachment-bytes", type=int, default=5_000_000)
+    attachment_ocr_preflight.add_argument("--skip-sha256", action="store_true")
+
+    attachment_ocr_pilot = subparsers.add_parser(
+        "attachment-ocr-pilot",
+        help="Run Tesseract OCR for verified pilot attachments only.",
+    )
+    attachment_ocr_pilot.add_argument("--archive-db", action="append", required=True)
+    attachment_ocr_pilot.add_argument("--ocr-preflight-db", required=True)
+    attachment_ocr_pilot.add_argument("--out-dir", required=True)
+    attachment_ocr_pilot.add_argument("--max-candidates", type=int, default=15)
+    attachment_ocr_pilot.add_argument("--max-attachment-bytes", type=int, default=5_000_000)
+    attachment_ocr_pilot.add_argument("--languages", default="rus+eng")
+    attachment_ocr_pilot.add_argument("--psm", type=int, default=6)
+    attachment_ocr_pilot.add_argument("--tesseract-timeout-seconds", type=int, default=30)
+    attachment_ocr_pilot.add_argument("--max-text-chars-per-attachment", type=int, default=100_000)
+    attachment_ocr_pilot.add_argument("--workers", type=int, default=1)
+    attachment_ocr_pilot.add_argument("--tesseract-thread-limit", type=int, default=1)
+    attachment_ocr_pilot.add_argument("--reuse-existing-ocr-text", action="store_true")
 
     return parser.parse_args(argv)
 

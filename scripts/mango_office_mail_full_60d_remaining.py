@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -81,6 +82,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         since_days=args.since_days,
         older_than_days=args.older_than_days,
         max_messages=args.max_messages,
+        window_days=args.window_days,
         include_mailboxes=set(args.mailbox or []),
     )
     plan["excluded_control_sha256_count"] = len(excluded_sha256s)
@@ -119,8 +121,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "planned_message_count": plan["planned_message_count"],
         "since_days": args.since_days,
         "older_than_days": args.older_than_days,
+        "window_days": args.window_days,
         "excluded_control_sha256_count": len(excluded_sha256s),
         "batch_reports": [],
+        "skipped_existing_completed_batches": 0,
         "totals": {
             "messages_found_since": 0,
             "messages_attempted": 0,
@@ -145,9 +149,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
     manifest_path = out_root / "full_60d_run_manifest.json"
 
+    skipped_existing_batches = 0
     for index, window in enumerate(plan["windows"], start=1):
         batch_id = str(window["batch_id"])
         batch_max_messages = int(args.max_messages)
+        existing_complete = load_existing_completed_batch(
+            batch_reports_dir,
+            batch_id,
+            max_messages=batch_max_messages,
+            planned_message_count=int(window["message_count"]),
+        )
+        if existing_complete is not None:
+            report, verification = existing_complete
+            errors = len(report.get("errors") or [])
+            batch_summary = build_batch_summary(
+                window=window,
+                index=index,
+                status="skipped_existing",
+                report=report,
+                verification=verification,
+                max_messages=batch_max_messages,
+            )
+            manifest["batch_reports"].append(batch_summary)
+            add_report_totals(manifest["totals"], report, errors=errors)
+            skipped_existing_batches += 1
+            manifest["skipped_existing_completed_batches"] = skipped_existing_batches
+            write_json(manifest_path, manifest)
+            print(
+                f"[{index}/{len(plan['windows'])}] {batch_id}: "
+                f"skipped existing complete "
+                f"found={report.get('messages_found_since')} "
+                f"inserted={report.get('messages_inserted_or_seen')} "
+                f"excluded={report.get('messages_excluded_by_sha256')} "
+                f"errors={errors}",
+                flush=True,
+            )
+            continue
+
         preflight = build_mail_archive_preflight(
             MailArchivePreflightConfig(
                 out_dir=archive_dir,
@@ -206,30 +244,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         planned_message_count = int(window["message_count"])
         live_message_count = int(report.get("messages_found_since") or 0)
-        batch_summary = {
-            "batch_id": batch_id,
-            "index": index,
-            "status": "ok" if complete else "failed",
-            "mailbox": window["mailbox"],
-            "since_days": window["since_days"],
-            "before_days": window["before_days"],
-            "planned_message_count": planned_message_count,
-            "messages_found_since": live_message_count,
-            "new_messages_seen_after_plan": max(0, live_message_count - planned_message_count),
-            "messages_missing_after_plan": max(0, planned_message_count - live_message_count),
-            "max_messages": batch_max_messages,
-            "messages_attempted": report.get("messages_attempted"),
-            "messages_inserted_or_seen": report.get("messages_inserted_or_seen"),
-            "messages_excluded_by_sha256": report.get("messages_excluded_by_sha256"),
-            "errors": errors,
-            "verification_pass": verification.get("verification_pass"),
-        }
+        batch_summary = build_batch_summary(
+            window=window,
+            index=index,
+            status="ok" if complete else "failed",
+            report=report,
+            verification=verification,
+            max_messages=batch_max_messages,
+        )
         manifest["batch_reports"].append(batch_summary)
-        for key in manifest["totals"]:
-            if key == "errors":
-                manifest["totals"][key] += errors
-            else:
-                manifest["totals"][key] += int(report.get(key) or 0)
+        add_report_totals(manifest["totals"], report, errors=errors)
         write_json(manifest_path, manifest)
         print(
             f"[{index}/{len(plan['windows'])}] {batch_id}: "
@@ -243,6 +267,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Full mail run stopped at failed batch: {batch_id}", file=sys.stderr)
             return 1
 
+    if skipped_existing_batches:
+        manifest["stale_archive_rows_pruned_after_success"] = {
+            "skipped_due_to_resume": True,
+            "reason": "completed batches were reused without touching message updated_at",
+        }
+    else:
+        manifest["stale_archive_rows_pruned_after_success"] = prune_archive_rows_before(
+            archive_dir / "mail_archive.sqlite",
+            cutoff_iso=str(manifest["created_at"]),
+        )
     manifest["completed_at"] = utc_now()
     manifest["status"] = "completed"
     write_json(manifest_path, manifest)
@@ -259,6 +293,7 @@ def build_plan(
     since_days: int,
     older_than_days: int,
     max_messages: int,
+    window_days: int,
     include_mailboxes: set[str],
 ) -> dict[str, Any]:
     today = datetime.now(timezone.utc).date()
@@ -286,9 +321,12 @@ def build_plan(
                 )
                 continue
             total = 0
-            for age in range(int(since_days), int(older_than_days), -1):
+            for age, before_days in iter_age_windows(
+                since_days=int(since_days),
+                older_than_days=int(older_than_days),
+                window_days=int(window_days),
+            ):
                 since_imap = (today - timedelta(days=age)).strftime("%d-%b-%Y")
-                before_days = age - 1 if age > 1 else None
                 before_imap = (
                     (today - timedelta(days=before_days)).strftime("%d-%b-%Y")
                     if before_days is not None
@@ -337,6 +375,7 @@ def build_plan(
         "today_utc": today.isoformat(),
         "since_days": since_days,
         "older_than_days": older_than_days,
+        "window_days": int(window_days),
         "max_messages": max_messages,
         "folder_count": len(folder_counts),
         "planned_window_count": len(windows),
@@ -350,6 +389,23 @@ def build_plan(
             "contains_raw_personal_values": False,
         },
     }
+
+
+def iter_age_windows(
+    *,
+    since_days: int,
+    older_than_days: int,
+    window_days: int,
+) -> list[tuple[int, int]]:
+    step = max(1, int(window_days))
+    age = int(since_days)
+    floor = int(older_than_days)
+    windows: list[tuple[int, int]] = []
+    while age > floor:
+        before_days = max(floor, age - step)
+        windows.append((age, before_days))
+        age = before_days
+    return windows
 
 
 def load_excluded_message_sha256s(paths: Sequence[str]) -> set[str]:
@@ -385,6 +441,183 @@ def is_batch_complete(
     )
 
 
+def load_existing_completed_batch(
+    batch_reports_dir: Path,
+    batch_id: str,
+    *,
+    max_messages: int,
+    planned_message_count: int,
+) -> Optional[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    ingest_path = batch_reports_dir / f"{batch_id}_ingest.json"
+    verification_path = batch_reports_dir / f"{batch_id}_verification.json"
+    if not ingest_path.exists() or not verification_path.exists():
+        return None
+    try:
+        report = json.loads(ingest_path.read_text(encoding="utf-8"))
+        verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if int(report.get("messages_found_since") or -1) != int(planned_message_count):
+        return None
+    if not is_batch_complete(report, verification, max_messages=max_messages):
+        return None
+    return report, verification
+
+
+def build_batch_summary(
+    *,
+    window: Mapping[str, Any],
+    index: int,
+    status: str,
+    report: Mapping[str, Any],
+    verification: Mapping[str, Any],
+    max_messages: int,
+) -> dict[str, Any]:
+    planned_message_count = int(window["message_count"])
+    live_message_count = int(report.get("messages_found_since") or 0)
+    return {
+        "batch_id": str(window["batch_id"]),
+        "index": index,
+        "status": status,
+        "mailbox": window["mailbox"],
+        "since_days": window["since_days"],
+        "before_days": window["before_days"],
+        "planned_message_count": planned_message_count,
+        "messages_found_since": live_message_count,
+        "new_messages_seen_after_plan": max(0, live_message_count - planned_message_count),
+        "messages_missing_after_plan": max(0, planned_message_count - live_message_count),
+        "max_messages": max_messages,
+        "messages_attempted": report.get("messages_attempted"),
+        "messages_inserted_or_seen": report.get("messages_inserted_or_seen"),
+        "messages_excluded_by_sha256": report.get("messages_excluded_by_sha256"),
+        "errors": len(report.get("errors") or []),
+        "verification_pass": verification.get("verification_pass"),
+    }
+
+
+def add_report_totals(
+    totals: dict[str, int],
+    report: Mapping[str, Any],
+    *,
+    errors: int,
+) -> None:
+    for key in totals:
+        if key == "errors":
+            totals[key] += errors
+        else:
+            totals[key] += int(report.get(key) or 0)
+
+
+def prune_archive_rows_before(db_path: Path, *, cutoff_iso: str) -> dict[str, int]:
+    if not db_path.exists():
+        return {
+            "attachment_dirs": 0,
+            "attachment_files": 0,
+            "messages": 0,
+            "message_sources": 0,
+            "message_participants": 0,
+            "attachments": 0,
+            "message_matches": 0,
+            "raw_eml_files": 0,
+            "text_files": 0,
+        }
+    with sqlite3.connect(str(db_path)) as con:
+        rows = con.execute(
+            "SELECT sha256 FROM messages WHERE updated_at < ?",
+            (cutoff_iso,),
+        ).fetchall()
+        stale_sha256s = [str(row[0]) for row in rows]
+        if not stale_sha256s:
+            return {
+                "attachment_dirs": 0,
+                "attachment_files": 0,
+                "messages": 0,
+                "message_sources": 0,
+                "message_participants": 0,
+                "attachments": 0,
+                "message_matches": 0,
+                "raw_eml_files": 0,
+                "text_files": 0,
+            }
+        file_report = prune_archive_files(db_path.parent, stale_sha256s)
+        placeholders = ",".join("?" for _ in stale_sha256s)
+        source_rows = con.execute(
+            f"SELECT COUNT(*) FROM message_sources WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        ).fetchone()[0]
+        participant_rows = con.execute(
+            f"SELECT COUNT(*) FROM message_participants WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        ).fetchone()[0]
+        attachment_rows = con.execute(
+            f"SELECT COUNT(*) FROM attachments WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        ).fetchone()[0]
+        match_rows = con.execute(
+            f"SELECT COUNT(*) FROM message_matches WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        ).fetchone()[0]
+        con.execute(
+            f"DELETE FROM message_matches WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        )
+        con.execute(
+            f"DELETE FROM attachments WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        )
+        con.execute(
+            f"DELETE FROM message_participants WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        )
+        con.execute(
+            f"DELETE FROM message_sources WHERE message_sha256 IN ({placeholders})",
+            stale_sha256s,
+        )
+        con.execute(
+            f"DELETE FROM messages WHERE sha256 IN ({placeholders})",
+            stale_sha256s,
+        )
+        con.commit()
+    return {
+        **file_report,
+        "messages": len(stale_sha256s),
+        "message_sources": int(source_rows),
+        "message_participants": int(participant_rows),
+        "attachments": int(attachment_rows),
+        "message_matches": int(match_rows),
+    }
+
+
+def prune_archive_files(archive_dir: Path, stale_sha256s: Sequence[str]) -> dict[str, int]:
+    raw_dir = archive_dir / "raw_eml"
+    text_dir = archive_dir / "extracted_text"
+    attachment_dir = archive_dir / "attachments"
+    raw_eml_files = 0
+    text_files = 0
+    attachment_dirs = 0
+    attachment_files = 0
+    for sha256 in stale_sha256s:
+        raw_path = raw_dir / sha256[:2] / f"{sha256}.eml"
+        if raw_path.exists():
+            raw_path.unlink()
+            raw_eml_files += 1
+        text_path = text_dir / f"{sha256}.txt"
+        if text_path.exists():
+            text_path.unlink()
+            text_files += 1
+        message_attachment_dir = attachment_dir / sha256
+        if message_attachment_dir.exists():
+            attachment_files += sum(1 for path in message_attachment_dir.rglob("*") if path.is_file())
+            shutil.rmtree(message_attachment_dir)
+            attachment_dirs += 1
+    return {
+        "attachment_dirs": attachment_dirs,
+        "attachment_files": attachment_files,
+        "raw_eml_files": raw_eml_files,
+        "text_files": text_files,
+    }
+
+
 def count_search_ids(search_data: Sequence[bytes]) -> int:
     return len((search_data[0] or b"").split()) if search_data else 0
 
@@ -416,10 +649,13 @@ def print_summary(report: Mapping[str, Any], *, status: str) -> None:
         "folder_count",
         "since_days",
         "older_than_days",
+        "window_days",
         "planned_window_count",
         "planned_message_count",
         "max_window_count",
         "excluded_control_sha256_count",
+        "skipped_existing_completed_batches",
+        "stale_archive_rows_pruned_after_success",
         "archive_dir",
         "totals",
         "safety",
@@ -451,6 +687,12 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         help="Only process windows older than this many days. Example: 60 with --since-days 180 processes 180..60 days ago.",
     )
     parser.add_argument("--max-messages", type=int, default=250)
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=1,
+        help="Plan IMAP searches in windows of this many days. Use 1 for daily windows; 31 is useful for sparse older history.",
+    )
     parser.add_argument("--mailbox", action="append")
     parser.add_argument("--exclude-archive-db", action="append")
     parser.add_argument("--internal-domain", action="append", default=["kmipt.ru"])

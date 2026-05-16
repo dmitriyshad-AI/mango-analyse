@@ -88,6 +88,48 @@ def test_high_risk_theme_forces_manager_only() -> None:
     assert any("Высокорисковая" in item for item in result.manager_checklist)
 
 
+def test_high_risk_client_message_forces_manager_only_even_when_topic_is_wrong() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Уточним условия.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.86,
+        }
+    )
+
+    result = provider.build_draft(
+        "В случае невозможности замены класса, как можно получить возврат платежа?",
+        context={"rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.topic_id == "theme:001_pricing"
+    assert result.route == "manager_only"
+    assert "high_risk_input_manager_only" in result.safety_flags
+    assert result.metadata["forced_route_high_risk_input"] == ["refund"]
+
+
+def test_neutral_price_question_is_not_forced_by_input_guard() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Уточним цену.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.86,
+        }
+    )
+
+    result = provider.build_draft(
+        "Сколько стоит подготовка по математике?",
+        context={"rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "high_risk_input_manager_only" not in result.safety_flags
+
+
 def test_non_question_message_type_forces_manager_only() -> None:
     result = parse_llm_json(
         '{"route":"draft_for_manager","draft_text":"Спасибо!","message_type":"context_update",'

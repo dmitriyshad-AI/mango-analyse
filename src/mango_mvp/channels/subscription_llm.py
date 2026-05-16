@@ -55,6 +55,15 @@ HIGH_RISK_MARKERS = (
     "документ",
     "скид",
 )
+HIGH_RISK_INPUT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("refund", re.compile(r"\bвозврат\w*|\bвернуть\s+(?:деньги|оплату|плат[её]ж)|\bкак\s+получить\s+возврат", re.I)),
+    ("matkap", re.compile(r"мат(?:еринск(?:ий|ого|им|ому)?\s*)?капитал|маткап|сертификат\s+мат", re.I)),
+    ("tax", re.compile(r"налогов(?:ый|ого|ому|ым)?\s+вычет|справк\w*\s+для\s+налог", re.I)),
+    ("legal", re.compile(r"юрид|суд|претензи|досудеб|законн|правомер", re.I)),
+    ("complaint", re.compile(r"жалоб|конфликт|недовольн|претензи|обман|ужасн|плохо\s+провел", re.I)),
+    ("discount", re.compile(r"скидк|промокод|льгот|рассрочк", re.I)),
+    ("payment_status", re.compile(r"прошл[ао]\s+ли\s+оплат|подтверждени[ея]\s+оплат|статус\s+оплат|поступил[а]?\s+оплат|чек", re.I)),
+)
 _RETRYABLE_MARKERS = (
     "no last agent message",
     "temporarily unavailable",
@@ -192,7 +201,8 @@ class SubscriptionLlmDraftProvider:
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
         prompt = build_draft_prompt(client_message, context=context)
-        return self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
+        result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
+        return apply_input_policy_guards(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
         return self.generate_from_prompt(prompt)
@@ -308,7 +318,8 @@ class FakeSubscriptionLlmDraftProvider:
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
         prompt = build_draft_prompt(client_message, context=context)
-        return self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
+        result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
+        return apply_input_policy_guards(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
         return self.generate_from_prompt(prompt)
@@ -507,6 +518,36 @@ def apply_subscription_policy_guards(result: SubscriptionDraftResult) -> Subscri
     )
 
 
+def apply_input_policy_guards(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    markers = detect_high_risk_input_markers(client_message, context=context)
+    if not markers:
+        return result
+    flags = tuple(dict.fromkeys([*result.safety_flags, "high_risk_input_manager_only", "high_risk_manager_only"]))
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "Исходное сообщение клиента содержит высокорисковую тему: проверить вручную.",
+            ]
+        )
+    )
+    return replace(
+        result,
+        route="manager_only",
+        safety_flags=flags,
+        manager_checklist=checklist,
+        metadata={
+            **dict(result.metadata),
+            "forced_route_high_risk_input": list(markers),
+        },
+    )
+
+
 def is_high_risk_result(result: SubscriptionDraftResult) -> bool:
     topic = result.topic_id.strip()
     if topic in HIGH_RISK_THEME_IDS:
@@ -522,6 +563,23 @@ def is_high_risk_result(result: SubscriptionDraftResult) -> bool:
         ]
     ).casefold()
     return any(marker.casefold() in haystack for marker in HIGH_RISK_MARKERS)
+
+
+def detect_high_risk_input_markers(client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> tuple[str, ...]:
+    texts = [str(client_message or "")]
+    if isinstance(context, Mapping):
+        recent = context.get("recent_messages")
+        if isinstance(recent, Sequence) and not isinstance(recent, (str, bytes, bytearray)):
+            texts.extend(str(item or "") for item in recent[-3:])
+        for key in ("risk_flags", "context_warnings", "missing_facts"):
+            value = context.get(key)
+            if isinstance(value, str):
+                texts.append(value)
+            elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+                texts.extend(str(item or "") for item in value)
+    haystack = "\n".join(texts)
+    markers = [name for name, pattern in HIGH_RISK_INPUT_PATTERNS if pattern.search(haystack)]
+    return tuple(dict.fromkeys(markers))
 
 
 DraftGenerationResult = SubscriptionDraftResult

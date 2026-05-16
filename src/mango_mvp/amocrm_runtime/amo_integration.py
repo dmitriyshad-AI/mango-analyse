@@ -797,6 +797,10 @@ def _normalize_field_value_for_meta(meta: dict[str, Any], value: Any) -> Any:
     field_type = str(meta.get("type") or "").strip().casefold()
     if isinstance(value, list):
         return [_normalize_field_value_for_meta(meta, item) for item in value]
+    if isinstance(value, str) and field_type in {"date", "date_time", "birthday"}:
+        timestamp = _parse_amo_date_value(value)
+        if timestamp is not None:
+            return timestamp
     if isinstance(value, str) and field_type == "text" and len(value) > 255:
         suffix = " [сжато]"
         budget = max(20, 255 - len(suffix))
@@ -806,6 +810,31 @@ def _normalize_field_value_for_meta(meta: dict[str, Any], value: Any) -> Any:
             candidate = candidate[:word_boundary].rstrip(" ,;.")
         return f"{candidate}{suffix}"
     return value
+
+
+def _parse_amo_date_value(value: str) -> int | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y %H:%M"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                parsed = None  # type: ignore[assignment]
+        if parsed is None:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return int(parsed.timestamp())
 
 
 def build_custom_fields_values(

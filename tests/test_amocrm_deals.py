@@ -400,6 +400,23 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         self.assertEqual(len(by_id[2]), 255)
         self.assertEqual(by_id[3], "reopen_recommended")
 
+    def test_build_custom_fields_values_converts_date_time_fields(self) -> None:
+        catalog = [
+            {"id": 1, "name": "AI-дата обновления сделки", "type": "date_time"},
+            {"id": 2, "name": "AI-дата следующего касания", "type": "date"},
+        ]
+        payload = {
+            "AI-дата обновления сделки": "2026-05-13T11:57:33+00:00",
+            "AI-дата следующего касания": "2026-05-15",
+        }
+
+        values = amo_integration.build_custom_fields_values(payload, catalog)
+        by_id = {item["field_id"]: item["values"][0]["value"] for item in values}
+
+        self.assertIsInstance(by_id[1], int)
+        self.assertEqual(by_id[1], 1778673453)
+        self.assertEqual(by_id[2], 1778803200)
+
     def test_write_analysis_to_lead_safe_mode_skips_nonempty_fields(self) -> None:
         with patch.object(
             deals_module,

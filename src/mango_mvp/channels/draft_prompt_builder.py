@@ -4,7 +4,10 @@ import html
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from typing import Any, Mapping, Optional, Sequence
+
+from mango_mvp.question_catalog.classifier import load_taxonomy
 
 
 DRAFT_PROMPT_SCHEMA_VERSION = "channel_draft_prompt_v1_2026_05_16"
@@ -111,6 +114,12 @@ def build_draft_prompt(
         "- Не представляйся ботом, ИИ, нейросетью, GPT, Claude или Codex.\n"
         "- Не обещай точные цены, расписание, скидки, возвраты, документы или действия в CRM без подтвержденных свежих фактов.\n"
         "- Любая отправка клиенту запрещена: safety_flags всегда должны включать manager_approval_required и no_auto_send.\n\n"
+        "Закрытый список тем:\n"
+        "- topic_id должен быть выбран СТРОГО из списка `allowed_topic_ids` ниже.\n"
+        "- Все значения alternative_themes тоже должны быть только из этого списка.\n"
+        "- Любые другие topic_id запрещены. Не придумывай новые темы, даже если они кажутся точнее.\n"
+        "- Если ни одна тема не подходит, выбирай service:S2_unclear.\n"
+        f"{json.dumps(question_catalog_taxonomy_prompt_payload(), ensure_ascii=False, indent=2, sort_keys=True)}\n\n"
         "JSON-схема ответа:\n"
         "{\n"
         '  "message_type": "question",\n'
@@ -139,12 +148,51 @@ def build_draft_prompt(
         "Если в сообщении несколько тем, укажи главную в topic_id, а остальные в alternative_themes.\n"
         "Для возврата, оплаты, материнского капитала, налогового вычета, документов, скидок, жалоб "
         "и юридических вопросов не обещай решение, скидку, возврат, место в группе или запись в CRM.\n\n"
+        "Особые правила выбора темы:\n"
+        "- Возврат денег, вопрос как вернуть оплату или отказ с возвратом — theme:009_refund.\n"
+        "- Материнский капитал — theme:007_matkap_payment.\n"
+        "- Налоговый вычет или справка для налоговой — theme:008_tax_deduction.\n"
+        "- Статус уже сделанной оплаты, подтверждение оплаты, чек или квитанция — theme:003_payment_status.\n"
+        "- Способ оплаты, реквизиты или ссылка на оплату — theme:002_payment_method.\n"
+        "- Рассрочка — theme:006_installment.\n"
+        "- Скидка, льгота или промокод — theme:005_discounts.\n"
+        "- Пробное занятие — theme:023_trial_class.\n"
+        "- Материалы, домашнее задание, пропуск занятия или доступ к записи урока — theme:018_materials_homework.\n"
+        "- Ссылка, письмо, доступ к платформе или материалам не пришли — theme:025_missing_links_access.\n"
+        "- Клиент явно отказывается или пишет не связываться — service:S3_out_of_scope.\n\n"
         "Правило РОПа и короткий проверенный контекст:\n"
         f"{json.dumps(context_payload, ensure_ascii=False, indent=2, sort_keys=True)}\n\n"
         "<client_message>\n"
         f"{escaped_message}\n"
         "</client_message>\n"
     )
+
+
+@lru_cache(maxsize=1)
+def question_catalog_taxonomy_prompt_payload() -> Mapping[str, Any]:
+    taxonomy = load_taxonomy()
+    topics = [
+        {
+            "id": str(item.get("theme_id") or ""),
+            "name": str(item.get("theme_name") or ""),
+            "description": str(item.get("short_description") or ""),
+        }
+        for item in taxonomy.get("themes", [])
+    ]
+    services = [
+        {
+            "id": str(item.get("service_id") or ""),
+            "name": str(item.get("service_name") or ""),
+            "description": str(item.get("short_description") or ""),
+        }
+        for item in taxonomy.get("service_categories", [])
+    ]
+    allowed = [item["id"] for item in topics + services if item["id"]]
+    return {
+        "allowed_topic_ids": allowed,
+        "themes": topics,
+        "service_categories": services,
+    }
 
 
 def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] = None) -> Mapping[str, Any]:

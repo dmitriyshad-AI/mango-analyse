@@ -40,6 +40,21 @@ def test_provider_parses_valid_json() -> None:
     assert result.to_json_dict()["confidence_theme"] == 0.8
 
 
+def test_provider_normalizes_unknown_topic_ids_to_unclear_manager_only() -> None:
+    result = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"Здравствуйте! Уточним.",'
+        '"message_type":"question","topic_id":"theme:refund_payment","confidence_theme":0.91,'
+        '"alternative_themes":["theme:013_schedule","theme:made_up"]}'
+    )
+
+    assert result.topic_id == "service:S2_unclear"
+    assert result.alternative_themes == ("theme:013_schedule",)
+    assert result.route == "manager_only"
+    assert "invalid_topic_id_normalized" in result.safety_flags
+    assert "invalid_alternative_themes_removed" in result.safety_flags
+    assert result.metadata["original_invalid_topic_id"] == "theme:refund_payment"
+
+
 def test_provider_falls_back_on_invalid_json() -> None:
     result = parse_llm_json("not json")
 

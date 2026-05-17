@@ -16,12 +16,14 @@ from mango_mvp.channels.draft_prompt_builder import (
     safe_schedule_template,
     should_force_manager_only,
 )
+from mango_mvp.question_catalog.classifier import load_valid_theme_and_service_ids
 
 
 SUBSCRIPTION_LLM_SCHEMA_VERSION = "subscription_llm_draft_v1_2026_05_16"
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 SAFE_FALLBACK_DRAFT_TEXT = "Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
+UNKNOWN_TOPIC_FALLBACK_ID = "service:S2_unclear"
 
 ALLOWED_ROUTES = {"draft_for_manager", "manager_only", "blocked"}
 ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for_more", "manager_only"}
@@ -417,7 +419,7 @@ def normalize_subscription_draft_payload(payload: Mapping[str, Any] | Subscripti
         manager_followup_deadline=manager_followup_deadline,
         raw_response=raw_response,
     )
-    return guard_identity_disclosure(apply_subscription_policy_guards(result))
+    return guard_identity_disclosure(apply_taxonomy_topic_guard(apply_subscription_policy_guards(result)))
 
 
 def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = None) -> SubscriptionDraftResult:
@@ -545,6 +547,38 @@ def apply_input_policy_guards(
             **dict(result.metadata),
             "forced_route_high_risk_input": list(markers),
         },
+    )
+
+
+def apply_taxonomy_topic_guard(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    valid_ids = load_valid_theme_and_service_ids()
+    topic_id = str(result.topic_id or "").strip()
+    valid_alternatives = tuple(item for item in result.alternative_themes if item in valid_ids)
+    invalid_alternatives = tuple(item for item in result.alternative_themes if item and item not in valid_ids)
+    if topic_id in valid_ids and valid_alternatives == result.alternative_themes:
+        return result
+
+    flags = list(result.safety_flags)
+    checklist = list(result.manager_checklist)
+    metadata = dict(result.metadata)
+
+    if topic_id not in valid_ids:
+        flags.append("invalid_topic_id_normalized")
+        checklist.append("LLM вернула тему не из утвержденного списка: проверить вручную.")
+        metadata["original_invalid_topic_id"] = topic_id
+        topic_id = UNKNOWN_TOPIC_FALLBACK_ID
+    if invalid_alternatives:
+        flags.append("invalid_alternative_themes_removed")
+        metadata["invalid_alternative_themes"] = list(invalid_alternatives)
+
+    return replace(
+        result,
+        topic_id=topic_id,
+        alternative_themes=valid_alternatives,
+        route="manager_only",
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=tuple(dict.fromkeys(checklist)),
+        metadata=metadata,
     )
 
 

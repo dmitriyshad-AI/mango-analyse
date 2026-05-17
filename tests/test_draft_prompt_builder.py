@@ -7,6 +7,7 @@ from mango_mvp.channels.draft_prompt_builder import (
     DraftPromptInput,
     build_draft_prompt,
     build_safe_schedule_payload,
+    question_catalog_taxonomy_prompt_payload,
     route_from_rop_policy,
 )
 from mango_mvp.channels.pilot_context import build_pilot_context
@@ -77,3 +78,18 @@ def test_prompt_requests_contextual_classification_fields() -> None:
     assert "recent_messages" in prompt
     assert "context_quality" in prompt
     assert "Если в сообщении несколько тем" in prompt
+
+
+def test_prompt_contains_closed_question_catalog_taxonomy() -> None:
+    prompt = build_draft_prompt(
+        "В случае невозможности замены класса, как можно получить возврат платежа?",
+        context={"rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+    taxonomy = question_catalog_taxonomy_prompt_payload()
+
+    assert len(taxonomy["allowed_topic_ids"]) == 37
+    assert "topic_id должен быть выбран СТРОГО" in prompt
+    assert "Любые другие topic_id запрещены" in prompt
+    assert "theme:009_refund" in prompt
+    assert "service:S5_general_consultation" in prompt
+    assert "Возврат денег, вопрос как вернуть оплату" in prompt

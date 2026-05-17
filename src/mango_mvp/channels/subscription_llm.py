@@ -104,6 +104,16 @@ HIGH_RISK_INPUT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
 )
+UNSUPPORTED_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b\d{1,3}(?:[,.]\d{1,2})?\s*(?:%|процент\w*)", re.I),
+    re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:руб(?:\.|лей|ля|ль)?|₽|р\.)", re.I),
+    re.compile(r"\b\d+\s*(?:к|тыс\.?|тысяч)\b", re.I),
+    re.compile(
+        r"\b(?:до|по)\s+\d{1,2}(?:[./-]\d{1,2}(?:[./-]\d{2,4})?|\s+"
+        r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))",
+        re.I,
+    ),
+)
 _RETRYABLE_MARKERS = (
     "no last agent message",
     "temporarily unavailable",
@@ -242,6 +252,7 @@ class SubscriptionLlmDraftProvider:
     ) -> SubscriptionDraftResult:
         prompt = build_draft_prompt(client_message, context=context)
         result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
+        result = apply_unsupported_promise_guard(result, context=context)
         return apply_input_policy_guards(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -359,6 +370,7 @@ class FakeSubscriptionLlmDraftProvider:
     ) -> SubscriptionDraftResult:
         prompt = build_draft_prompt(client_message, context=context)
         result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
+        result = apply_unsupported_promise_guard(result, context=context)
         return apply_input_policy_guards(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -524,6 +536,45 @@ def guard_identity_disclosure(result: SubscriptionDraftResult) -> SubscriptionDr
     )
 
 
+def apply_unsupported_promise_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    claims = find_unsupported_numeric_promises(result.draft_text, context=context)
+    if not claims:
+        return result
+    flags = tuple(dict.fromkeys([*result.safety_flags, "unsupported_promise_detected"]))
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "Черновик содержит конкретную цифру, сумму, процент или срок без подтвержденного свежего факта: проверить вручную.",
+            ]
+        )
+    )
+    return replace(
+        result,
+        route="manager_only",
+        forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+        safety_flags=flags,
+        manager_checklist=checklist,
+        metadata={**dict(result.metadata), "unsupported_promises": list(claims)},
+    )
+
+
+def find_unsupported_numeric_promises(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    claims = _extract_numeric_promise_claims(draft_text)
+    if not claims:
+        return ()
+    fact_texts = _fresh_fact_texts(context)
+    return tuple(claim for claim in claims if not _claim_supported_by_facts(claim, fact_texts))
+
+
 def apply_subscription_policy_guards(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
     route = result.route
     flags = list(result.safety_flags)
@@ -652,6 +703,85 @@ def detect_high_risk_input_markers(client_message: str, *, context: Optional[Map
     haystack = "\n".join(texts)
     markers = [name for name, pattern in HIGH_RISK_INPUT_PATTERNS if pattern.search(haystack)]
     return tuple(dict.fromkeys(markers))
+
+
+def _extract_numeric_promise_claims(text: str) -> tuple[str, ...]:
+    source = str(text or "")
+    claims: list[str] = []
+    for pattern in UNSUPPORTED_PROMISE_PATTERNS:
+        for match in pattern.finditer(source):
+            claim = " ".join(match.group(0).split())
+            if claim:
+                claims.append(claim)
+    return tuple(dict.fromkeys(claims))
+
+
+def _fresh_fact_texts(context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
+    if not isinstance(context, Mapping):
+        return ()
+    facts_context = context.get("facts_context")
+    facts_mapping = facts_context if isinstance(facts_context, Mapping) else {}
+    context_quality = context.get("context_quality")
+    quality_mapping = context_quality if isinstance(context_quality, Mapping) else {}
+
+    if _truthy_value(context.get("facts_stale")) or _truthy_value(facts_mapping.get("stale")) or _truthy_value(facts_mapping.get("facts_stale")):
+        return ()
+    if _truthy_value(quality_mapping.get("facts_stale")):
+        return ()
+
+    fresh = (
+        context.get("facts_fresh") is True
+        or facts_mapping.get("fresh") is True
+        or facts_mapping.get("facts_fresh") is True
+        or facts_mapping.get("fresh_facts") is True
+    )
+    if not fresh:
+        return ()
+
+    texts: list[str] = []
+    for key in ("confirmed_facts", "facts_context"):
+        _append_fact_texts(texts, context.get(key))
+    return tuple(text for text in texts if text)
+
+
+def _append_fact_texts(result: list[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        cleaned = " ".join(value.split())
+        if cleaned:
+            result.append(cleaned)
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if str(key).strip().casefold() in {"missing", "facts_missing", "stale", "facts_stale"}:
+                continue
+            _append_fact_texts(result, item)
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        for item in value:
+            _append_fact_texts(result, item)
+        return
+    if isinstance(value, (int, float)):
+        result.append(str(value))
+
+
+def _claim_supported_by_facts(claim: str, fact_texts: Sequence[str]) -> bool:
+    normalized_claim = _normalize_fact_match_text(claim)
+    if not normalized_claim:
+        return False
+    return any(normalized_claim in _normalize_fact_match_text(text) for text in fact_texts)
+
+
+def _normalize_fact_match_text(text: Any) -> str:
+    value = str(text or "").casefold().replace("ё", "е").replace("\u00a0", " ")
+    return " ".join(value.split())
+
+
+def _truthy_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да"}
 
 
 DraftGenerationResult = SubscriptionDraftResult

@@ -217,6 +217,72 @@ def test_neutral_discount_theme_is_allowed_as_manager_draft_without_auto_send() 
     assert "high_risk_manager_only" not in result.safety_flags
 
 
+def test_neutral_discount_question_without_numeric_promise_is_allowed() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Уточним, какая скидка сейчас действует.",
+            "message_type": "question",
+            "topic_id": "theme:005_discounts",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Какая скидка действует?",
+        context={"rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "unsupported_promise_detected" not in result.safety_flags
+
+
+def test_draft_with_numeric_discount_without_fresh_fact_is_forced_to_manager_only() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Для вас действует скидка 10% до 31 мая.",
+            "message_type": "question",
+            "topic_id": "theme:005_discounts",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Какая скидка действует?",
+        context={"rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.route == "manager_only"
+    assert "unsupported_promise_detected" in result.safety_flags
+    assert "10%" in result.forbidden_promises_detected
+    assert "до 31 мая" in result.forbidden_promises_detected
+    assert result.metadata["unsupported_promises"] == ["10%", "до 31 мая"]
+
+
+def test_draft_with_numeric_discount_from_fresh_fact_is_allowed() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Для вас действует скидка 10% до 31 мая.",
+            "message_type": "question",
+            "topic_id": "theme:005_discounts",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Какая скидка действует?",
+        context={
+            "rop_policy": {"bot_permission": "draft_for_manager"},
+            "facts_context": {"fresh": True, "discount": "Скидка 10% действует до 31 мая."},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "unsupported_promise_detected" not in result.safety_flags
+
+
 def test_neutral_price_question_is_not_forced_by_input_guard() -> None:
     provider = FakeDraftProvider(
         {

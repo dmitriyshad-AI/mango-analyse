@@ -9,6 +9,7 @@ from mango_mvp.channels.subscription_llm import (
     DraftGenerationResult,
     FakeDraftProvider,
     contains_bot_identity_disclosure,
+    detect_high_risk_input_markers,
     parse_llm_json,
 )
 
@@ -123,6 +124,97 @@ def test_high_risk_client_message_forces_manager_only_even_when_topic_is_wrong()
     assert result.route == "manager_only"
     assert "high_risk_input_manager_only" in result.safety_flags
     assert result.metadata["forced_route_high_risk_input"] == ["refund"]
+
+
+def test_high_risk_input_marker_coverage_for_russian_forms() -> None:
+    cases = {
+        "refund": [
+            "Возврат",
+            "вернуть деньги",
+            "возвращу оплату",
+            "верните оплату",
+            "возвратить платеж",
+            "расторгнуть договор",
+            "отказаться от обучения",
+            "забрать деньги",
+            "возрат денег",
+            "ВОЗВРАТ платежа",
+        ],
+        "matkap": [
+            "маткапитал",
+            "материнский капитал",
+            "материнский сертификат",
+            "семейный сертификат",
+        ],
+        "tax": [
+            "налоговый вычет",
+            "вернуть 13%",
+            "справка для налоговой",
+        ],
+        "legal": [
+            "подам в суд",
+            "иск",
+            "претензия",
+            "роспотребнадзор",
+            "по закону обязаны",
+            "нарушили права",
+            "расторжение договора",
+        ],
+        "complaint": [
+            "жалоба",
+            "жалуюсь",
+            "возмущена",
+            "недовольны",
+            "плохо учит",
+            "некомпетентный преподаватель",
+            "преподаватель ужасный",
+        ],
+        "payment_status": [
+            "оплатил",
+            "оплатила",
+            "провели платёж",
+            "списали",
+            "списание",
+            "зачислили",
+            "получили деньги",
+        ],
+    }
+
+    for marker, texts in cases.items():
+        for text in texts:
+            assert marker in detect_high_risk_input_markers(text), text
+
+
+def test_high_risk_input_marker_false_positives_are_not_forced() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Уточним.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.86,
+        }
+    )
+
+    for text in (
+        "Можете прислать материалы для возврата к теме?",
+        "Жалоба на сайт работает?",
+        "Какая скидка действует?",
+    ):
+        result = provider.build_draft(text, context={"rop_policy": {"bot_permission": "draft_for_manager"}})
+        assert result.route == "draft_for_manager", text
+        assert "high_risk_input_manager_only" not in result.safety_flags
+
+
+def test_neutral_discount_theme_is_allowed_as_manager_draft_without_auto_send() -> None:
+    result = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"Здравствуйте! Уточним актуальную скидку.",'
+        '"message_type":"question","topic_id":"theme:005_discounts","confidence_theme":0.91}'
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "manager_approval_required" in result.safety_flags
+    assert "high_risk_manager_only" not in result.safety_flags
 
 
 def test_neutral_price_question_is_not_forced_by_input_guard() -> None:

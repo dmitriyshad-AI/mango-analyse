@@ -1,0 +1,7 @@
+src/mango_mvp/channels/subscription_llm.py
+tests/test_subscription_llm_draft_provider.py
+audits/_inbox/telegram_pilot_high_risk_keywords_20260517/implementation_notes.md
+audits/_inbox/telegram_pilot_high_risk_keywords_20260517/changed_files.txt
+audits/_inbox/telegram_pilot_high_risk_keywords_20260517/test_output.txt
+audits/_inbox/telegram_pilot_high_risk_keywords_20260517/risk_review.md
+audits/_inbox/telegram_pilot_high_risk_keywords_20260517/backward_compatibility.md

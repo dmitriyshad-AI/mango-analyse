@@ -1,0 +1,26 @@
+{
+  "chunk_extraction_errors": 0,
+  "chunks_by_freshness_status": {
+    "unknown": 70
+  },
+  "chunks_total": 70,
+  "drive_sources_total": 2,
+  "facts_total": 81,
+  "freshness_blocks_total": 6,
+  "metadata_only_sources": 2,
+  "needs_manager_confirmation": 81,
+  "precise_answer_sources": 0,
+  "run_id": "20260517_night_v1",
+  "safe_for_stage6_dry_run": true,
+  "sources_by_freshness_status": {
+    "metadata_only": 2,
+    "unknown": 9
+  },
+  "sources_by_read_status": {
+    "metadata_only": 2,
+    "read": 9
+  },
+  "sources_total": 11,
+  "sources_with_sha256": 11,
+  "usable_for_precise_answer": 0
+}

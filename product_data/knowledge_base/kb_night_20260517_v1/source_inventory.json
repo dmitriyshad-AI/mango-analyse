@@ -1,0 +1,233 @@
+[
+  {
+    "fact_types": [
+      "manager_instruction",
+      "restriction",
+      "price",
+      "schedule",
+      "documents",
+      "payment_methods",
+      "program"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-12T13:21:44.770052+00:00",
+    "metadata": {},
+    "notes": "Local KC knowledge base. Sections are chunked before prompt use; the whole docx must not be sent to LLM.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/База знаний КЦ.docx",
+    "read_status": "read",
+    "sha256": "a94ead8fa22ab91022d9c6c284fd60e08efa90b93c152b0fec2f7d1723eef327",
+    "source_id": "source:local_docx:a238607e99b38079",
+    "source_kind": "local_docx",
+    "status_reason": "local_source_readable",
+    "title": "База знаний КЦ",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "manager_instruction",
+      "restriction",
+      "documents",
+      "payment_methods",
+      "program"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-12T23:08:54.156744+00:00",
+    "metadata": {},
+    "notes": "Local draft with KC bot knowledge boundaries; read-only source for short chunks.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/KC_BOT_KNOWLEDGE_BASE_DRAFT_2026-05-13.md",
+    "read_status": "read",
+    "sha256": "bb76ed70f2687c56fdb2b7f872a96db09c523fb0510ef0c9269130bf6f087406",
+    "source_id": "source:local_markdown:cdb6228413e11d7a",
+    "source_kind": "local_markdown",
+    "status_reason": "local_source_readable",
+    "title": "KC bot knowledge base draft 2026-05-13",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "manager_instruction",
+      "restriction",
+      "price",
+      "documents"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-12T22:35:35.545014+00:00",
+    "metadata": {},
+    "notes": "Local plan for Google Drive knowledge processing; not a fresh fact source by itself.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/DRIVE_KC_KNOWLEDGE_BASE_BUILD_PLAN_2026-05-13.md",
+    "read_status": "read",
+    "sha256": "bf5ba85dc5293bb62ece80261eb4d70d3ffdfc61bd57fabbfab695d3dad9391e",
+    "source_id": "source:local_markdown:19398a8abc802579",
+    "source_kind": "local_markdown",
+    "status_reason": "local_source_readable",
+    "title": "Drive KC knowledge base build plan 2026-05-13",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "rop_policy",
+      "restriction"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-15T00:17:57.346267+00:00",
+    "metadata": {},
+    "notes": "Canonical ROP routing and allowed-answer policy for Telegram pilot context.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/question_catalog/rop_bot_policy_questionnaire_v2_2026-05-15.csv",
+    "read_status": "read",
+    "sha256": "5be48bf00c4109e51cb89e705ee77f734f141aa549ba201c0102db9e22faff08",
+    "source_id": "source:local_csv:5c9ae609d4c7d46f",
+    "source_kind": "local_csv",
+    "status_reason": "local_source_readable",
+    "title": "ROP bot policy questionnaire v2 approved CSV",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "rop_policy",
+      "restriction"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-15T00:13:07.614424+00:00",
+    "metadata": {},
+    "notes": "Approved ROP policy workbook. Used for inventory and sha256; CSV remains the text-readable source.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/question_catalog/rop_bot_policy_questionnaire_APPROVED_2026-05-15.xlsx",
+    "read_status": "read",
+    "sha256": "3636d5861a72086966cb5b44d3830f575904a28645a81f3f2f82b7554b21a9e8",
+    "source_id": "source:local_xlsx:5fd8afd7600f5872",
+    "source_kind": "local_xlsx",
+    "status_reason": "local_source_readable",
+    "title": "ROP bot policy questionnaire approved XLSX",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "question_catalog"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-13T19:16:06.134486+00:00",
+    "metadata": {},
+    "notes": "Question class taxonomy for matching a new customer message to policy and fact requirements.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/question_catalog/customer_question_classes.csv",
+    "read_status": "read",
+    "sha256": "9d5875da49620c590cf2c188cef571af1df2b88683218daec12d329a50493929",
+    "source_id": "source:local_csv:11ee1aa6835d4f4d",
+    "source_kind": "local_csv",
+    "status_reason": "local_source_readable",
+    "title": "Customer question classes",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "question_catalog"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-13T19:16:06.078735+00:00",
+    "metadata": {},
+    "notes": "Historical redacted question examples. Use only short relevant fragments in prompt context.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/question_catalog/customer_question_items.jsonl",
+    "read_status": "read",
+    "sha256": "e8313edeb8f18336a7e15dde700d224290d2faf4dedf4fc6f0ea0c91c4621934",
+    "source_id": "source:local_jsonl:a62ad52b9880ce91",
+    "source_kind": "local_jsonl",
+    "status_reason": "local_source_readable",
+    "title": "Customer question items",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "price",
+      "schedule",
+      "documents",
+      "payment_methods",
+      "program",
+      "question_catalog"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-15T00:18:09.101637+00:00",
+    "metadata": {},
+    "notes": "Question catalog fact source registry. Entries still require manual freshness confirmation.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/question_catalog/current_fact_source_registry.json",
+    "read_status": "read",
+    "sha256": "ebfe6ada85636d99b2c2185af2bab3b92a3cfb0b7cdd021c0a428573912d15e3",
+    "source_id": "source:local_json:67cddf8247d07f49",
+    "source_kind": "local_json",
+    "status_reason": "local_source_readable",
+    "title": "Current fact source registry",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "question_catalog",
+      "restriction"
+    ],
+    "freshness_status": "unknown",
+    "google_drive_url": null,
+    "last_updated_at": "2026-05-13T19:16:06.163481+00:00",
+    "metadata": {},
+    "notes": "Fact requirements and fallback rules for question classes.",
+    "path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/question_catalog/fact_requirements.csv",
+    "read_status": "read",
+    "sha256": "4f5af60a2770aca355b5f459c5722a1b0587d43a432cf4c0f608c1e648991f0e",
+    "source_id": "source:local_csv:36801d70584f85d3",
+    "source_kind": "local_csv",
+    "status_reason": "local_source_readable",
+    "title": "Question catalog fact requirements",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "price",
+      "payment_methods"
+    ],
+    "freshness_status": "metadata_only",
+    "google_drive_url": "google-drive://manual-registration/унпк_стоимость_обучения_и_порядок_оплаты_на_26_2027_уч_г_от_16.03.26",
+    "last_updated_at": null,
+    "metadata": {
+      "folder_title": "Google Drive: актуальные документы по ценам 2026/2027",
+      "live_access_used": false,
+      "metadata_only": true,
+      "sha256_scope": "metadata_record"
+    },
+    "notes": "Registered as metadata only; use precise facts only after verified local extraction.",
+    "path": null,
+    "read_status": "metadata_only",
+    "sha256": "37789d225199fdd2a057d3d7cff239396fa6717c2d225b8b7e3c5f3734c2f863",
+    "source_id": "source:google_drive_doc:45de1d52eb2dbe32",
+    "source_kind": "google_drive_doc",
+    "status_reason": "google_drive_registered_metadata_only",
+    "title": "УНПК Стоимость обучения и порядок оплаты на 26/2027 уч г от 16.03.26",
+    "usable_for_precise_answer": false
+  },
+  {
+    "fact_types": [
+      "price",
+      "payment_methods"
+    ],
+    "freshness_status": "metadata_only",
+    "google_drive_url": "google-drive://manual-registration/фотон_стоимость_обучения_и_порядок_оплаты_на_26_27_уч_от_16.03.26",
+    "last_updated_at": null,
+    "metadata": {
+      "folder_title": "Google Drive: актуальные документы по ценам 2026/2027",
+      "live_access_used": false,
+      "metadata_only": true,
+      "sha256_scope": "metadata_record"
+    },
+    "notes": "Registered as metadata only; use precise facts only after verified local extraction.",
+    "path": null,
+    "read_status": "metadata_only",
+    "sha256": "1c528a2678410cee199d6fa0b9edd8fc8b4cd624be3f1bf33cf8a9869b627811",
+    "source_id": "source:google_drive_doc:eef515411fedd003",
+    "source_kind": "google_drive_doc",
+    "status_reason": "google_drive_registered_metadata_only",
+    "title": "ФОТОН Стоимость обучения и порядок оплаты на 26/27 уч от 16.03.26",
+    "usable_for_precise_answer": false
+  }
+]

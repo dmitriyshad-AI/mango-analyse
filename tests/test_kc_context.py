@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from mango_mvp.knowledge_base.fact_registry import FRESHNESS_UNKNOWN, FactSource, KnowledgeChunk
-from mango_mvp.knowledge_base.kc_context import SCHEDULE_SAFE_TEMPLATE, build_kc_context, limit_context_chunks
+from mango_mvp.knowledge_base.fact_registry import FRESHNESS_METADATA_ONLY, FRESHNESS_UNKNOWN, FactSource, KnowledgeChunk
+from mango_mvp.knowledge_base.kc_context import (
+    SCHEDULE_SAFE_TEMPLATE,
+    build_kc_context,
+    build_kc_context_from_snapshot,
+    limit_context_chunks,
+    render_prompt_context,
+)
 
 
 def test_context_builder_limits_chunks() -> None:
@@ -64,3 +70,38 @@ def test_schedule_missing_uses_safe_schedule_template() -> None:
     assert context.manager_followup_required is True
     assert context.manager_followup_deadline == "2026-05-17T09:30:00+00:00"
     assert context.freshness_blocks[0]["reason"] == "schedule_source_not_ready"
+
+
+def test_context_can_be_built_from_snapshot_and_renders_source_freshness() -> None:
+    source = FactSource(
+        source_id="source:drive_price",
+        title="Drive price doc",
+        source_kind="google_drive_doc",
+        fact_types=("price",),
+        google_drive_url="google-drive://price",
+        freshness_status=FRESHNESS_METADATA_ONLY,
+        read_status="metadata_only",
+    )
+    chunk = KnowledgeChunk(
+        chunk_id="kc_chunk:price",
+        source_id=source.source_id,
+        title="Стоимость",
+        text="Точную стоимость можно назвать только после проверки свежего прайс-документа.",
+        fact_types=("price",),
+        freshness_status=FRESHNESS_METADATA_ONLY,
+        metadata={"source_title": source.title},
+    )
+    snapshot = {"sources": [source.to_json_dict()], "chunks": [chunk.to_json_dict()]}
+
+    context = build_kc_context_from_snapshot(
+        message_text="Сколько стоит обучение?",
+        snapshot=snapshot,
+        required_fact_keys=("prices.current",),
+        max_chunks=3,
+    )
+    rendered = render_prompt_context(context)
+
+    assert context.precise_answers_allowed is False
+    assert context.freshness_blocks[0]["candidate_source_ids"] == ["source:drive_price"]
+    assert "source=Drive price doc" in rendered
+    assert "freshness=metadata_only" in rendered

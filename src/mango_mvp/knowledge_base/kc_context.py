@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 from mango_mvp.knowledge_base.fact_registry import (
     FACT_TYPE_SCHEDULE,
+    PRECISE_FRESHNESS_STATUSES,
     FactSource,
     KnowledgeChunk,
     build_freshness_blocks,
@@ -21,6 +22,10 @@ SCHEDULE_SAFE_TEMPLATE = (
 )
 
 SAFE_FALLBACK_TEMPLATE = "Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
+PRECISE_CLAIM_RE = re.compile(
+    r"(\b\d[\d\s]*(?:руб|₽|%|процент)|\b\d{1,2}[.:]\d{2}\b|\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b)",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +87,30 @@ def build_kc_context(
     )
 
 
+def build_kc_context_from_snapshot(
+    *,
+    message_text: str,
+    snapshot: Mapping[str, Any],
+    required_fact_keys: Sequence[str] = (),
+    topic_id: str | None = None,
+    received_at: datetime | None = None,
+    max_chunks: int = 6,
+    max_chunk_chars: int = 700,
+    total_char_limit: int = 3200,
+) -> KCContext:
+    return build_kc_context(
+        message_text=message_text,
+        chunks=snapshot.get("chunks") or snapshot.get("knowledge_chunks") or (),
+        sources=snapshot.get("sources") or (),
+        required_fact_keys=required_fact_keys,
+        topic_id=topic_id,
+        received_at=received_at,
+        max_chunks=max_chunks,
+        max_chunk_chars=max_chunk_chars,
+        total_char_limit=total_char_limit,
+    )
+
+
 def limit_context_chunks(
     chunks: Sequence[KnowledgeChunk | Mapping[str, Any]],
     *,
@@ -107,6 +136,8 @@ def limit_context_chunks(
     selected: list[KnowledgeChunk] = []
     used_chars = 0
     for chunk in scored:
+        if _precise_claim_not_verified(chunk):
+            continue
         if len(selected) >= max_chunks:
             break
         remaining = total_char_limit - used_chars
@@ -117,6 +148,10 @@ def limit_context_chunks(
         selected.append(trimmed)
         used_chars += len(trimmed.text)
     return selected
+
+
+def _precise_claim_not_verified(chunk: KnowledgeChunk) -> bool:
+    return chunk.freshness_status not in PRECISE_FRESHNESS_STATUSES and bool(PRECISE_CLAIM_RE.search(chunk.text))
 
 
 def build_schedule_safe_block(*, received_at: datetime | None = None) -> dict[str, Any]:
@@ -143,7 +178,8 @@ def render_prompt_context(context: KCContext) -> str:
     if context.selected_chunks:
         lines.append("Короткие фрагменты базы знаний:")
         for chunk in context.selected_chunks:
-            lines.append(f"- [{chunk.title}] {chunk.text}")
+            source_label = str(chunk.metadata.get("source_title") or chunk.source_id)
+            lines.append(f"- [{chunk.title}; source={source_label}; freshness={chunk.freshness_status}] {chunk.text}")
     return "\n".join(lines)
 
 

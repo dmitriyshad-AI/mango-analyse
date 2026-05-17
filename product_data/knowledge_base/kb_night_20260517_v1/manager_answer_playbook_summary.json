@@ -1,0 +1,70 @@
+{
+  "catalog_root": "product_data/question_catalog",
+  "generated_at": "2026-05-17T00:50:10.663054+00:00",
+  "mode": "read_only",
+  "safety": {
+    "client_send": false,
+    "crm_write": false,
+    "exact_dynamic_facts_removed_from_patterns": true,
+    "manager_answers_are_facts": false,
+    "personal_data_removed_from_patterns": true,
+    "raw_manager_answers_copied_to_client_layer": false,
+    "stable_runtime_write": false,
+    "tallanto_write": false
+  },
+  "schema_version": "manager_answer_playbook_v1",
+  "summary": {
+    "answers_usable_as_fact": 0,
+    "channel_counts": {
+      "call": 253,
+      "email": 46,
+      "telegram": 201
+    },
+    "classification_counts": {
+      "good": 230,
+      "no_answer": 59,
+      "outdated": 119,
+      "unsafe": 92
+    },
+    "pattern_rows": 63,
+    "patterns_usable_as_fact": 0,
+    "risk_counts": {
+      "commercial": 52,
+      "legal_docs": 73,
+      "negative": 20,
+      "safe": 355
+    },
+    "sample_rows": 500,
+    "topic_counts": {
+      "адрес / очная площадка": 47,
+      "возврат": 20,
+      "возраст / класс / уровень": 22,
+      "документы": 20,
+      "доступ/ссылки": 86,
+      "жалобы": 20,
+      "маткапитал": 20,
+      "налоговый вычет": 20,
+      "неполный контекст / уточнение предыдущего сообщения": 6,
+      "обратная связь": 37,
+      "обратная связь по обучению": 6,
+      "обрывок без клиентского вопроса": 6,
+      "общая консультация / нужна помощь": 6,
+      "общий вопрос": 6,
+      "оплата": 19,
+      "отказ / неактуально": 6,
+      "подходит ли уровень": 6,
+      "посещение / отсутствие / отметки": 6,
+      "преподаватель": 6,
+      "пробное занятие": 20,
+      "программа": 23,
+      "продолжение обучения / решение семьи": 6,
+      "расписание": 20,
+      "скидки": 22,
+      "следующий шаг / порядок действий": 6,
+      "статус запроса / ожидает ответа": 6,
+      "транспорт / логистика": 6,
+      "уточнение причины звонка": 6,
+      "цена": 20
+    }
+  }
+}

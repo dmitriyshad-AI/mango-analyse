@@ -76,6 +76,12 @@ class PilotContext:
     timeline_context: Mapping[str, Any] = field(default_factory=dict)
     rop_policy: Mapping[str, Any] = field(default_factory=dict)
     facts_context: Mapping[str, Any] = field(default_factory=dict)
+    confirmed_facts: Mapping[str, Any] = field(default_factory=dict)
+    missing_facts: Sequence[str] = field(default_factory=tuple)
+    required_fact_keys: Sequence[str] = field(default_factory=tuple)
+    knowledge_snippets: Sequence[str] = field(default_factory=tuple)
+    context_warnings: Sequence[str] = field(default_factory=tuple)
+    knowledge_base_version: str = ""
     risk_flags: Sequence[str] = field(default_factory=tuple)
     context_quality: PilotContextQuality = field(default_factory=PilotContextQuality)
 
@@ -93,9 +99,32 @@ class PilotContext:
         object.__setattr__(self, "timeline_context", compact_mapping(self.timeline_context, max_items=16, max_chars=300))
         object.__setattr__(self, "rop_policy", compact_mapping(self.rop_policy, max_items=16, max_chars=300))
         object.__setattr__(self, "facts_context", compact_mapping(self.facts_context, max_items=16, max_chars=300))
+        object.__setattr__(self, "confirmed_facts", compact_mapping(self.confirmed_facts, max_items=16, max_chars=300))
+        object.__setattr__(
+            self,
+            "missing_facts",
+            tuple(dedupe(clean_text(item, max_chars=160) for item in self.missing_facts)),
+        )
+        object.__setattr__(
+            self,
+            "required_fact_keys",
+            tuple(dedupe(clean_text(item, max_chars=120) for item in self.required_fact_keys)),
+        )
+        object.__setattr__(
+            self,
+            "knowledge_snippets",
+            tuple(dedupe(clean_text(item, max_chars=700) for item in self.knowledge_snippets))[:8],
+        )
+        object.__setattr__(
+            self,
+            "context_warnings",
+            tuple(dedupe(clean_text(item, max_chars=120) for item in self.context_warnings)),
+        )
+        object.__setattr__(self, "knowledge_base_version", clean_text(self.knowledge_base_version, max_chars=160))
         object.__setattr__(self, "risk_flags", tuple(dedupe(clean_text(item, max_chars=120) for item in self.risk_flags)))
 
     def to_prompt_context(self) -> Mapping[str, Any]:
+        merged_context_warnings = dedupe((*self.context_warnings, *_context_warnings_for_quality(self.context_quality)))
         payload: dict[str, Any] = {
             "schema_version": PILOT_CONTEXT_SCHEMA_VERSION,
             "recent_messages": list(self.recent_messages),
@@ -106,9 +135,14 @@ class PilotContext:
             "timeline_context": dict(self.timeline_context),
             "rop_policy": dict(self.rop_policy),
             "facts_context": dict(self.facts_context),
+            "confirmed_facts": dict(self.confirmed_facts),
+            "missing_facts": list(self.missing_facts),
+            "required_fact_keys": list(self.required_fact_keys),
+            "knowledge_snippets": list(self.knowledge_snippets),
+            "knowledge_base_version": self.knowledge_base_version,
             "risk_flags": list(self.risk_flags),
             "context_quality": self.context_quality.to_json_dict(),
-            "context_warnings": context_warnings(self.context_quality),
+            "context_warnings": list(merged_context_warnings),
             "pilot_context_safety": pilot_context_safety_contract(),
         }
         return {key: value for key, value in payload.items() if value not in ({}, [], "", None)}
@@ -132,6 +166,12 @@ def build_pilot_context(
     timeline_context: Mapping[str, Any] | None = None,
     rop_policy: Mapping[str, Any] | None = None,
     facts_context: Mapping[str, Any] | None = None,
+    confirmed_facts: Mapping[str, Any] | None = None,
+    missing_facts: Sequence[str] = (),
+    required_fact_keys: Sequence[str] = (),
+    knowledge_snippets: Sequence[str] = (),
+    context_warnings: Sequence[str] = (),
+    knowledge_base_version: str = "",
     risk_flags: Sequence[str] = (),
 ) -> PilotContext:
     current_message = message.text if isinstance(message, ChannelMessage) else str(message or "")
@@ -144,6 +184,8 @@ def build_pilot_context(
     tallanto = dict(tallanto_context or {})
     timeline = dict(timeline_context or {})
     facts = dict(facts_context or {})
+    missing_fact_items = tuple(dedupe(clean_text(item, max_chars=160) for item in missing_facts))
+    explicit_warnings = tuple(dedupe(clean_text(item, max_chars=120) for item in context_warnings))
     quality = PilotContextQuality(
         customer_identity_found=bool(client.get("phone") or client.get("channel_user_id") or client.get("customer_id")),
         phone_found=bool(client.get("phone")),
@@ -154,11 +196,12 @@ def build_pilot_context(
         family_phone=truthy(amo.get("family_phone") or tallanto.get("family_phone")),
         multiple_students=int_or_zero(tallanto.get("students_count") or tallanto.get("student_count")) > 1,
         multiple_deals=int_or_zero(amo.get("deals_count") or amo.get("deal_count")) > 1,
-        facts_stale=truthy(facts.get("stale") or facts.get("facts_stale")),
-        facts_missing=truthy(facts.get("missing") or facts.get("facts_missing")),
+        facts_stale=truthy(facts.get("stale") or facts.get("facts_stale")) or "facts_stale" in explicit_warnings,
+        facts_missing=bool(missing_fact_items) or truthy(facts.get("missing") or facts.get("facts_missing")),
     )
+    merged_context_warnings = tuple(dedupe((*explicit_warnings, *_context_warnings_for_quality(quality))))
     merged_risks = list(risk_flags)
-    merged_risks.extend(context_warnings(quality))
+    merged_risks.extend(merged_context_warnings)
     return PilotContext(
         current_message=current_message,
         recent_messages=recent_messages,
@@ -169,12 +212,22 @@ def build_pilot_context(
         timeline_context=timeline,
         rop_policy=rop_policy or {},
         facts_context=facts,
+        confirmed_facts=confirmed_facts or {},
+        missing_facts=missing_fact_items,
+        required_fact_keys=required_fact_keys,
+        knowledge_snippets=knowledge_snippets,
+        context_warnings=merged_context_warnings,
+        knowledge_base_version=knowledge_base_version,
         risk_flags=tuple(merged_risks),
         context_quality=quality,
     )
 
 
 def context_warnings(quality: PilotContextQuality) -> tuple[str, ...]:
+    return _context_warnings_for_quality(quality)
+
+
+def _context_warnings_for_quality(quality: PilotContextQuality) -> tuple[str, ...]:
     warnings: list[str] = []
     if quality.amo_tallanto_conflict:
         warnings.append("amo_tallanto_conflict")

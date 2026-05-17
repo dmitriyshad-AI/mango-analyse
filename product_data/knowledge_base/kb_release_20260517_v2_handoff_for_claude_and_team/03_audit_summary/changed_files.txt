@@ -1,0 +1,17 @@
+scripts/build_kb_release_v2_from_claude_and_codex.py
+scripts/run_telegram_stage6_kb_eval.py
+src/mango_mvp/channels/draft_prompt_builder.py
+src/mango_mvp/channels/pilot_context.py
+src/mango_mvp/channels/subscription_llm.py
+src/mango_mvp/channels/telegram_pilot_context_builder.py
+src/mango_mvp/knowledge_base/fact_registry.py
+src/mango_mvp/knowledge_base/kc_context.py
+tests/test_bot_policy_v2.py
+tests/test_kb_release_v2_import.py
+tests/test_kc_context.py
+tests/test_subscription_llm_draft_provider.py
+tests/test_telegram_pilot_context_builder.py
+tests/test_telegram_stage6_kb_eval.py
+product_data/knowledge_base/kb_release_20260517_v2/
+product_data/knowledge_base/kb_release_20260517_v2_agent_pack/
+audits/_inbox/kb_release_v2_claude_codex_integration_20260517_225712/

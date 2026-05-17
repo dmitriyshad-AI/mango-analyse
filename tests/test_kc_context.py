@@ -105,3 +105,111 @@ def test_context_can_be_built_from_snapshot_and_renders_source_freshness() -> No
     assert context.freshness_blocks[0]["candidate_source_ids"] == ["source:drive_price"]
     assert "source=Drive price doc" in rendered
     assert "freshness=metadata_only" in rendered
+
+
+def test_unverified_bare_amount_is_not_selected_for_prompt() -> None:
+    chunks = [
+        KnowledgeChunk(
+            chunk_id="kc_chunk:unsafe_price",
+            source_id="source:old_script",
+            title="Старый скрипт",
+            text="Сейчас доступна цена для предварительной записи: 47250 за год или 29750 за семестр.",
+            fact_types=("price",),
+            freshness_status=FRESHNESS_UNKNOWN,
+        ),
+        KnowledgeChunk(
+            chunk_id="kc_chunk:safe_template",
+            source_id="source:templates",
+            title="Шаблон ответа",
+            text="Стоимость нужно сверить по актуальному документу, затем менеджер вернется с точной суммой.",
+            fact_types=("price",),
+            freshness_status=FRESHNESS_UNKNOWN,
+        ),
+    ]
+
+    selected = limit_context_chunks(
+        chunks,
+        query="Сколько стоит обучение?",
+        required_fact_keys=("prices.current",),
+        max_chunks=3,
+    )
+
+    assert [chunk.chunk_id for chunk in selected] == ["kc_chunk:safe_template"]
+
+
+def test_answer_template_is_ranked_above_unapproved_price_candidate() -> None:
+    chunks = [
+        {
+            "chunk_id": "kc_chunk:price_candidate",
+            "source_id": "source:price_doc",
+            "title": "Цена",
+            "text": "Стоимость уточняется по актуальному прайсу.",
+            "fact_types": ["price"],
+            "freshness_status": "needs_manager_confirmation",
+            "source_role": "precise_fact_candidate",
+            "metadata": {"source_role": "precise_fact_candidate"},
+        },
+        {
+            "chunk_id": "kc_chunk:answer_template",
+            "source_id": "source:templates",
+            "title": "Шаблон ответа",
+            "text": "Клиент спрашивает про цену. Черновик: проверю актуальную стоимость и вернусь с точным ответом.",
+            "fact_types": ["price"],
+            "freshness_status": "needs_manager_confirmation",
+            "source_role": "answer_template",
+            "metadata": {"source_role": "answer_template"},
+        },
+    ]
+
+    selected = limit_context_chunks(
+        chunks,
+        query="Сколько стоит курс?",
+        required_fact_keys=("prices.current",),
+        max_chunks=2,
+    )
+
+    assert selected[0].chunk_id == "kc_chunk:answer_template"
+
+
+def test_active_brand_filters_other_brand_and_internal_chunks() -> None:
+    chunks = [
+        {
+            "chunk_id": "kc_chunk:foton",
+            "source_id": "source:foton",
+            "title": "Фотон",
+            "text": "Для Фотона действует свой порядок оплаты.",
+            "fact_types": ["payment_methods"],
+            "freshness_status": "document_verified",
+            "brand": "foton",
+        },
+        {
+            "chunk_id": "kc_chunk:unpk",
+            "source_id": "source:unpk",
+            "title": "УНПК",
+            "text": "Для УНПК МФТИ действует свой порядок оплаты.",
+            "fact_types": ["payment_methods"],
+            "freshness_status": "document_verified",
+            "brand": "unpk",
+        },
+        {
+            "chunk_id": "kc_chunk:internal",
+            "source_id": "source:internal",
+            "title": "Сравнение",
+            "text": "В УНПК и Фотоне разные условия.",
+            "fact_types": ["payment_methods"],
+            "freshness_status": "document_verified",
+            "brand": "internal",
+            "cross_brand_mixed": True,
+            "forbidden_for_client": True,
+        },
+    ]
+
+    selected = limit_context_chunks(
+        chunks,
+        query="Как оплатить?",
+        required_fact_keys=("payment_methods.current",),
+        active_brand="foton",
+        max_chunks=5,
+    )
+
+    assert [chunk.chunk_id for chunk in selected] == ["kc_chunk:foton"]

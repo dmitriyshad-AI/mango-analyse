@@ -17,7 +17,7 @@ MAX_KNOWLEDGE_SNIPPETS = 8
 MAX_KNOWLEDGE_SNIPPET_CHARS = 700
 MAX_KNOWLEDGE_CONTEXT_CHARS = 4500
 
-_FRESH_STATUSES = {"fresh", "fresh_verified", "verified", "allowed_after_fact_check"}
+_FRESH_STATUSES = {"fresh", "fresh_verified", "verified", "document_verified", "allowed_after_fact_check"}
 _BLOCKING_STATUSES = {
     "metadata_only",
     "unknown",
@@ -59,6 +59,9 @@ class KnowledgeSnapshotContext:
 def build_telegram_pilot_context(
     message: ChannelMessage | str,
     *,
+    active_brand: str = "unknown",
+    brand_policy: Mapping[str, Any] | None = None,
+    payment_context: Mapping[str, Any] | None = None,
     theme: Mapping[str, Any] | str | None = None,
     rop_policy: Mapping[str, Any] | None = None,
     kc_snapshot: Mapping[str, Any] | None = None,
@@ -82,6 +85,7 @@ def build_telegram_pilot_context(
         rop_policy=merged_policy,
         kc_snapshot=snapshot,
         snapshot_warnings=snapshot_warnings,
+        active_brand=active_brand,
     )
     policy_for_prompt = dict(merged_policy)
     if snapshot_context.facts_context.get("required_fact_keys"):
@@ -89,6 +93,9 @@ def build_telegram_pilot_context(
 
     return build_pilot_context(
         message,
+        active_brand=active_brand,
+        brand_policy=brand_policy or {},
+        payment_context=payment_context or {},
         recent_messages=recent_messages,
         client_identity=client_identity,
         customer_summary=customer_summary,
@@ -141,6 +148,7 @@ def build_knowledge_snapshot_context(
     rop_policy: Mapping[str, Any] | None = None,
     kc_snapshot: Mapping[str, Any] | None = None,
     snapshot_warnings: Sequence[str] = (),
+    active_brand: str = "unknown",
 ) -> KnowledgeSnapshotContext:
     policy = merge_theme_and_rop_policy(theme=theme, rop_policy=rop_policy)
     required_fact_keys = required_fact_keys_for_message(message_text, theme=theme, rop_policy=policy)
@@ -152,11 +160,13 @@ def build_knowledge_snapshot_context(
     required_fact_types = {fact_type_from_key(key) for key in required_fact_keys}
     facts = _records(kc_snapshot.get("facts"))
     sources = _records(kc_snapshot.get("sources"))
-    chunks = _chunk_records(kc_snapshot)
+    active = _normalize_active_brand(active_brand)
+    chunks = _chunk_records(kc_snapshot, active_brand=active)
     selected_chunks = limit_context_chunks(
         chunks,
         query=f"{topic_id} {message_text}",
         required_fact_keys=required_fact_keys,
+        active_brand=active,
         max_chunks=MAX_KNOWLEDGE_SNIPPETS,
         max_chunk_chars=MAX_KNOWLEDGE_SNIPPET_CHARS,
         total_char_limit=MAX_KNOWLEDGE_CONTEXT_CHARS,
@@ -166,6 +176,7 @@ def build_knowledge_snapshot_context(
         required_fact_types=required_fact_types,
         topic_id=topic_id,
         query=message_text,
+        active_brand=active,
     )
     missing_facts, stale_or_blocked = _missing_fact_keys(
         required_fact_keys=required_fact_keys,
@@ -185,7 +196,7 @@ def build_knowledge_snapshot_context(
 
     knowledge_snippets = _knowledge_snippets(selected_chunks)
     if len(knowledge_snippets) < MAX_KNOWLEDGE_SNIPPETS:
-        knowledge_snippets = (*knowledge_snippets, *_manager_pattern_snippets(kc_snapshot, topic_id=topic_id))[
+        knowledge_snippets = (*knowledge_snippets, *_manager_pattern_snippets(kc_snapshot, topic_id=topic_id, active_brand=active))[
             :MAX_KNOWLEDGE_SNIPPETS
         ]
     precise_answers_allowed = not missing_facts and not stale_or_blocked
@@ -215,6 +226,7 @@ def build_knowledge_snapshot_context(
         "confirmed_fact_ids": list(confirmed_facts.keys()),
         "selected_chunk_ids": [chunk.chunk_id for chunk in selected_chunks],
         "source_ids": selected_source_ids[:12],
+        "active_brand": active,
     }
     if confirmed_facts:
         facts_context["confirmed_facts"] = dict(confirmed_facts)
@@ -360,10 +372,12 @@ def _snapshot_version(snapshot: Mapping[str, Any]) -> str:
     return "kc_knowledge_snapshot_unknown"
 
 
-def _chunk_records(snapshot: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+def _chunk_records(snapshot: Mapping[str, Any], *, active_brand: str = "unknown") -> list[Mapping[str, Any]]:
     chunks = _records(snapshot.get("chunks") or snapshot.get("knowledge_chunks"))
     result: list[Mapping[str, Any]] = []
     for chunk in chunks:
+        if not _record_allowed_for_active_brand(chunk, active_brand=active_brand):
+            continue
         if _truthy(chunk.get("forbidden_for_client")):
             continue
         status = _stable_status(chunk.get("freshness_status"))
@@ -399,10 +413,11 @@ def _select_confirmed_facts(
     required_fact_types: set[str],
     topic_id: str,
     query: str,
+    active_brand: str = "unknown",
 ) -> dict[str, str]:
     confirmed: dict[str, str] = {}
     for fact in facts:
-        if not _usable_for_precise_answer(fact):
+        if not _usable_for_precise_answer(fact, active_brand=active_brand):
             continue
         if not _record_matches_context(fact, required_fact_types=required_fact_types, topic_id=topic_id, query=query):
             continue
@@ -456,19 +471,19 @@ def _knowledge_snippets(selected_chunks: Sequence[Any]) -> tuple[str, ...]:
     snippets: list[str] = []
     for chunk in selected_chunks:
         title = _clean_text(getattr(chunk, "title", ""), max_chars=120) or "База знаний"
-        source_id = _clean_text(getattr(chunk, "source_id", ""), max_chars=120)
-        status = _clean_text(getattr(chunk, "freshness_status", ""), max_chars=80) or "unknown"
         text = _clean_text(getattr(chunk, "text", ""), max_chars=MAX_KNOWLEDGE_SNIPPET_CHARS)
         if not text:
             continue
-        prefix = f"[{title}; source={source_id}; freshness={status}] "
+        prefix = f"{title}: "
         snippets.append(_clip_text(f"{prefix}{text}", MAX_KNOWLEDGE_SNIPPET_CHARS))
     return tuple(_dedupe(snippets))
 
 
-def _manager_pattern_snippets(snapshot: Mapping[str, Any], *, topic_id: str) -> tuple[str, ...]:
+def _manager_pattern_snippets(snapshot: Mapping[str, Any], *, topic_id: str, active_brand: str = "unknown") -> tuple[str, ...]:
     snippets: list[str] = []
     for pattern in _records(snapshot.get("manager_answer_patterns")):
+        if not _record_allowed_for_active_brand(pattern, active_brand=active_brand):
+            continue
         if topic_id and topic_id not in _text_list(pattern.get("related_theme_ids") or pattern.get("theme_ids")):
             continue
         text = _clean_text(
@@ -505,13 +520,33 @@ def _record_matches_context(
     return any(term in text for term in _query_terms(query))
 
 
-def _usable_for_precise_answer(record: Mapping[str, Any]) -> bool:
+def _usable_for_precise_answer(record: Mapping[str, Any], *, active_brand: str = "unknown") -> bool:
     return (
         _stable_status(record.get("freshness_status")) in _FRESH_STATUSES
         and _truthy(record.get("usable_for_precise_answer"))
         and not _truthy(record.get("requires_manager_confirmation"))
         and not _truthy(record.get("forbidden_for_client"))
+        and _record_allowed_for_active_brand(record, active_brand=active_brand)
     )
+
+
+def _record_allowed_for_active_brand(record: Mapping[str, Any], *, active_brand: str = "unknown") -> bool:
+    if _truthy(record.get("forbidden_for_client")) or _truthy(record.get("internal_only")):
+        return False
+    if _truthy(record.get("cross_brand_mixed")) or _clean_text(record.get("cross_brand_policy")) == "forbidden_for_client":
+        return False
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), Mapping) else {}
+    has_brand_field = bool(record.get("brand") or metadata.get("brand"))
+    brand = _clean_text(record.get("brand") or metadata.get("brand") or "brand_neutral").casefold()
+    active = _normalize_active_brand(active_brand)
+    text = f"{record.get('title', '')} {_fact_text(record)} {record.get('text', '')}"
+    if brand in {"", "unknown", "brand_neutral", "both"}:
+        if not has_brand_field:
+            return True
+        return _brand_neutral_text_is_safe(text)
+    if active == "unknown":
+        return False
+    return brand == active
 
 
 def _fact_text(record: Mapping[str, Any]) -> str:
@@ -608,6 +643,33 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "истина", "есть"}
+
+
+def _normalize_active_brand(value: Any) -> str:
+    text = str(value or "unknown").strip().casefold()
+    if text in {"foton", "фотон"}:
+        return "foton"
+    if text in {"unpk", "унпк", "унпк мфти"}:
+        return "unpk"
+    return "unknown"
+
+
+def _brand_neutral_text_is_safe(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    forbidden = (
+        "фотон",
+        "унпк",
+        "мфти",
+        "цдпо",
+        "црдо",
+        "ано дпо",
+        "kmipt",
+        "cdpofoton",
+        "т-банк",
+        "долями",
+    )
+    precise = _has_precise_claim(value)
+    return not precise and not any(marker in value for marker in forbidden)
 
 
 def _dedupe(values: Sequence[str]) -> list[str]:

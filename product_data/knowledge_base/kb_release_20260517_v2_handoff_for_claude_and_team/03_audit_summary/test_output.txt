@@ -1,0 +1,48 @@
+Команды:
+
+1. PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_kb_release_v2_from_claude_and_codex.py
+
+Результат:
+- facts_total: 332
+- client_allowed_facts: 252
+- cross_brand_internal_facts: 8
+- quality_passed: true
+
+2. PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_kb_release_v2_import.py tests/test_bot_policy_v2.py tests/test_kc_context.py tests/test_telegram_pilot_context_builder.py tests/test_subscription_llm_draft_provider.py tests/test_draft_prompt_builder.py tests/test_telegram_stage6_kb_eval.py
+
+Результат:
+- 60 passed in 0.93s
+
+3. PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_stage6_kb_eval.py --snapshot product_data/knowledge_base/kb_release_20260517_v2/kb_release_v2_snapshot.json --out-dir product_data/knowledge_base/kb_release_20260517_v2/stage6_fake_smoke --provider fake --active-brand foton --expected-dialogs 20
+
+Результат:
+- rows_total: 20
+- used_kb_context: 20
+- became_more_substantive: 11
+- baseline_manager_only_preserved: 11
+- baseline_manager_only_relaxed: 0
+- high_risk_route_relaxed: 0
+- invalid_topic_ids: 0
+- unsupported_numeric_promises: 0
+- errors: 0
+
+4. PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+
+Результат:
+- 1468 tests collected
+- collect-only завершился успешно
+
+5. PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_stage6_kb_eval.py --snapshot product_data/knowledge_base/kb_release_20260517_v2/kb_release_v2_snapshot.json --out-dir product_data/knowledge_base/kb_release_20260517_v2/stage6_codex_smoke --provider codex --model gpt-5.5 --reasoning-effort xhigh --timeout-sec 240 --active-brand foton --expected-dialogs 20
+
+Результат:
+- rows_total: 20
+- provider_mode: codex
+- used_kb_context: 20
+- became_more_substantive: 7
+- baseline_manager_only_preserved: 3
+- baseline_manager_only_relaxed: 0
+- high_risk_route_relaxed: 0
+- invalid_topic_ids: 0
+- unsupported_numeric_promises: 0
+- errors: 0
+- проверка CSV: source/freshness leaks = 0, упоминаний УНПК в foton-черновиках = 0

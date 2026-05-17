@@ -36,6 +36,27 @@ class RecordingProvider:
         }
 
 
+class LeakyProvider:
+    def build_draft(self, client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
+        return {
+            "message_type": "question",
+            "broad_group": "commercial",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.9,
+            "confidence_group": 0.9,
+            "route": "draft_for_manager",
+            "draft_text": (
+                "Здравствуйте! [Стоимость; source=source:price; freshness=fresh_verified] "
+                "Менеджер сверит условия."
+            ),
+            "manager_checklist": ["Проверить программу клиента"],
+            "missing_facts": [],
+            "safety_flags": ["manager_approval_required", "no_auto_send"],
+            "context_used": ["knowledge_snippets"],
+            "context_warnings": [],
+        }
+
+
 def test_stage6_kb_eval_writes_enriched_outputs_and_passes_snapshot_context(tmp_path: Path) -> None:
     input_path = tmp_path / "private_dialog_threads.jsonl"
     snapshot_path = tmp_path / "kc_snapshot.json"
@@ -101,6 +122,67 @@ def test_stage6_kb_eval_fake_provider_builds_comparison_summary(tmp_path: Path) 
     assert "client_send: false" in summary
     assert "write_stable_runtime: false" in summary
     assert result.became_more_substantive == 1
+
+
+def test_stage6_kb_eval_output_draft_text_has_no_source_or_freshness_labels(tmp_path: Path) -> None:
+    input_path = tmp_path / "private_dialog_threads.jsonl"
+    snapshot_path = tmp_path / "kc_snapshot.json"
+    baseline_path = tmp_path / "baseline.csv"
+    out_dir = tmp_path / "out"
+    write_jsonl(input_path, [dialog_record("d1", "Какая цена курса?")])
+    write_snapshot(snapshot_path)
+    write_baseline_csv(baseline_path, [("d1", "m2")])
+
+    result = run_stage6_kb_eval(
+        input_path=input_path,
+        snapshot_path=snapshot_path,
+        out_dir=out_dir,
+        baseline_csv_path=baseline_path,
+        provider_mode="fake",
+        provider=LeakyProvider(),
+        expected_dialogs=1,
+    )
+
+    enriched = read_csv(Path(result.enriched_csv_path))[0]
+    comparison = read_csv(Path(result.comparison_csv_path))[0]
+    for value in (enriched["draft_text"], comparison["enriched_draft_text"]):
+        assert "source=" not in value
+        assert "freshness=" not in value
+        assert "source:" not in value
+    assert "internal_metadata_removed_from_draft" in enriched["safety_flags"]
+
+
+def test_stage6_kb_eval_preserves_baseline_manager_only_without_high_risk_keywords(tmp_path: Path) -> None:
+    input_path = tmp_path / "private_dialog_threads.jsonl"
+    snapshot_path = tmp_path / "kc_snapshot.json"
+    baseline_path = tmp_path / "baseline.csv"
+    out_dir = tmp_path / "out"
+    write_jsonl(input_path, [dialog_record("d1", "Не надо связываться, спасибо")])
+    write_snapshot(snapshot_path)
+    write_baseline_csv(
+        baseline_path,
+        [("d1", "m2")],
+        draft_text="Здравствуйте! Передадим менеджеру.",
+        route="manager_only",
+    )
+
+    result = run_stage6_kb_eval(
+        input_path=input_path,
+        snapshot_path=snapshot_path,
+        out_dir=out_dir,
+        baseline_csv_path=baseline_path,
+        provider_mode="fake",
+        expected_dialogs=1,
+    )
+
+    enriched = read_csv(Path(result.enriched_csv_path))[0]
+    comparison = read_csv(Path(result.comparison_csv_path))[0]
+    assert enriched["route"] == "manager_only"
+    assert comparison["enriched_route"] == "manager_only"
+    assert comparison["high_risk_route_relaxed"] != "True"
+    assert comparison["baseline_manager_only_relaxed"] != "True"
+    assert comparison["baseline_manager_only_preserved"] == "True"
+    assert "baseline_manager_only_preserved" in enriched["safety_flags"]
 
 
 def test_stage6_kb_eval_requires_fixed_sample_size(tmp_path: Path) -> None:
@@ -246,7 +328,13 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
 
 
-def write_baseline_csv(path: Path, rows: list[tuple[str, str]], *, draft_text: str = "Здравствуйте! Уточним и вернемся.") -> None:
+def write_baseline_csv(
+    path: Path,
+    rows: list[tuple[str, str]],
+    *,
+    draft_text: str = "Здравствуйте! Уточним и вернемся.",
+    route: str = "draft_for_manager",
+) -> None:
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(
             fh,
@@ -259,7 +347,7 @@ def write_baseline_csv(path: Path, rows: list[tuple[str, str]], *, draft_text: s
                     "dialog_id": dialog_id,
                     "target_message_id": message_id,
                     "topic_id": "theme:001_pricing",
-                    "route": "draft_for_manager",
+                    "route": route,
                     "draft_text": draft_text,
                 }
             )

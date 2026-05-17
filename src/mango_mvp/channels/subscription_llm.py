@@ -24,35 +24,33 @@ DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 SAFE_FALLBACK_DRAFT_TEXT = "Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
 UNKNOWN_TOPIC_FALLBACK_ID = "service:S2_unclear"
+INTERNAL_SERVICE_MARKER_RE = re.compile(
+    r"\[[^\]\n]{0,220}?(?:\bsource\s*=|\bfreshness\s*=|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+)[^\]\n]{0,260}\]\s*",
+    re.I,
+)
+INTERNAL_SERVICE_TOKEN_RE = re.compile(
+    r"\b(?:source|freshness)\s*=\s*[^\s;\],.]+|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+",
+    re.I,
+)
 
-ALLOWED_ROUTES = {"draft_for_manager", "manager_only", "blocked"}
+ALLOWED_ROUTES = {"draft_for_manager", "manager_only", "blocked", "bot_answer_self"}
 ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for_more", "manager_only"}
 BASE_SAFETY_FLAGS = ("manager_approval_required", "no_auto_send")
 HIGH_RISK_THEME_IDS = {
-    "theme:003_payment_status",
-    "theme:007_matkap_payment",
-    "theme:008_tax_deduction",
     "theme:009_refund",
-    "theme:012_certificates",
     "theme:019b_negative_feedback",
     "theme:029_legal_question",
 }
 HIGH_RISK_MARKERS = (
     "refund",
-    "matkap",
-    "tax",
     "legal",
     "negative",
-    "payment_status",
-    "documents",
     "возврат",
-    "маткап",
-    "налог",
-    "юрид",
+    "суд",
+    "иск",
+    "претензи",
+    "роспотребнадзор",
     "жалоб",
-    "подтверждение оплаты",
-    "статус оплаты",
-    "документ",
 )
 HIGH_RISK_INPUT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -70,19 +68,10 @@ HIGH_RISK_INPUT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
-        "matkap",
-        re.compile(
-            r"маткапитал|мат\s*кап|материнск\w*\s+капитал|материнск\w*\s+сертификат"
-            r"|семейн\w*\s+сертификат|сертификат\s+(?:материнск\w*|семейн\w*)",
-            re.I,
-        ),
-    ),
-    ("tax", re.compile(r"налогов\w*\s+вычет|\bвычет\b|13\s*%|справк\w*\s+для\s+налог\w*|\bндфл\b", re.I)),
-    (
         "legal",
         re.compile(
-            r"\bюрид\w*|\bсуд\b|\bиск\b|претензи|досудеб|роспотребнадзор"
-            r"|по\s+закону\s+обязан|наруш\w*\s+прав|расторжен\w*\s+договор",
+            r"\bсуд\b|\bиск\b|претензи|досудеб|роспотребнадзор|прокуратур"
+            r"|наруш\w*\s+прав|расторжен\w*\s+договор|по\s+закону\s+обязан\w*(?:\s+(?:вернуть|возместить|расторгнуть))?",
             re.I,
         ),
     ),
@@ -94,16 +83,21 @@ HIGH_RISK_INPUT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.I,
         ),
     ),
-    (
-        "payment_status",
-        re.compile(
-            r"\bоплатил[аи]?\b|прошл[ао]\s+ли\s+оплат|подтверждени[ея]\s+оплат"
-            r"|статус\s+оплат|поступил[а]?\s+оплат|провели\s+плат[её]ж"
-            r"|списал[аи]?|списание|зачисл\w*|получили\s+деньги|чек",
-            re.I,
-        ),
-    ),
 )
+PAYMENT_CONFIRMATION_RE = re.compile(
+    r"оплат[ауы]\s+(?:отмечен|прошл|поступил|зачислен|получен)"
+    r"|плат[её]ж\s+(?:прош[её]л|получен|зачислен)"
+    r"|вижу,\s*что\s+оплат|оплата\s+есть|мы\s+получили\s+оплат",
+    re.I,
+)
+PRECISE_CONDITION_RE = re.compile(
+    r"\b\d[\d\s\u00a0]{1,9}\s*(?:руб|₽|р\.|%)|\bрассрочк\w*\s+доступн|\bскидк\w*\s+\d",
+    re.I,
+)
+BRAND_FORBIDDEN_TERMS = {
+    "foton": ("унпк", "унпк мфти", "ано дпо", "ноу унпк", "kmipt.ru"),
+    "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями"),
+}
 UNSUPPORTED_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{1,3}(?:[,.]\d{1,2})?\s*(?:%|процент\w*)", re.I),
     re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:руб(?:\.|лей|ля|ль)?|₽|р\.)", re.I),
@@ -162,11 +156,21 @@ class SubscriptionDraftResult:
         route = str(self.route or "manager_only").strip()
         if route not in ALLOWED_ROUTES:
             route = "manager_only"
-        text = str(self.draft_text or "").strip() or SAFE_FALLBACK_DRAFT_TEXT
+        raw_text = str(self.draft_text or "").strip()
+        text = strip_internal_service_markers(raw_text) or SAFE_FALLBACK_DRAFT_TEXT
         message_type = str(self.message_type or "question").strip()
         if message_type not in ALLOWED_MESSAGE_TYPES:
             message_type = "manager_only"
-        flags = tuple(dict.fromkeys([*BASE_SAFETY_FLAGS, *(_clean_list(self.safety_flags, max_items=16, max_chars=80))]))
+        extra_flags = ["internal_metadata_removed_from_draft"] if text != raw_text and raw_text else []
+        flags = tuple(
+            dict.fromkeys(
+                [
+                    *BASE_SAFETY_FLAGS,
+                    *(_clean_list(self.safety_flags, max_items=16, max_chars=80)),
+                    *extra_flags,
+                ]
+            )
+        )
         object.__setattr__(self, "message_type", message_type)
         object.__setattr__(self, "broad_group", str(self.broad_group or "").strip()[:80])
         object.__setattr__(self, "route", route)
@@ -253,6 +257,8 @@ class SubscriptionLlmDraftProvider:
         prompt = build_draft_prompt(client_message, context=context)
         result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
         result = apply_unsupported_promise_guard(result, context=context)
+        result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
+        result = apply_brand_separation_guard(result, client_message=client_message, context=context)
         return apply_input_policy_guards(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -371,6 +377,8 @@ class FakeSubscriptionLlmDraftProvider:
         prompt = build_draft_prompt(client_message, context=context)
         result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
         result = apply_unsupported_promise_guard(result, context=context)
+        result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
+        result = apply_brand_separation_guard(result, client_message=client_message, context=context)
         return apply_input_policy_guards(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -513,6 +521,22 @@ def parse_llm_json(text: str) -> SubscriptionDraftResult:
         return safe_fallback_draft(reason="invalid_json", metadata={"parse_error": str(exc)[:300]})
 
 
+def strip_internal_service_markers(text: str) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    value = INTERNAL_SERVICE_MARKER_RE.sub("", value)
+    value = INTERNAL_SERVICE_TOKEN_RE.sub("", value)
+    value = re.sub(r"\s+([,.;:!?])", r"\1", value)
+    value = re.sub(r"\s{2,}", " ", value)
+    return value.strip()
+
+
+def draft_has_internal_service_markers(text: str) -> bool:
+    value = str(text or "")
+    return bool(INTERNAL_SERVICE_MARKER_RE.search(value) or INTERNAL_SERVICE_TOKEN_RE.search(value))
+
+
 def draft_has_identity_disclosure(text: str) -> bool:
     return bool(find_identity_disclosure_phrases(text))
 
@@ -639,6 +663,48 @@ def apply_input_policy_guards(
     )
 
 
+def apply_payment_confirmation_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _draft_confirms_payment(result):
+        return result
+    payment = _payment_context(context)
+    amo_status = _payment_status(payment.get("amo_payment_status") or payment.get("amo_status"))
+    tallanto_status = _payment_status(payment.get("tallanto_payment_status") or payment.get("tallanto_status"))
+    conflict = _truthy_value(payment.get("payment_conflict") or payment.get("amo_tallanto_payment_conflict"))
+    if conflict or (amo_status and tallanto_status and amo_status != tallanto_status):
+        return _payment_guarded_result(result, reason="payment_source_conflict", checklist="Сверить AMO и Tallanto перед ответом по оплате.")
+    if amo_status == "paid" and tallanto_status == "paid":
+        return result
+    return _payment_guarded_result(
+        result,
+        reason="payment_confirmation_without_two_sources",
+        checklist="Проверить оплату в AMO и Tallanto перед подтверждением клиенту.",
+    )
+
+
+def apply_brand_separation_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    active_brand = _active_brand(context)
+    if active_brand == "unknown":
+        if PRECISE_CONDITION_RE.search(result.draft_text):
+            return _brand_guarded_result(result, reason="brand_unknown_precise_condition_blocked")
+        return result
+    forbidden_terms = BRAND_FORBIDDEN_TERMS.get(active_brand, ())
+    lowered = result.draft_text.casefold()
+    leaked = tuple(term for term in forbidden_terms if term in lowered)
+    if not leaked:
+        return result
+    return _brand_guarded_result(result, reason="cross_brand_client_text_blocked", leaked_terms=leaked)
+
+
 def apply_taxonomy_topic_guard(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
     valid_ids = load_valid_theme_and_service_ids()
     topic_id = str(result.topic_id or "").strip()
@@ -703,6 +769,103 @@ def detect_high_risk_input_markers(client_message: str, *, context: Optional[Map
     haystack = "\n".join(texts)
     markers = [name for name, pattern in HIGH_RISK_INPUT_PATTERNS if pattern.search(haystack)]
     return tuple(dict.fromkeys(markers))
+
+
+def _draft_confirms_payment(result: SubscriptionDraftResult) -> bool:
+    if result.topic_id == "theme:003_payment_status" and PAYMENT_CONFIRMATION_RE.search(result.draft_text):
+        return True
+    return bool(PAYMENT_CONFIRMATION_RE.search(result.draft_text))
+
+
+def _payment_context(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not isinstance(context, Mapping):
+        return {}
+    payment = context.get("payment_context")
+    merged: dict[str, Any] = {}
+    if isinstance(payment, Mapping):
+        merged.update(payment)
+    for key in (
+        "amo_payment_status",
+        "tallanto_payment_status",
+        "amo_status",
+        "tallanto_status",
+        "payment_conflict",
+        "amo_tallanto_payment_conflict",
+        "payment_last_seen_at",
+        "payment_source_confidence",
+    ):
+        if key in context:
+            merged[key] = context[key]
+    amo = context.get("amo_context")
+    if isinstance(amo, Mapping):
+        for key in ("payment_status", "amo_payment_status", "paid"):
+            if key in amo and "amo_payment_status" not in merged:
+                merged["amo_payment_status"] = amo[key]
+    tallanto = context.get("tallanto_context")
+    if isinstance(tallanto, Mapping):
+        for key in ("payment_status", "tallanto_payment_status", "paid"):
+            if key in tallanto and "tallanto_payment_status" not in merged:
+                merged["tallanto_payment_status"] = tallanto[key]
+    return merged
+
+
+def _payment_status(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    if isinstance(value, bool):
+        return "paid" if value else "not_paid"
+    if text in {"paid", "оплачено", "оплачен", "оплачена", "yes", "true", "1", "received", "success"}:
+        return "paid"
+    if text in {"not_paid", "не оплачено", "нет", "false", "0", "missing", "unpaid"}:
+        return "not_paid"
+    return text
+
+
+def _payment_guarded_result(result: SubscriptionDraftResult, *, reason: str, checklist: str) -> SubscriptionDraftResult:
+    return replace(
+        result,
+        route="manager_only",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, reason, "payment_confirmation_guarded"])),
+        manager_checklist=tuple(dict.fromkeys([*result.manager_checklist, checklist])),
+        metadata={**dict(result.metadata), reason: True},
+    )
+
+
+def _active_brand(context: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(context, Mapping):
+        return "unknown"
+    value = context.get("active_brand")
+    if not value and isinstance(context.get("facts_context"), Mapping):
+        value = context["facts_context"].get("active_brand")  # type: ignore[index]
+    text = str(value or "unknown").strip().casefold()
+    if text in {"foton", "фотон"}:
+        return "foton"
+    if text in {"unpk", "унпк", "унпк мфти"}:
+        return "unpk"
+    return "unknown"
+
+
+def _brand_guarded_result(
+    result: SubscriptionDraftResult,
+    *,
+    reason: str,
+    leaked_terms: Sequence[str] = (),
+) -> SubscriptionDraftResult:
+    return replace(
+        result,
+        route="manager_only",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, reason, "brand_separation_guarded"])),
+        manager_checklist=tuple(
+            dict.fromkeys(
+                [
+                    *result.manager_checklist,
+                    "Проверить бренд клиента: в черновике нельзя смешивать Фотон и УНПК.",
+                ]
+            )
+        ),
+        metadata={**dict(result.metadata), reason: True, "forbidden_brand_terms": list(leaked_terms)},
+    )
 
 
 def _extract_numeric_promise_claims(text: str) -> tuple[str, ...]:

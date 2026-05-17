@@ -68,6 +68,9 @@ class PilotContextQuality:
 @dataclass(frozen=True)
 class PilotContext:
     current_message: str
+    active_brand: str = "unknown"
+    brand_policy: Mapping[str, Any] = field(default_factory=dict)
+    payment_context: Mapping[str, Any] = field(default_factory=dict)
     recent_messages: Sequence[str] = field(default_factory=tuple)
     client_identity: Mapping[str, Any] = field(default_factory=dict)
     customer_summary: str = ""
@@ -87,6 +90,9 @@ class PilotContext:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "current_message", clean_text(self.current_message, max_chars=1200))
+        object.__setattr__(self, "active_brand", normalize_active_brand(self.active_brand))
+        object.__setattr__(self, "brand_policy", compact_mapping(self.brand_policy, max_items=12, max_chars=240))
+        object.__setattr__(self, "payment_context", compact_mapping(self.payment_context, max_items=12, max_chars=240))
         object.__setattr__(
             self,
             "recent_messages",
@@ -127,6 +133,9 @@ class PilotContext:
         merged_context_warnings = dedupe((*self.context_warnings, *_context_warnings_for_quality(self.context_quality)))
         payload: dict[str, Any] = {
             "schema_version": PILOT_CONTEXT_SCHEMA_VERSION,
+            "active_brand": self.active_brand,
+            "brand_policy": dict(self.brand_policy),
+            "payment_context": dict(self.payment_context),
             "recent_messages": list(self.recent_messages),
             "client_identity": dict(self.client_identity),
             "customer_context_summary": self.customer_summary,
@@ -158,6 +167,9 @@ class PilotContext:
 def build_pilot_context(
     message: ChannelMessage | str,
     *,
+    active_brand: str = "unknown",
+    brand_policy: Mapping[str, Any] | None = None,
+    payment_context: Mapping[str, Any] | None = None,
     recent_messages: Sequence[str] = (),
     client_identity: Mapping[str, Any] | None = None,
     customer_summary: str = "",
@@ -204,6 +216,9 @@ def build_pilot_context(
     merged_risks.extend(merged_context_warnings)
     return PilotContext(
         current_message=current_message,
+        active_brand=active_brand,
+        brand_policy=brand_policy or {},
+        payment_context=payment_context or {},
         recent_messages=recent_messages,
         client_identity=client,
         customer_summary=customer_summary,
@@ -282,6 +297,15 @@ def compact_mapping(value: Mapping[str, Any] | None, *, max_items: int, max_char
 def clean_text(value: Any, *, max_chars: int) -> str:
     text = " ".join(str(value or "").strip().split())
     return text[:max_chars]
+
+
+def normalize_active_brand(value: Any) -> str:
+    text = str(value or "unknown").strip().casefold()
+    if text in {"foton", "фотон"}:
+        return "foton"
+    if text in {"unpk", "унпк", "унпк мфти"}:
+        return "unpk"
+    return "unknown"
 
 
 def dedupe(values: Sequence[str]) -> tuple[str, ...]:

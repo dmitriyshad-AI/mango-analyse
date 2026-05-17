@@ -59,7 +59,74 @@ def test_builder_wires_fresh_snapshot_into_pilot_context() -> None:
     assert payload["confirmed_facts"]["fact:price_grade_10"] == "Стоимость курса для 10 класса: 120 000 рублей."
     assert payload["knowledge_snippets"]
     assert "Стоимость обучения" in payload["knowledge_snippets"][0]
+    assert "source=" not in payload["knowledge_snippets"][0]
+    assert "freshness=" not in payload["knowledge_snippets"][0]
     assert "missing_facts" not in payload
+
+
+def test_builder_filters_snapshot_by_active_brand() -> None:
+    snapshot = {
+        "schema_version": "kb_release_v2_snapshot_2026_05_17",
+        "run_id": "kb_release_v2_test",
+        "facts": [
+            {
+                "fact_id": "fact:foton_installment",
+                "fact_type": "installment",
+                "client_safe_text": "Для Фотона можно обсудить рассрочку.",
+                "brand": "foton",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:006_installment"],
+            },
+            {
+                "fact_id": "fact:unpk_installment",
+                "fact_type": "installment",
+                "client_safe_text": "Для УНПК МФТИ другой порядок оплаты.",
+                "brand": "unpk",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:006_installment"],
+            },
+        ],
+        "chunks": [
+            {
+                "chunk_id": "chunk:foton",
+                "source_id": "source:foton",
+                "title": "Фотон рассрочка",
+                "text": "Для Фотона можно обсудить рассрочку.",
+                "fact_types": ["installment"],
+                "freshness_status": "document_verified",
+                "brand": "foton",
+            },
+            {
+                "chunk_id": "chunk:unpk",
+                "source_id": "source:unpk",
+                "title": "УНПК рассрочка",
+                "text": "Для УНПК МФТИ другой порядок оплаты.",
+                "fact_types": ["installment"],
+                "freshness_status": "document_verified",
+                "brand": "unpk",
+            },
+        ],
+    }
+
+    context = build_telegram_pilot_context(
+        "Можно оплатить частями?",
+        active_brand="foton",
+        theme={"topic_id": "theme:006_installment"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["installment_terms.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert payload["active_brand"] == "foton"
+    assert list(payload["confirmed_facts"]) == ["fact:foton_installment"]
+    assert "Фотона" in payload["knowledge_snippets"][0]
+    assert "УНПК" not in " ".join(payload["knowledge_snippets"])
 
 
 def test_builder_uses_safe_fallback_when_snapshot_missing() -> None:

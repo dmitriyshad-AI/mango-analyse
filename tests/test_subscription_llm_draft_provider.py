@@ -9,8 +9,10 @@ from mango_mvp.channels.subscription_llm import (
     DraftGenerationResult,
     FakeDraftProvider,
     contains_bot_identity_disclosure,
+    draft_has_internal_service_markers,
     detect_high_risk_input_markers,
     parse_llm_json,
+    strip_internal_service_markers,
 )
 
 
@@ -83,6 +85,21 @@ def test_draft_text_does_not_disclose_bot_identity() -> None:
         assert contains_bot_identity_disclosure(f"Тест: {phrase}")
 
 
+def test_draft_text_strips_kb_source_and_freshness_metadata() -> None:
+    result = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"Здравствуйте! '
+        '[Стоимость; source=source:price; freshness=fresh_verified] Менеджер сверит условия.",'
+        '"message_type":"question","topic_id":"theme:001_pricing","confidence_theme":0.91}'
+    )
+
+    assert "source=" not in result.draft_text
+    assert "freshness=" not in result.draft_text
+    assert "source:" not in result.draft_text
+    assert "internal_metadata_removed_from_draft" in result.safety_flags
+    assert draft_has_internal_service_markers("[x; source=source:price; freshness=fresh]")
+    assert strip_internal_service_markers("[x; source=source:price; freshness=fresh] Ответ") == "Ответ"
+
+
 def test_low_confidence_forces_manager_only() -> None:
     result = parse_llm_json(
         '{"route":"draft_for_manager","draft_text":"Здравствуйте!","message_type":"question",'
@@ -140,17 +157,6 @@ def test_high_risk_input_marker_coverage_for_russian_forms() -> None:
             "возрат денег",
             "ВОЗВРАТ платежа",
         ],
-        "matkap": [
-            "маткапитал",
-            "материнский капитал",
-            "материнский сертификат",
-            "семейный сертификат",
-        ],
-        "tax": [
-            "налоговый вычет",
-            "вернуть 13%",
-            "справка для налоговой",
-        ],
         "legal": [
             "подам в суд",
             "иск",
@@ -168,15 +174,6 @@ def test_high_risk_input_marker_coverage_for_russian_forms() -> None:
             "плохо учит",
             "некомпетентный преподаватель",
             "преподаватель ужасный",
-        ],
-        "payment_status": [
-            "оплатил",
-            "оплатила",
-            "провели платёж",
-            "списали",
-            "списание",
-            "зачислили",
-            "получили деньги",
         ],
     }
 
@@ -274,6 +271,7 @@ def test_draft_with_numeric_discount_from_fresh_fact_is_allowed() -> None:
     result = provider.build_draft(
         "Какая скидка действует?",
         context={
+            "active_brand": "foton",
             "rop_policy": {"bot_permission": "draft_for_manager"},
             "facts_context": {"fresh": True, "discount": "Скидка 10% действует до 31 мая."},
         },

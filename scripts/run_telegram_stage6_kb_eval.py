@@ -15,7 +15,9 @@ from mango_mvp.channels.pilot_context import build_pilot_context
 from mango_mvp.channels.subscription_llm import (
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
+    apply_brand_separation_guard,
     apply_input_policy_guards,
+    apply_payment_confirmation_guard,
     apply_unsupported_promise_guard,
     normalize_subscription_draft_payload,
 )
@@ -40,7 +42,7 @@ STAGE6_KB_EVAL_SCHEMA_VERSION = "telegram_stage6_kb_eval_v1"
 FRESH_STATUSES = {"fresh", "fresh_verified"}
 SUBSTANTIVE_RE = re.compile(r"\?|подскаж|можно|когда|сколько|стоим|цен|оплат|возврат|распис|ссылк|доступ|курс|программ", re.I)
 TRIVIAL_RE = re.compile(r"^(спасибо.*|ок|окей|хорошо|да|нет|поняла|понял|ясно)[.!?\s]*$", re.I)
-HIGH_RISK_RE = re.compile(r"возврат|вернуть|маткап|материнск|налог|юрид|жалоб|договор|скид|оплат|чек|счет|счёт", re.I)
+HIGH_RISK_RE = re.compile(r"возврат|вернуть\s+деньги|суд|иск|претензи|роспотребнадзор|жалоб|нарушили\s+права", re.I)
 EMPTY_CLARIFICATION_RE = re.compile(r"\b(уточним|проверим|передам|верн[её]мся|свяжемся)\b", re.I)
 WORD_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]{4,}")
 
@@ -226,6 +228,7 @@ def main() -> int:
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--provider", choices=("fake", "codex"), default="fake")
+    parser.add_argument("--active-brand", choices=("foton", "unpk", "unknown"), default="foton")
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--reasoning-effort", default="xhigh")
     parser.add_argument("--timeout-sec", type=int, default=240)
@@ -237,6 +240,7 @@ def main() -> int:
         snapshot_path=args.snapshot,
         out_dir=args.out_dir,
         baseline_csv_path=args.baseline,
+        active_brand=args.active_brand,
         provider_mode=args.provider,
         model=args.model,
         reasoning_effort=args.reasoning_effort,
@@ -269,6 +273,8 @@ class Stage6KbEvalResult:
     invalid_topic_ids: int
     unsupported_numeric_promises: int
     high_risk_route_relaxed: int
+    baseline_manager_only_relaxed: int
+    baseline_manager_only_preserved: int
     errors: int
 
     def to_json_dict(self) -> Mapping[str, Any]:
@@ -281,6 +287,7 @@ def run_stage6_kb_eval(
     snapshot_path: Path | str,
     out_dir: Path | str,
     baseline_csv_path: Path | str | None = None,
+    active_brand: str = "foton",
     provider_mode: str = "fake",
     provider: DraftProvider | None = None,
     model: str = "gpt-5.5",
@@ -309,7 +316,7 @@ def run_stage6_kb_eval(
     comparison_rows: list[dict[str, Any]] = []
     for run_index, dialog in enumerate(dialogs, start=1):
         old_row = find_baseline_for_dialog(dialog, baseline)
-        prepared = prepare_eval_dialog(dialog, snapshot=snapshot, baseline=old_row)
+        prepared = prepare_eval_dialog(dialog, snapshot=snapshot, baseline=old_row, active_brand=active_brand)
         result = build_guarded_draft(draft_provider, prepared["current_client_message"], context=prepared["pilot_context"])
         enriched = build_stage6_enriched_row(prepared, result.to_json_dict(), provider_mode=provider_mode, run_index=run_index)
         enriched = enforce_stage6_route_safety(enriched, old_row)
@@ -347,6 +354,7 @@ def run_stage6_kb_eval(
                 "snapshot_path": str(snapshot["path"]),
                 "snapshot_run_id": str(snapshot["run_id"]),
                 "provider_mode": provider_mode,
+                "active_brand": active_brand,
                 "safety": stage6_kb_eval_safety_contract(),
                 **counts,
             },
@@ -393,7 +401,8 @@ class FakeStage6KbDraftProvider:
         if snippets:
             text = (
                 "Здравствуйте! Вижу ваш вопрос и сверю его с данными по заявке. "
-                f"В базе знаний есть ориентир для менеджера: {shorten(snippets[0], 260)} "
+                "В базе знаний есть ориентир для менеджера, но перед ответом нужно сверить "
+                "актуальность условий именно по вашей программе. "
                 "Перед отправкой проверим актуальность условий именно для вашей программы."
             )
         payload = {
@@ -424,6 +433,8 @@ def build_guarded_draft(provider: DraftProvider, client_message: str, *, context
     else:
         result = normalize_subscription_draft_payload(raw)
     result = apply_unsupported_promise_guard(result, context=context)
+    result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
+    result = apply_brand_separation_guard(result, client_message=client_message, context=context)
     return apply_input_policy_guards(result, client_message=client_message, context=context)
 
 
@@ -431,6 +442,13 @@ def enforce_stage6_route_safety(row: Mapping[str, Any], baseline: Mapping[str, A
     updated = dict(row)
     safety_flags = list(updated.get("safety_flags") or [])
     current = str(updated.get("current_client_message") or "")
+    baseline_route = str(baseline.get("route") or "").strip()
+    enriched_route = str(updated.get("route") or "").strip()
+    if baseline_route == "manager_only" and enriched_route != "manager_only":
+        updated["route"] = "manager_only"
+        for flag in ("baseline_manager_only_preserved", "kb_route_not_allowed_to_weaken_baseline"):
+            if flag not in safety_flags:
+                safety_flags.append(flag)
     if baseline.get("route") == "manager_only" and HIGH_RISK_RE.search(current):
         updated["route"] = "manager_only"
         if "baseline_high_risk_preserved" not in safety_flags:
@@ -447,7 +465,13 @@ def enforce_stage6_route_safety(row: Mapping[str, Any], baseline: Mapping[str, A
     return updated
 
 
-def prepare_eval_dialog(dialog: Mapping[str, Any], *, snapshot: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, Any]:
+def prepare_eval_dialog(
+    dialog: Mapping[str, Any],
+    *,
+    snapshot: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+    active_brand: str = "foton",
+) -> dict[str, Any]:
     messages = list(dialog.get("messages") or [])
     target_index = select_target_client_index(messages)
     target = messages[target_index] if messages else {}
@@ -461,6 +485,7 @@ def prepare_eval_dialog(dialog: Mapping[str, Any], *, snapshot: Mapping[str, Any
         sources=snapshot["sources"],
         required_fact_keys=required_keys,
         topic_id=topic_id,
+        active_brand=active_brand,
         received_at=parse_dt(target.get("date")),
         max_chunks=6,
         max_chunk_chars=700,
@@ -474,6 +499,7 @@ def prepare_eval_dialog(dialog: Mapping[str, Any], *, snapshot: Mapping[str, Any
         fresh_texts = []
     facts_context = {
         "snapshot_run_id": snapshot["run_id"],
+        "active_brand": active_brand,
         "selected_chunks": len(kc.selected_chunks),
         "manager_answer_patterns": len(manager_patterns),
         "manager_answer_patterns_are_facts": False,
@@ -489,6 +515,11 @@ def prepare_eval_dialog(dialog: Mapping[str, Any], *, snapshot: Mapping[str, Any
         risks.append("high_risk_text_marker")
     pilot_context = build_pilot_context(
         current,
+        active_brand=active_brand,
+        brand_policy={
+            "client_text_active_brand_only": True,
+            "cross_brand_client_text_forbidden": True,
+        },
         recent_messages=previous,
         client_identity={"telegram_dialog_id": dialog.get("dialog_id"), "target_message_id": target.get("message_id")},
         rop_policy={"topic_id": topic_id or "", "bot_permission": "draft_for_manager", "answer_status": "historical_eval_not_live"},
@@ -595,6 +626,12 @@ def build_stage6_comparison_row(new: Mapping[str, Any], old: Mapping[str, Any]) 
         "high_risk_route_relaxed": bool(HIGH_RISK_RE.search(str(new.get("current_client_message") or "")))
         and old.get("route") == "manager_only"
         and new.get("route") == "draft_for_manager",
+        "baseline_manager_only_relaxed": old.get("route") == "manager_only" and new.get("route") != "manager_only",
+        "baseline_manager_only_preserved": (
+            old.get("route") == "manager_only"
+            and new.get("route") == "manager_only"
+            and "baseline_manager_only_preserved" in serialize_cell(new.get("safety_flags"))
+        ),
         "baseline_draft_text": old_text,
         "enriched_draft_text": new_text,
     }
@@ -636,6 +673,8 @@ def render_stage6_summary(
             f"- llm_or_provider_errors: {counts['errors']}",
             f"- invalid_topic_ids: {counts['invalid_topic_ids']}",
             f"- unsupported_numeric_promises: {counts['unsupported_numeric_promises']}",
+            f"- baseline_manager_only_relaxed: {counts['baseline_manager_only_relaxed']}",
+            f"- baseline_manager_only_preserved: {counts['baseline_manager_only_preserved']}",
             f"- used_kb_context: {counts['used_kb_context']}",
             f"- context_found_rate: {context_found_rate}",
             f"- became_more_substantive: {counts['became_more_substantive']}",
@@ -664,6 +703,8 @@ def stage6_counts(enriched: Sequence[Mapping[str, Any]], comparison: Sequence[Ma
         "invalid_topic_ids": sum(1 for row in comparison if boolish(row.get("invalid_topic_id"))),
         "unsupported_numeric_promises": sum(1 for row in comparison if boolish(row.get("unsupported_numeric_promises"))),
         "high_risk_route_relaxed": sum(1 for row in comparison if boolish(row.get("high_risk_route_relaxed"))),
+        "baseline_manager_only_relaxed": sum(1 for row in comparison if boolish(row.get("baseline_manager_only_relaxed"))),
+        "baseline_manager_only_preserved": sum(1 for row in comparison if boolish(row.get("baseline_manager_only_preserved"))),
         "errors": sum(1 for row in enriched if str(row.get("error") or "")),
     }
 
@@ -688,6 +729,12 @@ def normalize_chunk(item: Mapping[str, Any]) -> Mapping[str, Any]:
     fact_types = item.get("fact_types") or item.get("fact_type") or classify_fact_types(f"{title} {text}")
     if isinstance(fact_types, str):
         fact_types = [fact_types]
+    metadata = dict(item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {})
+    brand = first_non_empty(item, ("brand", "active_brand")) or metadata.get("brand") or "brand_neutral"
+    cross_brand_mixed = boolish(item.get("cross_brand_mixed") or metadata.get("cross_brand_mixed"))
+    forbidden_for_client = boolish(item.get("forbidden_for_client") or metadata.get("forbidden_for_client"))
+    internal_only = boolish(item.get("internal_only") or metadata.get("internal_only"))
+    cross_brand_policy = first_non_empty(item, ("cross_brand_policy",)) or metadata.get("cross_brand_policy") or ""
     return {
         "chunk_id": first_non_empty(item, ("chunk_id", "fact_id", "id")) or f"kc_chunk:{abs(hash((title, text)))}",
         "source_id": first_non_empty(item, ("source_id", "source", "source_title")) or "source:snapshot",
@@ -695,6 +742,20 @@ def normalize_chunk(item: Mapping[str, Any]) -> Mapping[str, Any]:
         "text": text,
         "fact_types": list(fact_types or []),
         "freshness_status": first_non_empty(item, ("freshness_status", "status")) or "unknown",
+        "brand": brand,
+        "active_brand_scope": first_non_empty(item, ("active_brand_scope",)) or metadata.get("active_brand_scope") or "",
+        "cross_brand_policy": cross_brand_policy,
+        "cross_brand_mixed": cross_brand_mixed,
+        "forbidden_for_client": forbidden_for_client,
+        "internal_only": internal_only,
+        "metadata": {
+            **metadata,
+            "brand": brand,
+            "cross_brand_policy": cross_brand_policy,
+            "cross_brand_mixed": cross_brand_mixed,
+            "forbidden_for_client": forbidden_for_client,
+            "internal_only": internal_only,
+        },
     }
 
 
@@ -770,7 +831,8 @@ def format_eval_message(message: Mapping[str, Any]) -> str:
 
 
 def format_chunk(chunk: Mapping[str, Any]) -> str:
-    return shorten(f"[{chunk.get('title')}; source={chunk.get('source_id')}; freshness={chunk.get('freshness_status')}] {chunk.get('text')}", 700)
+    title = str(chunk.get("title") or "База знаний").strip() or "База знаний"
+    return shorten(f"{title}: {chunk.get('text')}", 700)
 
 
 def format_pattern(pattern: Mapping[str, Any]) -> str:
@@ -948,6 +1010,7 @@ def supplement_snapshot_snippets(
     snippets: Sequence[str],
     *,
     max_snippets: int = 2,
+    active_brand: str = "unknown",
 ) -> list[str]:
     result = list(snippets)
     if result:
@@ -955,14 +1018,38 @@ def supplement_snapshot_snippets(
     for chunk in snapshot.get("chunks", []) or snapshot.get("knowledge_chunks", []) or []:
         if not isinstance(chunk, Mapping):
             continue
-        text = str(chunk.get("text") or "").strip()
-        title = str(chunk.get("title") or "База знаний").strip()
+        normalized = normalize_chunk(chunk)
+        if not chunk_allowed_for_stage6(normalized, active_brand=active_brand):
+            continue
+        text = str(normalized.get("text") or "").strip()
+        title = str(normalized.get("title") or "База знаний").strip()
         if not text:
             continue
         result.append(f"[{title}] {text[:700]}")
         if len(result) >= max_snippets:
             break
     return result
+
+
+def chunk_allowed_for_stage6(chunk: Mapping[str, Any], *, active_brand: str = "unknown") -> bool:
+    if boolish(chunk.get("forbidden_for_client")) or boolish(chunk.get("internal_only")):
+        return False
+    if boolish(chunk.get("cross_brand_mixed")) or str(chunk.get("cross_brand_policy") or "") == "forbidden_for_client":
+        return False
+    brand = str(chunk.get("brand") or "brand_neutral").strip().casefold()
+    active = normalize_active_brand(active_brand)
+    if brand in {"", "unknown", "brand_neutral"}:
+        return True
+    return active != "unknown" and brand == active
+
+
+def normalize_active_brand(value: Any) -> str:
+    text = str(value or "unknown").strip().casefold()
+    if text in {"foton", "фотон"}:
+        return "foton"
+    if text in {"unpk", "унпк", "унпк мфти"}:
+        return "unpk"
+    return "unknown"
 
 
 def normalize_provider_response(response: Any) -> dict[str, Any]:
@@ -1039,6 +1126,8 @@ def render_stage6_summary(*args: Any, **kwargs: Any) -> str:
             f"- llm_or_provider_errors: {counts['errors']}",
             f"- invalid_topic_ids: {counts['invalid_topic_ids']}",
             f"- unsupported_numeric_promises: {counts['unsupported_numeric_promises']}",
+            f"- baseline_manager_only_relaxed: {counts['baseline_manager_only_relaxed']}",
+            f"- baseline_manager_only_preserved: {counts['baseline_manager_only_preserved']}",
             f"- used_kb_context: {counts['used_kb_context']}",
             f"- context_found_rate: {context_found_rate}",
             f"- became_more_substantive: {counts['became_more_substantive']}",

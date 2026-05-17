@@ -1,0 +1,24 @@
+{
+  "blocking_failures": [],
+  "checks": {
+    "approval_queue_exists": true,
+    "brand_neutral_is_safe": true,
+    "cross_brand_mixed_internal_only": true,
+    "has_foton_facts": true,
+    "has_lvsh_mendeleevo_both_brands": true,
+    "has_matkap_both_brands": true,
+    "has_tax_both_brands": true,
+    "has_unpk_facts": true,
+    "matkap_tax_not_brand_neutral": true,
+    "no_brand_both": true,
+    "rop_v5_not_imported_as_truth": true
+  },
+  "created_at": "2026-05-17T20:16:07.290863+00:00",
+  "interpretation": "v2 готов как кандидат для тестового Telegram-пилота после прохождения тестов.",
+  "manual_review_required": {
+    "approval_queue_items": 133,
+    "cross_brand_internal_facts": 10
+  },
+  "quality_passed": true,
+  "schema_version": "kb_release_v2_quality_report_v1"
+}

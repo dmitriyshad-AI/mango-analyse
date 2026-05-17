@@ -5,11 +5,12 @@ import argparse
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.pilot_context import build_pilot_context
 from mango_mvp.channels.preview_service import LlmChannelPreviewService
 from mango_mvp.channels.subscription_llm import SubscriptionLlmDraftProvider
+from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context
 from mango_mvp.channels.telegram_bot_polling import (
     TelegramBotDraftResult,
     TelegramBotPollingConfig,
@@ -28,6 +29,9 @@ LONG_POLLING_CONFIRMATION = "YES_MANAGER_DRAFT_ONLY"
 TELEGRAM_PILOT_LLM_ENABLED_ENV = "TELEGRAM_PILOT_LLM_ENABLED"
 TELEGRAM_PILOT_CODEX_MODEL_ENV = "TELEGRAM_PILOT_CODEX_MODEL"
 TELEGRAM_PILOT_CODEX_REASONING_ENV = "TELEGRAM_PILOT_CODEX_REASONING_EFFORT"
+TELEGRAM_PILOT_KB_SNAPSHOT_PATH_ENV = "TELEGRAM_PILOT_KB_SNAPSHOT_PATH"
+TELEGRAM_PILOT_ACTIVE_BRAND_ENV = "TELEGRAM_PILOT_ACTIVE_BRAND"
+ALLOWED_TELEGRAM_PILOT_ACTIVE_BRANDS = {"foton", "unpk", "unknown"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -140,18 +144,53 @@ def build_preview_service_from_env() -> Any:
     )
     return LlmChannelPreviewService(
         draft_provider=provider,
-        context_builder=lambda message: build_pilot_context(
-            message,
-            recent_messages=(message.text,),
-            client_identity={
-                "channel": message.channel,
-                "channel_thread_id": message.channel_thread_id,
-                "channel_user_id": message.channel_user_id,
-            },
-            rop_policy={"bot_permission": "draft_for_manager"},
-            risk_flags=("manager_approval_required", "no_auto_send"),
-        ).to_prompt_context(),
+        context_builder=build_context_builder_from_env(),
     )
+
+
+def build_context_builder_from_env() -> Callable[[Any], Mapping[str, Any]]:
+    snapshot_path = env_text(TELEGRAM_PILOT_KB_SNAPSHOT_PATH_ENV)
+    active_brand = telegram_pilot_active_brand_from_env()
+
+    if snapshot_path:
+        return lambda message: build_telegram_pilot_context(
+            message,
+            active_brand=active_brand,
+            snapshot_path=snapshot_path,
+            **base_context_kwargs(message),
+        ).to_prompt_context()
+    return lambda message: build_pilot_context(
+        message,
+        active_brand=active_brand,
+        **base_context_kwargs(message),
+    ).to_prompt_context()
+
+
+def base_context_kwargs(message: Any) -> Mapping[str, Any]:
+    return {
+        "recent_messages": (message.text,),
+        "client_identity": {
+            "channel": message.channel,
+            "channel_thread_id": message.channel_thread_id,
+            "channel_user_id": message.channel_user_id,
+        },
+        "rop_policy": {"bot_permission": "draft_for_manager"},
+        "risk_flags": ("manager_approval_required", "no_auto_send"),
+    }
+
+
+def telegram_pilot_active_brand_from_env() -> str:
+    value = env_text(TELEGRAM_PILOT_ACTIVE_BRAND_ENV).casefold()
+    if not value:
+        return "unknown"
+    if value not in ALLOWED_TELEGRAM_PILOT_ACTIVE_BRANDS:
+        allowed = ", ".join(sorted(ALLOWED_TELEGRAM_PILOT_ACTIVE_BRANDS))
+        raise SystemExit(f"{TELEGRAM_PILOT_ACTIVE_BRAND_ENV} должен быть одним из: {allowed}.")
+    return value
+
+
+def env_text(name: str) -> str:
+    return str(os.environ.get(name) or "").strip()
 
 
 def build_manager_bot(token: str | None) -> Any:

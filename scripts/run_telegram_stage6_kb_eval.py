@@ -6,7 +6,7 @@ import csv
 import json
 import re
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol, Sequence
@@ -45,6 +45,30 @@ TRIVIAL_RE = re.compile(r"^(спасибо.*|ок|окей|хорошо|да|н�
 HIGH_RISK_RE = re.compile(r"возврат|вернуть\s+деньги|суд|иск|претензи|роспотребнадзор|жалоб|нарушили\s+права", re.I)
 EMPTY_CLARIFICATION_RE = re.compile(r"\b(уточним|проверим|передам|верн[её]мся|свяжемся)\b", re.I)
 WORD_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]{4,}")
+STAGE6_DRAFT_FALLBACK_TEXT = (
+    "Здравствуйте! Передам вопрос менеджеру: он сверит актуальные данные и вернется с ответом."
+)
+STAGE6_INTERNAL_METADATA_BLOCK_RE = re.compile(
+    r"\[[^\]\n]{0,260}?"
+    r"(?:\b(?:source|source_id|fact|fact_id|freshness|freshness_status)\s*[:=]"
+    r"|(?:source|fact|kc_chunk):[A-Za-z0-9_:\-]+)"
+    r"[^\]\n]{0,260}\]\s*",
+    re.I,
+)
+STAGE6_INTERNAL_METADATA_TOKEN_RE = re.compile(
+    r"\b(?:source|source_id|fact|fact_id|freshness|freshness_status)\s*[:=]\s*[^\s;\],.]+"
+    r"|(?:source|fact|kc_chunk):[A-Za-z0-9_:\-]+",
+    re.I,
+)
+STAGE6_FORBIDDEN_DRAFT_MARKER_RE = re.compile(
+    r"\b(?:source_id|fact_id|freshness_status|AMO|Tallanto|GPT|Claude|Codex)\b"
+    r"|\bя\s+(?:бот|ии)\b",
+    re.I,
+)
+STAGE6_BRAND_FORBIDDEN_TERMS = {
+    "foton": ("унпк", "унпк мфти", "ано дпо", "ноу унпк", "kmipt.ru"),
+    "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями"),
+}
 
 
 @dataclass(frozen=True)
@@ -272,6 +296,7 @@ class Stage6KbEvalResult:
     empty_clarification_reduced: int
     invalid_topic_ids: int
     unsupported_numeric_promises: int
+    brand_separation_violation: int
     high_risk_route_relaxed: int
     baseline_manager_only_relaxed: int
     baseline_manager_only_preserved: int
@@ -435,7 +460,52 @@ def build_guarded_draft(provider: DraftProvider, client_message: str, *, context
     result = apply_unsupported_promise_guard(result, context=context)
     result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
     result = apply_brand_separation_guard(result, client_message=client_message, context=context)
-    return apply_input_policy_guards(result, client_message=client_message, context=context)
+    result = apply_input_policy_guards(result, client_message=client_message, context=context)
+    return apply_stage6_draft_text_safety(result)
+
+
+def apply_stage6_draft_text_safety(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    raw_text = str(result.draft_text or "")
+    cleaned = strip_stage6_internal_metadata(raw_text)
+    flags = list(result.safety_flags)
+    route = result.route
+    if cleaned != raw_text:
+        flags.extend(["internal_metadata_removed_from_draft", "stage6_internal_metadata_removed_from_draft"])
+    if stage6_draft_has_forbidden_marker(cleaned):
+        cleaned = STAGE6_DRAFT_FALLBACK_TEXT
+        route = "manager_only"
+        flags.append("stage6_internal_draft_marker_blocked")
+    cleaned = " ".join(cleaned.split()).strip() or STAGE6_DRAFT_FALLBACK_TEXT
+    if cleaned == raw_text and tuple(flags) == result.safety_flags and route == result.route:
+        return result
+    return replace(
+        result,
+        route=route,
+        draft_text=cleaned,
+        safety_flags=tuple(dict.fromkeys(flags)),
+    )
+
+
+def strip_stage6_internal_metadata(text: str) -> str:
+    cleaned = STAGE6_INTERNAL_METADATA_BLOCK_RE.sub("", str(text or ""))
+    cleaned = STAGE6_INTERNAL_METADATA_TOKEN_RE.sub("", cleaned)
+    return " ".join(cleaned.split()).strip()
+
+
+def stage6_draft_has_forbidden_marker(text: str) -> bool:
+    return bool(STAGE6_FORBIDDEN_DRAFT_MARKER_RE.search(str(text or "")))
+
+
+def stage6_brand_separation_violation(row: Mapping[str, Any]) -> bool:
+    active_brand = normalize_active_brand(row.get("active_brand"))
+    if active_brand == "unknown":
+        return False
+    draft_text = str(row.get("draft_text") or "").casefold()
+    forbidden_terms = STAGE6_BRAND_FORBIDDEN_TERMS.get(active_brand, ())
+    if any(term in draft_text for term in forbidden_terms):
+        return True
+    flags = serialize_cell(row.get("safety_flags"))
+    return "brand_separation_guarded" in flags and str(row.get("route") or "") != "manager_only"
 
 
 def enforce_stage6_route_safety(row: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, Any]:
@@ -540,6 +610,7 @@ def prepare_eval_dialog(
     }
     return {
         "dialog_id": str(dialog.get("dialog_id") or ""),
+        "active_brand": active_brand,
         "message_count": int(dialog.get("message_count") or len(messages)),
         "target_message_id": str(target.get("message_id") or ""),
         "target_date": str(target.get("date") or ""),
@@ -563,6 +634,7 @@ def build_stage6_enriched_row(prepared: Mapping[str, Any], result: Mapping[str, 
         "run_index": run_index,
         "provider_mode": provider_mode,
         "dialog_id": prepared["dialog_id"],
+        "active_brand": prepared["active_brand"],
         "priority_note": prepared["priority_note"],
         "message_count": prepared["message_count"],
         "target_message_id": prepared["target_message_id"],
@@ -623,6 +695,7 @@ def build_stage6_comparison_row(new: Mapping[str, Any], old: Mapping[str, Any]) 
             "unsupported_promise_detected" in serialize_cell(new.get("safety_flags"))
             and "unsupported_promise_removed_from_stage6_draft" not in serialize_cell(new.get("safety_flags"))
         ),
+        "brand_separation_violation": stage6_brand_separation_violation(new),
         "high_risk_route_relaxed": bool(HIGH_RISK_RE.search(str(new.get("current_client_message") or "")))
         and old.get("route") == "manager_only"
         and new.get("route") == "draft_for_manager",
@@ -673,6 +746,7 @@ def render_stage6_summary(
             f"- llm_or_provider_errors: {counts['errors']}",
             f"- invalid_topic_ids: {counts['invalid_topic_ids']}",
             f"- unsupported_numeric_promises: {counts['unsupported_numeric_promises']}",
+            f"- brand_separation_violation: {counts['brand_separation_violation']}",
             f"- baseline_manager_only_relaxed: {counts['baseline_manager_only_relaxed']}",
             f"- baseline_manager_only_preserved: {counts['baseline_manager_only_preserved']}",
             f"- used_kb_context: {counts['used_kb_context']}",
@@ -702,6 +776,7 @@ def stage6_counts(enriched: Sequence[Mapping[str, Any]], comparison: Sequence[Ma
         "empty_clarification_reduced": sum(1 for row in comparison if boolish(row.get("empty_clarification_reduced"))),
         "invalid_topic_ids": sum(1 for row in comparison if boolish(row.get("invalid_topic_id"))),
         "unsupported_numeric_promises": sum(1 for row in comparison if boolish(row.get("unsupported_numeric_promises"))),
+        "brand_separation_violation": sum(1 for row in comparison if boolish(row.get("brand_separation_violation"))),
         "high_risk_route_relaxed": sum(1 for row in comparison if boolish(row.get("high_risk_route_relaxed"))),
         "baseline_manager_only_relaxed": sum(1 for row in comparison if boolish(row.get("baseline_manager_only_relaxed"))),
         "baseline_manager_only_preserved": sum(1 for row in comparison if boolish(row.get("baseline_manager_only_preserved"))),
@@ -1126,6 +1201,7 @@ def render_stage6_summary(*args: Any, **kwargs: Any) -> str:
             f"- llm_or_provider_errors: {counts['errors']}",
             f"- invalid_topic_ids: {counts['invalid_topic_ids']}",
             f"- unsupported_numeric_promises: {counts['unsupported_numeric_promises']}",
+            f"- brand_separation_violation: {counts['brand_separation_violation']}",
             f"- baseline_manager_only_relaxed: {counts['baseline_manager_only_relaxed']}",
             f"- baseline_manager_only_preserved: {counts['baseline_manager_only_preserved']}",
             f"- used_kb_context: {counts['used_kb_context']}",
@@ -1249,6 +1325,8 @@ def first_non_empty(row: Mapping[str, Any], keys: Sequence[str]) -> str:
 
 
 def serialize_cell(value: Any) -> str:
+    if isinstance(value, bool):
+        return "True" if value else "False"
     if isinstance(value, (Mapping, list, tuple)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return str(value or "")

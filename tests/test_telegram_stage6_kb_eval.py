@@ -46,9 +46,46 @@ class LeakyProvider:
             "confidence_group": 0.9,
             "route": "draft_for_manager",
             "draft_text": (
-                "Здравствуйте! [Стоимость; source=source:price; freshness=fresh_verified] "
+                "Здравствуйте! [Стоимость; source_id=price_source; fact_id=price_regular; "
+                "freshness_status=fresh_verified] "
                 "Менеджер сверит условия."
             ),
+            "manager_checklist": ["Проверить программу клиента"],
+            "missing_facts": [],
+            "safety_flags": ["manager_approval_required", "no_auto_send"],
+            "context_used": ["knowledge_snippets"],
+            "context_warnings": [],
+        }
+
+
+class CrossBrandProvider:
+    def build_draft(self, client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
+        return {
+            "message_type": "question",
+            "broad_group": "commercial",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.9,
+            "confidence_group": 0.9,
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! По УНПК менеджер подскажет условия по выбранной программе.",
+            "manager_checklist": ["Проверить бренд"],
+            "missing_facts": [],
+            "safety_flags": ["manager_approval_required", "no_auto_send"],
+            "context_used": ["knowledge_snippets"],
+            "context_warnings": [],
+        }
+
+
+class NumericPromiseProvider:
+    def build_draft(self, client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
+        return {
+            "message_type": "question",
+            "broad_group": "commercial",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.9,
+            "confidence_group": 0.9,
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Стоимость курса 49 000 руб., скидка 20%.",
             "manager_checklist": ["Проверить программу клиента"],
             "missing_facts": [],
             "safety_flags": ["manager_approval_required", "no_auto_send"],
@@ -147,9 +184,78 @@ def test_stage6_kb_eval_output_draft_text_has_no_source_or_freshness_labels(tmp_
     comparison = read_csv(Path(result.comparison_csv_path))[0]
     for value in (enriched["draft_text"], comparison["enriched_draft_text"]):
         assert "source=" not in value
+        assert "source_id" not in value
+        assert "fact_id" not in value
         assert "freshness=" not in value
+        assert "freshness_status" not in value
         assert "source:" not in value
     assert "internal_metadata_removed_from_draft" in enriched["safety_flags"]
+    assert "stage6_internal_metadata_removed_from_draft" in enriched["safety_flags"]
+
+
+def test_stage6_kb_eval_reports_zero_brand_violation_after_guarded_cross_brand_draft(tmp_path: Path) -> None:
+    input_path = tmp_path / "private_dialog_threads.jsonl"
+    snapshot_path = tmp_path / "kc_snapshot.json"
+    baseline_path = tmp_path / "baseline.csv"
+    out_dir = tmp_path / "out"
+    write_jsonl(input_path, [dialog_record("d1", "Какая цена курса?")])
+    write_snapshot(snapshot_path)
+    write_baseline_csv(baseline_path, [("d1", "m2")])
+
+    result = run_stage6_kb_eval(
+        input_path=input_path,
+        snapshot_path=snapshot_path,
+        out_dir=out_dir,
+        baseline_csv_path=baseline_path,
+        active_brand="foton",
+        provider_mode="fake",
+        provider=CrossBrandProvider(),
+        expected_dialogs=1,
+    )
+
+    enriched = read_csv(Path(result.enriched_csv_path))[0]
+    comparison = read_csv(Path(result.comparison_csv_path))[0]
+    summary = json.loads((out_dir / "stage6_eval_summary.json").read_text(encoding="utf-8"))
+
+    assert "УНПК" not in enriched["draft_text"]
+    assert enriched["route"] == "manager_only"
+    assert "brand_separation_guarded" in enriched["safety_flags"]
+    assert comparison["brand_separation_violation"] == "False"
+    assert result.brand_separation_violation == 0
+    assert summary["brand_separation_violation"] == 0
+
+
+def test_stage6_kb_eval_reports_zero_unsupported_numeric_promises_after_guarded_draft(tmp_path: Path) -> None:
+    input_path = tmp_path / "private_dialog_threads.jsonl"
+    snapshot_path = tmp_path / "kc_snapshot.json"
+    baseline_path = tmp_path / "baseline.csv"
+    out_dir = tmp_path / "out"
+    write_jsonl(input_path, [dialog_record("d1", "Какая цена курса?")])
+    write_snapshot(snapshot_path)
+    write_baseline_csv(baseline_path, [("d1", "m2")])
+
+    result = run_stage6_kb_eval(
+        input_path=input_path,
+        snapshot_path=snapshot_path,
+        out_dir=out_dir,
+        baseline_csv_path=baseline_path,
+        active_brand="foton",
+        provider_mode="fake",
+        provider=NumericPromiseProvider(),
+        expected_dialogs=1,
+    )
+
+    enriched = read_csv(Path(result.enriched_csv_path))[0]
+    comparison = read_csv(Path(result.comparison_csv_path))[0]
+    summary = json.loads((out_dir / "stage6_eval_summary.json").read_text(encoding="utf-8"))
+
+    assert "49 000" not in enriched["draft_text"]
+    assert "20%" not in enriched["draft_text"]
+    assert enriched["route"] == "manager_only"
+    assert "unsupported_promise_removed_from_stage6_draft" in enriched["safety_flags"]
+    assert comparison["unsupported_numeric_promises"] == "False"
+    assert result.unsupported_numeric_promises == 0
+    assert summary["unsupported_numeric_promises"] == 0
 
 
 def test_stage6_kb_eval_preserves_baseline_manager_only_without_high_risk_keywords(tmp_path: Path) -> None:

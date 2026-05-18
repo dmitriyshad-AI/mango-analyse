@@ -3,11 +3,11 @@
 quality_passed: `True`
 
 ## Summary
-- facts_total: `655`
-- client_allowed_facts: `375`
+- facts_total: `664`
+- client_allowed_facts: `363`
 - source_registry_total: `10`
-- approval_queue_items: `634`
-- approval_queue_by_type: `{'price': 70, 'discount': 62, 'promocode': 11, 'installment': 18, 'matkap': 36, 'deadline': 26, 'camp_zvsh': 2, 'program': 195, 'documents': 60, 'contact': 11, 'teacher': 11, 'refund': 18, 'policy': 4, 'camp_lvsh': 52, 'camp_city': 13, 'intensive': 38, 'tax': 5, 'location': 2}`
+- approval_queue_items: `641`
+- approval_queue_by_type: `{'price': 70, 'discount': 55, 'promocode': 27, 'installment': 18, 'matkap': 36, 'deadline': 26, 'camp_zvsh': 2, 'program': 195, 'documents': 60, 'teacher': 11, 'refund': 18, 'policy': 4, 'camp_lvsh': 52, 'camp_city': 13, 'intensive': 38, 'tax': 5, 'contact': 11}`
 
 ## Checks
 - all_fact_source_ids_exist: `True`

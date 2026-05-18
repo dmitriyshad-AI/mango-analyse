@@ -1,0 +1,26 @@
+dialog_id,target_message_id,topic_id,route,draft_text
+unpk_smoke_01,unpk_smoke_01:client,theme:001_pricing,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_02,unpk_smoke_02:client,theme:005_discounts,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_03,unpk_smoke_03:client,theme:006_installment,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_04,unpk_smoke_04:client,theme:007_matkap_payment,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_05,unpk_smoke_05:client,theme:005_discounts,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_06,unpk_smoke_06:client,theme:008_tax_deduction,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_07,unpk_smoke_07:client,theme:011_contract,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_08,unpk_smoke_08:client,theme:008_tax_deduction,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_09,unpk_smoke_09:client,theme:002_payment_method,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_10,unpk_smoke_10:client,theme:013_schedule,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_11,unpk_smoke_11:client,theme:009_refund,manager_only,"Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
+unpk_smoke_12,unpk_smoke_12:client,theme:014_contacts,manager_only,"Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
+unpk_smoke_13,unpk_smoke_13:client,theme:029_legal_question,manager_only,"Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
+unpk_smoke_14,unpk_smoke_14:client,theme:019b_negative_feedback,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_15,unpk_smoke_15:client,theme:017_teachers,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_16,unpk_smoke_16:client,theme:006_installment,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_17,unpk_smoke_17:client,theme:005_discounts,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_18,unpk_smoke_18:client,theme:007_matkap_payment,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_19,unpk_smoke_19:client,theme:001_pricing,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_20,unpk_smoke_20:client,theme:016_program_content,draft_for_manager,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_21,unpk_smoke_21:client,theme:021_camps,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_22,unpk_smoke_22:client,theme:017_teachers,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_23,unpk_smoke_23:client,theme:015_location_address,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_24,unpk_smoke_24:client,theme:023_trial_class,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.
+unpk_smoke_25,unpk_smoke_25:client,theme:014_contacts,bot_answer_self,Здравствуйте! Уточним актуальные условия и вернемся с ответом.

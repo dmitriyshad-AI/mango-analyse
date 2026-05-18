@@ -61,7 +61,6 @@ FOTON_FORBIDDEN_CLIENT_MARKERS = (
     "НОУ УНПК",
     "kmipt.ru",
     "@unpk_mipt",
-    "@unpkmfti",
 )
 UNPK_FORBIDDEN_CLIENT_MARKERS = (
     "Фотон",
@@ -71,6 +70,8 @@ UNPK_FORBIDDEN_CLIENT_MARKERS = (
     "edu@cdpofoton.ru",
     "Т-Банк",
     "Долями",
+    "рассрочка через банк",
+    "через банк",
 )
 STALE_CERTIFICATE_MARKERS = (
     "3 рабочих дня",
@@ -81,7 +82,9 @@ STALE_CERTIFICATE_MARKERS = (
 TECHNICAL_ENGLISH_CLIENT_RE = re.compile(
     r"\b(?:prices?|lesson|session|package|base|plus|one\s+block|one\s+subject|two\s+subjects|"
     r"after\s+20\d{2}|before\s+20\d{2}|moscow|dolgoprudny|location|start\s+date|"
-    r"online\s+platform|free\s+morning\s+club|factultative)\b",
+    r"online\s+platform|free\s+morning\s+club|factultative|program|pair\s+duration|"
+    r"duration\s+minutes|non\s+stacking|over\s+18|under\s+18|used\s+for|receipt\s+rules|"
+    r"fiztech\s+xxi|veb\s+rf|former\s+student)\b",
     re.IGNORECASE,
 )
 GENERIC_ROP_QUESTIONS = {
@@ -90,6 +93,18 @@ GENERIC_ROP_QUESTIONS = {
 }
 MONEY_FACT_TYPES = {"price", "discount", "promocode", "installment", "tax", "matkap", "refund"}
 NON_MONEY_RUB_FACT_TYPES = {"course_parameter", "deadline", "program", "documents", "contact", "location", "teacher", "policy"}
+VERIFIED_FRESHNESS = {"verified", "document_verified", "fresh_verified", "current"}
+TIME_SENSITIVE_FACT_TYPES = {
+    "price",
+    "discount",
+    "promocode",
+    "deadline",
+    "program",
+    "camp_lvsh",
+    "camp_city",
+    "intensive",
+    "installment",
+}
 
 
 @dataclass(frozen=True)
@@ -162,7 +177,55 @@ def review_facts(facts: Sequence[Mapping[str, Any]]) -> list[Finding]:
         text = str(fact.get("client_safe_text") or "")
         fact_key = str(fact.get("fact_key") or "")
         path = str(structured.get("path") or fact_key)
-        allowed = is_true(fact.get("allowed_for_client_answer")) and bool(text.strip())
+        allowed_flag = is_true(fact.get("allowed_for_client_answer"))
+        allowed = allowed_flag and bool(text.strip())
+        freshness = str(fact.get("freshness_status") or fact.get("verification_status") or "")
+        freshness_ok = freshness in VERIFIED_FRESHNESS
+        requires_confirmation = is_true(fact.get("requires_manager_confirmation"))
+
+        if allowed_flag and not text.strip():
+            findings.append(
+                Finding(
+                    "P0",
+                    "allowed_fact_has_empty_client_text",
+                    "Факт разрешён для клиентского ответа, но клиентский текст пустой.",
+                    item_id=fact_id,
+                    evidence=fact_key,
+                )
+            )
+
+        if allowed_flag and requires_confirmation:
+            findings.append(
+                Finding(
+                    "P0",
+                    "allowed_fact_requires_manager_confirmation",
+                    "Факт нельзя одновременно разрешать клиенту и требовать подтверждение менеджера.",
+                    item_id=fact_id,
+                    evidence=f"{freshness} | {text[:220]}",
+                )
+            )
+
+        if requires_confirmation and freshness_ok:
+            findings.append(
+                Finding(
+                    "P0",
+                    "verified_fact_marked_requires_manager_confirmation",
+                    "Подтвержденный документом факт ошибочно помечен как требующий ручного подтверждения.",
+                    item_id=fact_id,
+                    evidence=f"{freshness} | {fact_key}",
+                )
+            )
+
+        if allowed and (fact_type == "promocode" or "promo" in fact_key.casefold() or "promo" in path.casefold()):
+            findings.append(
+                Finding(
+                    "P0",
+                    "promo_code_allowed_for_client",
+                    "Промокоды исключены из клиентской базы бота и не должны быть client-safe.",
+                    item_id=fact_id,
+                    evidence=text[:220],
+                )
+            )
 
         if allowed and fact_type == "price":
             amount = structured.get("amount")
@@ -242,6 +305,17 @@ def review_facts(facts: Sequence[Mapping[str, Any]]) -> list[Finding]:
 
         if allowed:
             findings.extend(review_client_text(text, brand=brand, item_id=fact_id))
+            findings.extend(review_fact_freshness(fact, fact_type=fact_type, item_id=fact_id))
+            if fact_type == "discount" and not discount_has_condition(text, fact_key, structured):
+                findings.append(
+                    Finding(
+                        "P1",
+                        "discount_without_conditions",
+                        "Скидка разрешена клиенту без понятного условия применения.",
+                        item_id=fact_id,
+                        evidence=text[:220],
+                    )
+                )
 
         if allowed and "theme_12_certificate" in fact_key:
             for marker in ("ФИО плательщика", "ФИО ребёнка", "за какой период"):
@@ -270,6 +344,77 @@ def review_facts(facts: Sequence[Mapping[str, Any]]) -> list[Finding]:
                 )
 
     return findings
+
+
+def review_fact_freshness(fact: Mapping[str, Any], *, fact_type: str, item_id: str) -> list[Finding]:
+    if fact_type not in TIME_SENSITIVE_FACT_TYPES:
+        return []
+    structured = as_mapping(fact.get("structured_value"))
+    valid_until = str(fact.get("valid_until") or structured.get("valid_until") or "")
+    check_date = str(fact.get("freshness_check_date") or structured.get("freshness_check_date") or "")
+    if valid_until:
+        return []
+    if check_date:
+        return [
+            Finding(
+                "P2",
+                "time_sensitive_fact_has_check_date_only",
+                "У чувствительного к дате факта нет срока действия, но есть дата последней проверки.",
+                item_id=item_id,
+                evidence=f"{fact_type} checked={check_date}",
+            )
+        ]
+    return [
+        Finding(
+            "P1",
+            "time_sensitive_fact_missing_freshness_marker",
+            "У чувствительного к дате факта нет ни срока действия, ни даты проверки.",
+            item_id=item_id,
+            evidence=fact_type,
+        )
+    ]
+
+
+def discount_has_condition(text: str, fact_key: str, structured: Mapping[str, Any]) -> bool:
+    payload = " ".join(
+        [
+            text,
+            fact_key.replace("_", " "),
+            json.dumps(dict(structured), ensure_ascii=False),
+        ]
+    ).casefold().replace("ё", "е")
+    return any(
+        marker in payload
+        for marker in (
+            "услов",
+            "если",
+            "при ",
+            "для ",
+            "после",
+            "до ",
+            "действ",
+            "многодет",
+            "сотрудник",
+            "ранн",
+            "друг",
+            "оплат",
+            "смен",
+            "предмет",
+            "кэшбэк",
+            "кешбэк",
+            "рекоменд",
+            "помесяч",
+            "мфти",
+            "суммир",
+            "не сумм",
+            "лагер",
+            "лвш",
+            "городской",
+            "очно",
+            "онлайн",
+            "класс",
+        )
+    )
 
 
 def review_client_text(text: str, *, brand: str, item_id: str) -> list[Finding]:
@@ -470,10 +615,7 @@ def load_snapshot(release_root: Path) -> Mapping[str, Any]:
 
 
 def load_facts(release_root: Path, snapshot: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    candidates = [
-        release_root / "facts_registry.jsonl",
-        release_root.parent / "kb_release_20260518_v3" / "facts_registry.jsonl",
-    ]
+    candidates = [release_root / "facts_registry.jsonl"]
     for path in candidates:
         if path.exists():
             return [

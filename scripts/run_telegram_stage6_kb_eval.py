@@ -67,7 +67,7 @@ STAGE6_FORBIDDEN_DRAFT_MARKER_RE = re.compile(
 )
 STAGE6_BRAND_FORBIDDEN_TERMS = {
     "foton": ("унпк", "унпк мфти", "ано дпо", "ноу унпк", "kmipt.ru"),
-    "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями"),
+    "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями", "рассрочка через банк", "через банк"),
 }
 
 

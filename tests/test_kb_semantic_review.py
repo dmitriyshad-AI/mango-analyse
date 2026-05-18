@@ -40,7 +40,7 @@ def test_semantic_review_blocks_cross_brand_client_text(tmp_path: Path) -> None:
                 "fact_type": "contact",
                 "brand": "foton",
                 "allowed_for_client_answer": True,
-                "client_safe_text": "Фотон: пишите в @unpkmfti.",
+                "client_safe_text": "Фотон: пишите в @unpk_mipt.",
                 "structured_value": {"path": "contacts.telegram"},
             }
         ],
@@ -146,6 +146,7 @@ def test_semantic_review_passes_minimal_good_release(tmp_path: Path) -> None:
                 "allowed_for_client_answer": True,
                 "client_safe_text": "Фотон: цена за год для 5-11 класса — 74 500 ₽.",
                 "structured_value": {"amount": 74500, "currency": "RUB", "path": "prices.offline_5_11.year"},
+                "valid_until": "2026-07-01",
             },
             {
                 "fact_id": "fact:good-lessons",
@@ -171,6 +172,146 @@ def test_semantic_review_passes_minimal_good_release(tmp_path: Path) -> None:
 
     assert report["semantic_pass"] is True
     assert report["findings"] == []
+
+
+def test_semantic_review_blocks_client_promocode(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:promo",
+                "fact_key": "promo_codes.teacher_promo.code",
+                "fact_type": "promocode",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: промокод TEACHER500 даёт скидку.",
+                "structured_value": {"path": "promo_codes.teacher_promo.code"},
+                "freshness_check_date": "2026-05-18",
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is False
+    assert any(item["check_id"] == "promo_code_allowed_for_client" for item in report["findings"])
+
+
+def test_semantic_review_blocks_allowed_fact_that_requires_confirmation(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:contradiction",
+                "fact_key": "prices.current.year",
+                "fact_type": "price",
+                "brand": "foton",
+                "freshness_status": "document_verified",
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": True,
+                "client_safe_text": "Фотон: год стоит 74 500 ₽.",
+                "structured_value": {"amount": 74500, "currency": "RUB", "path": "prices.current.year"},
+                "valid_until": "2026-07-01",
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is False
+    assert any(item["check_id"] == "allowed_fact_requires_manager_confirmation" for item in report["findings"])
+    assert any(item["check_id"] == "verified_fact_marked_requires_manager_confirmation" for item in report["findings"])
+
+
+def test_semantic_review_blocks_empty_allowed_client_text(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:empty",
+                "fact_key": "contacts.telegram",
+                "fact_type": "contact",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "",
+                "structured_value": {"path": "contacts.telegram"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is False
+    assert any(item["check_id"] == "allowed_fact_has_empty_client_text" for item in report["findings"])
+
+
+def test_semantic_review_blocks_discount_without_conditions(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:discount",
+                "fact_key": "discounts.generic.percent",
+                "fact_type": "discount",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: скидка — 10%.",
+                "structured_value": {"percentage": 10, "unit": "percent", "path": "discounts.generic.percent"},
+                "valid_until": "2026-07-01",
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is False
+    assert any(item["check_id"] == "discount_without_conditions" for item in report["findings"])
+
+
+def test_semantic_review_allows_discount_with_conditions(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:discount-ok",
+                "fact_key": "discounts.second_subject.percent",
+                "fact_type": "discount",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: скидка 10% действует для второго предмета.",
+                "structured_value": {"percentage": 10, "unit": "percent", "path": "discounts.second_subject.percent"},
+                "valid_until": "2026-07-01",
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is True
+    assert report["findings"] == []
+
+
+def test_semantic_review_warns_on_time_sensitive_fact_with_check_date_only(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:checked-price",
+                "fact_key": "prices.current.year",
+                "fact_type": "price",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: год стоит 74 500 ₽.",
+                "structured_value": {"amount": 74500, "currency": "RUB", "path": "prices.current.year"},
+                "freshness_check_date": "2026-05-18",
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is True
+    assert any(item["check_id"] == "time_sensitive_fact_has_check_date_only" for item in report["findings"])
 
 
 def _write_release(

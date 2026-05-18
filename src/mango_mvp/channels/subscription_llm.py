@@ -96,7 +96,7 @@ PRECISE_CONDITION_RE = re.compile(
 )
 BRAND_FORBIDDEN_TERMS = {
     "foton": ("унпк", "унпк мфти", "ано дпо", "ноу унпк", "kmipt.ru"),
-    "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями"),
+    "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями", "рассрочка через банк", "через банк"),
 }
 UNSUPPORTED_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{1,3}(?:[,.]\d{1,2})?\s*(?:%|процент\w*)", re.I),

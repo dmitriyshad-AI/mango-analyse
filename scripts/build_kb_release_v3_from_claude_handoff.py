@@ -27,6 +27,7 @@ SCHEMA_VERSION = "kb_release_v3_snapshot_2026_05_18"
 FACT_SCHEMA_VERSION = "kb_release_v3_fact_v1"
 SOURCE_SCHEMA_VERSION = "kb_release_v3_source_v1"
 BUILDER_VERSION = "kb_release_v3_builder_2026_05_18_v1"
+FRESHNESS_CHECK_DATE = "2026-05-18"
 
 DEFAULT_RUN_ID = "kb_release_20260518_v3"
 DEFAULT_HANDOFF_DIR = Path("claude_to_codex_v3_handoff_2026-05-17")
@@ -177,6 +178,7 @@ CLIENT_BLOCKED_STATUSES = {
     "internal_only",
     "dynamic_needs_check",
 }
+CONFIRMATION_STATUSES = {"needs_owner_confirmation", "dynamic_needs_check"}
 BRAND_LABELS = {
     "foton": "Фотон",
     "unpk": "УНПК",
@@ -573,6 +575,7 @@ def make_fact(
     if linked_open_question == "q14_closed" and brand != "unpk":
         linked_open_question = ""
     structured_value = build_structured_value(path, value, fact_type=fact_type)
+    structured_value["freshness_check_date"] = FRESHNESS_CHECK_DATE
     fact_text = render_fact_text(path, value, brand=brand, fact_type=fact_type, structured_value=structured_value)
     route_policy = infer_route_policy(path, fact_type=fact_type, status=status, internal_only=internal_only)
     risk_level = infer_risk_level(path, fact_type=fact_type)
@@ -587,7 +590,12 @@ def make_fact(
         path=path,
     )
     usable_precise = bool(allowed and freshness not in {"dynamic_needs_check", "waiting_list"} and status != "waiting_list")
-    requires_confirmation = bool(not allowed or status in CLIENT_BLOCKED_STATUSES or freshness == "dynamic_needs_check")
+    requires_confirmation = requires_manager_confirmation_for_fact(
+        status=status,
+        freshness=freshness,
+        route_policy=route_policy,
+        safety_reasons=safety_reasons,
+    )
     source_id = str(source.get("source_id") or "")
     fact_id = f"fact:v3:{brand}:{safe_id(':'.join(path))}:{sha256_text(f'{fact_key}|{value}|{source_id}')[:10]}"
     client_safe_text = fact_text if allowed else ""
@@ -623,6 +631,7 @@ def make_fact(
         "structured_value": structured_value,
         "valid_from": "",
         "valid_until": structured_value.get("valid_until", ""),
+        "freshness_check_date": FRESHNESS_CHECK_DATE,
         "verified_by": "",
         "verified_at": "",
         "owner_role": owner_role_for_fact(path, fact_type),
@@ -714,7 +723,7 @@ def build_policy_facts(handoff: Mapping[str, Any], source_lookup: Mapping[str, M
                     route_policy="manager_only",
                     linked_open_question="q12_closed",
                     internal_only=False,
-                    requires_manager_confirmation=True,
+                    requires_manager_confirmation=False,
                 )
             )
     return facts
@@ -843,6 +852,9 @@ def make_manual_fact(
     )
     if client_safe_text == "":
         allowed = False
+    structured = dict(structured_value or {})
+    structured.setdefault("path", fact_key)
+    structured["freshness_check_date"] = FRESHNESS_CHECK_DATE
     fact_id = f"fact:v3:{clean_brand}:{safe_id(fact_key)}:{sha256_text(f'{fact_key}|{fact_text}')[:10]}"
     return {
         "schema_version": FACT_SCHEMA_VERSION,
@@ -869,15 +881,25 @@ def make_manual_fact(
         "source_status": str(source.get("source_status") or ""),
         "freshness_status": freshness,
         "verification_status": normalize_status(status),
-        "structured_value": dict(structured_value or {}),
+        "structured_value": structured,
         "valid_from": "",
         "valid_until": "",
+        "freshness_check_date": FRESHNESS_CHECK_DATE,
         "verified_by": "",
         "verified_at": "",
         "owner_role": owner_role_for_fact(tuple(fact_key.split(".")), fact_type),
         "allowed_for_client_answer": allowed,
         "usable_for_precise_answer": bool(allowed and freshness not in {"dynamic_needs_check", "waiting_list"}),
-        "requires_manager_confirmation": bool(requires_manager_confirmation if requires_manager_confirmation is not None else not allowed),
+        "requires_manager_confirmation": bool(
+            requires_manager_confirmation
+            if requires_manager_confirmation is not None
+            else requires_manager_confirmation_for_fact(
+                status=status,
+                freshness=freshness,
+                route_policy=route_policy,
+                safety_reasons=safety_reasons,
+            )
+        ),
         "requires_amo_check": False,
         "requires_tallanto_check": False,
         "route_policy": route_policy,
@@ -1227,6 +1249,8 @@ def write_outputs(
 
     write_json(team_root / "kb_release_v3_snapshot.json", snapshot)
     write_yaml(team_root / "facts_registry.yaml", {"schema_version": "facts_registry_v3", "items": list(facts)})
+    write_jsonl(team_root / "facts_registry.jsonl", facts)
+    write_csv(team_root / "facts_registry.csv", facts)
     write_json(team_root / "source_registry.json", {"items": list(sources)})
     write_csv(team_root / "approval_queue_for_rop_v3.csv", approval_queue)
     write_json(team_root / "quality_report.json", quality)
@@ -1395,8 +1419,20 @@ def render_value(
             return format_rub(value)
         if structured_value.get("unit") == "percent":
             return f"{format_number(value)}%"
+        if structured_value.get("unit") == "minutes":
+            return f"{format_number(value)} минут"
+        if structured_value.get("unit") == "hours":
+            return f"{format_number(value)} часов"
+        if structured_value.get("unit") == "pairs":
+            return f"{format_number(value)} пары"
+        if structured_value.get("unit") == "lessons":
+            return f"{format_number(value)} занятий"
         return format_number(value)
     text = clean_text(value, max_chars=1000).replace("_", " ").replace(" / ", " или ")
+    if text == "non stacking largest applies":
+        return "скидки не суммируются, применяется наибольшая доступная скидка"
+    if text == "used for crm only":
+        return "только для внутренней CRM-метки"
     pct = percent_from_path(path)
     if pct is not None and text:
         return f"{pct}%: {text}"
@@ -1408,6 +1444,8 @@ def readable_fact_label(path: tuple[str, ...], *, fact_type: str) -> str:
     labels: list[str] = []
     if "prices_regular_2026_27" in text:
         labels.append("цены на 2026/27 учебный год")
+    elif "lvsh_mendeleevo" in text:
+        labels.append("ЛВШ Менделеево")
     elif "ls_city_2026" in text:
         labels.append("городской летний лагерь")
     elif "individual_lessons" in text:
@@ -1459,6 +1497,16 @@ def readable_fact_label(path: tuple[str, ...], *, fact_type: str) -> str:
         labels.append("Москва")
     if "dolgoprudny" in text:
         labels.append("Долгопрудный")
+    if "refer_a_friend" in text:
+        labels.append("программа «приведи друга»")
+    if "second_subject" in text:
+        labels.append("скидка на второй предмет")
+    if "mfti_employees" in text:
+        labels.append("для сотрудников МФТИ")
+    if "monthly_payment" in text:
+        labels.append("при помесячной оплате")
+    if "stacking" in text:
+        labels.append("правило суммирования скидок")
 
     last = path[-1].casefold() if path else ""
     leaf_labels = {
@@ -1485,6 +1533,8 @@ def readable_fact_label(path: tuple[str, ...], *, fact_type: str) -> str:
         "total_lessons": "количество занятий за год",
         "weekly_lessons": "занятий в неделю",
         "daily_hours": "длительность занятия",
+        "daily_pairs": "пар в день",
+        "pair_duration_minutes": "длительность пары",
         "semester_1_weeks": "недель в первом семестре",
         "semester_2_weeks": "недель во втором семестре",
         "classes": "классы",
@@ -1533,6 +1583,15 @@ def build_structured_value(path: tuple[str, ...], value: Any, *, fact_type: str)
             structured["days"] = int(numeric)
         elif is_week_path(path):
             structured["weeks"] = int(numeric)
+        elif is_duration_minutes_path(path):
+            structured["count"] = int(numeric)
+            structured["unit"] = "minutes"
+        elif is_duration_hours_path(path):
+            structured["count"] = int(numeric)
+            structured["unit"] = "hours"
+        elif is_pair_count_path(path):
+            structured["count"] = int(numeric)
+            structured["unit"] = "pairs"
         elif is_lesson_count_path(path):
             structured["count"] = int(numeric)
             structured["unit"] = "lessons"
@@ -1705,8 +1764,8 @@ def client_allowed(
         reasons.append("manager_only_route")
     if fact_type in {"teacher"} and "approved_phrases" not in path_text:
         reasons.append("teacher_names_internal")
-    if fact_type == "promocode" and ("teacher" in path_text or "flocktory" in path_text):
-        reasons.append("promocode_needs_marketing_confirmation")
+    if fact_type == "promocode" or "promo_codes" in path_text or "promocode" in path_text:
+        reasons.append("promocode_removed_from_bot")
     reasons.extend(client_safety_violations(text, brand))
     if normalized_status in CLIENT_ALLOWED_STATUSES and not reasons:
         return True, []
@@ -1733,7 +1792,7 @@ def client_safety_violations(text: str, brand: str) -> list[str]:
     if has_foton and has_unpk:
         violations.append("cross_brand_text")
     if brand == "foton":
-        for term in ("унпк", "ано дпо", "ноу унпк", "kmipt.ru", "@unpk_mipt", "@unpkmfti", "+7 (495) 150-81-51", "8 (800) 500-81-51"):
+        for term in ("унпк", "ано дпо", "ноу унпк", "kmipt.ru", "@unpk_mipt", "+7 (495) 150-81-51", "8 (800) 500-81-51"):
             if term in lowered:
                 violations.append(f"other_brand_term:{term}")
     if brand == "unpk":
@@ -1741,6 +1800,24 @@ def client_safety_violations(text: str, brand: str) -> list[str]:
             if term in lowered:
                 violations.append(f"other_brand_term:{term}")
     return sorted(set(violations))
+
+
+def requires_manager_confirmation_for_fact(
+    *,
+    status: str,
+    freshness: str,
+    route_policy: str,
+    safety_reasons: Sequence[str],
+) -> bool:
+    normalized_status = normalize_status(status)
+    normalized_freshness = normalize_freshness(freshness)
+    if normalized_status in CONFIRMATION_STATUSES or normalized_freshness in CONFIRMATION_STATUSES:
+        return True
+    if route_policy in {"manager_only", "manager_handoff_only"} and any(
+        "dynamic" in reason or "confirmation" in reason or "owner" in reason for reason in safety_reasons
+    ):
+        return True
+    return False
 
 
 def infer_route_policy(path: tuple[str, ...], *, fact_type: str, status: str, internal_only: bool) -> str:
@@ -1932,7 +2009,19 @@ def is_week_path(path: tuple[str, ...]) -> bool:
 
 def is_lesson_count_path(path: tuple[str, ...]) -> bool:
     text = ".".join(path).casefold()
-    return any(marker in text for marker in ("total_lessons", "weekly_lessons", "daily_pairs", "pair_duration_minutes", "daily_hours"))
+    return any(marker in text for marker in ("total_lessons", "weekly_lessons"))
+
+
+def is_duration_minutes_path(path: tuple[str, ...]) -> bool:
+    return "pair_duration_minutes" in ".".join(path).casefold()
+
+
+def is_duration_hours_path(path: tuple[str, ...]) -> bool:
+    return "daily_hours" in ".".join(path).casefold()
+
+
+def is_pair_count_path(path: tuple[str, ...]) -> bool:
+    return "daily_pairs" in ".".join(path).casefold()
 
 
 def is_class_path(path: tuple[str, ...]) -> bool:
@@ -2032,7 +2121,7 @@ def forbidden_promises_for_fact_type(fact_type: str) -> list[str]:
 
 def forbidden_mentions_for_brand(brand: str) -> list[str]:
     if brand == "foton":
-        return ["УНПК", "АНО ДПО", "НОУ УНПК", "kmipt.ru", "@unpk_mipt", "@unpkmfti"]
+        return ["УНПК", "АНО ДПО", "НОУ УНПК", "kmipt.ru", "@unpk_mipt"]
     if brand == "unpk":
         return ["Фотон", "ЦДПО", "ЦРДО", "cdpofoton.ru", "Т-Банк", "Долями"]
     return []

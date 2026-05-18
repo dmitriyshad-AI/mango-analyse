@@ -301,6 +301,27 @@ def test_neutral_price_question_is_not_forced_by_input_guard() -> None:
     assert "high_risk_input_manager_only" not in result.safety_flags
 
 
+def test_unpk_draft_does_not_allow_bank_installment_wording() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Здравствуйте! Возможность рассрочки через банк нужно проверить по конкретному курсу.",
+            "message_type": "question",
+            "topic_id": "theme:006_installment",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Можно ли оплатить курс в рассрочку через банк?",
+        context={"active_brand": "unpk", "rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.route == "manager_only"
+    assert "brand_separation_guarded" in result.safety_flags
+    assert "рассрочка через банк" not in result.draft_text.casefold()
+
+
 def test_non_question_message_type_forces_manager_only() -> None:
     result = parse_llm_json(
         '{"route":"draft_for_manager","draft_text":"Спасибо!","message_type":"context_update",'

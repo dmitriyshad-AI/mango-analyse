@@ -291,6 +291,123 @@ def test_semantic_review_allows_discount_with_conditions(tmp_path: Path) -> None
     assert report["findings"] == []
 
 
+def test_semantic_review_blocks_discount_stacking_contradiction(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:bad-stacking",
+                "fact_key": "objection_responses.too_expensive_camp.2",
+                "fact_type": "program",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "route_policy": "draft_for_manager",
+                "client_safe_text": "Фотон: черновик для ситуации «возражение о стоимости лагеря»: Скидки суммируются.",
+                "structured_value": {"path": "objection_responses.too_expensive_camp.2"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is False
+    assert any(item["check_id"] == "discount_stacking_contradiction" for item in report["findings"])
+
+
+def test_semantic_review_blocks_pilot_short_machine_tail(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:matkap-short",
+                "fact_key": "matkap.child_age.sertificate_owner_min",
+                "fact_type": "matkap",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "route_policy": "bot_answer_self_for_pilot",
+                "client_safe_text": "Фотон: материнский капитал — 3.",
+                "structured_value": {"number": 3, "path": "matkap.child_age.sertificate_owner_min"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is False
+    assert any(item["check_id"] == "pilot_client_text_has_machine_short_tail" for item in report["findings"])
+
+
+def test_semantic_review_allows_pilot_short_tail_when_template_required(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:lvsh-deposit",
+                "fact_key": "lvsh_mendeleevo_2026.pricing_2026.deposit",
+                "fact_type": "camp_lvsh",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "route_policy": "bot_answer_self_for_pilot",
+                "bot_template_required": True,
+                "client_safe_text": "Фотон: ЛВШ Менделеево — 15 000 ₽.",
+                "valid_until": "2026-08-31",
+                "structured_value": {"amount": 15000, "currency": "RUB", "path": "lvsh_mendeleevo_2026.pricing_2026.deposit"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is True
+    assert report["findings"] == []
+
+
+def test_semantic_review_allows_public_telegram_handle_with_underscore(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:unpk-telegram",
+                "fact_key": "contacts_unpk.telegram",
+                "fact_type": "contact",
+                "brand": "unpk",
+                "allowed_for_client_answer": True,
+                "route_policy": "draft_for_manager",
+                "client_safe_text": "УНПК: контакты — @unpk_mipt.",
+                "structured_value": {"raw_value": "@unpk_mipt", "path": "contacts_unpk.telegram"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is True
+    assert report["findings"] == []
+
+
+def test_semantic_review_allows_contextual_pilot_number(tmp_path: Path) -> None:
+    release = _write_release(
+        tmp_path,
+        facts=[
+            {
+                "fact_id": "fact:matkap-contextual",
+                "fact_key": "matkap.child_age.sertificate_owner_min",
+                "fact_type": "matkap",
+                "brand": "foton",
+                "allowed_for_client_answer": True,
+                "route_policy": "bot_answer_self_for_pilot",
+                "client_safe_text": "Фотон: материнский капитал можно использовать, если ребёнку, на которого оформлен сертификат, исполнилось 3 года.",
+                "structured_value": {"number": 3, "path": "matkap.child_age.sertificate_owner_min"},
+            }
+        ],
+    )
+
+    report = run_kb_semantic_review(release)
+
+    assert report["semantic_pass"] is True
+    assert report["findings"] == []
+
+
 def test_semantic_review_warns_on_time_sensitive_fact_with_check_date_only(tmp_path: Path) -> None:
     release = _write_release(
         tmp_path,

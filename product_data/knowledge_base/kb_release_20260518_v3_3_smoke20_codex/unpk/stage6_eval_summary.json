@@ -1,0 +1,29 @@
+{
+  "active_brand": "unpk",
+  "baseline_manager_only_preserved": 4,
+  "baseline_manager_only_relaxed": 0,
+  "became_more_substantive": 8,
+  "brand_separation_violation": 0,
+  "empty_clarification_reduced": 1,
+  "errors": 0,
+  "high_risk_route_relaxed": 0,
+  "invalid_topic_ids": 0,
+  "provider_mode": "codex",
+  "rows_total": 20,
+  "safety": {
+    "client_send": false,
+    "live_telegram": false,
+    "manager_approval_required": true,
+    "read_only_snapshot": true,
+    "run_asr": false,
+    "run_resolve_analyze": false,
+    "write_crm": false,
+    "write_stable_runtime": false,
+    "write_tallanto": false
+  },
+  "schema_version": "telegram_stage6_kb_eval_v1",
+  "snapshot_path": "product_data/knowledge_base/kb_release_20260518_v3_3/kb_release_v3_snapshot.json",
+  "snapshot_run_id": "kb_release_20260518_v3_3",
+  "unsupported_numeric_promises": 0,
+  "used_kb_context": 20
+}

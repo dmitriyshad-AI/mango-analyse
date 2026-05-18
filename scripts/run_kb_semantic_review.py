@@ -54,6 +54,9 @@ GLOBAL_FORBIDDEN_CLIENT_MARKERS = (
     "были одно",
     "наш партнёр",
     "наш партнер",
+    "q7 закрыт",
+    "ответу бухгалтерии",
+    "dynamic needs check",
 )
 FOTON_FORBIDDEN_CLIENT_MARKERS = (
     "УНПК",
@@ -61,6 +64,9 @@ FOTON_FORBIDDEN_CLIENT_MARKERS = (
     "НОУ УНПК",
     "kmipt.ru",
     "@unpk_mipt",
+    "@unpkmfti",
+    "@unpk mipt",
+    "unpkmfti",
 )
 UNPK_FORBIDDEN_CLIENT_MARKERS = (
     "Фотон",
@@ -182,6 +188,27 @@ def review_facts(facts: Sequence[Mapping[str, Any]]) -> list[Finding]:
         freshness = str(fact.get("freshness_status") or fact.get("verification_status") or "")
         freshness_ok = freshness in VERIFIED_FRESHNESS
         requires_confirmation = is_true(fact.get("requires_manager_confirmation"))
+
+        if allowed and re.search(r"(?<!не\s)скидки\s+суммируются", text.casefold().replace("ё", "е")):
+            findings.append(
+                Finding(
+                    "P1",
+                    "discount_stacking_contradiction",
+                    "Клиентский факт утверждает, что скидки суммируются, хотя действующее правило запрещает суммирование.",
+                    item_id=fact_id,
+                    evidence=text[:220],
+                )
+            )
+        if allowed and " , " in text:
+            findings.append(
+                Finding(
+                    "P1",
+                    "machine_joined_client_text",
+                    "Клиентский текст содержит машинную склейку ключа данных.",
+                    item_id=fact_id,
+                    evidence=text[:220],
+                )
+            )
 
         if allowed_flag and not text.strip():
             findings.append(
@@ -306,7 +333,38 @@ def review_facts(facts: Sequence[Mapping[str, Any]]) -> list[Finding]:
         if allowed:
             findings.extend(review_client_text(text, brand=brand, item_id=fact_id))
             findings.extend(review_fact_freshness(fact, fact_type=fact_type, item_id=fact_id))
-            if fact_type == "discount" and not discount_has_condition(text, fact_key, structured):
+            route_policy = str(fact.get("route_policy") or "")
+            template_required = bool(fact.get("bot_template_required"))
+            if route_policy == "bot_answer_self_for_pilot" and has_machine_short_tail(text) and not template_required:
+                findings.append(
+                    Finding(
+                        "P1",
+                        "pilot_client_text_has_machine_short_tail",
+                        "Пилотный клиентский факт выглядит как машинный обрывок и не годится для самостоятельного ответа.",
+                        item_id=fact_id,
+                        evidence=text[:220],
+                    )
+                )
+            if template_required and not text:
+                findings.append(
+                    Finding(
+                        "P1",
+                        "template_required_fact_has_empty_text",
+                        "Факт требует шаблон, но не содержит текста-источника для шаблона.",
+                        item_id=fact_id,
+                    )
+                )
+            if fact_type == "discount" and route_policy == "bot_answer_self_for_pilot" and not discount_text_has_condition(text):
+                findings.append(
+                    Finding(
+                        "P1",
+                        "discount_without_conditions",
+                        "Скидка в pilot-маршруте разрешена клиенту без понятного условия применения прямо в тексте.",
+                        item_id=fact_id,
+                        evidence=text[:220],
+                    )
+                )
+            elif fact_type == "discount" and not discount_has_condition(text, fact_key, structured):
                 findings.append(
                     Finding(
                         "P1",
@@ -417,6 +475,40 @@ def discount_has_condition(text: str, fact_key: str, structured: Mapping[str, An
     )
 
 
+def discount_text_has_condition(text: str) -> bool:
+    lowered = text.casefold().replace("ё", "е")
+    return any(
+        marker in lowered
+        for marker in (
+            "если",
+            "при ",
+            "для ",
+            "после",
+            "услов",
+            "многодет",
+            "сотрудник",
+            "второй предмет",
+            "помесяч",
+            "оплатив",
+            "действующ",
+            "применяется",
+            "с учетом",
+            "с учётом",
+            "постоянн",
+            "участник",
+            "друга",
+            "другу",
+            "семей",
+        )
+    )
+
+
+def has_machine_short_tail(text: str) -> bool:
+    stripped = " ".join(text.split())
+    match = re.search(r"—\s*([0-9]+(?:[.,][0-9]+)?%?|да|нет)\.$", stripped, re.IGNORECASE)
+    return bool(match)
+
+
 def review_client_text(text: str, *, brand: str, item_id: str) -> list[Finding]:
     findings: list[Finding] = []
     lowered = text.casefold().replace("ё", "е")
@@ -445,7 +537,8 @@ def review_client_text(text: str, *, brand: str, item_id: str) -> list[Finding]:
                 )
             )
 
-    if re.search(r"\b[a-z]+_[a-z0-9_]+\b", text) or " / " in text:
+    text_without_handles = re.sub(r"@[A-Za-z0-9_]+", "", text)
+    if re.search(r"\b[a-z]+_[a-z0-9_]+\b", text_without_handles) or " / " in text:
         findings.append(
             Finding(
                 "P1",

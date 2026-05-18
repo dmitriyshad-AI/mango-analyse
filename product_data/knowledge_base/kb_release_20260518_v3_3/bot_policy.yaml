@@ -1,0 +1,315 @@
+schema_version: bot_policy_v2
+generated_at: '2026-05-17'
+risk_levels:
+  low:
+    routes:
+    - bot_answer_self
+    - bot_answer_self_for_pilot
+    - draft_for_manager
+    description: Бот может дать содержательный черновик. Менеджер проверяет перед
+      отправкой.
+  medium:
+    routes:
+    - draft_for_manager
+    - bot_answer_self_for_pilot
+    description: Бот всегда готовит черновик. bot_answer_self_for_pilot допустим —
+      пилот идёт сначала на сотрудниках, потом на лояльной группе.
+  high:
+    routes:
+    - manager_only
+    description: ZERO collect. Бот не уточняет, не комментирует, передаёт менеджеру
+      с приоритетом.
+pilot_mode:
+  enabled: true
+  rationale: 'Решение Дмитрия от 2026-05-17. Пилот сначала на сотрудниках, потом на
+    лояльной подготовленной группе клиентов. bot_answer_self_for_pilot разрешён в
+    темах: brand_relationship (по строгому шаблону), matkap (info-ответ), tax_deduction
+    (info-ответ), positive_feedback, is_it_bot, schedule (общая информация), program.'
+  rollback_trigger: Если в пилоте бот ошибся хотя бы раз — переход в режим draft_for_manager
+    до правок.
+promo_codes_policy:
+  bot_handles_promo: false
+  reason: 22 промокода без даты окончания акции. Риск предложить истёкший.
+  route: draft_for_manager
+  bot_phrase: Спасибо, передам менеджеру — он подскажет актуальные акции и промокоды.
+  applies_to_brands:
+  - foton
+  - unpk
+  scope: Все промокоды без исключения. Включая LVSH-VEB20, LVSH-KF-10, преподавательские,
+    Флоктори, MFTI-students.
+approved_phrases_themes_11_12_17:
+  theme_11_contract:
+    foton_bot: Договор пришлёт менеджер в ближайшие дни на email. Подскажите email.
+    unpk_bot: Договор пришлёт менеджер в ближайшие дни на email. Подскажите email.
+    note: РОП заменил «в течение рабочего дня» на «в ближайшие дни» (мягче, нет жёсткого
+      обещания)
+    bot_route: bot_answer_self_for_pilot
+  theme_12_certificate:
+    foton_bot: Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся
+      раньше. Подскажите ФИО плательщика, ФИО ребёнка и за какой период.
+    unpk_bot: Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся
+      раньше. Подскажите ФИО плательщика, ФИО ребёнка и за какой период.
+    note: 'РОП: НЕ уточнять тип справки — она единая для всех типов. Срок: 10 дней
+      (не 3, как было).'
+    bot_route: bot_answer_self_for_pilot
+    forbidden_to_ask:
+    - работа / налоговая / иное
+    - КНД 1151158
+    - тип справки
+  theme_17_teachers:
+    rule: Бот не называет имён преподавателей в общих вопросах. Имя сообщается ТОЛЬКО
+      когда клиент уже учится в конкретной группе.
+    foton_bot: Преподаватели — из МФТИ, МГУ, ВШЭ, МГТУ им. Баумана, МИФИ. Эксперты
+      ЕГЭ, члены жюри олимпиад. Если ребёнку не подойдёт педагог — переведём в другую
+      группу.
+    unpk_bot: Преподаватели — из МФТИ, МГУ, ВШЭ, МГТУ им. Баумана, МИФИ. Эксперты
+      ЕГЭ, члены жюри олимпиад. Если ребёнку не подойдёт педагог — переведём в другую
+      группу.
+    when_already_studying: Только тогда бот может назвать имя преподавателя группы
+      по запросу.
+    note: 'РОП решение 2026-05-17: убрать все имена из общих ответов. Регалии оставить.'
+    bot_route: bot_answer_self_for_pilot
+theme_routes:
+  pricing:
+    risk: low
+    requires_brand_filter: true
+    requires_fact_freshness:
+    - fresh_verified
+    - document_verified
+    - dynamic_needs_check
+    when_dynamic_needs_check: manager_check_text + draft без точной цифры
+  discounts:
+    risk: low
+    requires_brand_filter: true
+  installment:
+    risk: low
+    requires_brand_filter: true
+    foton_specific:
+      allowed_facts:
+      - installment.tbank
+      - installment.dolyami
+      forbidden_in_client:
+      - упоминание УНПК
+      - сравнение с УНПК
+    unpk_specific:
+      allowed_facts:
+      - alternative_payment_schedules
+      forbidden_in_client:
+      - Фотон
+      - Т-Банк
+      - Долями
+      - у Фотона есть
+      fallback_phrase: У нас оплата возможна помесячно, за семестр или за год. При
+        оплате семестром или годом действует скидка. Если нужно растянуть оплату —
+        менеджер подскажет варианты под вашу ситуацию.
+  matkap:
+    risk: low_when_informational
+    high_when:
+    - клиент требует гарантии одобрения СФР
+    - клиент в конфликтной формулировке
+    routing:
+      Можно оплатить маткапиталом?: bot_answer_self_for_pilot
+      Какие документы нужны?: draft_for_manager
+      Гарантируете одобрение СФР?: manager_only
+      Региональный маткапитал?: bot_answer_self
+    brand_isolation:
+      unpk_bot:
+        approved_phrase: Да, оплата материнским капиталом возможна. Работаем с федеральным
+          маткапиталом. Менеджер пришлёт перечень документов и поможет с оформлением
+          через СФР. Подскажите ФИО ребёнка и какой курс рассматриваете.
+        notes: Бренд и юр.лицо клиенту не раскрываются. Внутренне — АНО ДПО УНПК МФТИ.
+      foton_bot:
+        approved_phrase: Да, оплата материнским капиталом возможна. Работаем с федеральным
+          маткапиталом. Менеджер пришлёт перечень документов и поможет с оформлением
+          через СФР. Подскажите ФИО ребёнка и какой курс рассматриваете.
+        notes: Бренд и юр.лицо клиенту не раскрываются. Внутренне — оформление через
+          юр.лицо Фотона.
+  tax_deduction:
+    risk: low_when_informational
+    high_when:
+    - клиент требует гарантии возврата от ФНС
+    routing:
+      Можно получить налоговый вычет?: bot_answer_self_for_pilot
+      Какие документы нужны?: draft_for_manager
+      За несколько лет можно?: bot_answer_self
+      Сколько вернут на двоих детей?: bot_answer_self_for_pilot
+      Гарантируете возврат: manager_only
+    brand_isolation:
+      unpk_bot:
+        approved_phrase: Налоговый вычет за обучение возможен — у нас есть лицензия.
+          За обучение ребёнка можно вернуть до 14 300 ₽ в год. Типовая справка готовится
+          за 3 рабочих дня. Менеджер пришлёт инструкцию и поможет с заявлением.
+        notes: Не называть номер лицензии и юр.лицо. Клиент видит просто «у нас есть
+          лицензия».
+      foton_bot:
+        approved_phrase: Налоговый вычет за обучение возможен — у нас есть лицензия.
+          За обучение ребёнка можно вернуть до 14 300 ₽ в год. Типовая справка готовится
+          за 3 рабочих дня. Менеджер пришлёт инструкцию и поможет с заявлением.
+        notes: Не называть номер лицензии и юр.лицо.
+  payment_status:
+    risk: medium
+    requires_amo_check: true
+    requires_tallanto_check: true
+    decision_matrix:
+      amo_match_AND_tallanto_match:
+        action: bot_answer_self
+        phrase: Вижу, что оплата отмечена. Спасибо!
+      amo_match_OR_tallanto_match_only:
+        action: draft_for_manager
+        phrase: Проверю у менеджера — он сверит детали и подтвердит в течение рабочего
+          дня.
+      conflict:
+        action: manager_only
+        internal_flag: payment_source_conflict
+        manager_checklist:
+        - Сверить AMO
+        - Сверить Tallanto
+        - Найти расхождение
+      no_data:
+        action: draft_for_manager
+        phrase: Передам менеджеру на сверку — он подтвердит в течение рабочего дня.
+  refund:
+    risk: high
+    route: manager_only
+    bot_phrase: Принято. Передаю запрос менеджеру — он свяжется с вами по телефону.
+    collect: false
+    notes: ZERO collect. Бот ничего не уточняет. Шаблон возврата клиенту не показывается.
+      Менеджер сам выбирает шаблон по юр.лицу клиента.
+  complaint:
+    risk: high
+    route: manager_only
+    bot_phrase: Спасибо, что обратились. Передаю менеджеру — он свяжется с вами в
+      ближайшее время.
+    collect: false
+    p0_triggers:
+    - суд
+    - иск
+    - прокуратура
+    - роспотребнадзор
+    - отзыв в интернете
+    - СМИ
+  legal_threat:
+    risk: high
+    route: manager_only
+    bot_phrase: Принято. По этому вопросу свяжется ответственный сотрудник.
+    collect: false
+  legal_reference:
+    risk: low
+    route: draft_for_manager
+    notes: Не блокировать автоматически. Передать менеджеру с черновиком.
+  schedule:
+    risk: low
+    requires_brand_filter: true
+    requires_fact_freshness:
+    - fresh_verified
+    - dynamic_needs_check
+  camp_lvsh:
+    risk: low
+    requires_brand_filter: true
+    requires_fact_freshness:
+    - fresh_verified
+    - dynamic_needs_check
+    dynamic_facts:
+    - mesta_v_smene
+    - status_smeny
+  intensive:
+    risk: low
+    requires_brand_filter: true
+    brand_isolation:
+      foton_bot:
+        allowed_intensives:
+        - oge_8_9
+        when_asked_about_ege: По интенсиву на ЕГЭ менеджер подскажет варианты — свяжется
+          в течение рабочего дня.
+        notes: 'q6 открыт: есть ли у Фотона ЕГЭ-программы помимо интенсивов? До ответа
+          РОПа — handoff менеджеру без упоминания УНПК.'
+      unpk_bot:
+        allowed_intensives:
+        - ege_10_11
+        when_asked_about_oge: По интенсиву на ОГЭ менеджер подскажет варианты — свяжется
+          в течение рабочего дня.
+        notes: 'q6 открыт: есть ли у УНПК ОГЭ-программы помимо интенсивов? До ответа
+          РОПа — handoff без упоминания Фотона.'
+  brand_relationship:
+    risk: medium
+    route: bot_answer_self_for_pilot
+    approved_response: Это отдельные организации, по вашему вопросу сориентирую в
+      рамках текущего учебного центра.
+    followup: Не добавлять подробностей про связь брендов и условия другого. Если
+      вопрос чувствительный — handoff менеджеру.
+    forbidden_phrasings:
+    - раньше сотрудничали
+    - были одно
+    - наш партнёр
+    open_question_for_rop_q3: Согласовать финальную формулу с юристом.
+post_filter_draft_text:
+  forbidden_in_any_brand:
+  - source_id
+  - freshness
+  - fact_id
+  - JSON
+  - AMO
+  - Tallanto
+  - CRM
+  - Mango
+  - я бот
+  - я ИИ
+  - я нейросеть
+  - GPT
+  - Claude
+  - Codex
+  - ChatGPT
+  forbidden_when_active_brand_foton:
+    inherited_from: brand_rules.yaml::forbidden_client_mentions.when_active_brand_is_foton
+  forbidden_when_active_brand_unpk:
+    inherited_from: brand_rules.yaml::forbidden_client_mentions.when_active_brand_is_unpk
+  violation_action: Black draft, route to manager with flag brand_separation_violation
+unsupported_numeric_promise_detector:
+  rule: Если в draft_text есть число (₽, %, дней, баллов), оно должно быть привязано
+    к fact_id с allowed_for_client_answer=true. Иначе — оставить только описание без
+    числа.
+  examples_blocked:
+  - Стоимость 89 900 ₽ (без fact)
+  - Скидка 30% (без fact)
+  - До 14 300 ₽ возврата (без fact)
+required_prompt_blocks:
+- 'active_brand: foton|unpk'
+- brand_rules.core_rule (1 строка)
+- forbidden_client_mentions для текущего бренда
+- approved_brand_relationship_answer (если в вопросе есть brand_relationship_trigger)
+- 3-8 релевантных фактов из facts_for_bot_{BRAND}.yaml
+- route по теме (что можно сказать, что должен проверить менеджер)
+open_questions:
+- id: q1
+  question: Принимает ли Фотон маткапитал? Если нет — какой handoff делает бот Фотон?
+  owner: Бухгалтерия (Клычева Дарья)
+- id: q2
+  question: Есть ли у ООО ЦДПО Фотон / ООО ЦРДО Фотон лицензия для налогового вычета?
+  owner: Бухгалтерия
+- id: q3
+  question: Подтвердить нейтральную формулу на вопрос «вы и Фотон/УНПК — одно?». Текущий
+    вариант «На данный момент никак, раньше сотрудничали» — приемлем или нужно ещё
+    нейтральнее?
+  owner: РОП + юрист
+- id: q4
+  question: Может ли бот Фотон вообще консультировать по продуктам, которые есть только
+    у УНПК (ЕГЭ-интенсивы, индивидуальные занятия)? Или handoff без альтернатив?
+  owner: РОП
+- id: q5
+  question: Список телефонов/мессенджеров — точно разные для двух брендов, не пересекаются?
+  owner: ИТ + маркетинг
+- id: q14
+  question: УНПК очно 49 000/82 000 — это точно 5-11 класс или 1-4? В facts.csv привязка
+    к 1-4 класс.
+  owner: Бухгалтерия
+- id: q15
+  question: УНПК онлайн 41 800/69 900 — это обычный курс 9-11 класс или олимпиадная
+    подготовка Физтех?
+  owner: РОП
+crm_tallanto_brand_detection_for_client_answer: false
+telegram_active_brand_source: telegram_bot_or_channel
+two_separate_telegram_bots: true
+bot_answer_self_rollout:
+  enabled_for_staff_tests: true
+  enabled_for_loyal_prepared_clients: true
+  enabled_for_public_traffic: false

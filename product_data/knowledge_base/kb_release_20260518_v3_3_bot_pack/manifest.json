@@ -1,0 +1,84 @@
+{
+  "client_safe_facts_total": 360,
+  "created_at": "2026-05-18T21:39:01.429185+00:00",
+  "facts_by_brand": {
+    "foton": 250,
+    "internal": 147,
+    "unpk": 267
+  },
+  "facts_total": 664,
+  "formal_pass": true,
+  "package_type": "bot",
+  "safety": {
+    "active_brand_required": true,
+    "client_auto_send": false,
+    "crm_write": false,
+    "tallanto_write": false
+  },
+  "schema_version": "kb_distribution_packs_v1",
+  "semantic_blocking_findings": 0,
+  "semantic_pass": true,
+  "smoke": {
+    "foton": {
+      "active_brand": "foton",
+      "baseline_manager_only_preserved": 3,
+      "baseline_manager_only_relaxed": 0,
+      "became_more_substantive": 8,
+      "brand_separation_violation": 0,
+      "empty_clarification_reduced": 1,
+      "errors": 0,
+      "high_risk_route_relaxed": 0,
+      "invalid_topic_ids": 0,
+      "provider_mode": "codex",
+      "rows_total": 20,
+      "safety": {
+        "client_send": false,
+        "live_telegram": false,
+        "manager_approval_required": true,
+        "read_only_snapshot": true,
+        "run_asr": false,
+        "run_resolve_analyze": false,
+        "write_crm": false,
+        "write_stable_runtime": false,
+        "write_tallanto": false
+      },
+      "schema_version": "telegram_stage6_kb_eval_v1",
+      "snapshot_path": "product_data/knowledge_base/kb_release_20260518_v3_3/kb_release_v3_snapshot.json",
+      "snapshot_run_id": "kb_release_20260518_v3_3",
+      "unsupported_numeric_promises": 0,
+      "used_kb_context": 20
+    },
+    "short_status": "FOTON rows=20, UNPK rows=20, errors=0, brand_violations=0",
+    "unpk": {
+      "active_brand": "unpk",
+      "baseline_manager_only_preserved": 4,
+      "baseline_manager_only_relaxed": 0,
+      "became_more_substantive": 8,
+      "brand_separation_violation": 0,
+      "empty_clarification_reduced": 1,
+      "errors": 0,
+      "high_risk_route_relaxed": 0,
+      "invalid_topic_ids": 0,
+      "provider_mode": "codex",
+      "rows_total": 20,
+      "safety": {
+        "client_send": false,
+        "live_telegram": false,
+        "manager_approval_required": true,
+        "read_only_snapshot": true,
+        "run_asr": false,
+        "run_resolve_analyze": false,
+        "write_crm": false,
+        "write_stable_runtime": false,
+        "write_tallanto": false
+      },
+      "schema_version": "telegram_stage6_kb_eval_v1",
+      "snapshot_path": "product_data/knowledge_base/kb_release_20260518_v3_3/kb_release_v3_snapshot.json",
+      "snapshot_run_id": "kb_release_20260518_v3_3",
+      "unsupported_numeric_promises": 0,
+      "used_kb_context": 20
+    }
+  },
+  "source_full_release": "product_data/knowledge_base/kb_release_20260518_v3_3",
+  "source_release": "product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team"
+}

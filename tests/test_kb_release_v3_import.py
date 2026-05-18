@@ -12,7 +12,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260518_v3"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260518_v3_3"
 
 REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "priority",
@@ -408,8 +408,174 @@ def test_v3_client_facts_do_not_use_machine_slug_text(kb_v3: KbReleaseV3) -> Non
     )
     for fact in _allowed_client_facts(kb_v3.facts):
         text = str(fact.get("client_safe_text") or fact.get("fact_text") or "")
-        if " / " in text or re.search(r"\b[a-z]+_[a-z0-9_]+\b", text) or technical_english_re.search(text):
+        text_without_handles = re.sub(r"@[A-Za-z0-9_]+", "", text)
+        if " / " in text or re.search(r"\b[a-z]+_[a-z0-9_]+\b", text_without_handles) or technical_english_re.search(text):
             bad.append(fact)
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_pilot_client_facts_do_not_have_machine_short_tails(kb_v3: KbReleaseV3) -> None:
+    bad = []
+    for fact in _allowed_client_facts(kb_v3.facts):
+        if fact.get("route_policy") != "bot_answer_self_for_pilot":
+            continue
+        text = str(fact.get("client_safe_text") or "")
+        if re.search(r"—\s*([0-9]+(?:[.,][0-9]+)?%?|да|нет)\.$", text, re.I) and not fact.get(
+            "bot_template_required"
+        ):
+            bad.append(fact)
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_pilot_discounts_include_condition_in_client_text(kb_v3: KbReleaseV3) -> None:
+    bad = []
+    for fact in _allowed_client_facts(kb_v3.facts):
+        if fact.get("route_policy") != "bot_answer_self_for_pilot" or fact.get("fact_type") != "discount":
+            continue
+        text = str(fact.get("client_safe_text") or "").casefold().replace("ё", "е")
+        if not any(
+            marker in text
+            for marker in (
+                "для ",
+                "при ",
+                "если",
+                "после",
+                "услов",
+                "многодет",
+                "сотрудник",
+                "второй предмет",
+                "помесяч",
+                "оплатив",
+                "постоянн",
+                "участник",
+                "друга",
+            )
+        ):
+            bad.append(fact)
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_client_facts_do_not_claim_discounts_stack(kb_v3: KbReleaseV3) -> None:
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if re.search(r"(?<!не\s)скидки\s+суммируются", str(fact.get("client_safe_text") or "").casefold())
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_client_text_does_not_expose_internal_approval_notes(kb_v3: KbReleaseV3) -> None:
+    forbidden = ("q7 закрыт", "ответу бухгалтерии", "цифра 25% устарела", "dynamic needs check")
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if any(marker in str(fact.get("client_safe_text") or "").casefold() for marker in forbidden)
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_time_sensitive_allowed_facts_have_valid_until(kb_v3: KbReleaseV3) -> None:
+    sensitive = {"price", "discount", "deadline", "program", "camp_lvsh", "camp_city", "intensive", "installment"}
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("fact_type") in sensitive
+        and not (fact.get("valid_until") or _jsonish(fact.get("structured_value")).get("valid_until"))
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_all_facts_have_refresh_date(kb_v3: KbReleaseV3) -> None:
+    bad = [fact for fact in kb_v3.facts if not (fact.get("valid_until") or _jsonish(fact.get("structured_value")).get("valid_until"))]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_foton_client_facts_do_not_expose_unpk_telegram_variants(kb_v3: KbReleaseV3) -> None:
+    forbidden = ("@unpk_mipt", "@unpkmfti", "@unpk mipt", "unpkmfti")
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("brand") == "foton"
+        and any(marker in str(fact.get("client_safe_text") or "").casefold() for marker in forbidden)
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_unpk_telegram_handle_keeps_underscore(kb_v3: KbReleaseV3) -> None:
+    fact = next(fact for fact in kb_v3.facts if fact.get("fact_key") == "contacts_unpk.telegram")
+    assert "@unpk_mipt" in str(fact.get("client_safe_text") or fact.get("manager_check_text") or "")
+
+
+def test_v3_post_filter_has_discount_stacking_regex(kb_v3: KbReleaseV3) -> None:
+    post_filter = kb_v3.snapshot.get("post_filter_registry") or kb_v3.snapshot.get("post_filter") or {}
+    blob = json.dumps(post_filter, ensure_ascii=False)
+    assert "скидки" in blob and "суммируются" in blob
+    assert "regex_patterns" in post_filter.get("matcher_fields", [])
+    assert "phrases" in post_filter.get("matcher_fields", [])
+    assert "pattern_descriptions" in post_filter.get("human_only_fields", [])
+    assert not set(post_filter.get("pattern_descriptions", [])) & set(post_filter.get("phrases", []))
+    assert post_filter.get("regex_patterns_total", 0) >= 3
+
+
+def test_v3_refer_a_friend_cashback_text_includes_condition(kb_v3: KbReleaseV3) -> None:
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if "приведи друга" in str(fact.get("client_safe_text") or "").casefold()
+        and re.search(r"\b[0-9][0-9\s]{2,}\b", str(fact.get("client_safe_text") or ""))
+        and "условие:" not in str(fact.get("client_safe_text") or "").casefold()
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_price_and_discount_client_facts_require_templates(kb_v3: KbReleaseV3) -> None:
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("fact_type") in {"price", "discount"}
+        and re.search(r"(?:\d[\d\s]{2,}\s*(?:₽|руб)?|\d{1,2}\s*%)", str(fact.get("client_safe_text") or ""))
+        and not fact.get("bot_template_required")
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_manager_display_text_has_no_client_blocked_debug_tags(kb_v3: KbReleaseV3) -> None:
+    bad = [
+        fact
+        for fact in kb_v3.facts
+        if "[client_blocked:" in str(fact.get("manager_display_text") or "")
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_client_safe_text_has_no_known_machine_fragments(kb_v3: KbReleaseV3) -> None:
+    fragments = (
+        "рассрочка и оплата — т-банк.",
+        "рассрочка и оплата — 1-2 минуты.",
+        "материнский капитал — договор.",
+        "онлайн-платформа, онлайн — да.",
+        "скидка, правило —",
+        "..",
+    )
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if any(fragment in str(fact.get("client_safe_text") or "").casefold() for fragment in fragments)
+    ]
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_short_machine_client_text_requires_template(kb_v3: KbReleaseV3) -> None:
+    bad = []
+    for fact in _allowed_client_facts(kb_v3.facts):
+        text = str(fact.get("client_safe_text") or "")
+        if re.search(r"—\s*([^—.]{1,42})\.$", text) and re.search(
+            r"—\s*(?:[0-9]+(?:[.,][0-9]+)?%?|[0-9]+[–-][0-9]+|да|нет|[А-Яа-яA-Za-z ]{1,24})\.$",
+            text,
+            re.I,
+        ):
+            if fact.get("fact_type") != "contact" and not fact.get("bot_template_required"):
+                bad.append(fact)
     assert not bad, _fact_ids(bad[:30])
 
 

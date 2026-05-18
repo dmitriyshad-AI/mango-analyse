@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_2_handoff_for_claude_and_team")
-DEFAULT_FULL_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_2")
-DEFAULT_SMOKE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_2_smoke50_codex")
-DEFAULT_EMPLOYEE_OUT = Path("product_data/knowledge_base/kb_release_20260518_v3_2_employee_pack")
-DEFAULT_BOT_OUT = Path("product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack")
+DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team")
+DEFAULT_FULL_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3")
+DEFAULT_SMOKE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3_smoke20_codex")
+DEFAULT_EMPLOYEE_OUT = Path("product_data/knowledge_base/kb_release_20260518_v3_3_employee_pack")
+DEFAULT_BOT_OUT = Path("product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack")
 PACK_SCHEMA_VERSION = "kb_distribution_packs_v1"
 
 BRAND_LABELS = {
@@ -158,15 +158,14 @@ def build_bot_pack(
     write_jsonl(out / "client_safe_facts_foton.jsonl", [fact for fact in allowed if fact.get("brand") == "foton"])
     write_jsonl(out / "client_safe_facts_unpk.jsonl", [fact for fact in allowed if fact.get("brand") == "unpk"])
     write_jsonl(out / "manager_only_or_internal_facts.jsonl", manager_only)
+    write_json(out / "bot_template_registry.json", build_bot_template_registry(allowed))
     write_json(out / "bot_fact_index.json", build_fact_index(facts))
     write_json(out / "manifest.json", manifest_payload("bot", facts, quality, semantic, smoke))
     for filename in (
-        "kb_release_v3_snapshot.json",
         "facts_registry.jsonl",
         "facts_registry.yaml",
         "facts_registry.csv",
         "source_registry.json",
-        "approval_queue_for_rop_v3.csv",
         "quality_report.json",
         "semantic_review.json",
         "post_filter_registry.json",
@@ -280,7 +279,7 @@ def render_manager_only(facts: Sequence[Mapping[str, Any]]) -> str:
     lines.extend(["", "## Примеры для ручной проверки", ""])
     for fact in examples:
         brand = BRAND_LABELS.get(str(fact.get("brand")), str(fact.get("brand")))
-        text = clean_text(fact.get("manager_check_text") or fact.get("fact_text"))
+        text = clean_text(fact.get("manager_display_text") or fact.get("manager_check_text") or fact.get("fact_text"))
         reason = ", ".join(str(item) for item in fact.get("safety_block_reasons") or []) or "manual"
         lines.append(f"- `{brand}` {text} Причина: `{reason}`")
     return "\n".join(lines) + "\n"
@@ -344,8 +343,10 @@ def render_smoke_examples() -> str:
 Основные проверочные примеры лежат в машинном виде:
 
 - `../kb_release_20260518_v3_2_smoke50_input/smoke_questions_50.csv`
-- `../kb_release_20260518_v3_2_smoke50_codex/FOTON/stage6_kb_enriched_drafts.csv`
-- `../kb_release_20260518_v3_2_smoke50_codex/UNPK/stage6_kb_enriched_drafts.csv`
+- `../kb_release_20260518_v3_3_smoke20_codex/foton/stage6_kb_enriched_drafts.csv`
+- `../kb_release_20260518_v3_3_smoke20_codex/unpk/stage6_kb_enriched_drafts.csv`
+- `../kb_release_20260518_v3_3_smoke20_fake/foton/stage6_kb_enriched_drafts.csv`
+- `../kb_release_20260518_v3_3_smoke20_fake/unpk/stage6_kb_enriched_drafts.csv`
 
 Эти примеры нужны не как финальные скрипты, а как проверка, что ИИ:
 
@@ -384,6 +385,7 @@ def render_bot_readme(
             "- `manager_only_or_internal_facts.jsonl` — факты только для проверки менеджером/внутренней логики.",
             "- `facts_registry.jsonl` — полный реестр с разрешениями и маршрутами.",
             "- `post_filter_registry.json` — запретные фразы и фильтры.",
+            "- `bot_template_registry.json` — обязательные шаблоны для фактов, которые нельзя подставлять дословно.",
             "- `bot_fact_index.json` — компактный индекс по брендам, типам и маршрутам.",
             "- `BOT_USAGE_CONTRACT.md` — правила использования в боте.",
             "",
@@ -408,6 +410,10 @@ def render_bot_contract() -> str:
 10. Все ответы в пилоте идут как черновик в служебный чат менеджера.
 11. Бот не отправляет сообщения клиенту напрямую, пока Дмитрий отдельно не подтвердит режим автоответов.
 12. Бот не подставляет `client_safe_text` дословно в сообщение клиенту или менеджеру. Он использует факт как источник смысла и собирает нормальную фразу из утверждённого шаблона, `structured_value.raw_value` и контекста вопроса.
+13. Если у факта стоит `bot_template_required=true`, его нельзя использовать как готовую фразу: сначала нужно собрать человеческий ответ через шаблон с явным смыслом числа, срока, цены или условия.
+14. Все факты с `bot_template_required=true` должны иметь запись в `bot_template_registry.json`. Если записи нет или шаблон не подходит к вопросу клиента, маршрут `manager_only`.
+15. `pattern_descriptions` в `post_filter_registry.json` — это человекочитаемые пояснения, а не строки для поиска. Матчеры используют только поля `phrases` и `regex_patterns`.
+16. Для показа менеджеру использовать `manager_display_text`; `manager_check_text` может содержать служебные причины блокировки.
 """
 
 
@@ -474,7 +480,7 @@ def render_pack_semantic_review(
             "",
             "## Non-blocking risks",
             "",
-            "- У части цен, скидок, программ и лагерей нет явного `valid_until`; есть дата проверки `2026-05-18`.",
+            "- Для широкого запуска нужно продолжать ручную проверку редких и спорных фактов, даже если автоматический gate зелёный.",
             "- Пакет для сотрудников облегчает работу, но не заменяет решение РОПа/менеджера по спорным кейсам.",
             "- Пакет для бота рассчитан на режим черновиков, а не автономную отправку клиенту.",
             "",
@@ -543,11 +549,71 @@ def build_fact_index(facts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "freshness_status": fact.get("freshness_status"),
             "valid_until": fact.get("valid_until"),
             "freshness_check_date": fact.get("freshness_check_date"),
+            "bot_template_required": bool(fact.get("bot_template_required")),
         }
         index["brands"].setdefault(brand, []).append(item)
         index["route_policies"].setdefault(route, []).append(str(fact.get("fact_id")))
         index["fact_types"].setdefault(fact_type, []).append(str(fact.get("fact_id")))
     return index
+
+
+def build_bot_template_registry(facts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    template_facts = [
+        fact
+        for fact in facts
+        if truthy(fact.get("allowed_for_client_answer")) and truthy(fact.get("bot_template_required"))
+    ]
+    templates = []
+    for fact in sorted(template_facts, key=lambda item: (str(item.get("brand")), str(item.get("fact_key")))):
+        templates.append(
+            {
+                "fact_id": fact.get("fact_id"),
+                "fact_key": fact.get("fact_key"),
+                "brand": fact.get("brand"),
+                "fact_type": fact.get("fact_type"),
+                "template_id": template_id_for_fact(fact),
+                "template_text": template_text_for_fact(fact),
+                "fallback_route": "manager_only",
+                "client_send": False,
+            }
+        )
+    return {
+        "schema_version": "bot_template_registry_v1",
+        "description": "Шаблоны для client-safe фактов, где дословная подстановка текста запрещена.",
+        "facts_requiring_template_total": len(template_facts),
+        "templates_total": len(templates),
+        "fallback_route_if_missing": "manager_only",
+        "templates": templates,
+    }
+
+
+def template_id_for_fact(fact: Mapping[str, Any]) -> str:
+    fact_type = str(fact.get("fact_type") or "fact")
+    return f"template:{fact_type}:contextual_answer_v1"
+
+
+def template_text_for_fact(fact: Mapping[str, Any]) -> str:
+    fact_type = str(fact.get("fact_type") or "")
+    if fact_type == "discount":
+        return (
+            "Ответить только если из факта понятны размер и условие скидки. "
+            "Сказать: «По этой программе действует [размер], условие: [условие]. Перед оформлением менеджер проверит актуальность». "
+            "Если условия нет — manager_only."
+        )
+    if fact_type in {"price", "installment"}:
+        return (
+            "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. "
+            "Если не хватает периода, формата или даты актуальности — manager_only."
+        )
+    if fact_type in {"deadline", "program", "camp_lvsh", "camp_city", "camp_zvsh", "intensive"}:
+        return (
+            "Собрать фразу с названием программы, датой/условием и оговоркой «по текущим данным». "
+            "Не обещать место, группу или зачисление без проверки."
+        )
+    return (
+        "Собрать человеческую фразу из structured_value и контекста вопроса. "
+        "Не копировать client_safe_text дословно. Если смысл числа или условия неясен — manager_only."
+    )
 
 
 def fact_rows(facts: Sequence[Mapping[str, Any]] | Any) -> list[dict[str, Any]]:
@@ -560,6 +626,7 @@ def fact_rows(facts: Sequence[Mapping[str, Any]] | Any) -> list[dict[str, Any]]:
                 "route_policy": fact.get("route_policy", ""),
                 "risk_level": fact.get("risk_level", ""),
                 "client_safe_text": fact.get("client_safe_text", ""),
+                "manager_display_text": fact.get("manager_display_text", ""),
                 "manager_check_text": fact.get("manager_check_text", ""),
                 "source_title": fact.get("source_title", ""),
                 "freshness_status": fact.get("freshness_status", ""),
@@ -583,6 +650,8 @@ def load_smoke_summaries(root: Path) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for brand in ("FOTON", "UNPK"):
         path = root / brand / "stage6_eval_summary.json"
+        if not path.exists():
+            path = root / brand.lower() / "stage6_eval_summary.json"
         result[brand.lower()] = load_json(path) if path.exists() else {}
     result["short_status"] = (
         f"FOTON rows={result.get('foton', {}).get('rows_total', 0)}, "

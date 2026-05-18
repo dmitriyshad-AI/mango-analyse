@@ -98,71 +98,67 @@ Mango Analyse — внутренний проект для отдела прод
 9. Если факт не найден или устарел, бот не выдумывает и передаёт менеджеру.
 10. Любые новые смысловые ошибки переводятся в тест, semantic gate, чек-лист или ручной контроль.
 
-## Текущая база знаний v3.2
+## Текущая база знаний v3.3
 
 Актуальный машинный релиз:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_2/
+product_data/knowledge_base/kb_release_20260518_v3_3/
 ```
 
 Пакет для Claude и команды:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_2_handoff_for_claude_and_team/
+product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team/
 ```
 
 Пакет для сотрудников:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_2_employee_pack/
+product_data/knowledge_base/kb_release_20260518_v3_3_employee_pack/
 ```
 
 Пакет для бота:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack/
+product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack/
 ```
 
-Проверка Stage 6 на 50 вопросах через реальный Codex:
+Проверка Stage 6 на 20 вопросов на бренд через реальный Codex:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_2_smoke50_codex/
+product_data/knowledge_base/kb_release_20260518_v3_3_smoke20_codex/
 ```
 
-Последние коммиты:
-
-- `6772e56a9` — semantic gate и smoke eval для KB v3.2;
-- `8d693ba16` — два distribution-пакета: для сотрудников и для бота.
-
-Статус v3.2:
+Статус v3.3:
 
 - `formal_pass=true`;
 - `semantic_pass=true`;
 - blocking findings: 0;
-- known P2 risk: у части фактов есть дата проверки `2026-05-18`, но нет явного `valid_until`;
-- режим: безопасно для внутреннего использования как база черновиков и справочная база, не как автономная отправка клиентам.
+- все 664 факта имеют `valid_until`;
+- bot pack не содержит `approval_queue_for_rop_v3.csv` и полный snapshot;
+- есть `bot_template_registry.json`;
+- Stage 6 через реальный Codex: Фотон 20/20 и УНПК 20/20, ошибок 0, брендовых нарушений 0, неподтверждённых числовых обещаний 0;
+- режим: внутренний пилот на сотрудниках и лояльной подготовленной группе клиентов только как черновики с обязательным одобрением менеджера; публичный трафик и автоотправка не разрешены.
 
-## Открытые замечания после Claude CLI review 2026-05-18
+## Открытые замечания после Claude CLI review 2026-05-19
 
-Claude CLI через `/kb-review product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack` дал `PASS_WITH_NOTES`.
+Claude CLI через `/kb-review product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack` дал `PASS_WITH_NOTES`.
 
-Не блокирует внутренний пилот на сотрудниках, но нужно закрыть до пилота на клиентах:
+Не блокирует внутренний пилот на сотрудниках и пилот на лояльной подготовленной группе клиентов в режиме черновиков, но нужно закрыть до публичного трафика:
 
-1. В части `bot_answer_self_for_pilot` фактов есть короткие машинные `client_safe_text`, например «Фотон: рассрочка и оплата — 0.» и «Фотон: материнский капитал — 3.». Контракт запрещает подставлять `client_safe_text` дословно, но builder надо улучшить.
-2. Некоторые скидки лагеря выглядят как «городской летний лагерь — 10%.» без условия применения прямо в клиентской строке.
-3. 241 чувствительный к дате факт имеет `freshness_check_date`, но не имеет `valid_until`.
-4. `post_filter_registry.json` содержит часть описательных фраз, которые нужно проверить как реальные матчеры.
-5. `approval_queue_for_rop_v3.csv` и полный snapshot лежат в bot pack; это удобно для ревью, но не обязательно нужно runtime-боту.
+1. Перед публичным трафиком расширить реальный smoke до 50 вопросов на бренд и 5-10 свежих кросс-бренд провокаций.
+2. До декабря 2026 обновить факты с коротким `valid_until=2026-12-31`, особенно контакты и расписание.
+3. Проверить маркетинговое название «Утренний клуб Предлёнка».
 
-Эти замечания должны стать отдельным блоком до выхода на лояльных клиентов.
+Пункты v3.2 про пустые `valid_until`, описательные matcher-фразы, короткие машинные ценовые/скидочные тексты и лишние bot-pack артефакты закрыты в v3.3.
 
 ## Какой пакет проверять
 
 Для смыслового аудита базы знаний сначала проверять:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack/
+product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack/
 ```
 
 Почему: это пакет, который будет использовать будущий бот. Он содержит раздельные факты по брендам, фильтры, полный реестр и контракт использования.
@@ -170,7 +166,7 @@ product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack/
 Для проверки удобства сотрудников отдельно смотреть:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_2_employee_pack/
+product_data/knowledge_base/kb_release_20260518_v3_3_employee_pack/
 ```
 
 Не выбирать «последнюю папку» автоматически: рядом лежат smoke, fake и input-папки, которые не являются релизом для аудита.
@@ -218,7 +214,7 @@ Claude CLI в этом проекте должен работать как read-
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_kb_semantic_review.py \
-  --release-dir product_data/knowledge_base/kb_release_20260518_v3_2_handoff_for_claude_and_team
+  --release-dir product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team
 ```
 
 Для bot pack дополнительно вручную проверить:

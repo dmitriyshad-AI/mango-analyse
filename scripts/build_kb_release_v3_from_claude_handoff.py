@@ -26,13 +26,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
 SCHEMA_VERSION = "kb_release_v3_snapshot_2026_05_18"
 FACT_SCHEMA_VERSION = "kb_release_v3_fact_v1"
 SOURCE_SCHEMA_VERSION = "kb_release_v3_source_v1"
-BUILDER_VERSION = "kb_release_v3_builder_2026_05_18_v1"
+BUILDER_VERSION = "kb_release_v3_builder_2026_05_18_v2"
 FRESHNESS_CHECK_DATE = "2026-05-18"
 
-DEFAULT_RUN_ID = "kb_release_20260518_v3"
+DEFAULT_RUN_ID = "kb_release_20260518_v3_3"
 DEFAULT_HANDOFF_DIR = Path("claude_to_codex_v3_handoff_2026-05-17")
-DEFAULT_OUT_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3")
-DEFAULT_HANDOFF_OUT_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_handoff_for_claude_and_team")
+DEFAULT_OUT_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3")
+DEFAULT_HANDOFF_OUT_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team")
 
 SOURCE_FILES: dict[str, dict[str, str]] = {
     "brand_rules": {
@@ -343,6 +343,7 @@ def build_kb_release_v3(
     facts.extend(build_policy_facts(handoff, source_lookup))
     facts.extend(build_manual_decision_facts(source_lookup))
     facts = attach_source_details(dedupe_facts(facts), source_lookup=source_lookup)
+    facts = ensure_fact_refresh_dates(facts)
     facts = sorted(facts, key=lambda item: (str(item.get("brand")), str(item.get("product")), str(item.get("fact_key"))))
 
     approval_queue = build_approval_queue_v3(facts)
@@ -589,6 +590,7 @@ def make_fact(
         internal_only=internal_only,
         path=path,
     )
+    bot_template_required = bool(allowed and direct_text_requires_template(fact_text, fact_type=fact_type))
     usable_precise = bool(allowed and freshness not in {"dynamic_needs_check", "waiting_list"} and status != "waiting_list")
     requires_confirmation = requires_manager_confirmation_for_fact(
         status=status,
@@ -614,6 +616,7 @@ def make_fact(
         "short_fact": humanize_path(path, max_parts=4),
         "client_safe_text": client_safe_text,
         "manager_check_text": manager_text,
+        "manager_display_text": fact_text,
         "internal_text": fact_text if internal_only else "",
         "brand": brand,
         "active_brand_scope": active_brand_scope(brand, internal_only=internal_only),
@@ -637,6 +640,7 @@ def make_fact(
         "owner_role": owner_role_for_fact(path, fact_type),
         "allowed_for_client_answer": allowed,
         "usable_for_precise_answer": usable_precise,
+        "bot_template_required": bot_template_required,
         "requires_manager_confirmation": requires_confirmation,
         "requires_amo_check": fact_type == "payment_status",
         "requires_tallanto_check": fact_type == "payment_status",
@@ -867,6 +871,7 @@ def make_manual_fact(
         "short_fact": humanize_path(tuple(fact_key.split(".")), max_parts=4),
         "client_safe_text": safe_client_text if allowed else "",
         "manager_check_text": fact_text,
+        "manager_display_text": fact_text,
         "internal_text": fact_text if internal_only else "",
         "brand": clean_brand,
         "active_brand_scope": active_brand_scope(clean_brand, internal_only=internal_only),
@@ -920,15 +925,52 @@ def build_post_filter_registry(handoff: Mapping[str, Any]) -> dict[str, Any]:
     phrases: list[str] = []
     for key in ("brand_rules", "bot_policy", "facts_for_bot_FOTON", "facts_for_bot_UNPK", "facts_internal_only"):
         collect_forbidden_phrases(handoff.get(key), phrases)
-    unique = sorted({clean_text(phrase, max_chars=500) for phrase in phrases if clean_text(phrase)})
+    literals: list[str] = []
+    pattern_descriptions: list[str] = []
+    for phrase in phrases:
+        normalized = clean_text(phrase, max_chars=500)
+        if not normalized:
+            continue
+        split = split_matchable_filter_phrase(normalized)
+        if split:
+            literals.extend(split)
+        elif is_filter_pattern_description(normalized):
+            pattern_descriptions.append(normalized)
+        else:
+            literals.append(normalized)
+    unique = sorted({phrase for phrase in literals if phrase})
+    descriptions = sorted({phrase for phrase in pattern_descriptions if phrase})
+    regex_patterns = [
+        r"(?<!не\s)скидки\s+суммируются",
+        r"\bоплат(?:ите|и)\s+(?:сейчас|сразу|сегодня)\b",
+        r"\bгарантир(?:уем|ую|уется|овать)\s+(?:поступление|результат|место|зачисление)\b",
+    ]
     return {
         "schema_version": "kb_release_v3_post_filter_v1",
         "source": "Claude v3 handoff forbidden_to_say + brand rules + bot policy",
         "violation_action": "manager_only",
         "violation_flag": "brand_separation_violation",
+        "matcher_fields": ["phrases", "regex_patterns"],
+        "human_only_fields": ["pattern_descriptions"],
         "phrases": unique,
         "phrases_total": len(unique),
+        "regex_patterns": regex_patterns,
+        "regex_patterns_total": len(regex_patterns),
+        "pattern_descriptions": descriptions,
+        "pattern_descriptions_total": len(descriptions),
     }
+
+
+def split_matchable_filter_phrase(phrase: str) -> list[str]:
+    lowered = phrase.casefold().replace("ё", "е")
+    if lowered == "у них есть места / цены / условия":
+        return ["У них есть места", "У них есть цены", "У них есть условия"]
+    return []
+
+
+def is_filter_pattern_description(phrase: str) -> bool:
+    lowered = phrase.casefold().replace("ё", "е")
+    return lowered.startswith("любое ") or lowered in {"работа / налоговая / иное"}
 
 
 def collect_forbidden_phrases(value: Any, result: list[str]) -> None:
@@ -1369,6 +1411,24 @@ def attach_source_details(
     return result
 
 
+def ensure_fact_refresh_dates(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for fact in facts:
+        item = dict(fact)
+        structured_value = item.get("structured_value")
+        structured = dict(structured_value) if isinstance(structured_value, Mapping) else {}
+        path_text = str(structured.get("path") or item.get("fact_key") or "")
+        path = tuple(part for part in path_text.split(".") if part)
+        valid_until = str(item.get("valid_until") or structured.get("valid_until") or "").strip()
+        if not valid_until:
+            valid_until = valid_until_from_path(path)
+        structured["valid_until"] = valid_until
+        item["valid_until"] = valid_until
+        item["structured_value"] = structured
+        result.append(item)
+    return result
+
+
 def dedupe_facts(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str, str]] = set()
     result: list[dict[str, Any]] = []
@@ -1396,10 +1456,294 @@ def render_fact_text(
 ) -> str:
     if "client_safe_text" in path and isinstance(value, str):
         return clean_text(value, max_chars=1400)
+    contextual = render_contextual_fact_text(
+        path,
+        value,
+        brand=brand,
+        fact_type=fact_type,
+        structured_value=structured_value,
+    )
+    if contextual:
+        return contextual
     label = readable_fact_label(path, fact_type=fact_type)
     brand_label = BRAND_LABELS.get(brand, brand)
     rendered_value = render_value(path, value, fact_type=fact_type, structured_value=structured_value)
     return clean_text(f"{brand_label}: {label} — {rendered_value}.", max_chars=1400)
+
+
+def render_contextual_fact_text(
+    path: tuple[str, ...],
+    value: Any,
+    *,
+    brand: str,
+    fact_type: str,
+    structured_value: Mapping[str, Any],
+) -> str:
+    text = ".".join(path).casefold()
+    brand_label = BRAND_LABELS.get(brand, brand)
+    raw_value = structured_value.get("raw_value", value)
+    rendered_value = render_value(path, value, fact_type=fact_type, structured_value=structured_value)
+    pct_value = structured_value.get("percentage") or numeric_value(raw_value)
+    pct_text = f"{format_number(pct_value)}%" if pct_value is not None else rendered_value
+
+    if "licenses.client_safe_summary" in text:
+        return f"{brand_label}: у учебного центра есть лицензия на образовательную деятельность."
+
+    objection = render_objection_response_text(path, raw_value, brand_label=brand_label)
+    if objection:
+        return objection
+
+    social = render_social_proof_text(path, raw_value, brand_label=brand_label)
+    if social:
+        return social
+
+    intensive = render_intensive_text(path, raw_value, brand_label=brand_label)
+    if intensive:
+        return intensive
+
+    academic = render_academic_year_text(path, raw_value, brand_label=brand_label)
+    if academic:
+        return academic
+
+    lvsh = render_lvsh_text(path, raw_value, rendered_value=rendered_value, brand_label=brand_label)
+    if lvsh:
+        return lvsh
+    if "zvsh_mendeleevo.dates_2026_27" in text:
+        return f"{brand_label}: даты ЗВШ Менделеево на 2026/27 учебный год пока не определены."
+
+    if "installment.services.dolyami.parts" in text:
+        return f"{brand_label}: сервис «Долями» делит оплату на {format_number(numeric_value(raw_value) or 4)} равные части."
+    if "installment.services.dolyami.interest_for_client" in text:
+        return f"{brand_label}: при оплате через «Долями» для клиента указана переплата 0%."
+    if "installment.services.rassrochka.term_months" in text:
+        return f"{brand_label}: срок рассрочки может составлять {rendered_value} месяцев."
+    if "installment.services.rassrochka.limit" in text:
+        return f"{brand_label}: лимит рассрочки по текущим данным — {rendered_value}."
+    if "installment.services.rassrochka.signing" in text:
+        return f"{brand_label}: подписание документов по рассрочке проходит по СМС."
+    if "installment.provider" in text:
+        return f"{brand_label}: рассрочка оформляется через Т-Банк; перед ответом клиенту менеджер проверяет актуальные условия."
+    if "installment.refresh_frequency" in text:
+        return f"{brand_label}: условия рассрочки через Т-Банк нужно обновлять и перепроверять минимум раз в квартал."
+    if "installment.services.dolyami.best_for" in text:
+        return f"{brand_label}: сервис «Долями» подходит для коротких программ, например интенсивов и летних школ."
+    if "installment.services.rassrochka.decision_time" in text:
+        return f"{brand_label}: предварительное решение по рассрочке обычно занимает {rendered_value}; перед обещанием срока нужна проверка."
+    if "installment.services.rassrochka.no_interest_for_client" in text:
+        return f"{brand_label}: рассрочка указана как вариант без переплаты для клиента, но условия нужно проверить перед оформлением."
+
+    if "payment_options.available_schedules" in text and "discount_extra" in text:
+        if ".monthly." in text:
+            return f"{brand_label}: при помесячной оплате дополнительная скидка не применяется."
+        if ".semester." in text:
+            return f"{brand_label}: при оплате за семестр действует дополнительная скидка {rendered_value}."
+        if ".year." in text:
+            return f"{brand_label}: при оплате за год действует дополнительная скидка {rendered_value}."
+
+    if "matkap.child_age.sertificate_owner_min" in text:
+        return f"{brand_label}: материнский капитал можно использовать, если ребёнку, на которого оформлен сертификат, исполнилось {format_number(numeric_value(raw_value) or 3)} года."
+    if "matkap.child_age.student_max" in text:
+        return f"{brand_label}: обучение с оплатой материнским капиталом возможно для ученика до {format_number(numeric_value(raw_value) or 25)} лет."
+    if "matkap.timeline.sfr_review_days" in text:
+        return f"{brand_label}: СФР рассматривает заявление на оплату материнским капиталом до {format_number(numeric_value(raw_value) or 10)} рабочих дней."
+    if "matkap.timeline.transfer_days" in text:
+        return f"{brand_label}: после одобрения СФР перевод средств обычно занимает до {format_number(numeric_value(raw_value) or 5)} рабочих дней."
+    if "matkap.required_docs" in text:
+        return f"{brand_label}: для оформления материнского капитала может понадобиться документ: {clean_text(value)}."
+    if "matkap.timeline.total_max_days" in text:
+        return f"{brand_label}: весь цикл проверки и перевода материнского капитала может занимать до {format_number(numeric_value(raw_value) or 15)} рабочих дней."
+
+    if "ls_city_2026" in text and "discounts.already_paid_2026_27" in text:
+        return f"{brand_label}: для городского летнего лагеря действует скидка {pct_text} для семей, уже оплативших обучение на 2026/27 год."
+    if "ls_city_2026" in text and "discounts.former_student_same_brand" in text:
+        return f"{brand_label}: для городского летнего лагеря действует скидка {pct_text} для учеников, которые ранее учились в этом же учебном центре."
+    if "ls_city_2026" in text and "discounts.multichild" in text:
+        return f"{brand_label}: для городского летнего лагеря действует скидка {pct_text} для многодетных семей."
+    if "ls_city_2026" in text and "discounts.mfti_employees" in text:
+        return f"{brand_label}: для городского летнего лагеря действует скидка {pct_text} для сотрудников МФТИ."
+    if "ls_city_2026" in text and "discounts.refer_a_friend" in text:
+        tariff = "расширенный тариф" if "advanced" in text else "базовый тариф" if "base" in text else "тариф"
+        return (
+            f"{brand_label}: для городского летнего лагеря по программе «приведи друга», {tariff}, "
+            f"кэшбэк {rendered_value} ₽; условие: после завершения смены другом."
+        )
+    if "ls_city_2026" in text and "free_morning_club.from_day" in text:
+        return f"{brand_label}: утренний клуб в городском летнем лагере доступен со {format_number(numeric_value(raw_value) or 2)}-го дня смены."
+
+    if "loyal_customers_camps" in text:
+        pct = percent_from_path(path)
+        condition = clean_text(value)
+        if pct and condition:
+            return f"{brand_label}: скидка для постоянных участников лагерей — {pct}%, условие: {condition}."
+    if "refer_a_friend" in text and "cashback" in text:
+        condition = refer_a_friend_condition(path, brand=brand)
+        return f"{brand_label}: по программе «приведи друга» кэшбэк {rendered_value}; условие: {condition}."
+    if "discounts.active_student_to_summer_camp" in text:
+        return f"{brand_label}: для действующих учеников этого учебного центра доступна скидка {pct_text} на любой летний лагерь."
+    if "second_subject.offline" in text:
+        return f"{brand_label}: при очном обучении скидка на второй предмет составляет {rendered_value}."
+    if "second_subject.online" in text:
+        return f"{brand_label}: при онлайн-обучении скидка на второй предмет составляет {rendered_value}."
+    if "discounts.mfti_employees.pct" in text:
+        return f"{brand_label}: для сотрудников МФТИ действует скидка {rendered_value}."
+    if "discounts.mfti_employees.note" in text:
+        return f"{brand_label}: для сотрудников МФТИ действует скидка 10%; другие значения перед ответом нужно проверить у ответственного менеджера."
+    if "discounts.multichild.rule" in text:
+        return f"{brand_label}: для многодетных семей действует скидка 10%; скидки не суммируются, применяется наибольшая доступная скидка."
+    if "discounts.monthly_payment" in text:
+        return f"{brand_label}: при помесячной оплате действует скидка {rendered_value}."
+    if "discounts.stacking_rule" in text:
+        return f"{brand_label}: если клиенту доступно несколько скидок, они не суммируются; применяется наибольшая доступная скидка."
+
+    if "online_platform.levels" in text:
+        return f"{brand_label}: на онлайн-платформе есть уровень обучения: {clean_text(value)}."
+    if "online_platform.recording" in text:
+        return (
+            f"{brand_label}: на онлайн-платформе доступны записи занятий."
+            if bool(value)
+            else f"{brand_label}: по текущим данным записи занятий на онлайн-платформе не указаны."
+        )
+
+    if "academic_year_2026_27.weekly_lessons" in text:
+        return f"{brand_label}: в учебном году 2026/27 занятия проходят {format_number(numeric_value(raw_value) or 1)} раз в неделю."
+    if "lvsh_mendeleevo_2026.accommodation.meals_per_day" in text:
+        return f"{brand_label}: в ЛВШ Менделеево предусмотрено {format_number(numeric_value(raw_value) or 5)} приёмов пищи в день."
+    if "lvsh_mendeleevo_2026.pricing_2026.main_with_25_pct_discount" in text:
+        return f"{brand_label}: при применении скидки 25% стоимость ЛВШ Менделеево составляет {rendered_value}."
+    if "matkap.rule_federal_only" in text:
+        return f"{brand_label}: по текущим правилам можно использовать федеральный материнский капитал."
+
+    return ""
+
+
+def render_objection_response_text(path: tuple[str, ...], value: Any, *, brand_label: str) -> str:
+    text = ".".join(path).casefold()
+    if "objection_responses" not in text:
+        return ""
+    raw = clean_text(value)
+    if not raw:
+        return ""
+    topic = "возражение клиента"
+    if "inconvenient_time" in text:
+        topic = "возражение о неудобном времени"
+    elif "too_expensive_camp" in text:
+        topic = "возражение о стоимости лагеря"
+    elif "too_expensive_course" in text:
+        topic = "возражение о стоимости курса"
+    elif "brand_link_question" in text:
+        topic = "вопрос о связи брендов"
+    elif "is_it_bot" in text:
+        topic = "вопрос о том, кто отвечает клиенту"
+    if raw.casefold().replace("ё", "е") == "скидки суммируются":
+        return (
+            f"{brand_label}: не использовать этот черновик без проверки РОПа; "
+            "в источнике есть противоречивая фраза «Скидки суммируются», а действующее правило говорит, что скидки не суммируются."
+        )
+    if "приведи друга" in raw.casefold() and "условие:" not in raw.casefold():
+        raw = f"{raw.rstrip('.')}; условие: проверить по программе «приведи друга» перед отправкой"
+    return f"{brand_label}: черновик для ситуации «{topic}»: {raw.rstrip('.')}."
+
+
+def render_social_proof_text(path: tuple[str, ...], value: Any, *, brand_label: str) -> str:
+    text = ".".join(path).casefold()
+    if "results_social_proof" not in text:
+        return ""
+    if "ege_avg_above_country_pts" in text:
+        return f"{brand_label}: средний результат ЕГЭ у учеников выше среднего по стране на {format_number(numeric_value(value) or 25)} баллов."
+    if "oge_grade_5_pct" in text:
+        return f"{brand_label}: по текущим данным {format_number(numeric_value(value) or 92)}% учеников получили оценку 5 на ОГЭ."
+    if "university_admission_pct" in text:
+        return f"{brand_label}: по текущим данным {format_number(numeric_value(value) or 97)}% выпускников поступили в вузы."
+    if "total_alumni" in text:
+        return f"{brand_label}: по текущим данным через обучение прошло более {format_number(numeric_value(value) or 100000)} учеников."
+    if "industry_rating_2025" in text:
+        return f"{brand_label}: в рейтинге 2025 года указан статус «{clean_text(value)}»."
+    if "olymp_fiztech_2024_winners" in text:
+        return f"{brand_label}: в 2024 году указано {format_number(numeric_value(value) or 14)} победителей и призёров олимпиады «Физтех»."
+    return ""
+
+
+def render_intensive_text(path: tuple[str, ...], value: Any, *, brand_label: str) -> str:
+    text = ".".join(path).casefold()
+    if "intensives_2026" not in text:
+        return ""
+    rendered = render_simple_value(value)
+    if "available_in_foton" in text or "available_in_unpk" in text:
+        return f"{brand_label}: этот интенсив в текущем бренде {'доступен' if bool(value) else 'не проводится'}."
+    if "duration_weeks" in text:
+        return f"{brand_label}: длительность интенсива 2026 — {format_number(numeric_value(value) or 0)} недель."
+    if "group_size" in text:
+        return f"{brand_label}: размер группы на интенсиве 2026 — {rendered} человек."
+    if ".classes" in text:
+        return f"{brand_label}: интенсив 2026 рассчитан на {rendered} классы."
+    if ".subjects." in text:
+        return f"{brand_label}: среди предметов интенсива 2026 есть {rendered}."
+    if ".includes." in text:
+        return f"{brand_label}: в интенсив 2026 входит: {rendered}."
+    if "bot_behavior_when_asked" in text:
+        return f"{brand_label}: по вопросу об интенсиве менеджер подберёт подходящие варианты и свяжется в течение рабочего дня."
+    return ""
+
+
+def render_academic_year_text(path: tuple[str, ...], value: Any, *, brand_label: str) -> str:
+    text = ".".join(path).casefold()
+    if "academic_year_2026_27" not in text:
+        return ""
+    rendered = render_simple_value(value)
+    if "semester_1_weeks" in text:
+        return f"{brand_label}: в первом семестре 2026/27 учебного года {rendered} недель."
+    if "semester_2_weeks" in text:
+        return f"{brand_label}: во втором семестре 2026/27 учебного года {rendered} недель."
+    return ""
+
+
+def render_lvsh_text(path: tuple[str, ...], value: Any, *, rendered_value: str, brand_label: str) -> str:
+    text = ".".join(path).casefold()
+    if "lvsh_mendeleevo_2026" not in text:
+        return ""
+    rendered = render_simple_value(value)
+    if ".smeny_2026." in text and ".freshness" in text:
+        return f"{brand_label}: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту."
+    if "accommodation.air_conditioning" in text:
+        return f"{brand_label}: в ЛВШ Менделеево по текущим данным есть кондиционирование."
+    if ".directions." in text and ".classes" in text:
+        direction = "физико-математического направления" if ".fizmat." in text else "IT-направления"
+        return f"{brand_label}: ЛВШ Менделеево для {direction} рассчитана на {rendered} классы."
+    if ".directions." in text and ".subjects." in text:
+        direction = "физико-математического направления" if ".fizmat." in text else "IT-направления"
+        return f"{brand_label}: в ЛВШ Менделеево для {direction} есть предмет «{rendered}»."
+    if "program.group_size" in text:
+        return f"{brand_label}: размер группы в ЛВШ Менделеево — {rendered} человек."
+    if "pricing_2026.deposit" in text:
+        return f"{brand_label}: депозит для ЛВШ Менделеево — {rendered_value}."
+    if "pricing_2026.main_full" in text:
+        return f"{brand_label}: полная стоимость ЛВШ Менделеево — {rendered_value}."
+    if "pricing_2026.main_min" in text:
+        return f"{brand_label}: минимальная стоимость ЛВШ Менделеево по текущим условиям — {rendered_value}."
+    if "not_to_confuse_with" in text:
+        return f"{brand_label}: городской лагерь и выездная ЛВШ Менделеево — разные продукты."
+    return ""
+
+
+def render_simple_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "да" if value else "нет"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return format_number(value)
+    return clean_text(value)
+
+
+def refer_a_friend_condition(path: tuple[str, ...], *, brand: str) -> str:
+    text = ".".join(path).casefold()
+    if "camp_base_tariff" in text or "camp_advanced_tariff" in text:
+        return "после завершения смены другом"
+    if brand == "unpk":
+        return "после 1 семестра обучения друга"
+    if "offline" in text:
+        return "после 5 занятий друга"
+    if "online" in text:
+        return "после семестра обучения друга"
+    return "после выполнения условия программы"
 
 
 def render_value(
@@ -1428,7 +1772,9 @@ def render_value(
         if structured_value.get("unit") == "lessons":
             return f"{format_number(value)} занятий"
         return format_number(value)
-    text = clean_text(value, max_chars=1000).replace("_", " ").replace(" / ", " или ")
+    text = clean_text(value, max_chars=1000).replace(" / ", " или ")
+    if "@" not in text:
+        text = text.replace("_", " ")
     if text == "non stacking largest applies":
         return "скидки не суммируются, применяется наибольшая доступная скидка"
     if text == "used for crm only":
@@ -1756,6 +2102,8 @@ def client_allowed(
         reasons.append("invalid_client_brand")
     if normalized_status in CLIENT_BLOCKED_STATUSES or freshness in CLIENT_BLOCKED_STATUSES:
         reasons.append(f"blocked_status:{normalized_status or freshness}")
+    if path_text in {"contacts_foton.telegram", "contacts_foton.vk"}:
+        reasons.append("unconfirmed_foton_contact")
     if "modular_courses_m9_m11" in path_text:
         reasons.append("discontinued_product")
     if "rassrochka_6_12_months" in path_text:
@@ -1766,6 +2114,8 @@ def client_allowed(
         reasons.append("teacher_names_internal")
     if fact_type == "promocode" or "promo_codes" in path_text or "promocode" in path_text:
         reasons.append("promocode_removed_from_bot")
+    if re.search(r"(?<!не\s)скидки\s+суммируются", text.casefold().replace("ё", "е")):
+        reasons.append("discount_stacking_contradiction")
     reasons.extend(client_safety_violations(text, brand))
     if normalized_status in CLIENT_ALLOWED_STATUSES and not reasons:
         return True, []
@@ -1774,6 +2124,21 @@ def client_allowed(
     if normalized_status not in CLIENT_ALLOWED_STATUSES:
         reasons.append(f"not_client_allowed_status:{normalized_status}")
     return False, sorted(set(reasons))
+
+
+def direct_text_requires_template(text: str, *, fact_type: str) -> bool:
+    if fact_type in {"contact"}:
+        return False
+    if fact_type in {"price", "discount", "installment"}:
+        return True
+    stripped = " ".join(text.split())
+    match = re.search(r"—\s*([^—.]{1,42})\.$", stripped)
+    if not match:
+        return False
+    tail = match.group(1).strip()
+    if any(unit in tail.casefold() for unit in ("руб", "₽", "%", "месяц", "недел", "дн", "занят", "человек")):
+        return True
+    return bool(re.fullmatch(r"(?:да|нет|[0-9]+(?:[.,][0-9]+)?|[0-9]+[–-][0-9]+|[А-Яа-яA-Za-z ]{1,24})", tail, re.IGNORECASE))
 
 
 def client_safety_violations(text: str, brand: str) -> list[str]:
@@ -1788,11 +2153,22 @@ def client_safety_violations(text: str, brand: str) -> list[str]:
         if stale_certificate_phrase in lowered:
             violations.append(f"stale_certificate_phrase:{stale_certificate_phrase}")
     has_foton = any(term in lowered for term in ("фотон", "цдпо", "црдо", "cdpofoton"))
-    has_unpk = any(term in lowered for term in ("унпк", "ано дпо", "ноу унпк", "kmipt"))
+    has_unpk = any(term in lowered for term in ("унпк", "ано дпо", "ноу унпк", "kmipt", "unpk"))
     if has_foton and has_unpk:
         violations.append("cross_brand_text")
     if brand == "foton":
-        for term in ("унпк", "ано дпо", "ноу унпк", "kmipt.ru", "@unpk_mipt", "+7 (495) 150-81-51", "8 (800) 500-81-51"):
+        for term in (
+            "унпк",
+            "ано дпо",
+            "ноу унпк",
+            "kmipt.ru",
+            "@unpk_mipt",
+            "@unpkmfti",
+            "@unpk mipt",
+            "unpkmfti",
+            "+7 (495) 150-81-51",
+            "8 (800) 500-81-51",
+        ):
             if term in lowered:
                 violations.append(f"other_brand_term:{term}")
     if brand == "unpk":
@@ -2031,10 +2407,40 @@ def is_class_path(path: tuple[str, ...]) -> bool:
 def valid_until_from_path(path: tuple[str, ...]) -> str:
     text = ".".join(path)
     match = re.search(r"before_(\d{4})_(\d{2})_(\d{2})", text)
-    if not match:
-        return ""
-    year, month, day = match.groups()
-    return f"{year}-{month}-{day}"
+    if match:
+        year, month, day = match.groups()
+        return f"{year}-{month}-{day}"
+    lowered = text.casefold()
+    if "prices_regular_2026_27" in lowered or "academic_year_2026_27" in lowered:
+        return "2027-08-31"
+    if "individual_lessons" in lowered:
+        return "2027-08-31"
+    if "ls_city_2026" in lowered or "lvsh_mendeleevo_2026" in lowered:
+        return "2026-08-31"
+    if "intensives_2026" in lowered:
+        return "2026-12-31"
+    if "zvsh_mendeleevo" in lowered:
+        return "2027-08-31"
+    if "online_platform" in lowered or "objection_responses" in lowered:
+        return "2027-08-31"
+    if "results_social_proof" in lowered:
+        return "2026-12-31"
+    if "matkap" in lowered or "tax_deduction" in lowered or "certificates" in lowered:
+        return "2026-12-31"
+    if "fiztech_olympiad" in lowered or "preschool_patsayeva" in lowered:
+        return "2027-08-31"
+    if (
+        lowered.startswith("team_answers.")
+        or "teacher_promo_codes" in lowered
+        or "cross_brand_handoff_notes" in lowered
+        or "crm_brand_groups" in lowered
+    ):
+        return "2026-12-31"
+    if lowered.startswith("discounts.") or ".discounts." in lowered:
+        return "2027-08-31"
+    if "installment" in lowered or "payment_options" in lowered:
+        return "2027-08-31"
+    return "2026-12-31"
 
 
 def classes_from_path(path: tuple[str, ...]) -> str:
@@ -2121,7 +2527,7 @@ def forbidden_promises_for_fact_type(fact_type: str) -> list[str]:
 
 def forbidden_mentions_for_brand(brand: str) -> list[str]:
     if brand == "foton":
-        return ["УНПК", "АНО ДПО", "НОУ УНПК", "kmipt.ru", "@unpk_mipt"]
+        return ["УНПК", "АНО ДПО", "НОУ УНПК", "kmipt.ru", "@unpk_mipt", "@unpkmfti", "@unpk mipt"]
     if brand == "unpk":
         return ["Фотон", "ЦДПО", "ЦРДО", "cdpofoton.ru", "Т-Банк", "Долями"]
     return []

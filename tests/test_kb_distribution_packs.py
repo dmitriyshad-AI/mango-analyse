@@ -32,6 +32,9 @@ def test_distribution_packs_split_employee_and_bot_outputs(tmp_path: Path) -> No
     assert (bot_out / "README_FOR_BOT.md").exists()
     assert (bot_out / "BOT_USAGE_CONTRACT.md").exists()
     assert (bot_out / "post_filter_registry.json").exists()
+    assert (bot_out / "bot_template_registry.json").exists()
+    assert not (bot_out / "kb_release_v3_snapshot.json").exists()
+    assert not (bot_out / "approval_queue_for_rop_v3.csv").exists()
 
     foton_facts = _read_jsonl(bot_out / "client_safe_facts_foton.jsonl")
     unpk_facts = _read_jsonl(bot_out / "client_safe_facts_unpk.jsonl")
@@ -48,6 +51,17 @@ def test_distribution_packs_split_employee_and_bot_outputs(tmp_path: Path) -> No
     assert bot_manifest["safety"]["client_auto_send"] is False
     assert bot_manifest["safety"]["crm_write"] is False
     assert "не подставляет `client_safe_text` дословно" in bot_contract
+    assert "`bot_template_required=true`" in bot_contract
+    assert "`pattern_descriptions`" in bot_contract
+    template_registry = json.loads((bot_out / "bot_template_registry.json").read_text(encoding="utf-8"))
+    required_fact_keys = {
+        item["fact_key"]
+        for item in foton_facts + unpk_facts
+        if item.get("bot_template_required")
+    }
+    template_fact_keys = {item["fact_key"] for item in template_registry["templates"]}
+    assert required_fact_keys <= template_fact_keys
+    assert template_registry["fallback_route_if_missing"] == "manager_only"
 
 
 def test_distribution_packs_reject_stable_runtime_outputs(tmp_path: Path) -> None:
@@ -81,6 +95,7 @@ def _write_release(root: Path) -> Path:
             "route_policy": "draft_for_manager",
             "risk_level": "low",
             "valid_until": "2026-08-31",
+            "bot_template_required": True,
         },
         {
             "fact_id": "fact:unpk:price",

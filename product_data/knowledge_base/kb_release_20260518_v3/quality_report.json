@@ -72,7 +72,7 @@
     ],
     "missing": []
   },
-  "created_at": "2026-05-17T23:50:31.347049+00:00",
+  "created_at": "2026-05-18T00:26:57.569234+00:00",
   "details": {
     "allowed_client_text_violations": [],
     "allowed_license_fact_ids": [],
@@ -89,27 +89,27 @@
   "summary": {
     "approval_queue_by_type": {
       "camp_city": 13,
-      "camp_lvsh": 64,
+      "camp_lvsh": 52,
       "camp_zvsh": 2,
-      "contact": 13,
+      "contact": 11,
       "deadline": 26,
-      "discount": 65,
-      "documents": 66,
+      "discount": 62,
+      "documents": 60,
       "installment": 18,
-      "intensive": 42,
+      "intensive": 38,
       "location": 2,
-      "matkap": 40,
+      "matkap": 36,
       "policy": 4,
-      "price": 124,
-      "program": 172,
+      "price": 70,
+      "program": 195,
       "promocode": 11,
-      "refund": 2,
-      "tax": 30,
+      "refund": 18,
+      "tax": 5,
       "teacher": 11
     },
-    "approval_queue_items": 705,
-    "client_allowed_facts": 419,
-    "facts_total": 726,
+    "approval_queue_items": 634,
+    "client_allowed_facts": 375,
+    "facts_total": 655,
     "source_registry_total": 10
   }
 }

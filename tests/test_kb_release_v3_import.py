@@ -30,6 +30,19 @@ REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "risk_notes",
 }
 
+NON_MONEY_NUMERIC_PATH_MARKERS = (
+    "total_lessons",
+    "weekly_lessons",
+    "daily_hours",
+    "semester_1_weeks",
+    "semester_2_weeks",
+    "daily_pairs",
+    "pair_duration_minutes",
+    "classes",
+    "start",
+    "retroactive_years",
+)
+
 EXPECTED_APPROVAL_ITEM_TYPES = {
     "price",
     "discount",
@@ -305,6 +318,135 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
     )
 
 
+def test_v3_non_money_numbers_are_not_ruble_prices(kb_v3: KbReleaseV3) -> None:
+    bad_small_price_facts = []
+    bad_marker_facts = []
+    for fact in kb_v3.facts:
+        structured = _jsonish(fact.get("structured_value"))
+        amount = structured.get("amount")
+        if (
+            fact.get("fact_type") == "price"
+            and _is_true(fact.get("allowed_for_client_answer"))
+            and isinstance(amount, (int, float))
+            and amount < 3000
+        ):
+            bad_small_price_facts.append(fact)
+
+        path_blob = f"{fact.get('fact_key') or ''} {_jsonish(fact.get('structured_value')).get('path') or ''}".casefold()
+        if _is_true(fact.get("allowed_for_client_answer")) and any(
+            marker in path_blob for marker in NON_MONEY_NUMERIC_PATH_MARKERS
+        ):
+            if fact.get("fact_type") == "price" or structured.get("currency") == "RUB":
+                bad_marker_facts.append(fact)
+
+    assert not bad_small_price_facts, _fact_ids(bad_small_price_facts[:30])
+    assert not bad_marker_facts, _fact_ids(bad_marker_facts[:30])
+
+
+def test_v3_range_facts_are_linked(kb_v3: KbReleaseV3) -> None:
+    range_facts = [
+        fact
+        for fact in kb_v3.facts
+        if _jsonish(fact.get("structured_value")).get("amount_min") is not None
+        or _jsonish(fact.get("structured_value")).get("amount_max") is not None
+    ]
+    assert range_facts
+
+    bad = []
+    for fact in range_facts:
+        structured = _jsonish(fact.get("structured_value"))
+        if structured.get("do_not_use_as_current_price"):
+            continue
+        amount_min = structured.get("amount_min")
+        amount_max = structured.get("amount_max")
+        text_blob = _fact_blob(fact)
+        if not isinstance(amount_min, (int, float)) or not isinstance(amount_max, (int, float)):
+            bad.append(fact)
+        elif amount_min > amount_max:
+            bad.append(fact)
+        elif "диапазон" not in text_blob and "от " not in text_blob:
+            bad.append(fact)
+
+    split_range_price_facts = [
+        fact
+        for fact in kb_v3.facts
+        if (
+            ".range.min" in str(fact.get("fact_key") or "")
+            or ".range.max" in str(fact.get("fact_key") or "")
+            or "_range_min" in str(fact.get("fact_id") or "")
+            or "_range_max" in str(fact.get("fact_id") or "")
+        )
+        and not _jsonish(fact.get("structured_value")).get("do_not_use_as_current_price")
+    ]
+
+    assert not bad, _fact_ids(bad[:30])
+    assert not split_range_price_facts, _fact_ids(split_range_price_facts[:30])
+
+
+def test_v3_phystech_products_are_not_collapsed(kb_v3: KbReleaseV3) -> None:
+    q15_facts = [
+        fact
+        for fact in kb_v3.facts
+        if "online_olympiad_phystech_9_and_11" in str(fact.get("fact_key") or "")
+    ]
+    old_general_facts = [
+        fact for fact in kb_v3.facts if str(fact.get("fact_key") or "").startswith("fiztech_olympiad.")
+    ]
+    assert q15_facts
+    assert old_general_facts
+    assert {fact.get("product") for fact in q15_facts} == {"online_olympiad_phystech_classes_9_11"}
+    assert {fact.get("product") for fact in old_general_facts} == {"fiztech_olympiad_general"}
+
+
+def test_v3_client_facts_do_not_use_machine_slug_text(kb_v3: KbReleaseV3) -> None:
+    bad = []
+    for fact in _allowed_client_facts(kb_v3.facts):
+        text = str(fact.get("client_safe_text") or fact.get("fact_text") or "")
+        if " / " in text or re.search(r"\b[a-z]+_[a-z0-9_]+\b", text):
+            bad.append(fact)
+    assert not bad, _fact_ids(bad[:30])
+
+
+def test_v3_forbidden_brand_relationship_phrase_is_not_client_allowed(kb_v3: KbReleaseV3) -> None:
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if "раньше сотрудничали" in str(fact.get("client_safe_text") or "").casefold()
+    ]
+    assert not bad, _fact_ids(bad)
+
+
+def test_v3_certificate_phrase_does_not_collect_unconfirmed_fields(kb_v3: KbReleaseV3) -> None:
+    bad = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if "theme_12_certificate" in str(fact.get("fact_key") or "")
+        if "ФИО плательщика" in str(fact.get("client_safe_text") or "")
+        or "ФИО ребёнка" in str(fact.get("client_safe_text") or "")
+        or "за какой период" in str(fact.get("client_safe_text") or "")
+    ]
+    assert not bad, _fact_ids(bad)
+
+
+def test_v3_approval_queue_questions_are_specific(kb_v3: KbReleaseV3) -> None:
+    questions = [str(item.get("rop_question") or "") for item in kb_v3.approval_queue]
+    assert len(set(questions)) >= 100
+    assert not [
+        item
+        for item in kb_v3.approval_queue
+        if item.get("priority") == "P0" and item.get("suggested_decision") == "keep_internal_only"
+    ]
+    too_generic = [
+        question
+        for question in questions
+        if question in {
+            "Можно ли использовать этот факт в ответе клиенту текущего бренда?",
+            "Подтверждаете эту цену и область применения для бота?",
+        }
+    ]
+    assert not too_generic
+
+
 def test_v3_brand_scope_blocks_cross_brand_prices(kb_v3: KbReleaseV3) -> None:
     for fact in _allowed_client_facts(kb_v3.facts):
         client_text = str(fact.get("client_safe_text") or "")
@@ -465,6 +607,18 @@ def _single_fact_for_amount(
 def _has_amount(fact: Mapping[str, Any], amount: int) -> bool:
     normalized = re.sub(r"\D+", "", _fact_blob(fact))
     return str(amount) in normalized
+
+
+def _jsonish(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(loaded) if isinstance(loaded, Mapping) else {}
+    return {}
 
 
 def _has_money_amount(fact: Mapping[str, Any]) -> bool:

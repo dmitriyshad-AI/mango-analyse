@@ -202,6 +202,7 @@ FACT_TYPE_TOPICS = {
     "teacher": "16_teachers",
     "refund": "17_refund",
     "policy": "18_policy",
+    "course_parameter": "19_course_parameters",
 }
 GLOBAL_CLIENT_FORBIDDEN_PATTERNS = (
     "source_id",
@@ -217,6 +218,10 @@ GLOBAL_CLIENT_FORBIDDEN_PATTERNS = (
     "я бот",
     "я ИИ",
     "я нейросеть",
+    "раньше сотрудничали",
+    "были одно",
+    "наш партнёр",
+    "наш партнер",
     "Л035",
     "50Л01",
     "№77753",
@@ -228,6 +233,47 @@ GLOBAL_CLIENT_FORBIDDEN_PATTERNS = (
     "ООО «ЦРДО",
     "ООО ЦРДО",
 )
+
+NON_MONEY_NUMERIC_PATH_MARKERS = (
+    "total_lessons",
+    "weekly_lessons",
+    "daily_hours",
+    "semester_1_weeks",
+    "semester_2_weeks",
+    "daily_pairs",
+    "pair_duration_minutes",
+    "duration_weeks",
+    "experience_years",
+    "classes",
+    "programs",
+    "schedule",
+    "start",
+    "signup_deadline",
+    "payment_deadline",
+    "retroactive_years",
+    "lead_time_days",
+)
+MONEY_LEAF_KEYS = {
+    "semester",
+    "year",
+    "four_weeks",
+    "four_weeks_new",
+    "lesson",
+    "session",
+    "package",
+    "individual",
+    "group",
+    "main_full",
+    "main_min",
+    "online",
+    "offline",
+    "cashback",
+    "deposit",
+    "price",
+    "amount",
+    "min",
+    "max",
+}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -417,6 +463,8 @@ def walk_value(
 ) -> list[dict[str, Any]]:
     if value is None:
         return []
+    if should_skip_fact_path(path, value):
+        return []
     if isinstance(value, Mapping):
         current = dict(context)
         current["brand"] = normalize_brand(value.get("brand") or current.get("brand"))
@@ -450,12 +498,33 @@ def walk_value(
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         records: list[dict[str, Any]] = []
         range_mode = bool(path and "range" in path[-1])
+        if range_mode and len(value) >= 2 and numeric_value(value[0]) is not None and numeric_value(value[1]) is not None:
+            return [make_fact(path=path, value={"min": value[0], "max": value[1]}, context=context, source=source)]
         for index, item in enumerate(value):
             suffix = ("min" if index == 0 else "max") if range_mode and index < 2 else str(index + 1)
             records.extend(walk_value(item, path=(*path, suffix), context=context, source=source))
         return records
 
-    return [make_fact(path=path, value=value, context=context, source=source)]
+    normalized_value = normalize_value_for_fact(path, value)
+    return [make_fact(path=path, value=normalized_value, context=context, source=source)]
+
+
+def should_skip_fact_path(path: tuple[str, ...], value: Any) -> bool:
+    text = f"{'.'.join(path)} {clean_text(value, max_chars=1000)}".casefold().replace("ё", "е")
+    if "долями плюс" in text and "3/6/10" in text:
+        return True
+    if "certificate_lead_time_days" in text or "3 рабочих дня" in text or "3 рабочих дней" in text:
+        return True
+    if "тип справки" in text or "работа / налоговая / иное" in text:
+        return True
+    return False
+
+
+def normalize_value_for_fact(path: tuple[str, ...], value: Any) -> Any:
+    text = ".".join(path).casefold()
+    if "brand_link_question.approved_response" in text:
+        return "Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра."
+    return value
 
 
 def is_internal_child(path: tuple[str, ...], key: str, item: Any, context: Mapping[str, Any]) -> bool:
@@ -498,6 +567,7 @@ def make_fact(
     if is_deadline_fact(path):
         fact_type = "deadline"
     product = clean_text(context.get("product") or infer_product(path, fact_type))
+    product = canonical_product_key(path, product)
     internal_only = bool(context.get("internal_only") or should_force_internal(path, value))
     linked_open_question = infer_linked_question(context.get("linked_open_question"), path)
     if linked_open_question == "q14_closed" and brand != "unpk":
@@ -591,6 +661,8 @@ def build_policy_facts(handoff: Mapping[str, Any], source_lookup: Mapping[str, M
                 text = payload.get(bot_key)
                 if not text:
                     continue
+                if str(theme_key) == "theme_12_certificate":
+                    text = "Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше."
                 facts.append(
                     make_manual_fact(
                         fact_key=f"bot_policy.approved_phrases.{theme_key}.{brand}",
@@ -876,9 +948,11 @@ def build_approval_queue_v3(facts: Sequence[Mapping[str, Any]]) -> list[dict[str
             continue
         fact_id = str(fact.get("fact_id") or "")
         topic = FACT_TYPE_TOPICS.get(item_type, FACT_TYPE_TOPICS.get(str(fact.get("fact_type")), "99_other"))
+        decision = suggested_decision(fact)
+        priority = approval_priority(fact, item_type, decision)
         queue.append(
             {
-                "priority": approval_priority(fact, item_type),
+                "priority": priority,
                 "approval_item_id": f"approve:{safe_id(fact_id)}",
                 "item_type": item_type,
                 "topic": topic,
@@ -886,8 +960,8 @@ def build_approval_queue_v3(facts: Sequence[Mapping[str, Any]]) -> list[dict[str
                 "brand": fact.get("brand"),
                 "product": fact.get("product"),
                 "manager_text": fact.get("manager_check_text") or fact.get("fact_text"),
-                "suggested_decision": suggested_decision(fact),
-                "rop_question": rop_question(item_type, fact),
+                "suggested_decision": decision,
+                "rop_question": rop_question(item_type, fact, decision),
                 "source_id": fact.get("source_id"),
                 "linked_open_question": fact.get("linked_open_question"),
                 "risk_notes": risk_notes(fact),
@@ -915,6 +989,7 @@ def should_include_in_approval_queue(fact: Mapping[str, Any], item_type: str) ->
         "teacher",
         "refund",
         "policy",
+        "course_parameter",
     }:
         return True
     return bool(fact.get("requires_manager_confirmation") or fact.get("linked_open_question"))
@@ -1297,7 +1372,7 @@ def render_fact_text(
 ) -> str:
     if "client_safe_text" in path and isinstance(value, str):
         return clean_text(value, max_chars=1400)
-    label = humanize_path(path)
+    label = readable_fact_label(path, fact_type=fact_type)
     brand_label = BRAND_LABELS.get(brand, brand)
     rendered_value = render_value(path, value, fact_type=fact_type, structured_value=structured_value)
     return clean_text(f"{brand_label}: {label} — {rendered_value}.", max_chars=1400)
@@ -1310,6 +1385,9 @@ def render_value(
     fact_type: str,
     structured_value: Mapping[str, Any],
 ) -> str:
+    if is_range_mapping(value):
+        amount_min, amount_max = range_bounds(value)
+        return f"диапазон от {format_rub(amount_min)} до {format_rub(amount_max)}"
     if isinstance(value, bool):
         return "да" if value else "нет"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -1318,27 +1396,121 @@ def render_value(
         if structured_value.get("unit") == "percent":
             return f"{format_number(value)}%"
         return format_number(value)
-    text = clean_text(value, max_chars=1000)
+    text = clean_text(value, max_chars=1000).replace("_", " ").replace(" / ", " или ")
     pct = percent_from_path(path)
     if pct is not None and text:
         return f"{pct}%: {text}"
     return text
 
 
+def readable_fact_label(path: tuple[str, ...], *, fact_type: str) -> str:
+    text = ".".join(path).casefold()
+    labels: list[str] = []
+    if "prices_regular_2026_27" in text:
+        labels.append("цены на 2026/27 учебный год")
+    elif "academic_year_2026_27" in text:
+        labels.append("учебный год 2026/27")
+    elif "discount" in text:
+        labels.append("скидка")
+    elif "tax_deduction" in text:
+        labels.append("налоговый вычет")
+    elif "matkap" in text:
+        labels.append("материнский капитал")
+    elif "certificates" in text or "certificate" in text:
+        labels.append("справки и документы")
+    elif "location" in text or "address" in text or "metro" in text:
+        labels.append("адрес и место занятий")
+    elif "contacts" in text:
+        labels.append("контакты")
+    elif "installment" in text or "payment_options" in text:
+        labels.append("рассрочка и оплата")
+    else:
+        labels.append(humanize_path(path, max_parts=2).replace("/", ",").replace("_", " "))
+
+    classes = classes_from_path(path)
+    if classes:
+        labels.append(f"{classes} класс")
+    fmt = format_from_path(path)
+    if fmt == "offline":
+        labels.append("очно")
+    elif fmt == "online":
+        labels.append("онлайн")
+    if "before_2026_07_01" in text:
+        labels.append("до 01.07.2026")
+    if "after_2026_07_01" in text:
+        labels.append("после 01.07.2026")
+    if "before_2026_08_01" in text:
+        labels.append("до 01.08.2026")
+    if "after_2026_08_01" in text:
+        labels.append("после 01.08.2026")
+
+    last = path[-1].casefold() if path else ""
+    leaf_labels = {
+        "semester": "семестр",
+        "year": "год",
+        "semester_range": "семестр",
+        "year_range": "год",
+        "four_weeks": "4 недели",
+        "four_weeks_new": "4 недели для новых учеников",
+        "total_lessons": "количество занятий за год",
+        "weekly_lessons": "занятий в неделю",
+        "daily_hours": "длительность занятия",
+        "semester_1_weeks": "недель в первом семестре",
+        "semester_2_weeks": "недель во втором семестре",
+        "classes": "классы",
+        "product": "продукт",
+        "schedule": "расписание",
+        "start": "старт занятий",
+        "retroactive_years": "за сколько прошлых лет можно подать",
+        "cashback": "кэшбэк",
+        "condition": "условие",
+        "rule": "правило",
+    }
+    if last in leaf_labels:
+        labels.append(leaf_labels[last])
+    return ", ".join(dict.fromkeys(part for part in labels if part))
+
+
 def build_structured_value(path: tuple[str, ...], value: Any, *, fact_type: str) -> dict[str, Any]:
     structured: dict[str, Any] = {"path": ".".join(path), "raw_value": value}
+    if is_range_mapping(value):
+        amount_min, amount_max = range_bounds(value)
+        structured["amount_min"] = amount_min
+        structured["amount_max"] = amount_max
+        structured["currency"] = "RUB"
+        structured["range_id"] = ".".join(path)
+        valid_until = valid_until_from_path(path)
+        if valid_until:
+            structured["valid_until"] = valid_until
+        classes = classes_from_path(path)
+        if classes:
+            structured["classes"] = classes
+        fmt = format_from_path(path)
+        if fmt:
+            structured["format"] = fmt
+        period = period_from_path(path)
+        if period:
+            structured["period"] = period
+        return structured
     numeric = numeric_value(value)
     if numeric is not None:
-        if fact_type == "price" or is_money_path(path):
-            structured["amount"] = int(numeric) if numeric == int(numeric) else numeric
-            structured["currency"] = "RUB"
-        elif percent_from_path(path) is not None or "%" in clean_text(value):
+        if percent_from_path(path) is not None or "%" in clean_text(value):
             structured["percentage"] = numeric
             structured["unit"] = "percent"
         elif is_month_path(path):
             structured["months"] = int(numeric)
         elif is_day_path(path):
             structured["days"] = int(numeric)
+        elif is_week_path(path):
+            structured["weeks"] = int(numeric)
+        elif is_lesson_count_path(path):
+            structured["count"] = int(numeric)
+            structured["unit"] = "lessons"
+        elif is_class_path(path):
+            structured["classes_raw"] = clean_text(value)
+        elif fact_type == "price" or is_money_path(path):
+            structured["amount"] = int(numeric) if numeric == int(numeric) else numeric
+            structured["currency"] = "RUB"
         else:
             structured["number"] = int(numeric) if numeric == int(numeric) else numeric
         if path and path[-1] in {"min", "max"}:
@@ -1367,6 +1539,14 @@ def infer_fact_type(path: tuple[str, ...], value: Any) -> str:
     last = path[-1].casefold() if path else ""
     if "deadline" in text or "valid_until" in text:
         return "deadline"
+    if "tax" in text or "deduction" in text or "вычет" in clean_text(value).casefold():
+        return "tax"
+    if "refund" in text or "return" in text or "withholding" in text:
+        return "refund"
+    if is_non_money_numeric_path(path):
+        return "course_parameter"
+    if "academic_year" in text or "schedule" in text or "start_date" in text or "dates" in text or "smeny" in text:
+        return "deadline" if is_deadline_fact(path) else "program"
     if "discount" in text or "cashback" in text or "pct_" in text:
         return "discount"
     if "promo" in text or "promocode" in text:
@@ -1377,12 +1557,8 @@ def infer_fact_type(path: tuple[str, ...], value: Any) -> str:
         return "installment"
     if "matkap" in text:
         return "matkap"
-    if "tax" in text or "deduction" in text or "вычет" in clean_text(value).casefold():
-        return "tax"
     if "certificate" in text or "licenses" in text or "legal_entities" in text or "contract" in text or "document" in text:
         return "documents"
-    if "refund" in text or "return" in text or "withholding" in text:
-        return "refund"
     if "lvsh" in text:
         return "camp_lvsh"
     if "zvsh" in text:
@@ -1397,8 +1573,6 @@ def infer_fact_type(path: tuple[str, ...], value: Any) -> str:
         return "contact"
     if "location" in text or "address" in text or "metro" in text:
         return "location"
-    if "academic_year" in text or "schedule" in text or "start_date" in text or "dates" in text or "smeny" in text:
-        return "deadline" if is_deadline_fact(path) else "program"
     if "policy" in text or "brand_rules" in text:
         return "policy"
     return "program"
@@ -1422,8 +1596,10 @@ def infer_product(path: tuple[str, ...], fact_type: str) -> str:
         return "city_camp_2026"
     if "intensive" in text:
         return "intensives_2026"
-    if "fiztech_olympiad" in text or "online_olympiad_phystech" in text:
-        return "online_olympiad_phystech"
+    if "online_olympiad_phystech_9_and_11" in text:
+        return "online_olympiad_phystech_classes_9_11"
+    if "fiztech_olympiad" in text:
+        return "fiztech_olympiad_general"
     if "preschool_patsayeva" in text:
         return "preschool_patsayeva"
     if "matkap" in text:
@@ -1435,6 +1611,15 @@ def infer_product(path: tuple[str, ...], fact_type: str) -> str:
     if "installment" in text or "payment_options" in text:
         return "installment"
     return safe_id(path[0])
+
+
+def canonical_product_key(path: tuple[str, ...], product: str) -> str:
+    text = ".".join(path).casefold()
+    if "online_olympiad_phystech_9_and_11" in text:
+        return "online_olympiad_phystech_classes_9_11"
+    if "fiztech_olympiad" in text:
+        return "fiztech_olympiad_general"
+    return product
 
 
 def is_deadline_fact(path: tuple[str, ...]) -> bool:
@@ -1518,7 +1703,7 @@ def client_safety_violations(text: str, brand: str) -> list[str]:
     if has_foton and has_unpk:
         violations.append("cross_brand_text")
     if brand == "foton":
-        for term in ("унпк", "ано дпо", "ноу унпк", "kmipt.ru", "@unpk_mipt", "+7 (495) 150-81-51", "8 (800) 500-81-51"):
+        for term in ("унпк", "ано дпо", "ноу унпк", "kmipt.ru", "@unpk_mipt", "@unpkmfti", "+7 (495) 150-81-51", "8 (800) 500-81-51"):
             if term in lowered:
                 violations.append(f"other_brand_term:{term}")
     if brand == "unpk":
@@ -1647,6 +1832,22 @@ def numeric_value(value: Any) -> float | None:
         return None
 
 
+def is_range_mapping(value: Any) -> bool:
+    return isinstance(value, Mapping) and numeric_value(value.get("min")) is not None and numeric_value(value.get("max")) is not None
+
+
+def range_bounds(value: Mapping[str, Any]) -> tuple[int | float, int | float]:
+    lower = numeric_value(value.get("min"))
+    upper = numeric_value(value.get("max"))
+    if lower is None or upper is None:
+        raise ValueError("range value must contain numeric min and max")
+    if lower > upper:
+        lower, upper = upper, lower
+    lower_out: int | float = int(lower) if lower == int(lower) else lower
+    upper_out: int | float = int(upper) if upper == int(upper) else upper
+    return lower_out, upper_out
+
+
 def percent_from_path(path: tuple[str, ...]) -> int | None:
     for part in reversed(path):
         match = re.fullmatch(r"pct_(\d+)", part.casefold())
@@ -1657,25 +1858,34 @@ def percent_from_path(path: tuple[str, ...]) -> int | None:
 
 def is_money_path(path: tuple[str, ...]) -> bool:
     text = ".".join(path).casefold()
+    if is_non_money_numeric_path(path):
+        return False
+    last = path[-1].casefold() if path else ""
+    if "prices_regular_2026_27" in text:
+        return last in MONEY_LEAF_KEYS or last.endswith("_range")
     markers = (
         "price",
         "pricing",
+        "cost",
         "cashback",
         "deposit",
         "tariff",
-        "semester",
-        "year",
         "four_weeks",
-        "lesson_",
-        "session_",
-        "package_",
-        "tier_",
+        "lesson_price",
+        "session_price",
+        "package_price",
+        "tier_price",
         "main_full",
         "main_min",
-        "return",
-        "withholding",
+        "max_return",
+        "amount_rub",
     )
     return any(marker in text for marker in markers)
+
+
+def is_non_money_numeric_path(path: tuple[str, ...]) -> bool:
+    text = ".".join(path).casefold()
+    return any(marker in text for marker in NON_MONEY_NUMERIC_PATH_MARKERS)
 
 
 def is_month_path(path: tuple[str, ...]) -> bool:
@@ -1684,6 +1894,19 @@ def is_month_path(path: tuple[str, ...]) -> bool:
 
 def is_day_path(path: tuple[str, ...]) -> bool:
     return any("day" in part.casefold() or "days" in part.casefold() for part in path)
+
+
+def is_week_path(path: tuple[str, ...]) -> bool:
+    return any("week" in part.casefold() or "weeks" in part.casefold() for part in path)
+
+
+def is_lesson_count_path(path: tuple[str, ...]) -> bool:
+    text = ".".join(path).casefold()
+    return any(marker in text for marker in ("total_lessons", "weekly_lessons", "daily_pairs", "pair_duration_minutes", "daily_hours"))
+
+
+def is_class_path(path: tuple[str, ...]) -> bool:
+    return any("class" == part.casefold() or "classes" == part.casefold() or "programs" == part.casefold() for part in path)
 
 
 def valid_until_from_path(path: tuple[str, ...]) -> str:
@@ -1759,6 +1982,7 @@ def related_theme_ids(fact_type: str) -> list[str]:
         "teacher": ["theme:017_teachers"],
         "refund": ["theme:010_refund"],
         "policy": ["theme:000_policy"],
+        "course_parameter": ["theme:016_program_content"],
     }
     return mapping.get(fact_type, ["service:S2_unclear"])
 
@@ -1778,7 +2002,7 @@ def forbidden_promises_for_fact_type(fact_type: str) -> list[str]:
 
 def forbidden_mentions_for_brand(brand: str) -> list[str]:
     if brand == "foton":
-        return ["УНПК", "АНО ДПО", "НОУ УНПК", "kmipt.ru", "@unpk_mipt"]
+        return ["УНПК", "АНО ДПО", "НОУ УНПК", "kmipt.ru", "@unpk_mipt", "@unpkmfti"]
     if brand == "unpk":
         return ["Фотон", "ЦДПО", "ЦРДО", "cdpofoton.ru", "Т-Банк", "Долями"]
     return []
@@ -1809,6 +2033,8 @@ def notes_for_fact(path: tuple[str, ...], status: str, allowed: bool) -> str:
 def approval_item_type(fact: Mapping[str, Any]) -> str:
     key = str(fact.get("fact_key") or "").casefold()
     fact_type = str(fact.get("fact_type") or "")
+    if fact_type == "course_parameter":
+        return "program"
     if "deadline" in key or "start_date" in key or "dates" in key or "smeny" in key:
         return "deadline"
     if "lvsh" in key:
@@ -1818,39 +2044,76 @@ def approval_item_type(fact: Mapping[str, Any]) -> str:
     return fact_type
 
 
-def approval_priority(fact: Mapping[str, Any], item_type: str) -> str:
-    if fact.get("risk_level") == "high" or item_type in {"price", "discount", "promocode", "installment", "tax", "matkap"}:
+def approval_priority(fact: Mapping[str, Any], item_type: str, decision: str) -> str:
+    if decision == "keep_internal_only":
+        if fact.get("risk_level") == "high" or fact.get("linked_open_question"):
+            return "P1"
+        return "P2"
+    if decision == "do_not_offer_to_client":
+        return "P1"
+    if item_type in {"price", "discount", "promocode", "installment", "tax", "matkap"}:
         return "P0"
+    if decision == "needs_owner_confirmation_before_client_use":
+        return "P1"
+    if fact.get("risk_level") == "high":
+        return "P1"
     if fact.get("requires_manager_confirmation") or fact.get("linked_open_question"):
         return "P1"
     return "P2"
 
 
 def suggested_decision(fact: Mapping[str, Any]) -> str:
-    if fact.get("internal_only"):
-        return "keep_internal_only"
     status = str(fact.get("verification_status") or fact.get("freshness_status") or "")
-    if status in {"needs_owner_confirmation", "dynamic_needs_check"}:
-        return "needs_owner_confirmation_before_client_use"
     if status == "discontinued":
         return "do_not_offer_to_client"
+    if fact.get("internal_only"):
+        return "keep_internal_only"
+    if status in {"needs_owner_confirmation", "dynamic_needs_check"}:
+        return "needs_owner_confirmation_before_client_use"
+    if fact.get("safety_block_reasons"):
+        return "review_before_client_use"
     if fact.get("allowed_for_client_answer"):
         return "approve_for_client_answer_after_rop_review"
     return "review_before_client_use"
 
 
-def rop_question(item_type: str, fact: Mapping[str, Any]) -> str:
+def rop_question(item_type: str, fact: Mapping[str, Any], decision: str) -> str:
+    snippet = short_question_fact_text(fact)
+    brand = BRAND_LABELS.get(str(fact.get("brand") or ""), str(fact.get("brand") or ""))
+    product = clean_text(fact.get("product") or "", max_chars=80).replace("_", " ")
+    prefix = f"{brand}"
+    if product:
+        prefix = f"{prefix}, {product}"
+    if decision == "keep_internal_only":
+        return f"Оставляем только для менеджера: {prefix}? Проверьте, не нужна ли клиентская короткая версия. Факт: {snippet}"
+    if decision == "do_not_offer_to_client":
+        return f"Подтверждаете, что это нельзя предлагать клиенту: {prefix}? Факт: {snippet}"
+    if decision == "needs_owner_confirmation_before_client_use":
+        return f"Кто должен подтвердить перед ответом клиенту: {prefix}? Факт: {snippet}"
     if item_type == "price":
-        return "Подтверждаете эту цену и область применения для бота?"
+        return f"Подтверждаете цену, период действия и область применения: {prefix}? Факт: {snippet}"
     if item_type == "discount":
-        return "Подтверждаете скидку и правило, что скидки не суммируются?"
+        return f"Подтверждаете скидку и правило применения без суммирования: {prefix}? Факт: {snippet}"
     if item_type == "promocode":
-        return "Можно ли использовать этот промокод в клиентском ответе или оставить внутренним?"
+        return f"Можно ли показывать этот промокод клиенту или оставить внутренним: {prefix}? Факт: {snippet}"
     if item_type == "installment":
-        return "Какую часть условия рассрочки можно говорить клиенту без ручной проверки?"
+        return f"Какую часть условия рассрочки можно говорить без ручной проверки: {prefix}? Факт: {snippet}"
     if item_type in {"tax", "matkap", "documents"}:
-        return "Подтверждаете клиентскую формулировку без раскрытия юрлица и номеров?"
-    return "Можно ли использовать этот факт в ответе клиенту текущего бренда?"
+        return f"Подтверждаете клиентскую формулировку без лишних реквизитов: {prefix}? Факт: {snippet}"
+    if item_type in {"deadline", "camp_lvsh", "camp_zvsh", "camp_city", "program", "intensive"}:
+        return f"Подтверждаете актуальность программы, сроков и ограничений: {prefix}? Факт: {snippet}"
+    if item_type in {"contact", "location"}:
+        return f"Подтверждаете контакт или адрес для клиентского ответа: {prefix}? Факт: {snippet}"
+    return f"Можно ли использовать этот факт в ответе клиенту текущего бренда: {prefix}? Факт: {snippet}"
+
+
+def short_question_fact_text(fact: Mapping[str, Any]) -> str:
+    text = clean_text(
+        fact.get("client_safe_text") or fact.get("manager_check_text") or fact.get("fact_text") or fact.get("fact_key"),
+        max_chars=180,
+    )
+    text = re.sub(r"\[[^\]]*client_blocked:[^\]]*\]", "", text).strip()
+    return text or clean_text(fact.get("fact_key") or "", max_chars=180)
 
 
 def risk_notes(fact: Mapping[str, Any]) -> str:
@@ -1905,7 +2168,7 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             if key not in fieldnames:
                 fieldnames.append(key)
     with path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(file, fieldnames=fieldnames, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: csv_value(row.get(key)) for key in fieldnames})

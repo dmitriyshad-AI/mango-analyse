@@ -1,110 +1,269 @@
-# Claude Code Audit Context
+# CLAUDE.md — контекст проекта Mango Analyse
 
-This repository uses Claude Code as an independent read-only auditor and Codex as the primary implementation agent.
+Этот файл читается Claude CLI при запуске из корня проекта. Он нужен, чтобы Claude выступал независимым смысловым ревьюером, а не начинал каждый аудит с нуля.
 
-## Current Phase
+Последнее обновление: 2026-05-18.
 
-Post-backfill CRM/writeback readiness after Stage15 v11 frozen gate.
+## Кто пользователь
 
-## Current Step
+Дмитрий Фабарисов — основной заказчик и владелец проекта.
 
-Audit newly rebuilt CRM/AMO-ready input and verify it uses the post-backfill phone-chain layer, not the old April export pointer.
+Стиль ответа Дмитрию:
 
-Before making a verdict, always check the newest formal artifacts in:
+- только русский язык;
+- кратко и по делу;
+- без сложных английских терминов;
+- не путать зелёные тесты с реальной готовностью;
+- спорить аргументированно, если смысл важнее согласия.
 
-- `docs/`
-- `audits/_inbox/<pack>/`
-- `stable_runtime/` only when the audit pack explicitly references it
+## Что за проект
 
-Do not rely on informal chat history.
+Mango Analyse — внутренний проект для отдела продаж учебных центров:
 
-## Seven-Point Safety Plan
+- Фотон;
+- УНПК МФТИ.
 
-Status on 2026-05-10:
+Ближайшая цель: Telegram-бот в режиме черновиков для менеджера. Бот не отправляет сообщения клиентам напрямую. Он собирает контекст, предлагает черновик, показывает риски и отдаёт менеджеру решение.
 
-1. Fixpoint sanitizer + idempotence test: done.
-2. `docs/THREAT_MODEL.md` with leak classes: current canonical threat model.
-3. Frozen adversarial corpus: done.
-   - release corpus: `stable_runtime/bot_safety_frozen_corpus_20260510_v3_frozen_gate/bot_safety_adversarial_cases.jsonl`
-   - validation: `stable_runtime/bot_safety_frozen_corpus_validation_20260510_v4_frozen_gate/summary.json`
-4. ASR-tolerance layer: done in frozen corpus.
-5. Separate sanitizer and detector: done.
-   - detector: `src/mango_mvp/quality/bot_safety_detector.py`
-   - detector must not import sanitizer regexes.
-6. Heuristic NER layer: implemented as deterministic heuristic coverage; Natasha is intentionally not introduced.
-7. Exit criterion for controlled manager-assist allowlist: met for Stage15 v11.
-   - Stage15: `stable_runtime/transcript_quality_stage15_export_gate_20260510_v11_frozen_gate/summary.json`
-   - frozen corpus validation: passed, 1312 rows, 0 failures.
-   - autonomous bot remains blocked until over-sanitization queue is reviewed.
+Дальше планируется:
 
-Current open risk is not Stage15 safety. Current open risk is that legacy CRM/writeback paths may still read `stable_runtime/CANONICAL_EXPORT.txt`, which previously pointed to an old April `sales_master_export_*` directory.
+1. внутренний пилот на сотрудниках;
+2. пилот на небольшой лояльной группе клиентов;
+3. расширение до продукта для других организаций.
 
-## Repository Map
+## Главное правило: бренды не смешиваются
 
-- Implementation code: `src/mango_mvp/`
-- Tests: `tests/`
-- Scripts: `scripts/`
-- Product and architecture docs: `docs/`
-- Runtime artifacts: `stable_runtime/`
-- Claude audit inbox packages: `audits/_inbox/`
-- Claude audit results: `audits/_results/`
-- Claude slash commands: `.claude/commands/`
+УНПК МФТИ и Фотон — отдельные организации. Раньше они могли сотрудничать, но клиенту это не объясняется и не используется как аргумент.
 
-## Authority Split
+Нельзя:
 
-Codex owns implementation and test changes.
+- в одном клиентском ответе сравнивать условия Фотона и УНПК;
+- писать, что один бренд является партнёром другого;
+- объяснять условия УНПК в боте Фотона;
+- объяснять условия Фотона в боте УНПК;
+- упоминать историю сотрудничества.
 
-Claude Code owns only:
+Безопасная фраза, если клиент спрашивает про связь брендов:
 
-- `audits/_results/`
+> Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра.
 
-Claude Code must not edit:
+Архитектурное решение: два отдельных Telegram-бота. `active_brand` задаётся каналом, а не угадывается из AMO/Tallanto.
 
-- `src/`
-- `tests/`
-- `scripts/`
-- `docs/`
-- `stable_runtime/`
-- `audits/_inbox/`
-- `CLAUDE.md`
-- `.claude/commands/`
+## Юридические лица
 
-Codex must not edit completed Claude result folders in `audits/_results/`.
+Эти данные являются внутренними. Клиенту по умолчанию не показывать номера лицензий, даты и юридические детали.
 
-Communication between agents must happen only through formal artifacts:
+- АНО ДПО «УНПК МФТИ» — лицензия Л035-01255-50/01195871 от 13.05.2024.
+- НОУ УНПК МФТИ — лицензия 50Л01 №0000547 от 06.03.2013.
+- ООО «ЦДПО Фотон» — лицензия №77753 от 23.11.2018.
+- ООО «ЦРДО Фотон» — лицензия Л035-01255-50/02496431 от 20.06.2025.
 
-- threat model
-- audit pack
-- findings CSV
-- row decisions CSV
-- audit result markdown
+Все 4 юридических лица имеют право выдавать справку КНД 1151158 для социального налогового вычета.
 
-Do not use shared free-form chat logs as source of truth.
+Клиентская безопасная формулировка: «У нас есть лицензия на образовательную деятельность».
 
-## Safety Boundaries
+## Решения команды
 
-During audits:
+| Тема | Решение |
+|---|---|
+| Связь брендов | Использовать только фразу про отдельные организации и текущий учебный центр. |
+| Скидка сотрудникам МФТИ | 10%, скидки не суммируются, применяется наибольшая. |
+| Второй предмет онлайн | Фотон 30%, УНПК 20%; очно 20%. |
+| Долями | 4 равные части. Рассрочка 6/12 месяцев — через менеджера. |
+| Адрес Москвы | Скорняжный, не Скоряжный. |
+| Модульные М9/М11 | Продукта нет, статус discontinued. |
+| Возврат | Сразу менеджер по телефону, шаблоны клиенту не показывать. |
+| ЗВШ Менделеево 2026/27 | Дат нет, лист ожидания. |
+| УНПК очно 49 000 / 82 000 | Для 5-11 классов. |
+| УНПК онлайн 41 800 / 69 900 | Олимпиадная Физтех только 9 и 11 классы. |
+| Договор | «В ближайшие дни». |
+| Справка | «До 10 дней, постараемся раньше», тип справки не уточнять без контекста. |
+| Преподаватели | В общих вопросах давать регалии, без ФИО. |
+| Промокоды | Из клиентского слоя бота убраны полностью. |
+| Скидки | Каждая скидка должна иметь условие применения. |
+| Многодетная скидка | По статусу семьи, не по числу детей в базе. |
+| Маткапитал и налоговый вычет | Можно использовать и для Фотона, и для УНПК, с учётом active_brand. |
+| ЛВШ Менделеево | Есть и у Фотона, и у УНПК, но смены и условия обрабатываются отдельно по active_brand. |
 
-- Do not write to CRM/AMO/Tallanto.
-- Do not run ASR.
-- Do not run R+A processing.
-- Do not delete files.
-- Do not modify `stable_runtime/`.
-- Do not expand audit scope indefinitely.
-- If a new class of issue appears, classify it as either:
-  - known threat-model class
-  - new future threat-model class
+## Главные правила для бота
 
-## Last External Audit Context
+1. Бот не раскрывает свою природу: не пишет «я бот», «я ИИ», «GPT», «Claude», «Codex».
+2. На прямой вопрос о природе отвечает: «Я помощник менеджера, помогу с вопросом или передам коллеге».
+3. Бот читает AMO/Tallanto/CRM только в read-only режиме.
+4. Бот не пишет в AMO/Tallanto/CRM без отдельного подтверждения Дмитрия.
+5. Бот не отправляет клиенту напрямую на первом этапе.
+6. Возврат, жалоба, юридическая угроза, гарантия результата, спорная оплата — `manager_only`.
+7. Маткапитал и налоговый вычет можно объяснять как справочные темы, если есть утверждённый факт и нет спорной ситуации.
+8. Подтверждение оплаты возможно только после надёжной read-only сверки AMO/Tallanto.
+9. Если факт не найден или устарел, бот не выдумывает и передаёт менеджеру.
+10. Любые новые смысловые ошибки переводятся в тест, semantic gate, чек-лист или ручной контроль.
 
-Historical handoff context from the previous Claude/Cowork audit:
+## Текущая база знаний v3.2
 
-- Stage 15 v3 passed the control check.
-- The architecture iteration was then implemented through Stage15 v11 frozen gate.
-- Controlled manager-assist allowlist is considered quality-ready.
-- Autonomous bot production is not ready until over-sanitization queue and company policies are reviewed.
-- Before CRM writeback, verify that AMO-ready/contact context inputs are rebuilt from post-backfill artifacts:
-  - `stable_runtime/canonical_master_20260510_after_quality_backfill_v1/canonical_calls_master.db`
-  - `stable_runtime/insight_readiness_report_after_quality_backfill_20260510_v1/client_chains.csv`
+Актуальный машинный релиз:
 
-If newer repository docs contradict this handoff, prefer the newest formal repository docs and the current audit pack.
+```text
+product_data/knowledge_base/kb_release_20260518_v3_2/
+```
+
+Пакет для Claude и команды:
+
+```text
+product_data/knowledge_base/kb_release_20260518_v3_2_handoff_for_claude_and_team/
+```
+
+Пакет для сотрудников:
+
+```text
+product_data/knowledge_base/kb_release_20260518_v3_2_employee_pack/
+```
+
+Пакет для бота:
+
+```text
+product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack/
+```
+
+Проверка Stage 6 на 50 вопросах через реальный Codex:
+
+```text
+product_data/knowledge_base/kb_release_20260518_v3_2_smoke50_codex/
+```
+
+Последние коммиты:
+
+- `6772e56a9` — semantic gate и smoke eval для KB v3.2;
+- `8d693ba16` — два distribution-пакета: для сотрудников и для бота.
+
+Статус v3.2:
+
+- `formal_pass=true`;
+- `semantic_pass=true`;
+- blocking findings: 0;
+- known P2 risk: у части фактов есть дата проверки `2026-05-18`, но нет явного `valid_until`;
+- режим: безопасно для внутреннего использования как база черновиков и справочная база, не как автономная отправка клиентам.
+
+## Открытые замечания после Claude CLI review 2026-05-18
+
+Claude CLI через `/kb-review product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack` дал `PASS_WITH_NOTES`.
+
+Не блокирует внутренний пилот на сотрудниках, но нужно закрыть до пилота на клиентах:
+
+1. В части `bot_answer_self_for_pilot` фактов есть короткие машинные `client_safe_text`, например «Фотон: рассрочка и оплата — 0.» и «Фотон: материнский капитал — 3.». Контракт запрещает подставлять `client_safe_text` дословно, но builder надо улучшить.
+2. Некоторые скидки лагеря выглядят как «городской летний лагерь — 10%.» без условия применения прямо в клиентской строке.
+3. 241 чувствительный к дате факт имеет `freshness_check_date`, но не имеет `valid_until`.
+4. `post_filter_registry.json` содержит часть описательных фраз, которые нужно проверить как реальные матчеры.
+5. `approval_queue_for_rop_v3.csv` и полный snapshot лежат в bot pack; это удобно для ревью, но не обязательно нужно runtime-боту.
+
+Эти замечания должны стать отдельным блоком до выхода на лояльных клиентов.
+
+## Какой пакет проверять
+
+Для смыслового аудита базы знаний сначала проверять:
+
+```text
+product_data/knowledge_base/kb_release_20260518_v3_2_bot_pack/
+```
+
+Почему: это пакет, который будет использовать будущий бот. Он содержит раздельные факты по брендам, фильтры, полный реестр и контракт использования.
+
+Для проверки удобства сотрудников отдельно смотреть:
+
+```text
+product_data/knowledge_base/kb_release_20260518_v3_2_employee_pack/
+```
+
+Не выбирать «последнюю папку» автоматически: рядом лежат smoke, fake и input-папки, которые не являются релизом для аудита.
+
+## Архитектурный контракт Claude ↔ Codex
+
+Codex отвечает за:
+
+- код;
+- сборку машинных релизов;
+- тесты;
+- semantic gate;
+- audit packs;
+- коммиты.
+
+Claude отвечает за:
+
+- независимый смысловой аудит;
+- поиск спорных фактов и бизнес-рисков;
+- проверку бренд-разделения;
+- проверку полезности черновиков для менеджера;
+- отчёт с verdict: `PASS`, `PASS_WITH_NOTES`, `BLOCKED`.
+
+Claude CLI в этом проекте должен работать как read-only ревьюер. Исправления вносит Codex после решения Дмитрия.
+
+## Semantic review
+
+Зелёные тесты и `quality_passed=true` означают только `formal_pass`.
+
+Для клиентских текстов, базы знаний, Telegram/email-черновиков, AMO/Tallanto/CRM-текстов нужен отдельный `semantic_pass`.
+
+Обязательные проверки:
+
+- факты правдоподобны;
+- цены, проценты, даты и количества не перепутаны;
+- скидки имеют условия применения;
+- промокоды не попали в клиентский слой;
+- бренд не смешан;
+- внутренние юр.данные не попали в клиентский текст;
+- клиенту не показываются `source_id`, `fact_id`, JSON, debug-текст;
+- bot pack не разрешает прямую отправку клиенту;
+- high-risk темы не ослаблены.
+
+Автоматический gate:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_kb_semantic_review.py \
+  --release-dir product_data/knowledge_base/kb_release_20260518_v3_2_handoff_for_claude_and_team
+```
+
+Для bot pack дополнительно вручную проверить:
+
+- `client_safe_facts_foton.jsonl`;
+- `client_safe_facts_unpk.jsonl`;
+- `manager_only_or_internal_facts.jsonl`;
+- `BOT_USAGE_CONTRACT.md`;
+- `ACTIVE_BRAND_RULES.md`;
+- `post_filter_registry.json`.
+
+## Что нельзя делать без Дмитрия
+
+- запускать ASR;
+- запускать Resolve+Analyze;
+- писать в AMO/CRM/Tallanto;
+- отправлять сообщения клиентам;
+- менять `stable_runtime`;
+- удалять файлы;
+- делать `git reset`, `git checkout`, `git clean`;
+- запускать live-write скрипты;
+- менять исходные YAML Claude как будто это новая правда.
+
+## Где смотреть историю
+
+История итераций и причины решений лежат в:
+
+```text
+PROJECT_HISTORY.md
+```
+
+Этот файл не является источником текущей правды. Если он спорит с `CLAUDE.md`, верить `CLAUDE.md`.
+
+## Где сохранять отчёты Claude CLI
+
+Claude CLI сохраняет результат аудита в:
+
+```text
+audits/_inbox/claude_cli_kb_review_<timestamp>/
+```
+
+Файл отчёта:
+
+```text
+claude_review.md
+```
+
+Claude CLI не должен менять код, тесты, docs, stable_runtime или продуктовые артефакты.

@@ -42,10 +42,12 @@ def test_distribution_packs_split_employee_and_bot_outputs(tmp_path: Path) -> No
     assert [item["brand"] for item in manager_only] == ["internal"]
 
     bot_manifest = json.loads((bot_out / "manifest.json").read_text(encoding="utf-8"))
+    bot_contract = (bot_out / "BOT_USAGE_CONTRACT.md").read_text(encoding="utf-8")
     assert bot_manifest["formal_pass"] is True
     assert bot_manifest["semantic_pass"] is True
     assert bot_manifest["safety"]["client_auto_send"] is False
     assert bot_manifest["safety"]["crm_write"] is False
+    assert "не подставляет `client_safe_text` дословно" in bot_contract
 
 
 def test_distribution_packs_reject_stable_runtime_outputs(tmp_path: Path) -> None:

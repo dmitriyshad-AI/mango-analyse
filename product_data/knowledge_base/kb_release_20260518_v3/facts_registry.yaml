@@ -422,10 +422,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 foton / discounts / already paid 2026 27
-  fact_text: 'Фотон: скидка — 10%.'
+  fact_text: 'Фотон: городской летний лагерь — 10%.'
   short_fact: ls city 2026 foton / discounts / already paid 2026 27
-  client_safe_text: 'Фотон: скидка — 10%.'
-  manager_check_text: 'Фотон: скидка — 10%.'
+  client_safe_text: 'Фотон: городской летний лагерь — 10%.'
+  manager_check_text: 'Фотон: городской летний лагерь — 10%.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -482,10 +482,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 foton / discounts / former student same brand
-  fact_text: 'Фотон: скидка — 5% Фотон → Фотон.'
+  fact_text: 'Фотон: городской летний лагерь — 5% Фотон → Фотон.'
   short_fact: ls city 2026 foton / discounts / former student same brand
-  client_safe_text: 'Фотон: скидка — 5% Фотон → Фотон.'
-  manager_check_text: 'Фотон: скидка — 5% Фотон → Фотон.'
+  client_safe_text: 'Фотон: городской летний лагерь — 5% Фотон → Фотон.'
+  manager_check_text: 'Фотон: городской летний лагерь — 5% Фотон → Фотон.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -542,10 +542,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 foton / discounts / multichild
-  fact_text: 'Фотон: скидка — 10%.'
+  fact_text: 'Фотон: городской летний лагерь — 10%.'
   short_fact: ls city 2026 foton / discounts / multichild
-  client_safe_text: 'Фотон: скидка — 10%.'
-  manager_check_text: 'Фотон: скидка — 10%.'
+  client_safe_text: 'Фотон: городской летний лагерь — 10%.'
+  manager_check_text: 'Фотон: городской летний лагерь — 10%.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -602,10 +602,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 foton / discounts / refer a friend / advanced
-  fact_text: 'Фотон: скидка — 5 000.'
+  fact_text: 'Фотон: городской летний лагерь — 5 000.'
   short_fact: ls city 2026 foton / discounts / refer a friend / advanced
-  client_safe_text: 'Фотон: скидка — 5 000.'
-  manager_check_text: 'Фотон: скидка — 5 000.'
+  client_safe_text: 'Фотон: городской летний лагерь — 5 000.'
+  manager_check_text: 'Фотон: городской летний лагерь — 5 000.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -661,10 +661,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 foton / discounts / refer a friend / base
-  fact_text: 'Фотон: скидка — 3 000.'
+  fact_text: 'Фотон: городской летний лагерь, базовый вариант — 3 000.'
   short_fact: ls city 2026 foton / discounts / refer a friend / base
-  client_safe_text: 'Фотон: скидка — 3 000.'
-  manager_check_text: 'Фотон: скидка — 3 000.'
+  client_safe_text: 'Фотон: городской летний лагерь, базовый вариант — 3 000.'
+  manager_check_text: 'Фотон: городской летний лагерь, базовый вариант — 3 000.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -720,12 +720,11 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 foton / format
-  fact_text: 'Фотон: ls city 2026 foton , format — Очная городская школа, без проживания.'
+  fact_text: 'Фотон: городской летний лагерь — Очная городская школа, без проживания.'
   short_fact: ls city 2026 foton / format
-  client_safe_text: 'Фотон: ls city 2026 foton , format — Очная городская школа, без
+  client_safe_text: 'Фотон: городской летний лагерь — Очная городская школа, без проживания.'
+  manager_check_text: 'Фотон: городской летний лагерь — Очная городская школа, без
     проживания.'
-  manager_check_text: 'Фотон: ls city 2026 foton , format — Очная городская школа,
-    без проживания.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -779,10 +778,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 foton / free morning club / from day
-  fact_text: 'Фотон: free morning club , from day — 2.'
+  fact_text: 'Фотон: городской летний лагерь — 2.'
   short_fact: ls city 2026 foton / free morning club / from day
-  client_safe_text: 'Фотон: free morning club , from day — 2.'
-  manager_check_text: 'Фотон: free morning club , from day — 2.'
+  client_safe_text: 'Фотон: городской летний лагерь — 2.'
+  manager_check_text: 'Фотон: городской летний лагерь — 2.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -837,10 +836,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 foton / free morning club / name
-  fact_text: 'Фотон: free morning club , name — Утренний клуб Предлёнка.'
+  fact_text: 'Фотон: городской летний лагерь, название — Утренний клуб Предлёнка.'
   short_fact: ls city 2026 foton / free morning club / name
-  client_safe_text: 'Фотон: free morning club , name — Утренний клуб Предлёнка.'
-  manager_check_text: 'Фотон: free morning club , name — Утренний клуб Предлёнка.'
+  client_safe_text: 'Фотон: городской летний лагерь, название — Утренний клуб Предлёнка.'
+  manager_check_text: 'Фотон: городской летний лагерь, название — Утренний клуб Предлёнка.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -894,10 +893,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 foton / free morning club / time
-  fact_text: 'Фотон: free morning club , time — 09:45-11:45.'
+  fact_text: 'Фотон: городской летний лагерь — 09:45-11:45.'
   short_fact: ls city 2026 foton / free morning club / time
-  client_safe_text: 'Фотон: free morning club , time — 09:45-11:45.'
-  manager_check_text: 'Фотон: free morning club , time — 09:45-11:45.'
+  client_safe_text: 'Фотон: городской летний лагерь — 09:45-11:45.'
+  manager_check_text: 'Фотон: городской летний лагерь — 09:45-11:45.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -952,12 +951,12 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 foton / meals
-  fact_text: 'Фотон: ls city 2026 foton , meals — Обед (первое, второе, салат, булочка)
+  fact_text: 'Фотон: городской летний лагерь — Обед (первое, второе, салат, булочка)
     + полдник.'
   short_fact: ls city 2026 foton / meals
-  client_safe_text: 'Фотон: ls city 2026 foton , meals — Обед (первое, второе, салат,
+  client_safe_text: 'Фотон: городской летний лагерь — Обед (первое, второе, салат,
     булочка) + полдник.'
-  manager_check_text: 'Фотон: ls city 2026 foton , meals — Обед (первое, второе, салат,
+  manager_check_text: 'Фотон: городской летний лагерь — Обед (первое, второе, салат,
     булочка) + полдник.'
   internal_text: ''
   brand: foton
@@ -1012,10 +1011,10 @@ items:
   fact_types:
   - deadline
   title: ls city 2026 foton / moscow foton / dates
-  fact_text: 'Фотон: moscow foton , dates — 3-14 августа.'
+  fact_text: 'Фотон: городской летний лагерь, Москва, даты — 3-14 августа.'
   short_fact: ls city 2026 foton / moscow foton / dates
-  client_safe_text: 'Фотон: moscow foton , dates — 3-14 августа.'
-  manager_check_text: 'Фотон: moscow foton , dates — 3-14 августа.'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва, даты — 3-14 августа.'
+  manager_check_text: 'Фотон: городской летний лагерь, Москва, даты — 3-14 августа.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -1070,13 +1069,13 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 foton / moscow foton / location
-  fact_text: 'Фотон: адрес и место занятий — Сретенка или Скорняжный (точный адрес
-    уточняется).'
+  fact_text: 'Фотон: городской летний лагерь, Москва — Сретенка или Скорняжный (точный
+    адрес уточняется).'
   short_fact: ls city 2026 foton / moscow foton / location
-  client_safe_text: 'Фотон: адрес и место занятий — Сретенка или Скорняжный (точный
-    адрес уточняется).'
-  manager_check_text: 'Фотон: адрес и место занятий — Сретенка или Скорняжный (точный
-    адрес уточняется).'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва — Сретенка или Скорняжный
+    (точный адрес уточняется).'
+  manager_check_text: 'Фотон: городской летний лагерь, Москва — Сретенка или Скорняжный
+    (точный адрес уточняется).'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -1130,10 +1129,12 @@ items:
   fact_types:
   - price
   title: ls city 2026 foton / moscow foton / prices / base
-  fact_text: 'Фотон: prices , base — 34 300 ₽.'
+  fact_text: 'Фотон: городской летний лагерь, Москва, базовый вариант — 34 300 ₽.'
   short_fact: ls city 2026 foton / moscow foton / prices / base
-  client_safe_text: 'Фотон: prices , base — 34 300 ₽.'
-  manager_check_text: 'Фотон: prices , base — 34 300 ₽.'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва, базовый вариант — 34
+    300 ₽.'
+  manager_check_text: 'Фотон: городской летний лагерь, Москва, базовый вариант — 34
+    300 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -1189,10 +1190,13 @@ items:
   fact_types:
   - price
   title: ls city 2026 foton / moscow foton / prices / plus full
-  fact_text: 'Фотон: prices , plus full — 59 000 ₽.'
+  fact_text: 'Фотон: городской летний лагерь, Москва, расширенный вариант на полный
+    день — 59 000 ₽.'
   short_fact: ls city 2026 foton / moscow foton / prices / plus full
-  client_safe_text: 'Фотон: prices , plus full — 59 000 ₽.'
-  manager_check_text: 'Фотон: prices , plus full — 59 000 ₽.'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва, расширенный вариант на
+    полный день — 59 000 ₽.'
+  manager_check_text: 'Фотон: городской летний лагерь, Москва, расширенный вариант
+    на полный день — 59 000 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -1248,10 +1252,13 @@ items:
   fact_types:
   - price
   title: ls city 2026 foton / moscow foton / prices / plus half
-  fact_text: 'Фотон: prices , plus half — 49 000 ₽.'
+  fact_text: 'Фотон: городской летний лагерь, Москва, расширенный вариант на полдня
+    — 49 000 ₽.'
   short_fact: ls city 2026 foton / moscow foton / prices / plus half
-  client_safe_text: 'Фотон: prices , plus half — 49 000 ₽.'
-  manager_check_text: 'Фотон: prices , plus half — 49 000 ₽.'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва, расширенный вариант на
+    полдня — 49 000 ₽.'
+  manager_check_text: 'Фотон: городской летний лагерь, Москва, расширенный вариант
+    на полдня — 49 000 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -1307,13 +1314,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 foton / not to confuse with
-  fact_text: 'Фотон: ls city 2026 foton , not to confuse with — ЛВШ выездная — другой
-    продукт.'
+  fact_text: 'Фотон: городской летний лагерь — ЛВШ выездная — другой продукт.'
   short_fact: ls city 2026 foton / not to confuse with
-  client_safe_text: 'Фотон: ls city 2026 foton , not to confuse with — ЛВШ выездная
-    — другой продукт.'
-  manager_check_text: 'Фотон: ls city 2026 foton , not to confuse with — ЛВШ выездная
-    — другой продукт.'
+  client_safe_text: 'Фотон: городской летний лагерь — ЛВШ выездная — другой продукт.'
+  manager_check_text: 'Фотон: городской летний лагерь — ЛВШ выездная — другой продукт.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -2975,10 +2979,10 @@ items:
   fact_types:
   - program
   title: individual lessons foton / format
-  fact_text: 'Фотон: individual lessons foton , format — Только онлайн, 1-на-1.'
+  fact_text: 'Фотон: индивидуальные занятия — Только онлайн, 1-на-1.'
   short_fact: individual lessons foton / format
-  client_safe_text: 'Фотон: individual lessons foton , format — Только онлайн, 1-на-1.'
-  manager_check_text: 'Фотон: individual lessons foton , format — Только онлайн, 1-на-1.'
+  client_safe_text: 'Фотон: индивидуальные занятия — Только онлайн, 1-на-1.'
+  manager_check_text: 'Фотон: индивидуальные занятия — Только онлайн, 1-на-1.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -3034,15 +3038,15 @@ items:
   fact_types:
   - program
   title: individual lessons foton / note internal
-  fact_text: 'Фотон: individual lessons foton , note internal — В источнике также
-    упоминался пакет до 39 000 — уточнить полный прайс у бухгалтерии..'
+  fact_text: 'Фотон: индивидуальные занятия — В источнике также упоминался пакет до
+    39 000 — уточнить полный прайс у бухгалтерии..'
   short_fact: individual lessons foton / note internal
   client_safe_text: ''
-  manager_check_text: 'Фотон: individual lessons foton , note internal — В источнике
-    также упоминался пакет до 39 000 — уточнить полный прайс у бухгалтерии.. [client_blocked:
-    internal_only, manager_only_route]'
-  internal_text: 'Фотон: individual lessons foton , note internal — В источнике также
-    упоминался пакет до 39 000 — уточнить полный прайс у бухгалтерии..'
+  manager_check_text: 'Фотон: индивидуальные занятия — В источнике также упоминался
+    пакет до 39 000 — уточнить полный прайс у бухгалтерии.. [client_blocked: internal_only,
+    manager_only_route]'
+  internal_text: 'Фотон: индивидуальные занятия — В источнике также упоминался пакет
+    до 39 000 — уточнить полный прайс у бухгалтерии..'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -3101,10 +3105,10 @@ items:
   fact_types:
   - price
   title: individual lessons foton / prices / lesson 45min
-  fact_text: 'Фотон: prices , lesson 45min — 3 900 ₽.'
+  fact_text: 'Фотон: индивидуальные занятия, занятие 45 минут — 3 900 ₽.'
   short_fact: individual lessons foton / prices / lesson 45min
-  client_safe_text: 'Фотон: prices , lesson 45min — 3 900 ₽.'
-  manager_check_text: 'Фотон: prices , lesson 45min — 3 900 ₽.'
+  client_safe_text: 'Фотон: индивидуальные занятия, занятие 45 минут — 3 900 ₽.'
+  manager_check_text: 'Фотон: индивидуальные занятия, занятие 45 минут — 3 900 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -3161,10 +3165,10 @@ items:
   fact_types:
   - price
   title: individual lessons foton / prices / package 5 sessions
-  fact_text: 'Фотон: prices , package 5 sessions — 23 000 ₽.'
+  fact_text: 'Фотон: индивидуальные занятия, пакет 5 занятий — 23 000 ₽.'
   short_fact: individual lessons foton / prices / package 5 sessions
-  client_safe_text: 'Фотон: prices , package 5 sessions — 23 000 ₽.'
-  manager_check_text: 'Фотон: prices , package 5 sessions — 23 000 ₽.'
+  client_safe_text: 'Фотон: индивидуальные занятия, пакет 5 занятий — 23 000 ₽.'
+  manager_check_text: 'Фотон: индивидуальные занятия, пакет 5 занятий — 23 000 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -3221,10 +3225,10 @@ items:
   fact_types:
   - price
   title: individual lessons foton / prices / session 90min
-  fact_text: 'Фотон: prices , session 90min — 6 900 ₽.'
+  fact_text: 'Фотон: индивидуальные занятия, занятие 90 минут — 6 900 ₽.'
   short_fact: individual lessons foton / prices / session 90min
-  client_safe_text: 'Фотон: prices , session 90min — 6 900 ₽.'
-  manager_check_text: 'Фотон: prices , session 90min — 6 900 ₽.'
+  client_safe_text: 'Фотон: индивидуальные занятия, занятие 90 минут — 6 900 ₽.'
+  manager_check_text: 'Фотон: индивидуальные занятия, занятие 90 минут — 6 900 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4270,10 +4274,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege intensive / available in foton
-  fact_text: 'Фотон: ege intensive , available in foton — нет.'
+  fact_text: 'Фотон: интенсивы 2026 — нет.'
   short_fact: intensives 2026 / ege intensive / available in foton
-  client_safe_text: 'Фотон: ege intensive , available in foton — нет.'
-  manager_check_text: 'Фотон: ege intensive , available in foton — нет.'
+  client_safe_text: 'Фотон: интенсивы 2026 — нет.'
+  manager_check_text: 'Фотон: интенсивы 2026 — нет.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4327,13 +4331,13 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege intensive / bot behavior when asked
-  fact_text: 'Фотон: ege intensive , bot behavior when asked — По интенсиву на ЕГЭ
-    менеджер подскажет варианты — свяжется в течение рабочего дня..'
+  fact_text: 'Фотон: интенсивы 2026 — По интенсиву на ЕГЭ менеджер подскажет варианты
+    — свяжется в течение рабочего дня..'
   short_fact: intensives 2026 / ege intensive / bot behavior when asked
-  client_safe_text: 'Фотон: ege intensive , bot behavior when asked — По интенсиву
-    на ЕГЭ менеджер подскажет варианты — свяжется в течение рабочего дня..'
-  manager_check_text: 'Фотон: ege intensive , bot behavior when asked — По интенсиву
-    на ЕГЭ менеджер подскажет варианты — свяжется в течение рабочего дня..'
+  client_safe_text: 'Фотон: интенсивы 2026 — По интенсиву на ЕГЭ менеджер подскажет
+    варианты — свяжется в течение рабочего дня..'
+  manager_check_text: 'Фотон: интенсивы 2026 — По интенсиву на ЕГЭ менеджер подскажет
+    варианты — свяжется в течение рабочего дня..'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4388,15 +4392,14 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege intensive / note internal
-  fact_text: 'Фотон: ege intensive , note internal — Годовые ЕГЭ-курсы у Фотона есть
-    (например, ЕГЭ по русскому), но это не интенсив..'
+  fact_text: 'Фотон: интенсивы 2026 — Годовые ЕГЭ-курсы у Фотона есть (например, ЕГЭ
+    по русскому), но это не интенсив..'
   short_fact: intensives 2026 / ege intensive / note internal
   client_safe_text: ''
-  manager_check_text: 'Фотон: ege intensive , note internal — Годовые ЕГЭ-курсы у
-    Фотона есть (например, ЕГЭ по русскому), но это не интенсив.. [client_blocked:
-    internal_only, manager_only_route]'
-  internal_text: 'Фотон: ege intensive , note internal — Годовые ЕГЭ-курсы у Фотона
-    есть (например, ЕГЭ по русскому), но это не интенсив..'
+  manager_check_text: 'Фотон: интенсивы 2026 — Годовые ЕГЭ-курсы у Фотона есть (например,
+    ЕГЭ по русскому), но это не интенсив.. [client_blocked: internal_only, manager_only_route]'
+  internal_text: 'Фотон: интенсивы 2026 — Годовые ЕГЭ-курсы у Фотона есть (например,
+    ЕГЭ по русскому), но это не интенсив..'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -4453,10 +4456,10 @@ items:
   fact_types:
   - course_parameter
   title: intensives 2026 / oge foton / classes
-  fact_text: 'Фотон: oge foton , classes, классы — 8-9.'
+  fact_text: 'Фотон: интенсивы 2026, классы — 8-9.'
   short_fact: intensives 2026 / oge foton / classes
-  client_safe_text: 'Фотон: oge foton , classes, классы — 8-9.'
-  manager_check_text: 'Фотон: oge foton , classes, классы — 8-9.'
+  client_safe_text: 'Фотон: интенсивы 2026, классы — 8-9.'
+  manager_check_text: 'Фотон: интенсивы 2026, классы — 8-9.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4511,10 +4514,10 @@ items:
   fact_types:
   - course_parameter
   title: intensives 2026 / oge foton / duration weeks
-  fact_text: 'Фотон: oge foton , duration weeks — 7.'
+  fact_text: 'Фотон: интенсивы 2026 — 7.'
   short_fact: intensives 2026 / oge foton / duration weeks
-  client_safe_text: 'Фотон: oge foton , duration weeks — 7.'
-  manager_check_text: 'Фотон: oge foton , duration weeks — 7.'
+  client_safe_text: 'Фотон: интенсивы 2026 — 7.'
+  manager_check_text: 'Фотон: интенсивы 2026 — 7.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4570,10 +4573,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / format
-  fact_text: 'Фотон: oge foton , format — онлайн, 2 занятия/нед после 18:00.'
+  fact_text: 'Фотон: интенсивы 2026 — онлайн, 2 занятия/нед после 18:00.'
   short_fact: intensives 2026 / oge foton / format
-  client_safe_text: 'Фотон: oge foton , format — онлайн, 2 занятия/нед после 18:00.'
-  manager_check_text: 'Фотон: oge foton , format — онлайн, 2 занятия/нед после 18:00.'
+  client_safe_text: 'Фотон: интенсивы 2026 — онлайн, 2 занятия/нед после 18:00.'
+  manager_check_text: 'Фотон: интенсивы 2026 — онлайн, 2 занятия/нед после 18:00.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4628,10 +4631,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / group size
-  fact_text: 'Фотон: oge foton , group size — 10-15.'
+  fact_text: 'Фотон: интенсивы 2026 — 10-15.'
   short_fact: intensives 2026 / oge foton / group size
-  client_safe_text: 'Фотон: oge foton , group size — 10-15.'
-  manager_check_text: 'Фотон: oge foton , group size — 10-15.'
+  client_safe_text: 'Фотон: интенсивы 2026 — 10-15.'
+  manager_check_text: 'Фотон: интенсивы 2026 — 10-15.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4686,10 +4689,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / includes / 1
-  fact_text: 'Фотон: includes , 1 — 14 вебинаров.'
+  fact_text: 'Фотон: интенсивы 2026 — 14 вебинаров.'
   short_fact: intensives 2026 / oge foton / includes / 1
-  client_safe_text: 'Фотон: includes , 1 — 14 вебинаров.'
-  manager_check_text: 'Фотон: includes , 1 — 14 вебинаров.'
+  client_safe_text: 'Фотон: интенсивы 2026 — 14 вебинаров.'
+  manager_check_text: 'Фотон: интенсивы 2026 — 14 вебинаров.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4744,10 +4747,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / includes / 2
-  fact_text: 'Фотон: includes , 2 — Проверка ДЗ куратором.'
+  fact_text: 'Фотон: интенсивы 2026 — Проверка ДЗ куратором.'
   short_fact: intensives 2026 / oge foton / includes / 2
-  client_safe_text: 'Фотон: includes , 2 — Проверка ДЗ куратором.'
-  manager_check_text: 'Фотон: includes , 2 — Проверка ДЗ куратором.'
+  client_safe_text: 'Фотон: интенсивы 2026 — Проверка ДЗ куратором.'
+  manager_check_text: 'Фотон: интенсивы 2026 — Проверка ДЗ куратором.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4801,10 +4804,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / includes / 3
-  fact_text: 'Фотон: includes , 3 — Конспекты.'
+  fact_text: 'Фотон: интенсивы 2026 — Конспекты.'
   short_fact: intensives 2026 / oge foton / includes / 3
-  client_safe_text: 'Фотон: includes , 3 — Конспекты.'
-  manager_check_text: 'Фотон: includes , 3 — Конспекты.'
+  client_safe_text: 'Фотон: интенсивы 2026 — Конспекты.'
+  manager_check_text: 'Фотон: интенсивы 2026 — Конспекты.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4858,10 +4861,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / includes / 4
-  fact_text: 'Фотон: includes , 4 — 3 пробника.'
+  fact_text: 'Фотон: интенсивы 2026 — 3 пробника.'
   short_fact: intensives 2026 / oge foton / includes / 4
-  client_safe_text: 'Фотон: includes , 4 — 3 пробника.'
-  manager_check_text: 'Фотон: includes , 4 — 3 пробника.'
+  client_safe_text: 'Фотон: интенсивы 2026 — 3 пробника.'
+  manager_check_text: 'Фотон: интенсивы 2026 — 3 пробника.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4916,10 +4919,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / includes / 5
-  fact_text: 'Фотон: includes , 5 — Чат.'
+  fact_text: 'Фотон: интенсивы 2026 — Чат.'
   short_fact: intensives 2026 / oge foton / includes / 5
-  client_safe_text: 'Фотон: includes , 5 — Чат.'
-  manager_check_text: 'Фотон: includes , 5 — Чат.'
+  client_safe_text: 'Фотон: интенсивы 2026 — Чат.'
+  manager_check_text: 'Фотон: интенсивы 2026 — Чат.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -4973,10 +4976,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / includes / 6
-  fact_text: 'Фотон: includes , 6 — Психподдержка.'
+  fact_text: 'Фотон: интенсивы 2026 — Психподдержка.'
   short_fact: intensives 2026 / oge foton / includes / 6
-  client_safe_text: 'Фотон: includes , 6 — Психподдержка.'
-  manager_check_text: 'Фотон: includes , 6 — Психподдержка.'
+  client_safe_text: 'Фотон: интенсивы 2026 — Психподдержка.'
+  manager_check_text: 'Фотон: интенсивы 2026 — Психподдержка.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5030,10 +5033,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / includes / 7
-  fact_text: 'Фотон: includes , 7 — Записи до конца июня.'
+  fact_text: 'Фотон: интенсивы 2026 — Записи до конца июня.'
   short_fact: intensives 2026 / oge foton / includes / 7
-  client_safe_text: 'Фотон: includes , 7 — Записи до конца июня.'
-  manager_check_text: 'Фотон: includes , 7 — Записи до конца июня.'
+  client_safe_text: 'Фотон: интенсивы 2026 — Записи до конца июня.'
+  manager_check_text: 'Фотон: интенсивы 2026 — Записи до конца июня.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5087,10 +5090,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / links / math
-  fact_text: 'Фотон: links , math — https://my.mts-link.ru/course-info/2018411.'
+  fact_text: 'Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2018411.'
   short_fact: intensives 2026 / oge foton / links / math
-  client_safe_text: 'Фотон: links , math — https://my.mts-link.ru/course-info/2018411.'
-  manager_check_text: 'Фотон: links , math — https://my.mts-link.ru/course-info/2018411.'
+  client_safe_text: 'Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2018411.'
+  manager_check_text: 'Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2018411.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5145,10 +5148,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / links / physics
-  fact_text: 'Фотон: links , physics — https://my.mts-link.ru/course-info/2019323.'
+  fact_text: 'Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2019323.'
   short_fact: intensives 2026 / oge foton / links / physics
-  client_safe_text: 'Фотон: links , physics — https://my.mts-link.ru/course-info/2019323.'
-  manager_check_text: 'Фотон: links , physics — https://my.mts-link.ru/course-info/2019323.'
+  client_safe_text: 'Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2019323.'
+  manager_check_text: 'Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2019323.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5203,10 +5206,11 @@ items:
   fact_types:
   - price
   title: intensives 2026 / oge foton / prices after 2026 04 07 / one block
-  fact_text: 'Фотон: prices after 2026 04 07 , one block — 11 490 ₽.'
+  fact_text: 'Фотон: интенсивы 2026, после 07.04.2026, один блок — 11 490 ₽.'
   short_fact: intensives 2026 / oge foton / prices after 2026 04 07 / one block
-  client_safe_text: 'Фотон: prices after 2026 04 07 , one block — 11 490 ₽.'
-  manager_check_text: 'Фотон: prices after 2026 04 07 , one block — 11 490 ₽.'
+  client_safe_text: 'Фотон: интенсивы 2026, после 07.04.2026, один блок — 11 490 ₽.'
+  manager_check_text: 'Фотон: интенсивы 2026, после 07.04.2026, один блок — 11 490
+    ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5262,10 +5266,12 @@ items:
   fact_types:
   - price
   title: intensives 2026 / oge foton / prices after 2026 04 07 / one subject
-  fact_text: 'Фотон: prices after 2026 04 07 , one subject — 19 900 ₽.'
+  fact_text: 'Фотон: интенсивы 2026, после 07.04.2026, один предмет — 19 900 ₽.'
   short_fact: intensives 2026 / oge foton / prices after 2026 04 07 / one subject
-  client_safe_text: 'Фотон: prices after 2026 04 07 , one subject — 19 900 ₽.'
-  manager_check_text: 'Фотон: prices after 2026 04 07 , one subject — 19 900 ₽.'
+  client_safe_text: 'Фотон: интенсивы 2026, после 07.04.2026, один предмет — 19 900
+    ₽.'
+  manager_check_text: 'Фотон: интенсивы 2026, после 07.04.2026, один предмет — 19
+    900 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5321,10 +5327,12 @@ items:
   fact_types:
   - price
   title: intensives 2026 / oge foton / prices after 2026 04 07 / two subjects
-  fact_text: 'Фотон: prices after 2026 04 07 , two subjects — 32 900 ₽.'
+  fact_text: 'Фотон: интенсивы 2026, после 07.04.2026, два предмета — 32 900 ₽.'
   short_fact: intensives 2026 / oge foton / prices after 2026 04 07 / two subjects
-  client_safe_text: 'Фотон: prices after 2026 04 07 , two subjects — 32 900 ₽.'
-  manager_check_text: 'Фотон: prices after 2026 04 07 , two subjects — 32 900 ₽.'
+  client_safe_text: 'Фотон: интенсивы 2026, после 07.04.2026, два предмета — 32 900
+    ₽.'
+  manager_check_text: 'Фотон: интенсивы 2026, после 07.04.2026, два предмета — 32
+    900 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5380,10 +5388,10 @@ items:
   fact_types:
   - price
   title: intensives 2026 / oge foton / prices before 2026 04 07 / one block
-  fact_text: 'Фотон: prices before 2026 04 07 , one block — 9 900 ₽.'
+  fact_text: 'Фотон: интенсивы 2026, до 07.04.2026, один блок — 9 900 ₽.'
   short_fact: intensives 2026 / oge foton / prices before 2026 04 07 / one block
-  client_safe_text: 'Фотон: prices before 2026 04 07 , one block — 9 900 ₽.'
-  manager_check_text: 'Фотон: prices before 2026 04 07 , one block — 9 900 ₽.'
+  client_safe_text: 'Фотон: интенсивы 2026, до 07.04.2026, один блок — 9 900 ₽.'
+  manager_check_text: 'Фотон: интенсивы 2026, до 07.04.2026, один блок — 9 900 ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5440,10 +5448,11 @@ items:
   fact_types:
   - price
   title: intensives 2026 / oge foton / prices before 2026 04 07 / one subject
-  fact_text: 'Фотон: prices before 2026 04 07 , one subject — 16 900 ₽.'
+  fact_text: 'Фотон: интенсивы 2026, до 07.04.2026, один предмет — 16 900 ₽.'
   short_fact: intensives 2026 / oge foton / prices before 2026 04 07 / one subject
-  client_safe_text: 'Фотон: prices before 2026 04 07 , one subject — 16 900 ₽.'
-  manager_check_text: 'Фотон: prices before 2026 04 07 , one subject — 16 900 ₽.'
+  client_safe_text: 'Фотон: интенсивы 2026, до 07.04.2026, один предмет — 16 900 ₽.'
+  manager_check_text: 'Фотон: интенсивы 2026, до 07.04.2026, один предмет — 16 900
+    ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5500,10 +5509,11 @@ items:
   fact_types:
   - price
   title: intensives 2026 / oge foton / prices before 2026 04 07 / two subjects
-  fact_text: 'Фотон: prices before 2026 04 07 , two subjects — 27 720 ₽.'
+  fact_text: 'Фотон: интенсивы 2026, до 07.04.2026, два предмета — 27 720 ₽.'
   short_fact: intensives 2026 / oge foton / prices before 2026 04 07 / two subjects
-  client_safe_text: 'Фотон: prices before 2026 04 07 , two subjects — 27 720 ₽.'
-  manager_check_text: 'Фотон: prices before 2026 04 07 , two subjects — 27 720 ₽.'
+  client_safe_text: 'Фотон: интенсивы 2026, до 07.04.2026, два предмета — 27 720 ₽.'
+  manager_check_text: 'Фотон: интенсивы 2026, до 07.04.2026, два предмета — 27 720
+    ₽.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5560,10 +5570,10 @@ items:
   fact_types:
   - deadline
   title: intensives 2026 / oge foton / start date
-  fact_text: 'Фотон: oge foton , start date — 13 апреля 2026.'
+  fact_text: 'Фотон: интенсивы 2026, дата старта — 13 апреля 2026.'
   short_fact: intensives 2026 / oge foton / start date
-  client_safe_text: 'Фотон: oge foton , start date — 13 апреля 2026.'
-  manager_check_text: 'Фотон: oge foton , start date — 13 апреля 2026.'
+  client_safe_text: 'Фотон: интенсивы 2026, дата старта — 13 апреля 2026.'
+  manager_check_text: 'Фотон: интенсивы 2026, дата старта — 13 апреля 2026.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5618,10 +5628,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / subjects / 1
-  fact_text: 'Фотон: subjects , 1 — математика.'
+  fact_text: 'Фотон: интенсивы 2026 — математика.'
   short_fact: intensives 2026 / oge foton / subjects / 1
-  client_safe_text: 'Фотон: subjects , 1 — математика.'
-  manager_check_text: 'Фотон: subjects , 1 — математика.'
+  client_safe_text: 'Фотон: интенсивы 2026 — математика.'
+  manager_check_text: 'Фотон: интенсивы 2026 — математика.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5675,10 +5685,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / subjects / 2
-  fact_text: 'Фотон: subjects , 2 — физика.'
+  fact_text: 'Фотон: интенсивы 2026 — физика.'
   short_fact: intensives 2026 / oge foton / subjects / 2
-  client_safe_text: 'Фотон: subjects , 2 — физика.'
-  manager_check_text: 'Фотон: subjects , 2 — физика.'
+  client_safe_text: 'Фотон: интенсивы 2026 — физика.'
+  manager_check_text: 'Фотон: интенсивы 2026 — физика.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5732,12 +5742,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton / vk chat 9
-  fact_text: 'Фотон: oge foton , vk chat 9 — https://vk.me/join/3nehyHq4QR7 Lvm89Iymtzn1NEZP51CDLYY=.'
+  fact_text: 'Фотон: интенсивы 2026 — https://vk.me/join/3nehyHq4QR7 Lvm89Iymtzn1NEZP51CDLYY=.'
   short_fact: intensives 2026 / oge foton / vk chat 9
-  client_safe_text: 'Фотон: oge foton , vk chat 9 — https://vk.me/join/3nehyHq4QR7
-    Lvm89Iymtzn1NEZP51CDLYY=.'
-  manager_check_text: 'Фотон: oge foton , vk chat 9 — https://vk.me/join/3nehyHq4QR7
-    Lvm89Iymtzn1NEZP51CDLYY=.'
+  client_safe_text: 'Фотон: интенсивы 2026 — https://vk.me/join/3nehyHq4QR7 Lvm89Iymtzn1NEZP51CDLYY=.'
+  manager_check_text: 'Фотон: интенсивы 2026 — https://vk.me/join/3nehyHq4QR7 Lvm89Iymtzn1NEZP51CDLYY=.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -5792,12 +5800,12 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton teachers / 1 / name
-  fact_text: 'Фотон: 1 , name — Редичкина.'
+  fact_text: 'Фотон: интенсивы 2026, название — Редичкина.'
   short_fact: intensives 2026 / oge foton teachers / 1 / name
   client_safe_text: ''
-  manager_check_text: 'Фотон: 1 , name — Редичкина. [client_blocked: internal_only,
-    manager_only_route]'
-  internal_text: 'Фотон: 1 , name — Редичкина.'
+  manager_check_text: 'Фотон: интенсивы 2026, название — Редичкина. [client_blocked:
+    internal_only, manager_only_route]'
+  internal_text: 'Фотон: интенсивы 2026, название — Редичкина.'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -5853,12 +5861,12 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge foton teachers / 2 / name
-  fact_text: 'Фотон: 2 , name — Петрунина.'
+  fact_text: 'Фотон: интенсивы 2026, название — Петрунина.'
   short_fact: intensives 2026 / oge foton teachers / 2 / name
   client_safe_text: ''
-  manager_check_text: 'Фотон: 2 , name — Петрунина. [client_blocked: internal_only,
-    manager_only_route]'
-  internal_text: 'Фотон: 2 , name — Петрунина.'
+  manager_check_text: 'Фотон: интенсивы 2026, название — Петрунина. [client_blocked:
+    internal_only, manager_only_route]'
+  internal_text: 'Фотон: интенсивы 2026, название — Петрунина.'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -5914,12 +5922,12 @@ items:
   fact_types:
   - documents
   title: legal entities / entities / 1 / name
-  fact_text: 'Фотон: 1 , name — ООО «ЦДПО Фотон».'
+  fact_text: 'Фотон: 1 , name, название — ООО «ЦДПО Фотон».'
   short_fact: legal entities / entities / 1 / name
   client_safe_text: ''
-  manager_check_text: 'Фотон: 1 , name — ООО «ЦДПО Фотон». [client_blocked: global_forbidden:ООО
-    «ЦДПО, internal_only, manager_only_route]'
-  internal_text: 'Фотон: 1 , name — ООО «ЦДПО Фотон».'
+  manager_check_text: 'Фотон: 1 , name, название — ООО «ЦДПО Фотон». [client_blocked:
+    global_forbidden:ООО «ЦДПО, internal_only, manager_only_route]'
+  internal_text: 'Фотон: 1 , name, название — ООО «ЦДПО Фотон».'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -6345,12 +6353,12 @@ items:
   fact_types:
   - documents
   title: legal entities / entities / 2 / name
-  fact_text: 'Фотон: 2 , name — ООО «ЦРДО Фотон».'
+  fact_text: 'Фотон: 2 , name, название — ООО «ЦРДО Фотон».'
   short_fact: legal entities / entities / 2 / name
   client_safe_text: ''
-  manager_check_text: 'Фотон: 2 , name — ООО «ЦРДО Фотон». [client_blocked: global_forbidden:ООО
-    «ЦРДО, internal_only, manager_only_route]'
-  internal_text: 'Фотон: 2 , name — ООО «ЦРДО Фотон».'
+  manager_check_text: 'Фотон: 2 , name, название — ООО «ЦРДО Фотон». [client_blocked:
+    global_forbidden:ООО «ЦРДО, internal_only, manager_only_route]'
+  internal_text: 'Фотон: 2 , name, название — ООО «ЦРДО Фотон».'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -6468,12 +6476,12 @@ items:
   fact_types:
   - documents
   title: legal entities full map / 3 / name
-  fact_text: 'Фотон: 3 , name — ООО «ЦДПО Фотон».'
+  fact_text: 'Фотон: 3 , name, название — ООО «ЦДПО Фотон».'
   short_fact: legal entities full map / 3 / name
   client_safe_text: ''
-  manager_check_text: 'Фотон: 3 , name — ООО «ЦДПО Фотон». [client_blocked: global_forbidden:ООО
-    «ЦДПО, internal_only, manager_only_route]'
-  internal_text: 'Фотон: 3 , name — ООО «ЦДПО Фотон».'
+  manager_check_text: 'Фотон: 3 , name, название — ООО «ЦДПО Фотон». [client_blocked:
+    global_forbidden:ООО «ЦДПО, internal_only, manager_only_route]'
+  internal_text: 'Фотон: 3 , name, название — ООО «ЦДПО Фотон».'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -6898,12 +6906,12 @@ items:
   fact_types:
   - documents
   title: legal entities full map / 4 / name
-  fact_text: 'Фотон: 4 , name — ООО «ЦРДО Фотон».'
+  fact_text: 'Фотон: 4 , name, название — ООО «ЦРДО Фотон».'
   short_fact: legal entities full map / 4 / name
   client_safe_text: ''
-  manager_check_text: 'Фотон: 4 , name — ООО «ЦРДО Фотон». [client_blocked: global_forbidden:ООО
-    «ЦРДО, internal_only, manager_only_route]'
-  internal_text: 'Фотон: 4 , name — ООО «ЦРДО Фотон».'
+  manager_check_text: 'Фотон: 4 , name, название — ООО «ЦРДО Фотон». [client_blocked:
+    global_forbidden:ООО «ЦРДО, internal_only, manager_only_route]'
+  internal_text: 'Фотон: 4 , name, название — ООО «ЦРДО Фотон».'
   brand: foton
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -8857,10 +8865,10 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / location / name
-  fact_text: 'Фотон: адрес и место занятий — УСК «Менделеево».'
+  fact_text: 'Фотон: адрес и место занятий, название — УСК «Менделеево».'
   short_fact: lvsh mendeleevo 2026 / location / name
-  client_safe_text: 'Фотон: адрес и место занятий — УСК «Менделеево».'
-  manager_check_text: 'Фотон: адрес и место занятий — УСК «Менделеево».'
+  client_safe_text: 'Фотон: адрес и место занятий, название — УСК «Менделеево».'
+  manager_check_text: 'Фотон: адрес и место занятий, название — УСК «Менделеево».'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -9515,10 +9523,10 @@ items:
   fact_types:
   - deadline
   title: lvsh mendeleevo 2026 / smeny 2026 / 1 / dates
-  fact_text: 'Фотон: 1 , dates — 20-28 июня.'
+  fact_text: 'Фотон: 1 , dates, даты — 20-28 июня.'
   short_fact: lvsh mendeleevo 2026 / smeny 2026 / 1 / dates
   client_safe_text: ''
-  manager_check_text: 'Фотон: 1 , dates — 20-28 июня. [client_blocked: not_client_allowed_status:open]'
+  manager_check_text: 'Фотон: 1 , dates, даты — 20-28 июня. [client_blocked: not_client_allowed_status:open]'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -9698,10 +9706,10 @@ items:
   fact_types:
   - deadline
   title: lvsh mendeleevo 2026 / smeny 2026 / 2 / dates
-  fact_text: 'Фотон: 2 , dates — 18-26 июля.'
+  fact_text: 'Фотон: 2 , dates, даты — 18-26 июля.'
   short_fact: lvsh mendeleevo 2026 / smeny 2026 / 2 / dates
   client_safe_text: ''
-  manager_check_text: 'Фотон: 2 , dates — 18-26 июля. [client_blocked: not_client_allowed_status:open]'
+  manager_check_text: 'Фотон: 2 , dates, даты — 18-26 июля. [client_blocked: not_client_allowed_status:open]'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -11935,10 +11943,10 @@ items:
   fact_types:
   - program
   title: online platform / levels / 1
-  fact_text: 'Фотон: levels , 1, онлайн — базовый.'
+  fact_text: 'Фотон: онлайн-платформа, онлайн — базовый.'
   short_fact: online platform / levels / 1
-  client_safe_text: 'Фотон: levels , 1, онлайн — базовый.'
-  manager_check_text: 'Фотон: levels , 1, онлайн — базовый.'
+  client_safe_text: 'Фотон: онлайн-платформа, онлайн — базовый.'
+  manager_check_text: 'Фотон: онлайн-платформа, онлайн — базовый.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -11993,10 +12001,10 @@ items:
   fact_types:
   - program
   title: online platform / levels / 2
-  fact_text: 'Фотон: levels , 2, онлайн — продвинутый.'
+  fact_text: 'Фотон: онлайн-платформа, онлайн — продвинутый.'
   short_fact: online platform / levels / 2
-  client_safe_text: 'Фотон: levels , 2, онлайн — продвинутый.'
-  manager_check_text: 'Фотон: levels , 2, онлайн — продвинутый.'
+  client_safe_text: 'Фотон: онлайн-платформа, онлайн — продвинутый.'
+  manager_check_text: 'Фотон: онлайн-платформа, онлайн — продвинутый.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -12051,10 +12059,10 @@ items:
   fact_types:
   - program
   title: online platform / levels / 3
-  fact_text: 'Фотон: levels , 3, онлайн — олимпиадный.'
+  fact_text: 'Фотон: онлайн-платформа, онлайн — олимпиадный.'
   short_fact: online platform / levels / 3
-  client_safe_text: 'Фотон: levels , 3, онлайн — олимпиадный.'
-  manager_check_text: 'Фотон: levels , 3, онлайн — олимпиадный.'
+  client_safe_text: 'Фотон: онлайн-платформа, онлайн — олимпиадный.'
+  manager_check_text: 'Фотон: онлайн-платформа, онлайн — олимпиадный.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -12109,10 +12117,12 @@ items:
   fact_types:
   - program
   title: online platform / name
-  fact_text: 'Фотон: online platform , name, онлайн — МТС Линк (бывший Webinar).'
+  fact_text: 'Фотон: онлайн-платформа, онлайн, название — МТС Линк (бывший Webinar).'
   short_fact: online platform / name
-  client_safe_text: 'Фотон: online platform , name, онлайн — МТС Линк (бывший Webinar).'
-  manager_check_text: 'Фотон: online platform , name, онлайн — МТС Линк (бывший Webinar).'
+  client_safe_text: 'Фотон: онлайн-платформа, онлайн, название — МТС Линк (бывший
+    Webinar).'
+  manager_check_text: 'Фотон: онлайн-платформа, онлайн, название — МТС Линк (бывший
+    Webinar).'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -12167,10 +12177,10 @@ items:
   fact_types:
   - program
   title: online platform / recording
-  fact_text: 'Фотон: online platform , recording, онлайн — да.'
+  fact_text: 'Фотон: онлайн-платформа, онлайн — да.'
   short_fact: online platform / recording
-  client_safe_text: 'Фотон: online platform , recording, онлайн — да.'
-  manager_check_text: 'Фотон: online platform , recording, онлайн — да.'
+  client_safe_text: 'Фотон: онлайн-платформа, онлайн — да.'
+  manager_check_text: 'Фотон: онлайн-платформа, онлайн — да.'
   internal_text: ''
   brand: foton
   active_brand_scope: foton_bot
@@ -15698,15 +15708,15 @@ items:
   fact_types:
   - program
   title: crm brand groups / tallanto / heuristics for manager / moscow
-  fact_text: 'Внутренне: heuristics for manager , moscow — Москва — есть и УНПК и
-    Фотон (скорее Фотон, но много исключений).'
+  fact_text: 'Внутренне: heuristics for manager , moscow, Москва — Москва — есть и
+    УНПК и Фотон (скорее Фотон, но много исключений).'
   short_fact: crm brand groups / tallanto / heuristics for manager / moscow
   client_safe_text: ''
-  manager_check_text: 'Внутренне: heuristics for manager , moscow — Москва — есть
-    и УНПК и Фотон (скорее Фотон, но много исключений). [client_blocked: cross_brand_text,
+  manager_check_text: 'Внутренне: heuristics for manager , moscow, Москва — Москва
+    — есть и УНПК и Фотон (скорее Фотон, но много исключений). [client_blocked: cross_brand_text,
     internal_only, invalid_client_brand, manager_only_route]'
-  internal_text: 'Внутренне: heuristics for manager , moscow — Москва — есть и УНПК
-    и Фотон (скорее Фотон, но много исключений).'
+  internal_text: 'Внутренне: heuristics for manager , moscow, Москва — Москва — есть
+    и УНПК и Фотон (скорее Фотон, но много исключений).'
   brand: internal
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -21058,12 +21068,12 @@ items:
   fact_types:
   - program
   title: signatories 2026 / ano dpo unpk mfti / name
-  fact_text: 'Внутренне: ano dpo unpk mfti , name — Харламов М.Ю..'
+  fact_text: 'Внутренне: ano dpo unpk mfti , name, название — Харламов М.Ю..'
   short_fact: signatories 2026 / ano dpo unpk mfti / name
   client_safe_text: ''
-  manager_check_text: 'Внутренне: ano dpo unpk mfti , name — Харламов М.Ю.. [client_blocked:
-    internal_only, invalid_client_brand, manager_only_route]'
-  internal_text: 'Внутренне: ano dpo unpk mfti , name — Харламов М.Ю..'
+  manager_check_text: 'Внутренне: ano dpo unpk mfti , name, название — Харламов М.Ю..
+    [client_blocked: internal_only, invalid_client_brand, manager_only_route]'
+  internal_text: 'Внутренне: ano dpo unpk mfti , name, название — Харламов М.Ю..'
   brand: internal
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -21231,12 +21241,12 @@ items:
   fact_types:
   - program
   title: signatories 2026 / ooo cdpo foton / name
-  fact_text: 'Внутренне: ooo cdpo foton , name — Кузнецова А.Е..'
+  fact_text: 'Внутренне: ooo cdpo foton , name, название — Кузнецова А.Е..'
   short_fact: signatories 2026 / ooo cdpo foton / name
   client_safe_text: ''
-  manager_check_text: 'Внутренне: ooo cdpo foton , name — Кузнецова А.Е.. [client_blocked:
-    internal_only, invalid_client_brand, manager_only_route]'
-  internal_text: 'Внутренне: ooo cdpo foton , name — Кузнецова А.Е..'
+  manager_check_text: 'Внутренне: ooo cdpo foton , name, название — Кузнецова А.Е..
+    [client_blocked: internal_only, invalid_client_brand, manager_only_route]'
+  internal_text: 'Внутренне: ooo cdpo foton , name, название — Кузнецова А.Е..'
   brand: internal
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -23606,10 +23616,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 unpk / discounts / already paid 2026 27
-  fact_text: 'УНПК: скидка — 10%.'
+  fact_text: 'УНПК: городской летний лагерь — 10%.'
   short_fact: ls city 2026 unpk / discounts / already paid 2026 27
-  client_safe_text: 'УНПК: скидка — 10%.'
-  manager_check_text: 'УНПК: скидка — 10%.'
+  client_safe_text: 'УНПК: городской летний лагерь — 10%.'
+  manager_check_text: 'УНПК: городской летний лагерь — 10%.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -23666,10 +23676,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 unpk / discounts / former student same brand
-  fact_text: 'УНПК: скидка — 5% УНПК → УНПК.'
+  fact_text: 'УНПК: городской летний лагерь — 5% УНПК → УНПК.'
   short_fact: ls city 2026 unpk / discounts / former student same brand
-  client_safe_text: 'УНПК: скидка — 5% УНПК → УНПК.'
-  manager_check_text: 'УНПК: скидка — 5% УНПК → УНПК.'
+  client_safe_text: 'УНПК: городской летний лагерь — 5% УНПК → УНПК.'
+  manager_check_text: 'УНПК: городской летний лагерь — 5% УНПК → УНПК.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -23726,10 +23736,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 unpk / discounts / mfti employees
-  fact_text: 'УНПК: скидка — 10%.'
+  fact_text: 'УНПК: городской летний лагерь — 10%.'
   short_fact: ls city 2026 unpk / discounts / mfti employees
-  client_safe_text: 'УНПК: скидка — 10%.'
-  manager_check_text: 'УНПК: скидка — 10%.'
+  client_safe_text: 'УНПК: городской летний лагерь — 10%.'
+  manager_check_text: 'УНПК: городской летний лагерь — 10%.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -23786,10 +23796,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 unpk / discounts / multichild
-  fact_text: 'УНПК: скидка — 10%.'
+  fact_text: 'УНПК: городской летний лагерь — 10%.'
   short_fact: ls city 2026 unpk / discounts / multichild
-  client_safe_text: 'УНПК: скидка — 10%.'
-  manager_check_text: 'УНПК: скидка — 10%.'
+  client_safe_text: 'УНПК: городской летний лагерь — 10%.'
+  manager_check_text: 'УНПК: городской летний лагерь — 10%.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -23846,10 +23856,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 unpk / discounts / refer a friend / advanced
-  fact_text: 'УНПК: скидка — 5 000.'
+  fact_text: 'УНПК: городской летний лагерь — 5 000.'
   short_fact: ls city 2026 unpk / discounts / refer a friend / advanced
-  client_safe_text: 'УНПК: скидка — 5 000.'
-  manager_check_text: 'УНПК: скидка — 5 000.'
+  client_safe_text: 'УНПК: городской летний лагерь — 5 000.'
+  manager_check_text: 'УНПК: городской летний лагерь — 5 000.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -23905,10 +23915,10 @@ items:
   fact_types:
   - discount
   title: ls city 2026 unpk / discounts / refer a friend / base
-  fact_text: 'УНПК: скидка — 3 000.'
+  fact_text: 'УНПК: городской летний лагерь, базовый вариант — 3 000.'
   short_fact: ls city 2026 unpk / discounts / refer a friend / base
-  client_safe_text: 'УНПК: скидка — 3 000.'
-  manager_check_text: 'УНПК: скидка — 3 000.'
+  client_safe_text: 'УНПК: городской летний лагерь, базовый вариант — 3 000.'
+  manager_check_text: 'УНПК: городской летний лагерь, базовый вариант — 3 000.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -23964,10 +23974,13 @@ items:
   fact_types:
   - price
   title: ls city 2026 unpk / dolgoprudny / prices / base
-  fact_text: 'УНПК: prices , base — 37 500 ₽.'
+  fact_text: 'УНПК: городской летний лагерь, Долгопрудный, базовый вариант — 37 500
+    ₽.'
   short_fact: ls city 2026 unpk / dolgoprudny / prices / base
-  client_safe_text: 'УНПК: prices , base — 37 500 ₽.'
-  manager_check_text: 'УНПК: prices , base — 37 500 ₽.'
+  client_safe_text: 'УНПК: городской летний лагерь, Долгопрудный, базовый вариант
+    — 37 500 ₽.'
+  manager_check_text: 'УНПК: городской летний лагерь, Долгопрудный, базовый вариант
+    — 37 500 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24023,10 +24036,13 @@ items:
   fact_types:
   - price
   title: ls city 2026 unpk / dolgoprudny / prices / plus factultative
-  fact_text: 'УНПК: prices , plus factultative — 59 500 ₽.'
+  fact_text: 'УНПК: городской летний лагерь, Долгопрудный, вариант с факультативом
+    — 59 500 ₽.'
   short_fact: ls city 2026 unpk / dolgoprudny / prices / plus factultative
-  client_safe_text: 'УНПК: prices , plus factultative — 59 500 ₽.'
-  manager_check_text: 'УНПК: prices , plus factultative — 59 500 ₽.'
+  client_safe_text: 'УНПК: городской летний лагерь, Долгопрудный, вариант с факультативом
+    — 59 500 ₽.'
+  manager_check_text: 'УНПК: городской летний лагерь, Долгопрудный, вариант с факультативом
+    — 59 500 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24082,10 +24098,13 @@ items:
   fact_types:
   - price
   title: ls city 2026 unpk / dolgoprudny / prices / plus individual
-  fact_text: 'УНПК: prices , plus individual — 99 500 ₽.'
+  fact_text: 'УНПК: городской летний лагерь, Долгопрудный, вариант с индивидуальными
+    занятиями — 99 500 ₽.'
   short_fact: ls city 2026 unpk / dolgoprudny / prices / plus individual
-  client_safe_text: 'УНПК: prices , plus individual — 99 500 ₽.'
-  manager_check_text: 'УНПК: prices , plus individual — 99 500 ₽.'
+  client_safe_text: 'УНПК: городской летний лагерь, Долгопрудный, вариант с индивидуальными
+    занятиями — 99 500 ₽.'
+  manager_check_text: 'УНПК: городской летний лагерь, Долгопрудный, вариант с индивидуальными
+    занятиями — 99 500 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24141,10 +24160,10 @@ items:
   fact_types:
   - deadline
   title: ls city 2026 unpk / dolgoprudny / smeny / 1
-  fact_text: 'УНПК: smeny , 1 — 20-31 июля.'
+  fact_text: 'УНПК: городской летний лагерь, Долгопрудный — 20-31 июля.'
   short_fact: ls city 2026 unpk / dolgoprudny / smeny / 1
-  client_safe_text: 'УНПК: smeny , 1 — 20-31 июля.'
-  manager_check_text: 'УНПК: smeny , 1 — 20-31 июля.'
+  client_safe_text: 'УНПК: городской летний лагерь, Долгопрудный — 20-31 июля.'
+  manager_check_text: 'УНПК: городской летний лагерь, Долгопрудный — 20-31 июля.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24199,10 +24218,10 @@ items:
   fact_types:
   - deadline
   title: ls city 2026 unpk / dolgoprudny / smeny / 2
-  fact_text: 'УНПК: smeny , 2 — 17-28 августа.'
+  fact_text: 'УНПК: городской летний лагерь, Долгопрудный — 17-28 августа.'
   short_fact: ls city 2026 unpk / dolgoprudny / smeny / 2
-  client_safe_text: 'УНПК: smeny , 2 — 17-28 августа.'
-  manager_check_text: 'УНПК: smeny , 2 — 17-28 августа.'
+  client_safe_text: 'УНПК: городской летний лагерь, Долгопрудный — 17-28 августа.'
+  manager_check_text: 'УНПК: городской летний лагерь, Долгопрудный — 17-28 августа.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24257,10 +24276,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 unpk / free morning club / from day
-  fact_text: 'УНПК: free morning club , from day — 2.'
+  fact_text: 'УНПК: городской летний лагерь — 2.'
   short_fact: ls city 2026 unpk / free morning club / from day
-  client_safe_text: 'УНПК: free morning club , from day — 2.'
-  manager_check_text: 'УНПК: free morning club , from day — 2.'
+  client_safe_text: 'УНПК: городской летний лагерь — 2.'
+  manager_check_text: 'УНПК: городской летний лагерь — 2.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24315,10 +24334,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 unpk / free morning club / name
-  fact_text: 'УНПК: free morning club , name — Утренний клуб Предлёнка.'
+  fact_text: 'УНПК: городской летний лагерь, название — Утренний клуб Предлёнка.'
   short_fact: ls city 2026 unpk / free morning club / name
-  client_safe_text: 'УНПК: free morning club , name — Утренний клуб Предлёнка.'
-  manager_check_text: 'УНПК: free morning club , name — Утренний клуб Предлёнка.'
+  client_safe_text: 'УНПК: городской летний лагерь, название — Утренний клуб Предлёнка.'
+  manager_check_text: 'УНПК: городской летний лагерь, название — Утренний клуб Предлёнка.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24372,10 +24391,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 unpk / free morning club / time
-  fact_text: 'УНПК: free morning club , time — 09:45-11:45.'
+  fact_text: 'УНПК: городской летний лагерь — 09:45-11:45.'
   short_fact: ls city 2026 unpk / free morning club / time
-  client_safe_text: 'УНПК: free morning club , time — 09:45-11:45.'
-  manager_check_text: 'УНПК: free morning club , time — 09:45-11:45.'
+  client_safe_text: 'УНПК: городской летний лагерь — 09:45-11:45.'
+  manager_check_text: 'УНПК: городской летний лагерь — 09:45-11:45.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24430,12 +24449,12 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 unpk / meals
-  fact_text: 'УНПК: ls city 2026 unpk , meals — Обед (первое, второе, салат, булочка)
+  fact_text: 'УНПК: городской летний лагерь — Обед (первое, второе, салат, булочка)
     + полдник.'
   short_fact: ls city 2026 unpk / meals
-  client_safe_text: 'УНПК: ls city 2026 unpk , meals — Обед (первое, второе, салат,
+  client_safe_text: 'УНПК: городской летний лагерь — Обед (первое, второе, салат,
     булочка) + полдник.'
-  manager_check_text: 'УНПК: ls city 2026 unpk , meals — Обед (первое, второе, салат,
+  manager_check_text: 'УНПК: городской летний лагерь — Обед (первое, второе, салат,
     булочка) + полдник.'
   internal_text: ''
   brand: unpk
@@ -24490,10 +24509,10 @@ items:
   fact_types:
   - deadline
   title: ls city 2026 unpk / moscow ano / dates
-  fact_text: 'УНПК: moscow ano , dates — 6-17 июля.'
+  fact_text: 'УНПК: городской летний лагерь, Москва, даты — 6-17 июля.'
   short_fact: ls city 2026 unpk / moscow ano / dates
-  client_safe_text: 'УНПК: moscow ano , dates — 6-17 июля.'
-  manager_check_text: 'УНПК: moscow ano , dates — 6-17 июля.'
+  client_safe_text: 'УНПК: городской летний лагерь, Москва, даты — 6-17 июля.'
+  manager_check_text: 'УНПК: городской летний лагерь, Москва, даты — 6-17 июля.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24548,10 +24567,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 unpk / moscow ano / location
-  fact_text: 'УНПК: адрес и место занятий — Москва Скорняжный.'
+  fact_text: 'УНПК: городской летний лагерь, Москва — Москва Скорняжный.'
   short_fact: ls city 2026 unpk / moscow ano / location
-  client_safe_text: 'УНПК: адрес и место занятий — Москва Скорняжный.'
-  manager_check_text: 'УНПК: адрес и место занятий — Москва Скорняжный.'
+  client_safe_text: 'УНПК: городской летний лагерь, Москва — Москва Скорняжный.'
+  manager_check_text: 'УНПК: городской летний лагерь, Москва — Москва Скорняжный.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24605,10 +24624,12 @@ items:
   fact_types:
   - price
   title: ls city 2026 unpk / moscow ano / prices / base
-  fact_text: 'УНПК: prices , base — 37 500 ₽.'
+  fact_text: 'УНПК: городской летний лагерь, Москва, базовый вариант — 37 500 ₽.'
   short_fact: ls city 2026 unpk / moscow ano / prices / base
-  client_safe_text: 'УНПК: prices , base — 37 500 ₽.'
-  manager_check_text: 'УНПК: prices , base — 37 500 ₽.'
+  client_safe_text: 'УНПК: городской летний лагерь, Москва, базовый вариант — 37 500
+    ₽.'
+  manager_check_text: 'УНПК: городской летний лагерь, Москва, базовый вариант — 37
+    500 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24664,10 +24685,13 @@ items:
   fact_types:
   - price
   title: ls city 2026 unpk / moscow ano / prices / plus factultative
-  fact_text: 'УНПК: prices , plus factultative — 59 500 ₽.'
+  fact_text: 'УНПК: городской летний лагерь, Москва, вариант с факультативом — 59
+    500 ₽.'
   short_fact: ls city 2026 unpk / moscow ano / prices / plus factultative
-  client_safe_text: 'УНПК: prices , plus factultative — 59 500 ₽.'
-  manager_check_text: 'УНПК: prices , plus factultative — 59 500 ₽.'
+  client_safe_text: 'УНПК: городской летний лагерь, Москва, вариант с факультативом
+    — 59 500 ₽.'
+  manager_check_text: 'УНПК: городской летний лагерь, Москва, вариант с факультативом
+    — 59 500 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24723,10 +24747,13 @@ items:
   fact_types:
   - price
   title: ls city 2026 unpk / moscow ano / prices / plus individual
-  fact_text: 'УНПК: prices , plus individual — 99 500 ₽.'
+  fact_text: 'УНПК: городской летний лагерь, Москва, вариант с индивидуальными занятиями
+    — 99 500 ₽.'
   short_fact: ls city 2026 unpk / moscow ano / prices / plus individual
-  client_safe_text: 'УНПК: prices , plus individual — 99 500 ₽.'
-  manager_check_text: 'УНПК: prices , plus individual — 99 500 ₽.'
+  client_safe_text: 'УНПК: городской летний лагерь, Москва, вариант с индивидуальными
+    занятиями — 99 500 ₽.'
+  manager_check_text: 'УНПК: городской летний лагерь, Москва, вариант с индивидуальными
+    занятиями — 99 500 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -24782,13 +24809,10 @@ items:
   fact_types:
   - camp_city
   title: ls city 2026 unpk / not to confuse with
-  fact_text: 'УНПК: ls city 2026 unpk , not to confuse with — ЛВШ выездная — другой
-    продукт.'
+  fact_text: 'УНПК: городской летний лагерь — ЛВШ выездная — другой продукт.'
   short_fact: ls city 2026 unpk / not to confuse with
-  client_safe_text: 'УНПК: ls city 2026 unpk , not to confuse with — ЛВШ выездная
-    — другой продукт.'
-  manager_check_text: 'УНПК: ls city 2026 unpk , not to confuse with — ЛВШ выездная
-    — другой продукт.'
+  client_safe_text: 'УНПК: городской летний лагерь — ЛВШ выездная — другой продукт.'
+  manager_check_text: 'УНПК: городской летний лагерь — ЛВШ выездная — другой продукт.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -26894,10 +26918,10 @@ items:
   fact_types:
   - course_parameter
   title: intensives 2026 / ege unpk / classes
-  fact_text: 'УНПК: ege unpk , classes, классы — 10-11.'
+  fact_text: 'УНПК: интенсивы 2026, классы — 10-11.'
   short_fact: intensives 2026 / ege unpk / classes
-  client_safe_text: 'УНПК: ege unpk , classes, классы — 10-11.'
-  manager_check_text: 'УНПК: ege unpk , classes, классы — 10-11.'
+  client_safe_text: 'УНПК: интенсивы 2026, классы — 10-11.'
+  manager_check_text: 'УНПК: интенсивы 2026, классы — 10-11.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -26952,10 +26976,10 @@ items:
   fact_types:
   - course_parameter
   title: intensives 2026 / ege unpk / duration weeks
-  fact_text: 'УНПК: ege unpk , duration weeks — 8.'
+  fact_text: 'УНПК: интенсивы 2026 — 8.'
   short_fact: intensives 2026 / ege unpk / duration weeks
-  client_safe_text: 'УНПК: ege unpk , duration weeks — 8.'
-  manager_check_text: 'УНПК: ege unpk , duration weeks — 8.'
+  client_safe_text: 'УНПК: интенсивы 2026 — 8.'
+  manager_check_text: 'УНПК: интенсивы 2026 — 8.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27011,10 +27035,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / format
-  fact_text: 'УНПК: ege unpk , format — онлайн, 2 занятия/нед.'
+  fact_text: 'УНПК: интенсивы 2026 — онлайн, 2 занятия/нед.'
   short_fact: intensives 2026 / ege unpk / format
-  client_safe_text: 'УНПК: ege unpk , format — онлайн, 2 занятия/нед.'
-  manager_check_text: 'УНПК: ege unpk , format — онлайн, 2 занятия/нед.'
+  client_safe_text: 'УНПК: интенсивы 2026 — онлайн, 2 занятия/нед.'
+  manager_check_text: 'УНПК: интенсивы 2026 — онлайн, 2 занятия/нед.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27069,10 +27093,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / group size
-  fact_text: 'УНПК: ege unpk , group size — 10-15.'
+  fact_text: 'УНПК: интенсивы 2026 — 10-15.'
   short_fact: intensives 2026 / ege unpk / group size
-  client_safe_text: 'УНПК: ege unpk , group size — 10-15.'
-  manager_check_text: 'УНПК: ege unpk , group size — 10-15.'
+  client_safe_text: 'УНПК: интенсивы 2026 — 10-15.'
+  manager_check_text: 'УНПК: интенсивы 2026 — 10-15.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27127,10 +27151,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / includes / 1
-  fact_text: 'УНПК: includes , 1 — 14 живых вебинаров (90 мин).'
+  fact_text: 'УНПК: интенсивы 2026 — 14 живых вебинаров (90 мин).'
   short_fact: intensives 2026 / ege unpk / includes / 1
-  client_safe_text: 'УНПК: includes , 1 — 14 живых вебинаров (90 мин).'
-  manager_check_text: 'УНПК: includes , 1 — 14 живых вебинаров (90 мин).'
+  client_safe_text: 'УНПК: интенсивы 2026 — 14 живых вебинаров (90 мин).'
+  manager_check_text: 'УНПК: интенсивы 2026 — 14 живых вебинаров (90 мин).'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27185,10 +27209,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / includes / 2
-  fact_text: 'УНПК: includes , 2 — 7 практических занятий.'
+  fact_text: 'УНПК: интенсивы 2026 — 7 практических занятий.'
   short_fact: intensives 2026 / ege unpk / includes / 2
-  client_safe_text: 'УНПК: includes , 2 — 7 практических занятий.'
-  manager_check_text: 'УНПК: includes , 2 — 7 практических занятий.'
+  client_safe_text: 'УНПК: интенсивы 2026 — 7 практических занятий.'
+  manager_check_text: 'УНПК: интенсивы 2026 — 7 практических занятий.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27243,10 +27267,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / includes / 3
-  fact_text: 'УНПК: includes , 3 — ДЗ и конспекты.'
+  fact_text: 'УНПК: интенсивы 2026 — ДЗ и конспекты.'
   short_fact: intensives 2026 / ege unpk / includes / 3
-  client_safe_text: 'УНПК: includes , 3 — ДЗ и конспекты.'
-  manager_check_text: 'УНПК: includes , 3 — ДЗ и конспекты.'
+  client_safe_text: 'УНПК: интенсивы 2026 — ДЗ и конспекты.'
+  manager_check_text: 'УНПК: интенсивы 2026 — ДЗ и конспекты.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27300,10 +27324,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / includes / 4
-  fact_text: 'УНПК: includes , 4 — 3 пробника.'
+  fact_text: 'УНПК: интенсивы 2026 — 3 пробника.'
   short_fact: intensives 2026 / ege unpk / includes / 4
-  client_safe_text: 'УНПК: includes , 4 — 3 пробника.'
-  manager_check_text: 'УНПК: includes , 4 — 3 пробника.'
+  client_safe_text: 'УНПК: интенсивы 2026 — 3 пробника.'
+  manager_check_text: 'УНПК: интенсивы 2026 — 3 пробника.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27358,10 +27382,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / includes / 5
-  fact_text: 'УНПК: includes , 5 — Ручная проверка второй части ЕГЭ.'
+  fact_text: 'УНПК: интенсивы 2026 — Ручная проверка второй части ЕГЭ.'
   short_fact: intensives 2026 / ege unpk / includes / 5
-  client_safe_text: 'УНПК: includes , 5 — Ручная проверка второй части ЕГЭ.'
-  manager_check_text: 'УНПК: includes , 5 — Ручная проверка второй части ЕГЭ.'
+  client_safe_text: 'УНПК: интенсивы 2026 — Ручная проверка второй части ЕГЭ.'
+  manager_check_text: 'УНПК: интенсивы 2026 — Ручная проверка второй части ЕГЭ.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27415,10 +27439,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / includes / 6
-  fact_text: 'УНПК: includes , 6 — Закрытый чат.'
+  fact_text: 'УНПК: интенсивы 2026 — Закрытый чат.'
   short_fact: intensives 2026 / ege unpk / includes / 6
-  client_safe_text: 'УНПК: includes , 6 — Закрытый чат.'
-  manager_check_text: 'УНПК: includes , 6 — Закрытый чат.'
+  client_safe_text: 'УНПК: интенсивы 2026 — Закрытый чат.'
+  manager_check_text: 'УНПК: интенсивы 2026 — Закрытый чат.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27472,10 +27496,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / includes / 7
-  fact_text: 'УНПК: includes , 7 — Психподдержка.'
+  fact_text: 'УНПК: интенсивы 2026 — Психподдержка.'
   short_fact: intensives 2026 / ege unpk / includes / 7
-  client_safe_text: 'УНПК: includes , 7 — Психподдержка.'
-  manager_check_text: 'УНПК: includes , 7 — Психподдержка.'
+  client_safe_text: 'УНПК: интенсивы 2026 — Психподдержка.'
+  manager_check_text: 'УНПК: интенсивы 2026 — Психподдержка.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27529,10 +27553,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / links / math
-  fact_text: 'УНПК: links , math — https://my.mts-link.ru/course-info/2022195.'
+  fact_text: 'УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022195.'
   short_fact: intensives 2026 / ege unpk / links / math
-  client_safe_text: 'УНПК: links , math — https://my.mts-link.ru/course-info/2022195.'
-  manager_check_text: 'УНПК: links , math — https://my.mts-link.ru/course-info/2022195.'
+  client_safe_text: 'УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022195.'
+  manager_check_text: 'УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022195.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27587,10 +27611,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / links / physics
-  fact_text: 'УНПК: links , physics — https://my.mts-link.ru/course-info/2022205.'
+  fact_text: 'УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022205.'
   short_fact: intensives 2026 / ege unpk / links / physics
-  client_safe_text: 'УНПК: links , physics — https://my.mts-link.ru/course-info/2022205.'
-  manager_check_text: 'УНПК: links , physics — https://my.mts-link.ru/course-info/2022205.'
+  client_safe_text: 'УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022205.'
+  manager_check_text: 'УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022205.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27645,10 +27669,10 @@ items:
   fact_types:
   - price
   title: intensives 2026 / ege unpk / prices / one block
-  fact_text: 'УНПК: prices , one block — 9 400 ₽.'
+  fact_text: 'УНПК: интенсивы 2026, один блок — 9 400 ₽.'
   short_fact: intensives 2026 / ege unpk / prices / one block
-  client_safe_text: 'УНПК: prices , one block — 9 400 ₽.'
-  manager_check_text: 'УНПК: prices , one block — 9 400 ₽.'
+  client_safe_text: 'УНПК: интенсивы 2026, один блок — 9 400 ₽.'
+  manager_check_text: 'УНПК: интенсивы 2026, один блок — 9 400 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27704,10 +27728,10 @@ items:
   fact_types:
   - price
   title: intensives 2026 / ege unpk / prices / one subject
-  fact_text: 'УНПК: prices , one subject — 18 800 ₽.'
+  fact_text: 'УНПК: интенсивы 2026, один предмет — 18 800 ₽.'
   short_fact: intensives 2026 / ege unpk / prices / one subject
-  client_safe_text: 'УНПК: prices , one subject — 18 800 ₽.'
-  manager_check_text: 'УНПК: prices , one subject — 18 800 ₽.'
+  client_safe_text: 'УНПК: интенсивы 2026, один предмет — 18 800 ₽.'
+  manager_check_text: 'УНПК: интенсивы 2026, один предмет — 18 800 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27763,10 +27787,10 @@ items:
   fact_types:
   - price
   title: intensives 2026 / ege unpk / prices / two subjects
-  fact_text: 'УНПК: prices , two subjects — 34 400 ₽.'
+  fact_text: 'УНПК: интенсивы 2026, два предмета — 34 400 ₽.'
   short_fact: intensives 2026 / ege unpk / prices / two subjects
-  client_safe_text: 'УНПК: prices , two subjects — 34 400 ₽.'
-  manager_check_text: 'УНПК: prices , two subjects — 34 400 ₽.'
+  client_safe_text: 'УНПК: интенсивы 2026, два предмета — 34 400 ₽.'
+  manager_check_text: 'УНПК: интенсивы 2026, два предмета — 34 400 ₽.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27822,10 +27846,10 @@ items:
   fact_types:
   - deadline
   title: intensives 2026 / ege unpk / start dates / math
-  fact_text: 'УНПК: start dates , math — 15 апреля 2026.'
+  fact_text: 'УНПК: интенсивы 2026 — 15 апреля 2026.'
   short_fact: intensives 2026 / ege unpk / start dates / math
-  client_safe_text: 'УНПК: start dates , math — 15 апреля 2026.'
-  manager_check_text: 'УНПК: start dates , math — 15 апреля 2026.'
+  client_safe_text: 'УНПК: интенсивы 2026 — 15 апреля 2026.'
+  manager_check_text: 'УНПК: интенсивы 2026 — 15 апреля 2026.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27880,10 +27904,10 @@ items:
   fact_types:
   - deadline
   title: intensives 2026 / ege unpk / start dates / physics
-  fact_text: 'УНПК: start dates , physics — 14 апреля 2026.'
+  fact_text: 'УНПК: интенсивы 2026 — 14 апреля 2026.'
   short_fact: intensives 2026 / ege unpk / start dates / physics
-  client_safe_text: 'УНПК: start dates , physics — 14 апреля 2026.'
-  manager_check_text: 'УНПК: start dates , physics — 14 апреля 2026.'
+  client_safe_text: 'УНПК: интенсивы 2026 — 14 апреля 2026.'
+  manager_check_text: 'УНПК: интенсивы 2026 — 14 апреля 2026.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27938,10 +27962,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / subjects / 1
-  fact_text: 'УНПК: subjects , 1 — математика (профиль).'
+  fact_text: 'УНПК: интенсивы 2026 — математика (профиль).'
   short_fact: intensives 2026 / ege unpk / subjects / 1
-  client_safe_text: 'УНПК: subjects , 1 — математика (профиль).'
-  manager_check_text: 'УНПК: subjects , 1 — математика (профиль).'
+  client_safe_text: 'УНПК: интенсивы 2026 — математика (профиль).'
+  manager_check_text: 'УНПК: интенсивы 2026 — математика (профиль).'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -27995,10 +28019,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / subjects / 2
-  fact_text: 'УНПК: subjects , 2 — физика.'
+  fact_text: 'УНПК: интенсивы 2026 — физика.'
   short_fact: intensives 2026 / ege unpk / subjects / 2
-  client_safe_text: 'УНПК: subjects , 2 — физика.'
-  manager_check_text: 'УНПК: subjects , 2 — физика.'
+  client_safe_text: 'УНПК: интенсивы 2026 — физика.'
+  manager_check_text: 'УНПК: интенсивы 2026 — физика.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -28052,10 +28076,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk / vk chat 11
-  fact_text: 'УНПК: ege unpk , vk chat 11 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.'
+  fact_text: 'УНПК: интенсивы 2026 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.'
   short_fact: intensives 2026 / ege unpk / vk chat 11
-  client_safe_text: 'УНПК: ege unpk , vk chat 11 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.'
-  manager_check_text: 'УНПК: ege unpk , vk chat 11 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.'
+  client_safe_text: 'УНПК: интенсивы 2026 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.'
+  manager_check_text: 'УНПК: интенсивы 2026 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -28110,11 +28134,12 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk teachers / 1 / name
-  fact_text: 'УНПК: 1 , name — Белых.'
+  fact_text: 'УНПК: интенсивы 2026, название — Белых.'
   short_fact: intensives 2026 / ege unpk teachers / 1 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 1 , name — Белых. [client_blocked: internal_only, manager_only_route]'
-  internal_text: 'УНПК: 1 , name — Белых.'
+  manager_check_text: 'УНПК: интенсивы 2026, название — Белых. [client_blocked: internal_only,
+    manager_only_route]'
+  internal_text: 'УНПК: интенсивы 2026, название — Белых.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -28170,11 +28195,12 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / ege unpk teachers / 2 / name
-  fact_text: 'УНПК: 2 , name — Маилян.'
+  fact_text: 'УНПК: интенсивы 2026, название — Маилян.'
   short_fact: intensives 2026 / ege unpk teachers / 2 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 2 , name — Маилян. [client_blocked: internal_only, manager_only_route]'
-  internal_text: 'УНПК: 2 , name — Маилян.'
+  manager_check_text: 'УНПК: интенсивы 2026, название — Маилян. [client_blocked: internal_only,
+    manager_only_route]'
+  internal_text: 'УНПК: интенсивы 2026, название — Маилян.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -28230,10 +28256,10 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge intensive / available in unpk
-  fact_text: 'УНПК: oge intensive , available in unpk — нет.'
+  fact_text: 'УНПК: интенсивы 2026 — нет.'
   short_fact: intensives 2026 / oge intensive / available in unpk
-  client_safe_text: 'УНПК: oge intensive , available in unpk — нет.'
-  manager_check_text: 'УНПК: oge intensive , available in unpk — нет.'
+  client_safe_text: 'УНПК: интенсивы 2026 — нет.'
+  manager_check_text: 'УНПК: интенсивы 2026 — нет.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -28287,13 +28313,13 @@ items:
   fact_types:
   - intensive
   title: intensives 2026 / oge intensive / bot behavior when asked
-  fact_text: 'УНПК: oge intensive , bot behavior when asked — По интенсиву на ОГЭ
-    менеджер подскажет варианты — свяжется в течение рабочего дня..'
+  fact_text: 'УНПК: интенсивы 2026 — По интенсиву на ОГЭ менеджер подскажет варианты
+    — свяжется в течение рабочего дня..'
   short_fact: intensives 2026 / oge intensive / bot behavior when asked
-  client_safe_text: 'УНПК: oge intensive , bot behavior when asked — По интенсиву
-    на ОГЭ менеджер подскажет варианты — свяжется в течение рабочего дня..'
-  manager_check_text: 'УНПК: oge intensive , bot behavior when asked — По интенсиву
-    на ОГЭ менеджер подскажет варианты — свяжется в течение рабочего дня..'
+  client_safe_text: 'УНПК: интенсивы 2026 — По интенсиву на ОГЭ менеджер подскажет
+    варианты — свяжется в течение рабочего дня..'
+  manager_check_text: 'УНПК: интенсивы 2026 — По интенсиву на ОГЭ менеджер подскажет
+    варианты — свяжется в течение рабочего дня..'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -28409,12 +28435,12 @@ items:
   fact_types:
   - documents
   title: legal entities / entities / 1 / name
-  fact_text: 'УНПК: 1 , name — АНО ДПО «УНПК МФТИ».'
+  fact_text: 'УНПК: 1 , name, название — АНО ДПО «УНПК МФТИ».'
   short_fact: legal entities / entities / 1 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 1 , name — АНО ДПО «УНПК МФТИ». [client_blocked: global_forbidden:АНО
-    ДПО, internal_only, manager_only_route]'
-  internal_text: 'УНПК: 1 , name — АНО ДПО «УНПК МФТИ».'
+  manager_check_text: 'УНПК: 1 , name, название — АНО ДПО «УНПК МФТИ». [client_blocked:
+    global_forbidden:АНО ДПО, internal_only, manager_only_route]'
+  internal_text: 'УНПК: 1 , name, название — АНО ДПО «УНПК МФТИ».'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -28777,12 +28803,12 @@ items:
   fact_types:
   - documents
   title: legal entities / entities / 2 / name
-  fact_text: 'УНПК: 2 , name — НОУ УНПК МФТИ.'
+  fact_text: 'УНПК: 2 , name, название — НОУ УНПК МФТИ.'
   short_fact: legal entities / entities / 2 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 2 , name — НОУ УНПК МФТИ. [client_blocked: global_forbidden:НОУ
-    УНПК, internal_only, manager_only_route]'
-  internal_text: 'УНПК: 2 , name — НОУ УНПК МФТИ.'
+  manager_check_text: 'УНПК: 2 , name, название — НОУ УНПК МФТИ. [client_blocked:
+    global_forbidden:НОУ УНПК, internal_only, manager_only_route]'
+  internal_text: 'УНПК: 2 , name, название — НОУ УНПК МФТИ.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -28963,12 +28989,12 @@ items:
   fact_types:
   - documents
   title: legal entities full map / 1 / name
-  fact_text: 'УНПК: 1 , name — АНО ДПО «УНПК МФТИ».'
+  fact_text: 'УНПК: 1 , name, название — АНО ДПО «УНПК МФТИ».'
   short_fact: legal entities full map / 1 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 1 , name — АНО ДПО «УНПК МФТИ». [client_blocked: global_forbidden:АНО
-    ДПО, internal_only, manager_only_route]'
-  internal_text: 'УНПК: 1 , name — АНО ДПО «УНПК МФТИ».'
+  manager_check_text: 'УНПК: 1 , name, название — АНО ДПО «УНПК МФТИ». [client_blocked:
+    global_forbidden:АНО ДПО, internal_only, manager_only_route]'
+  internal_text: 'УНПК: 1 , name, название — АНО ДПО «УНПК МФТИ».'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -29331,12 +29357,12 @@ items:
   fact_types:
   - documents
   title: legal entities full map / 2 / name
-  fact_text: 'УНПК: 2 , name — НОУ УНПК МФТИ.'
+  fact_text: 'УНПК: 2 , name, название — НОУ УНПК МФТИ.'
   short_fact: legal entities full map / 2 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 2 , name — НОУ УНПК МФТИ. [client_blocked: global_forbidden:НОУ
-    УНПК, internal_only, manager_only_route]'
-  internal_text: 'УНПК: 2 , name — НОУ УНПК МФТИ.'
+  manager_check_text: 'УНПК: 2 , name, название — НОУ УНПК МФТИ. [client_blocked:
+    global_forbidden:НОУ УНПК, internal_only, manager_only_route]'
+  internal_text: 'УНПК: 2 , name, название — НОУ УНПК МФТИ.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -31412,10 +31438,10 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / location / name
-  fact_text: 'УНПК: адрес и место занятий — УСК «Менделеево».'
+  fact_text: 'УНПК: адрес и место занятий, название — УСК «Менделеево».'
   short_fact: lvsh mendeleevo 2026 / location / name
-  client_safe_text: 'УНПК: адрес и место занятий — УСК «Менделеево».'
-  manager_check_text: 'УНПК: адрес и место занятий — УСК «Менделеево».'
+  client_safe_text: 'УНПК: адрес и место занятий, название — УСК «Менделеево».'
+  manager_check_text: 'УНПК: адрес и место занятий, название — УСК «Менделеево».'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -32002,10 +32028,10 @@ items:
   fact_types:
   - deadline
   title: lvsh mendeleevo 2026 / smeny 2026 / 1 / dates
-  fact_text: 'УНПК: 1 , dates — 18-26 июля.'
+  fact_text: 'УНПК: 1 , dates, даты — 18-26 июля.'
   short_fact: lvsh mendeleevo 2026 / smeny 2026 / 1 / dates
   client_safe_text: ''
-  manager_check_text: 'УНПК: 1 , dates — 18-26 июля. [client_blocked: not_client_allowed_status:open]'
+  manager_check_text: 'УНПК: 1 , dates, даты — 18-26 июля. [client_blocked: not_client_allowed_status:open]'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -32253,10 +32279,10 @@ items:
   fact_types:
   - deadline
   title: lvsh mendeleevo 2026 / smeny 2026 / 2 / dates
-  fact_text: 'УНПК: 2 , dates — 15-25 августа.'
+  fact_text: 'УНПК: 2 , dates, даты — 15-25 августа.'
   short_fact: lvsh mendeleevo 2026 / smeny 2026 / 2 / dates
   client_safe_text: ''
-  manager_check_text: 'УНПК: 2 , dates — 15-25 августа. [client_blocked: not_client_allowed_status:open]'
+  manager_check_text: 'УНПК: 2 , dates, даты — 15-25 августа. [client_blocked: not_client_allowed_status:open]'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -32498,12 +32524,12 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / teachers / 1 / name
-  fact_text: 'УНПК: 1 , name — Белых Кирилл Иванович.'
+  fact_text: 'УНПК: 1 , name, название — Белых Кирилл Иванович.'
   short_fact: lvsh mendeleevo 2026 / teachers / 1 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 1 , name — Белых Кирилл Иванович. [client_blocked: internal_only,
-    manager_only_route]'
-  internal_text: 'УНПК: 1 , name — Белых Кирилл Иванович.'
+  manager_check_text: 'УНПК: 1 , name, название — Белых Кирилл Иванович. [client_blocked:
+    internal_only, manager_only_route]'
+  internal_text: 'УНПК: 1 , name, название — Белых Кирилл Иванович.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -32745,12 +32771,12 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / teachers / 2 / name
-  fact_text: 'УНПК: 2 , name — Вагин Константин Юрьевич.'
+  fact_text: 'УНПК: 2 , name, название — Вагин Константин Юрьевич.'
   short_fact: lvsh mendeleevo 2026 / teachers / 2 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 2 , name — Вагин Константин Юрьевич. [client_blocked:
+  manager_check_text: 'УНПК: 2 , name, название — Вагин Константин Юрьевич. [client_blocked:
     internal_only, manager_only_route]'
-  internal_text: 'УНПК: 2 , name — Вагин Константин Юрьевич.'
+  internal_text: 'УНПК: 2 , name, название — Вагин Константин Юрьевич.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -32992,12 +33018,12 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / teachers / 3 / name
-  fact_text: 'УНПК: 3 , name — Кальцын Виталий Александрович.'
+  fact_text: 'УНПК: 3 , name, название — Кальцын Виталий Александрович.'
   short_fact: lvsh mendeleevo 2026 / teachers / 3 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 3 , name — Кальцын Виталий Александрович. [client_blocked:
+  manager_check_text: 'УНПК: 3 , name, название — Кальцын Виталий Александрович. [client_blocked:
     internal_only, manager_only_route]'
-  internal_text: 'УНПК: 3 , name — Кальцын Виталий Александрович.'
+  internal_text: 'УНПК: 3 , name, название — Кальцын Виталий Александрович.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -33175,12 +33201,12 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / teachers / 4 / name
-  fact_text: 'УНПК: 4 , name — Зиманова Анна Львовна.'
+  fact_text: 'УНПК: 4 , name, название — Зиманова Анна Львовна.'
   short_fact: lvsh mendeleevo 2026 / teachers / 4 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 4 , name — Зиманова Анна Львовна. [client_blocked: internal_only,
-    manager_only_route]'
-  internal_text: 'УНПК: 4 , name — Зиманова Анна Львовна.'
+  manager_check_text: 'УНПК: 4 , name, название — Зиманова Анна Львовна. [client_blocked:
+    internal_only, manager_only_route]'
+  internal_text: 'УНПК: 4 , name, название — Зиманова Анна Львовна.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -33358,12 +33384,12 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / teachers / 5 / name
-  fact_text: 'УНПК: 5 , name — Мендель Александр Васильевич.'
+  fact_text: 'УНПК: 5 , name, название — Мендель Александр Васильевич.'
   short_fact: lvsh mendeleevo 2026 / teachers / 5 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 5 , name — Мендель Александр Васильевич. [client_blocked:
+  manager_check_text: 'УНПК: 5 , name, название — Мендель Александр Васильевич. [client_blocked:
     internal_only, manager_only_route]'
-  internal_text: 'УНПК: 5 , name — Мендель Александр Васильевич.'
+  internal_text: 'УНПК: 5 , name, название — Мендель Александр Васильевич.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -33604,12 +33630,12 @@ items:
   fact_types:
   - camp_lvsh
   title: lvsh mendeleevo 2026 / teachers / 6 / name
-  fact_text: 'УНПК: 6 , name — Ибрагимов Руслан Раулевич.'
+  fact_text: 'УНПК: 6 , name, название — Ибрагимов Руслан Раулевич.'
   short_fact: lvsh mendeleevo 2026 / teachers / 6 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 6 , name — Ибрагимов Руслан Раулевич. [client_blocked:
+  manager_check_text: 'УНПК: 6 , name, название — Ибрагимов Руслан Раулевич. [client_blocked:
     internal_only, manager_only_route]'
-  internal_text: 'УНПК: 6 , name — Ибрагимов Руслан Раулевич.'
+  internal_text: 'УНПК: 6 , name, название — Ибрагимов Руслан Раулевич.'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -35897,10 +35923,10 @@ items:
   fact_types:
   - program
   title: online platform / levels / 1
-  fact_text: 'УНПК: levels , 1, онлайн — базовый.'
+  fact_text: 'УНПК: онлайн-платформа, онлайн — базовый.'
   short_fact: online platform / levels / 1
-  client_safe_text: 'УНПК: levels , 1, онлайн — базовый.'
-  manager_check_text: 'УНПК: levels , 1, онлайн — базовый.'
+  client_safe_text: 'УНПК: онлайн-платформа, онлайн — базовый.'
+  manager_check_text: 'УНПК: онлайн-платформа, онлайн — базовый.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -35955,10 +35981,10 @@ items:
   fact_types:
   - program
   title: online platform / levels / 2
-  fact_text: 'УНПК: levels , 2, онлайн — продвинутый.'
+  fact_text: 'УНПК: онлайн-платформа, онлайн — продвинутый.'
   short_fact: online platform / levels / 2
-  client_safe_text: 'УНПК: levels , 2, онлайн — продвинутый.'
-  manager_check_text: 'УНПК: levels , 2, онлайн — продвинутый.'
+  client_safe_text: 'УНПК: онлайн-платформа, онлайн — продвинутый.'
+  manager_check_text: 'УНПК: онлайн-платформа, онлайн — продвинутый.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -36013,10 +36039,10 @@ items:
   fact_types:
   - program
   title: online platform / levels / 3
-  fact_text: 'УНПК: levels , 3, онлайн — олимпиадный.'
+  fact_text: 'УНПК: онлайн-платформа, онлайн — олимпиадный.'
   short_fact: online platform / levels / 3
-  client_safe_text: 'УНПК: levels , 3, онлайн — олимпиадный.'
-  manager_check_text: 'УНПК: levels , 3, онлайн — олимпиадный.'
+  client_safe_text: 'УНПК: онлайн-платформа, онлайн — олимпиадный.'
+  manager_check_text: 'УНПК: онлайн-платформа, онлайн — олимпиадный.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -36071,10 +36097,11 @@ items:
   fact_types:
   - program
   title: online platform / name
-  fact_text: 'УНПК: online platform , name, онлайн — МТС Линк (бывший Webinar).'
+  fact_text: 'УНПК: онлайн-платформа, онлайн, название — МТС Линк (бывший Webinar).'
   short_fact: online platform / name
-  client_safe_text: 'УНПК: online platform , name, онлайн — МТС Линк (бывший Webinar).'
-  manager_check_text: 'УНПК: online platform , name, онлайн — МТС Линк (бывший Webinar).'
+  client_safe_text: 'УНПК: онлайн-платформа, онлайн, название — МТС Линк (бывший Webinar).'
+  manager_check_text: 'УНПК: онлайн-платформа, онлайн, название — МТС Линк (бывший
+    Webinar).'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -36129,10 +36156,10 @@ items:
   fact_types:
   - program
   title: online platform / recording
-  fact_text: 'УНПК: online platform , recording, онлайн — да.'
+  fact_text: 'УНПК: онлайн-платформа, онлайн — да.'
   short_fact: online platform / recording
-  client_safe_text: 'УНПК: online platform , recording, онлайн — да.'
-  manager_check_text: 'УНПК: online platform , recording, онлайн — да.'
+  client_safe_text: 'УНПК: онлайн-платформа, онлайн — да.'
+  manager_check_text: 'УНПК: онлайн-платформа, онлайн — да.'
   internal_text: ''
   brand: unpk
   active_brand_scope: unpk_bot
@@ -38424,12 +38451,12 @@ items:
   fact_types:
   - teacher
   title: teachers lobnya / 1 / name
-  fact_text: 'УНПК: 1 , name — Арешин Я. О..'
+  fact_text: 'УНПК: 1 , name, название — Арешин Я. О..'
   short_fact: teachers lobnya / 1 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 1 , name — Арешин Я. О.. [client_blocked: internal_only,
+  manager_check_text: 'УНПК: 1 , name, название — Арешин Я. О.. [client_blocked: internal_only,
     manager_only_route, teacher_names_internal]'
-  internal_text: 'УНПК: 1 , name — Арешин Я. О..'
+  internal_text: 'УНПК: 1 , name, название — Арешин Я. О..'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -38549,12 +38576,12 @@ items:
   fact_types:
   - teacher
   title: teachers lobnya / 2 / name
-  fact_text: 'УНПК: 2 , name — Арешина Н. В..'
+  fact_text: 'УНПК: 2 , name, название — Арешина Н. В..'
   short_fact: teachers lobnya / 2 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 2 , name — Арешина Н. В.. [client_blocked: internal_only,
-    manager_only_route, teacher_names_internal]'
-  internal_text: 'УНПК: 2 , name — Арешина Н. В..'
+  manager_check_text: 'УНПК: 2 , name, название — Арешина Н. В.. [client_blocked:
+    internal_only, manager_only_route, teacher_names_internal]'
+  internal_text: 'УНПК: 2 , name, название — Арешина Н. В..'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client
@@ -38798,12 +38825,12 @@ items:
   fact_types:
   - teacher
   title: teachers lobnya / 3 / name
-  fact_text: 'УНПК: 3 , name — Дергачев Д. И..'
+  fact_text: 'УНПК: 3 , name, название — Дергачев Д. И..'
   short_fact: teachers lobnya / 3 / name
   client_safe_text: ''
-  manager_check_text: 'УНПК: 3 , name — Дергачев Д. И.. [client_blocked: internal_only,
-    manager_only_route, teacher_names_internal]'
-  internal_text: 'УНПК: 3 , name — Дергачев Д. И..'
+  manager_check_text: 'УНПК: 3 , name, название — Дергачев Д. И.. [client_blocked:
+    internal_only, manager_only_route, teacher_names_internal]'
+  internal_text: 'УНПК: 3 , name, название — Дергачев Д. И..'
   brand: unpk
   active_brand_scope: internal_only
   cross_brand_policy: forbidden_for_client

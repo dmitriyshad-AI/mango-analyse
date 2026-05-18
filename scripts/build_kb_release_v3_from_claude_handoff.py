@@ -1408,6 +1408,14 @@ def readable_fact_label(path: tuple[str, ...], *, fact_type: str) -> str:
     labels: list[str] = []
     if "prices_regular_2026_27" in text:
         labels.append("цены на 2026/27 учебный год")
+    elif "ls_city_2026" in text:
+        labels.append("городской летний лагерь")
+    elif "individual_lessons" in text:
+        labels.append("индивидуальные занятия")
+    elif "intensives_2026" in text:
+        labels.append("интенсивы 2026")
+    elif "online_platform" in text:
+        labels.append("онлайн-платформа")
     elif "academic_year_2026_27" in text:
         labels.append("учебный год 2026/27")
     elif "discount" in text:
@@ -1443,9 +1451,31 @@ def readable_fact_label(path: tuple[str, ...], *, fact_type: str) -> str:
         labels.append("до 01.08.2026")
     if "after_2026_08_01" in text:
         labels.append("после 01.08.2026")
+    if "before_2026_04_07" in text:
+        labels.append("до 07.04.2026")
+    if "after_2026_04_07" in text:
+        labels.append("после 07.04.2026")
+    if "moscow" in text:
+        labels.append("Москва")
+    if "dolgoprudny" in text:
+        labels.append("Долгопрудный")
 
     last = path[-1].casefold() if path else ""
     leaf_labels = {
+        "name": "название",
+        "dates": "даты",
+        "start_date": "дата старта",
+        "base": "базовый вариант",
+        "plus_full": "расширенный вариант на полный день",
+        "plus_half": "расширенный вариант на полдня",
+        "plus_factultative": "вариант с факультативом",
+        "plus_individual": "вариант с индивидуальными занятиями",
+        "lesson_45min": "занятие 45 минут",
+        "session_90min": "занятие 90 минут",
+        "package_5_sessions": "пакет 5 занятий",
+        "one_block": "один блок",
+        "one_subject": "один предмет",
+        "two_subjects": "два предмета",
         "semester": "семестр",
         "year": "год",
         "semester_range": "семестр",

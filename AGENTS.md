@@ -45,6 +45,12 @@
 
 `аудит -> ТЗ -> реализация -> тесты -> audit pack -> коммит`
 
+Для базы знаний, Telegram/email-черновиков, CRM/AMO/Tallanto-текстов и любых клиентских ответов этот цикл расширяется:
+
+`аудит -> ТЗ -> реализация -> тесты -> semantic review -> audit pack -> коммит`
+
+`quality_passed=true` и зеленые тесты означают только `formal_pass`. Нельзя писать "готово к использованию", пока не пройден смысловой аудит по `docs/SEMANTIC_REVIEW_RULES.md`.
+
 Не начинать реализацию крупного блока без актуального ТЗ и понятных границ.
 
 Не вести несколько крупных блоков параллельно в одном рабочем дереве. Исключение: независимые read-only аудиты без изменений.
@@ -87,6 +93,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q <tests>
 - `implementation_notes.md`
 - `changed_files.txt`
 - `test_output.txt`
+- `semantic_review.md` для базы знаний, ботов, CRM-текстов и клиентских ответов
 - `risk_review.md`
 - `backward_compatibility.md`
 
@@ -112,4 +119,3 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q <tests>
 Основное ТЗ:
 
 `docs/TOP3_PRIORITY_FIXES_TZ_2026-05-15.md`
-

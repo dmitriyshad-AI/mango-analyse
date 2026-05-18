@@ -400,9 +400,15 @@ def test_v3_phystech_products_are_not_collapsed(kb_v3: KbReleaseV3) -> None:
 
 def test_v3_client_facts_do_not_use_machine_slug_text(kb_v3: KbReleaseV3) -> None:
     bad = []
+    technical_english_re = re.compile(
+        r"\b(?:prices?|lesson|session|package|base|plus|one\s+block|one\s+subject|two\s+subjects|"
+        r"after\s+20\d{2}|before\s+20\d{2}|moscow|dolgoprudny|location|start\s+date|"
+        r"online\s+platform|free\s+morning\s+club|factultative)\b",
+        re.I,
+    )
     for fact in _allowed_client_facts(kb_v3.facts):
         text = str(fact.get("client_safe_text") or fact.get("fact_text") or "")
-        if " / " in text or re.search(r"\b[a-z]+_[a-z0-9_]+\b", text):
+        if " / " in text or re.search(r"\b[a-z]+_[a-z0-9_]+\b", text) or technical_english_re.search(text):
             bad.append(fact)
     assert not bad, _fact_ids(bad[:30])
 
@@ -457,15 +463,15 @@ def test_v3_brand_scope_blocks_cross_brand_prices(kb_v3: KbReleaseV3) -> None:
             for marker in UNPK_CLIENT_FORBIDDEN_MARKERS:
                 assert marker.casefold() not in client_text.casefold(), fact
 
-    foton_prices = _allowed_price_text(kb_v3.facts, "foton")
-    unpk_prices = _allowed_price_text(kb_v3.facts, "unpk")
+    foton_amounts = _allowed_price_amounts(kb_v3.facts, "foton")
+    unpk_amounts = _allowed_price_amounts(kb_v3.facts, "unpk")
 
-    assert foton_prices
-    assert unpk_prices
-    assert "82000" not in foton_prices
-    assert "41800" not in foton_prices and "69900" not in foton_prices
-    assert "44600" not in unpk_prices and "74500" not in unpk_prices
-    assert "29750" not in unpk_prices and "47250" not in unpk_prices
+    assert foton_amounts
+    assert unpk_amounts
+    assert 82000 not in foton_amounts
+    assert 41800 not in foton_amounts and 69900 not in foton_amounts
+    assert 44600 not in unpk_amounts and 74500 not in unpk_amounts
+    assert 29750 not in unpk_amounts and 47250 not in unpk_amounts
 
 
 def test_v3_approval_queue_contains_atomic_business_items(kb_v3: KbReleaseV3) -> None:
@@ -679,6 +685,22 @@ def _allowed_price_text(facts: Iterable[Mapping[str, Any]], brand: str) -> str:
         and _is_price_fact(fact)
     )
     return re.sub(r"\D+", "", text)
+
+
+def _allowed_price_amounts(facts: Iterable[Mapping[str, Any]], brand: str) -> set[int]:
+    amounts: set[int] = set()
+    for fact in facts:
+        if (
+            fact.get("brand") == brand
+            and _is_true(fact.get("allowed_for_client_answer"))
+            and _is_price_fact(fact)
+        ):
+            structured = _jsonish(fact.get("structured_value"))
+            for key in ("amount", "amount_min", "amount_max"):
+                value = structured.get(key)
+                if isinstance(value, (int, float)):
+                    amounts.add(int(value))
+    return amounts
 
 
 def _post_filter_terms(kb_v3: KbReleaseV3) -> str:

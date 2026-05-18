@@ -39,6 +39,26 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q <tests>
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_post_backfill_amo_ready_export.py
 ```
 
+## Смысловая проверка
+
+Для базы знаний, Telegram/email-черновиков, CRM-текстов и клиентских ответов зеленые тесты дают только `formal_pass`.
+
+Перед словами "готово к использованию" нужен `semantic_pass` по правилам:
+
+```bash
+sed -n '1,260p' docs/SEMANTIC_REVIEW_RULES.md
+```
+
+Для базы знаний запускать:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_kb_semantic_review.py \
+  --release-dir product_data/knowledge_base/kb_release_20260518_v3_handoff_for_claude_and_team \
+  --out-dir audits/_inbox/<block>/semantic_review
+```
+
+Если `semantic_pass=false`, блок не считается завершенным, даже если `quality_passed=true`.
+
 ## Что не запускать без отдельного подтверждения
 
 - ASR;
@@ -104,6 +124,7 @@ audits/_inbox/<block>_<timestamp>/
 implementation_notes.md
 changed_files.txt
 test_output.txt
+semantic_review.md
 risk_review.md
 backward_compatibility.md
 ```

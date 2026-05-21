@@ -109,18 +109,19 @@ LOGS_DIR={shell_quote(logs_dir)}
 
 _pick_python() {{
   local candidates=(
-    "/usr/bin/python3"
+    "${{PROJECT_ROOT}}/.venv-asrbench/bin/python"
     "${{PROJECT_ROOT}}/.venv/bin/python"
     "${{PROJECT_ROOT}}/stable_runtime/venv_stable/bin/python"
+    "/Users/dmitrijfabarisov/.codex/skill-venv/bin/python"
+    "/usr/bin/python3"
   )
   for py in "${{candidates[@]}}"; do
     [[ -x "${{py}}" ]] || continue
-    PYTHONPATH="${{PROJECT_ROOT}}/src" "${{py}}" - <<'PY' >/dev/null 2>&1
+    if PYTHONPATH="${{PROJECT_ROOT}}/src" "${{py}}" - <<'PY' >/dev/null 2>&1; then
 import importlib
 for mod in ("sqlalchemy", "dotenv", "mango_mvp.cli", "openai"):
     importlib.import_module(mod)
 PY
-    if [[ $? -eq 0 ]]; then
       echo "${{py}}"
       return 0
     fi
@@ -128,7 +129,12 @@ PY
   return 1
 }}
 
-VENV_PYTHON="$(_pick_python)"
+if ! VENV_PYTHON="$(_pick_python)"; then
+  echo "BLOCKED: no Python environment can import sqlalchemy, dotenv, mango_mvp.cli and openai." >&2
+  echo "Tried: .venv-asrbench/bin/python, .venv/bin/python, stable_runtime/venv_stable/bin/python, /Users/dmitrijfabarisov/.codex/skill-venv/bin/python, /usr/bin/python3" >&2
+  exit 2
+fi
+echo "[python] ${{VENV_PYTHON}}"
 mkdir -p "${{TRANSCRIPTS_DIR}}" "${{LOGS_DIR}}"
 cd "${{PROJECT_ROOT}}"
 """

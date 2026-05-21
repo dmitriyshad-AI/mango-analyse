@@ -27,6 +27,7 @@ def test_builder_wires_fresh_snapshot_into_pilot_context() -> None:
                 "source_id": "source:price_2026",
                 "freshness_status": "fresh_verified",
                 "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
                 "requires_manager_confirmation": False,
                 "forbidden_for_client": False,
                 "related_theme_ids": ["theme:001_pricing"],
@@ -55,6 +56,8 @@ def test_builder_wires_fresh_snapshot_into_pilot_context() -> None:
     assert payload["knowledge_base_version"] == "kb_night_20260517_v1"
     assert payload["facts_context"]["knowledge_base_version"] == "kb_night_20260517_v1"
     assert payload["facts_context"]["fresh"] is True
+    assert payload["facts_context"]["client_safe_fact_verified"] is True
+    assert payload["rop_policy"]["autonomy_policy"]["allow_autonomous"] is True
     assert payload["facts_context"]["facts_missing"] is False
     assert payload["confirmed_facts"]["fact:price_grade_10"] == "Стоимость курса для 10 класса: 120 000 рублей."
     assert payload["knowledge_snippets"]
@@ -76,6 +79,7 @@ def test_builder_filters_snapshot_by_active_brand() -> None:
                 "brand": "foton",
                 "freshness_status": "document_verified",
                 "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
                 "requires_manager_confirmation": False,
                 "forbidden_for_client": False,
                 "related_theme_ids": ["theme:006_installment"],
@@ -87,6 +91,7 @@ def test_builder_filters_snapshot_by_active_brand() -> None:
                 "brand": "unpk",
                 "freshness_status": "document_verified",
                 "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
                 "requires_manager_confirmation": False,
                 "forbidden_for_client": False,
                 "related_theme_ids": ["theme:006_installment"],
@@ -197,3 +202,213 @@ def test_builder_keeps_metadata_only_price_as_missing_fact() -> None:
     assert "Стоимость обучения требует проверки" in payload["knowledge_snippets"][0]
     assert "120 000" not in " ".join(payload["knowledge_snippets"])
     assert "confirmed_facts" not in payload
+
+
+def test_builder_does_not_mark_usable_fact_without_client_permission_as_verified() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test",
+        "facts": [
+            {
+                "fact_id": "fact:internal_price",
+                "fact_type": "price",
+                "client_safe_text": "Стоимость курса: 120 000 рублей.",
+                "freshness_status": "fresh_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": False,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:001_pricing"],
+            }
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Сколько стоит курс?",
+        theme={"topic_id": "theme:001_pricing"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["prices.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert "confirmed_facts" not in payload
+    assert payload["facts_context"]["client_safe_fact_verified"] is False
+    assert payload["facts_context"]["facts_missing"] is True
+    assert payload["rop_policy"]["autonomy_policy"]["allow_autonomous"] is False
+
+
+def test_builder_prefers_matching_class_and_format_price_fact() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test",
+        "facts": [
+            {
+                "fact_id": "fact:online_1_4",
+                "fact_type": "price",
+                "client_safe_text": "Фотон: 1-4 класс, онлайн, семестр — 19 000 ₽.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:001_pricing"],
+            },
+            {
+                "fact_id": "fact:offline_5_11",
+                "fact_type": "price",
+                "client_safe_text": "Фотон: 5-11 класс, очно, семестр — 44 600 ₽.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:001_pricing"],
+            },
+            {
+                "fact_id": "fact:camp_price",
+                "fact_type": "price",
+                "client_safe_text": "Фотон: городской летний лагерь, базовый вариант — 34 300 ₽.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:001_pricing"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Сколько стоит очный курс для 5 класса?",
+        active_brand="foton",
+        theme={"topic_id": "theme:001_pricing"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["prices.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert list(payload["confirmed_facts"])[0] == "fact:offline_5_11"
+    assert "44 600" in next(iter(payload["confirmed_facts"].values()))
+    assert "fact:camp_price" not in payload["confirmed_facts"]
+
+
+def test_builder_prefers_deadline_fact_for_when_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test",
+        "facts": [
+            {
+                "fact_id": "fact:camp_address",
+                "fact_type": "location",
+                "client_safe_text": "УНПК: адрес ЛВШ Менделеево.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:026_camp_general"],
+            },
+            {
+                "fact_id": "fact:camp_dates",
+                "fact_type": "deadline",
+                "client_safe_text": "УНПК: ЛВШ Менделеево проходит 18-26 июля.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:013_schedule"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Когда проходит ЛВШ Менделеево?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert list(payload["confirmed_facts"])[0] == "fact:camp_dates"
+    assert "18-26 июля" in next(iter(payload["confirmed_facts"].values()))
+
+
+def test_builder_does_not_use_unrelated_city_camp_dates_for_lvsh_when_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test",
+        "facts": [
+            {
+                "fact_id": "fact:city_camp_dates",
+                "fact_type": "deadline",
+                "client_safe_text": "УНПК: городской летний лагерь, Долгопрудный — 20-31 июля.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:013_schedule"],
+            }
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Когда проходит ЛВШ Менделеево?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert "confirmed_facts" not in payload
+    assert payload["facts_context"]["client_safe_fact_verified"] is False
+    assert payload["missing_facts"] == ["schedule.current"]
+
+
+def test_builder_uses_waitlist_fact_for_zvsh_when_dates_unknown() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test",
+        "facts": [
+            {
+                "fact_id": "fact:zvsh_waitlist",
+                "fact_type": "deadline",
+                "client_safe_text": "УНПК: даты ЗВШ Менделеево пока не определены; можно записаться в лист ожидания.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:013_schedule"],
+            }
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Когда будет ЗВШ Менделеево?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert payload["confirmed_facts"] == {
+        "fact:zvsh_waitlist": "УНПК: даты ЗВШ Менделеево пока не определены; можно записаться в лист ожидания."
+    }
+    assert payload["facts_context"]["client_safe_fact_verified"] is True

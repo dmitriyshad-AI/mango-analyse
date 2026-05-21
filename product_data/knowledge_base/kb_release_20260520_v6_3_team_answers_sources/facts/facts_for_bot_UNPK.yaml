@@ -1,0 +1,530 @@
+schema_version: kb_facts_unpk_v6_1_2026_05_20_team_answers
+generated_at: '2026-05-20'
+active_brand_scope: unpk_bot
+legal_entities:
+  status: verified
+  internal_only: true
+  entities:
+  - name: АНО ДПО «УНПК МФТИ»
+    brand: unpk
+    used_for:
+    - Очные курсы Долгопрудный (МФТИ, Пацаева)
+    - ЛШ городская АНО июль (Москва Скорняжный)
+    - ЛВШ Менделеево
+    - Маткапитал
+    - Налоговый вычет
+    license_holder: true
+  - name: НОУ УНПК МФТИ
+    brand: unpk
+    used_for:
+    - Альтернативное юр. лицо УНПК
+licenses:
+  ano_dpo_unpk_mfti:
+    status: verified
+    number: Л035-01255-50/01195871
+    date: 13.05.2024
+    holder: АНО ДПО «УНПК МФТИ»
+    grants:
+    - Социальный налоговый вычет
+    - Приём оплаты маткапиталом
+    - Договоры на платные образовательные услуги
+    internal_only_for_number: true
+  nou_unpk_mfti:
+    status: verified
+    number: 50Л01 №0000547
+    date: 06.03.2013
+    holder: НОУ УНПК МФТИ
+    internal_only_for_number: true
+  client_safe_summary: У нас есть лицензия на образовательную деятельность.
+prices_regular_2026_27:
+  status: verified
+  source: Google Doc «Цены ФОТОН + УНПК от 16.03.2026», секция УНПК
+  brand: unpk
+  freshness_status: document_verified
+  offline_5_11_class:
+    before_2026_07_01:
+      semester: 49000
+      year: 82000
+  offline_1_4_class:
+    before_2026_07_01:
+      semester: 31000
+      year: 51700
+    note_internal: Очная площадка 1-4 классов хранится в locations_unpk, а не внутри
+      price-ветки, чтобы адрес не превращался в цену.
+  patsayeva_2x_week:
+    status: removed_2026_05_20
+    programs: []
+    note_internal: Программы 2 раза в неделю на Пацаева сняты. Если клиент спрашивает
+      — передать менеджеру.
+  online_olympiad_phystech_9_and_11:
+    status: verified
+    product: Олимпиадная подготовка Физтех
+    classes: 9 и 11
+    schedule: будни
+    semester: 41800
+    year: 69900
+    note_internal: Для других классов набора и ценника пока нет — обработать ответом
+      «менеджер свяжется».
+  online_5_11_class_regular:
+    status: prices_pending
+    classes: 5-11
+    note_internal: Обычный (не олимпиадный) онлайн-курс. Расписание и финальный прайс
+      на 2026/27 учебный год будут позже. До получения цен — handoff менеджеру.
+    bot_behavior_when_asked: Да, у нас есть обычные онлайн-курсы для 5-11 класса.
+      Финальный прайс и расписание на 2026/27 учебный год уточняются — менеджер свяжется
+      и пришлёт актуальные условия.
+discounts:
+  status: verified
+  brand: unpk
+  stacking_rule: non_stacking_largest_applies
+  stacking_rule_text: Скидки не суммируются — применяется наибольшая из доступных.
+  second_subject:
+    offline:
+      pct: 20%
+      condition_client_text: на второй и последующий предмет одного и того же ребёнка
+        при оплате очного формата
+      example: Если ребёнок занимается математикой и хочет добавить физику — на второй
+        предмет скидка 20%.
+    online:
+      pct: 20%
+      condition_client_text: на второй и последующий предмет одного и того же ребёнка
+        при оплате онлайн-формата
+  monthly_payment:
+    pct: 10%
+    condition_client_text: при оплате обучения сразу за семестр (вместо помесячной
+      оплаты)
+  multichild:
+    pct: 10%
+    condition_client_text: детям из многодетной семьи при предъявлении удостоверения
+      многодетной семьи (даже если из семьи учится только один ребёнок)
+    note: 'Поправка Дмитрия 2026-05-18: скидка работает по статусу семьи, а не по
+      количеству оплачиваемых детей. Один ребёнок из многодетной семьи получает скидку
+      10%. Не суммируется с другими скидками — применяется бóльшая.'
+  mfti_employees:
+    pct: 10%
+    condition_client_text: сотрудникам МФТИ при предъявлении подтверждающего документа
+      с места работы
+    note: 'q7 закрыт по ответу бухгалтерии 2026-05-17: 10% всегда, цифра 25% устарела.'
+  refer_a_friend:
+    offline:
+      cashback: 10000
+      condition_client_text: после того как приглашённый друг посетит 5 занятий очного
+        курса
+    online:
+      cashback: 5000
+      condition_client_text: после того как приглашённый друг посетит 5 занятий онлайн-курса
+    camp_base_tariff:
+      cashback: 3000
+      condition_client_text: после того как приглашённый друг отучится на смене летнего
+        лагеря по базовому тарифу
+    camp_advanced_tariff:
+      cashback: 5000
+      condition_client_text: после того как приглашённый друг отучится на смене летнего
+        лагеря по продвинутому тарифу
+  active_student_to_summer_camp:
+    pct: 7%
+    condition_client_text: действующим ученикам курсов УНПК при покупке любого летнего
+      лагеря (выездного или городского)
+  loyal_customers_lvsh_only:
+    applies_to:
+    - ЛВШ Менделеево
+    not_applies_to:
+    - ЛШ городская
+    - регулярные курсы
+    - интенсивы
+    - индивидуальные
+    condition_client_text: постоянным гостям ЛВШ Менделеево, посетившим смены в предыдущие
+      годы
+    tiers:
+      pct_5: после 1 посещённой смены ЛВШ
+      pct_10: после 2 смен ЛВШ
+      pct_15: после 3-4 смен ЛВШ
+      pct_20: после 5 смен ЛВШ
+      pct_30: после 6 и более смен ЛВШ
+promo_codes:
+  status: removed_from_bot
+  removed_at: '2026-05-18'
+  removed_reason: Без даты окончания акции; риск истёкших промокодов в client_safe_text
+  bot_behavior:
+    when_client_asks_about_promo: Спасибо, передам менеджеру — он подскажет актуальные
+      акции и промокоды.
+    route: draft_for_manager
+  former_internal_codes: []
+  former_internal_note: Промокоды больше не применяются. Старые коды убраны 2026-05-19.
+payment_options:
+  status: verified
+  brand: unpk
+  available_schedules:
+  - monthly:
+      discount_extra: 0%
+  - semester:
+      discount_extra: 10%
+  - year:
+      discount_extra: 14%
+  client_safe_text:
+    when_asked_about_installment: У нас оплата возможна помесячно, за семестр или
+      за год. При оплате семестром или годом действует скидка. Если нужно растянуть
+      оплату — менеджер подскажет варианты под вашу ситуацию.
+    forbidden_to_say:
+    - Фотон
+    - Т-Банк
+    - Долями
+    - у Фотона есть
+    - в другой компании
+    - у наших партнёров
+matkap:
+  status: verified
+  brand: unpk
+  rule_federal_only: true
+  responsible_person_internal: Дарья Клычева (бухгалтерия)
+  legal_entity_internal: АНО ДПО «УНПК МФТИ»
+  child_age:
+    sertificate_owner_min: 3
+    student_max: 18
+  required_docs:
+    internal_only: true
+    client_facing: false
+    bot_route: manager_handoff_only
+    items:
+    - Копия паспорта родителя
+    - Копия паспорта обучающегося
+    - СНИЛС родителя и обучающегося
+    - ИНН родителя и обучающегося
+    - Копия сертификата маткапитал
+    - Справка о состоянии лицевого счёта (СФР через Госуслуги)
+    - Договор
+    client_safe_summary: Менеджер пришлёт перечень документов и поможет с оформлением
+      через СФР.
+  timeline:
+    sfr_review_days: 10
+    transfer_days: 5
+    total_max_days: 15
+  client_safe_text:
+    when_asked: Да, оплата материнским капиталом возможна. Работаем с федеральным
+      маткапиталом. Менеджер пришлёт перечень документов и поможет с оформлением через
+      СФР. Подскажите ФИО ребёнка и какой курс рассматриваете.
+    when_regional: К сожалению, региональный маткапитал не принимаем. Если у вас федеральный
+      — менеджер подскажет порядок оформления.
+    when_timeline: Срок рассмотрения в СФР — до 10 рабочих дней, плюс ещё до 5 дней
+      на перевод. Итого до 15 дней.
+    when_age_over_18: Если ученику уже 18 лет или больше, по возрастным условиям маткапитала
+      есть ограничения. Уточню у менеджера, подходит ли ваш случай — он свяжется в
+      течение рабочего дня.
+    forbidden_to_say:
+    - АНО ДПО УНПК МФТИ
+    - оформляется в другой компании
+    - Фотон тоже принимает
+tax_deduction:
+  status: verified
+  brand: unpk
+  available: true
+  license_basis_internal: АНО ДПО «УНПК МФТИ», лицензия Л035-01255-50/01195871 от
+    13.05.2024
+  certificate_form: КНД 1151158 (Приказ Минфина 18.10.2023 № 165н)
+  certificate_lead_time_days: 10
+  limits:
+    2024_and_later:
+      max_expenses_per_child: 110000
+      max_return_per_child: 14300
+    2023_and_earlier:
+      max_expenses_per_child: 50000
+      max_return_per_child: 6500
+  retroactive_years: 3
+  fns_review_months: 3
+  payment_after_approval_months: 1
+  client_safe_text:
+    when_asked: Налоговый вычет за обучение возможен — у нас есть лицензия. За обучение
+      ребёнка можно вернуть до 14 300 ₽ в год. Менеджер подготовит и пришлёт справку
+      в течение 10 рабочих дней (постараемся быстрее) — её приложите к декларации
+      в налоговую.
+    when_multiple_years: Можно подать вычет за последние 3 года. Для каждого года
+      нужна отдельная справка от нас и отдельная декларация 3-НДФЛ. Менеджер подготовит
+      справки.
+    when_two_children: Лимит на каждого ребёнка отдельный — 110 000 ₽. Если за двоих
+      детей вы потратили по 110 000 ₽, можно вернуть до 28 600 ₽ суммарно. Менеджер
+      пришлёт две справки.
+    when_online_question: По онлайн-курсам — это вопрос трактовки конкретной налоговой
+      инспекции. Передам уточнение нашему специалисту.
+    forbidden_to_say:
+    - № 70369
+    - 06.03.2013
+    - АНО ДПО УНПК МФТИ
+certificates:
+  status: verified
+  brand: unpk
+  types:
+    payment_for_tax_deduction:
+      form: КНД 1151158
+      lead_time_days: 10
+    course_attendance:
+      form: Свободная форма
+      lead_time_days: 10
+    for_matkap:
+      content: Договор + лицензия + реквизиты
+      lead_time_days: 10
+  client_safe_text:
+    when_asked: Менеджер подготовит справку и пришлёт в течение 10 рабочих дней (постараемся
+      быстрее). Подскажите, какая справка нужна — по требованию (для работы / иное)
+      или для налогового вычета? И ФИО плательщика, ФИО ребёнка, за какой период.
+intensives_2026:
+  ege_unpk:
+    status: verified
+    brand: unpk
+    classes: 10-11
+    subjects:
+    - математика (профиль)
+    - физика
+    duration_weeks: 8
+    start_dates:
+      physics: 14 апреля 2026
+      math: 15 апреля 2026
+    format: онлайн, 2 занятия/нед
+    group_size: 10-15
+    prices:
+      one_subject: 18800
+      two_subjects: 34400
+      one_block: 9400
+    includes:
+    - 14 живых вебинаров (90 мин)
+    - 7 практических занятий
+    - ДЗ и конспекты
+    - 3 пробника
+    - Ручная проверка второй части ЕГЭ
+    - Закрытый чат
+    - Психподдержка
+    links:
+      math: https://my.mts-link.ru/course-info/2022195
+      physics: https://my.mts-link.ru/course-info/2022205
+    vk_chat_11: https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=
+  oge_intensive:
+    available_in_unpk: false
+    bot_behavior_when_asked: По интенсиву на ОГЭ менеджер подскажет варианты — свяжется
+      в течение рабочего дня.
+    forbidden_to_say:
+    - Фотон
+    - у наших коллег есть
+zvsh_mendeleevo:
+  status: waiting_list
+  brand: unpk
+  legal_entity_internal: АНО ДПО «УНПК МФТИ»
+  dates_2026_27: не определены
+  client_safe_text:
+    when_asked: Зимняя выездная школа в Менделеево — ждём расписание на новый учебный
+      год. Записаться в лист ожидания можно прямо сейчас — менеджер свяжется, как
+      только откроются продажи.
+  bot_route: bot_answer_self_for_pilot
+fiztech_olympiad:
+  status: needs_owner_confirmation
+  brand: unpk
+  prices:
+    individual: 33000
+    group: 50000
+  open_question: Уточнить полные условия.
+preschool_patsayeva:
+  status: removed_2026_05_20
+  brand: unpk
+  prices: {}
+  programs: []
+  note_internal: Дошкольные программы закрываются у обоих брендов. Клиенту не называть
+    старые тарифы; передать менеджеру.
+lvsh_mendeleevo_2026:
+  status: verified
+  brand: unpk
+  legal_entity_internal: АНО ДПО «УНПК МФТИ»
+  location:
+    name: УСК «Менделеево»
+    address: Московская область, Солнечногорский район, посёлок Красный Воин, Льяловское
+      шоссе, 1
+  audience: 5-10 класс (окончившие)
+  directions:
+    fizmat:
+      classes: 5-10
+      subjects:
+      - физика
+      - математика
+    it:
+      classes: 7-10
+      subjects:
+      - Python
+      - проектная деятельность
+  program:
+    daily_pairs: 3
+    pair_duration_minutes: 110
+    total_academic_hours: 72+
+    group_size: 12-15
+  pricing_2026:
+    main_full: 120000
+    main_with_25_pct_discount: 89900
+    main_min: 83800
+    booking_deposit: 15000
+  smeny_2026:
+  - dates: 18-26 июля
+    brand_internal: unpk_parallel_smena
+    status: open
+    freshness: dynamic_needs_check
+    note_internal: В эти же даты идёт смена Фотона — клиент бота УНПК видит только
+      смену УНПК.
+  - dates: 15-25 августа
+    brand_internal: unpk
+    status: open
+    freshness: dynamic_needs_check
+  accommodation:
+    room_capacity: 2-3 человека
+    air_conditioning: true
+    meals_per_day: 5
+  transfer_from_moscow:
+    available: true
+    cost: бесплатно
+    confirmed_by_team: '2026-05-20'
+  teachers:
+    internal_only_for_names: true
+    list:
+    - name: Белых Кирилл Иванович
+      subject: Информатика
+      education: Физфак МГУ
+      experience_years: 8+
+    - name: Вагин Константин Юрьевич
+      subject: Физика
+      education: К.ф.-м.н., МИФИ красный диплом 1995
+      experience_years: 15+
+    - name: Кальцын Виталий Александрович
+      subject: Физика
+      education: К.т.н., МГУ физфак 1981
+      experience_years: 20+
+    - name: Зиманова Анна Львовна
+      subject: Физика
+      education: МГУ астрономическое отделение
+    - name: Мендель Александр Васильевич
+      subject: Информатика
+      education: К.п.н., доцент
+    - name: Ибрагимов Руслан Раулевич
+      subject: Математика
+      education: МФТИ
+      experience_years: 12+
+ls_city_2026_unpk:
+  status: verified
+  brand: unpk
+  not_to_confuse_with: ЛВШ выездная — другой продукт
+  dolgoprudny:
+    smeny:
+    - 20-31 июля
+    - 17-28 августа
+    prices:
+      base: 37500
+      plus_factultative: 59500
+      plus_individual: 99500
+    location: Долгопрудный, Институтский пер., 9 (Главный корпус МФТИ)
+  moscow:
+    dates: 6-17 июля
+    prices:
+      base: 37500
+      plus_factultative: 59500
+      plus_individual: 99500
+    location: Москва, Верхняя Красносельская ул., 30
+  patsayeva:
+    available: false
+    note_internal: '2026-05-20: команда подтвердила, что на Пацаева летних школ нет.'
+  discounts:
+    multichild: 10%
+    mfti_employees: 10%
+    refer_a_friend:
+      base: 3000
+      advanced: 5000
+    former_student_same_brand: 5% УНПК → УНПК
+    already_paid_2026_27: 10%
+  meals: Обед (первое, второе, салат, булочка) + полдник
+  free_morning_club:
+    name: Утренний клуб Предлёнка
+    time: 09:45-11:45
+    from_day: 2
+teachers_lobnya:
+  status: archived_2026_05_20
+  archived_reason: Лобня больше не действующая площадка УНПК (команда подтвердила
+    2026-05-20)
+  internal_only_for_names: true
+  list:
+  - name: Арешин Я. О.
+    education: МФТИ магистр
+    experience_years: 12
+    ege_100_pts: 5
+  - name: Арешина Н. В.
+    subject: русский
+    role: руководитель курсов УНПК
+    ege_100_pts: 2
+  - name: Дергачев Д. И.
+    ege_100_pts: 1
+  internal_only: true
+contacts_unpk:
+  phone: +7 (495) 150-81-51
+  toll_free: 8 (800) 500-81-51
+  schedule: Пн-Вс 10:00-18:00
+  telegram: '@unpk_mipt'
+  website: kmipt.ru
+  email: edu@kmipt.ru
+locations_unpk:
+  addresses:
+  - city: Москва
+    address: Сретенка, 20
+    metro: Чистые Пруды
+  - city: Долгопрудный
+    address: Институтский пер., 9 (МФТИ)
+  - city: Долгопрудный
+    address: Проспект Пацаева, 7к1
+  - city: Менделеево (ЛВШ)
+    address: Льяловское шоссе, 1, посёлок Красный Воин
+  free_trial_offline:
+    available: false
+    offer: По бесплатному пробному очно — менеджер свяжется и подскажет вариант. Лимит
+      — по согласованию с куратором филиала; бот лимит не озвучивает.
+online_platform:
+  name: МТС Линк (бывший Webinar)
+  recording: true
+  levels:
+  - базовый
+  - продвинутый
+  - олимпиадный
+  offline_group_size: 6-12 человек
+academic_year_2026_27:
+  start_by_location:
+    moscow: 12-13 сентября 2026
+    online: 19-20 сентября 2026
+    mfti_institutsky_9: 20 сентября 2026
+    patsayeva: 26-27 сентября 2026
+  start: 12-27 сентября 2026 в зависимости от площадки
+  total_lessons: 35
+  weekly_lessons: 1
+  daily_hours: 2 ак.ч
+  semester_1_weeks: 20
+  semester_2_weeks: 15
+results_social_proof:
+  status: verified
+  oge_grade_5_pct: 92
+  ege_avg_above_country_pts: 25
+  university_admission_pct: 97
+  olymp_fiztech_2024_winners: 14
+  total_alumni: 100 000 учеников
+  total_alumni_confirmation: Подтверждено Дмитрием 2026-05-20
+objection_responses:
+  too_expensive_course:
+  - 20% на 2-й и последующие предметы
+  - Многодетным 10%
+  - Сотрудникам МФТИ 10%
+  - Семестр/год скидки 10-14%
+  - Приведи друга — кэшбек 10 000 ₽ очно или 5 000 ₽ онлайн
+  too_expensive_camp:
+  - Предоплата 15 000 ₽ фиксирует цену
+  - Применяется наибольшая из доступных скидок
+  inconvenient_time:
+  - Разные слоты по выходным
+  - Онлайн с записью
+  is_it_bot: Я помощник менеджера, помогу с вопросом или передам коллеге
+  brand_link_question:
+    approved_response: Это отдельные организации, по вашему вопросу сориентирую в
+      рамках текущего учебного центра.
+    followup_phrase: Я могу подсказать только про УНПК МФТИ и, к сожалению, не владею
+      информацией про другие организации.
+    forbidden_to_say:
+    - Раньше были одно
+    - Раньше сотрудничали
+    - Это наш партнёр
+    - У них есть

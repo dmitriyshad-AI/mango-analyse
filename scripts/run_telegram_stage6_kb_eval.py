@@ -15,7 +15,9 @@ from mango_mvp.channels.pilot_context import build_pilot_context
 from mango_mvp.channels.subscription_llm import (
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
+    apply_autonomy_matrix_guard,
     apply_brand_separation_guard,
+    apply_high_risk_content_guards,
     apply_input_policy_guards,
     apply_payment_confirmation_guard,
     apply_unsupported_promise_guard,
@@ -36,13 +38,16 @@ DEFAULT_BASELINE = Path(
     "llm_drafts_stage6_taxonomy_20260517/stage6_llm_drafts_for_manual_review.csv"
 )
 DEFAULT_INPUT = Path(".codex_local/telegram_pilot/eval_packs/20260517_contextual_layer_smoke/private_dialog_threads.jsonl")
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_night_20260517_v1/kc_snapshot_20260517_night_v1.json")
-DEFAULT_OUT_DIR = Path("product_data/knowledge_base/kb_night_20260517_v1")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json")
+DEFAULT_OUT_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_stage6_eval")
 STAGE6_KB_EVAL_SCHEMA_VERSION = "telegram_stage6_kb_eval_v1"
 FRESH_STATUSES = {"fresh", "fresh_verified"}
 SUBSTANTIVE_RE = re.compile(r"\?|подскаж|можно|когда|сколько|стоим|цен|оплат|возврат|распис|ссылк|доступ|курс|программ", re.I)
 TRIVIAL_RE = re.compile(r"^(спасибо.*|ок|окей|хорошо|да|нет|поняла|понял|ясно)[.!?\s]*$", re.I)
-HIGH_RISK_RE = re.compile(r"возврат|вернуть\s+деньги|суд|иск|претензи|роспотребнадзор|жалоб|нарушили\s+права", re.I)
+HIGH_RISK_RE = re.compile(
+    r"возврат|вернуть\s+деньги|суд|иск|претензи|роспотребнадзор|прокуратур|жалоб|нарушили\s+права|расторг",
+    re.I,
+)
 EMPTY_CLARIFICATION_RE = re.compile(r"\b(уточним|проверим|передам|верн[её]мся|свяжемся)\b", re.I)
 WORD_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]{4,}")
 STAGE6_DRAFT_FALLBACK_TEXT = (
@@ -461,6 +466,8 @@ def build_guarded_draft(provider: DraftProvider, client_message: str, *, context
     result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
     result = apply_brand_separation_guard(result, client_message=client_message, context=context)
     result = apply_input_policy_guards(result, client_message=client_message, context=context)
+    result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
+    result = apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
     return apply_stage6_draft_text_safety(result)
 
 
@@ -575,6 +582,9 @@ def prepare_eval_dialog(
         "manager_answer_patterns_are_facts": False,
         "fresh": bool(fresh_texts),
         "facts_fresh": bool(fresh_texts),
+        "client_safe": bool(fresh_texts),
+        "client_safe_fact_verified": bool(fresh_texts),
+        "autonomy_fact_verified": bool(fresh_texts),
         "missing": bool(kc.freshness_blocks),
         "stale": bool(required_keys) and not fresh_texts,
     }
@@ -607,6 +617,12 @@ def prepare_eval_dialog(
             "Использовать snapshot только как read-only подсказку.",
             "Исторические ответы менеджеров не считать источником фактов.",
         ],
+        "autonomy_policy": {
+            "allow_autonomous": bool(fresh_texts) and not kc.freshness_blocks,
+            "fact_requirement": "client_safe_fact_verified",
+            "p0_overrides_autonomy": True,
+            "default": "draft_for_manager_or_manager_only",
+        },
     }
     return {
         "dialog_id": str(dialog.get("dialog_id") or ""),
@@ -933,6 +949,8 @@ def select_patterns(patterns: Sequence[Mapping[str, Any]], query: str, topic_id:
 
 def infer_topic_id(text: str) -> str:
     value = text.casefold()
+    if "прокуратур" in value or "роспотребнадзор" in value or "суд" in value or "иск" in value or "по закону" in value:
+        return "theme:029_legal_question"
     if "возврат" in value or "вернуть" in value:
         return "theme:009_refund"
     if "распис" in value or "когда" in value:

@@ -1,0 +1,479 @@
+schema_version: kb_facts_foton_v6_1_2026_05_20_team_answers
+generated_at: '2026-05-20'
+active_brand_scope: foton_bot
+legal_entities:
+  status: verified
+  internal_only: true
+  entities:
+  - name: ООО «ЦДПО Фотон»
+    brand: foton
+    used_for:
+    - Курсы Фотон Москва (Верхняя Красносельская, 30)
+    - Онлайн Фотон
+    - ЛШ городская Москва Фотон 3-14 августа
+    - Рассрочка Т-Банк
+    receipt:
+      under_18: QR + Квитанция без НДС
+      over_18: Квитанция с НДС 5%
+  - name: ООО «ЦРДО Фотон»
+    brand: foton
+    used_for:
+    - Альтернативное юр. лицо Фотон
+licenses:
+  ooo_cdpo_foton:
+    status: verified
+    number: №77753 (серия 50Л01 №0009633)
+    date: 23.11.2018
+    holder: ООО «ЦДПО Фотон»
+    grants:
+    - Социальный налоговый вычет
+    - Приём оплаты маткапиталом
+    - Договоры на платные образовательные услуги
+    internal_only_for_number: true
+  ooo_crdo_foton:
+    status: verified
+    number: Л035-01255-50/02496431
+    date: 20.06.2025
+    holder: ООО «ЦРДО Фотон»
+    internal_only_for_number: true
+  client_safe_summary: У нас есть лицензия на образовательную деятельность.
+prices_regular_2026_27:
+  status: verified
+  source: Google Doc «Цены ФОТОН + УНПК от 16.03.2026», секция Фотон
+  brand: foton
+  freshness_status: document_verified
+  offline_5_11_class:
+    before_2026_07_01:
+      semester: 44600
+      year: 74500
+  offline_3_4_class:
+    before_2026_07_01:
+      semester: 28250
+      year: 47000
+  online_5_11_class:
+    before_2026_08_01:
+      semester: 29750
+      year_range:
+      - 47250
+      - 52500
+  online_1_4_class:
+    before_2026_08_01:
+      semester: 19000
+      year_range:
+      - 29900
+      - 33300
+  early_booking_2026_27:
+    description: Раннее бронирование для действующих учеников Фотона
+    signup_deadline: 1 мая 2026
+    payment_deadline: 15 мая 2026
+    online_5_11_year: 47250
+    online_5_11_semester: 29750
+    benefit: Зафиксировать цену + выбрать день недели
+discounts:
+  status: verified
+  brand: foton
+  stacking_rule: non_stacking_largest_applies
+  stacking_rule_text: Скидки не суммируются — применяется наибольшая из доступных.
+  second_subject:
+    offline:
+      pct: 20%
+      condition_client_text: на второй и последующий предмет одного и того же ребёнка
+        при оплате очного формата
+      example: Если ребёнок занимается математикой и хочет добавить физику — на второй
+        предмет скидка 20%.
+    online:
+      pct: 30%
+      condition_client_text: на второй и последующий предмет одного и того же ребёнка
+        при оплате онлайн-формата
+      example: Если ребёнок занимается математикой онлайн и хочет добавить физику
+        — на второй предмет скидка 30%.
+  multichild:
+    pct: 10%
+    condition_client_text: детям из многодетной семьи при предъявлении удостоверения
+      многодетной семьи (даже если из семьи учится только один ребёнок)
+    note: 'Поправка Дмитрия 2026-05-18: скидка работает по статусу семьи, а не по
+      количеству оплачиваемых детей. Один ребёнок из многодетной семьи получает скидку
+      10%. Не суммируется с другими скидками — применяется бóльшая.'
+  refer_a_friend:
+    offline:
+      cashback: 10000
+      condition_client_text: после того как приглашённый друг посетит 5 занятий очного
+        курса
+    online:
+      cashback: 10000
+      condition_client_text: после того как приглашённый друг оплатит и пройдёт семестр
+        онлайн-курса
+    camp_base_tariff:
+      cashback: 3000
+      condition_client_text: после того как приглашённый друг отучится на смене летнего
+        лагеря по базовому тарифу
+    camp_advanced_tariff:
+      cashback: 5000
+      condition_client_text: после того как приглашённый друг отучится на смене летнего
+        лагеря по продвинутому тарифу
+  active_student_to_summer_camp:
+    pct: 7%
+    condition_client_text: действующим ученикам курсов Фотон при покупке любого летнего
+      лагеря (выездного или городского)
+  loyal_customers_lvsh_only:
+    applies_to:
+    - ЛВШ Менделеево
+    not_applies_to:
+    - ЛШ городская
+    - регулярные курсы
+    - интенсивы
+    - индивидуальные
+    condition_client_text: постоянным гостям ЛВШ Менделеево, посетившим смены в предыдущие
+      годы
+    tiers:
+      pct_5: после 1 посещённой смены ЛВШ
+      pct_10: после 2 смен ЛВШ
+      pct_15: после 3-4 смен ЛВШ
+      pct_20: после 5 смен ЛВШ
+      pct_30: после 6 и более смен ЛВШ
+promo_codes:
+  status: removed_from_bot
+  removed_at: '2026-05-18'
+  removed_reason: Без даты окончания акции; риск истёкших промокодов в client_safe_text
+  bot_behavior:
+    when_client_asks_about_promo: Спасибо, передам менеджеру — он подскажет актуальные
+      акции и промокоды.
+    route: draft_for_manager
+  former_internal_codes: []
+  former_internal_note: Промокоды больше не применяются. Старые коды убраны 2026-05-19.
+installment:
+  status: verified
+  brand: foton
+  provider: Т-Банк
+  services:
+    rassrochka:
+      limit: 500000
+      term_months: 3-36
+      decision_time: 1-2 минуты
+      signing: по СМС
+      no_interest_for_client: с 01.04.2026 (ФЗ-283)
+    dolyami:
+      parts: 4
+      best_for: Короткие программы (интенсивы, ЛШ)
+      interest_for_client: 0
+    rassrochka_6_12_months:
+      terms_months_options:
+      - 6
+      - 12
+      note_internal: Условия индивидуальные и зависят от банка → бот направляет вопрос
+        менеджеру
+      bot_behavior: Бот не озвучивает конкретные условия — только сообщает что рассрочка
+        есть и менеджер свяжется
+  refresh_frequency: Условия Т-Банка обновлять минимум раз в квартал
+  client_safe_text:
+    when_asked: У нас есть рассрочка через Т-Банк — до 500 000 ₽, до 36 месяцев. Подписание
+      онлайн за 1-2 минуты по СМС. Также «Долями» — 4 равными частями без процентов
+      (подходит для коротких программ). Подскажите курс — менеджер пришлёт ссылку
+      на оформление. Решение по заявке на рассрочку принимает банк.
+    forbidden_to_say:
+    - в УНПК рассрочки нет
+    - у наших партнёров
+    - Фотон даёт, а другие нет
+matkap:
+  status: verified
+  brand: foton
+  rule_federal_only: true
+  responsible_person_internal: Бухгалтерия Фотон (уточнить ФИО у Дмитрия)
+  child_age:
+    sertificate_owner_min: 3
+    student_max: 18
+  required_docs:
+    internal_only: true
+    client_facing: false
+    bot_route: manager_handoff_only
+    items:
+    - Копия паспорта родителя
+    - Копия паспорта обучающегося
+    - СНИЛС родителя и обучающегося
+    - ИНН родителя и обучающегося
+    - Копия сертификата маткапитал
+    - Справка о состоянии лицевого счёта (СФР через Госуслуги)
+    - Договор
+    client_safe_summary: Менеджер пришлёт перечень документов и поможет с оформлением
+      через СФР.
+  timeline:
+    sfr_review_days: 10
+    transfer_days: 5
+    total_max_days: 15
+  client_safe_text:
+    when_asked: Да, оплата материнским капиталом возможна. Работаем с федеральным
+      маткапиталом. Менеджер пришлёт перечень документов и поможет с оформлением через
+      СФР. Подскажите ФИО ребёнка и какой курс рассматриваете.
+    when_regional: К сожалению, региональный маткапитал не принимаем. Если у вас федеральный
+      — менеджер подскажет порядок оформления.
+    when_timeline: Срок рассмотрения в СФР — до 10 рабочих дней, плюс ещё до 5 дней
+      на перевод. Итого до 15 дней.
+    when_age_over_18: Если ученику уже 18 лет или больше, по возрастным условиям маткапитала
+      есть ограничения. Уточню у менеджера, подходит ли ваш случай — он свяжется в
+      течение рабочего дня.
+    forbidden_to_say:
+    - через АНО ДПО УНПК
+    - оформляется через УНПК
+    - у УНПК есть
+tax_deduction:
+  status: verified
+  brand: foton
+  available: true
+  certificate_form: КНД 1151158 (Приказ Минфина 18.10.2023 № 165н)
+  certificate_lead_time_days: 10
+  limits:
+    2024_and_later:
+      max_expenses_per_child: 110000
+      max_return_per_child: 14300
+    2023_and_earlier:
+      max_expenses_per_child: 50000
+      max_return_per_child: 6500
+  retroactive_years: 3
+  fns_review_months: 3
+  payment_after_approval_months: 1
+  client_safe_text:
+    when_asked: Налоговый вычет за обучение возможен — у нас есть лицензия. За обучение
+      ребёнка можно вернуть до 14 300 ₽ в год. Менеджер подготовит и пришлёт справку
+      в течение 10 рабочих дней (постараемся быстрее) — её приложите к декларации
+      в налоговую.
+    when_multiple_years: Можно подать вычет за последние 3 года. Для каждого года
+      нужна отдельная справка от нас и отдельная декларация 3-НДФЛ. Менеджер подготовит
+      справки.
+    when_two_children: Лимит на каждого ребёнка отдельный — 110 000 ₽. Если за двоих
+      детей вы потратили по 110 000 ₽, можно вернуть до 28 600 ₽ суммарно. Менеджер
+      пришлёт две справки.
+    when_online_question: По онлайн-курсам — это вопрос трактовки конкретной налоговой
+      инспекции. Передам уточнение нашему специалисту.
+    forbidden_to_say:
+    - № 70369
+    - 06.03.2013
+    - АНО ДПО УНПК МФТИ
+certificates:
+  status: verified
+  brand: foton
+  types:
+    payment_for_tax_deduction:
+      form: КНД 1151158
+      lead_time_days: 10
+    course_attendance:
+      form: Свободная форма
+      lead_time_days: 10
+    for_matkap:
+      content: Договор + лицензия + реквизиты
+      lead_time_days: 10
+  client_safe_text:
+    when_asked: Менеджер подготовит справку и пришлёт в течение 10 рабочих дней (постараемся
+      быстрее). Подскажите, какая справка нужна — по требованию (для работы / иное)
+      или для налогового вычета? И ФИО плательщика, ФИО ребёнка, за какой период.
+intensives_2026:
+  oge_foton:
+    status: verified
+    brand: foton
+    classes: 8-9
+    subjects:
+    - математика
+    - физика
+    duration_weeks: 7
+    start_date: 13 апреля 2026
+    format: онлайн, 2 занятия/нед после 18:00
+    group_size: 10-15
+    includes:
+    - 14 вебинаров
+    - Проверка ДЗ куратором
+    - Конспекты
+    - 3 пробника
+    - Чат
+    - Психподдержка
+    - Записи до конца июня
+    links:
+      math: https://my.mts-link.ru/course-info/2018411
+      physics: https://my.mts-link.ru/course-info/2019323
+    vk_chat_9: https://vk.me/join/3nehyHq4QR7_Lvm89Iymtzn1NEZP51CDLYY=
+    price_note_internal: 'Интенсив ОГЭ уже не актуален: цены не называем клиенту без
+      проверки живого менеджера.'
+  ege_intensive:
+    available_in_foton: false
+    note_internal: Годовые ЕГЭ-курсы у Фотона есть (например, ЕГЭ по русскому), но
+      это не интенсив.
+    bot_behavior_when_asked: По интенсиву на ЕГЭ менеджер подскажет варианты — свяжется
+      в течение рабочего дня.
+    forbidden_to_say:
+    - УНПК
+    - у других
+    - у наших коллег есть
+individual_lessons_foton:
+  status: verified
+  brand: foton
+  format: Только онлайн, 1-на-1
+  prices:
+    lesson_45min: 3900
+    session_90min: 6900
+    package_5_sessions: 23000
+  note_internal: В источнике также упоминался пакет до 39 000 — уточнить полный прайс
+    у бухгалтерии.
+modular_courses_m9_m11:
+  status: discontinued
+  brand: foton
+  note: Продукта больше нет. РОП подтвердил 2026-05-17. Раньше это были интенсивы.
+  bot_behavior: 'Не предлагать клиенту. Если клиент сам спрашивает — handoff менеджеру:
+    «По индивидуальной подготовке менеджер пришлёт варианты»'
+lvsh_mendeleevo_2026:
+  status: verified
+  brand: foton
+  legal_entity_internal: ООО «ЦДПО Фотон»
+  contract_note_internal: Договор для клиента бота Фотон оформляется через ЦДПО Фотон.
+    Менделеево — общая физ.база, у обоих брендов свои смены и свои договоры.
+  location:
+    name: УСК «Менделеево»
+    address: Московская область, Солнечногорский район, посёлок Красный Воин, Льяловское
+      шоссе, 1
+  audience: 5-10 класс
+  directions:
+    fizmat:
+      classes: 5-10
+      subjects:
+      - физика
+      - математика
+    it:
+      classes: 7-10
+      subjects:
+      - Python
+      - проектная деятельность
+  program:
+    daily_pairs: 3
+    pair_duration_minutes: 110
+    total_academic_hours: 72+
+    group_size: 12-15
+  pricing_2026:
+    main_full: 98000
+    main_min: 75000
+    booking_deposit: 15000
+    discount_tiers_early_booking:
+      type: dynamic_pricing
+      tiers:
+      - 25%
+      - 20%
+      - 15%
+      - 10%
+      - 5%
+      note_internal: 'Дмитрий 2026-05-19: цены и даты применения каждой ступени меняются
+        динамически. Актуальные значения — на cdpofoton.ru. Бот не называет конкретный
+        процент клиенту; даёт общий ответ «по раннему бронированию действуют скидки
+        до 25%, актуальная ступень — у менеджера» и handoff.'
+      bot_route: draft_for_manager
+  smeny_2026:
+  - dates: 20-28 июня
+    brand_internal: foton
+    status: open
+    freshness: dynamic_needs_check
+  - dates: 18-26 июля
+    brand_internal: foton_parallel_smena
+    status: open
+    freshness: dynamic_needs_check
+    note_internal: В эти же даты есть смена УНПК — клиенту бот Фотон видит только
+      смену Фотона.
+  accommodation:
+    room_capacity: 2-3 человека
+    air_conditioning: true
+    meals_per_day: 5
+    meals_description: Шведский стол, ресторанный уровень
+    security_24_7: true
+  teachers_general_phrase: Преподаватели из МГУ и МФТИ, вожатые из топовых вузов Москвы
+ls_city_2026_foton:
+  status: verified
+  brand: foton
+  not_to_confuse_with: ЛВШ выездная — другой продукт
+  format: Очная городская школа, без проживания
+  moscow_foton:
+    dates: 3-14 августа
+    prices:
+      base: 34300
+      plus_half: 49000
+      plus_full: 59000
+    location: Верхняя Красносельская ул., 30
+  discounts:
+    multichild: 10%
+    refer_a_friend:
+      base: 3000
+      advanced: 5000
+    former_student_same_brand: 5% Фотон → Фотон
+    already_paid_2026_27: 10%
+  meals: Обед (первое, второе, салат, булочка) + полдник
+  free_morning_club:
+    name: Утренний клуб Предлёнка
+    time: 09:45-11:45
+    from_day: 2
+    cost: полностью бесплатно
+    description_for_client: Предлёнка начинается со второго дня занятий в летней городской
+      школе Фотона. Предлёнка полностью бесплатно
+contacts_foton:
+  phone: 8 (495) 500-25-88
+  toll_free: 8 (800) 550-25-88
+  schedule: Пн-Вс 10:00-18:00
+  email: edu@cdpofoton.ru
+  telegram: '@cdpoFoton'
+  whatsapp: +7 925 500 25 88
+  vk: vk.ru/foton_edu
+  website: cdpofoton.ru
+locations_foton:
+  addresses:
+  - city: Москва
+    address: Верхняя Красносельская ул., 30
+    metro: Красносельская
+  free_trial_offline_currently_unavailable_in_foton: true
+  free_trial_offline:
+    locations: []
+    offer: По бесплатному пробному очно — менеджер свяжется и подскажет вариант (лимит
+      — по согласованию с куратором филиала, бот лимит не озвучивает).
+online_platform:
+  name: МТС Линк (бывший Webinar)
+  recording: true
+  levels:
+  - базовый
+  - продвинутый
+  - олимпиадный
+  offline_group_size: 6-12 человек
+academic_year_2026_27:
+  start_by_location:
+    moscow: 12-13 сентября 2026
+    online: 19-20 сентября 2026
+  start: 12-20 сентября 2026 в зависимости от формата
+  total_lessons: 35
+  weekly_lessons: 1
+  daily_hours: 2 ак.ч
+  semester_1_weeks: 20
+  semester_2_weeks: 15
+results_social_proof:
+  status: verified
+  oge_grade_5_pct: 92
+  ege_avg_above_country_pts: 25
+  university_admission_pct: 97
+  total_students_currently: более 26 000
+  total_students_note_internal: Цифра берётся со счётчика на сайте cdpofoton.ru —
+    динамическая.
+  industry_rating_2025: Лидер отрасли 2025
+  industry_rating_2025_confirmation: Подтверждено Дмитрием 2026-05-20
+objection_responses:
+  too_expensive_course:
+  - 20% на 2-й предмет очно или 30% онлайн
+  - Многодетным 10%
+  - Приведи друга — кэшбек 10 000 ₽
+  - Можно рассрочка через Т-Банк
+  too_expensive_camp:
+  - Предоплата 15 000 ₽ фиксирует цену
+  - Применяется наибольшая из доступных скидок
+  - Рассрочка Т-Банк
+  inconvenient_time:
+  - Разные слоты выходных
+  - Онлайн с записью
+  is_it_bot: Я помощник менеджера, помогу с вопросом или передам коллеге
+  brand_link_question:
+    approved_response: Это отдельные организации, по вашему вопросу сориентирую в
+      рамках текущего учебного центра.
+    followup_phrase: Я могу подсказать только про ЦДПО Фотон и, к сожалению, не владею
+      информацией про другие организации.
+    forbidden_to_say:
+    - Раньше были одно
+    - Раньше сотрудничали
+    - Это наш партнёр
+    - У них есть

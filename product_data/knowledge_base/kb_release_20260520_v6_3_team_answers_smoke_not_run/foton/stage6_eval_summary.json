@@ -1,0 +1,8 @@
+{
+  "brand": "foton",
+  "brand_separation_violation": 0,
+  "errors": 0,
+  "note": "MEGA and live smoke were intentionally not run before final KB corrections.",
+  "rows_total": 0,
+  "status": "not_run_by_instruction"
+}

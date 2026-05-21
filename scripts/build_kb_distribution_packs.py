@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team")
-DEFAULT_FULL_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3")
-DEFAULT_SMOKE_DIR = Path("product_data/knowledge_base/kb_release_20260518_v3_3_smoke20_codex")
-DEFAULT_EMPLOYEE_OUT = Path("product_data/knowledge_base/kb_release_20260518_v3_3_employee_pack")
-DEFAULT_BOT_OUT = Path("product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack")
+DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_handoff_for_claude_and_team")
+DEFAULT_FULL_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers")
+DEFAULT_SMOKE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_smoke_not_run")
+DEFAULT_EMPLOYEE_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_employee_pack")
+DEFAULT_BOT_OUT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack")
 PACK_SCHEMA_VERSION = "kb_distribution_packs_v1"
 
 BRAND_LABELS = {
@@ -90,7 +90,16 @@ def build_distribution_packs(
     semantic = load_json(release / "semantic_review.json")
     smoke = load_smoke_summaries(smoke_dir)
 
-    build_employee_pack(employees, facts=facts, snapshot=snapshot, quality=quality, semantic=semantic, smoke=smoke)
+    build_employee_pack(
+        employees,
+        facts=facts,
+        snapshot=snapshot,
+        quality=quality,
+        semantic=semantic,
+        smoke=smoke,
+        release_dir=release,
+        full_release_dir=full_release,
+    )
     build_bot_pack(
         bot,
         release=release,
@@ -120,6 +129,8 @@ def build_employee_pack(
     quality: Mapping[str, Any],
     semantic: Mapping[str, Any],
     smoke: Mapping[str, Any],
+    release_dir: Path,
+    full_release_dir: Path,
 ) -> None:
     allowed = [fact for fact in facts if truthy(fact.get("allowed_for_client_answer"))]
     manager_only = [fact for fact in facts if not truthy(fact.get("allowed_for_client_answer"))]
@@ -135,7 +146,18 @@ def build_employee_pack(
     write_csv(out / "CLIENT_SAFE_FACTS_FOTON.csv", fact_rows(fact for fact in allowed if fact.get("brand") == "foton"))
     write_csv(out / "CLIENT_SAFE_FACTS_UNPK.csv", fact_rows(fact for fact in allowed if fact.get("brand") == "unpk"))
     write_csv(out / "MANAGER_ONLY_FACTS.csv", fact_rows(manager_only))
-    write_json(out / "manifest.json", manifest_payload("employee", facts, quality, semantic, smoke))
+    write_json(
+        out / "manifest.json",
+        manifest_payload(
+            "employee",
+            facts,
+            quality,
+            semantic,
+            smoke,
+            release_dir=release_dir,
+            full_release_dir=full_release_dir,
+        ),
+    )
 
 
 def build_bot_pack(
@@ -160,7 +182,18 @@ def build_bot_pack(
     write_jsonl(out / "manager_only_or_internal_facts.jsonl", manager_only)
     write_json(out / "bot_template_registry.json", build_bot_template_registry(allowed))
     write_json(out / "bot_fact_index.json", build_fact_index(facts))
-    write_json(out / "manifest.json", manifest_payload("bot", facts, quality, semantic, smoke))
+    write_json(
+        out / "manifest.json",
+        manifest_payload(
+            "bot",
+            facts,
+            quality,
+            semantic,
+            smoke,
+            release_dir=release,
+            full_release_dir=full_release,
+        ),
+    )
     for filename in (
         "facts_registry.jsonl",
         "facts_registry.yaml",
@@ -342,11 +375,8 @@ def render_smoke_examples() -> str:
 
 Основные проверочные примеры лежат в машинном виде:
 
-- `../kb_release_20260518_v3_2_smoke50_input/smoke_questions_50.csv`
-- `../kb_release_20260518_v3_3_smoke20_codex/foton/stage6_kb_enriched_drafts.csv`
-- `../kb_release_20260518_v3_3_smoke20_codex/unpk/stage6_kb_enriched_drafts.csv`
-- `../kb_release_20260518_v3_3_smoke20_fake/foton/stage6_kb_enriched_drafts.csv`
-- `../kb_release_20260518_v3_3_smoke20_fake/unpk/stage6_kb_enriched_drafts.csv`
+- `../kb_release_20260520_v6_3_team_answers_smoke_not_run/`
+- MEGA и малый живой прогон для v6.3 пока не запускались по прямому указанию Дмитрия.
 
 Эти примеры нужны не как финальные скрипты, а как проверка, что ИИ:
 
@@ -505,13 +535,16 @@ def manifest_payload(
     quality: Mapping[str, Any],
     semantic: Mapping[str, Any],
     smoke: Mapping[str, Any],
+    *,
+    release_dir: Path,
+    full_release_dir: Path,
 ) -> dict[str, Any]:
     return {
         "schema_version": PACK_SCHEMA_VERSION,
         "package_type": package_type,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "source_release": str(DEFAULT_RELEASE_DIR),
-        "source_full_release": str(DEFAULT_FULL_RELEASE_DIR),
+        "source_release": str(release_dir),
+        "source_full_release": str(full_release_dir),
         "facts_total": len(facts),
         "client_safe_facts_total": sum(1 for fact in facts if truthy(fact.get("allowed_for_client_answer"))),
         "facts_by_brand": dict(Counter(str(fact.get("brand") or "") for fact in facts)),

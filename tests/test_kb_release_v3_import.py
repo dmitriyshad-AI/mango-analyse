@@ -12,7 +12,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260518_v3_3"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260520_v6_3_team_answers"
 
 REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "priority",
@@ -65,8 +65,6 @@ EXPECTED_NUMERIC_FACTS: tuple[dict[str, Any], ...] = (
     {"amount": 3900, "brand": "foton", "tokens": ("individual", "lesson")},
     {"amount": 6900, "brand": "foton", "tokens": ("individual", "lesson")},
     {"amount": 23000, "brand": "foton", "tokens": ("individual", "lesson")},
-    {"amount": 16900, "brand": "foton", "tokens": ("intensive", "oge")},
-    {"amount": 27720, "brand": "foton", "tokens": ("intensive", "oge")},
     {"amount": 49000, "brand": "unpk", "tokens": ("offline", "5", "11")},
     {"amount": 82000, "brand": "unpk", "tokens": ("offline", "5", "11")},
     {"amount": 41800, "brand": "unpk", "tokens": ("online", "olympiad", "phystech")},
@@ -76,9 +74,6 @@ EXPECTED_NUMERIC_FACTS: tuple[dict[str, Any], ...] = (
     {"amount": 83800, "brand": "unpk", "tokens": ("lvsh", "mendeleevo")},
     {"amount": 33000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
     {"amount": 50000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
-    {"amount": 11900, "brand": "unpk", "tokens": ("preschool", "patsayeva")},
-    {"amount": 56500, "brand": "unpk", "tokens": ("preschool", "patsayeva")},
-    {"amount": 94000, "brand": "unpk", "tokens": ("preschool", "patsayeva")},
     {"amount": 18800, "brand": "unpk", "tokens": ("intensive", "ege")},
     {"amount": 34400, "brand": "unpk", "tokens": ("intensive", "ege")},
 )
@@ -121,6 +116,9 @@ FOTON_CLIENT_FORBIDDEN_MARKERS = (
     "@unpk_mipt",
     "лицензия 70369",
     "лицензия № 70369",
+    "Сретенка",
+    "Сретенка, 20",
+    "edu@kmipt.ru",
 )
 
 UNPK_CLIENT_FORBIDDEN_MARKERS = (
@@ -409,6 +407,12 @@ def test_v3_client_facts_do_not_use_machine_slug_text(kb_v3: KbReleaseV3) -> Non
     for fact in _allowed_client_facts(kb_v3.facts):
         text = str(fact.get("client_safe_text") or fact.get("fact_text") or "")
         text_without_handles = re.sub(r"@[A-Za-z0-9_]+", "", text)
+        text_without_handles = re.sub(
+            r"\b(?:https?://|www\.|[a-z0-9-]+\.(?:ru|com|org|net))/[A-Za-z0-9_./-]+",
+            "",
+            text_without_handles,
+            flags=re.I,
+        )
         if " / " in text or re.search(r"\b[a-z]+_[a-z0-9_]+\b", text_without_handles) or technical_english_re.search(text):
             bad.append(fact)
     assert not bad, _fact_ids(bad[:30])
@@ -640,6 +644,122 @@ def test_v3_brand_scope_blocks_cross_brand_prices(kb_v3: KbReleaseV3) -> None:
     assert 29750 not in unpk_amounts and 47250 not in unpk_amounts
 
 
+def test_v3_tax_deduction_facts_are_restored_and_client_safe(kb_v3: KbReleaseV3) -> None:
+    tax_facts = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if str(fact.get("fact_key") or "").startswith("tax_deduction.")
+    ]
+    assert tax_facts
+    text = " ".join(str(fact.get("client_safe_text") or "") for fact in tax_facts)
+    for marker in ("14 300", "110 000", "50 000", "6 500", "3 года", "3 месяц", "1 месяц", "10 рабочих дней"):
+        assert marker in text
+
+
+def test_v3_matkap_over_18_phrase_is_explicit_for_both_brands(kb_v3: KbReleaseV3) -> None:
+    for brand in ("foton", "unpk"):
+        fact = next(
+            fact
+            for fact in _allowed_client_facts(kb_v3.facts)
+            if fact.get("brand") == brand and fact.get("fact_key") == "matkap.client_safe_text.when_age_over_18"
+        )
+        text = str(fact.get("client_safe_text") or "")
+        assert "18 лет" in text
+        assert "менеджер" in text.casefold()
+
+
+def test_v3_foton_contacts_and_address_are_current(kb_v3: KbReleaseV3) -> None:
+    foton_client_text = " ".join(
+        str(fact.get("client_safe_text") or "")
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("brand") == "foton"
+    )
+    assert "vk.ru/foton_edu" in foton_client_text
+    assert "@cdpoFoton" in foton_client_text
+    assert "Сретенка" not in foton_client_text
+    assert "Скорняжный" not in foton_client_text
+
+    blocked_terms = _recursive_text(
+        ((kb_v3.brand_rules.get("forbidden_client_mentions") or {}).get("when_active_brand_is_foton") or {}).get(
+            "blocked_terms",
+            [],
+        )
+    )
+    assert "Сретенка" in blocked_terms
+    assert "Сретенка, 20" in blocked_terms
+
+
+def test_v3_future_and_expired_prices_are_not_client_safe(kb_v3: KbReleaseV3) -> None:
+    foton_client_price_text = " ".join(
+        str(fact.get("client_safe_text") or "")
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("brand") == "foton" and fact.get("fact_type") == "price"
+    )
+    for marker in ("16 900", "27 720", "до 07.04.2026", "после 01.07.2026", "после 01.08.2026"):
+        assert marker not in foton_client_price_text
+
+    for fact in _allowed_client_facts(kb_v3.facts):
+        if fact.get("fact_type") == "price":
+            text = str(fact.get("client_safe_text") or "")
+            assert not re.search(r"до 0?1\.0[78]\.2026", text), fact
+
+
+def test_v3_confirmed_social_proof_is_client_safe(kb_v3: KbReleaseV3) -> None:
+    unpk_social = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("brand") == "unpk" and fact.get("fact_key") == "results_social_proof.total_alumni"
+    ]
+    foton_social = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("brand") == "foton" and fact.get("fact_key") == "results_social_proof.industry_rating_2025"
+    ]
+    assert unpk_social and "100 000" in str(unpk_social[0].get("client_safe_text") or "")
+    assert foton_social and "Лидер отрасли" in str(foton_social[0].get("client_safe_text") or "")
+
+
+def test_v3_offline_group_size_is_client_safe_for_both_brands(kb_v3: KbReleaseV3) -> None:
+    for brand in ("foton", "unpk"):
+        fact = next(
+            fact
+            for fact in _allowed_client_facts(kb_v3.facts)
+            if fact.get("brand") == brand and fact.get("fact_key") == "online_platform.offline_group_size"
+        )
+        assert "6-12 человек" in str(fact.get("client_safe_text") or "")
+
+
+def test_v3_matkap_required_docs_are_manager_only(kb_v3: KbReleaseV3) -> None:
+    client_matkap_docs = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if str(fact.get("fact_key") or "").startswith("matkap.required_docs")
+    ]
+    assert not client_matkap_docs
+
+    manager_docs = [
+        fact
+        for fact in kb_v3.facts
+        if str(fact.get("fact_key") or "").startswith("matkap.required_docs")
+    ]
+    assert manager_docs
+    assert all(fact.get("internal_only") for fact in manager_docs)
+
+
+def test_v3_bot_policy_uses_latest_dmitry_decisions(kb_v3: KbReleaseV3) -> None:
+    installment = (((kb_v3.bot_policy.get("theme_routes") or {}).get("installment") or {}).get("unpk_specific") or {})
+    fallback = str(installment.get("fallback_phrase") or "")
+    assert "помесячно" in fallback.casefold()
+    assert "10%" in fallback
+    assert "14%" in fallback
+
+    complaint = ((kb_v3.bot_policy.get("theme_routes") or {}).get("complaint") or {})
+    p0_phrase = str(complaint.get("bot_phrase_p0") or "")
+    assert "Ваше обращение принято" in p0_phrase
+    assert "зафиксировано" not in p0_phrase.casefold()
+    assert "автоматический" not in p0_phrase.casefold()
+
+
 def test_v3_approval_queue_contains_atomic_business_items(kb_v3: KbReleaseV3) -> None:
     rows = kb_v3.approval_queue
     assert rows, "approval_queue_for_rop_v3.csv is empty"
@@ -731,7 +851,7 @@ def _load_sources(root: Path, snapshot: Mapping[str, Any]) -> list[Mapping[str, 
 
 def _load_mapping_artifact(root: Path, stem: str) -> Mapping[str, Any]:
     json_payload = _load_json_or_empty(root / f"{stem}.json")
-    if isinstance(json_payload, Mapping):
+    if isinstance(json_payload, Mapping) and json_payload:
         return json_payload
     snapshot = _load_json_or_empty(root / "kb_release_v3_snapshot.json")
     if isinstance(snapshot, Mapping) and isinstance(snapshot.get(stem), Mapping):

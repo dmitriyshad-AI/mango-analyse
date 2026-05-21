@@ -50,6 +50,8 @@ GLOBAL_FORBIDDEN_CLIENT_MARKERS = (
     "я ИИ",
     "нейросеть",
     "искусственный интеллект",
+    "Это автоматический ответ",
+    "автоматический ответ",
     "раньше сотрудничали",
     "были одно",
     "наш партнёр",
@@ -67,6 +69,9 @@ FOTON_FORBIDDEN_CLIENT_MARKERS = (
     "@unpkmfti",
     "@unpk mipt",
     "unpkmfti",
+    "Сретенка",
+    "Сретенка, 20",
+    "edu@kmipt.ru",
 )
 UNPK_FORBIDDEN_CLIENT_MARKERS = (
     "Фотон",
@@ -249,6 +254,77 @@ def review_facts(facts: Sequence[Mapping[str, Any]]) -> list[Finding]:
                     "P0",
                     "promo_code_allowed_for_client",
                     "Промокоды исключены из клиентской базы бота и не должны быть client-safe.",
+                    item_id=fact_id,
+                    evidence=text[:220],
+                )
+            )
+
+        if allowed and brand == "foton" and re.search(r"vk\.com/kmipt_edu|kmipt_edu", text, re.I):
+            findings.append(
+                Finding(
+                    "P0",
+                    "old_foton_vk_handle_allowed",
+                    "В клиентском факте Фотона остался старый VK, который путал Фотон и УНПК.",
+                    item_id=fact_id,
+                    evidence=text[:220],
+                )
+            )
+
+        if allowed and brand == "unpk" and re.search(r"лобн|лобненск", text, re.I):
+            findings.append(
+                Finding(
+                    "P0",
+                    "closed_unpk_lobnya_allowed",
+                    "Лобня закрыта и не должна попадать в клиентские факты УНПК.",
+                    item_id=fact_id,
+                    evidence=text[:220],
+                )
+            )
+
+        if allowed and brand == "unpk" and re.search(r"patsayeva_2x_week|2\s*раз[а]?\s+в\s+нед|ЕГЭ-?математика|ФТЛ\s*2", f"{fact_key} {text}", re.I):
+            if "patsayeva_2x_week" in fact_key or "пацаев" in text.casefold():
+                findings.append(
+                    Finding(
+                        "P0",
+                        "removed_unpk_patsayeva_2x_week_allowed",
+                        "Снятый блок Пацаева 2 раза в неделю не должен быть client-safe.",
+                        item_id=fact_id,
+                        evidence=f"{fact_key} | {text[:220]}",
+                    )
+                )
+
+        if allowed and brand == "unpk" and re.search(r"11\s*900|56\s*500|94\s*000", text):
+            findings.append(
+                Finding(
+                    "P0",
+                    "removed_preschool_prices_allowed",
+                    "Старые цены дошкольников не должны попадать в клиентские факты.",
+                    item_id=fact_id,
+                    evidence=text[:220],
+                )
+            )
+
+        if allowed and re.search(r"after_2026_|после\s+1\s+(?:июля|августа)|после\s+повышени|цена\s+выраст", f"{fact_key} {text}", re.I):
+            findings.append(
+                Finding(
+                    "P0",
+                    "future_price_allowed_for_client",
+                    "Будущая цена после повышения не должна быть client-safe.",
+                    item_id=fact_id,
+                    evidence=f"{fact_key} | {text[:220]}",
+                )
+            )
+
+        confirmed_social_proof = (
+            (brand == "unpk" and "results_social_proof.total_alumni" in fact_key)
+            or (brand == "foton" and "results_social_proof.industry_rating_2025" in fact_key)
+        )
+        if allowed and not confirmed_social_proof and re.search(r"100\s*000\s+учен|лидер\s+(?:отрасли|2025)", text, re.I):
+            findings.append(
+                Finding(
+                    "P1",
+                    "unverified_social_proof_allowed",
+                    "Сомнительное маркетинговое число или статус не должен быть client-safe без отдельного подтверждения.",
                     item_id=fact_id,
                     evidence=text[:220],
                 )
@@ -538,6 +614,12 @@ def review_client_text(text: str, *, brand: str, item_id: str) -> list[Finding]:
             )
 
     text_without_handles = re.sub(r"@[A-Za-z0-9_]+", "", text)
+    text_without_handles = re.sub(
+        r"\b(?:https?://|www\.|[a-z0-9-]+\.(?:ru|com|org|net))/[A-Za-z0-9_./-]+",
+        "",
+        text_without_handles,
+        flags=re.I,
+    )
     if re.search(r"\b[a-z]+_[a-z0-9_]+\b", text_without_handles) or " / " in text:
         findings.append(
             Finding(

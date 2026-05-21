@@ -16,6 +16,31 @@ NO_KNOWLEDGE_SNAPSHOT_VERSION = "knowledge_snapshot_missing"
 MAX_KNOWLEDGE_SNIPPETS = 8
 MAX_KNOWLEDGE_SNIPPET_CHARS = 700
 MAX_KNOWLEDGE_CONTEXT_CHARS = 4500
+AUTONOMY_MATRIX_SAFE_TOPIC_IDS = {
+    "theme:001_pricing",
+    "theme:005_discounts",
+    "theme:006_installment",
+    "theme:007_matkap_payment",
+    "theme:008_tax_deduction",
+    "theme:011_contract",
+    "theme:012_certificates",
+    "theme:013_schedule",
+    "theme:014_format",
+    "theme:015_address",
+    "theme:016_program",
+    "theme:018_materials_homework",
+    "theme:019a_positive_feedback",
+    "theme:020_enrollment",
+    "theme:021_continuation",
+    "theme:022_age_level_testing",
+    "theme:023_trial_class",
+    "theme:024_account_access",
+    "theme:025_missing_links_access",
+    "theme:026_camp_general",
+    "theme:027_camp_living_conditions",
+    "theme:028_transport_logistics",
+    "service:S5_general_consultation",
+}
 
 _FRESH_STATUSES = {"fresh", "fresh_verified", "verified", "document_verified", "allowed_after_fact_check"}
 _BLOCKING_STATUSES = {
@@ -90,6 +115,21 @@ def build_telegram_pilot_context(
     policy_for_prompt = dict(merged_policy)
     if snapshot_context.facts_context.get("required_fact_keys"):
         policy_for_prompt.setdefault("required_fact_keys", snapshot_context.facts_context["required_fact_keys"])
+    topic_id = _topic_id(theme=theme, rop_policy=policy_for_prompt)
+    policy_for_prompt.setdefault(
+        "autonomy_policy",
+        {
+            "allow_autonomous": bool(
+                topic_id in AUTONOMY_MATRIX_SAFE_TOPIC_IDS
+                and snapshot_context.facts_context.get("client_safe_fact_verified") is True
+                and not snapshot_context.missing_facts
+            ),
+            "allowed_topic_ids": [topic_id] if topic_id in AUTONOMY_MATRIX_SAFE_TOPIC_IDS else [],
+            "default": "draft_for_manager_or_manager_only",
+            "fact_requirement": "client_safe_fact_verified",
+            "p0_overrides_autonomy": True,
+        },
+    )
 
     return build_pilot_context(
         message,
@@ -157,7 +197,11 @@ def build_knowledge_snapshot_context(
 
     version = _snapshot_version(kc_snapshot)
     topic_id = _topic_id(theme=theme, rop_policy=policy)
-    required_fact_types = {fact_type_from_key(key) for key in required_fact_keys}
+    required_fact_types = _expand_required_fact_types(
+        {fact_type_from_key(key) for key in required_fact_keys},
+        topic_id=_topic_id(theme=theme, rop_policy=policy),
+        query=message_text,
+    )
     facts = _records(kc_snapshot.get("facts"))
     sources = _records(kc_snapshot.get("sources"))
     active = _normalize_active_brand(active_brand)
@@ -217,6 +261,9 @@ def build_knowledge_snapshot_context(
         "snapshot_found": True,
         "fresh": facts_fresh,
         "facts_fresh": facts_fresh,
+        "client_safe": facts_fresh,
+        "client_safe_fact_verified": facts_fresh,
+        "autonomy_fact_verified": facts_fresh,
         "missing": bool(missing_facts),
         "facts_missing": bool(missing_facts),
         "stale": bool(stale_or_blocked),
@@ -304,6 +351,8 @@ def required_fact_keys_for_message(
         keys.append("payment_methods.current")
     if re.search(r"договор|справ|налог|маткап|возврат|чек|квитанц", text):
         keys.append("documents.current")
+    if re.search(r"формат|онлайн|очно|офлайн|дистанц", text):
+        keys.append("formats.current")
     if re.search(r"программ|предмет|летн|пробн|чему учат|содержание", text):
         keys.append("programs.current")
     return tuple(_dedupe(_stable_fact_key(key) for key in keys if _clean_text(key)))
@@ -415,12 +464,17 @@ def _select_confirmed_facts(
     query: str,
     active_brand: str = "unknown",
 ) -> dict[str, str]:
-    confirmed: dict[str, str] = {}
-    for fact in facts:
+    candidates: list[tuple[int, int, Mapping[str, Any]]] = []
+    for index, fact in enumerate(facts):
         if not _usable_for_precise_answer(fact, active_brand=active_brand):
             continue
         if not _record_matches_context(fact, required_fact_types=required_fact_types, topic_id=topic_id, query=query):
             continue
+        score = _fact_match_score(fact, required_fact_types=required_fact_types, topic_id=topic_id, query=query)
+        candidates.append((score, -index, fact))
+
+    confirmed: dict[str, str] = {}
+    for _, _, fact in sorted(candidates, key=lambda item: item[:2], reverse=True):
         text = _fact_text(fact)
         if not text:
             continue
@@ -452,7 +506,8 @@ def _missing_fact_keys(
     stale_or_blocked = False
     for fact_key in required_fact_keys:
         fact_type = fact_type_from_key(fact_key)
-        if fact_type in confirmed_fact_types:
+        acceptable_fact_types = _expand_required_fact_types({fact_type}, topic_id="", query="")
+        if confirmed_fact_types & acceptable_fact_types:
             continue
         candidate_statuses = [
             _stable_status(record.get("freshness_status"))
@@ -509,6 +564,22 @@ def _record_matches_context(
     query: str,
 ) -> bool:
     fact_types = set(_fact_types(record))
+    text = _normalize_match_text(
+        f"{record.get('title', '')} {record.get('fact_key', '')} {_fact_text(record)} {record.get('text', '')}"
+    )
+    query_text = _normalize_match_text(query)
+    if _record_is_objection_pattern(text):
+        return False
+    if not _record_matches_product_markers(text, query_text):
+        return False
+    if not _record_matches_requested_format(text, query_text):
+        return False
+    if not _record_matches_requested_class(text, query_text):
+        return False
+    if _record_is_unrequested_special_product(text, query_text):
+        return False
+    if _query_asks_for_date(query_text) and not _record_answers_date_question(text):
+        return False
     if required_fact_types and fact_types & required_fact_types:
         return True
     related_theme_ids = set(_text_list(record.get("related_theme_ids") or record.get("theme_ids") or record.get("topics")))
@@ -516,14 +587,175 @@ def _record_matches_context(
         return True
     if required_fact_types or topic_id:
         return False
-    text = f"{record.get('title', '')} {_fact_text(record)}".casefold()
     return any(term in text for term in _query_terms(query))
+
+
+def _record_matches_product_markers(text: str, query_text: str) -> bool:
+    marker_groups = (
+        ("лвш", "менделеево"),
+        ("звш", "зимн"),
+        ("городск",),
+        ("интенсив",),
+        ("индивидуаль",),
+        ("маткап", "материн"),
+        ("налог", "вычет"),
+    )
+    for group in marker_groups:
+        if any(marker in query_text for marker in group) and not any(marker in text for marker in group):
+            return False
+    return True
+
+
+def _record_is_objection_pattern(text: str) -> bool:
+    return "objection_responses" in text or "возражение" in text or "черновик для ситуации" in text
+
+
+def _record_is_unrequested_special_product(text: str, query_text: str) -> bool:
+    special_markers = (
+        ("индивидуаль",),
+        ("интенсив",),
+        ("лвш", "менделеево"),
+        ("звш",),
+        ("городск", "лагер"),
+    )
+    for group in special_markers:
+        if any(marker in text for marker in group) and not any(marker in query_text for marker in group):
+            return True
+    return False
+
+
+def _record_matches_requested_format(text: str, query_text: str) -> bool:
+    asks_online = "онлайн" in query_text or "online" in query_text or "дистанц" in query_text
+    asks_offline = "очно" in query_text or "очный" in query_text or "офлайн" in query_text or "offline" in query_text
+    if asks_online and ("очно" in text or "очный" in text or "офлайн" in text) and not (
+        "онлайн" in text or "online" in text or "дистанц" in text
+    ):
+        return False
+    if asks_offline and ("онлайн" in text or "online" in text or "дистанц" in text) and not (
+        "очно" in text or "очный" in text or "офлайн" in text
+    ):
+        return False
+    return True
+
+
+def _record_matches_requested_class(text: str, query_text: str) -> bool:
+    numbers = _query_class_numbers(query_text)
+    if not numbers or "класс" not in text:
+        return True
+    return any(_record_mentions_number_or_range(text, number) for number in numbers)
+
+
+def _query_class_numbers(query_text: str) -> tuple[str, ...]:
+    numbers: list[str] = []
+    for match in re.findall(r"(?<!\d)(\d{1,2})(?:\s*[-–]\s*\d{1,2})?\s*(?:класс|кл\b)", query_text):
+        numbers.append(match)
+    for match in re.findall(r"(?:для|в)\s+(\d{1,2})(?:\s*(?:го|ого|й|ой))?\s*(?:класс|кл\b)", query_text):
+        numbers.append(match)
+    return tuple(_dedupe(numbers))
+
+
+def _query_asks_for_date(query_text: str) -> bool:
+    return "когда" in query_text or "дат" in query_text or "распис" in query_text
+
+
+def _record_answers_date_question(text: str) -> bool:
+    return _looks_like_date_fact(text) or "дат" in text or "распис" in text or "лист ожид" in text or "ждем распис" in text
+
+
+def _expand_required_fact_types(required_fact_types: set[str], *, topic_id: str, query: str) -> set[str]:
+    expanded = set(required_fact_types)
+    query_text = f"{topic_id} {query}".casefold()
+    if "schedule" in expanded:
+        expanded.update({"deadline", "camp_lvsh", "camp_city"})
+    if "program" in expanded:
+        expanded.update({"course_parameter", "program", "intensive", "camp_lvsh", "camp_city", "teacher"})
+    if "documents" in expanded:
+        expanded.update({"documents", "tax", "matkap"})
+    if "location" in expanded:
+        expanded.update({"location", "contact"})
+    if "лагер" in query_text or "лвш" in query_text or "лш" in query_text or "менделеево" in query_text:
+        expanded.update({"camp_lvsh", "camp_city", "deadline", "price", "location", "program"})
+    return expanded
+
+
+def _fact_match_score(
+    record: Mapping[str, Any],
+    *,
+    required_fact_types: set[str],
+    topic_id: str,
+    query: str,
+) -> int:
+    text = _normalize_match_text(
+        " ".join(
+            str(record.get(key) or "")
+            for key in ("fact_key", "title", "product", "client_safe_text", "manager_display_text", "short_fact")
+        )
+    )
+    query_text = _normalize_match_text(query)
+    score = 0
+    fact_types = set(_fact_types(record))
+    if required_fact_types & fact_types:
+        score += 20
+    related_theme_ids = set(_text_list(record.get("related_theme_ids") or record.get("theme_ids") or record.get("topics")))
+    if topic_id and topic_id in related_theme_ids:
+        score += 12
+    for term in _query_terms(query):
+        if term in text:
+            score += 2
+    for number in re.findall(r"\d+", query_text):
+        if _record_mentions_number_or_range(text, number):
+            score += 8
+    if ("онлайн" in query_text or "online" in query_text) and ("онлайн" in text or "online" in text):
+        score += 8
+    if ("очно" in query_text or "очный" in query_text or "офлайн" in query_text or "offline" in query_text) and (
+        "очно" in text or "очный" in text or "offline" in text
+    ):
+        score += 8
+    if ("когда" in query_text or "дат" in query_text or "распис" in query_text) and "deadline" in fact_types:
+        score += 30
+    if ("когда" in query_text or "дат" in query_text or "распис" in query_text) and _looks_like_date_fact(text):
+        score += 50
+    if ("где" in query_text or "адрес" in query_text or "площадк" in query_text) and "location" in fact_types:
+        score += 30
+    for marker in ("лвш", "менделеево", "лагер", "интенсив", "пробн", "маткап", "налог", "скид"):
+        if marker in query_text and marker in text:
+            score += 20
+        if marker in query_text and marker not in text:
+            score -= 20
+    return score
+
+
+def _record_mentions_number_or_range(text: str, number: str) -> bool:
+    if not number:
+        return False
+    if re.search(rf"(?<!\d){re.escape(number)}(?!\d)", text):
+        return True
+    value = int(number)
+    for start, end in re.findall(r"(?<!\d)(\d{1,2})\s*[-–]\s*(\d{1,2})(?!\d)", text):
+        if int(start) <= value <= int(end):
+            return True
+    return False
+
+
+def _looks_like_date_fact(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b\d{1,2}\s*[-–]\s*\d{1,2}\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)"
+            r"|\b\d{1,2}\s+(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)",
+            text,
+        )
+    )
+
+
+def _normalize_match_text(value: Any) -> str:
+    return " ".join(str(value or "").casefold().replace("ё", "е").replace("\u00a0", " ").split())
 
 
 def _usable_for_precise_answer(record: Mapping[str, Any], *, active_brand: str = "unknown") -> bool:
     return (
         _stable_status(record.get("freshness_status")) in _FRESH_STATUSES
         and _truthy(record.get("usable_for_precise_answer"))
+        and _truthy(record.get("allowed_for_client_answer"))
         and not _truthy(record.get("requires_manager_confirmation"))
         and not _truthy(record.get("forbidden_for_client"))
         and _record_allowed_for_active_brand(record, active_brand=active_brand)

@@ -43,6 +43,9 @@ audits/for_claude_*/
 _cleanup_quarantine_*/
 _external_handoffs/
 Claude Mango_Bot_Knowledge_Base_FINAL_*/
+Mango_Bot_KB_FINAL_*/
+mega_smoke_tests_v*/
+tmp/
 
 # Local runtime/output artifacts
 .cache/
@@ -134,6 +137,7 @@ product_data/customer_timeline/contact_control_sample_*/
 # Local Mango/API/audio working artifacts
 product_data/mango_api_reconcile_*/
 product_data/mango_audio_update_*/
+product_data/mango_update_after_*/
 product_data/mango_missing_*_asr_only_*/
 product_data/**/audio/
 *.mp3
@@ -145,6 +149,9 @@ product_data/**/audio/
 product_data/knowledge_base/full_kb_*/
 product_data/knowledge_base/google_drive_structured_facts_*/
 product_data/knowledge_base/kb_release_20260517_v1*/
+product_data/knowledge_base/kb_release_20260520_v4*/
+product_data/knowledge_base/kb_release_20260520_v6_1*/
+product_data/knowledge_base/kb_release_20260520_v6_2*/
 product_data/knowledge_base/**/llm_cache/
 product_data/knowledge_base/**/stage6_*_smoke/
 product_data/knowledge_base/**/stage6_fake_eval/
@@ -176,6 +183,8 @@ messages*.zip
 telegram_exports*/
 external_m1_*/
 external_m1_*.zip
+TP UNPK DataExport_*/
+product_data/telegram_history_analysis/
 mango_tallanto_transfer/
 prod_runtime_transfer/
 Contacts.xls

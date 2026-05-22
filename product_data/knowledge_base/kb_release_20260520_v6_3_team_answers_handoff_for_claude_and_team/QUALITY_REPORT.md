@@ -3,11 +3,11 @@
 quality_passed: `True`
 
 ## Summary
-- facts_total: `720`
-- client_allowed_facts: `397`
-- source_registry_total: `10`
-- approval_queue_items: `702`
-- approval_queue_by_type: `{'price': 46, 'discount': 59, 'promocode': 13, 'installment': 18, 'tax': 38, 'matkap': 42, 'deadline': 24, 'camp_zvsh': 2, 'program': 210, 'documents': 62, 'teacher': 13, 'refund': 18, 'policy': 4, 'camp_lvsh': 90, 'camp_city': 17, 'intensive': 34, 'contact': 12}`
+- facts_total: `829`
+- client_allowed_facts: `469`
+- source_registry_total: `11`
+- approval_queue_items: `809`
+- approval_queue_by_type: `{'price': 46, 'discount': 62, 'promocode': 13, 'installment': 27, 'tax': 40, 'matkap': 50, 'deadline': 26, 'camp_lvsh': 121, 'camp_zvsh': 3, 'program': 258, 'documents': 65, 'teacher': 13, 'refund': 18, 'policy': 4, 'camp_city': 17, 'intensive': 34, 'contact': 12}`
 
 ## Checks
 - all_fact_source_ids_exist: `True`
@@ -25,7 +25,7 @@ quality_passed: `True`
 - two_separate_bots_recorded: `True`
 
 ## Control Numbers
-- found: `20`
+- found: `19`
 - missing: `[]`
 
 ## Blocking Failures

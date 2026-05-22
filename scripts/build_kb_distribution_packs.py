@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 DEFAULT_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_handoff_for_claude_and_team")
 DEFAULT_FULL_RELEASE_DIR = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers")
@@ -141,6 +143,9 @@ def build_employee_pack(
     write_markdown(out / "FOR_AI_AGENTS.md", render_employee_ai_agent_instructions())
     write_markdown(out / "FOTON.md", render_brand_employee_doc("foton", allowed))
     write_markdown(out / "UNPK.md", render_brand_employee_doc("unpk", allowed))
+    gold_answers = extract_gold_answers(snapshot)
+    if gold_answers:
+        write_markdown(out / "GOLD_ANSWERS.md", render_gold_answers_markdown(gold_answers, audience="employees"))
     write_markdown(out / "FAQ_EXAMPLES.md", render_smoke_examples())
     write_markdown(out / "SEMANTIC_REVIEW.md", render_pack_semantic_review(quality, semantic, smoke, audience="employees"))
     write_csv(out / "CLIENT_SAFE_FACTS_FOTON.csv", fact_rows(fact for fact in allowed if fact.get("brand") == "foton"))
@@ -182,6 +187,11 @@ def build_bot_pack(
     write_jsonl(out / "manager_only_or_internal_facts.jsonl", manager_only)
     write_json(out / "bot_template_registry.json", build_bot_template_registry(allowed))
     write_json(out / "bot_fact_index.json", build_fact_index(facts))
+    gold_answers = extract_gold_answers(snapshot)
+    if gold_answers:
+        write_json(out / "bot_gold_answers.json", gold_answers)
+        write_yaml(out / "gold_answer_rules.yaml", gold_answers)
+        write_markdown(out / "GOLD_ANSWERS_FOR_BOT.md", render_gold_answers_markdown(gold_answers, audience="bot"))
     write_json(
         out / "manifest.json",
         manifest_payload(
@@ -649,6 +659,59 @@ def template_text_for_fact(fact: Mapping[str, Any]) -> str:
     )
 
 
+def extract_gold_answers(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    policy = snapshot.get("bot_policy")
+    if not isinstance(policy, Mapping):
+        return {}
+    gold = policy.get("gold_answers_v3")
+    return dict(gold) if isinstance(gold, Mapping) else {}
+
+
+def render_gold_answers_markdown(gold_answers: Mapping[str, Any], *, audience: str) -> str:
+    lines = [
+        "# Gold-ответы v3",
+        "",
+        "Это эталон качества ответа: тон, структура и проверенные границы. Это не скрипт для дословного копирования.",
+        "",
+        f"- Статус: `{gold_answers.get('status', '')}`",
+        f"- Источник: `{gold_answers.get('source_docx', '')}`",
+        f"- Назначение: `{gold_answers.get('use_as', '')}`",
+        f"- Аудитория пакета: `{audience}`",
+        "",
+        "## Общие правила",
+        "",
+    ]
+    for item in gold_answers.get("global_rules") or []:
+        lines.append(f"- {clean_text(item)}")
+    confirmed = gold_answers.get("confirmed_rules")
+    if isinstance(confirmed, Mapping):
+        lines.extend(["", "## Подтверждённые правила", ""])
+        for key, value in confirmed.items():
+            lines.append(f"- `{key}`: {clean_text(value, limit=500)}")
+    topics = gold_answers.get("topics")
+    if isinstance(topics, Mapping):
+        lines.extend(["", "## Эталоны по темам", ""])
+        for topic, payload in topics.items():
+            lines.extend([f"### {topic}", ""])
+            if isinstance(payload, Mapping):
+                for brand, record in payload.items():
+                    lines.append(f"#### {BRAND_LABELS.get(str(brand), str(brand))}")
+                    if isinstance(record, Mapping):
+                        example = clean_text(record.get("gold_answer_example"), limit=1200)
+                        if example:
+                            lines.append("")
+                            lines.append(example)
+                        must_include = record.get("must_include") or []
+                        if must_include:
+                            lines.append("")
+                            lines.append("Должно быть: " + ", ".join(f"`{clean_text(item, limit=80)}`" for item in must_include))
+                        must_not = record.get("must_not_include") or []
+                        if must_not:
+                            lines.append("Нельзя: " + ", ".join(f"`{clean_text(item, limit=80)}`" for item in must_not))
+                    lines.append("")
+    return "\n".join(lines)
+
+
 def fact_rows(facts: Sequence[Mapping[str, Any]] | Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for fact in facts:
@@ -712,6 +775,10 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def write_yaml(path: Path, payload: Any) -> None:
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:

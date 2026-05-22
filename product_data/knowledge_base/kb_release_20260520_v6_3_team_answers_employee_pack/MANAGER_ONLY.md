@@ -14,19 +14,19 @@
 
 ## Сколько таких фактов в базе
 
-- программы: `114`
+- программы: `124`
 - документы и справки: `55`
-- ЛВШ: `24`
-- материнский капитал: `20`
+- ЛВШ: `29`
+- материнский капитал: `22`
+- рассрочка и варианты оплаты: `19`
 - возвраты: `18`
-- даты и сроки: `14`
+- даты и сроки: `15`
+- цены: `14`
+- параметры занятий: `13`
 - промокоды: `13`
-- цены: `11`
 - преподаватели: `11`
 - налоговый вычет: `10`
-- параметры занятий: `10`
 - скидки: `9`
-- рассрочка и варианты оплаты: `6`
 - интенсивы: `2`
 - правила ответа: `2`
 - адреса: `2`
@@ -40,6 +40,10 @@
 - `Фотон` Фотон: ЛВШ Менделеево — Преподаватели из МГУ и МФТИ, вожатые из топовых вузов Москвы. Причина: `internal_only, manager_only_route`
 - `внутреннее` Внутренне: bot brand detection strategy , additional lvsh channel — @kmiptlvs (выездные школы, относится к УНПК). Причина: `internal_only, invalid_client_brand, manager_only_route`
 - `внутреннее` Внутренне: ЛВШ Менделеево, правило — Менделеево — общая физическая база. Свои лагеря там проводят и ЦДПО Фотон, и АНО ДПО УНПК МФТИ. Бот клиенту юр.лицо не раскрывает. Договор для клиента бота Фотон оформляется через ЦДПО Фотон; для клиента бота УНПК — через АНО ДПО УНПК МФТИ.. Причина: `cross_brand_text, global_forbidden:АНО ДПО, internal_only, invalid_client_brand, manager_only_route`
+- `УНПК МФТИ` По ЛВШ УНПК места уже почти распроданы; запись сейчас только через живого сотрудника. Причина: `not_client_allowed_status:almost_sold_out`
+- `УНПК МФТИ` УНПК: ЛВШ Менделеево — 2026-05-22. Причина: `not_client_allowed_status:almost_sold_out`
+- `УНПК МФТИ` УНПК: ЛВШ Менделеево — draft for manager. Причина: `not_client_allowed_status:almost_sold_out`
+- `УНПК МФТИ` УНПК: ЛВШ Менделеево — Бот не говорит «места есть» и не пишет «можно забронировать автоматически».. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — АНО ДПО «УНПК МФТИ». Причина: `global_forbidden:АНО ДПО, internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — да. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — Физфак МГУ. Причина: `internal_only, manager_only_route`
@@ -60,6 +64,7 @@
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — МФТИ. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево, название — Ибрагимов Руслан Раулевич. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — Математика. Причина: `internal_only, manager_only_route`
+- `УНПК МФТИ` Если ребёнок едет с другом, можно заранее указать это в анкете и попросить поселить их в одну комнату. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: zvsh mendeleevo , legal entity internal — АНО ДПО «УНПК МФТИ». Причина: `global_forbidden:АНО ДПО, internal_only, manager_only_route`
 - `Фотон` Фотон: справки и документы — 10. Причина: `internal_only, manager_only_route`
 - `Фотон` Фотон: материнский капитал — 10. Причина: `internal_only, manager_only_route`
@@ -69,8 +74,11 @@
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — 15+. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — 20+. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево — 12+. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: цены на 2026/27 учебный год, 5-11 класс, онлайн, классы — 5-11. Причина: `not_client_allowed_status:prices_pending`
+- `УНПК МФТИ` УНПК: цены на 2026/27 учебный год, 5-11 класс, онлайн, классы — 5-11. Причина: `not_client_allowed_status:prices_and_schedule_pending_2026_27`
+- `УНПК МФТИ` УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, классы — 9 и 11. Причина: `not_client_allowed_status:stale_previous_year_not_current`
+- `УНПК МФТИ` УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, расписание — будни. Причина: `not_client_allowed_status:stale_previous_year_not_current`
 - `УНПК МФТИ` УНПК: 1 , experience years — 12. Причина: `internal_only, manager_only_route, not_client_allowed_status:archived_2026_05_20`
+- `УНПК МФТИ` УНПК: unavailable programs 2026 27 , note internal — Подтверждено Дмитрием 2026-05-22. Бот не предлагает химию 10-11 и английский 1-4 как доступные программы УНПК.. Причина: `internal_only, manager_only_route`
 - `Фотон` Фотон: ЛВШ Менделеево — foton. Причина: `internal_only, manager_only_route, not_client_allowed_status:open`
 - `Фотон` Фотон: ЛВШ Менделеево, даты — 20-28 июня. Причина: `not_client_allowed_status:open`
 - `Фотон` Фотон: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту. Причина: `not_client_allowed_status:open`
@@ -78,13 +86,14 @@
 - `Фотон` Фотон: ЛВШ Менделеево, даты — 18-26 июля. Причина: `not_client_allowed_status:open`
 - `Фотон` Фотон: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту. Причина: `not_client_allowed_status:open`
 - `Фотон` Фотон: ЛВШ Менделеево — В эти же даты есть смена УНПК — клиенту бот Фотон видит только смену Фотона.. Причина: `cross_brand_text, internal_only, manager_only_route, not_client_allowed_status:open, other_brand_term:унпк`
-- `УНПК МФТИ` УНПК: ЛВШ Менделеево — unpk parallel smena. Причина: `internal_only, manager_only_route, not_client_allowed_status:open`
+- `УНПК МФТИ` УНПК: ЛВШ Менделеево — unpk parallel independent smena. Причина: `internal_only, manager_only_route, not_client_allowed_status:open`
 - `УНПК МФТИ` УНПК: ЛВШ Менделеево, даты — 18-26 июля. Причина: `not_client_allowed_status:open`
 - `УНПК МФТИ` УНПК: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту. Причина: `not_client_allowed_status:open`
-- `УНПК МФТИ` УНПК: ЛВШ Менделеево — В эти же даты идёт смена Фотона — клиент бота УНПК видит только смену УНПК.. Причина: `cross_brand_text, internal_only, manager_only_route, not_client_allowed_status:open, other_brand_term:фотон`
-- `УНПК МФТИ` УНПК: ЛВШ Менделеево — unpk. Причина: `internal_only, manager_only_route, not_client_allowed_status:open`
-- `УНПК МФТИ` УНПК: ЛВШ Менделеево, даты — 15-25 августа. Причина: `not_client_allowed_status:open`
-- `УНПК МФТИ` УНПК: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту. Причина: `not_client_allowed_status:open`
+- `УНПК МФТИ` УНПК: ЛВШ Менделеево — В эти же даты проходит независимая смена Фотона на той же базе; клиенту бота УНПК показывать только смену УНПК.. Причина: `cross_brand_text, internal_only, manager_only_route, not_client_allowed_status:open, other_brand_term:фотон`
+- `УНПК МФТИ` УНПК: ЛВШ Менделеево — unpk. Причина: `internal_only, manager_only_route, not_client_allowed_status:closed`
+- `УНПК МФТИ` Августовская смена УНПК 15-25 августа закрыта. Причина: `not_client_allowed_status:closed`
+- `УНПК МФТИ` УНПК: ЛВШ Менделеево, даты — 15-25 августа. Причина: `not_client_allowed_status:closed`
+- `УНПК МФТИ` УНПК: даты смен ЛВШ Менделеево требуют ручной проверки перед ответом клиенту. Причина: `not_client_allowed_status:closed`
 - `Фотон` Фотон: ЛВШ Менделеево — Дмитрий 2026-05-19: цены и даты применения каждой ступени меняются динамически. Актуальные значения — на cdpofoton.ru. Бот не называет конкретный процент клиенту; даёт общий ответ «по раннему бронированию действуют скидки до 25%, актуальная ступень — у менеджера» и handoff.. Причина: `internal_only, manager_only_route`
 - `Фотон` Фотон: по раннему бронированию ЛВШ Менделеево указана ступень скидки 25%; актуальный срок применения и доступность ступени проверяет менеджер. Причина: `manager_only_route`
 - `Фотон` Фотон: по раннему бронированию ЛВШ Менделеево указана ступень скидки 20%; актуальный срок применения и доступность ступени проверяет менеджер. Причина: `manager_only_route`
@@ -146,12 +155,3 @@
 - `УНПК МФТИ` УНПК: grants , 3 — Договоры на платные образовательные услуги. Причина: `internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ano dpo unpk mfti , holder — АНО ДПО «УНПК МФТИ». Причина: `global_forbidden:АНО ДПО, internal_only, manager_only_route`
 - `УНПК МФТИ` УНПК: ano dpo unpk mfti , number — Л035-01255-50/01195871. Причина: `global_forbidden:Л035, internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: nou unpk mfti , date — 06.03.2013. Причина: `internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: nou unpk mfti , holder — НОУ УНПК МФТИ. Причина: `global_forbidden:НОУ УНПК, internal_only, manager_only_route`
-- `УНПК МФТИ` УНПК: nou unpk mfti , number — 50Л01 №0000547. Причина: `global_forbidden:50Л01, internal_only, manager_only_route`
-- `Фотон` Фотон: рассрочка и оплата — Бот не озвучивает конкретные условия — только сообщает что рассрочка есть и менеджер свяжется. Причина: `individual_bank_terms, manager_only_route`
-- `Фотон` Фотон: рассрочка и оплата — Условия индивидуальные и зависят от банка → бот направляет вопрос менеджеру. Причина: `individual_bank_terms, internal_only, manager_only_route`
-- `Фотон` Фотон: рассрочка и оплата — 6. Причина: `individual_bank_terms, manager_only_route`
-- `Фотон` Фотон: рассрочка и оплата — 12. Причина: `individual_bank_terms, manager_only_route`
-- `Фотон` Рассрочка на 6 и 12 месяцев есть, но условия индивидуальны, зависят от банка и могут менять стоимость курса; вопрос передаётся менеджеру. Причина: `manager_only_route`
-- `внутреннее` Внутренне: рассрочка и оплата, правило — Рассрочка Т-Банк/Долями есть только в Фотоне. Если клиент бота УНПК спросил про рассрочку — бот не упоминает Фотон, а делает handoff менеджеру. Менеджер сам решает, отправлять ли клиента на отдельный диалог с Фотоном (если организационно возможно). Менеджер УНПК не консультирует клиента по условиям Фотона в текущем диалоге.. Причина: `cross_brand_text, internal_only, invalid_client_brand, manager_only_route`

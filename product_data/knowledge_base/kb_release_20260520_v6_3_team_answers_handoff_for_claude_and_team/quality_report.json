@@ -24,10 +24,7 @@
       "29750",
       "47250",
       "98000",
-      "75000",
       "120000",
-      "89900",
-      "83800",
       "18800",
       "34400",
       "3900",
@@ -36,7 +33,9 @@
       "18900",
       "94500",
       "33000",
-      "50000"
+      "50000",
+      "93100",
+      "114000"
     ],
     "found": [
       "44600",
@@ -46,10 +45,7 @@
       "29750",
       "47250",
       "98000",
-      "75000",
       "120000",
-      "89900",
-      "83800",
       "18800",
       "34400",
       "3900",
@@ -58,11 +54,13 @@
       "18900",
       "94500",
       "33000",
-      "50000"
+      "50000",
+      "93100",
+      "114000"
     ],
     "missing": []
   },
-  "created_at": "2026-05-20T22:43:04.314111+00:00",
+  "created_at": "2026-05-22T20:52:39.683311+00:00",
   "details": {
     "allowed_client_text_violations": [],
     "allowed_license_fact_ids": [],
@@ -79,26 +77,26 @@
   "summary": {
     "approval_queue_by_type": {
       "camp_city": 17,
-      "camp_lvsh": 90,
-      "camp_zvsh": 2,
+      "camp_lvsh": 121,
+      "camp_zvsh": 3,
       "contact": 12,
-      "deadline": 24,
-      "discount": 59,
-      "documents": 62,
-      "installment": 18,
+      "deadline": 26,
+      "discount": 62,
+      "documents": 65,
+      "installment": 27,
       "intensive": 34,
-      "matkap": 42,
+      "matkap": 50,
       "policy": 4,
       "price": 46,
-      "program": 210,
+      "program": 258,
       "promocode": 13,
       "refund": 18,
-      "tax": 38,
+      "tax": 40,
       "teacher": 13
     },
-    "approval_queue_items": 702,
-    "client_allowed_facts": 397,
-    "facts_total": 720,
-    "source_registry_total": 10
+    "approval_queue_items": 809,
+    "client_allowed_facts": 469,
+    "facts_total": 829,
+    "source_registry_total": 11
   }
 }

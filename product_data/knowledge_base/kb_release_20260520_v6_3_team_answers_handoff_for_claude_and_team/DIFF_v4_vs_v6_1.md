@@ -14,6 +14,9 @@
 - Offline mini-group size `6-12 человек` added for both brands.
 - Matkap required document list is manager-only; client-safe text says that manager will send the list.
 - Shared physical entities recorded for `Менделеево` and `Верхняя Красносельская ул., 30`.
+- Gold answers v3 added as a structured source and bot/employee pack artifact.
+- Foton installment client-facing term synchronized to `6, 10 или 12 месяцев` plus `Долями` for all Foton products; old split by product type is blocked and removed from client-safe facts.
+- Bot prompt and guards updated for warm human tone, composite questions, remote enrollment default, and camp grade-vs-age clarification.
 
 ## Not run by instruction
 

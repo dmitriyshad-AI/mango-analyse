@@ -1,6 +1,6 @@
 {
   "description": "Шаблоны для client-safe фактов, где дословная подстановка текста запрещена.",
-  "facts_requiring_template_total": 172,
+  "facts_requiring_template_total": 182,
   "fallback_route_if_missing": "manager_only",
   "schema_version": "bot_template_registry_v1",
   "templates": [
@@ -377,7 +377,7 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:installment_client_safe_text_when_asked:704bc92cfc",
+      "fact_id": "fact:v3:foton:installment_client_safe_text_when_asked:34f14886e4",
       "fact_key": "installment.client_safe_text.when_asked",
       "fact_type": "installment",
       "fallback_route": "manager_only",
@@ -407,8 +407,8 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:installment_services_dolyami_best_for:0ac1ef3c4f",
-      "fact_key": "installment.services.dolyami.best_for",
+      "fact_id": "fact:v3:foton:installment_services_dolyami_applies_to_all_foton_products:f5ced5d323",
+      "fact_key": "installment.services.dolyami.applies_to_all_foton_products",
       "fact_type": "installment",
       "fallback_route": "manager_only",
       "template_id": "template:installment:contextual_answer_v1",
@@ -417,8 +417,8 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:installment_services_dolyami_interest_for_client:ac2f4ce476",
-      "fact_key": "installment.services.dolyami.interest_for_client",
+      "fact_id": "fact:v3:foton:installment_services_dolyami_available:51ba6fc3c4",
+      "fact_key": "installment.services.dolyami.available",
       "fact_type": "installment",
       "fallback_route": "manager_only",
       "template_id": "template:installment:contextual_answer_v1",
@@ -427,8 +427,18 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:installment_services_dolyami_parts:5e71ec625d",
-      "fact_key": "installment.services.dolyami.parts",
+      "fact_id": "fact:v3:foton:installment_services_dolyami_products_scope_client_safe:6f10ef0796",
+      "fact_key": "installment.services.dolyami.products_scope_client_safe",
+      "fact_type": "installment",
+      "fallback_route": "manager_only",
+      "template_id": "template:installment:contextual_answer_v1",
+      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:installment_services_rassrochka_applies_to_all_foton_products:5b3dd211e9",
+      "fact_key": "installment.services.rassrochka.applies_to_all_foton_products",
       "fact_type": "installment",
       "fallback_route": "manager_only",
       "template_id": "template:installment:contextual_answer_v1",
@@ -477,8 +487,18 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:installment_services_rassrochka_term_months:49a7db5296",
+      "fact_id": "fact:v3:foton:installment_services_rassrochka_term_months:b80b799422",
       "fact_key": "installment.services.rassrochka.term_months",
+      "fact_type": "installment",
+      "fallback_route": "manager_only",
+      "template_id": "template:installment:contextual_answer_v1",
+      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:installment_services_rassrochka_term_months_confirmed_by_dmitry:38dcbb4690",
+      "fact_key": "installment.services.rassrochka.term_months_confirmed_by_dmitry",
       "fact_type": "installment",
       "fallback_route": "manager_only",
       "template_id": "template:installment:contextual_answer_v1",
@@ -667,8 +687,38 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_pricing_2026_booking_deposit:86c35aabe3",
-      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.booking_deposit",
+      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_documents_for_shift_manager_should_send_full_list:dc9519ec1b",
+      "fact_key": "lvsh_mendeleevo_2026.documents_for_shift.manager_should_send_full_list",
+      "fact_type": "documents",
+      "fallback_route": "manager_only",
+      "template_id": "template:documents:contextual_answer_v1",
+      "template_text": "Собрать человеческую фразу из structured_value и контекста вопроса. Не копировать client_safe_text дословно. Если смысл числа или условия неясен — manager_only."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_payment_options_2026_client_safe_text:cacabf2abd",
+      "fact_key": "lvsh_mendeleevo_2026.payment_options_2026.client_safe_text",
+      "fact_type": "installment",
+      "fallback_route": "manager_only",
+      "template_id": "template:installment:contextual_answer_v1",
+      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_pricing_2026_client_safe_text_when_price_asked:3c6647d940",
+      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.client_safe_text_when_price_asked",
+      "fact_type": "price",
+      "fallback_route": "manager_only",
+      "template_id": "template:price:contextual_answer_v1",
+      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_pricing_2026_current_price:68bc0cf841",
+      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.current_price",
       "fact_type": "price",
       "fallback_route": "manager_only",
       "template_id": "template:price:contextual_answer_v1",
@@ -687,22 +737,32 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_pricing_2026_main_min:ed422a317b",
-      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.main_min",
-      "fact_type": "price",
-      "fallback_route": "manager_only",
-      "template_id": "template:price:contextual_answer_v1",
-      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
-    },
-    {
-      "brand": "foton",
-      "client_send": false,
       "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_program_group_size:b6e4ffc717",
       "fact_key": "lvsh_mendeleevo_2026.program.group_size",
       "fact_type": "camp_lvsh",
       "fallback_route": "manager_only",
       "template_id": "template:camp_lvsh:contextual_answer_v1",
       "template_text": "Собрать фразу с названием программы, датой/условием и оговоркой «по текущим данным». Не обещать место, группу или зачисление без проверки."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_transfer_from_moscow_available:45de61df6a",
+      "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.available",
+      "fact_type": "camp_lvsh",
+      "fallback_route": "manager_only",
+      "template_id": "template:camp_lvsh:contextual_answer_v1",
+      "template_text": "Собрать фразу с названием программы, датой/условием и оговоркой «по текущим данным». Не обещать место, группу или зачисление без проверки."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_transfer_from_moscow_included_in_price:98f7a84078",
+      "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.included_in_price",
+      "fact_type": "price",
+      "fallback_route": "manager_only",
+      "template_id": "template:price:contextual_answer_v1",
+      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
     },
     {
       "brand": "foton",
@@ -719,6 +779,16 @@
       "client_send": false,
       "fact_id": "fact:v3:foton:online_platform_offline_group_size:6581fbaeef",
       "fact_key": "online_platform.offline_group_size",
+      "fact_type": "program",
+      "fallback_route": "manager_only",
+      "template_id": "template:program:contextual_answer_v1",
+      "template_text": "Собрать фразу с названием программы, датой/условием и оговоркой «по текущим данным». Не обещать место, группу или зачисление без проверки."
+    },
+    {
+      "brand": "foton",
+      "client_send": false,
+      "fact_id": "fact:v3:foton:presentation_format_facts_2026_05_21_client_facts_knowledge_control_client_safe_text:0186779bbb",
+      "fact_key": "presentation_format_facts_2026_05_21.client_facts.knowledge_control.client_safe_text",
       "fact_type": "program",
       "fallback_route": "manager_only",
       "template_id": "template:program:contextual_answer_v1",
@@ -1367,6 +1437,16 @@
     {
       "brand": "unpk",
       "client_send": false,
+      "fact_id": "fact:v3:unpk:locations_unpk_online_trial_fragment_available:f4bff46c12",
+      "fact_key": "locations_unpk.online_trial_fragment.available",
+      "fact_type": "location",
+      "fallback_route": "manager_only",
+      "template_id": "template:location:contextual_answer_v1",
+      "template_text": "Собрать человеческую фразу из structured_value и контекста вопроса. Не копировать client_safe_text дословно. Если смысл числа или условия неясен — manager_only."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
       "fact_id": "fact:v3:unpk:ls_city_2026_unpk_discounts_already_paid_2026_27:c110ae8db2",
       "fact_key": "ls_city_2026_unpk.discounts.already_paid_2026_27",
       "fact_type": "discount",
@@ -1517,8 +1597,18 @@
     {
       "brand": "unpk",
       "client_send": false,
-      "fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_pricing_2026_booking_deposit:fce2e756ca",
-      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.booking_deposit",
+      "fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_pricing_2026_client_safe_text_when_price_asked:270b760b20",
+      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.client_safe_text_when_price_asked",
+      "fact_type": "price",
+      "fallback_route": "manager_only",
+      "template_id": "template:price:contextual_answer_v1",
+      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_pricing_2026_current_price:1e348bc71f",
+      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.current_price",
       "fact_type": "price",
       "fallback_route": "manager_only",
       "template_id": "template:price:contextual_answer_v1",
@@ -1533,26 +1623,6 @@
       "fallback_route": "manager_only",
       "template_id": "template:price:contextual_answer_v1",
       "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
-    },
-    {
-      "brand": "unpk",
-      "client_send": false,
-      "fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_pricing_2026_main_min:db163c1225",
-      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.main_min",
-      "fact_type": "price",
-      "fallback_route": "manager_only",
-      "template_id": "template:price:contextual_answer_v1",
-      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
-    },
-    {
-      "brand": "unpk",
-      "client_send": false,
-      "fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_pricing_2026_main_with_25_pct_discount:213c56cce1",
-      "fact_key": "lvsh_mendeleevo_2026.pricing_2026.main_with_25_pct_discount",
-      "fact_type": "discount",
-      "fallback_route": "manager_only",
-      "template_id": "template:discount:contextual_answer_v1",
-      "template_text": "Ответить только если из факта понятны размер и условие скидки. Сказать: «По этой программе действует [размер], условие: [условие]. Перед оформлением менеджер проверит актуальность». Если условия нет — manager_only."
     },
     {
       "brand": "unpk",
@@ -1657,46 +1727,6 @@
     {
       "brand": "unpk",
       "client_send": false,
-      "fact_id": "fact:v3:unpk:prices_regular_2026_27_online_olympiad_phystech_9_and_11_product:5237936443",
-      "fact_key": "prices_regular_2026_27.online_olympiad_phystech_9_and_11.product",
-      "fact_type": "price",
-      "fallback_route": "manager_only",
-      "template_id": "template:price:contextual_answer_v1",
-      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
-    },
-    {
-      "brand": "unpk",
-      "client_send": false,
-      "fact_id": "fact:v3:unpk:prices_regular_2026_27_online_olympiad_phystech_9_and_11_schedule:0dcf8c7f43",
-      "fact_key": "prices_regular_2026_27.online_olympiad_phystech_9_and_11.schedule",
-      "fact_type": "course_parameter",
-      "fallback_route": "manager_only",
-      "template_id": "template:course_parameter:contextual_answer_v1",
-      "template_text": "Собрать человеческую фразу из structured_value и контекста вопроса. Не копировать client_safe_text дословно. Если смысл числа или условия неясен — manager_only."
-    },
-    {
-      "brand": "unpk",
-      "client_send": false,
-      "fact_id": "fact:v3:unpk:prices_regular_2026_27_online_olympiad_phystech_9_and_11_semester:e0276768ba",
-      "fact_key": "prices_regular_2026_27.online_olympiad_phystech_9_and_11.semester",
-      "fact_type": "price",
-      "fallback_route": "manager_only",
-      "template_id": "template:price:contextual_answer_v1",
-      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
-    },
-    {
-      "brand": "unpk",
-      "client_send": false,
-      "fact_id": "fact:v3:unpk:prices_regular_2026_27_online_olympiad_phystech_9_and_11_year:a13c2c4375",
-      "fact_key": "prices_regular_2026_27.online_olympiad_phystech_9_and_11.year",
-      "fact_type": "price",
-      "fallback_route": "manager_only",
-      "template_id": "template:price:contextual_answer_v1",
-      "template_text": "Ответить только с активным брендом, точной суммой/диапазоном, периодом и valid_until. Если не хватает периода, формата или даты актуальности — manager_only."
-    },
-    {
-      "brand": "unpk",
-      "client_send": false,
       "fact_id": "fact:v3:unpk:tax_deduction_available:d5c3dac7c4",
       "fact_key": "tax_deduction.available",
       "fact_type": "tax",
@@ -1723,7 +1753,77 @@
       "fallback_route": "manager_only",
       "template_id": "template:tax:contextual_answer_v1",
       "template_text": "Собрать человеческую фразу из structured_value и контекста вопроса. Не копировать client_safe_text дословно. Если смысл числа или условия неясен — manager_only."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_bring_friend_cashback_client_safe_text:c19e1b0181",
+      "fact_key": "tg_unpk_verified_2026_05_21.client_facts.bring_friend_cashback.client_safe_text",
+      "fact_type": "discount",
+      "fallback_route": "manager_only",
+      "template_id": "template:discount:contextual_answer_v1",
+      "template_text": "Ответить только если из факта понятны размер и условие скидки. Сказать: «По этой программе действует [размер], условие: [условие]. Перед оформлением менеджер проверит актуальность». Если условия нет — manager_only."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_city_school_discounts_client_safe_text:f783dbb8ca",
+      "fact_key": "tg_unpk_verified_2026_05_21.client_facts.city_school_discounts.client_safe_text",
+      "fact_type": "discount",
+      "fallback_route": "manager_only",
+      "template_id": "template:discount:contextual_answer_v1",
+      "template_text": "Ответить только если из факта понятны размер и условие скидки. Сказать: «По этой программе действует [размер], условие: [условие]. Перед оформлением менеджер проверит актуальность». Если условия нет — manager_only."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_city_school_shifts_client_safe_text:120d89f5d4",
+      "fact_key": "tg_unpk_verified_2026_05_21.client_facts.city_school_shifts.client_safe_text",
+      "fact_type": "program",
+      "fallback_route": "manager_only",
+      "template_id": "template:program:contextual_answer_v1",
+      "template_text": "Собрать фразу с названием программы, датой/условием и оговоркой «по текущим данным». Не обещать место, группу или зачисление без проверки."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_lvsh_medical_docs_validity_client_safe_text:b122712477",
+      "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_medical_docs_validity.client_safe_text",
+      "fact_type": "camp_lvsh",
+      "fallback_route": "manager_only",
+      "template_id": "template:camp_lvsh:contextual_answer_v1",
+      "template_text": "Собрать фразу с названием программы, датой/условием и оговоркой «по текущим данным». Не обещать место, группу или зачисление без проверки."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_lvsh_multichild_discount_client_safe_text:e0d296320d",
+      "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_multichild_discount.client_safe_text",
+      "fact_type": "discount",
+      "fallback_route": "manager_only",
+      "template_id": "template:discount:contextual_answer_v1",
+      "template_text": "Ответить только если из факта понятны размер и условие скидки. Сказать: «По этой программе действует [размер], условие: [условие]. Перед оформлением менеджер проверит актуальность». Если условия нет — manager_only."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_olympiad_absence_discount_client_safe_text:b75b65747c",
+      "fact_key": "tg_unpk_verified_2026_05_21.client_facts.olympiad_absence_discount.client_safe_text",
+      "fact_type": "discount",
+      "fallback_route": "manager_only",
+      "template_id": "template:discount:contextual_answer_v1",
+      "template_text": "Ответить только если из факта понятны размер и условие скидки. Сказать: «По этой программе действует [размер], условие: [условие]. Перед оформлением менеджер проверит актуальность». Если условия нет — manager_only."
+    },
+    {
+      "brand": "unpk",
+      "client_send": false,
+      "fact_id": "fact:v3:unpk:tg_unpk_verified_2026_05_21_client_facts_payment_deadline_after_registration_client_safe_text:7a8213c456",
+      "fact_key": "tg_unpk_verified_2026_05_21.client_facts.payment_deadline_after_registration.client_safe_text",
+      "fact_type": "deadline",
+      "fallback_route": "manager_only",
+      "template_id": "template:deadline:contextual_answer_v1",
+      "template_text": "Собрать фразу с названием программы, датой/условием и оговоркой «по текущим данным». Не обещать место, группу или зачисление без проверки."
     }
   ],
-  "templates_total": 172
+  "templates_total": 182
 }

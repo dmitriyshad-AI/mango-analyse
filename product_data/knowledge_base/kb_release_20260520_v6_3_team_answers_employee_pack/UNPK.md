@@ -17,11 +17,35 @@
 
 ### ЗВШ
 
+- В зимней выездной школе в Менделеево ориентир программы — около 21 часа физики и около 21 часа математики; дни физики и математики чередуются.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Зимняя выездная школа в Менделеево — ждём расписание на новый учебный год. Записаться в лист ожидания можно прямо сейчас — менеджер свяжется, как только откроются продажи.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `waiting_list`. Маршрут: `bot_answer_self_for_pilot`.
 
 ### ЛВШ
 
+- В выездной школе дети живут в номерах-студиях на 2-3 человека; в каждом номере есть своя ванная и туалет. Питание 5-разовое, шведский стол; спецменю возможно по запросу.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- В выездной школе есть направления ФизМат для 5-10 класса и ИТ для 7-10 класса. На ИТ-направлении группы делятся по уровню владения Python; все группы по информатике работают на Python. Отдельного направления только по математике на выездной школе нет.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- В выездной школе обычно 3 занятия в день по 3 академических часа, то есть около 6 часов занятий. Группы 12-15 человек, формируются по классу и уровню; за каждой группой закреплён вожатый.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Для выездной школы медсправка 079У действует 3 месяца, справка об эпидокружении — 3 дня.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Запись на ЛВШ УНПК сейчас проверяет живой менеджер.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Кружки входят в стоимость смены.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- На ИТ-направлении ноутбук с собой не обязателен: оборудование предоставляет организатор. Ночью компьютерный класс ставится на сигнализацию.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- На выездную школу берём детей, которые окончили 5 класс. Детей 9-10 лет обычно не берём без отдельного согласования; исключения обсуждаются с руководством.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- На смене есть медсестра.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Тестирование для распределения по группам проходит онлайн и обычно приходит на почту за 2-3 недели до смены. Оно помогает распределить детей на базовые, профильные и олимпиадные группы.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Трансфер на выездную школу включён в стоимость: сбор у метро Ховрино, отъезд в 11:00; обратно отъезд с базы в 15:30, прибытие к Ховрино примерно в 16:30. До метро семьи добираются самостоятельно.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: ЛВШ Менделеево — 2-3 человека.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: ЛВШ Менделеево — 5-10 класс (окончившие).
@@ -53,6 +77,8 @@
 
 ### адреса
 
+- По онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: адрес и место занятий — Долгопрудный.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: адрес и место занятий — Долгопрудный.
@@ -70,6 +96,8 @@
 - УНПК: адрес и место занятий — Сретенка, 20.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: адрес и место занятий — Чистые Пруды.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- УНПК: адрес и место занятий, онлайн — да.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: адрес и место занятий, очно — нет.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
@@ -97,6 +125,8 @@
 
 ### даты и сроки
 
+- После записи срок оплаты: для выездной школы — 5 дней, для городской летней школы — неделя.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: городской летний лагерь, Долгопрудный — 17-28 августа.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: городской летний лагерь, Долгопрудный — 20-31 июля.
@@ -112,13 +142,23 @@
 
 ### документы и справки
 
+- Для выездной школы нужны договор в 2 экземплярах, анкета, согласие на персональные данные, согласие на трансфер или самостоятельный заезд, копия паспорта или свидетельства о рождении, полис ОМС, медсправка 079У, справка об эпидокружении и сведения об аллергии или лекарствах.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Договор пришлёт менеджер в ближайшие дни на email. Подскажите email.
   Источник: bot_policy.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше.
   Источник: bot_policy.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Офис приёма документов, в том числе по маткапиталу: Долгопрудный, ул. Первомайская, д. 3, 4 этаж, каб. 401.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Сканы договора на лагерь направляются заранее на email, а оригинал берётся на смену для подписи руководством.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Справку об очном обучении можно подготовить на бланке организации по запросу.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: справки и документы — Свободная форма.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: у учебного центра есть лицензия на образовательную деятельность.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Электронный документооборот пока в разработке; сейчас договор подписывается скан-копией или на смене.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 
 ### интенсивы
@@ -173,9 +213,21 @@
 
 - Да, оплата материнским капиталом возможна. Работаем с федеральным маткапиталом. Менеджер пришлёт перечень документов и поможет с оформлением через СФР. Подскажите ФИО ребёнка и какой курс рассматриваете.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Для оформления маткапитала нужны паспорт родителя, свидетельство о рождении ученика, сертификат маткапитала, выписка об остатке и карточка предприятия; менеджер пришлёт точный перечень и поможет с оформлением.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Документы по маткапиталу можно подать на edu@kmipt.ru или лично в офисе в Долгопрудном: ул. Первомайская, д. 3, 4 этаж, каб. 401. Для иногородних возможна отправка Почтой России.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Если ученику уже 18 лет или больше, по возрастным условиям маткапитала есть ограничения. Уточню у менеджера, подходит ли ваш случай — он свяжется в течение рабочего дня.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - К сожалению, региональный маткапитал не принимаем. Если у вас федеральный — менеджер подскажет порядок оформления.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Маткапитал можно оформить на двоих детей из одной семьи отдельными договорами; для продления нужна обновлённая выписка об остатке.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Маткапиталом можно закрыть весь годовой абонемент; если оформление не пройдёт, оплату нужно будет внести другим способом.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Маткапиталом можно оплатить зимнюю и летнюю выездную школу; подтверждение одобрения СФР клиент передаёт менеджеру.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Принимаем федеральный материнский капитал; региональный маткапитал не принимаем. Младшему ребёнку в семье должно быть больше 3 лет.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Срок рассмотрения в СФР — до 10 рабочих дней, плюс ещё до 5 дней на перевод. Итого до 15 дней.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
@@ -196,6 +248,10 @@
 
 ### налоговый вычет
 
+- Для налогового вычета менеджер пришлёт шаблон заявления на email; справка готовится после подачи заявления.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Договор-оферта размещён на сайте; оплата означает согласие с офертой. Отдельный подписанный договор обычно не требуется, кроме случаев оплаты маткапиталом. Оферта подходит для налогового вычета.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Лимит на каждого ребёнка отдельный — 110 000 ₽. Если за двоих детей вы потратили по 110 000 ₽, можно вернуть до 28 600 ₽ суммарно. Менеджер пришлёт две справки.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Можно подать вычет за последние 3 года. Для каждого года нужна отдельная справка от нас и отдельная декларация 3-НДФЛ. Менеджер подготовит справки.
@@ -227,6 +283,12 @@
 
 ### параметры занятий
 
+- Очные курсы 2026/27 стартуют в середине сентября; расписание и подробная информация появятся в июне.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Распорядок дня на выездной школе: подъём 8:20, зарядка 8:50, завтрак 9:30, занятия 10:00-14:00, обед 14:00, третья пара 14:40-16:40, полдник 16:50, кружки и время с вожатыми 17:00-19:00, ужин 19:00, вечернее мероприятие 20:00-22:00, свечка 22:00, отбой 23:00.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Специализированных программ для незрячих детей сейчас нет.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.
@@ -267,9 +329,7 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: учебный год 2026/27, старт занятий — 12-27 сентября 2026 в зависимости от площадки.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, классы — 9 и 11.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
-- УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, расписание — будни.
+- Химия 10-11 и английский 1-4 в УНПК на 2026/27 не запускаются.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 
 ### правила ответа
@@ -284,6 +344,42 @@
 
 ### программы
 
+- В городской летней школе есть формат «База» с 2 занятиями в день по 90 минут, предлёнкой 9:45-11:45, обедом, сертификатом и рекомендациями. В «Премиум 10» добавляются 10 занятий в мини-группах 3-4 человека, разбор ошибок с наставником, полдник и связь родителя с наставником. В «Премиум+» добавляются индивидуальные занятия, персональный трек и расширенное письмо родителю.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- В назначении платежа нужно указать ФИО учащегося и предмет или курс; для лагеря — ФИО и «ЛВШ» или «ЛШ».
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- В первый день очных занятий в корпусе МФТИ внизу встречает администратор; с собой нужна копия паспорта или свидетельства о рождении.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Городская летняя школа «Формула Физтеха» — дневная программа без проживания. Есть направления ФизМат и ИИ для 5-10 классов; занятия проходят с понедельника по пятницу, выходные свободны, пребывание обычно с 10:00 до 18:00.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Городская летняя школа «Формула Физтеха»: 6-17 июля — Москва, Верхняя Красносельская, д. 30; 20-31 июля — Главный корпус МФТИ; 17-28 августа — Главный корпус МФТИ.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Горячая линия УНПК МФТИ: 8 (800) 500-81-51 и 8 (495) 150-81-51, почта edu@kmipt.ru.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Если пропуск подтверждён справкой о болезни по форме 095У или документом об участии в олимпиаде, занятие не списывается; также возможна отработка в другой группе.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Запись очных занятий не ведётся; пропущенные материалы можно запросить в чате группы.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Летние онлайн-школы пока не открыты; при открытии записи клиентов оповестят.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Онлайн-курсы УНПК проходят на платформе МТС-Link. Обычно это группы до 20 человек, занятия 2 раза в неделю по 90 минут; после каждого урока доступны записи. Есть домашние задания и контрольные срезы, обычно 5-6 раз в год.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Оплатить можно по QR-коду или по квитанции/реквизитам в банке. Ссылку формирует бухгалтерия и присылает на email или по СМС. Терминала на месте нет, бизнес-карты через QR не принимаются.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Перевод между группами по уровню возможен по инициативе ученика или по рекомендации педагога; олимпиадных задач обычно больше в сильной группе.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- По онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- По онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Старшая школа 10-11 классов в Долгопрудном проходит в Главном корпусе МФТИ по адресу Институтский пер., 9; занятия там только по воскресеньям.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- УНПК МФТИ — подразделение МФТИ, основанное в 1991 году.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- УНПК не готовит отдельно к ВСОШ, «Высшей пробе» и ПВГ.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: в 2024 году указано 14 победителей и призёров олимпиады «Физтех».
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: на онлайн-платформе доступны записи занятий.
@@ -332,6 +428,8 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 - УНПК: черновик для ситуации «вопрос о том, кто отвечает клиенту»: Я помощник менеджера, помогу с вопросом или передам коллеге.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
+- Химии сейчас нет ни в каком формате. Робототехника заявлена на сайте, но в этом году группы нет; возможно, она откроется позже.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `draft_for_manager`.
 
 ### рассрочка и варианты оплаты
 
@@ -340,6 +438,14 @@
 
 ### скидки
 
+- В городской летней школе возможны скидки для многодетных семей, сотрудников МФТИ и участников предыдущих смен.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Кэшбек «Приведи друга» выплачивается после успешного начала обучения друга; для лагеря — в конце смены.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- На выездной лагерь для многодетных действует дополнительная скидка 10% при подтверждающем документе.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- Пропуск из-за участия в олимпиаде не списывается с абонемента при подтверждающем документе; также можно перенести занятие на следующий год.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: для городского летнего лагеря действует скидка 10% для многодетных семей.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: для городского летнего лагеря действует скидка 10% для семей, уже оплативших обучение на 2026/27 год.
@@ -386,8 +492,6 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: при помесячной оплате действует скидка при оплате обучения сразу за семестр (вместо помесячной оплаты).
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: при применении скидки 25% стоимость ЛВШ Менделеево составляет 89 900 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: скидка для многодетных семей действует по статусу семьи, а не по количеству детей на оплате; условие: подтвердить статус многодетной семьи. Скидки не суммируются, применяется наибольшая доступная скидка.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: скидка для многодетных семей — 10%; условие: подтвердить статус многодетной семьи.
@@ -429,7 +533,9 @@
 
 ### цены
 
-- УНПК: ЛВШ Менделеево — 15 000 ₽.
+- УНПК: ЛВШ Менделеево — 114 000 ₽.
+  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
+- УНПК: ЛВШ Менделеево — ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽. Места уже почти распроданы, поэтому наличие и запись проверяет живой менеджер.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: ЛВШ Менделеево, Москва — бесплатно.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
@@ -451,8 +557,6 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: интенсивы 2026, один предмет — 18 800 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: минимальная стоимость ЛВШ Менделеево по текущим условиям — 83 800 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: полная стоимость ЛВШ Менделеево — 120 000 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: цены на 2026/27 учебный год, 1-4 класс, очно, год — 51 700 ₽.
@@ -462,10 +566,4 @@
 - УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, год — 69 900 ₽.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, продукт — Олимпиадная подготовка Физтех.
-  Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: цены на 2026/27 учебный год, 9 и 11 класс, онлайн, семестр — 41 800 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.

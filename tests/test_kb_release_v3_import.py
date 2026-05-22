@@ -61,7 +61,6 @@ EXPECTED_NUMERIC_FACTS: tuple[dict[str, Any], ...] = (
     {"amount": 29750, "brand": "foton", "tokens": ("online", "5", "11")},
     {"amount": 47250, "brand": "foton", "tokens": ("online",)},
     {"amount": 98000, "brand": "foton", "tokens": ("lvsh", "mendeleevo")},
-    {"amount": 75000, "brand": "foton", "tokens": ("lvsh", "mendeleevo")},
     {"amount": 3900, "brand": "foton", "tokens": ("individual", "lesson")},
     {"amount": 6900, "brand": "foton", "tokens": ("individual", "lesson")},
     {"amount": 23000, "brand": "foton", "tokens": ("individual", "lesson")},
@@ -69,9 +68,7 @@ EXPECTED_NUMERIC_FACTS: tuple[dict[str, Any], ...] = (
     {"amount": 82000, "brand": "unpk", "tokens": ("offline", "5", "11")},
     {"amount": 41800, "brand": "unpk", "tokens": ("online", "olympiad", "phystech")},
     {"amount": 69900, "brand": "unpk", "tokens": ("online", "olympiad", "phystech")},
-    {"amount": 120000, "brand": "unpk", "tokens": ("lvsh", "mendeleevo")},
-    {"amount": 89900, "brand": "unpk", "tokens": ("lvsh", "mendeleevo")},
-    {"amount": 83800, "brand": "unpk", "tokens": ("lvsh", "mendeleevo")},
+    {"amount": 114000, "brand": "unpk", "tokens": ("lvsh", "mendeleevo")},
     {"amount": 33000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
     {"amount": 50000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
     {"amount": 18800, "brand": "unpk", "tokens": ("intensive", "ege")},
@@ -290,11 +287,11 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
     )
 
     for fact in (q15_semester, q15_year):
-        assert _is_true(fact.get("allowed_for_client_answer")), fact
-        assert _is_true(fact.get("usable_for_precise_answer")), fact
+        assert not _is_true(fact.get("allowed_for_client_answer")), fact
+        assert not _is_true(fact.get("usable_for_precise_answer")), fact
+        assert _is_true(fact.get("internal_only")) or "stale_previous_year_not_current" in _fact_blob(fact), fact
         q15_scope = _fact_scope_blob(fact)
-        assert _has_any(q15_scope, ("физтех", "phystech")), fact
-        assert _has_any(q15_scope, ("олимпиад", "olympiad")), fact
+        assert _has_any(q15_scope, ("прошлого учебного года", "previous_year", "stale_previous_year")), fact
         assert _has_class_scope(q15_scope, first="9", last="11"), fact
         assert not _has_any(q15_scope, ("5-11", "5_11", "1-4", "1_4")), fact
 
@@ -305,8 +302,6 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
         and _is_price_fact(fact)
         and "online" in _fact_blob(fact)
         and _has_money_amount(fact)
-        and not _has_amount(fact, 41800)
-        and not _has_amount(fact, 69900)
         and _is_true(fact.get("allowed_for_client_answer"))
         and _is_true(fact.get("usable_for_precise_answer"))
     ]

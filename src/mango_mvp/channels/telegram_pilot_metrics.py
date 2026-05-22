@@ -73,8 +73,15 @@ class TelegramPilotDailyMetrics:
     failed_drafts: int
     topic_errors: int
     unsafe_fact_attempts: int
-    avg_seconds_to_draft: Optional[float]
-    useful_share: Optional[float]
+    new_leads: int = 0
+    qualified_leads: int = 0
+    next_step_offered: int = 0
+    manager_handoffs: int = 0
+    reasked_known_data: int = 0
+    avg_seconds_to_draft: Optional[float] = None
+    useful_share: Optional[float] = None
+    verdict: str = "PASS"
+    blocked_reasons: tuple[str, ...] = ()
     unsafe_draft_ids: tuple[str, ...] = ()
     topic_error_draft_ids: tuple[str, ...] = ()
 
@@ -91,8 +98,15 @@ class TelegramPilotDailyMetrics:
             "failed_drafts": self.failed_drafts,
             "topic_errors": self.topic_errors,
             "unsafe_fact_attempts": self.unsafe_fact_attempts,
+            "new_leads": self.new_leads,
+            "qualified_leads": self.qualified_leads,
+            "next_step_offered": self.next_step_offered,
+            "manager_handoffs": self.manager_handoffs,
+            "reasked_known_data": self.reasked_known_data,
             "avg_seconds_to_draft": self.avg_seconds_to_draft,
             "useful_share": self.useful_share,
+            "verdict": self.verdict,
+            "blocked_reasons": list(self.blocked_reasons),
             "unsafe_draft_ids": list(self.unsafe_draft_ids),
             "topic_error_draft_ids": list(self.topic_error_draft_ids),
             "store_schema_version": TELEGRAM_PILOT_STORE_SCHEMA_VERSION,
@@ -125,6 +139,11 @@ def build_daily_metrics(
             unsafe_draft_ids.add(str(draft.get("draft_id")))
 
     topic_error_draft_ids: set[str] = set()
+    new_leads = 0
+    qualified_leads = 0
+    next_step_offered = 0
+    manager_handoffs = 0
+    reasked_known_data = 0
     for event in feedback_events:
         event_type = str(event.get("event_type") or "").strip().lower()
         metadata = event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}
@@ -133,9 +152,26 @@ def build_daily_metrics(
             unsafe_draft_ids.add(draft_id)
         if event_type == PILOT_FEEDBACK_TOPIC_WRONG or bool(metadata.get("llm_topic_error")):
             topic_error_draft_ids.add(draft_id)
+    for draft in drafts:
+        metadata = draft.get("metadata") if isinstance(draft.get("metadata"), Mapping) else {}
+        flags = {str(item).strip().lower() for item in draft.get("safety_flags", [])}
+        if str(metadata.get("client_segment") or "").strip() == "new_lead":
+            new_leads += 1
+        if str(metadata.get("lead_stage") or "").strip() in {"qualified", "next_step_offered"}:
+            qualified_leads += 1
+        if str(metadata.get("next_step_type") or "").strip() not in {"", "wait_for_client", "manager_only_p0"}:
+            next_step_offered += 1
+        if draft.get("route") in {"draft_for_manager", "manager_only"} and metadata.get("manager_summary"):
+            manager_handoffs += 1
+        if "asked_known_data_again" in flags or bool(metadata.get("asked_known_data_again")):
+            reasked_known_data += 1
 
     reviewed = summary.useful_drafts + summary.needs_edit_drafts + summary.manager_only_drafts
     useful_share = round(summary.useful_drafts / reviewed, 4) if reviewed else None
+    blocked_reasons = daily_blocked_reasons(
+        failed_drafts=summary.failed_drafts,
+        unsafe_fact_attempts=len({item for item in unsafe_draft_ids if item}),
+    )
     return TelegramPilotDailyMetrics(
         day=summary.day,
         incoming_messages=summary.incoming_messages,
@@ -147,11 +183,27 @@ def build_daily_metrics(
         failed_drafts=summary.failed_drafts,
         topic_errors=len({item for item in topic_error_draft_ids if item}),
         unsafe_fact_attempts=len({item for item in unsafe_draft_ids if item}),
+        new_leads=new_leads,
+        qualified_leads=qualified_leads,
+        next_step_offered=next_step_offered,
+        manager_handoffs=manager_handoffs,
+        reasked_known_data=reasked_known_data,
         avg_seconds_to_draft=summary.avg_seconds_to_draft,
         useful_share=useful_share,
+        verdict="BLOCKED" if blocked_reasons else "PASS_WITH_NOTES" if (summary.needs_edit_drafts or topic_error_draft_ids) else "PASS",
+        blocked_reasons=tuple(blocked_reasons),
         unsafe_draft_ids=tuple(sorted(item for item in unsafe_draft_ids if item)),
         topic_error_draft_ids=tuple(sorted(item for item in topic_error_draft_ids if item)),
     )
+
+
+def daily_blocked_reasons(*, failed_drafts: int, unsafe_fact_attempts: int) -> list[str]:
+    reasons: list[str] = []
+    if failed_drafts:
+        reasons.append("failed_drafts")
+    if unsafe_fact_attempts:
+        reasons.append("unsafe_fact_attempts")
+    return reasons
 
 
 def write_daily_metrics_report(metrics: TelegramPilotDailyMetrics, out_dir: Path | str) -> Mapping[str, str]:
@@ -172,6 +224,8 @@ def render_daily_metrics_markdown(metrics: TelegramPilotDailyMetrics) -> str:
         [
             f"# Telegram pilot daily report: {metrics.day}",
             "",
+            f"- verdict: {metrics.verdict}",
+            f"- blocked_reasons: {', '.join(metrics.blocked_reasons)}",
             f"- incoming_messages: {metrics.incoming_messages}",
             f"- drafts_created: {metrics.drafts_created}",
             f"- useful_drafts: {metrics.useful_drafts}",
@@ -181,6 +235,11 @@ def render_daily_metrics_markdown(metrics: TelegramPilotDailyMetrics) -> str:
             f"- failed_drafts: {metrics.failed_drafts}",
             f"- topic_errors: {metrics.topic_errors}",
             f"- unsafe_fact_attempts: {metrics.unsafe_fact_attempts}",
+            f"- new_leads: {metrics.new_leads}",
+            f"- qualified_leads: {metrics.qualified_leads}",
+            f"- next_step_offered: {metrics.next_step_offered}",
+            f"- manager_handoffs: {metrics.manager_handoffs}",
+            f"- reasked_known_data: {metrics.reasked_known_data}",
             f"- useful_share: {useful_share}",
             f"- avg_seconds_to_draft: {avg_seconds}",
             "",

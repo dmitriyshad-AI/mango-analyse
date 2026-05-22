@@ -10,7 +10,7 @@ import re
 import signal
 from contextlib import suppress
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -25,6 +25,14 @@ from mango_mvp.channels.subscription_llm import (
     SubscriptionLlmDraftProvider,
     strip_internal_service_markers,
 )
+from mango_mvp.channels.manager_handoff_summary import build_manager_handoff_summary
+from mango_mvp.channels.new_lead_funnel import LeadFunnelState, build_lead_funnel_state, lead_funnel_context_payload
+from mango_mvp.channels.telegram_pilot_store import (
+    PILOT_DRAFT_STATUS_MANAGER_ONLY,
+    PILOT_DRAFT_STATUS_NEEDS_REVIEW,
+    TelegramPilotSQLiteStore,
+)
+from mango_mvp.channels.telegram_pilot_p0_register import append_p0_register_record, build_p0_register_record
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 
 
@@ -33,8 +41,11 @@ DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_te
 DEFAULT_CRM_ENV_FILE = Path("stable_runtime/amocrm_runtime/.env.private")
 DEFAULT_LOG_DIR = Path(".codex_local/telegram_pilot_bots/logs")
 DEFAULT_CACHE_DIR = Path(".codex_local/telegram_pilot_bots/llm_cache")
+DEFAULT_STORE_PATH = Path(".codex_local/telegram_pilot/telegram_pilot.sqlite")
+DEFAULT_P0_REGISTER_PATH = Path(".codex_local/telegram_pilot/p0_incident_register.csv")
 DEFAULT_DEBOUNCE_SECONDS = 7
 MAX_RECENT_MESSAGES = 12
+AUTONOMOUS_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
 
 FOTON_TOKEN_ENV = "MANGO_TELEGRAM_FOTON_BOT_TOKEN"
 UNPK_TOKEN_ENV = "MANGO_TELEGRAM_UNPK_BOT_TOKEN"
@@ -44,6 +55,10 @@ CRM_READ_MODE_ENV = "MANGO_TELEGRAM_CRM_READ_MODE"
 CRM_ENV_FILE_ENV = "MANGO_TELEGRAM_CRM_ENV_FILE"
 CRM_SERVER_URL_ENV = "MANGO_CRM_SERVER_URL"
 CRM_SERVER_API_KEY_ENV = "MANGO_CRM_SERVER_API_KEY"
+PILOT_STORE_PATH_ENV = "MANGO_TELEGRAM_PILOT_STORE_PATH"
+PILOT_STORE_ENABLED_ENV = "MANGO_TELEGRAM_PILOT_STORE_ENABLED"
+PILOT_P0_REGISTER_PATH_ENV = "MANGO_TELEGRAM_P0_REGISTER_PATH"
+PILOT_AUTONOMY_ENABLED_ENV = "TELEGRAM_PILOT_AUTONOMY_ENABLED"
 
 DEBUG_PHONE_RE = re.compile(
     r"^\s*[\"'«»“”]*\s*представь\s*,?\s*что\s+я\s+пишу\s+с\s+номера\s+"
@@ -71,6 +86,10 @@ class BrandBotConfig:
     crm_env_file: Path = DEFAULT_CRM_ENV_FILE
     crm_server_url: str = ""
     crm_server_api_key: str = ""
+    store_path: Path = DEFAULT_STORE_PATH
+    store_enabled: bool = True
+    p0_register_path: Path = DEFAULT_P0_REGISTER_PATH
+    autonomy_enabled: bool = True
 
     def __post_init__(self) -> None:
         brand = self.brand.casefold().strip()
@@ -91,6 +110,8 @@ class BrandBotConfig:
         object.__setattr__(self, "crm_env_file", Path(self.crm_env_file))
         object.__setattr__(self, "crm_server_url", str(self.crm_server_url or "").rstrip("/"))
         object.__setattr__(self, "crm_server_api_key", str(self.crm_server_api_key or ""))
+        object.__setattr__(self, "store_path", Path(self.store_path))
+        object.__setattr__(self, "p0_register_path", Path(self.p0_register_path))
 
 
 @dataclass
@@ -173,6 +194,13 @@ def load_debug_clients(env: Mapping[str, str]) -> dict[str, Mapping[str, Any]]:
     return result
 
 
+def env_flag(env: Mapping[str, str], key: str, *, default: bool = False) -> bool:
+    raw = str(env.get(key) or "").strip().casefold()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "да"}
+
+
 def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool = False) -> list[BrandBotConfig]:
     snapshot = Path(env.get(SNAPSHOT_ENV) or DEFAULT_SNAPSHOT)
     crm_env_file = Path(env.get(CRM_ENV_FILE_ENV) or DEFAULT_CRM_ENV_FILE)
@@ -183,6 +211,10 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
     reasoning = str(env.get("MANGO_TELEGRAM_CODEX_REASONING") or "xhigh")
     timeout = int(env.get("MANGO_TELEGRAM_CODEX_TIMEOUT_SEC") or "240")
     debounce = int(env.get("MANGO_TELEGRAM_DEBOUNCE_SECONDS") or DEFAULT_DEBOUNCE_SECONDS)
+    store_path = Path(env.get(PILOT_STORE_PATH_ENV) or DEFAULT_STORE_PATH)
+    store_enabled = env_flag(env, PILOT_STORE_ENABLED_ENV, default=True)
+    p0_register_path = Path(env.get(PILOT_P0_REGISTER_PATH_ENV) or DEFAULT_P0_REGISTER_PATH)
+    autonomy_enabled = env_flag(env, PILOT_AUTONOMY_ENABLED_ENV, default=True)
     selected = {"foton", "unpk"} if brand == "all" else {brand}
     configs: list[BrandBotConfig] = []
     if "foton" in selected:
@@ -201,6 +233,10 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 crm_env_file=crm_env_file,
                 crm_server_url=crm_server_url,
                 crm_server_api_key=crm_server_api_key,
+                store_path=store_path,
+                store_enabled=store_enabled,
+                p0_register_path=p0_register_path,
+                autonomy_enabled=autonomy_enabled,
             )
         )
     if "unpk" in selected:
@@ -219,6 +255,10 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 crm_env_file=crm_env_file,
                 crm_server_url=crm_server_url,
                 crm_server_api_key=crm_server_api_key,
+                store_path=store_path,
+                store_enabled=store_enabled,
+                p0_register_path=p0_register_path,
+                autonomy_enabled=autonomy_enabled,
             )
         )
     return configs
@@ -235,6 +275,7 @@ class PublicPilotBotRuntime:
             timeout_sec=config.timeout_sec,
             cache_dir=config.cache_dir / config.brand,
         )
+        self.store: TelegramPilotSQLiteStore | None = TelegramPilotSQLiteStore(config.store_path) if config.store_enabled else None
 
     def session(self, chat_id: int) -> ChatSession:
         item = self.sessions.get(chat_id)
@@ -242,6 +283,10 @@ class PublicPilotBotRuntime:
             item = ChatSession()
             self.sessions[chat_id] = item
         return item
+
+    def close(self) -> None:
+        if self.store is not None:
+            self.store.close()
 
     async def handle_start(self, update: Any, context: Any) -> None:
         del context
@@ -305,7 +350,12 @@ class PublicPilotBotRuntime:
         self.log_event(
             "message_queued",
             chat_id=chat_id,
-            payload={"brand": self.config.brand, "pending_count": len(session.pending_messages)},
+            payload={
+                "brand": self.config.brand,
+                "pending_count": len(session.pending_messages),
+                "input_text": text,
+                "debug_impersonation": bool(session.debug_phone),
+            },
         )
 
     async def _delayed_process(self, chat_id: int, message: Any) -> None:
@@ -327,6 +377,14 @@ class PublicPilotBotRuntime:
                 return
             await self.maybe_attach_prefetched_crm_context(chat_id, session, timeout_sec=2.0)
             context = self.build_context(chat_id=chat_id, session=session, current_text=combined_text)
+            funnel_state = self.build_funnel_state(
+                chat_id=chat_id,
+                session=session,
+                current_text=combined_text,
+                context=context,
+            )
+            context = self.attach_funnel_state_to_context(context, funnel_state)
+            request_started_at = datetime.now(timezone.utc)
             self.log_event(
                 "llm_request_started",
                 chat_id=chat_id,
@@ -334,6 +392,11 @@ class PublicPilotBotRuntime:
                     "brand": self.config.brand,
                     "message_count": len(batch),
                     "debug_impersonation": bool(session.debug_phone),
+                    "input_text": combined_text,
+                    "known_client_fields": context.get("known_client_fields") or {},
+                    "known_dialog_fields": context.get("known_dialog_fields") or {},
+                    "funnel_state": context.get("funnel_state") or {},
+                    "context_flags": context_flags_for_report(context),
                 },
             )
             typing_task = asyncio.create_task(self.show_typing_until_done(message))
@@ -343,23 +406,67 @@ class PublicPilotBotRuntime:
                 typing_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await typing_task
+            result = apply_public_autonomy_kill_switch(result, autonomy_enabled=self.config.autonomy_enabled)
+            funnel_state = self.build_funnel_state(
+                chat_id=chat_id,
+                session=session,
+                current_text=combined_text,
+                context=context,
+                result=result,
+            )
+            context = self.attach_funnel_state_to_context(context, funnel_state)
             text = public_reply_text(result)
+            manager_summary = self.build_manager_summary(
+                input_text=combined_text,
+                answer_text=text,
+                result=result,
+                funnel_state=funnel_state,
+                context=context,
+            )
             await message.reply_text(text, disable_web_page_preview=True)
             session.recent_messages.append(f"Клиент: {combined_text}")
             session.recent_messages.append(f"Ответ: {text}")
+            latency = round((datetime.now(timezone.utc) - request_started_at).total_seconds(), 3)
             self.log_event(
                 "reply_sent",
                 chat_id=chat_id,
                 payload={
                     "brand": self.config.brand,
+                    "input_text": combined_text,
+                    "answer_text": text,
                     "route": result.route,
                     "topic_id": result.topic_id,
                     "message_type": result.message_type,
                     "risk_level": result.risk_level,
                     "safety_flags": list(result.safety_flags),
                     "debug_impersonation": bool(session.debug_phone),
+                    "known_client_fields": context.get("known_client_fields") or {},
+                    "known_dialog_fields": context.get("known_dialog_fields") or {},
+                    "funnel_state": context.get("funnel_state") or {},
+                    "manager_summary_available": bool(manager_summary),
+                    "context_flags": context_flags_for_report(context),
+                    "latency_seconds": latency,
                     "text_chars": len(text),
+                    "autonomy_enabled": self.config.autonomy_enabled,
                 },
+            )
+            self.persist_pilot_decision(
+                message=message,
+                chat_id=chat_id,
+                input_text=combined_text,
+                answer_text=text,
+                context=context,
+                result=result,
+                funnel_state=funnel_state,
+                manager_summary=manager_summary,
+                latency_seconds=latency,
+                request_started_at=request_started_at,
+            )
+            self.persist_p0_register_if_needed(
+                chat_id=chat_id,
+                input_text=combined_text,
+                answer_text=text,
+                result=result,
             )
 
     async def show_typing_until_done(self, message: Any) -> None:
@@ -443,6 +550,12 @@ class PublicPilotBotRuntime:
         customer_summary = debug_customer_summary(session.debug_phone, session.debug_client)
         if crm_context.get("summary"):
             customer_summary = "\n".join(item for item in (customer_summary, str(crm_context["summary"])) if item)
+        known_client_fields = known_client_fields_for_session(session=session, crm_context=crm_context)
+        known_dialog_fields = known_dialog_fields_from_messages(
+            [*tuple(session.recent_messages)[-10:], current_text],
+            active_brand=self.config.brand,
+        )
+        known_context_summary_text = build_known_context_summary(known_client_fields, known_dialog_fields)
         rop_policy = {
             "bot_permission": "bot_answer_self_for_pilot",
             "autonomy_policy": {
@@ -472,6 +585,12 @@ class PublicPilotBotRuntime:
         )
         payload = dict(pilot_context.to_prompt_context())
         payload["active_brand"] = self.config.brand
+        if known_client_fields:
+            payload["known_client_fields"] = known_client_fields
+        if known_dialog_fields:
+            payload["known_dialog_fields"] = known_dialog_fields
+        if known_context_summary_text:
+            payload["known_context_summary"] = known_context_summary_text
         if crm_context:
             payload["read_only_customer_context"] = crm_context
         payload["public_pilot_mode"] = {
@@ -485,6 +604,66 @@ class PublicPilotBotRuntime:
         }
         return payload
 
+    def build_funnel_state(
+        self,
+        *,
+        chat_id: int,
+        session: ChatSession,
+        current_text: str,
+        context: Mapping[str, Any],
+        result: SubscriptionDraftResult | None = None,
+    ) -> LeadFunnelState:
+        del chat_id
+        return build_lead_funnel_state(
+            current_text,
+            active_brand=self.config.brand,
+            recent_messages=tuple(session.recent_messages)[-10:],
+            context=context,
+            topic_id=str((result.topic_id if result else context.get("topic_id")) or ""),
+            message_type=str((result.message_type if result else context.get("message_type")) or ""),
+            risk_level=str((result.risk_level if result else context.get("risk_level")) or ""),
+            route=str((result.route if result else context.get("route")) or ""),
+            safety_flags=tuple(result.safety_flags if result else context.get("safety_flags") or ()),
+        )
+
+    def attach_funnel_state_to_context(self, context: Mapping[str, Any], funnel_state: LeadFunnelState) -> Mapping[str, Any]:
+        payload = dict(context)
+        funnel_payload = lead_funnel_context_payload(funnel_state)
+        payload["funnel_state"] = funnel_payload
+        payload["known_slots"] = dict(funnel_payload.get("filled_slots") or {})
+        payload["missing_slots"] = list(funnel_payload.get("missing_slots") or [])
+        payload["next_best_question"] = str(funnel_payload.get("next_best_question") or "")
+        payload["next_step_type"] = str(funnel_payload.get("next_step_type") or "")
+        payload["lead_stage"] = str(funnel_payload.get("lead_stage") or "")
+        payload["client_segment"] = str(funnel_payload.get("client_segment") or "")
+        payload["semantic_flags"] = list(funnel_payload.get("semantic_flags") or [])
+        return payload
+
+    def build_manager_summary(
+        self,
+        *,
+        input_text: str,
+        answer_text: str,
+        result: SubscriptionDraftResult,
+        funnel_state: LeadFunnelState,
+        context: Mapping[str, Any],
+    ) -> str:
+        if result.route in AUTONOMOUS_ROUTES:
+            return ""
+        return build_manager_handoff_summary(
+            brand=self.config.brand,
+            client_message=input_text,
+            answer_text=answer_text,
+            route=result.route,
+            topic_id=result.topic_id,
+            risk_level=result.risk_level,
+            safety_flags=result.safety_flags,
+            missing_facts=result.missing_facts,
+            manager_checklist=result.manager_checklist,
+            funnel_state=funnel_state,
+            context=context,
+        )
+
     def log_event(self, event: str, *, chat_id: int, payload: Mapping[str, Any]) -> None:
         self.config.log_dir.mkdir(parents=True, exist_ok=True)
         path = self.config.log_dir / f"{datetime.now(timezone.utc).date().isoformat()}_{self.config.brand}.jsonl"
@@ -497,12 +676,152 @@ class PublicPilotBotRuntime:
         with path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
+    def persist_pilot_decision(
+        self,
+        *,
+        message: Any,
+        chat_id: int,
+        input_text: str,
+        answer_text: str,
+        context: Mapping[str, Any],
+        result: SubscriptionDraftResult,
+        funnel_state: LeadFunnelState | None = None,
+        manager_summary: str = "",
+        latency_seconds: float,
+        request_started_at: datetime,
+    ) -> None:
+        if self.store is None:
+            return
+        try:
+            metadata = {
+                "brand": self.config.brand,
+                "latency_seconds": latency_seconds,
+                "client_send_executed": True,
+                "public_pilot_runtime": True,
+                "autonomy_enabled": self.config.autonomy_enabled,
+                "llm_result": result.to_json_dict(),
+            }
+            if funnel_state is not None:
+                funnel_payload = funnel_state.to_json_dict()
+                metadata.update(
+                    {
+                        "funnel_state": funnel_payload,
+                        "lead_stage": funnel_payload.get("lead_stage"),
+                        "client_segment": funnel_payload.get("client_segment"),
+                        "next_step_type": funnel_payload.get("next_step_type"),
+                        "known_slots": funnel_payload.get("filled_slots") or {},
+                        "missing_slots": funnel_payload.get("missing_slots") or [],
+                        "semantic_flags": funnel_payload.get("semantic_flags") or [],
+                    }
+                )
+            if manager_summary:
+                metadata["manager_summary"] = manager_summary
+            store_result = self.store.upsert_message_context_draft(
+                {
+                    "channel": "telegram_public_pilot_bot",
+                    "channel_message_id": str(getattr(message, "message_id", "") or stable_runtime_message_id(chat_id, request_started_at)),
+                    "channel_thread_id": str(chat_id),
+                    "channel_user_id": str(chat_id),
+                    "direction": "inbound",
+                    "text": input_text,
+                    "received_at": telegram_message_datetime(message, fallback=request_started_at).isoformat(),
+                    "metadata": {"brand": self.config.brand},
+                },
+                context=context,
+                draft_text=answer_text,
+                prompt_version=f"telegram_public_pilot:{self.config.model}:{self.config.reasoning_effort}",
+                knowledge_base_version=knowledge_base_version_for_store(context, self.config.snapshot_path),
+                status=PILOT_DRAFT_STATUS_MANAGER_ONLY if result.route == "manager_only" else PILOT_DRAFT_STATUS_NEEDS_REVIEW,
+                topic_id=result.topic_id,
+                route=result.route,
+                safety_flags=result.safety_flags,
+                draft_metadata=metadata,
+                actor="telegram_public_pilot_bot",
+            )
+            self.log_event(
+                "pilot_store_write",
+                chat_id=chat_id,
+                payload={"brand": self.config.brand, **store_result.to_json_dict()},
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log_event(
+                "pilot_store_error",
+                chat_id=chat_id,
+                payload={"brand": self.config.brand, "error": str(exc)[:240]},
+            )
+
+    def persist_p0_register_if_needed(
+        self,
+        *,
+        chat_id: int,
+        input_text: str,
+        answer_text: str,
+        result: SubscriptionDraftResult,
+    ) -> None:
+        try:
+            record = build_p0_register_record(
+                brand=self.config.brand,
+                chat_id=chat_id,
+                input_text=input_text,
+                answer_text=answer_text,
+                topic_id=result.topic_id,
+                route=result.route,
+                safety_flags=result.safety_flags,
+                client_send_executed=True,
+                metadata={"source": "telegram_public_pilot_runtime"},
+            )
+            if record is None:
+                return
+            path = append_p0_register_record(self.config.p0_register_path, record)
+            self.log_event(
+                "p0_register_recorded",
+                chat_id=chat_id,
+                payload={"brand": self.config.brand, "severity": record.severity, "path": str(path)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log_event(
+                "p0_register_error",
+                chat_id=chat_id,
+                payload={"brand": self.config.brand, "error": str(exc)[:240]},
+            )
+
 
 def public_reply_text(result: SubscriptionDraftResult) -> str:
     text = strip_internal_service_markers(str(result.draft_text or "")).strip()
     if not text:
         text = SAFE_FALLBACK_DRAFT_TEXT
     return text[:3900]
+
+
+def apply_public_autonomy_kill_switch(result: SubscriptionDraftResult, *, autonomy_enabled: bool) -> SubscriptionDraftResult:
+    if autonomy_enabled or result.route not in AUTONOMOUS_ROUTES:
+        return result
+    return replace(
+        result,
+        route="draft_for_manager",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        safety_flags=(*result.safety_flags, "autonomy_kill_switch_applied"),
+        metadata={**dict(result.metadata), "original_route_before_autonomy_kill_switch": result.route},
+    )
+
+
+def telegram_message_datetime(message: Any, *, fallback: datetime) -> datetime:
+    value = getattr(message, "date", None)
+    if isinstance(value, datetime):
+        return value if value.tzinfo and value.utcoffset() is not None else value.replace(tzinfo=timezone.utc)
+    return fallback
+
+
+def stable_runtime_message_id(chat_id: int, created_at: datetime) -> str:
+    return f"{chat_id}:{created_at.isoformat(timespec='seconds')}"
+
+
+def knowledge_base_version_for_store(context: Mapping[str, Any], snapshot_path: Path) -> str:
+    for key in ("knowledge_base_version", "kb_version", "snapshot_version", "context_version"):
+        value = str(context.get(key) or "").strip()
+        if value:
+            return value[:160]
+    return str(snapshot_path)
 
 
 def greeting_for_brand(brand: str) -> str:
@@ -532,6 +851,110 @@ def debug_customer_summary(phone: str, client: Mapping[str, Any]) -> str:
     if label:
         return f"Тестовый режим сотрудника: отвечать как известному клиенту с телефона {phone}. Клиент: {label}."
     return f"Тестовый режим сотрудника: отвечать как известному клиенту с телефона {phone}. Клиент не найден в локальной тестовой карте."
+
+
+def known_client_fields_for_session(*, session: ChatSession, crm_context: Mapping[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    _merge_known_field_aliases(result, session.debug_client)
+    if session.debug_phone:
+        result.setdefault("phone", session.debug_phone)
+    local = crm_context.get("local_runtime_context") if isinstance(crm_context.get("local_runtime_context"), Mapping) else {}
+    if local:
+        _merge_known_field_aliases(result, local)
+        result.update({key: value for key, value in known_dialog_fields_from_messages([str(local.get("history_summary") or "")]).items() if value and key not in result})
+    amo = crm_context.get("amo_context") if isinstance(crm_context.get("amo_context"), Mapping) else {}
+    tallanto = crm_context.get("tallanto_context") if isinstance(crm_context.get("tallanto_context"), Mapping) else {}
+    if amo.get("status") == "ok":
+        result.setdefault("amo_context", "found")
+    if tallanto.get("status") == "ok":
+        result.setdefault("tallanto_context", "found")
+    return {key: str(value)[:180] for key, value in result.items() if str(value or "").strip()}
+
+
+def known_dialog_fields_from_messages(messages: Sequence[str], *, active_brand: str = "") -> dict[str, str]:
+    client_parts: list[str] = []
+    for item in messages:
+        for raw_line in str(item or "").splitlines():
+            line = raw_line.strip()
+            lowered = line.casefold()
+            if lowered.startswith("ответ:"):
+                continue
+            if lowered.startswith("клиент:"):
+                line = line.split(":", 1)[1].strip()
+            if line:
+                client_parts.append(line)
+    text = "\n".join(client_parts)
+    normalized = text.casefold().replace("ё", "е")
+    result: dict[str, str] = {}
+    grade = re.search(r"\b(?P<grade>[1-9]|1[01])\s*(?:класс|кл\.?)\b", normalized)
+    if grade:
+        result["grade"] = grade.group("grade")
+    subjects: list[str] = []
+    for marker, canonical in (
+        ("математ", "математика"),
+        ("физик", "физика"),
+        ("информат", "информатика"),
+        ("программ", "программирование"),
+        ("русск", "русский язык"),
+        ("англий", "английский язык"),
+        ("хими", "химия"),
+        ("биолог", "биология"),
+    ):
+        if marker in normalized:
+            subjects.append(canonical)
+    if subjects:
+        result["subject"] = ", ".join(dict.fromkeys(subjects))
+    if "онлайн" in normalized:
+        result["format"] = "онлайн"
+    elif "очно" in normalized or "офлайн" in normalized:
+        result["format"] = "очно"
+    if active_brand:
+        result["active_brand"] = active_brand
+    return result
+
+
+def _merge_known_field_aliases(target: dict[str, str], source: Mapping[str, Any]) -> None:
+    aliases = {
+        "parent_name": ("parent_name", "parent", "parent_full_name", "fio_parent", "parent_fio"),
+        "student_name": ("student_name", "student", "student_full_name", "fio_student", "student_fio", "child_name"),
+        "phone": ("phone", "normalized_phone", "client_phone"),
+        "grade": ("grade", "class", "student_grade", "klass"),
+        "subject": ("subject", "course_subject", "interest_subject"),
+        "known_course": ("known_course", "current_course", "course"),
+        "current_group": ("current_group", "group", "tallanto_group"),
+    }
+    for normalized, keys in aliases.items():
+        for key in keys:
+            value = str(source.get(key) or "").strip()
+            if value:
+                target.setdefault(normalized, value)
+                break
+
+
+def build_known_context_summary(known_client_fields: Mapping[str, Any], known_dialog_fields: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for label, fields in (("Из CRM/локального контекста известно", known_client_fields), ("Из текущего диалога известно", known_dialog_fields)):
+        public = {
+            key: value
+            for key, value in fields.items()
+            if key in {"parent_name", "student_name", "grade", "subject", "format", "known_course", "current_group", "active_brand"}
+        }
+        if public:
+            parts.append(f"{label}: " + ", ".join(f"{key}={value}" for key, value in public.items()))
+    return "; ".join(parts)[:700]
+
+
+def context_flags_for_report(context: Mapping[str, Any]) -> dict[str, bool]:
+    quality = context.get("context_quality") if isinstance(context.get("context_quality"), Mapping) else {}
+    return {
+        "crm_context": bool(context.get("read_only_customer_context")),
+        "known_client_fields": bool(context.get("known_client_fields")),
+        "known_dialog_fields": bool(context.get("known_dialog_fields")),
+        "family_phone": bool(quality.get("family_phone")),
+        "multiple_students": bool(quality.get("multiple_students")),
+        "multiple_deals": bool(quality.get("multiple_deals")),
+        "facts_missing": bool(quality.get("facts_missing")),
+    }
 
 
 def build_read_only_crm_context(
@@ -939,6 +1362,8 @@ async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mappi
                 await app.updater.stop()
             await app.stop()
             await app.shutdown()
+        for runtime in runtimes:
+            runtime.close()
 
 
 def write_local_env_file(path: Path, *, foton_token: str, unpk_token: str) -> None:
@@ -951,6 +1376,10 @@ def write_local_env_file(path: Path, *, foton_token: str, unpk_token: str) -> No
         "MANGO_TELEGRAM_CODEX_REASONING": "xhigh",
         "MANGO_TELEGRAM_CODEX_TIMEOUT_SEC": "240",
         "MANGO_TELEGRAM_DEBOUNCE_SECONDS": str(DEFAULT_DEBOUNCE_SECONDS),
+        PILOT_STORE_PATH_ENV: str(DEFAULT_STORE_PATH),
+        PILOT_STORE_ENABLED_ENV: "1",
+        PILOT_P0_REGISTER_PATH_ENV: str(DEFAULT_P0_REGISTER_PATH),
+        PILOT_AUTONOMY_ENABLED_ENV: "1",
         CRM_READ_MODE_ENV: "server",
         CRM_ENV_FILE_ENV: str(DEFAULT_CRM_ENV_FILE),
         CRM_SERVER_URL_ENV: "https://api.fotonai.online",

@@ -109,6 +109,44 @@ def test_idempotent_update_does_not_duplicate_draft(tmp_path) -> None:
     store.close()
 
 
+def test_store_keeps_funnel_context_and_manager_summary_idempotently(tmp_path) -> None:
+    store = TelegramPilotSQLiteStore(tmp_path / "telegram_pilot.sqlite", clock=StepClock())
+    message = inbound_message("msg-funnel", "9 класс, физика")
+
+    first = store.upsert_message_context_draft(
+        message,
+        context={"funnel_state": {"lead_stage": "qualification_needed"}},
+        draft_text="Draft for manager",
+        prompt_version="prompt-v1",
+        knowledge_base_version="kb-v1",
+        route="draft_for_manager",
+        draft_metadata={
+            "funnel_state": {"lead_stage": "qualification_needed"},
+            "lead_stage": "qualification_needed",
+            "next_step_type": "ask_format",
+            "manager_summary": "Бренд: УНПК МФТИ\nЧто нужно проверить: расписание",
+        },
+    )
+    duplicate = store.upsert_message_context_draft(
+        message,
+        context={"funnel_state": {"lead_stage": "other"}},
+        draft_text="Different",
+        prompt_version="prompt-v2",
+        knowledge_base_version="kb-v2",
+        route="manager_only",
+        draft_metadata={"lead_stage": "other", "manager_summary": "different"},
+    )
+    draft = store.get_draft(first.draft_id)
+
+    assert duplicate.created is False
+    assert draft is not None
+    assert draft["metadata"]["lead_stage"] == "qualification_needed"
+    assert draft["metadata"]["next_step_type"] == "ask_format"
+    assert draft["metadata"]["manager_summary"].startswith("Бренд: УНПК")
+    assert draft["draft_text"] == "Draft for manager"
+    store.close()
+
+
 def test_daily_summary_counts_useful_drafts(tmp_path) -> None:
     store = TelegramPilotSQLiteStore(tmp_path / "telegram_pilot.sqlite", clock=StepClock())
     useful = store_draft(store, inbound_message("msg-1", "first"))

@@ -65,14 +65,17 @@ MULTICHILD_DISCOUNT_TEXT = (
 )
 DISCOUNT_STACKING_SAFE_TEXT = "Скидки не суммируются: применяется наибольшая доступная скидка. Менеджер проверит условия под вашу ситуацию."
 FOTON_INSTALLMENT_SAFE_TEXT = (
-    "Да, в Фотоне есть рассрочка через Т-Банк. Долями — 4 части без процентов для коротких программ. "
-    "Также есть варианты рассрочки на 6 или 12 месяцев; условия индивидуальные. "
-    "Решение по заявке принимает банк. Менеджер пришлёт ссылку на оформление."
+    "Да, в Фотоне можно оплатить обучение частями: доступны варианты на 6, 10 или 12 месяцев, "
+    "а также сервис Долями. Это относится к очным и онлайн-курсам, ЛВШ, ЛШ и другим программам Фотона. "
+    "Конкретные условия и оформление зависят от выбранного способа оплаты; менеджер поможет подобрать удобный вариант."
+)
+FOTON_CAMP_INSTALLMENT_SAFE_TEXT = (
+    "Да, для ЛВШ, ЛШ и лагерей Фотона тоже можно оплатить частями: доступны варианты на 6, 10 или 12 месяцев, "
+    "а также сервис Долями. Менеджер поможет выбрать способ оплаты и оформить его дистанционно."
 )
 FOTON_DOLYAMI_SAFE_TEXT = (
-    "Долями — это оплата на 4 части без процентов, обычно для коротких программ. "
-    "Это подходит именно для короткие программы. "
-    "Решение о доступности принимает Т-Банк и банк. Менеджер проверит, подходит ли этот вариант для вашего курса."
+    "Да, Долями можно использовать в Фотоне. Ещё доступны варианты оплаты частями на 6, 10 или 12 месяцев. "
+    "Это правило действует для очных и онлайн-курсов, ЛВШ, ЛШ и других программ Фотона; менеджер поможет оформить подходящий вариант."
 )
 UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT = (
     "Олимпиадная подготовка Физтех сейчас указана для 9 и 11 классов, занятия проходят в будни. "
@@ -97,7 +100,8 @@ UNPK_FOUR_WEEKS_NEW_PRICE_SAFE_TEXT = (
 )
 PROMOCODE_SAFE_TEXT = "Спасибо, передам менеджеру — он свяжется, уточнит и подскажет актуальные акции и промокоды."
 UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT = (
-    "Здравствуйте! У нас оплата возможна помесячно, за семестр или за год. "
+    "В УНПК рассрочки нет, это не банковская рассрочка, поэтому одобрение банка не требуется. "
+    "Можно платить помесячно, за семестр или за год. "
     "При оплате за семестр действует скидка 10%, за год - 14%. "
     "Если нужно растянуть оплату, менеджер подскажет варианты под вашу ситуацию."
 )
@@ -119,26 +123,64 @@ TAX_ONLINE_FORM_SAFE_TEXT = (
 )
 TAX_FNS_REVIEW_SAFE_TEXT = "ФНС рассматривает заявление и принимает решение. Справка помогает подтвердить обучение, а менеджер подскажет порядок оформления."
 TAX_AMOUNT_SAFE_TEXT = (
-    "По налоговому вычету можно вернуть до 14 300 ₽ в год на одного ребёнка: "
-    "это 13% с расходов до 110 000 ₽. За 2023 год и ранее действовал лимит 50 000 ₽ — возврат до 6 500 ₽. "
-    "Справку для вычета готовим до 10 рабочих дней; "
-    "решение и сроки выплаты остаются на стороне ФНС."
+    "Да, налоговый вычет оформить можно: у нас есть лицензия. "
+    "За обучение ребёнка можно вернуть до 14 300 ₽ в год — это 13% с расходов до 110 000 ₽. "
+    "Подать можно за 3 предыдущих года; за 2023 год и ранее действовал лимит 50 000 ₽, возврат до 6 500 ₽. "
+    "Если занимаются двое детей, лимит считается отдельно на каждого ребёнка, то есть ориентир до 28 600 ₽ за год. "
+    "Справку для вычета готовим до 10 рабочих дней; решение и сроки выплаты остаются на стороне ФНС."
 )
 TAX_LICENSE_SAFE_TEXT = "Да, есть лицензия на ведение образовательной деятельности. Менеджер поможет подготовить документы для налогового вычета."
-UNPK_LVSH_SEATS_SAFE_TEXT = "Обычно группа 12-15 человек. Точные места по смене проверит менеджер и свяжется с вами."
+UNPK_LVSH_SEATS_SAFE_TEXT = "Обычно группа 12-15 человек. По ЛВШ УНПК места уже почти распроданы, поэтому наличие и запись проверяет живой менеджер."
 FOTON_LVSH_PRICE_SAFE_TEXT = (
-    "Летняя выездная школа в Менделеево: ориентир от 75 000 ₽, полный тариф 98 000 ₽. "
-    "В стоимость входит проживание, 5-разовое питание и есть бесплатный трансфер из Москвы. "
-    "Подскажите возраст ребёнка — подберём подходящую смену."
+    "ЛВШ Менделеево у Фотона сейчас стоит 93 100 ₽. "
+    "Полная стоимость — 98 000 ₽. "
+    "Напишите класс ребёнка — подберём подходящую смену и проверим наличие мест."
+)
+FOTON_CAMP_OVERVIEW_SAFE_TEXT = (
+    "У Фотона есть два летних формата: выездная школа в Менделеево и городская летняя школа в Москве. "
+    "Подбираем смену по классу, предмету и формату; наличие мест по конкретной смене проверит менеджер."
+)
+FOTON_ONLINE_TRIAL_SAFE_TEXT = (
+    "По онлайн-формату можно прислать фрагмент занятия, чтобы вы посмотрели подачу и уровень. "
+    "Напишите класс и предмет — подберём подходящий курс и отправим материал для знакомства."
+)
+UNPK_TRIAL_SAFE_TEXT = (
+    "По очному формату сейчас обычно не начинаем с отдельного пробного занятия. "
+    "По онлайн-формату можно прислать фрагмент занятия, чтобы вы посмотрели подачу и уровень. "
+    "Если рассматриваете очный курс, менеджер расскажет про формат, преподавателей и поможет понять, подойдёт ли программа."
 )
 UNPK_LVSH_PRICE_SAFE_TEXT = (
-    "ЛВШ Менделеево: полный тариф 120 000 ₽, со скидкой 25% — 89 900 ₽, минимальная цена — 83 800 ₽. "
-    "В стоимость входит проживание и 5-разовое питание. Подскажите возраст ребёнка — подберём смену."
+    "ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽. "
+    "В стоимость входит проживание и 5-разовое питание; места уже почти распроданы, запись проверяет живой менеджер. "
+    "Напишите класс ребёнка — менеджер проверит, можем ли ещё закрепить место."
+)
+UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT = (
+    "По ЛВШ Менделеево в УНПК: полная стоимость — 120 000 ₽, текущая цена сейчас — 114 000 ₽. "
+    "Места почти распроданы, поэтому наличие и запись сейчас проверяет живой менеджер."
+)
+UNPK_LVSH_GRADE_11_PRICE_DETAILS_SAFE_TEXT = (
+    "По цене ЛВШ Менделеево в УНПК: полная стоимость — 120 000 ₽, текущая цена сейчас — 114 000 ₽. "
+    "При этом сама ЛВШ обычно рассчитана на учеников, окончивших 5-10 класс; "
+    "для 11 класса менеджер проверит подходящую летнюю альтернативу под ваш предмет и наличие мест."
+)
+UNPK_LVSH_GRADE_11_SAFE_TEXT = (
+    "По ЛВШ Менделеево важный момент: программа обычно рассчитана на учеников, окончивших 5-10 класс; "
+    "ИТ-направление — на 7-10 класс. Для 11 класса менеджер проверит подходящую альтернативу под ваш предмет. "
+    "Если говорить справочно о самой ЛВШ Менделеево, текущая цена сейчас — 114 000 ₽, но запись и применимость нужно проверять живым сотрудником."
+)
+UNPK_CAMP_OVERVIEW_SAFE_TEXT = (
+    "У УНПК есть два летних формата: выездная ЛВШ в Менделеево с проживанием и городская летняя школа без проживания. "
+    "Подбирать лучше по классу, предмету и формату: с проживанием или дневная программа. "
+    "Напишите класс ребёнка — сориентирую по подходящему варианту и передам менеджеру проверку мест."
+)
+UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT = (
+    "Летние лагеря и ЛВШ УНПК — очные форматы. Если нужен именно онлайн по вашему предмету, "
+    "менеджер проверит актуальные варианты УНПК, расписание и стоимость, чтобы не сориентировать неверно."
 )
 FOTON_CITY_CAMP_AUGUST_SAFE_TEXT = "ЛШ Москва Фотон проходит 3-14 августа, адрес: Верхняя Красносельская. Менеджер подскажет детали записи."
 UNPK_JUNE_CAMP_HANDOFF_TEXT = "По июньской выездной смене менеджер свяжется и подскажет актуальные смены."
 FOTON_LVSH_DATES_SAFE_TEXT = "ЛВШ Менделеево у Фотона: 20-28 июня и 18-26 июля. Менеджер подскажет наличие мест."
-UNPK_LVSH_DATES_SAFE_TEXT = "ЛВШ Менделеево у УНПК: 18-26 июля и 15-25 августа. Менеджер подскажет наличие мест."
+UNPK_LVSH_DATES_SAFE_TEXT = "ЛВШ Менделеево у УНПК: актуальная смена 18-26 июля; августовская смена закрыта. Места почти распроданы, запись проверяет менеджер."
 CONTRACT_ENTITY_SAFE_TEXT = "Менеджер пришлёт информацию, на каком оформлении будет договор, и проверит данные по вашей заявке."
 CERTIFICATE_SAFE_TEXT = "Менеджер свяжется и подготовит справку: срок до 10 дней, постараемся раньше. Уточним данные для подготовки."
 PII_DOCUMENT_SAFE_TEXT = "Менеджер свяжется и проверит вопрос по документам. Повторно присылать данные в чат не нужно."
@@ -162,6 +204,10 @@ ADDRESS_UNPK_SAFE_TEXT = "Площадки УНПК: Москва — Срете
 ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT = (
     "Здравствуйте! Регулярные занятия в Москве проходят по адресу Сретенка, 20. "
     "Подсказать, как удобнее записаться?"
+)
+ADDRESS_FOTON_MOSCOW_SAFE_TEXT = (
+    "Здравствуйте! В Москве Фотон находится по адресу Верхняя Красносельская, 30, метро Красносельская. "
+    "Подсказать, какие курсы там проходят и как записаться?"
 )
 CONTACT_FOTON_SAFE_TEXT = "Телефоны: 8 (495) 500-25-88 и 8 (800) 550-25-88. График: Пн-Вс с 10:00 до 18:00."
 CONTACT_UNPK_SAFE_TEXT = "Телефоны: +7 (495) 150-81-51 и 8 (800) 500-81-51. Email: edu@kmipt.ru. График: Пн-Вс с 10:00 до 18:00."
@@ -206,12 +252,26 @@ MISSING_DOCS_HELPFUL_TEXT = (
     "Менеджер проверит перечень и подскажет следующий шаг."
 )
 MISSING_CAMP_HELPFUL_TEXT = (
-    "По лагерям и выездным школам важно подобрать смену под возраст, предмет и формат. "
+    "По лагерям и выездным школам важно подобрать смену под класс, предмет и формат. "
     "Напишите, пожалуйста, класс ребёнка и интересующее направление — менеджер проверит актуальные смены и наличие мест."
 )
 MISSING_GENERAL_HELPFUL_TEXT = (
     "Помогу сориентироваться по обучению. Напишите, пожалуйста, класс ребёнка, предмет и цель: подтянуть школьную программу, "
     "подготовиться к экзамену или олимпиаде. По этим данным менеджер предложит подходящий следующий шаг."
+)
+UNSUPPORTED_FOLLOWUP_DEADLINE_SAFE_TEXT = (
+    "Передам вопрос менеджеру: он проверит детали и вернётся с ответом в рабочее время."
+)
+UNSUPPORTED_SCHEDULE_ASSUMPTION_SAFE_TEXT = (
+    "Точное расписание зависит от класса, предмета, формата и площадки. "
+    "Менеджер проверит актуальные варианты; напишите, пожалуйста, какие дни и формат удобнее."
+)
+UNSUPPORTED_OFFLINE_VISIT_INVITATION_SAFE_TEXT = (
+    "Запись и оформление проходят дистанционно. Если нужна личная встреча, её можно согласовать с сотрудником отдельно."
+)
+KNOWN_CONTEXT_REPAIR_TEXT = (
+    "Да, вижу данные из переписки — повторно присылать их не нужно. "
+    "Отвечу по сути, а детали, которые требуют проверки по группе или месту, передам менеджеру."
 )
 INTERNAL_SERVICE_MARKER_RE = re.compile(
     r"\[[^\]\n]{0,220}?(?:\bsource\s*=|\bfreshness\s*=|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+)[^\]\n]{0,260}\]\s*",
@@ -369,7 +429,8 @@ PAYMENT_CONFIRMATION_RE = re.compile(
     re.I,
 )
 FUTURE_PRICE_INPUT_RE = re.compile(
-    r"\b(?:после\s+1\s+(?:июля|августа)|в\s+август\w*|августовск\w+|после\s+повышени\w*|с\s+сентябр\w*|будущ\w+\s+цен\w*|цена\s+выраст\w*)\b",
+    r"\b(?:после\s+1\s+(?:июля|августа)|после\s+0?1[./-]0?7(?:[./-]\d{2,4})?|"
+    r"в\s+август\w*|августовск\w+|после\s+повышени\w*|с\s+сентябр\w*|будущ\w+\s+цен\w*|цена\s+выраст\w*)\b",
     re.I,
 )
 PRECISE_CONDITION_RE = re.compile(
@@ -389,6 +450,33 @@ UNSUPPORTED_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))",
         re.I,
     ),
+)
+FOLLOWUP_DEADLINE_RE = re.compile(
+    r"\b(?:менеджер|ответственн\w+\s+сотрудник|сотрудник|специалист|мы|я)\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:свяж\w*|ответ\w*|напиш\w*|перезвон\w*|верн[её]т\w*)\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:сегодня|завтра|послезавтра|до\s+вечера|к\s+вечеру|до\s+завтра|в\s+течение\s+\d+\s+(?:минут|час|часов|дн|дней)|"
+    r"не\s+позднее\s+[^.!?\n]{0,40}|до\s+\d{1,2}\s+"
+    r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря))\b",
+    re.I,
+)
+SCHEDULE_ASSUMPTION_RE = re.compile(
+    r"\b(?:чаще|обычно|как\s+правило|скорее\s+всего|часто)\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:выходн\w*|суббот\w*|воскресень\w*|вечер\w*|будн\w*)\b"
+    r"|\b(?:есть|подбираем|подбер[её]м|можно\s+подобрать)\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:групп\w*|заняти\w*|расписани\w*)\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:выходн\w*|суббот\w*|воскресень\w*|вечер\w*|будн\w*)\b",
+    re.I,
+)
+OFFLINE_VISIT_INVITATION_RE = re.compile(
+    r"\b(?:приезж\w*|подъезж\w*|приход\w*|жд[её]м\s+вас|можете\s+прийти|можно\s+прийти)\b"
+    r"[^.!?\n]{0,140}?"
+    r"\b(?:познаком\w*|посмотр\w*|оформ\w*|запис\w*|встреч\w*|на\s+площадк\w*|в\s+офис\w*)\b",
+    re.I,
 )
 _RETRYABLE_MARKERS = (
     "no last agent message",
@@ -538,11 +626,14 @@ class SubscriptionLlmDraftProvider:
     ) -> SubscriptionDraftResult:
         prompt = build_draft_prompt(client_message, context=context)
         result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
-        result = apply_unsupported_promise_guard(result, context=context)
         result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
         result = apply_brand_separation_guard(result, client_message=client_message, context=context)
         result = apply_input_policy_guards(result, client_message=client_message, context=context)
         result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
+        result = apply_unsupported_promise_guard(result, context=context)
+        result = apply_unconfirmed_operational_specificity_guard(result, context=context)
+        result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
+        result = apply_funnel_policy_guard(result, context=context)
         return apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -660,11 +751,14 @@ class FakeSubscriptionLlmDraftProvider:
     ) -> SubscriptionDraftResult:
         prompt = build_draft_prompt(client_message, context=context)
         result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
-        result = apply_unsupported_promise_guard(result, context=context)
         result = apply_payment_confirmation_guard(result, client_message=client_message, context=context)
         result = apply_brand_separation_guard(result, client_message=client_message, context=context)
         result = apply_input_policy_guards(result, client_message=client_message, context=context)
         result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
+        result = apply_unsupported_promise_guard(result, context=context)
+        result = apply_unconfirmed_operational_specificity_guard(result, context=context)
+        result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
+        result = apply_funnel_policy_guard(result, context=context)
         return apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -910,11 +1004,139 @@ def find_unsupported_numeric_promises(
     *,
     context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[str, ...]:
+    if _is_verified_safe_numeric_template(draft_text):
+        return ()
     claims = _extract_numeric_promise_claims(draft_text)
     if not claims:
         return ()
     fact_texts = _fresh_fact_texts(context)
     return tuple(claim for claim in claims if not _claim_supported_by_facts(claim, fact_texts))
+
+
+def _is_verified_safe_numeric_template(draft_text: str) -> bool:
+    normalized = " ".join(str(draft_text or "").split())
+    if not normalized:
+        return False
+    verified_templates = {
+        FOTON_INSTALLMENT_SAFE_TEXT,
+        FOTON_CAMP_INSTALLMENT_SAFE_TEXT,
+        FOTON_DOLYAMI_SAFE_TEXT,
+        FOTON_SECOND_SUBJECT_DISCOUNT_TEXT,
+        UNPK_SECOND_SUBJECT_DISCOUNT_TEXT,
+        UNPK_MONTHLY_SEMESTER_DISCOUNT_TEXT,
+        UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
+        MULTICHILD_DISCOUNT_TEXT,
+        DISCOUNT_STACKING_SAFE_TEXT,
+        ADMISSION_GUARANTEE_SAFE_TEXT,
+        RESULT_GUARANTEE_SAFE_TEXT,
+        MATKAP_FEDERAL_TIMING_SAFE_TEXT,
+        TAX_AMOUNT_SAFE_TEXT,
+        UNPK_LVSH_SEATS_SAFE_TEXT,
+        FOTON_LVSH_PRICE_SAFE_TEXT,
+        FOTON_CITY_CAMP_AUGUST_SAFE_TEXT,
+        FOTON_LVSH_DATES_SAFE_TEXT,
+        UNPK_LVSH_PRICE_SAFE_TEXT,
+        UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT,
+        UNPK_LVSH_GRADE_11_PRICE_DETAILS_SAFE_TEXT,
+        UNPK_CAMP_OVERVIEW_SAFE_TEXT,
+        UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT,
+        UNPK_LVSH_DATES_SAFE_TEXT,
+    }
+    return normalized in {" ".join(template.split()) for template in verified_templates}
+
+
+def apply_unconfirmed_operational_specificity_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    followup_claims = find_unsupported_followup_deadline_claims(result.draft_text, context=context)
+    if followup_claims:
+        return _operational_specificity_guarded_result(
+            result,
+            draft_text=UNSUPPORTED_FOLLOWUP_DEADLINE_SAFE_TEXT,
+            flag="unsupported_followup_deadline_detected",
+            claims=followup_claims,
+            checklist_item="Не называть конкретную дату или срок связи менеджера без подтверждённого факта.",
+        )
+
+    schedule_claims = find_unsupported_schedule_assumption_claims(result.draft_text, context=context)
+    if schedule_claims:
+        return _operational_specificity_guarded_result(
+            result,
+            draft_text=UNSUPPORTED_SCHEDULE_ASSUMPTION_SAFE_TEXT,
+            flag="unsupported_schedule_assumption_detected",
+            claims=schedule_claims,
+            checklist_item="Не делать догадки по расписанию без подтверждённого факта.",
+        )
+
+    visit_claims = find_unsupported_offline_visit_invitation_claims(result.draft_text, context=context)
+    if visit_claims:
+        return _operational_specificity_guarded_result(
+            result,
+            draft_text=UNSUPPORTED_OFFLINE_VISIT_INVITATION_SAFE_TEXT,
+            flag="unsupported_offline_visit_invitation_detected",
+            claims=visit_claims,
+            checklist_item="Запись и оформление по умолчанию дистанционные; очную встречу не предлагать без согласования.",
+        )
+    return result
+
+
+def find_unsupported_followup_deadline_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=FOLLOWUP_DEADLINE_RE, context=context)
+
+
+def find_unsupported_schedule_assumption_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=SCHEDULE_ASSUMPTION_RE, context=context)
+
+
+def find_unsupported_offline_visit_invitation_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=OFFLINE_VISIT_INVITATION_RE, context=context)
+
+
+def _unsupported_claims_by_pattern(
+    draft_text: str,
+    *,
+    pattern: re.Pattern[str],
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    source = str(draft_text or "")
+    claims = tuple(dict.fromkeys(" ".join(match.group(0).split()) for match in pattern.finditer(source) if match.group(0).strip()))
+    if not claims:
+        return ()
+    fact_texts = _fresh_fact_texts(context)
+    return tuple(claim for claim in claims if not _claim_supported_by_facts(claim, fact_texts))
+
+
+def _operational_specificity_guarded_result(
+    result: SubscriptionDraftResult,
+    *,
+    draft_text: str,
+    flag: str,
+    claims: Sequence[str],
+    checklist_item: str,
+) -> SubscriptionDraftResult:
+    return replace(
+        result,
+        route="manager_only",
+        draft_text=draft_text,
+        forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, flag, "manager_approval_required", "no_auto_send"])),
+        manager_checklist=tuple(dict.fromkeys([*result.manager_checklist, checklist_item])),
+        metadata={**dict(result.metadata), flag: True, "unsupported_operational_claims": list(claims)},
+    )
 
 
 def apply_subscription_policy_guards(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
@@ -1036,6 +1258,7 @@ def apply_high_risk_content_guards(
     terminal_template = "" if cross_brand_guarded() else _terminal_safe_template(result, client_message=client_message, context=context)
     if terminal_template:
         direct_info_template = terminal_template in {
+            ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
             ADDRESS_UNPK_SAFE_TEXT,
             ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
             CONTACT_FOTON_SAFE_TEXT,
@@ -1057,6 +1280,7 @@ def apply_high_risk_content_guards(
         else:
             checklist.append("Вопрос требует безопасной служебной обработки без раскрытия лишних данных.")
         metadata["terminal_safe_template_applied"] = True
+        metadata["terminal_direct_info_template_applied"] = direct_info_template
 
     matkap_template = "" if cross_brand_guarded() or metadata.get("terminal_safe_template_applied") else _matkap_safe_template(result, client_message=client_message, context=context)
     if matkap_template:
@@ -1094,7 +1318,17 @@ def apply_high_risk_content_guards(
         checklist.append("Рассрочка: не сравнивать бренды и не обещать одобрение заявки.")
         metadata["installment_safe_template_applied"] = True
 
-    pricing_template = "" if cross_brand_guarded() or metadata.get("terminal_safe_template_applied") or metadata.get("future_price_handoff_applied") else _pricing_safe_template(result, client_message=client_message, context=context)
+    pricing_template = (
+        ""
+        if cross_brand_guarded()
+        or metadata.get("terminal_safe_template_applied")
+        or metadata.get("future_price_handoff_applied")
+        or metadata.get("matkap_safe_template_applied")
+        or metadata.get("tax_safe_template_applied")
+        or metadata.get("camp_safe_template_applied")
+        or metadata.get("installment_safe_template_applied")
+        else _pricing_safe_template(result, client_message=client_message, context=context)
+    )
     if pricing_template:
         route = "manager_only" if pricing_template == UNPK_OLYMPIAD_PHYSTECH_HANDOFF_TEXT else "draft_for_manager"
         draft_text = pricing_template
@@ -1106,13 +1340,35 @@ def apply_high_risk_content_guards(
         checklist.append("Прайс: использовать только проверенный брендовый факт или передать менеджеру.")
         metadata["pricing_safe_template_applied"] = True
 
-    discount_template = "" if cross_brand_guarded() or metadata.get("terminal_safe_template_applied") or metadata.get("future_price_handoff_applied") else _discount_safe_template(result, client_message=client_message, context=context)
+    discount_template = (
+        ""
+        if cross_brand_guarded()
+        or metadata.get("terminal_safe_template_applied")
+        or metadata.get("future_price_handoff_applied")
+        or metadata.get("unpk_installment_approved_fallback_applied")
+        or metadata.get("installment_safe_template_applied")
+        else _discount_safe_template(result, client_message=client_message, context=context)
+    )
     if discount_template:
         route = "manager_only" if discount_template == FORCED_DISCOUNT_SAFE_TEXT else "draft_for_manager"
         draft_text = discount_template
         flags.append("discount_safe_template_applied")
         checklist.append("Скидка: не обещать индивидуальные условия без проверки менеджером.")
         metadata["discount_safe_template_applied"] = True
+
+    trial_template = "" if cross_brand_guarded() or metadata.get("terminal_safe_template_applied") else _trial_safe_template(
+        result, client_message=client_message, context=context
+    )
+    if trial_template:
+        route = "manager_only" if route == "manager_only" else "draft_for_manager"
+        draft_text = trial_template
+        if topic != "theme:023_trial_class":
+            topic = "theme:023_trial_class"
+            flags.append("trial_topic_normalized")
+            metadata["trial_topic_normalized"] = True
+        flags.append("trial_safe_template_applied")
+        checklist.append("Пробное занятие: не обещать бесплатность сверх утверждённых правил.")
+        metadata["trial_safe_template_applied"] = True
 
     if _is_admission_guarantee_case(result, client_message=client_message, context=context):
         route = "manager_only" if route == "manager_only" else "draft_for_manager"
@@ -1200,11 +1456,20 @@ def apply_high_risk_content_guards(
         checklist.append("Жалоба: не извиняться от лица компании и не признавать вину в авточерновике.")
         metadata["complaint_apology_guarded"] = True
 
-    missing_fact_template = _missing_fact_helpful_template(
-        replace(result, topic_id=topic, route=route, draft_text=draft_text, safety_flags=tuple(dict.fromkeys(flags))),
-        client_message=client_message,
-        context=context,
-        markers=markers,
+    has_concrete_safe_template = bool(
+        metadata.get("camp_safe_template_applied")
+        and re.search(r"\b\d{1,3}(?:[ \u00a0]\d{3})+\s*₽", str(draft_text or ""))
+    )
+    missing_fact_template = (
+        ""
+        if metadata.get("terminal_safe_template_applied")
+        or has_concrete_safe_template
+        else _missing_fact_helpful_template(
+            replace(result, topic_id=topic, route=route, draft_text=draft_text, safety_flags=tuple(dict.fromkeys(flags))),
+            client_message=client_message,
+            context=context,
+            markers=markers,
+        )
     )
     if missing_fact_template:
         route = "draft_for_manager"
@@ -1222,6 +1487,12 @@ def apply_high_risk_content_guards(
         flags.append("combined_high_risk_manager_only")
         checklist.append("Комбинированный вопрос с high-risk частью: не отвечать на безопасную часть отдельно.")
         metadata["combined_high_risk_manager_only"] = True
+
+    softened_deadline_text = _soften_current_price_deadline_text(draft_text, client_message=client_message)
+    if softened_deadline_text != draft_text:
+        draft_text = softened_deadline_text
+        flags.append("current_price_deadline_softened")
+        metadata["current_price_deadline_softened"] = True
 
     if route == result.route and draft_text == result.draft_text and tuple(flags) == result.safety_flags:
         return result
@@ -1250,6 +1521,7 @@ def apply_autonomy_matrix_guard(
     checklist = list(result.manager_checklist)
     metadata = dict(result.metadata)
     original_route = result.route
+    funnel = context.get("funnel_state") if isinstance(context, Mapping) and isinstance(context.get("funnel_state"), Mapping) else {}
 
     def demote(route: str, reason: str, checklist_item: str) -> SubscriptionDraftResult:
         flags.append(reason)
@@ -1258,6 +1530,18 @@ def apply_autonomy_matrix_guard(
         return replace(
             result,
             route=route,
+            safety_flags=tuple(dict.fromkeys(flags)),
+            manager_checklist=tuple(dict.fromkeys(checklist)),
+            metadata=metadata,
+        )
+
+    if str(funnel.get("lead_stage") or "") == "p0_manager_only" or str(funnel.get("next_step_type") or "") == "manager_only_p0":
+        flags.extend(("autonomy_blocked_funnel_p0", "high_risk_manager_only"))
+        checklist.append("Автономный ответ запрещен: детерминированная воронка распознала P0/high-risk часть.")
+        metadata["autonomy_blocked_funnel_p0"] = True
+        return replace(
+            result,
+            route="manager_only",
             safety_flags=tuple(dict.fromkeys(flags)),
             manager_checklist=tuple(dict.fromkeys(checklist)),
             metadata=metadata,
@@ -1278,6 +1562,12 @@ def apply_autonomy_matrix_guard(
             metadata=metadata,
         )
 
+    if "asked_known_data_again" in result.safety_flags:
+        return demote(
+            "draft_for_manager",
+            "autonomy_blocked_asked_known_data_again",
+            "Автономный ответ запрещен: черновик повторно запросил уже известные данные клиента.",
+        )
     if result.message_type != "question":
         return demote(
             "draft_for_manager",
@@ -1302,13 +1592,13 @@ def apply_autonomy_matrix_guard(
             "autonomy_default_cautious_topic_not_allowed",
             "Автономный ответ запрещен: тема не входит в матрицу автономности.",
         )
-    if _context_has_missing_fact_signal(context):
+    if _context_has_missing_fact_signal(context) and not _is_verified_client_safe_template(result.draft_text):
         return demote(
             "draft_for_manager",
             "autonomy_default_cautious_missing_facts",
             "Автономный ответ запрещен: есть недостающие факты.",
         )
-    if not _has_client_safe_current_fact(context):
+    if not _has_client_safe_current_fact(context) and not _is_verified_client_safe_template(result.draft_text):
         return demote(
             "draft_for_manager",
             "autonomy_default_cautious_unverified_fact",
@@ -1318,7 +1608,7 @@ def apply_autonomy_matrix_guard(
     flags.append("autonomy_matrix_passed")
     metadata["autonomy_matrix_passed"] = True
     draft_text = result.draft_text
-    if _draft_is_low_value_without_exact_fact(draft_text):
+    if _draft_is_low_value_without_exact_fact(draft_text) and not _is_verified_client_safe_template(draft_text):
         fact_answer = _promoted_verified_fact_text(result, context=context, client_message=client_message)
         if fact_answer:
             draft_text = fact_answer
@@ -1336,6 +1626,49 @@ def apply_autonomy_matrix_guard(
         manager_checklist=tuple(dict.fromkeys(checklist)),
         metadata=metadata,
     )
+
+
+def _is_verified_client_safe_template(draft_text: str) -> bool:
+    normalized = " ".join(str(draft_text or "").split())
+    if not normalized:
+        return False
+    verified_templates = {
+        ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
+        ADDRESS_UNPK_SAFE_TEXT,
+        ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
+        CONTACT_FOTON_SAFE_TEXT,
+        CONTACT_UNPK_SAFE_TEXT,
+        FOTON_INSTALLMENT_SAFE_TEXT,
+        FOTON_CAMP_INSTALLMENT_SAFE_TEXT,
+        FOTON_DOLYAMI_SAFE_TEXT,
+        FOTON_SECOND_SUBJECT_DISCOUNT_TEXT,
+        UNPK_SECOND_SUBJECT_DISCOUNT_TEXT,
+        UNPK_MONTHLY_SEMESTER_DISCOUNT_TEXT,
+        UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
+        MULTICHILD_DISCOUNT_TEXT,
+        DISCOUNT_STACKING_SAFE_TEXT,
+        MATKAP_FEDERAL_TIMING_SAFE_TEXT,
+        MATKAP_REGIONAL_SAFE_TEXT,
+        MATKAP_SFR_REVIEW_SAFE_TEXT,
+        TAX_AMOUNT_SAFE_TEXT,
+        TAX_LICENSE_SAFE_TEXT,
+        TAX_FNS_REVIEW_SAFE_TEXT,
+        TAX_ONLINE_FORM_SAFE_TEXT,
+        FOTON_LVSH_PRICE_SAFE_TEXT,
+        UNPK_LVSH_PRICE_SAFE_TEXT,
+        UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT,
+        UNPK_LVSH_GRADE_11_PRICE_DETAILS_SAFE_TEXT,
+        UNPK_LVSH_GRADE_11_SAFE_TEXT,
+        UNPK_CAMP_OVERVIEW_SAFE_TEXT,
+        UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT,
+        FOTON_CAMP_OVERVIEW_SAFE_TEXT,
+        FOTON_LVSH_DATES_SAFE_TEXT,
+        UNPK_LVSH_DATES_SAFE_TEXT,
+        UNPK_LVSH_SEATS_SAFE_TEXT,
+        FOTON_ONLINE_TRIAL_SAFE_TEXT,
+        UNPK_TRIAL_SAFE_TEXT,
+    }
+    return normalized in {" ".join(template.split()) for template in verified_templates}
 
 
 def apply_payment_confirmation_guard(
@@ -1359,6 +1692,259 @@ def apply_payment_confirmation_guard(
         reason="payment_confirmation_without_two_sources",
         checklist="Проверить оплату в AMO и Tallanto перед подтверждением клиенту.",
     )
+
+
+def apply_known_context_redundant_question_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    """Catch drafts that ask again for data already known from safe context."""
+
+    repeated = find_redundant_questions_for_known_context(result.draft_text, context=context)
+    if not repeated:
+        return result
+    flags = tuple(
+        dict.fromkeys(
+            [
+                *result.safety_flags,
+                "asked_known_data_again",
+                "human_tone_review_required",
+            ]
+        )
+    )
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "Черновик просит данные, которые уже есть в контексте клиента: проверить и не отправлять как есть.",
+            ]
+        )
+    )
+    metadata = {
+        **dict(result.metadata),
+        "asked_known_data_again_fields": list(repeated),
+    }
+    route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
+    repair_text = _known_context_repair_text(result, client_message=client_message, context=context, repeated=repeated)
+    return replace(
+        result,
+        route=route,
+        draft_text=repair_text,
+        safety_flags=flags,
+        manager_checklist=checklist,
+        context_warnings=tuple(dict.fromkeys([*result.context_warnings, "asked_known_data_again"])),
+        metadata=metadata,
+    )
+
+
+def apply_funnel_policy_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    funnel = context.get("funnel_state") if isinstance(context, Mapping) and isinstance(context.get("funnel_state"), Mapping) else {}
+    if not funnel:
+        return result
+    if str(funnel.get("lead_stage") or "") != "p0_manager_only" and str(funnel.get("next_step_type") or "") != "manager_only_p0":
+        return result
+    flags = tuple(dict.fromkeys([*result.safety_flags, "autonomy_blocked_funnel_p0", "high_risk_manager_only"]))
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "Детерминированная воронка распознала P0/high-risk часть: не отправлять автономно.",
+            ]
+        )
+    )
+    return replace(
+        result,
+        route="manager_only",
+        safety_flags=flags,
+        manager_checklist=checklist,
+        metadata={**dict(result.metadata), "autonomy_blocked_funnel_p0": True},
+    )
+
+
+def _known_context_repair_text(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+    repeated: Sequence[str] = (),
+) -> str:
+    """Replace a repeated-data question with a useful answer that keeps known context."""
+
+    known = known_context_fields(context)
+    grade = str(known.get("grade") or "").strip()
+    subject = str(known.get("subject") or "").strip()
+    context_bits = []
+    if grade:
+        context_bits.append(f"{grade} класс")
+    if subject:
+        context_bits.append(subject)
+    prefix = f"Поняла: {', '.join(context_bits)}. " if context_bits else "Поняла, продолжу с учётом уже сказанного. "
+
+    draft = " ".join(str(result.draft_text or "").split())
+    cleaned_draft = _remove_repeated_known_data_questions(draft, repeated=repeated)
+    if cleaned_draft and len(cleaned_draft) >= 90:
+        return cleaned_draft
+
+    topic = str(result.topic_id or "")
+    if topic in {"theme:026_camp_general", "theme:027_camp_living_conditions", "theme:028_transport_logistics"}:
+        active_brand = _active_brand(context)
+        text = prefix
+        current = str(client_message or "").casefold().replace("ё", "е")
+        if active_brand == "foton":
+            if "онлайн" in current:
+                return (
+                    text
+                    + "По онлайн-формату летней смены нужно проверить актуальную возможность. "
+                    "Из подтверждённого у Фотона есть выездная школа в Менделеево и городская летняя школа в Москве; "
+                    "менеджер подберёт вариант под ваш класс и цель."
+                )
+            return (
+                text
+                + "У Фотона есть выездная школа в Менделеево и городская летняя школа в Москве. "
+                "Менеджер проверит подходящую смену и наличие мест под ваш класс."
+            )
+        if active_brand == "unpk":
+            return (
+                text
+                + "По УНПК есть летние смены и ЛВШ Менделеево; менеджер проверит подходящую смену "
+                "и наличие мест под ваш класс."
+            )
+
+    if draft and len(draft) >= 90 and not any(field in repeated for field in ("grade", "subject", "student_name", "parent_name")):
+        return draft
+    return KNOWN_CONTEXT_REPAIR_TEXT
+
+
+def _remove_repeated_known_data_questions(text: str, *, repeated: Sequence[str]) -> str:
+    value = str(text or "").strip()
+    if not value or not repeated:
+        return value
+    sentence_parts = re.split(r"(?<=[.!?])\s+", value)
+    cleaned: list[str] = []
+    for sentence in sentence_parts:
+        lowered = sentence.casefold().replace("ё", "е")
+        drop = False
+        if "grade" in repeated and re.search(r"(напишите|подскажите|уточните)[^.!?\n]{0,70}класс", lowered):
+            drop = True
+        if "subject" in repeated and re.search(r"(напишите|подскажите|уточните)[^.!?\n]{0,70}предмет", lowered):
+            drop = True
+        if "student_name" in repeated and re.search(r"(напишите|подскажите|уточните)[^.!?\n]{0,70}(имя|фио)", lowered):
+            drop = True
+        if "parent_name" in repeated and re.search(r"(ваше\s+имя|как\s+вас\s+зовут|фио\s+родител)", lowered):
+            drop = True
+        if "phone" in repeated and re.search(r"(телефон|номер\s+телефона|контактн\w+\s+номер)", lowered):
+            drop = True
+        if not drop:
+            cleaned.append(sentence)
+    result = " ".join(part.strip() for part in cleaned if part.strip())
+    return result or value
+
+
+def find_redundant_questions_for_known_context(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    known = known_context_fields(context)
+    if not known:
+        return ()
+    text = str(draft_text or "").casefold().replace("ё", "е")
+    repeated: list[str] = []
+    if known.get("student_name") and re.search(r"(фио|имя|как\s+зовут)[^.!?\n]{0,80}(реб[её]нк|ученик)", text):
+        repeated.append("student_name")
+    if known.get("parent_name") and re.search(r"(ваше\s+имя|как\s+вас\s+зовут|фио\s+родител)", text):
+        repeated.append("parent_name")
+    if known.get("phone") and re.search(r"(телефон|номер\s+телефона|контактн\w+\s+номер)", text):
+        repeated.append("phone")
+    if known.get("grade") and re.search(r"(какой\s+класс|класс\s+реб[её]нк|напишите[^.!?\n]{0,40}класс|подскажите[^.!?\n]{0,40}класс)", text):
+        repeated.append("grade")
+    if known.get("subject") and re.search(r"(какой\s+предмет|предмет[^.!?\n]{0,30}интерес|напишите[^.!?\n]{0,40}предмет|подскажите[^.!?\n]{0,40}предмет)", text):
+        repeated.append("subject")
+    if known.get("format") and re.search(r"(онлайн\s+или\s+очн|очно\s+или\s+онлайн|какой\s+формат|формат[^.!?\n]{0,30}удоб)", text):
+        repeated.append("format")
+    if known.get("active_brand") and re.search(r"(фотон\s+или\s+унпк|какой\s+центр|какой\s+учебн\w+\s+центр)", text):
+        repeated.append("active_brand")
+    return tuple(dict.fromkeys(repeated))
+
+
+def known_context_fields(context: Optional[Mapping[str, Any]]) -> dict[str, str]:
+    if not isinstance(context, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for container_key in ("known_client_fields", "known_dialog_fields", "client_identity"):
+        value = context.get(container_key)
+        if isinstance(value, Mapping):
+            _merge_known_context_fields(result, value)
+    known_slots = context.get("known_slots")
+    if isinstance(known_slots, Mapping):
+        _merge_known_context_fields(result, known_slots)
+    funnel = context.get("funnel_state")
+    if isinstance(funnel, Mapping):
+        filled = funnel.get("filled_slots")
+        if isinstance(filled, Mapping):
+            _merge_known_context_fields(result, filled)
+        slots = funnel.get("known_slots")
+        if isinstance(slots, Mapping):
+            _merge_known_context_fields(result, slots)
+    active_brand = _active_brand(context)
+    if active_brand != "unknown":
+        result.setdefault("active_brand", active_brand)
+    for summary_key in ("customer_context_summary", "known_context_summary"):
+        summary = str(context.get(summary_key) or "")
+        if summary:
+            _merge_known_context_fields(result, _known_fields_from_text(summary))
+    return {key: value for key, value in result.items() if str(value or "").strip()}
+
+
+def _merge_known_context_fields(target: dict[str, str], source: Mapping[str, Any]) -> None:
+    aliases = {
+        "parent_name": ("parent_name", "parent", "parent_full_name", "fio_parent", "parent_fio"),
+        "student_name": ("student_name", "student", "student_full_name", "fio_student", "student_fio", "child_name"),
+        "phone": ("phone", "normalized_phone", "client_phone"),
+        "grade": ("grade", "class", "student_grade", "klass"),
+        "subject": ("subject", "course_subject", "interest_subject"),
+        "format": ("format", "course_format", "preferred_format"),
+        "active_brand": ("active_brand", "brand"),
+        "known_course": ("known_course", "current_course", "course"),
+        "current_group": ("current_group", "group", "tallanto_group"),
+    }
+    for normalized, keys in aliases.items():
+        for key in keys:
+            value = str(source.get(key) or "").strip()
+            if value:
+                target.setdefault(normalized, value[:160])
+                break
+
+
+def _known_fields_from_text(text: str) -> Mapping[str, str]:
+    value = str(text or "")
+    result: dict[str, str] = {}
+    grade = re.search(r"\b(?P<grade>[1-9]|1[01])\s*(?:класс|кл\.?)\b", value, re.I)
+    if grade:
+        result["grade"] = grade.group("grade")
+    subjects = []
+    lowered = value.casefold().replace("ё", "е")
+    for marker, canonical in (
+        ("математ", "математика"),
+        ("физик", "физика"),
+        ("информат", "информатика"),
+        ("программ", "программирование"),
+        ("русск", "русский язык"),
+        ("англий", "английский язык"),
+        ("хими", "химия"),
+        ("биолог", "биология"),
+    ):
+        if marker in lowered:
+            subjects.append(canonical)
+    if subjects:
+        result["subject"] = ", ".join(dict.fromkeys(subjects))
+    return result
 
 
 def apply_brand_separation_guard(
@@ -1487,7 +2073,20 @@ def _is_future_price_case(
     context: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     client_text = str(client_message or "")
-    return bool(FUTURE_PRICE_INPUT_RE.search(client_text))
+    normalized = client_text.casefold().replace("ё", "е")
+    if not FUTURE_PRICE_INPUT_RE.search(client_text):
+        return False
+    asks_change_without_precise_future_price = bool(
+        re.search(r"после\s+1\s+июля[^.?!]{0,80}(поменя|измен|выраст|подраст|будет\s+друг)", normalized)
+        and not re.search(
+            r"(сколько|какая|почем|почём|стоим)[^.?!]{0,80}после\s+1\s+июля|"
+            r"после\s+1\s+июля[^.?!]{0,80}(сколько|какая|почем|почём|стоим)",
+            normalized,
+        )
+    )
+    if asks_change_without_precise_future_price:
+        return False
+    return True
 
 
 def _is_result_guarantee_case(
@@ -1551,6 +2150,8 @@ def _discount_safe_template(
     context: Optional[Mapping[str, Any]] = None,
 ) -> str:
     active_brand = _active_brand(context)
+    if result.message_type != "question" and "?" not in str(client_message or ""):
+        return ""
     haystack = " ".join(
         [
             str(client_message or ""),
@@ -1621,6 +2222,15 @@ def _installment_safe_template(
     if "долями" in client_haystack or "dolyami" in haystack:
         return FOTON_DOLYAMI_SAFE_TEXT
     if result.topic_id == "theme:006_installment" or "installment" in haystack or "рассроч" in haystack:
+        camp_context = client_haystack
+        if isinstance(context, Mapping):
+            recent_messages = context.get("recent_messages")
+            if isinstance(recent_messages, Sequence) and not isinstance(recent_messages, (str, bytes, bytearray)):
+                camp_context += " " + " ".join(str(item or "") for item in recent_messages).casefold()
+            else:
+                camp_context += " " + str(recent_messages or "").casefold()
+        if any(marker in camp_context for marker in ("лвш", "лагер", "смен", "менделеево")):
+            return FOTON_CAMP_INSTALLMENT_SAFE_TEXT
         return FOTON_INSTALLMENT_SAFE_TEXT
     return ""
 
@@ -1713,6 +2323,13 @@ def _terminal_safe_template(
         "обычн" in client_haystack or "регулярн" in client_haystack or "заняти" in client_haystack
     ):
         return ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT
+    if active_brand == "foton" and (
+        "адрес" in client_haystack
+        or "где" in client_haystack
+        or "площадк" in client_haystack
+        or "моск" in client_haystack
+    ):
+        return ADDRESS_FOTON_MOSCOW_SAFE_TEXT
     if active_brand == "unpk" and ("площадки" in client_haystack or "адрес" in client_haystack):
         return ADDRESS_UNPK_SAFE_TEXT
     asks_contact = (
@@ -1802,7 +2419,18 @@ def _teacher_safe_template(
 ) -> str:
     haystack = _semantic_haystack(result, client_message=client_message, context=context)
     client_haystack = str(client_message or "").casefold()
-    if "преподав" not in haystack and "педагог" not in haystack and "teacher" not in haystack:
+    teacher_intent = bool(
+        "преподав" in client_haystack
+        or "педагог" in client_haystack
+        or "учитель" in client_haystack
+        or "кто вед" in client_haystack
+        or "кто работает" in client_haystack
+        or "teacher" in result.topic_id.casefold()
+        or any("teacher" in str(item or "").casefold() for item in result.alternative_themes)
+    )
+    if not teacher_intent:
+        return ""
+    if "преподав" not in haystack and "педагог" not in haystack and "учитель" not in haystack and "teacher" not in haystack:
         return ""
     if "не понрав" in client_haystack:
         return TEACHERS_CHANGE_SAFE_TEXT
@@ -1913,9 +2541,20 @@ def _promoted_verified_fact_text(
         return ""
     fact_sentence = " ".join(_ensure_sentence(fact) for fact in facts)
     if result.topic_id == "theme:001_pricing":
-        return (
-            f"Да, сориентирую по проверенным условиям. {fact_sentence} "
-            "Если напишете класс ребёнка и удобный формат, подберём самый подходящий вариант оплаты."
+        asks_validity = any(
+            marker in str(client_message or "").casefold().replace("ё", "е")
+            for marker in ("сейчас", "поменяет", "изменит", "потом", "подраст", "повыс", "актуальн")
+        )
+        suffix = " Это текущая цена; позже она может измениться." if asks_validity else ""
+        known = known_context_fields(context)
+        next_step = (
+            "Дальше можно подобрать подходящую группу и удобный вариант оплаты."
+            if known.get("grade") and (known.get("format") or known.get("subject"))
+            else "Если напишете класс ребёнка и удобный формат, подберём самый подходящий вариант оплаты."
+        )
+        return _soften_current_price_deadline_text(
+            f"Да, сориентирую по проверенным условиям. {fact_sentence}{suffix} {next_step}",
+            client_message=client_message,
         )
     if result.topic_id == "theme:013_schedule":
         return (
@@ -2002,14 +2641,20 @@ def _tax_safe_template(
     haystack = _semantic_haystack(result, client_message=client_message, context=context)
     if "налог" not in haystack and "вычет" not in haystack and "фнс" not in haystack:
         return ""
-    if "лиценз" in haystack:
-        return TAX_LICENSE_SAFE_TEXT
-    if any(marker in haystack for marker in ("сумм", "сколько", "верн", "возврат", "13%", "110 000", "14 300")):
+    client_haystack = str(client_message or "").casefold()
+    if any(
+        marker in client_haystack
+        for marker in ("сумм", "сколько", "верн", "возврат", "13%", "110 000", "14 300", "2023", "прошл", "двое", "два")
+    ):
         return TAX_AMOUNT_SAFE_TEXT
     if "онлайн" in haystack and ("очн" in haystack or "заоч" in haystack):
         return TAX_ONLINE_FORM_SAFE_TEXT
     if "фнс" in haystack and ("верн" in haystack or "точно" in haystack or "гарант" in haystack):
         return TAX_FNS_REVIEW_SAFE_TEXT
+    if "лиценз" in haystack:
+        return TAX_LICENSE_SAFE_TEXT
+    if any(marker in haystack for marker in ("сумм", "сколько", "верн", "возврат", "13%", "110 000", "14 300")):
+        return TAX_AMOUNT_SAFE_TEXT
     return ""
 
 
@@ -2021,8 +2666,15 @@ def _camp_safe_template(
 ) -> str:
     active_brand = _active_brand(context)
     haystack = _semantic_haystack(result, client_message=client_message, context=context)
+    dialog_haystack = _dialog_context_haystack(context)
     client_haystack = str(client_message or "").casefold()
-    if not any(marker in (client_haystack + " " + haystack) for marker in ("лагер", "лвш", "лш", "смен", "менделеево")):
+    combined_haystack = " ".join([client_haystack, haystack, dialog_haystack])
+    if not any(marker in combined_haystack for marker in ("лагер", "лвш", "лш", "смен", "менделеево")):
+        return ""
+    if result.message_type != "question" and not any(
+        marker in client_haystack
+        for marker in ("?", "сколько", "цен", "стоим", "мест", "можно", "есть", "подходит", "подойд", "что входит", "какая")
+    ):
         return ""
     price_question = bool(
         "сколько стоит" in client_haystack
@@ -2032,11 +2684,22 @@ def _camp_safe_template(
         or "почём" in client_haystack
         or "прайс" in client_haystack
     )
-    if price_question and ("менделеево" in client_haystack or "лвш" in client_haystack):
+    mendeleevo_context = "менделеево" in combined_haystack or "лвш" in combined_haystack
+    detailed_price_question = any(marker in client_haystack for marker in ("полная", "минимальн", "скидк", "ранняя", "дешев"))
+    known_grade = _known_grade_int(context, client_message=client_message)
+    if active_brand == "unpk" and ("онлайн" in client_haystack and ("лагер" in combined_haystack or "лвш" in combined_haystack or "летн" in combined_haystack)):
+        return UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT
+    if active_brand == "unpk" and mendeleevo_context and known_grade >= 11 and detailed_price_question:
+        return UNPK_LVSH_GRADE_11_PRICE_DETAILS_SAFE_TEXT
+    if active_brand == "unpk" and mendeleevo_context and known_grade >= 11:
+        return UNPK_LVSH_GRADE_11_SAFE_TEXT
+    if active_brand == "unpk" and mendeleevo_context and (price_question or detailed_price_question) and detailed_price_question:
+        return UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT
+    if price_question and mendeleevo_context:
         if active_brand == "foton":
-            return FOTON_LVSH_PRICE_SAFE_TEXT
+            return _without_known_grade_reask(FOTON_LVSH_PRICE_SAFE_TEXT, context=context)
         if active_brand == "unpk":
-            return UNPK_LVSH_PRICE_SAFE_TEXT
+            return _without_known_grade_reask(UNPK_LVSH_PRICE_SAFE_TEXT, context=context)
     if active_brand == "unpk" and ("зимн" in haystack or "звш" in haystack):
         return UNPK_ZVSH_WAITLIST_SAFE_TEXT
     if active_brand == "foton" and ("все смен" in client_haystack or "какие смен" in client_haystack or "лвш" in client_haystack):
@@ -2049,7 +2712,107 @@ def _camp_safe_template(
         return FOTON_CITY_CAMP_AUGUST_SAFE_TEXT
     if active_brand == "unpk" and "июн" in client_haystack:
         return UNPK_JUNE_CAMP_HANDOFF_TEXT
+    if active_brand == "foton" and ("лагер" in client_haystack or "летн" in client_haystack):
+        return FOTON_CAMP_OVERVIEW_SAFE_TEXT
+    if active_brand == "unpk" and ("лагер" in client_haystack or "летн" in client_haystack):
+        return UNPK_CAMP_OVERVIEW_SAFE_TEXT
     return ""
+
+
+def _trial_safe_template(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    active_brand = _active_brand(context)
+    haystack = " ".join([str(client_message or ""), result.draft_text, result.topic_id, result.broad_group]).casefold()
+    if "пробн" not in haystack:
+        return ""
+    if active_brand == "foton" and ("онлайн" in haystack or _known_subject_or_format(context, "онлайн")):
+        return FOTON_ONLINE_TRIAL_SAFE_TEXT
+    if active_brand == "unpk":
+        return UNPK_TRIAL_SAFE_TEXT
+    return ""
+
+
+def _soften_current_price_deadline_text(text: str, *, client_message: str = "") -> str:
+    value = " ".join(str(text or "").split())
+    if not value:
+        return ""
+    if not re.search(r"\b(?:до|после)\s+(?:1\s+июля|0?1[./-]0?7(?:[./-]\d{2,4})?)\b", value, flags=re.I):
+        return value
+    had_deadline = True
+    value = re.sub(
+        r"\s*после\s+(?:1\s+июля|0?1[./-]0?7(?:[./-]\d{2,4})?)(?:\s+2026)?(?:\s+года?)?[^.?!]*(?:[.?!]|$)",
+        ". ",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(r"\s+при\s+оформлении\s+до\s+1\s+июля(?:\s+2026)?(?:\s+года?)?", "", value, flags=re.I)
+    value = re.sub(r"\s+при\s+раннем\s+бронировании\s+до\s+1\s+июля(?:\s+2026)?(?:\s+года?)?", "", value, flags=re.I)
+    value = re.sub(r"\s+до\s+1\s+июля(?:\s+2026)?(?:\s+года?)?", "", value, flags=re.I)
+    value = re.sub(r"\s+до\s+0?1[./-]0?7(?:[./-]\d{2,4})?", "", value, flags=re.I)
+    value = re.sub(r"\s+([.,!?])", r"\1", value)
+    value = re.sub(r"\.{2,}", ".", value)
+    value = re.sub(r"\s{2,}", " ", value).strip()
+    asks_validity = any(
+        marker in str(client_message or "").casefold().replace("ё", "е")
+        for marker in ("сейчас", "поменяет", "изменит", "потом", "подраст", "повыс")
+    )
+    if (asks_validity or had_deadline) and "может измениться" not in value and "подраст" not in value:
+        value = value.rstrip(".") + ". Это текущая цена; позже она может измениться."
+    return value
+
+
+def _without_known_grade_reask(text: str, *, context: Optional[Mapping[str, Any]]) -> str:
+    known = known_context_fields(context)
+    if not known.get("grade"):
+        return text
+    value = str(text or "")
+    replacements = (
+        (
+            "Напишите класс ребёнка — подберём смену и проверим наличие.",
+            "По вашему классу менеджер проверит подходящую смену и наличие мест.",
+        ),
+        (
+            "Напишите класс ребёнка — подберём подходящую смену и проверим актуальные условия.",
+            "По вашему классу подберём подходящую смену и проверим актуальные условия.",
+        ),
+        (
+            "Напишите класс ребёнка — менеджер проверит, можем ли ещё закрепить место.",
+            "По вашему классу менеджер проверит, можем ли ещё закрепить место.",
+        ),
+    )
+    for old, new in replacements:
+        value = value.replace(old, new)
+    return value
+
+
+def _known_subject_or_format(context: Optional[Mapping[str, Any]], marker: str) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    needle = marker.casefold()
+    for key in ("known_dialog_fields", "known_client_fields", "customer_context_summary", "known_context_summary"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            if any(needle in str(item or "").casefold() for item in value.values()):
+                return True
+        elif needle in str(value or "").casefold():
+            return True
+    return False
+
+
+def _known_grade_int(context: Optional[Mapping[str, Any]], *, client_message: str = "") -> int:
+    known = known_context_fields(context)
+    value = str(known.get("grade") or "").strip()
+    if not value:
+        match = re.search(r"\b(?P<grade>[1-9]|10|11)\s*(?:класс|классе|кл\.?)\b", str(client_message or ""), flags=re.I)
+        value = match.group("grade") if match else ""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _autonomy_policy(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -2163,6 +2926,23 @@ def _semantic_haystack(
     return haystack
 
 
+def _dialog_context_haystack(context: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(context, Mapping):
+        return ""
+    texts: list[str] = []
+    for key in ("recent_messages", "dialog_messages", "conversation_messages"):
+        value = context.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            texts.extend(str(item or "") for item in value[-8:])
+        elif isinstance(value, str):
+            texts.append(value)
+    for key in ("customer_context_summary", "known_context_summary"):
+        value = str(context.get(key) or "").strip()
+        if value:
+            texts.append(value)
+    return " ".join(texts).casefold().replace("ё", "е")
+
+
 def _client_message_contains_pii(client_message: str) -> bool:
     text = str(client_message or "")
     return bool(
@@ -2180,7 +2960,14 @@ def _pricing_safe_template(
 ) -> str:
     active_brand = _active_brand(context)
     client_haystack = str(client_message or "").casefold()
+    if _is_generic_price_question_without_selection(client_haystack):
+        if _context_has_missing_fact_signal(context):
+            return ""
+        return MISSING_PRICE_HELPFUL_TEXT
     if active_brand == "foton" and ("онлайн" in client_haystack and ("сколько" in client_haystack or "сто" in client_haystack or "цена" in client_haystack)):
+        verified_online_price = _foton_online_price_text_from_facts(context)
+        if verified_online_price:
+            return verified_online_price
         return FOTON_ONLINE_PRICE_SAFE_TEXT
     if active_brand != "unpk":
         return ""
@@ -2214,6 +3001,56 @@ def _pricing_safe_template(
     return ""
 
 
+def _is_generic_price_question_without_selection(client_haystack: str) -> bool:
+    text = str(client_haystack or "").casefold().replace("ё", "е")
+    asks_price = any(marker in text for marker in ("сколько", "стоим", "цен", "почем", "почём", "прайс"))
+    if not asks_price:
+        return False
+    has_grade = bool(re.search(r"\b(?:[1-9]|10|11)\s*(?:класс|классе|кл\.?)\b", text))
+    has_format = any(marker in text for marker in ("очно", "очный", "онлайн", "дистанц"))
+    has_product = any(marker in text for marker in ("лвш", "лагер", "интенсив", "4 недели", "четыре недели", "егэ", "огэ"))
+    return not (has_grade or has_format or has_product)
+
+
+def _foton_online_price_text_from_facts(context: Optional[Mapping[str, Any]]) -> str:
+    semester = _price_amount_from_facts(context, required_markers=("онлайн",), period_markers=("семестр",))
+    year = _price_amount_from_facts(
+        context,
+        required_markers=("онлайн",),
+        period_markers=("год —", "год -", "годовая", "за год"),
+        excluded_markers=("семестр",),
+    )
+    if not semester or not year:
+        return ""
+    return (
+        f"Для онлайн-обучения в Фотоне сейчас: за семестр — {semester}, за год — {year}. "
+        "Цена скоро подрастёт, поэтому если формат подходит, лучше закрепить текущие условия. "
+        "Дальше подберём группу под класс, предмет и уровень ребёнка."
+    )
+
+
+def _price_amount_from_facts(
+    context: Optional[Mapping[str, Any]],
+    *,
+    required_markers: Sequence[str],
+    period_markers: Sequence[str],
+    excluded_markers: Sequence[str] = (),
+) -> str:
+    for fact in _fresh_fact_texts(context):
+        normalized = str(fact or "").casefold().replace("ё", "е")
+        if not all(marker in normalized for marker in required_markers):
+            continue
+        if any(marker in normalized for marker in excluded_markers):
+            continue
+        if not any(marker in normalized for marker in period_markers):
+            continue
+        match = re.search(r"\b\d{1,3}(?:[ \u00a0]\d{3})+(?:\s*(?:₽|руб(?:\.|лей|ля|ль)?))?", str(fact or ""))
+        if match:
+            amount = " ".join(match.group(0).replace("\u00a0", " ").split())
+            return amount if "₽" in amount or "руб" in amount.casefold() else f"{amount} ₽"
+    return ""
+
+
 def _normalized_fact_text(context: Optional[Mapping[str, Any]]) -> str:
     return " ".join(_fresh_fact_texts(context)).replace("\u00a0", " ").casefold()
 
@@ -2226,6 +3063,21 @@ def _is_unpk_installment_case(
 ) -> bool:
     if _active_brand(context) != "unpk":
         return False
+    client_lower = str(client_message or "").casefold()
+    if result.message_type != "question" and not any(
+        marker in client_lower
+        for marker in (
+            "?",
+            "можно",
+            "как",
+            "банк",
+            "одобр",
+            "услов",
+            "не все сразу",
+            "не всё сразу",
+        )
+    ):
+        return False
     if result.topic_id == "theme:006_installment":
         return True
     haystack = " ".join(
@@ -2237,7 +3089,18 @@ def _is_unpk_installment_case(
             *result.context_warnings,
         ]
     ).casefold()
-    return "рассроч" in haystack or "частями" in haystack or "помесяч" in haystack
+    return bool(
+        "рассроч" in haystack
+        or "частями" in haystack
+        or "по частям" in haystack
+        or "помесяч" in haystack
+        or "не все сразу" in haystack
+        or "не всё сразу" in haystack
+        or "не всю сумму" in haystack
+        or "разбить оплат" in haystack
+        or "растянуть оплат" in haystack
+        or "платить постепенно" in haystack
+    )
 
 
 def _is_unpk_zvsh_case(
@@ -2341,11 +3204,17 @@ def _brand_guarded_result(
     reason: str,
     leaked_terms: Sequence[str] = (),
 ) -> SubscriptionDraftResult:
+    precise_condition_flags: tuple[str, ...] = ()
+    precise_condition_claims: tuple[str, ...] = ()
+    if reason == "brand_unknown_precise_condition_blocked":
+        precise_condition_flags = ("unsupported_promise_detected",)
+        precise_condition_claims = _extract_numeric_promise_claims(result.draft_text)
     return replace(
         result,
         route="manager_only",
         draft_text=SAFE_FALLBACK_DRAFT_TEXT,
-        safety_flags=tuple(dict.fromkeys([*result.safety_flags, reason, "brand_separation_guarded"])),
+        forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *precise_condition_claims])),
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, reason, "brand_separation_guarded", *precise_condition_flags])),
         manager_checklist=tuple(
             dict.fromkeys(
                 [
@@ -2354,7 +3223,12 @@ def _brand_guarded_result(
                 ]
             )
         ),
-        metadata={**dict(result.metadata), reason: True, "forbidden_brand_terms": list(leaked_terms)},
+        metadata={
+            **dict(result.metadata),
+            reason: True,
+            "forbidden_brand_terms": list(leaked_terms),
+            **({"unsupported_promises": list(precise_condition_claims)} if precise_condition_claims else {}),
+        },
     )
 
 
@@ -2424,7 +3298,16 @@ def _claim_supported_by_facts(claim: str, fact_texts: Sequence[str]) -> bool:
     normalized_claim = _normalize_fact_match_text(claim)
     if not normalized_claim:
         return False
-    return any(normalized_claim in _normalize_fact_match_text(text) for text in fact_texts)
+    normalized_facts = [_normalize_fact_match_text(text) for text in fact_texts]
+    if normalized_claim == "до 1 июля" and any(
+        "before_2026_07_01" in text or "до 1 июля" in text or "ранн" in text for text in normalized_facts
+    ):
+        return True
+    if normalized_claim == "до 1 июня" and any(
+        "before_2026_06_01" in text or "до 1 июня" in text or "ранн" in text for text in normalized_facts
+    ):
+        return True
+    return any(normalized_claim in text for text in normalized_facts)
 
 
 def _normalize_fact_match_text(text: Any) -> str:

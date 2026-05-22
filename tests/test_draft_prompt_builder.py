@@ -93,3 +93,145 @@ def test_prompt_contains_closed_question_catalog_taxonomy() -> None:
     assert "theme:009_refund" in prompt
     assert "service:S5_general_consultation" in prompt
     assert "Возврат денег, вопрос как вернуть оплату" in prompt
+
+
+def test_prompt_tells_model_not_to_ask_known_context_again() -> None:
+    prompt = build_draft_prompt(
+        "Ок, спасибо. Подскажете, что дальше?",
+        context={
+            "active_brand": "unpk",
+            "known_client_fields": {"student_name": "Колосов Даниил", "phone": "79092009933"},
+            "known_dialog_fields": {"grade": "9", "subject": "физика"},
+            "recent_messages": ["Клиент: 9 класс, предмет физика"],
+        },
+    )
+
+    assert "не спрашивай это заново" in prompt
+    assert "known_client_fields" in prompt
+    assert "known_dialog_fields" in prompt
+    assert "Если известен класс и предмет" in prompt
+
+
+def test_prompt_prioritizes_no_fabrication_over_direct_answer() -> None:
+    prompt = build_draft_prompt(
+        "Когда менеджер ответит и по каким дням занятия?",
+        context={"active_brand": "unpk", "facts_context": {"facts_missing": True}},
+    )
+
+    assert "Сначала ответь на прямой вопрос клиента" in prompt
+    assert "не выдумывать» важнее" in prompt
+    assert "Не называй неподтверждённые сроки связи менеджера" in prompt
+    assert "Не делай догадки по расписанию без факта" in prompt
+
+
+def test_prompt_requires_warm_human_consultant_tone() -> None:
+    prompt = build_draft_prompt(
+        "Подскажите, подойдет ли ребёнку физика в 9 классе?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert "тепло и по-человечески" in prompt
+    assert "важно помочь семье и ребёнку" in prompt
+    assert "не только за справкой" in prompt
+    assert "Не звучать как строгая формальная организация" in prompt
+    assert "шаблонная нейросеть" in prompt
+
+
+def test_prompt_contains_sales_playbook_without_importing_old_facts() -> None:
+    prompt = build_draft_prompt(
+        "Сколько стоит и есть ли смысл идти, если ребёнок сомневается?",
+        context={"active_brand": "foton"},
+    )
+
+    assert "Playbook лучших менеджеров" in prompt
+    assert "спокойного заботливого администратора" in prompt
+    assert "Сначала цель, потом предложение" in prompt
+    assert "Цены, даты, расписание и условия из старых звонков не являются фактами" in prompt
+    assert "не придумывай дедлайны" in prompt
+
+
+def test_prompt_contains_gold_answers_v3_rules_and_context() -> None:
+    prompt = build_draft_prompt(
+        "Есть рассрочка и можно ли приехать познакомиться?",
+        context={
+            "active_brand": "foton",
+            "gold_answer_context": {
+                "topic": "installment",
+                "brand": "foton",
+                "must_include": ["6, 10 или 12 месяцев"],
+                "must_not_include": ["до 36 месяцев"],
+            },
+        },
+    )
+
+    assert "Gold-ответы v3" in prompt
+    assert "не дословный скрипт" in prompt
+    assert "6, 10 или 12 месяцев" in prompt
+    assert "Не говорить старые условия" in prompt
+    assert "Запись и оформление по умолчанию дистанционные" in prompt
+    assert "gold_answer_context" in prompt
+
+
+def test_prompt_requires_question_parts_for_multi_topic_messages() -> None:
+    prompt = build_draft_prompt(
+        "Сколько стоит курс и как вернуть деньги за прошлый месяц?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert '"question_parts"' in prompt
+    assert "Если вопрос составной, выдели части" in prompt
+    assert "P0/high-risk часть всегда ведёт к менеджеру" in prompt
+
+
+def test_prompt_tells_camp_questions_to_ask_grade_not_age() -> None:
+    prompt = build_draft_prompt(
+        "Сколько стоит лагерь?",
+        context={"active_brand": "foton"},
+    )
+
+    assert "По лагерям уточняй класс ребёнка, а не возраст" in prompt
+    assert "Не говори «места есть»" in prompt
+
+
+def test_prompt_contains_funnel_state_fields() -> None:
+    prompt = build_draft_prompt(
+        "Сколько стоит?",
+        context={
+            "active_brand": "foton",
+            "funnel_state": {
+                "lead_stage": "qualification_needed",
+                "client_segment": "new_lead",
+                "next_step_type": "ask_grade",
+                "next_best_question": "В каком классе ребёнок?",
+            },
+            "known_slots": {"subject": "математика", "format": "offline"},
+            "missing_slots": ["grade"],
+            "next_best_question": "В каком классе ребёнок?",
+            "next_step_type": "ask_grade",
+            "semantic_flags": ["new_lead"],
+        },
+    )
+
+    assert "Детерминированная воронка нового лида" in prompt
+    assert "funnel_state" in prompt
+    assert "known_slots" in prompt
+    assert "missing_slots" in prompt
+    assert "В каком классе ребёнок?" in prompt
+    assert "ask_grade" in prompt
+
+
+def test_prompt_says_funnel_p0_overrides_autonomy() -> None:
+    prompt = build_draft_prompt(
+        "Сколько стоит и как вернуть деньги?",
+        context={
+            "active_brand": "unpk",
+            "funnel_state": {"lead_stage": "p0_manager_only", "next_step_type": "manager_only_p0"},
+            "known_slots": {"grade": "9", "subject": "физика"},
+            "next_step_type": "manager_only_p0",
+        },
+    )
+
+    assert "lead_stage=p0_manager_only" in prompt
+    assert "next_step_type=manager_only_p0" in prompt
+    assert "автономность запрещена" in prompt
+    assert "Не спрашивай поля из known_slots повторно" in prompt

@@ -9,14 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_OTHER_DBS = [
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/recent_window_20260319_20260326_mini/recent_window_20260319_20260326_mini.db",
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/messages28_full_20260407/messages28_full_20260407_retry1.db",
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/messages28_phone_history_llm_wave_20260409/messages28_phone_history_llm_wave_20260409.db",
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/top100_history_wave1_20260331/top_100_priority_history_wave.db",
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/history_remaining_excl_done_20260407/remaining_history_3762.db",
-    "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/top20_core_wave1_20260331/top_20_llm_wave.db",
-]
+DEFAULT_OTHER_DBS: list[str] = []
 
 
 def connect(path: str) -> sqlite3.Connection:

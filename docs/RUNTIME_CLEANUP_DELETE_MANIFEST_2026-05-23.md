@@ -69,3 +69,26 @@
 - Targets: `35`
 - Estimated size: `20.69 GiB`
 - Generated at: `2026-05-23T00:52:15`
+
+## Execution result
+
+Moved to Trash folder:
+
+`/Users/dmitrijfabarisov/.Trash/mango_runtime_cleanup_20260523_005235`
+
+Post-checks:
+
+- All listed targets are absent from the working tree.
+- Current runtime check passed: `validation_ok=true`, `blocked=0`, `warnings=0`, missing ASR/R+A = `0/0`.
+- Targeted tests passed: `8 passed`.
+- `product_data/canonical_audio_store_20260516_v1` was not deleted because the current canonical DB has `264` audio references into it.
+- `product_data/mango_update_after_20260512_20260521_v1/asr_ui_batch/audio` was not deleted because the current canonical DB has `839` audio references into it; only the duplicate `recordings/` folder was moved.
+
+Disk impact in working tree after move:
+
+- `stable_runtime`: about `13G`.
+- `product_data`: about `28G`.
+- Trash now contains this cleanup batch: about `21G`.
+- Earlier canonical DB cleanup batch in Trash: about `5.8G`.
+
+Note: disk space is not actually reclaimed until macOS Trash is emptied.

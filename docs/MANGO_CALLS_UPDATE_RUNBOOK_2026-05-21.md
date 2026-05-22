@@ -188,6 +188,22 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_mango_new_calls_a
 - запускать один ASR worker, если нет отдельной причины;
 - не запускать несколько ASR workers одновременно: Whisper/MLX и GigaAM сами активно используют ресурсы.
 
+Перед запуском ASR обязательно выполнить read-only проверку окружения:
+
+```bash
+cd "/Users/dmitrijfabarisov/Projects/Mango analyse"
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+python3 scripts/check_asr_runtime_contract.py
+```
+
+Критерий прохода:
+
+- `active_runtime_ok=true`;
+- preferred Python обычно `.venv-asrbench/bin/python`;
+- окружение импортирует `sqlalchemy`, `dotenv`, `mango_mvp.cli`, `mango_mvp.gui`, `mlx_whisper`, `gigaam`;
+- если найдены старые ссылки на `stable_runtime/venv_stable.broken_20260407`, не запускать эти старые launchers без отдельного обновления.
+
 Обычно запускать prepared script из batch-папки:
 
 ```bash

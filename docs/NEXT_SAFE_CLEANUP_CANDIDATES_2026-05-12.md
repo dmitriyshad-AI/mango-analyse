@@ -39,19 +39,25 @@ Already done:
 
 These items are ignored by Git and do not contain canonical project source code.
 
+Update 2026-05-21:
+
+- `.venv-asrbench` is no longer a safe cleanup candidate. It is the current preferred ASR runtime for fresh Mango calls and must be kept until a replacement ASR runtime passes `scripts/check_asr_runtime_contract.py`.
+- Do not delete `.venv-asrbench` while any ASR UI batch is active.
+- `stable_runtime/venv_stable.broken_20260407` was deleted, but legacy launchers still reference it. Those launchers are not safe entrypoints until updated.
+
 | Path | Size | Files | Why it is safe | Tradeoff |
 |---|---:|---:|---|---|
 | `.cache/llm_responses` | `311M` | `79478` | Local LLM response cache. | Deleted after owner approval. |
-| `.venv-asrbench` | `931M` | `28387` | Rebuildable Python virtual environment for ASR benchmarking. | Need to recreate it if ASR benchmark work returns. |
+| `.venv-asrbench` | `931M` | `28387` | Reclassified 2026-05-21: current ASR runtime, keep. | Delete only after a replacement runtime is verified. |
 | `stable_runtime/venv_stable.broken_20260407` | `997M` | `30963` | Old broken virtual environment, explicitly ignored by Git. | Deleted after owner approval. |
 | `.codex_workers` | `96M` | `8373` | Local Codex worker homes from previous parallel work. | Deleted after owner approval. |
 | `_cleanup_quarantine_20260510_stage2` | `1.1G` | `12380` | Prior cleanup quarantine; manifest marks all 30 moved items as `SAFE`. | Deleted after owner approval. |
 
-Remaining expected impact if `.venv-asrbench` is deleted: about `931M` and about `28387` files removed.
+Remaining expected impact if `.venv-asrbench` is deleted after replacement: about `931M` and about `28387` files removed.
 
 Decision notes:
 - `.cache/llm_responses` mostly contained cached `analyze` responses (`277M`, `70801` files) and transcript-quality review responses (`30M`, `7731` files). It has been deleted. This did not delete final exports, transcripts, DBs, or source audio.
-- `.venv-asrbench` is referenced by the GUI as one fallback backend Python after `stable_runtime/venv_stable`. Keep it if this machine still uses it to recognize fresh calls.
+- `.venv-asrbench` is referenced by the GUI and is currently the preferred ASR backend Python for fresh calls. Keep it until a replacement passes the ASR runtime preflight.
 - `stable_runtime/venv_stable.broken_20260407` was a broken old virtual environment and has been deleted.
 - `.codex_workers` contained only local worker homes (`ra1`, `ra2`, `ra3`) with Codex config/auth/cache files. No project source or audit result was found there. It has been deleted.
 - `_cleanup_quarantine_20260510_stage2` contained 30 previously moved items, all marked `SAFE` in its manifest. It has been deleted.

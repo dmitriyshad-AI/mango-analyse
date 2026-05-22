@@ -14,9 +14,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CANONICAL_DB = (
-    PROJECT_ROOT / "stable_runtime" / "canonical_master_20260516_after_mango_update_v1" / "canonical_calls_master.db"
-)
+DEFAULT_CURRENT_RUNTIME = PROJECT_ROOT / "stable_runtime" / "CURRENT_RUNTIME.json"
 DEFAULT_PREVIOUS_CHAINS = (
     PROJECT_ROOT
     / "stable_runtime"
@@ -118,9 +116,18 @@ EXTERNAL_CHAIN_FIELDS = [
 ]
 
 
+def _default_canonical_db() -> Path:
+    if DEFAULT_CURRENT_RUNTIME.exists():
+        payload = json.loads(DEFAULT_CURRENT_RUNTIME.read_text(encoding="utf-8"))
+        value = ((payload.get("paths") or {}).get("canonical_db") or "").strip()
+        if value:
+            return Path(value)
+    raise FileNotFoundError(f"Cannot resolve current canonical DB from {DEFAULT_CURRENT_RUNTIME}")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build phone-chain readiness files directly from a canonical DB.")
-    parser.add_argument("--canonical-db", default=str(DEFAULT_CANONICAL_DB))
+    parser.add_argument("--canonical-db", default=str(_default_canonical_db()))
     parser.add_argument("--previous-client-chains", default=str(DEFAULT_PREVIOUS_CHAINS))
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
     parser.add_argument("--fresh-from", default="2025-01-01")

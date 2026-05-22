@@ -12,12 +12,7 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BASE_DB = (
-    PROJECT_ROOT
-    / "stable_runtime"
-    / "canonical_master_20260510_after_quality_backfill_v1"
-    / "canonical_calls_master.db"
-)
+DEFAULT_CURRENT_RUNTIME = PROJECT_ROOT / "stable_runtime" / "CURRENT_RUNTIME.json"
 DEFAULT_IMPORT_JSONL = (
     PROJECT_ROOT
     / "product_data"
@@ -30,18 +25,28 @@ DEFAULT_SOURCE_DBS = (
     / "mango_new_calls_terminal_import_20260516_v2"
     / "source_dbs_for_future_rebuild.tsv"
 )
-DEFAULT_OUT_ROOT = PROJECT_ROOT / "stable_runtime" / "canonical_master_20260516_after_mango_update_v1"
-BUILD_ID = "canonical_master_20260516_after_mango_update_v1"
+DEFAULT_OUT_ROOT = PROJECT_ROOT / "stable_runtime" / "canonical_master_from_current_manual_v1"
+BUILD_ID = "canonical_master_from_current_manual_v1"
+
+
+def _default_base_db() -> Path:
+    if DEFAULT_CURRENT_RUNTIME.exists():
+        payload = json.loads(DEFAULT_CURRENT_RUNTIME.read_text(encoding="utf-8"))
+        value = str((payload.get("paths") or {}).get("canonical_db") or "").strip()
+        if value:
+            return Path(value)
+    raise FileNotFoundError(f"Cannot resolve current canonical DB from {DEFAULT_CURRENT_RUNTIME}")
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a versioned canonical DB by appending terminal Mango calls to the accepted canonical layer."
     )
-    parser.add_argument("--base-db", default=str(DEFAULT_BASE_DB))
+    parser.add_argument("--base-db", default=str(_default_base_db()))
     parser.add_argument("--import-jsonl", default=str(DEFAULT_IMPORT_JSONL))
     parser.add_argument("--source-dbs", default=str(DEFAULT_SOURCE_DBS))
     parser.add_argument("--out-root", default=str(DEFAULT_OUT_ROOT))
+    parser.add_argument("--build-id", default=BUILD_ID)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
@@ -87,6 +92,8 @@ def _load_source_db_map(path: Path) -> dict[str, str]:
         if len(parts) < 2:
             continue
         label, source_path = parts[0].strip(), parts[1].strip()
+        if label and source_path:
+            rows[label] = source_path
         if label == "may_live_batch_243_source":
             rows["ready_import_terminal_243"] = source_path
         elif label == "may_new_21_processed":
@@ -180,6 +187,7 @@ def _build_rows(
     conn: sqlite3.Connection,
     import_rows: list[dict[str, Any]],
     source_db_map: dict[str, str],
+    build_id: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     max_id = conn.execute("SELECT COALESCE(MAX(canonical_call_id), 0) FROM canonical_calls").fetchone()[0]
     existing_filenames = {
@@ -209,7 +217,7 @@ def _build_rows(
         canonical_rows.append(
             {
                 "canonical_call_id": canonical_call_id,
-                "build_id": BUILD_ID,
+                "build_id": build_id,
                 "source_filename": filename,
                 "source_file": source_file,
                 "month": _month_from_started_at(row.get("db_started_at")),
@@ -255,7 +263,7 @@ def _build_rows(
         provenance_rows.append(
             {
                 "canonical_call_id": canonical_call_id,
-                "build_id": BUILD_ID,
+                "build_id": build_id,
                 "source_filename": filename,
                 "source_db": source_db,
                 "source_db_abs": source_db_abs,
@@ -265,7 +273,7 @@ def _build_rows(
                 "merge_role": "selected_incremental_terminal",
                 "rank_json": _json_dump(
                     {
-                        "source": "mango_update_20260516",
+                        "source": build_id,
                         "import_bucket": row.get("import_bucket"),
                         "queue_item_id": row.get("queue_item_id"),
                         "manager_quality": row.get("manager_quality"),
@@ -320,6 +328,7 @@ def main() -> int:
             conn=conn,
             import_rows=import_rows,
             source_db_map=source_db_map,
+            build_id=args.build_id,
         )
         _insert_many(conn, "canonical_calls", canonical_rows)
         _insert_many(conn, "call_record_provenance", provenance_rows)
@@ -337,7 +346,7 @@ def main() -> int:
         "generated_at": _dt_now(),
         "mode": "write",
         "project_root": str(PROJECT_ROOT),
-        "build_id": BUILD_ID,
+        "build_id": args.build_id,
         "base_db": str(base_db),
         "out_db": str(out_db),
         "import_jsonl": str(import_jsonl),

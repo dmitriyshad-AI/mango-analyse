@@ -84,6 +84,56 @@ def test_waiting_for_customer_choice_without_date_is_vague_next_step() -> None:
     assert "vague_next_step" in _risk_types(row)
 
 
+def test_generic_materials_next_step_loses_specific_latest_call_action() -> None:
+    row = {
+        "Краткое резюме последнего свежего звонка": (
+            "Клиент подтвердил оплату и сказал, что чек отправит в Telegram. "
+            "Менеджер договорился дождаться квитанции и проверить июльскую смену."
+        ),
+        "Следующий шаг": "Отправить материалы",
+        "Приоритет лида": "warm",
+    }
+
+    assert "generic_next_step_after_specific_latest_call" in _risk_types(row)
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_specific_payment_link_next_step_is_not_generic_materials_risk() -> None:
+    row = {
+        "Краткое резюме последнего свежего звонка": (
+            "Клиент готов оплачивать летнюю смену, менеджер должен отправить ссылку на оплату."
+        ),
+        "Следующий шаг": "Отправить ссылку на оплату",
+        "Приоритет лида": "warm",
+    }
+
+    assert "generic_next_step_after_specific_latest_call" not in _risk_types(row)
+
+
+def test_generic_materials_with_vague_tail_loses_specific_latest_call_action() -> None:
+    row = {
+        "Краткое резюме последнего свежего звонка": (
+            "Клиент попросил прислать расписание в WhatsApp и уточнить условия тестирования."
+        ),
+        "Следующий шаг": "Отправить материалы и связаться с клиентом",
+        "Приоритет лида": "warm",
+    }
+
+    assert "generic_next_step_after_specific_latest_call" in _risk_types(row)
+
+
+def test_generic_materials_with_specific_tail_is_not_blocked_as_generic() -> None:
+    row = {
+        "Краткое резюме последнего свежего звонка": (
+            "Клиент попросил прислать расписание в WhatsApp и уточнить условия тестирования."
+        ),
+        "Следующий шаг": "Отправить материалы и расписание тестирования в WhatsApp",
+        "Приоритет лида": "warm",
+    }
+
+    assert "generic_next_step_after_specific_latest_call" not in _risk_types(row)
+
+
 def test_lost_lead_competitor_purchase_conflicts_with_active_next_step() -> None:
     row = {
         "Авто история общения": (

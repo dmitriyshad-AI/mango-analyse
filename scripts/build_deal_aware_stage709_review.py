@@ -498,15 +498,16 @@ def build_source_lineage(stage1_root: Path, out_root: Path) -> dict[str, Any]:
         "stage1_summary_sha256": sha256_file(summary_path),
         "required_sources": required[["source_key", "path", "bytes", "modified_at", "sha256"]].to_dict(orient="records"),
         "runtime_paths": contract.get("paths", {}),
-        "post_backfill_required_sources": {
+        "current_runtime_required_sources": {
             "canonical_db": str(canonical_db),
             "canonical_db_sha256": sha256_file(canonical_db),
             "canonical_summary": str(canonical_summary),
             "canonical_summary_sha256": sha256_file(canonical_summary),
             "client_chains_csv": str(client_chains),
             "client_chains_sha256": sha256_file(client_chains),
-            "canonical_db_is_post_backfill": "canonical_master_20260510_after_quality_backfill_v1" in str(canonical_db),
-            "client_chains_is_post_backfill": "insight_readiness_report_after_quality_backfill_20260510_v1" in str(client_chains),
+            "canonical_db_from_current_runtime": bool(canonical_db)
+            and canonical_db == Path(safe_text(contract.get("paths", {}).get("canonical_db"))),
+            "client_chains_exists": client_chains.exists(),
         },
         "stage1_actual_sources": stage1_summary.get("sources", {}),
         "gate_failures": [gate for gate in contract.get("gates", []) if not gate.get("passed")],
@@ -529,12 +530,12 @@ def build_source_lineage(stage1_root: Path, out_root: Path) -> dict[str, Any]:
             "stage1_amo_writeback_snapshot_rows": csv_row_count(stage1_root / "amo_writeback_snapshot.csv"),
             "stage1_tallanto_writeoff_rows": csv_row_count(stage1_root / "tallanto_writeoff_visits.csv"),
         },
-        "conclusion_ru": "Stage1 привязан к текущему post-backfill/human-history слою; старый апрельский экспорт по контракту запрещен. Есть осознанный override: Stage1 берет human-history v8, а runtime pointer хранит стабильный strict baseline.",
+        "conclusion_ru": "Stage1 сверяется с текущим runtime-контрактом; старый апрельский экспорт по контракту запрещен. Есть осознанный override: Stage1 может брать отдельный human-history слой, а runtime pointer хранит стабильный strict baseline.",
     }
-    required_sources = lineage["post_backfill_required_sources"]
-    lineage["post_backfill_source_check_passed"] = bool(
-        required_sources["canonical_db_is_post_backfill"]
-        and required_sources["client_chains_is_post_backfill"]
+    required_sources = lineage["current_runtime_required_sources"]
+    lineage["current_runtime_source_check_passed"] = bool(
+        required_sources["canonical_db_from_current_runtime"]
+        and required_sources["client_chains_exists"]
         and required_sources["canonical_db_sha256"]
         and required_sources["client_chains_sha256"]
     )
@@ -648,9 +649,9 @@ def render_summary(
         "stage2_root_cause_short_ru": root_cause["conclusion_ru"],
         "source_lineage_short_ru": lineage["conclusion_ru"],
         "source_lineage": {
-            "post_backfill_source_check_passed": lineage.get("post_backfill_source_check_passed"),
+            "current_runtime_source_check_passed": lineage.get("current_runtime_source_check_passed"),
             "known_mismatch": lineage.get("known_mismatch", {}),
-            "post_backfill_required_sources": lineage.get("post_backfill_required_sources", {}),
+            "current_runtime_required_sources": lineage.get("current_runtime_required_sources", {}),
         },
         "sample_coverage": sample_coverage(classified, sample),
         "readiness": {

@@ -134,6 +134,53 @@ def test_builder_filters_snapshot_by_active_brand() -> None:
     assert "УНПК" not in " ".join(payload["knowledge_snippets"])
 
 
+def test_builder_adds_related_discount_fact_for_installment_query() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test_installment_discount",
+        "facts": [
+            {
+                "fact_id": "fact:unpk_installment_base",
+                "fact_type": "installment",
+                "client_safe_text": "В УНПК можно платить помесячно, за семестр или за год.",
+                "brand": "unpk",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:006_installment"],
+            },
+            {
+                "fact_id": "fact:unpk_year_discount",
+                "fact_type": "course_parameter",
+                "client_safe_text": "При оплате за семестр действует скидка 10%, за год — 14%.",
+                "brand": "unpk",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:006_installment"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Можно оплатить помесячно или за год?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:006_installment"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["installment_terms.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert "fact:unpk_installment_base" in payload["confirmed_facts"]
+    assert "fact:unpk_year_discount" in payload["confirmed_facts"]
+    assert "14%" in " ".join(payload["confirmed_facts"].values())
+
+
 def test_builder_uses_safe_fallback_when_snapshot_missing() -> None:
     context = build_telegram_pilot_context(
         "Какая цена?",

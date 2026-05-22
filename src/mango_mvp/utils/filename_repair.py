@@ -32,6 +32,8 @@ KNOWN_MANAGER_NAME_REPAIRS = {
     "Ад†≠†бм•Ґ Аавсђ": "Афанасьев Артём",
     "Х†аЂ†ђЃҐ М†™б®ђ": "Харламов Максим",
     "Бга≠†иЃҐ Дђ®ва®©": "Бурнашов Дмитрий",
+    # Operational alias: the same manager appeared in source data under an old surname.
+    "Леонова Анна": "Тропина Анна",
 }
 
 

@@ -73,6 +73,7 @@ class IngestFilenameParseTest(unittest.TestCase):
     def test_repair_manager_name_uses_extended_archive_mapping(self) -> None:
         self.assertEqual(repair_manager_name("КЃѓЃв•Ґ† ЕҐ†"), "Копотева Ева")
         self.assertEqual(repair_manager_name("Шђл£Ђ•Ґ† ПЃЂ®≠†"), "Шмыглева Полина")
+        self.assertEqual(repair_manager_name("Леонова Анна"), "Тропина Анна")
 
     def test_repair_manager_name_normalizes_unicode(self) -> None:
         repaired = repair_manager_name("Л•Ѓ≠ЃҐ АЂ•™б•©")

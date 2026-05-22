@@ -36,12 +36,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CANONICAL_DB = (
-    PROJECT_ROOT
-    / "stable_runtime"
-    / "canonical_master_20260510_after_quality_backfill_v1"
-    / "canonical_calls_master.db"
-)
+DEFAULT_CURRENT_RUNTIME = PROJECT_ROOT / "stable_runtime" / "CURRENT_RUNTIME.json"
 DEFAULT_CLIENT_CHAINS = (
     PROJECT_ROOT
     / "stable_runtime"
@@ -192,11 +187,20 @@ AMO_EXPORT_HEADERS = [
 ]
 
 
+def _default_canonical_db() -> Path:
+    if DEFAULT_CURRENT_RUNTIME.exists():
+        payload = json.loads(DEFAULT_CURRENT_RUNTIME.read_text(encoding="utf-8"))
+        value = ((payload.get("paths") or {}).get("canonical_db") or "").strip()
+        if value:
+            return Path(value)
+    raise FileNotFoundError(f"Cannot resolve current canonical DB from {DEFAULT_CURRENT_RUNTIME}")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build AMO-ready master export from post-backfill canonical DB and phone-chain layer."
+        description="Build AMO-ready master export from the current canonical DB and phone-chain layer."
     )
-    parser.add_argument("--canonical-db", default=str(DEFAULT_CANONICAL_DB))
+    parser.add_argument("--canonical-db", default=str(_default_canonical_db()))
     parser.add_argument("--client-chains-csv", default=str(DEFAULT_CLIENT_CHAINS))
     parser.add_argument("--stage15-summary", default=str(DEFAULT_STAGE15_SUMMARY))
     parser.add_argument(

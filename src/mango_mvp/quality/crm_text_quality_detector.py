@@ -146,6 +146,36 @@ VAGUE_NEXT_STEP_RE = re.compile(
     r"\b(?:при\s+необходимости|если\s+понадобится|если\s+будет\s+актуально)\b",
     re.I,
 )
+GENERIC_MATERIALS_NEXT_STEP_RE = re.compile(
+    r"^\s*(?:отправить|выслать|направить|прислать)\s+"
+    r"(?:(?:клиент\w*|родител\w*)\s+)?"
+    r"(?:материал\w*|информац\w*|письм\w*|презентац\w*)"
+    r"(?:\s+(?:клиент\w*|родител\w*|на\s+почт\w+|по\s+почт\w+|в\s+telegram|в\s+телеграм))?"
+    r"\s*[.!]?\s*$",
+    re.I,
+)
+GENERIC_MATERIALS_NEXT_STEP_PREFIX_RE = re.compile(
+    r"^\s*(?:отправить|выслать|направить|прислать)\s+"
+    r"(?:(?:клиент\w*|родител\w*)\s+)?"
+    r"(?:материал\w*|информац\w*|письм\w*|презентац\w*)"
+    r"(?:\s+(?:клиент\w*|родител\w*|на\s+почт\w+|по\s+почт\w+|в\s+telegram|в\s+телеграм))?"
+    r"(?:\s*(?:,|и)\s+.+)?\s*[.!]?\s*$",
+    re.I,
+)
+SPECIFIC_LATEST_CALL_ACTION_RE = re.compile(
+    r"\b(?:"
+    r"чек\w*|квитанц\w+|договор\w*|оферт\w+|сайт\w*|"
+    r"qr\s*-?\s*код\w*|кьюар\s*-?\s*код\w*|"
+    r"telegram|телеграм\w*|whatsapp|ватсап\w*|вотсап\w*|email|e-mail|почт\w+|"
+    r"личн\w+\s+кабинет\w*|\bлк\b|"
+    r"маткапитал\w*|материнск\w+\s+капитал\w*|налогов\w+\s+вычет\w*|"
+    r"оплат\w+|плат[её]ж\w+|сч[её]т\w*|рассрочк\w+|"
+    r"смен\w+|заезд\w+|июльск\w+\s+смен\w+|августовск\w+\s+смен\w+|"
+    r"расписан\w+|график\w+|тестирован\w+|\bтест\w*|"
+    r"услови\w+\s+скидк\w+|скидк\w+|трансфер\w+|автобус\w+"
+    r")\b",
+    re.I,
+)
 LOST_LEAD_SIGNAL_RE = re.compile(
     r"\b(?:"
     r"(?:уже\s+)?(?:купил[аи]?|купили|приобр[её]л[аи]?|приобрели|оплатил[аи]?|оплатили)\s+"
@@ -264,6 +294,7 @@ def detect_crm_text_quality_risks(
 
     findings.extend(_detect_objection_labels(objection_text, next_step, priority, probability))
     findings.extend(_detect_next_step_quality(next_step, priority, probability))
+    findings.extend(_detect_generic_next_step_after_specific_latest_call(payload, next_step))
     findings.extend(_detect_lost_lead_next_step_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_passive_customer_next_step_conflict(_payload_text(payload), next_step, priority, probability))
     findings.extend(_detect_no_next_step_conflict(_payload_text(payload), next_step, priority, probability))
@@ -504,6 +535,33 @@ def _detect_next_step_quality(next_step: str, priority: str, probability: str) -
             )
         )
     return _dedupe_findings(result)
+
+
+def _detect_generic_next_step_after_specific_latest_call(
+    payload: object,
+    next_step: str,
+) -> list[CrmTextQualityFinding]:
+    if not next_step or not GENERIC_MATERIALS_NEXT_STEP_PREFIX_RE.search(next_step):
+        return []
+    if not GENERIC_MATERIALS_NEXT_STEP_RE.search(next_step) and SPECIFIC_LATEST_CALL_ACTION_RE.search(next_step):
+        return []
+    latest_summary = _latest_call_summary_text(payload)
+    specific = SPECIFIC_LATEST_CALL_ACTION_RE.search(latest_summary)
+    if not specific:
+        return []
+    return [
+        CrmTextQualityFinding(
+            class_id="Q4c",
+            risk_type="generic_next_step_after_specific_latest_call",
+            severity="P2",
+            field="Следующий шаг",
+            matched_text=f"{next_step} <- {specific.group(0)}",
+            reason=(
+                "Generic materials next step loses a concrete action artifact from the latest call; "
+                "route to manual review or generate a more specific next step."
+            ),
+        )
+    ]
 
 
 def _detect_lost_lead_next_step_conflict(
@@ -903,6 +961,21 @@ def _next_step_text(payload: object) -> str:
         if value:
             return _safe_text(value)
     return _extract_labeled_value(_payload_text(payload), NEXT_STEP_FIELDS)
+
+
+def _latest_call_summary_text(payload: object) -> str:
+    fields = (
+        "Краткое резюме последнего свежего звонка",
+        "Последняя AI-сводка",
+        "Краткое резюме разговора",
+        "latest_call_summary",
+        "last_call_summary",
+    )
+    if isinstance(payload, Mapping):
+        value = _first_mapping_value(payload, fields)
+        if value:
+            return _safe_text(value)
+    return _extract_labeled_value(_payload_text(payload), fields)
 
 
 def _preferred_auto_history(payload: object) -> tuple[str, str]:

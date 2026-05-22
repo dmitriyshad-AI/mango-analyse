@@ -24,6 +24,18 @@ from mango_mvp.productization.processing_handoff import (  # noqa: E402
 )
 
 
+DEFAULT_CURRENT_RUNTIME = ROOT / "stable_runtime" / "CURRENT_RUNTIME.json"
+
+
+def default_canonical_db() -> str:
+    if DEFAULT_CURRENT_RUNTIME.exists():
+        payload = json.loads(DEFAULT_CURRENT_RUNTIME.read_text(encoding="utf-8"))
+        value = clean((payload.get("paths") or {}).get("canonical_db"))
+        if value:
+            return value
+    raise FileNotFoundError(f"Cannot resolve current canonical DB from {DEFAULT_CURRENT_RUNTIME}")
+
+
 def clean(value: object) -> str:
     return str(value or "").strip()
 
@@ -253,7 +265,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build read-only downstream projection using canonical audio store paths.")
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--audio-store-mapping", default="product_data/canonical_audio_store_20260516_v1/audio_store_mapping.csv")
-    parser.add_argument("--canonical-db", default="stable_runtime/canonical_master_20260510_after_quality_backfill_v1/canonical_calls_master.db")
+    parser.add_argument("--canonical-db", default=default_canonical_db())
     parser.add_argument("--new-queue-csv", default="product_data/mango_audio_update_20260516_v1/asr_handoff_new_calls_20260516.csv")
     parser.add_argument("--out-dir", default="product_data/canonical_audio_store_20260516_v1/downstream_projection")
     parser.add_argument("--no-verify-checksum", action="store_true")

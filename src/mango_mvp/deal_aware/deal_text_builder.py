@@ -1044,6 +1044,8 @@ def quality_payload(candidate: dict[str, Any], payload: dict[str, Any]) -> dict[
     result = dict(payload)
     result["AMO статус сделки"] = safe_text(candidate.get("selected_status_name"))
     result["AMO причина отказа"] = safe_text(candidate.get("selected_loss_reason"))
+    result["Дата последнего свежего звонка"] = safe_text(candidate.get("last_call_at"))
+    result["Краткое резюме последнего свежего звонка"] = safe_text(candidate.get("latest_call_summary"))
     result["priority"] = safe_text(payload.get("AI-приоритет сделки"))
     result["Рекомендуемая дата следующего контакта"] = safe_text(payload.get("AI-дата следующего касания"))
     return result

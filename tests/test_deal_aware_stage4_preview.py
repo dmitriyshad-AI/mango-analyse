@@ -9,7 +9,9 @@ from mango_mvp.deal_aware.deal_text_builder import (
     DealTextPaths,
     build_deal_payload,
     build_deal_text_preview,
+    quality_payload,
 )
+from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
@@ -210,6 +212,29 @@ def test_commercial_course_call_with_homework_description_is_not_service_feedbac
 
     assert "сервисную обратную связь" not in payload["AI-сводка по сделке"]
     assert payload["AI-рекомендованный следующий шаг"].startswith("Отправить клиенту материалы")
+
+
+def test_deal_quality_payload_exposes_latest_call_for_generic_next_step_gate() -> None:
+    payload = {
+        "AI-рекомендованный следующий шаг": "Отправить клиенту материалы",
+        "AI-приоритет сделки": "warm",
+    }
+    candidate = {
+        "last_call_at": "2026-05-20 13:35:00",
+        "latest_call_summary": (
+            "Клиент уточнил условия скидки на занятия в записи и сказал, что сверит информацию на сайте."
+        ),
+    }
+
+    risks = {
+        finding.risk_type
+        for finding in detect_crm_text_quality_risks(
+            quality_payload(candidate, payload),
+            analysis_date="2026-05-21",
+        )
+    }
+
+    assert "generic_next_step_after_specific_latest_call" in risks
 
 
 def test_build_stage4_preview_outputs_read_only_quality_artifacts(tmp_path: Path) -> None:

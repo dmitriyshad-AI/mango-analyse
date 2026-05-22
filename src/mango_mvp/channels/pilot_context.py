@@ -103,7 +103,7 @@ class PilotContext:
         object.__setattr__(self, "amo_context", compact_mapping(self.amo_context, max_items=16, max_chars=300))
         object.__setattr__(self, "tallanto_context", compact_mapping(self.tallanto_context, max_items=16, max_chars=300))
         object.__setattr__(self, "timeline_context", compact_mapping(self.timeline_context, max_items=16, max_chars=300))
-        object.__setattr__(self, "rop_policy", compact_mapping(self.rop_policy, max_items=16, max_chars=300))
+        object.__setattr__(self, "rop_policy", compact_rop_policy(self.rop_policy, max_items=16, max_chars=300))
         object.__setattr__(self, "facts_context", compact_mapping(self.facts_context, max_items=16, max_chars=300))
         object.__setattr__(self, "confirmed_facts", compact_mapping(self.confirmed_facts, max_items=16, max_chars=300))
         object.__setattr__(
@@ -291,6 +291,24 @@ def compact_mapping(value: Mapping[str, Any] | None, *, max_items: int, max_char
             result[clean_key] = clean_text(item, max_chars=max_chars) if isinstance(item, str) else item
         if len(result) >= max_items:
             break
+    return result
+
+
+def compact_rop_policy(value: Mapping[str, Any] | None, *, max_items: int, max_chars: int) -> Mapping[str, Any]:
+    result = dict(compact_mapping(value, max_items=max_items, max_chars=max_chars))
+    if not isinstance(value, Mapping):
+        return result
+    autonomy = value.get("autonomy_policy")
+    if not isinstance(autonomy, Mapping):
+        return result
+    compact_autonomy = dict(compact_mapping(autonomy, max_items=16, max_chars=max_chars))
+    for key in ("allowed_topic_ids", "autonomous_topic_ids", "topic_ids"):
+        topics = autonomy.get(key)
+        if isinstance(topics, Sequence) and not isinstance(topics, (str, bytes, bytearray)):
+            compact_autonomy[key] = [clean_text(item, max_chars=120) for item in topics if clean_text(item, max_chars=120)][:64]
+        elif topics is not None:
+            compact_autonomy[key] = clean_text(topics, max_chars=120)
+    result["autonomy_policy"] = compact_autonomy
     return result
 
 

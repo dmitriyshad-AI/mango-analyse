@@ -673,6 +673,8 @@ def _expand_required_fact_types(required_fact_types: set[str], *, topic_id: str,
         expanded.update({"documents", "tax", "matkap"})
     if "location" in expanded:
         expanded.update({"location", "contact"})
+    if "installment" in expanded:
+        expanded.update({"installment", "payment_methods", "discount", "course_parameter"})
     if "лагер" in query_text or "лвш" in query_text or "лш" in query_text or "менделеево" in query_text:
         expanded.update({"camp_lvsh", "camp_city", "deadline", "price", "location", "program"})
     return expanded

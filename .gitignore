@@ -133,12 +133,15 @@ stable_runtime/amocrm_runtime/.env.private
 # Local customer timeline sample builds
 product_data/customer_timeline/deal_aware_sample_*/
 product_data/customer_timeline/contact_control_sample_*/
+product_data/customer_timeline/canonical_readonly_*/
 
 # Local Mango/API/audio working artifacts
 product_data/mango_api_reconcile_*/
 product_data/mango_audio_update_*/
 product_data/mango_update_after_*/
 product_data/mango_missing_*_asr_only_*/
+product_data/gold_candidates_paid_proxy_after_calls_*/
+product_data/gold_dialogues_paid_after_calls_*/
 product_data/**/audio/
 *.mp3
 *.wav

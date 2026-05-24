@@ -17,9 +17,11 @@ from mango_mvp.channels.subscription_llm import (
     MATKAP_FEDERAL_TIMING_SAFE_TEXT,
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_UNPK_SAFE_TEXT,
+    SubscriptionDraftResult,
     UNPK_EGE_INTENSIVE_PRICE_SAFE_TEXT,
     UNPK_FOUR_WEEKS_NEW_PRICE_SAFE_TEXT,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
+    apply_conversation_intent_plan_guard,
     contains_bot_identity_disclosure,
     draft_has_internal_service_markers,
     detect_high_risk_input_markers,
@@ -27,6 +29,7 @@ from mango_mvp.channels.subscription_llm import (
     parse_llm_json,
     strip_internal_service_markers,
 )
+from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
 
 
 def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -> None:
@@ -88,14 +91,523 @@ def test_provider_timeout_returns_safe_fallback() -> None:
     assert "codex_exec_timeout" in result.safety_flags
 
 
-def test_draft_text_does_not_disclose_bot_identity() -> None:
+def test_codex_provider_llm_rewriter_is_feature_flagged(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    def runner(cmd, input, capture_output, text, check, timeout, env):
+        calls.append(input)
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        if len(calls) == 1:
+            output_path.write_text(
+                '{"route":"draft_for_manager","draft_text":"Вам подойдёт информатика: можно начать с онлайн-группы.",'
+                '"message_type":"question","topic_id":"service:S5_general_consultation","confidence_theme":0.8}',
+                encoding="utf-8",
+            )
+        else:
+            output_path.write_text(
+                '{"draft_text":"Для 6 класса можем подобрать направление без догадок по предмету. '
+                'Напишите, что важнее: подтянуть школьную программу или попробовать олимпиадный уровень?"}',
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE", "1")
+    provider = CodexExecDraftProvider(runner=runner, cache_dir=None, timeout_sec=20)
+
+    result = provider.build_draft(
+        "Здравствуйте, хочу понять, что у вас есть для 6 класса.",
+        context={"active_brand": "foton", "known_slots": {"grade": "6"}, "confirmed_facts": {"fact:general": "Фотон: есть курсы для школьников."}},
+    )
+
+    assert len(calls) == 2
+    assert result.metadata["answer_quality"]["rewrite_provider"] == "llm_runner"
+    assert "информатика" not in result.draft_text
+    assert "answer_quality_rewritten" in result.safety_flags
+
+
+def test_codex_provider_supports_rewriter_feature_flag_alias(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    def runner(cmd, input, capture_output, text, check, timeout, env):
+        calls.append(input)
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        if len(calls) == 1:
+            output_path.write_text(
+                '{"route":"draft_for_manager","draft_text":"Вам подойдёт информатика: можно начать с онлайн-группы.",'
+                '"message_type":"question","topic_id":"service:S5_general_consultation","confidence_theme":0.8}',
+                encoding="utf-8",
+            )
+        else:
+            output_path.write_text(
+                '{"draft_text":"Для 6 класса можем подобрать направление без догадок по предмету. '
+                'Напишите, что важнее: подтянуть школьную программу или попробовать олимпиадный уровень?"}',
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.delenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE", raising=False)
+    monkeypatch.setenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER", "1")
+    provider = CodexExecDraftProvider(runner=runner, cache_dir=None, timeout_sec=20)
+
+    result = provider.build_draft(
+        "Здравствуйте, хочу понять, что у вас есть для 6 класса.",
+        context={"active_brand": "foton", "known_slots": {"grade": "6"}, "confirmed_facts": {"fact:general": "Фотон: есть курсы для школьников."}},
+    )
+
+    assert len(calls) == 2
+    assert result.metadata["answer_quality"]["rewrite_provider"] == "llm_runner"
+    assert "информатика" not in result.draft_text
+
+
+def test_draft_text_blocks_vendor_prompt_or_identity_lies() -> None:
     result = parse_llm_json('{"route":"draft_for_manager","draft_text":"Как ИИ я могу подсказать."}')
 
     assert result.route == "manager_only"
     assert "bot_identity_disclosure" in result.safety_flags
-    assert contains_bot_identity_disclosure("Я бот и нейросеть")
-    for phrase in ("я бот", "как ИИ", "нейросеть", "искусственный интеллект", "GPT", "Claude", "Codex"):
+    assert not contains_bot_identity_disclosure("Да, я цифровой помощник Фотона, не живой оператор.")
+    for phrase in ("как ИИ", "я нейросеть", "GPT", "Claude", "Codex", "OpenAI", "я человек", "я не бот", "system prompt"):
         assert contains_bot_identity_disclosure(f"Тест: {phrase}")
+
+
+def test_direct_identity_question_gets_brand_safe_policy_c_answer() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="service:S5_general_consultation",
+        topic_confidence=0.95,
+        draft_text="Здравствуйте! Чем помочь?",
+    )
+
+    foton = apply_high_risk_content_guards(base, client_message="Вы бот или человек?", context={"active_brand": "foton"})
+    assert foton.route == "draft_for_manager"
+    assert "цифровой помощник Фотона" in foton.draft_text
+    assert "GPT" not in foton.draft_text
+
+    unpk = apply_high_risk_content_guards(base, client_message="Ты GPT?", context={"active_brand": "unpk"})
+    assert unpk.route == "draft_for_manager"
+    assert "цифровой помощник" in unpk.draft_text
+    assert "GPT" not in unpk.draft_text
+
+
+def test_conversation_intent_plan_guard_uses_context_not_keyword_branch() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        topic_confidence=0.84,
+        draft_text="Да, текущая цена такая-то, можно закрепить условия.",
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Можно закрепить место на ЛВШ?",
+        context={
+            "active_brand": "foton",
+            "conversation_intent_plan": {
+                "primary_intent": "live_availability",
+                "topic_id": "theme:026_camp_general",
+                "answer_policy": "answer_safe_parts_then_manager_live_check",
+                "route_bias": "draft_for_manager",
+                "product_family": "camp",
+            },
+        },
+    )
+
+    assert guarded.topic_id == "theme:026_camp_general"
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert "conversation_intent_plan_topic_applied" in guarded.safety_flags
+
+
+def test_conversation_intent_plan_guard_keeps_p0_manager_only() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        topic_id="theme:001_pricing",
+        topic_confidence=0.84,
+        draft_text="Стоимость зависит от курса.",
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Хочу вернуть деньги.",
+        context={
+            "active_brand": "unpk",
+            "conversation_intent_plan": {
+                "primary_intent": "refund",
+                "topic_id": "theme:009_refund",
+                "answer_policy": "manager_only_p0",
+                "route_bias": "manager_only",
+            },
+        },
+    )
+
+    assert guarded.topic_id == "theme:009_refund"
+    assert guarded.route == "manager_only"
+    assert "conversation_intent_plan_p0" in guarded.safety_flags
+
+
+def test_conversation_intent_plan_repairs_false_legal_from_model_when_current_message_is_process_question() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        topic_id="theme:029_legal_question",
+        topic_confidence=0.84,
+        draft_text="Приняли обращение. Передам его ответственному сотруднику, он вернется с ответом.",
+        safety_flags=("high_risk_manager_only", "legal_threat_topic_overrode_refund"),
+    )
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="А чтобы записаться или с менеджером обсудить, надо приезжать или можно дистанционно?",
+        context={
+            "active_brand": "unpk",
+            "conversation_intent_plan": {
+                "primary_intent": "format",
+                "topic_id": "theme:014_format",
+                "answer_policy": "answer_directly_if_fact_verified",
+                "route_bias": "bot_answer_self_for_pilot",
+                "risk_signals": [],
+            },
+        },
+    )
+
+    assert guarded.topic_id == "theme:014_format"
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_false_p0_repaired" in guarded.metadata
+    assert "high_risk_manager_only" not in guarded.safety_flags
+
+
+def test_high_risk_guards_do_not_recreate_false_legal_when_plan_is_semantic_non_p0() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            topic_id="theme:029_legal_question",
+            topic_confidence=0.84,
+            draft_text="Можно оформить дистанционно: приезжать не нужно. Передам менеджеру запрос на запись.",
+        ),
+        client_message="А чтобы записаться или с менеджером обсудить, надо приезжать или можно дистанционно?",
+        context={
+            "active_brand": "unpk",
+            "conversation_intent_plan": {
+                "primary_intent": "format",
+                "topic_id": "theme:014_format",
+                "answer_policy": "answer_directly_if_fact_verified",
+                "route_bias": "bot_answer_self_for_pilot",
+                "risk_signals": [],
+            },
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "zero_collect_legal_guarded" not in result.safety_flags
+    assert "Приняли обращение" not in result.draft_text
+
+
+def test_soft_negative_feedback_is_not_treated_as_complaint_p0() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="Передам менеджеру контекст.",
+        ),
+        client_message="Я же про очный курс спрашиваю. Похоже, вы не можете ответить, подумаю тогда.",
+        context={
+            "active_brand": "unpk",
+            "conversation_intent_plan": {
+                "primary_intent": "format",
+                "topic_id": "theme:014_format",
+                "answer_policy": "answer_directly_if_fact_verified",
+                "route_bias": "bot_answer_self_for_pilot",
+                "risk_signals": [],
+            },
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "complaint_apology_guarded" not in result.safety_flags
+    assert "high_risk_manager_only" not in result.safety_flags
+    assert result.draft_text.startswith("Понял, давайте не буду повторять общий ответ")
+
+
+def test_quality_rewrite_is_not_overwritten_by_unpk_installment_fallback() -> None:
+    rewritten = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:006_installment",
+        topic_confidence=0.94,
+        draft_text="Да, помесячно платить можно. Скидка при этом не применяется: 10% действует при оплате за семестр, 14% — при оплате за год.",
+        safety_flags=("answer_quality_rewritten",),
+        metadata={"answer_quality": {"rewritten": True}},
+    )
+
+    guarded = apply_high_risk_content_guards(
+        rewritten,
+        client_message="А если помесячно, скидка сохраняется?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.draft_text == rewritten.draft_text
+    assert "unpk_installment_approved_fallback_applied" not in guarded.safety_flags
+
+
+def test_price_fix_process_answers_directly_without_reasking_known_slots() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            topic_id="theme:001_pricing",
+            topic_confidence=0.9,
+            draft_text="Онлайн-обучение в Фотоне: есть варианты оплаты за семестр и год.",
+        ),
+        client_message="Как закрепить 47 250 — заявка или оплата?",
+        context={
+            "active_brand": "foton",
+            "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+            "conversation_intent_plan": {
+                "primary_intent": "price_fix",
+                "topic_id": "theme:001_pricing",
+                "answer_policy": "answer_directly_if_fact_verified",
+                "route_bias": "bot_answer_self_for_pilot",
+                "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+            },
+        },
+    )
+
+    assert "достаточно ли одной заявки или нужна оплата" in result.draft_text
+    assert "8 класс" in result.draft_text
+    assert "физика" in result.draft_text
+    assert "direct_process_safe_template_applied" in result.safety_flags
+
+
+def test_installment_question_with_negated_places_is_not_overwritten_by_camp_template() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            topic_id="theme:006_installment",
+            topic_confidence=0.9,
+            draft_text="По местам не буду обещать без проверки.",
+        ),
+        client_message="Я не про места спрашиваю, а про оплату. Можно помесячно или за семестр?",
+        context={
+            "active_brand": "foton",
+            "recent_messages": ["Ответ: По местам не буду обещать без проверки."],
+            "known_slots": {"grade": "4", "subject": "математика", "format": "очно"},
+            "conversation_intent_plan": {
+                "primary_intent": "installment",
+                "topic_id": "theme:006_installment",
+                "answer_policy": "answer_directly_if_fact_verified",
+                "route_bias": "bot_answer_self_for_pilot",
+            },
+        },
+    )
+
+    assert result.topic_id == "theme:006_installment"
+    assert "местам" not in result.draft_text.casefold()
+    assert "оплат" in result.draft_text.casefold() or "рассроч" in result.draft_text.casefold()
+
+
+def test_manager_handoff_request_is_acknowledged_as_action() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="Если хотите, передам менеджеру.",
+        ),
+        client_message="Да, передайте менеджеру, пожалуйста.",
+        context={"active_brand": "unpk", "known_slots": {"grade": "7", "subject": "математика"}},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text.startswith("Да, передам менеджеру:")
+    assert "7 класс" in result.draft_text
+    assert "математика" in result.draft_text
+
+    followup = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="По онлайн-формату можно прислать фрагмент занятия.",
+        ),
+        client_message="Пусть менеджер тогда напишет и скажет по фрагменту точно.",
+        context={
+            "active_brand": "unpk",
+            "known_slots": {"grade": "9", "subject": "информатика", "format": "онлайн"},
+        },
+    )
+
+    assert followup.draft_text.startswith("Да, передам менеджеру:")
+    assert "9 класс" in followup.draft_text
+    assert "информатика" in followup.draft_text
+    assert "онлайн" in followup.draft_text
+
+
+def test_unpk_online_trial_context_beats_address_trigger_words() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:014_format",
+            topic_confidence=0.9,
+            draft_text="Старшая школа проходит в Главном корпусе МФТИ по адресу Институтский пер., 9.",
+        ),
+        client_message="9 класс, информатика. мы онлайн хотим, приезжать не надо будет?",
+        context={
+            "active_brand": "unpk",
+            "recent_messages": ["Клиент: а пробное занятие у вас есть?", "Ответ: По онлайну можно прислать фрагмент занятия."],
+            "known_slots": {"grade": "9", "subject": "информатика", "format": "онлайн"},
+            "conversation_intent_plan": {
+                "primary_intent": "format",
+                "topic_id": "theme:014_format",
+                "known_slots": {"grade": "9", "subject": "информатика", "format": "онлайн"},
+            },
+        },
+    )
+
+    assert "фрагмент занятия" in result.draft_text
+    assert "приезжать" in result.draft_text or "приезжать для этого не нужно" in result.draft_text
+    assert "Институтский" not in result.draft_text
+    assert "Сретенка" not in result.draft_text
+    assert "trial_safe_template_applied" in result.safety_flags
+
+
+def test_trial_fragment_data_question_answers_directly_without_reasking_known_slots() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="По онлайн-формату можно прислать фрагмент занятия.",
+        ),
+        client_message="Я уже написала: 9 класс, информатика, онлайн. Какие данные нужны, чтобы мне прислали фрагмент?",
+        context={
+            "active_brand": "unpk",
+            "recent_messages": ["Клиент: а пробное занятие есть?"],
+            "known_slots": {"grade": "9", "subject": "информатика", "format": "онлайн"},
+        },
+    )
+
+    assert "9 класс" in result.draft_text
+    assert "информатика" in result.draft_text
+    assert "онлайн" in result.draft_text
+    assert "повторять" in result.draft_text.casefold() or "повторно" in result.draft_text.casefold()
+    assert "личные документы" in result.draft_text
+    assert "Передам менеджеру запрос на фрагмент" in result.draft_text
+    assert "trial_safe_template_applied" in result.safety_flags
+
+
+def test_trial_fragment_process_and_ack_do_not_repeat_generic_trial_template() -> None:
+    base_context = {
+        "active_brand": "unpk",
+        "recent_messages": ["Клиент: а пробное занятие есть?", "Клиент: 9 класс, информатика, онлайн"],
+        "known_slots": {"grade": "9", "subject": "информатика", "format": "онлайн"},
+    }
+    process = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="По онлайн-формату можно прислать фрагмент занятия.",
+        ),
+        client_message="Как получить этот фрагмент?",
+        context=base_context,
+    )
+    ack = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="manager_only",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="По онлайн-формату можно прислать фрагмент занятия.",
+        ),
+        client_message="Хорошо, жду фрагмент, посмотрю и потом решу.",
+        context=base_context,
+    )
+
+    assert "Вижу уже: 9 класс, информатика, онлайн." in process.draft_text
+    assert "Передам менеджеру запрос на фрагмент" in process.draft_text
+    assert "Вижу уже: 9 класс, информатика, онлайн." in ack.draft_text
+    assert "передам менеджеру запрос на онлайн-фрагмент" in ack.draft_text.casefold()
+    assert "Бесплатность отдельно не обещаю" not in process.draft_text
+    assert "Бесплатность отдельно не обещаю" not in ack.draft_text
+
+
+def test_foton_trial_process_does_not_use_unpk_fragment_wording() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="В онлайн-формате Фотона пробное занятие есть.",
+        ),
+        client_message="5 класс математика онлайн. Как тогда записаться на пробное?",
+        context={
+            "active_brand": "foton",
+            "recent_messages": ["Клиент: а пробное занятие есть?"],
+            "known_slots": {"grade": "5", "subject": "математика", "format": "онлайн"},
+        },
+    )
+
+    assert "онлайн-пробное" in result.draft_text
+    assert "фрагмент" not in result.draft_text.casefold()
+    assert "5 класс" in result.draft_text
+    assert "математика" in result.draft_text
+    assert "trial_safe_template_applied" in result.safety_flags
+
+
+def test_foton_trial_live_or_recording_question_does_not_switch_to_teacher_template() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="У нас преподают специалисты из МФТИ.",
+        ),
+        client_message="Пробное будет живое онлайн занятие с преподавателем или запись?",
+        context={
+            "active_brand": "foton",
+            "recent_messages": ["Клиент: 5 класс математика онлайн, хочу пробное"],
+            "known_slots": {"grade": "5", "subject": "математика", "format": "онлайн"},
+        },
+    )
+
+    assert "формат пробного" in result.draft_text
+    assert "живые вебинары" in result.draft_text
+    assert "записи уроков" in result.draft_text
+    assert "У нас преподают специалисты" not in result.draft_text
+    assert "teacher_safe_template_applied" not in result.safety_flags
+
+
+def test_negated_address_question_does_not_return_address_template() -> None:
+    result = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="Площадки УНПК: Москва — Сретенка, 20; Долгопрудный — МФТИ.",
+        ),
+        client_message="Адрес не нужен, я спрашиваю про онлайн-фрагмент бесплатно или нет.",
+        context={"active_brand": "unpk", "recent_messages": ["Клиент: пробное занятие есть?"]},
+    )
+
+    assert "Сретенка" not in result.draft_text
+    assert "фрагмент" in result.draft_text
+
+
+def test_unconfirmed_followup_deadline_blocks_within_day_wording() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Менеджер ответит в течение суток и пришлёт фрагмент.",
+            "message_type": "question",
+            "topic_id": "theme:013_schedule",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Когда мне ответят?",
+        context={"active_brand": "unpk", "rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.route == "manager_only"
+    assert "в течение суток" not in result.draft_text
+    assert "unsupported_followup_deadline_detected" in result.safety_flags
 
 
 def test_draft_text_strips_kb_source_and_freshness_metadata() -> None:
@@ -111,6 +623,69 @@ def test_draft_text_strips_kb_source_and_freshness_metadata() -> None:
     assert "internal_metadata_removed_from_draft" in result.safety_flags
     assert draft_has_internal_service_markers("[x; source=source:price; freshness=fresh]")
     assert strip_internal_service_markers("[x; source=source:price; freshness=fresh] Ответ") == "Ответ"
+    assert strip_internal_service_markers("[source_id=fact:v3:price; kb_release_20260520_v6_3] Ответ") == "Ответ"
+    assert "product_data" not in strip_internal_service_markers("Ответ source_id=fact:v3:price product_data/knowledge_base/kb_release_20260520_v6_3")
+    assert "/Users/" not in strip_internal_service_markers("Ответ /Users/dmitrijfabarisov/Projects/Mango")
+
+
+def test_final_p0_override_replaces_non_p0_draft_text() -> None:
+    base = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"Стоимость зависит от класса, подскажите детали.",'
+        '"message_type":"question","topic_id":"theme:001_pricing","confidence_theme":0.91}'
+    )
+
+    result = apply_high_risk_content_guards(
+        base,
+        client_message="Если не вернете деньги, пойду в суд.",
+        context={"active_brand": "unpk"},
+    )
+
+    assert result.route == "manager_only"
+    assert result.topic_id == "theme:029_legal_question"
+    assert result.draft_text == LEGAL_THREAT_SAFE_TEXT
+    assert "final_p0_text_override" in result.safety_flags
+    assert "high_risk_manager_only" in result.safety_flags
+
+
+def test_answer_contract_prevents_green_installment_fallback_lock_in() -> None:
+    base = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"В УНПК можно платить помесячно, за семестр или за год.",'
+        '"message_type":"question","topic_id":"theme:006_installment","confidence_theme":0.91}'
+    )
+
+    result = apply_high_risk_content_guards(
+        base,
+        client_message="А банк не участвует? Можно помесячно?",
+        context={
+            "active_brand": "unpk",
+            "answer_contract": {
+                "primary_intent": "installment",
+                "direct_question": "А банк не участвует? Можно помесячно?",
+                "must_answer_first": True,
+                "p0_required": False,
+            },
+        },
+    )
+
+    assert result.draft_text != UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT
+    assert "unpk_installment_approved_fallback_applied" not in result.safety_flags
+    assert result.metadata["answer_contract_controls_green_templates"] is True
+
+
+def test_group_vs_individual_question_does_not_force_individual_handoff() -> None:
+    base = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"Есть групповые форматы, менеджер поможет выбрать по уровню.",'
+        '"message_type":"question","topic_id":"theme:014_format","confidence_theme":0.91}'
+    )
+
+    result = apply_high_risk_content_guards(
+        base,
+        client_message="Есть группы по физике или только индивидуально?",
+        context={"active_brand": "foton"},
+    )
+
+    assert result.draft_text != "Менеджер свяжется и подскажет варианты индивидуальных занятий."
+    assert "terminal_safe_template_applied" not in result.safety_flags
 
 
 def test_draft_text_blocks_manager_placeholder() -> None:
@@ -174,10 +749,11 @@ def test_high_risk_client_message_forces_manager_only_even_when_topic_is_wrong()
         context={"rop_policy": {"bot_permission": "draft_for_manager"}},
     )
 
-    assert result.topic_id == "theme:001_pricing"
+    assert result.topic_id == "theme:009_refund"
     assert result.route == "manager_only"
-    assert "high_risk_input_manager_only" in result.safety_flags
-    assert result.metadata["forced_route_high_risk_input"] == ["refund"]
+    assert result.draft_text != "Здравствуйте! Уточним условия."
+    assert "zero_collect_refund_guarded" in result.safety_flags
+    assert "final_p0_text_override" in result.safety_flags
 
 
 def test_refund_zero_collect_removes_pii_request_from_draft() -> None:
@@ -618,6 +1194,38 @@ def test_foton_regular_installment_ignores_llm_camp_terms_when_client_asks_cours
     assert "16,9%" not in result.draft_text
 
 
+def test_foton_installment_followup_answers_bank_and_monthly_without_camp_self_pollution() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Менеджер подскажет оплату частями.",
+            "message_type": "question",
+            "topic_id": "theme:006_installment",
+            "confidence_theme": 0.92,
+        }
+    )
+
+    result = provider.build_draft(
+        "Я про обычные занятия по математике 4 класс очно, не лагеря. Помесячно можно или только через банк? Банк точно одобрит?",
+        context={
+            "active_brand": "foton",
+            "recent_messages": [
+                "Клиент: 4 класс математика очно, можно платить частями?",
+                "Бот: Да, в Фотоне можно оплатить обучение частями: доступны варианты на 6, 10 или 12 месяцев, а также сервис Долями. Это относится к очным и онлайн-курсам, ЛВШ, ЛШ и другим программам Фотона.",
+            ],
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:006_installment"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "dialogue_memory_view": {"known_slots": {"grade": "4", "subject": "математика", "format": "очно"}},
+        },
+    )
+
+    assert "решение принимает" in result.draft_text
+    assert "помесяч" in result.draft_text.casefold()
+    assert "одобрение заранее" in result.draft_text
+    assert "ЛВШ" not in result.draft_text
+    assert "лагер" not in result.draft_text.casefold()
+
+
 def test_complaint_draft_does_not_apologize_from_company() -> None:
     provider = FakeDraftProvider(
         {
@@ -661,6 +1269,28 @@ def test_complaint_draft_does_not_collect_lesson_details() -> None:
     lowered = result.draft_text.casefold()
     for forbidden in ("дат", "предмет", "имя", "преподав"):
         assert forbidden not in lowered
+
+
+def test_negative_feedback_non_question_is_not_off_topic_fallback() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "manager_only",
+            "draft_text": "Я помогаю с вопросами об обучении.",
+            "message_type": "non_question",
+            "topic_id": "service:S3_out_of_scope",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Вижу, что вы не отвечаете нормально. Тогда не буду оставлять заявку.",
+        context={"active_brand": "unpk", "rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Понял, давайте не буду повторять общий ответ. Передам менеджеру контекст переписки, чтобы он ответил по вашему вопросу точнее."
+    assert "complaint_apology_guarded" not in result.safety_flags
+    assert "По другим темам" not in result.draft_text
 
 
 def test_complaint_draft_does_not_collect_details_with_podskazhite() -> None:
@@ -1358,6 +1988,38 @@ def test_foton_online_price_answers_with_confirmed_price_immediately() -> None:
     assert "скоро подрастёт" in result.draft_text
 
 
+def test_foton_followup_price_uses_known_online_format_from_memory() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Фотон: 5-11 класс, очно, семестр — 44 600 ₽, год — 74 500 ₽.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "А это цена на сейчас?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {
+                "fact:online_semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 47 250 ₽.",
+                "fact:online_year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 78 750 ₽.",
+                "fact:offline_semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+            },
+            "dialogue_memory_view": {"known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"}},
+        },
+    )
+
+    assert "онлайн" in result.draft_text.casefold()
+    assert "47 250" in result.draft_text
+    assert "78 750" in result.draft_text
+    assert "44 600" not in result.draft_text
+
+
 def test_foton_online_trial_question_uses_approved_safe_text() -> None:
     provider = FakeDraftProvider(
         {
@@ -1375,16 +2037,44 @@ def test_foton_online_trial_question_uses_approved_safe_text() -> None:
             "active_brand": "foton",
             "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:023_trial_class"]},
             "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
-            "confirmed_facts": {"fact:trial": "Фотон: по онлайн-формату можно прислать фрагмент занятия."},
+            "confirmed_facts": {"fact:trial": "Фотон: пробное онлайн есть по умолчанию и оформляется дистанционно."},
         },
     )
 
     assert result.route == "bot_answer_self_for_pilot"
     assert result.topic_id == "theme:023_trial_class"
     assert "trial_safe_template_applied" in result.safety_flags
-    assert "фрагмент занятия" in result.draft_text
-    assert "по умолчанию" not in result.draft_text
+    assert "пробное занятие есть по умолчанию" in result.draft_text
+    assert "дистанционно" in result.draft_text
+    assert "приезжать не нужно" in result.draft_text
+    assert "фрагмент занятия" not in result.draft_text
     assert "бесплат" not in result.draft_text.casefold()
+
+
+def test_foton_trial_remote_question_does_not_invite_visit() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "manager_only",
+            "draft_text": "Запись и оформление проходят дистанционно. Если нужна личная встреча, её можно согласовать.",
+            "message_type": "question",
+            "topic_id": "theme:014_format",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "То есть приезжать точно не надо, всё онлайн оформляется?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:014_format", "theme:023_trial_class"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "dialogue_memory_view": {"known_slots": {"format": "онлайн", "product": "пробное"}},
+        },
+    )
+
+    assert "приезжать не нужно" in result.draft_text
+    assert "личная встреча" not in result.draft_text.casefold()
+    assert "согласовать" not in result.draft_text.casefold()
 
 
 def test_unpk_trial_question_does_not_promise_offline_free_trial() -> None:
@@ -1415,6 +2105,35 @@ def test_unpk_trial_question_does_not_promise_offline_free_trial() -> None:
     assert "бесплат" not in result.draft_text.casefold()
 
 
+def test_unpk_online_fragment_followup_answers_free_and_no_visit_directly() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "По очному формату сейчас обычно не начинаем с отдельного пробного занятия.",
+            "message_type": "question",
+            "topic_id": "theme:023_trial_class",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Я про онлайн, фрагмент этот бесплатно пришлёте? И приезжать никуда не надо?",
+        context={
+            "active_brand": "unpk",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:023_trial_class"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {"fact:fragment": "По онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем."},
+            "dialogue_memory_view": {"known_slots": {"format": "онлайн"}},
+        },
+    )
+
+    assert "онлайн-формату" in result.draft_text
+    assert "фрагмент занятия" in result.draft_text
+    assert "приезжать" in result.draft_text
+    assert "не обещаю" in result.draft_text
+    assert "очному формату" not in result.draft_text.casefold()
+
+
 def test_llm_missing_facts_do_not_block_autonomy_when_context_fact_is_verified() -> None:
     provider = FakeDraftProvider(
         {
@@ -1439,6 +2158,96 @@ def test_llm_missing_facts_do_not_block_autonomy_when_context_fact_is_verified()
 
     assert result.route == "bot_answer_self_for_pilot"
     assert "autonomy_default_cautious_missing_facts" not in result.safety_flags
+
+
+def test_live_availability_missing_fact_blocks_autonomy_even_with_verified_program_fact() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Да, сориентирую по проверенной информации. Фотон: ЛВШ Менделеево — 5-10 класс.",
+            "message_type": "question",
+            "topic_id": "theme:026_camp_general",
+            "confidence_theme": 0.91,
+            "missing_facts": ["availability_by_group_or_shift"],
+        }
+    )
+
+    result = provider.build_draft(
+        "А места на физику для 8 класса ещё есть?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:026_camp_general"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {"fact:camp": "Фотон: ЛВШ Менделеево рассчитана на 5-10 класс, есть физика."},
+            "dialogue_memory_view": {"known_slots": {"grade": "8", "subject": "физика", "product": "ЛВШ"}},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "autonomy_default_cautious_live_status_missing" in result.safety_flags
+    assert "не буду обещать без проверки" in result.draft_text
+    assert "8 класс" in result.draft_text
+    assert "физика" in result.draft_text
+    assert "Если напишете класс" not in result.draft_text
+
+
+def test_live_availability_fixation_question_answers_process_not_repeated_handoff() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Передам менеджеру, он проверит наличие мест.",
+            "message_type": "question",
+            "topic_id": "theme:026_camp_general",
+            "confidence_theme": 0.91,
+            "missing_facts": ["availability_by_group_or_shift"],
+        }
+    )
+
+    result = provider.build_draft(
+        "Хорошо, а как можно закрепить место?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:026_camp_general"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {"fact:camp": "Фотон: ЛВШ Менделеево рассчитана на 5-10 класс, есть физика."},
+            "dialogue_memory_view": {"known_slots": {"grade": "8", "subject": "физика", "product": "ЛВШ"}},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "Сначала менеджер проверит наличие" in result.draft_text
+    assert "Если место есть" in result.draft_text
+    assert "оформление заявки" in result.draft_text
+    assert "место точно доступно" in result.draft_text
+
+
+def test_live_availability_data_needed_question_uses_known_slots() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Передам менеджеру, он проверит наличие мест.",
+            "message_type": "question",
+            "topic_id": "theme:026_camp_general",
+            "confidence_theme": 0.91,
+            "missing_facts": ["availability_by_group_or_shift"],
+        }
+    )
+
+    result = provider.build_draft(
+        "Давайте, что от меня нужно для проверки мест?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:026_camp_general"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {"fact:camp": "Фотон: ЛВШ Менделеево рассчитана на 5-10 класс, есть физика."},
+            "dialogue_memory_view": {"known_slots": {"grade": "8", "subject": "физика", "product": "ЛВШ"}},
+        },
+    )
+
+    assert "уже вижу: 8 класс, физика" in result.draft_text
+    assert "Повторно присылать это не нужно" in result.draft_text
+    assert "предпочтение по датам смены" in result.draft_text
+    assert "Напишите класс" not in result.draft_text
 
 
 def test_missing_price_fact_uses_helpful_template_without_autonomy() -> None:
@@ -1617,7 +2426,8 @@ def test_current_price_with_deadline_is_not_blocked_by_future_context() -> None:
     assert "future_price_handoff_applied" not in result.safety_flags
     assert "74 500" in result.draft_text
     assert "до 1 июля" not in result.draft_text
-    assert "Это текущая цена" in result.draft_text
+    assert "текущ" in result.draft_text.casefold()
+    assert "сейчас" in result.draft_text.casefold()
 
 
 def test_current_price_numeric_deadline_is_softened() -> None:
@@ -1649,7 +2459,156 @@ def test_current_price_numeric_deadline_is_softened() -> None:
     assert "51 700" in result.draft_text
     assert "01.07" not in result.draft_text
     assert "до 1 июля" not in result.draft_text
-    assert "Это текущая цена" in result.draft_text
+    assert "текущ" in result.draft_text.casefold()
+    assert "сейчас" in result.draft_text.casefold()
+
+
+def test_current_online_price_august_deadline_is_softened() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Онлайн 8 класс: семестр — 29 750 ₽, год — 47 250 ₽. По текущим данным такие условия указаны для периода до 1 августа 2026 года; после этого стоимость может измениться.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Это цена прямо на сейчас? Потом поменяется?",
+        context={
+            "active_brand": "foton",
+            "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {
+                "fact:semester": "Фотон: онлайн 5-11, семестр — 29 750 ₽.",
+                "fact:year": "Фотон: онлайн 5-11, год — 47 250 ₽.",
+            },
+        },
+    )
+
+    assert "29 750" in result.draft_text
+    assert "47 250" in result.draft_text
+    assert "1 августа" not in result.draft_text
+    assert "01.08" not in result.draft_text
+    assert "текущ" in result.draft_text.casefold()
+    assert "сейчас" in result.draft_text.casefold()
+
+
+def test_current_price_direct_date_answer_is_softened_without_fixation_promise() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": (
+                "Да, уточняю: дата — 1 июля 2026. Цена 74 500 ₽ за год для очного формата "
+                "5–11 классов в Фотоне указана как действующая. Сейчас по дате вы укладываетесь; "
+                "отдельно нужно проверить место в группе и передать оформление по текущим условиям."
+            ),
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+            "manager_checklist": [
+                "Проверить наличие места в очной группе 8 класса по информатике",
+                "Подтвердить, что оформление возможно по цене 74 500 ₽ до 01.07.2026",
+            ],
+        }
+    )
+
+    result = provider.build_draft(
+        "После какой даты? Мне надо понять, успеваю ли по 74500 за год",
+        context={
+            "active_brand": "foton",
+            "known_slots": {"grade": "8", "subject": "информатика", "format": "очно"},
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {
+                "fact:year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+            },
+        },
+    )
+
+    assert "74 500" in result.draft_text
+    assert "1 июля" not in result.draft_text
+    assert "01.07" not in result.draft_text
+    assert "укладываетесь" not in result.draft_text.casefold()
+    assert "успева" not in result.draft_text.casefold()
+    assert "передать оформление" not in result.draft_text.casefold()
+    assert "Точную дату изменения цены менеджер подтвердит" in result.draft_text
+    assert all("1 июля" not in item and "01.07" not in item for item in result.manager_checklist)
+    assert "current_price_deadline_softened" in result.safety_flags
+
+
+def test_price_deadline_softener_does_not_leave_broken_fixation_fragment() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": (
+                "Да, это цена на сейчас: очно 8 класс, информатика — семестр 44 600 ₽, год 74 500 ₽. "
+                "Раннее бронирование позволяет зафиксировать цену + выбрать день недели до 1 июля. "
+                "Могу передать менеджеру, чтобы проверил группу и подсказал, как зафиксировать текущие условия до 1 июля."
+            ),
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Это цена на сейчас или скоро поменяется?",
+        context={
+            "active_brand": "foton",
+            "known_slots": {"grade": "8", "subject": "информатика", "format": "очно"},
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {
+                "fact:semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+                "fact:year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+            },
+        },
+    )
+
+    assert "1 июля" not in result.draft_text
+    assert "позволяет Оформление" not in result.draft_text
+    assert "как Оформление" not in result.draft_text
+    assert "как оформить по текущим условиям" in result.draft_text
+    assert "Оформление по текущим условиям проверит менеджер" not in result.draft_text
+
+
+def test_price_fixation_phrase_is_softened_even_without_explicit_deadline() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": (
+                "Да, это цена на сейчас: очно 8 класс, информатика — семестр 44 600 ₽, год 74 500 ₽. "
+                "Раннее бронирование позволяет зафиксировать цену + выбрать день недели. "
+                "Могу передать менеджеру, чтобы проверил группу и подсказал, как зафиксировать текущие условия."
+            ),
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Это цена на сейчас или скоро поменяется?",
+        context={
+            "active_brand": "foton",
+            "known_slots": {"grade": "8", "subject": "информатика", "format": "очно"},
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {
+                "fact:semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+                "fact:year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+            },
+        },
+    )
+
+    assert "зафиксировать" not in result.draft_text.casefold()
+    assert "позволяет Оформление" not in result.draft_text
+    assert "как Оформление" not in result.draft_text
+    assert "Чтобы Оформление" not in result.draft_text
+    assert "как оформить по текущим условиям" in result.draft_text
 
 
 def test_unpk_four_weeks_new_price_uses_verified_fact_template() -> None:
@@ -1870,6 +2829,75 @@ def test_foton_camp_general_question_mentions_both_main_formats() -> None:
     assert "Менделеево" in result.draft_text
     assert "городская летняя школа" in result.draft_text
     assert "наличие мест" in result.draft_text.casefold()
+
+
+def test_foton_outbound_camp_living_question_answers_living_meals_transfer() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Менеджер уточнит условия лагеря.",
+            "message_type": "question",
+            "topic_id": "theme:027_camp_living_conditions",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "8 класс, физика. Выездной лагерь: проживание, питание и трансфер входят?",
+        context={
+            "active_brand": "foton",
+            "known_dialog_fields": {"grade": "8", "subject": "физика"},
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:027_camp_living_conditions"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
+            "confirmed_facts": {
+                "fact:lvsh_living": "Фотон: в ЛВШ Менделеево есть проживание, 5-разовое питание и трансфер из Москвы.",
+            },
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "проживание" in result.draft_text.casefold()
+    assert "5-разовое питание" in result.draft_text
+    assert "трансфер" in result.draft_text.casefold()
+    assert "городской летний лагерь" not in result.draft_text.casefold()
+    assert "онлайн" not in result.draft_text.casefold()
+
+
+def test_foton_camp_living_question_is_not_overwritten_by_missing_shift_fact() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": (
+                "Поняла: 8 класс, физика. У Фотона есть выездная школа в Менделеево "
+                "и городская летняя школа в Москве. Менеджер проверит подходящую смену."
+            ),
+            "message_type": "question",
+            "topic_id": "theme:027_camp_living_conditions",
+            "confidence_theme": 0.91,
+            "missing_facts": ["availability_by_shift"],
+        }
+    )
+
+    result = provider.build_draft(
+        "А в Менделеево что входит в смену, проживание и питание отдельно?",
+        context={
+            "active_brand": "foton",
+            "known_dialog_fields": {"grade": "8", "subject": "физика"},
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:027_camp_living_conditions"]},
+            "facts_context": {"client_safe": True, "fresh": True, "facts_missing": True},
+            "confirmed_facts": {
+                "fact:lvsh_living": "Фотон: в ЛВШ Менделеево есть проживание, 5-разовое питание и трансфер из Москвы.",
+                "fact:lvsh_transfer": "Фотон: трансфер из Москвы включён в стоимость ЛВШ Менделеево.",
+            },
+            "dialogue_memory_view": {"known_slots": {"grade": "8", "subject": "физика", "product": "ЛВШ"}},
+        },
+    )
+
+    assert "проживание" in result.draft_text.casefold()
+    assert "5-разовое питание" in result.draft_text
+    assert "трансфер" in result.draft_text.casefold()
+    assert "Напишите, пожалуйста, класс" not in result.draft_text
+    assert "missing_fact_helpful_template_applied" not in result.safety_flags
 
 
 def test_unpk_lvsh_price_uses_camp_price_template_not_generic_price() -> None:
@@ -2309,3 +3337,60 @@ def test_funnel_p0_route_recommendation_overrides_autonomous_llm() -> None:
 
     assert result.route == "manager_only"
     assert "autonomy_blocked_funnel_p0" in result.safety_flags
+
+
+def test_provider_runs_answer_quality_rewriter_after_first_guards_before_autonomy() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Стоимость зависит от класса, формата и периода оплаты. Менеджер проверит актуальную стоимость.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.94,
+        }
+    )
+
+    result = provider.build_draft(
+        "Это цена прямо на сейчас? Можно зафиксировать?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "client_safe_fact_verified": True,
+            "facts_context": {"fresh": True, "client_safe": True},
+            "confirmed_facts": {"fact:price": "Фотон 8 класс физика онлайн: текущая цена сейчас 74 500 ₽ за год."},
+            "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+            "funnel_state": {"filled_slots": {"grade": "8", "subject": "физика", "format": "онлайн"}},
+        },
+    )
+
+    assert result.metadata["answer_quality"]["rewritten"] is True
+    assert "answer_quality_rewritten" in result.safety_flags
+    assert "74 500 ₽" in result.draft_text
+    assert "autonomy_matrix_passed" in result.safety_flags
+
+
+def test_provider_rewriter_cannot_promote_manager_only_to_autonomous() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "manager_only",
+            "draft_text": "Приняли обращение. Передам ответственному сотруднику, он вернется с ответом.",
+            "message_type": "question",
+            "topic_id": "theme:009_refund",
+            "confidence_theme": 0.95,
+            "safety_flags": ["high_risk_manager_only"],
+        }
+    )
+
+    result = provider.build_draft(
+        "Сколько стоит и как вернуть деньги?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "client_safe_fact_verified": True,
+            "confirmed_facts": {"fact:price": "Фотон: текущая цена 74 500 ₽."},
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert "answer_quality_rewritten" not in result.safety_flags
+    assert result.metadata["answer_quality"]["rewritten"] is False

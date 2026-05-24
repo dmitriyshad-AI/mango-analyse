@@ -159,7 +159,8 @@ def build_lead_funnel_state(
 ) -> LeadFunnelState:
     ctx = dict(context or {})
     brand = normalize_brand(active_brand or ctx.get("active_brand"))
-    text = "\n".join([*map(str, recent_messages), str(client_message or "")])
+    recent_client_text = _client_only_recent_text(recent_messages)
+    text = "\n".join([recent_client_text, str(client_message or "")])
     normalized = normalize_text(text)
     current_normalized = normalize_text(client_message)
     blockers = detect_safety_blockers(current_normalized, route=route, risk_level=risk_level, safety_flags=safety_flags)
@@ -461,7 +462,7 @@ def build_semantic_flags(
 
 
 def extract_grade(text: str) -> str:
-    match = re.search(r"\b(?P<grade>[1-9]|1[01])\s*(?:класс|кл\.?)\b", text)
+    match = re.search(r"\b(?P<grade>[1-9]|1[01])\s*(?:класс[ае]?|кл\.?)\b", text)
     if match:
         return match.group("grade")
     if "огэ" in text:
@@ -477,6 +478,23 @@ def extract_subjects(text: str) -> str:
         if marker in text:
             subjects.append(subject)
     return ", ".join(dict.fromkeys(subjects))
+
+
+def _client_only_recent_text(recent_messages: Sequence[str]) -> str:
+    parts: list[str] = []
+    for item in recent_messages:
+        for raw_line in str(item or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            lowered = line.casefold()
+            if lowered.startswith(("ответ:", "бот:", "assistant:", "bot:")):
+                continue
+            if lowered.startswith(("клиент:", "client:", "user:")) and ":" in line:
+                line = line.split(":", 1)[1].strip()
+            if line:
+                parts.append(line)
+    return "\n".join(parts)
 
 
 def extract_format(text: str) -> str:

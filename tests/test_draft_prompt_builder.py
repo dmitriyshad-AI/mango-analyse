@@ -26,6 +26,19 @@ def test_prompt_contains_rop_policy_and_forbids() -> None:
     assert "Нельзя раскрывать" in prompt
 
 
+def test_prompt_contains_policy_c_for_direct_identity_question() -> None:
+    prompt = build_draft_prompt(
+        "Вы бот или человек?",
+        context={"active_brand": "foton"},
+    )
+
+    assert "Сам первым не объявляй" in prompt
+    assert "цифровой помощник активного бренда" in prompt
+    assert "не живой оператор" in prompt
+    assert "Не называй модель и вендора" in prompt
+    assert "Не ври" in prompt
+
+
 def test_prompt_blocks_unapproved_topic() -> None:
     assert route_from_rop_policy({"bot_permission": "unknown"}) == "manager_only"
 
@@ -110,6 +123,23 @@ def test_prompt_tells_model_not_to_ask_known_context_again() -> None:
     assert "known_client_fields" in prompt
     assert "known_dialog_fields" in prompt
     assert "Если известен класс и предмет" in prompt
+
+
+def test_prompt_keeps_read_only_customer_context_for_known_client_reasoning() -> None:
+    prompt = build_draft_prompt(
+        "Можно посмотреть, что у нас по оплате?",
+        context={
+            "active_brand": "unpk",
+            "read_only_customer_context": {
+                "summary": "Клиент найден в read-only контексте; использовать только для понимания ситуации.",
+                "local_runtime_context": "Есть история обращений, без раскрытия клиенту.",
+            },
+        },
+    )
+
+    assert "read_only_customer_context" in prompt
+    assert "используй это только для понимания ситуации" in prompt
+    assert "не раскрывай CRM/Tallanto/AMO" in prompt
 
 
 def test_prompt_prioritizes_no_fabrication_over_direct_answer() -> None:
@@ -220,6 +250,32 @@ def test_prompt_contains_funnel_state_fields() -> None:
     assert "ask_grade" in prompt
 
 
+def test_prompt_contains_dialogue_memory_view_fields() -> None:
+    prompt = build_draft_prompt(
+        "А можно зафиксировать текущую цену?",
+        context={
+            "active_brand": "foton",
+            "dialogue_memory_view": {
+                "active_brand": "foton",
+                "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+                "open_question": {
+                    "text": "А можно зафиксировать текущую цену?",
+                    "kind": "price_fix",
+                    "answered": False,
+                },
+                "do_not_ask_again": ["grade", "subject", "format"],
+                "next_best_action_hint": "answer_open_question:price_fix",
+            },
+        },
+    )
+
+    assert "Память текущего диалога" in prompt
+    assert "dialogue_memory_view" in prompt
+    assert "А можно зафиксировать текущую цену?" in prompt
+    assert "answer_open_question:price_fix" in prompt
+    assert "do_not_ask_again" in prompt
+
+
 def test_prompt_says_funnel_p0_overrides_autonomy() -> None:
     prompt = build_draft_prompt(
         "Сколько стоит и как вернуть деньги?",
@@ -235,3 +291,18 @@ def test_prompt_says_funnel_p0_overrides_autonomy() -> None:
     assert "next_step_type=manager_only_p0" in prompt
     assert "автономность запрещена" in prompt
     assert "Не спрашивай поля из known_slots повторно" in prompt
+
+
+def test_prompt_prioritizes_last_turn_and_multitopic_answer_quality() -> None:
+    prompt = build_draft_prompt(
+        "Это цена прямо на сейчас? Можно частями?",
+        context={
+            "active_brand": "foton",
+            "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+        },
+    )
+
+    assert "Последнее сообщение клиента важнее общего сценария подбора" in prompt
+    assert "не сбрасывайся в стартовую анкету" in prompt
+    assert "не пиши общий шаблон" in prompt
+    assert "ответь хотя бы на 2-3 главные части" in prompt

@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.contracts import ChannelMessage
+from mango_mvp.channels.answer_contract import build_answer_contract
+from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
+from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
+from mango_mvp.channels.dialogue_memory import DialogueMemory, build_dialogue_memory
+from mango_mvp.channels.few_shot_reference import build_few_shot_reference
 from mango_mvp.channels.pilot_context import PilotContext, build_pilot_context
 from mango_mvp.knowledge_base.fact_registry import classify_fact_types, fact_type_from_key
 from mango_mvp.knowledge_base.kc_context import limit_context_chunks
@@ -68,6 +73,8 @@ _TOPIC_REQUIRED_FACT_KEYS = {
     "document": ("documents.current",),
     "trial": ("trial_class.current",),
     "program": ("programs.current",),
+    "transport": ("transport.current",),
+    "logistics": ("transport.current",),
 }
 
 
@@ -98,24 +105,77 @@ def build_telegram_pilot_context(
     tallanto_context: Mapping[str, Any] | None = None,
     timeline_context: Mapping[str, Any] | None = None,
     risk_flags: Sequence[str] = (),
+    known_slots: Mapping[str, Any] | None = None,
+    dialogue_memory: Mapping[str, Any] | DialogueMemory | None = None,
+    session_id: str = "",
 ) -> PilotContext:
     """Build PilotContext for Telegram manager drafts from a compact KC snapshot."""
 
     current_message = message.text if isinstance(message, ChannelMessage) else str(message or "")
     merged_policy = merge_theme_and_rop_policy(theme=theme, rop_policy=rop_policy)
     snapshot, snapshot_warnings = _load_snapshot(kc_snapshot=kc_snapshot, snapshot_path=snapshot_path)
+    memory = build_dialogue_memory(
+        current_message=current_message,
+        active_brand=active_brand,
+        recent_messages=recent_messages,
+        known_slots=known_slots or {},
+        previous_memory=dialogue_memory,
+        session_id=session_id,
+    )
+    memory_view = memory.to_prompt_view()
+    memory_known_slots = memory_view.get("known_slots") if isinstance(memory_view.get("known_slots"), Mapping) else {}
+    merged_known_slots = {**dict(known_slots or {}), **dict(memory_known_slots)}
+    base_topic_id = _topic_id(theme=theme, rop_policy=merged_policy)
+    intent_plan = build_conversation_intent_plan(
+        current_message=current_message,
+        active_brand=active_brand,
+        topic_id=base_topic_id,
+        known_slots=merged_known_slots,
+        dialogue_memory_view=memory_view,
+        recent_messages=recent_messages,
+    )
+    intent_view = intent_plan.to_prompt_view()
+    safety_decision = classify_answer_safety(
+        client_message=current_message,
+        context={"conversation_intent_plan": intent_view, "recent_messages": recent_messages},
+        topic_id=intent_plan.topic_id,
+    )
+    policy_for_snapshot = dict(merged_policy)
+    policy_for_snapshot.setdefault("topic_id", intent_plan.topic_id)
+    existing_required = _text_list(policy_for_snapshot.get("required_fact_keys"))
+    policy_for_snapshot["required_fact_keys"] = list(
+        dict.fromkeys([*existing_required, *intent_plan.required_fact_keys])
+    )
+    knowledge_query = intent_plan.fact_query_text or _contextual_message_for_knowledge_lookup(current_message, known_slots=merged_known_slots)
+    knowledge_query = _contextual_message_with_recent_product(knowledge_query, current_message=current_message, recent_messages=recent_messages)
     snapshot_context = build_knowledge_snapshot_context(
-        message_text=current_message,
-        theme=theme,
-        rop_policy=merged_policy,
+        message_text=knowledge_query,
+        theme={"topic_id": intent_plan.topic_id},
+        rop_policy=policy_for_snapshot,
         kc_snapshot=snapshot,
         snapshot_warnings=snapshot_warnings,
         active_brand=active_brand,
     )
-    policy_for_prompt = dict(merged_policy)
+    policy_for_prompt = dict(policy_for_snapshot)
     if snapshot_context.facts_context.get("required_fact_keys"):
         policy_for_prompt.setdefault("required_fact_keys", snapshot_context.facts_context["required_fact_keys"])
     topic_id = _topic_id(theme=theme, rop_policy=policy_for_prompt)
+    few_shot_reference = build_few_shot_reference(
+        message_text=current_message,
+        active_brand=active_brand,
+        topic_id=topic_id,
+        confirmed_facts=snapshot_context.confirmed_facts,
+        missing_facts=snapshot_context.missing_facts,
+        known_slots=merged_known_slots,
+    )
+    answer_contract = build_answer_contract(
+        active_brand=active_brand,
+        conversation_intent_plan=intent_view,
+        dialogue_memory_view=memory_view,
+        safety_decision=safety_decision.to_json_dict(),
+        known_slots=merged_known_slots,
+        confirmed_facts=snapshot_context.confirmed_facts,
+    )
     policy_for_prompt.setdefault(
         "autonomy_policy",
         {
@@ -151,7 +211,56 @@ def build_telegram_pilot_context(
         context_warnings=snapshot_context.context_warnings,
         knowledge_base_version=snapshot_context.knowledge_base_version,
         risk_flags=risk_flags,
+        dialogue_memory_view=memory_view,
+        conversation_intent_plan=intent_view,
+        answer_contract=answer_contract.to_prompt_view(),
+        answer_quality_reference=few_shot_reference,
+        few_shot_style_examples=tuple(few_shot_reference.get("style_examples") or ()),
+        few_shot_correction_examples=tuple(few_shot_reference.get("correction_examples") or ()),
     )
+
+
+def _contextual_message_for_knowledge_lookup(message_text: str, *, known_slots: Mapping[str, Any]) -> str:
+    additions: list[str] = []
+    grade = _clean_text(known_slots.get("grade") or known_slots.get("class") or known_slots.get("student_grade"))
+    subject = _clean_text(known_slots.get("subject") or known_slots.get("course_subject") or known_slots.get("interest_subject"))
+    course_format = _clean_text(known_slots.get("format") or known_slots.get("course_format") or known_slots.get("preferred_format"))
+    if grade and "класс" not in grade.casefold():
+        additions.append(f"{grade} класс")
+    elif grade:
+        additions.append(grade)
+    if subject:
+        additions.append(subject)
+    if course_format:
+        additions.append(course_format)
+    if not additions:
+        return str(message_text or "")
+    return " ".join([str(message_text or ""), "Контекст диалога:", *additions]).strip()
+
+
+def _contextual_message_with_recent_product(
+    query: str,
+    *,
+    current_message: str,
+    recent_messages: Sequence[str],
+) -> str:
+    current = _normalize_match_text(current_message)
+    recent = _normalize_match_text(" ".join(str(item or "") for item in recent_messages[-8:]))
+    if not current or not recent:
+        return query
+    followup_markers = ("трансфер", "добир", "дорог", "заезд", "из москв", "прожив", "питан", "что входит", "мест", "смен")
+    if not any(marker in current for marker in followup_markers):
+        return query
+    additions: list[str] = []
+    if "выездн" in current:
+        additions.append("ЛВШ Менделеево выездной лагерь")
+    elif any(marker in recent for marker in ("лвш", "менделеево", "выездн")):
+        additions.append("ЛВШ Менделеево выездной лагерь")
+    elif "городск" in recent and "лагер" in recent:
+        additions.append("городской лагерь")
+    if not additions:
+        return query
+    return " ".join([query, "Контекст продукта:", *additions]).strip()
 
 
 def build_telegram_pilot_context_from_snapshot(
@@ -215,6 +324,16 @@ def build_knowledge_snapshot_context(
         max_chunk_chars=MAX_KNOWLEDGE_SNIPPET_CHARS,
         total_char_limit=MAX_KNOWLEDGE_CONTEXT_CHARS,
     )
+    selected_chunks = [
+        chunk
+        for chunk in selected_chunks
+        if _chunk_matches_context(
+            chunk,
+            required_fact_types=required_fact_types,
+            topic_id=topic_id,
+            query=message_text,
+        )
+    ]
     confirmed_facts = _select_confirmed_facts(
         facts,
         required_fact_types=required_fact_types,
@@ -338,7 +457,10 @@ def required_fact_keys_for_message(
         if marker in topic_text:
             keys.extend(marker_keys)
 
-    text = f"{topic_text} {message_text}".casefold()
+    requirement_message = str(message_text or "").split("Контекст диалога:", 1)[0]
+    requirement_message = requirement_message.split("Известные данные:", 1)[0]
+    requirement_message = requirement_message.split("Нужные факты:", 1)[0]
+    text = f"{topic_text} {requirement_message}".casefold()
     if re.search(r"стоим|цен[аы]|сколько стоит|прайс|руб", text):
         keys.append("prices.current")
     if re.search(r"распис|когда|во сколько|суббот|воскрес|слот|занят", text):
@@ -355,6 +477,8 @@ def required_fact_keys_for_message(
         keys.append("formats.current")
     if re.search(r"программ|предмет|летн|пробн|чему учат|содержание", text):
         keys.append("programs.current")
+    if re.search(r"трансфер|добир|дорог|заезд|из москв|самостоятельн", text):
+        keys.append("transport.current")
     return tuple(_dedupe(_stable_fact_key(key) for key in keys if _clean_text(key)))
 
 
@@ -507,6 +631,8 @@ def _missing_fact_keys(
     for fact_key in required_fact_keys:
         fact_type = fact_type_from_key(fact_key)
         acceptable_fact_types = _expand_required_fact_types({fact_type}, topic_id="", query="")
+        if fact_type == "location" and required_fact_types & {"camp_lvsh", "camp_city"}:
+            acceptable_fact_types.update({"camp_lvsh", "camp_city"})
         if confirmed_fact_types & acceptable_fact_types:
             continue
         candidate_statuses = [
@@ -556,6 +682,21 @@ def _manager_pattern_snippets(snapshot: Mapping[str, Any], *, topic_id: str, act
     return tuple(_dedupe(snippets))
 
 
+def _chunk_matches_context(
+    chunk: Any,
+    *,
+    required_fact_types: set[str],
+    topic_id: str,
+    query: str,
+) -> bool:
+    record = {
+        "title": getattr(chunk, "title", ""),
+        "text": getattr(chunk, "text", ""),
+        "fact_types": list(getattr(chunk, "fact_types", ()) or ()),
+    }
+    return _record_matches_context(record, required_fact_types=required_fact_types, topic_id=topic_id, query=query)
+
+
 def _record_matches_context(
     record: Mapping[str, Any],
     *,
@@ -591,8 +732,10 @@ def _record_matches_context(
 
 
 def _record_matches_product_markers(text: str, query_text: str) -> bool:
+    if "выездн" in query_text and "городск" in text:
+        return False
     marker_groups = (
-        ("лвш", "менделеево"),
+        ("лвш", "менделеево", "выездн"),
         ("звш", "зимн"),
         ("городск",),
         ("интенсив",),
@@ -614,7 +757,7 @@ def _record_is_unrequested_special_product(text: str, query_text: str) -> bool:
     special_markers = (
         ("индивидуаль",),
         ("интенсив",),
-        ("лвш", "менделеево"),
+        ("лвш", "менделеево", "выездн"),
         ("звш",),
         ("городск", "лагер"),
     )
@@ -677,6 +820,8 @@ def _expand_required_fact_types(required_fact_types: set[str], *, topic_id: str,
         expanded.update({"installment", "payment_methods", "discount", "course_parameter"})
     if "лагер" in query_text or "лвш" in query_text or "лш" in query_text or "менделеево" in query_text:
         expanded.update({"camp_lvsh", "camp_city", "deadline", "price", "location", "program"})
+    if any(marker in query_text for marker in ("трансфер", "добир", "дорог", "заезд", "из москв", "самостоятельн")):
+        expanded.update({"location", "camp_lvsh", "program"})
     return expanded
 
 
@@ -719,6 +864,14 @@ def _fact_match_score(
         score += 50
     if ("где" in query_text or "адрес" in query_text or "площадк" in query_text) and "location" in fact_types:
         score += 30
+    if any(marker in query_text for marker in ("трансфер", "добир", "дорог", "заезд", "из москв", "самостоятельн")):
+        if any(marker in text for marker in ("трансфер", "добир", "дорог", "заезд", "из москв", "ховрино", "самостоятельн")):
+            score += 80
+        else:
+            score -= 10
+    if any(marker in query_text for marker in ("прожив", "питан", "что входит")):
+        if any(marker in text for marker in ("прожив", "питан", "5-раз", "шведск", "размещ")):
+            score += 50
     for marker in ("лвш", "менделеево", "лагер", "интенсив", "пробн", "маткап", "налог", "скид"):
         if marker in query_text and marker in text:
             score += 20

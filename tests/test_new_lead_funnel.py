@@ -48,6 +48,21 @@ def test_camp_flow_asks_class_not_age_and_never_promises_seats() -> None:
     assert "возраст" not in state.next_best_question.casefold()
 
 
+def test_funnel_slots_ignore_bot_answers_to_avoid_self_pollution() -> None:
+    state = build_lead_funnel_state(
+        "а места на выездную еще есть?",
+        active_brand="foton",
+        topic_id="theme:026_camp_general",
+        recent_messages=[
+            "Клиент: а выездная смена есть? сколько она стоит?",
+            "Ответ: В ЛВШ есть физика, математика, Python и проектная деятельность.",
+        ],
+    )
+
+    assert state.known_slots.subject == ""
+    assert "программ" not in state.to_json_dict()["filled_slots"].get("subject", "")
+
+
 def test_p0_composite_stops_qualification() -> None:
     state = build_lead_funnel_state(
         "Сколько стоит курс и как вернуть деньги за прошлый месяц?",

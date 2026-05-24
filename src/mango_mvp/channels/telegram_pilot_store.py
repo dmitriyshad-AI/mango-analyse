@@ -492,11 +492,62 @@ class TelegramPilotSQLiteStore:
     def list_messages(self, *, day: Optional[date | str] = None) -> tuple[Mapping[str, Any], ...]:
         return self._list_records("tgm_pilot_messages", "message_json", "received_at", day=day)
 
+    def list_contexts(self, *, day: Optional[date | str] = None) -> tuple[Mapping[str, Any], ...]:
+        return self._list_records("tgm_pilot_contexts", "context_json", "inserted_at", day=day)
+
     def list_drafts(self, *, day: Optional[date | str] = None) -> tuple[Mapping[str, Any], ...]:
         return self._list_records("tgm_pilot_drafts", "draft_json", "created_at", day=day)
 
     def list_feedback_events(self, *, day: Optional[date | str] = None) -> tuple[Mapping[str, Any], ...]:
         return self._list_records("tgm_pilot_feedback", "feedback_json", "occurred_at", day=day)
+
+    def upsert_dialogue_memory_snapshot(
+        self,
+        *,
+        message_key: str,
+        session_id: str,
+        active_brand: str,
+        memory_snapshot: Mapping[str, Any],
+        created_at: Optional[datetime] = None,
+    ) -> StoreResult:
+        self._ensure_writable()
+        now = created_at or self._now()
+        require_timezone(now, "created_at")
+        key = "dialogue_memory:" + stable_digest({"message_key": message_key, "session_id": session_id})[:32]
+        payload = {
+            "schema_version": TELEGRAM_PILOT_STORE_SCHEMA_VERSION,
+            "snapshot_id": key,
+            "message_key": require_text(message_key, "message_key"),
+            "session_id": require_text(session_id, "session_id"),
+            "active_brand": normalize_pilot_key(active_brand or "unknown", "active_brand"),
+            "created_at": now.isoformat(),
+            "memory_snapshot": dict(memory_snapshot),
+            "safety": telegram_pilot_store_safety_contract(),
+        }
+        created = (
+            self._con.execute(
+                """
+                INSERT OR IGNORE INTO tgm_pilot_dialogue_memory (
+                  snapshot_id, message_key, session_id, active_brand, created_at, memory_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    payload["message_key"],
+                    payload["session_id"],
+                    payload["active_brand"],
+                    payload["created_at"],
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                ),
+            ).rowcount
+            == 1
+        )
+        self._con.commit()
+        return StoreResult("dialogue_memory_snapshot", key, created)
+
+    def list_dialogue_memory_snapshots(self, *, day: Optional[date | str] = None) -> tuple[Mapping[str, Any], ...]:
+        return self._list_records("tgm_pilot_dialogue_memory", "memory_json", "created_at", day=day)
 
     def daily_summary(self, day: date | str) -> TelegramPilotDailySummary:
         day_text, start, end = day_bounds(day)
@@ -593,12 +644,22 @@ class TelegramPilotSQLiteStore:
               metadata_json TEXT NOT NULL,
               feedback_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS tgm_pilot_dialogue_memory (
+              snapshot_id TEXT PRIMARY KEY,
+              message_key TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              active_brand TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              memory_json TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS ix_tgm_pilot_messages_received
               ON tgm_pilot_messages(received_at, channel_thread_id);
             CREATE INDEX IF NOT EXISTS ix_tgm_pilot_drafts_created
               ON tgm_pilot_drafts(created_at, status);
             CREATE INDEX IF NOT EXISTS ix_tgm_pilot_feedback_occurred
               ON tgm_pilot_feedback(occurred_at, event_type);
+            CREATE INDEX IF NOT EXISTS ix_tgm_pilot_dialogue_memory_created
+              ON tgm_pilot_dialogue_memory(created_at, active_brand);
             """
         )
         self._con.commit()

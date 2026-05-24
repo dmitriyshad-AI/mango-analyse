@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import subprocess
 import tempfile
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,12 +19,13 @@ from typing import Any, Mapping, Optional, Sequence
 from mango_mvp.channels.subscription_llm import (
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
-    _is_verified_client_safe_template,
     normalize_subscription_draft_payload,
     strip_internal_service_markers,
 )
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
+from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_funnel_context_payload
+from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
 DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke_tests_v7_dynamic_sim_2026-05-21/v7_dynamic_client_sim_2026-05-21.jsonl")
@@ -135,6 +138,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0, help="Limit personas for smoke runs.")
     parser.add_argument("--max-turns", type=int, default=0, help="Override persona max_turns.")
     parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help="Run this many dialogs concurrently. Recommended: 2-3 for codex modes, higher only for fake smoke.",
+    )
+    parser.add_argument(
         "--transcripts-in",
         type=Path,
         default=None,
@@ -145,6 +154,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Continue an interrupted run by loading existing dynamic_dialog_transcripts.jsonl from --out-dir.",
     )
+    parser.add_argument(
+        "--skip-completed",
+        action="store_true",
+        help="When resuming, keep completed dialogs and run only missing/incomplete dialogs.",
+    )
+    parser.add_argument(
+        "--only-failed",
+        action="store_true",
+        help="When resuming, rerun only dialogs with FAIL verdict or previous infrastructure errors.",
+    )
+    parser.add_argument(
+        "--only-timeout",
+        action="store_true",
+        help="When resuming, rerun only dialogs that ended with timeout.",
+    )
     parser.add_argument("--client-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--bot-mode", choices=("codex", "fake"), default="codex")
@@ -153,32 +177,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--client-reasoning", default="medium")
     parser.add_argument("--judge-reasoning", default="high")
     parser.add_argument("--timeout-sec", type=int, default=180)
+    parser.add_argument(
+        "--disable-bot-cache",
+        action="store_true",
+        help="Do not use cached bot LLM drafts; useful when validating fresh prompt/code changes.",
+    )
+    parser.add_argument(
+        "--enable-llm-rewriter",
+        action="store_true",
+        help="Enable optional answer-quality LLM rewrite layer for bot answers in this run only.",
+    )
     args = parser.parse_args(argv)
+    if args.parallel < 1:
+        raise ValueError("--parallel must be >= 1")
+    if args.enable_llm_rewriter:
+        os.environ["TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"] = "1"
 
     if "stable_runtime" in args.out_dir.resolve(strict=False).parts:
         raise ValueError("Refusing to write dynamic sim outputs under stable_runtime")
+    if (args.bot_mode == "codex" or args.transcripts_in is not None) and not args.snapshot.exists():
+        raise FileNotFoundError(f"Knowledge snapshot not found: {args.snapshot}")
 
     sim_input = load_dynamic_sim_input(args.scenarios)
     personas = [item for item in sim_input.personas if args.brand == "all" or item.get("brand") == args.brand]
     if args.limit > 0:
         personas = personas[: args.limit]
-
-    client_model = FakeClientModel() if args.client_mode == "fake" else CodexJsonModel(
-        model=args.model,
-        reasoning_effort=args.client_reasoning,
-        timeout_sec=args.timeout_sec,
-    )
-    judge_model = FakeJudgeModel() if args.judge_mode == "fake" else CodexJsonModel(
-        model=args.model,
-        reasoning_effort=args.judge_reasoning,
-        timeout_sec=args.timeout_sec,
-    )
-    bot_provider: Any = FakeBotProvider() if args.bot_mode == "fake" else SubscriptionLlmDraftProvider(
-        model=args.model,
-        reasoning_effort=args.bot_reasoning,
-        timeout_sec=args.timeout_sec,
-        cache_dir=Path(".codex_local/telegram_dynamic_client_sim/llm_cache"),
-    )
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     transcripts_path = args.out_dir / "dynamic_dialog_transcripts.jsonl"
@@ -189,8 +212,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     per_dialog_dir = args.out_dir / "transcripts_md"
     summary_path = args.out_dir / "dynamic_summary.json"
     summary_md_path = args.out_dir / "dynamic_summary.md"
+    persona_order = {
+        str(persona.get("dialog_id") or ""): index
+        for index, persona in enumerate(personas)
+    }
 
     if args.transcripts_in is not None:
+        judge_model = build_judge_model(args)
         transcripts = [
             attach_context_facts_to_dialog(dialog, snapshot_path=args.snapshot)
             for dialog in load_transcripts(args.transcripts_in)
@@ -209,55 +237,131 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.resume and transcripts_path.exists():
             transcripts = list(load_transcripts(transcripts_path))
             print(f"resume_loaded_dialogs={len(transcripts)}", flush=True)
+        existing_by_id = {str(dialog.get("dialog_id") or ""): dict(dialog) for dialog in transcripts if str(dialog.get("dialog_id") or "").strip()}
+        rerun_ids = {
+            dialog_id
+            for dialog_id, dialog in existing_by_id.items()
+            if _should_rerun_existing_dialog(dialog, only_failed=args.only_failed, only_timeout=args.only_timeout)
+        }
+        if rerun_ids:
+            transcripts = [dialog for dialog in transcripts if str(dialog.get("dialog_id") or "") not in rerun_ids]
+            existing_by_id = {str(dialog.get("dialog_id") or ""): dict(dialog) for dialog in transcripts if str(dialog.get("dialog_id") or "").strip()}
         completed_ids = {
-            str(dialog.get("dialog_id") or "")
-            for dialog in transcripts
-            if str(dialog.get("dialog_id") or "").strip()
+            dialog_id
+            for dialog_id, dialog in existing_by_id.items()
+            if _dialog_completed(dialog) and (args.resume or args.skip_completed)
         }
         judge_results = [
             dict(dialog.get("judge_result") or {})
             for dialog in transcripts
             if isinstance(dialog.get("judge_result"), Mapping)
         ]
+        pending_personas = []
         for persona in personas:
             dialog_id = str(persona.get("dialog_id") or "")
             if dialog_id in completed_ids:
                 print(f"skip_completed_dialog={dialog_id}", flush=True)
                 continue
-            print(f"run_dialog={dialog_id}", flush=True)
-            started = time.time()
-            dialog = run_one_dialog(
-                persona,
-                simulator_spec=sim_input.simulator_spec,
-                judge_spec=sim_input.judge_spec,
-                client_model=client_model,
-                judge_model=judge_model,
-                bot_provider=bot_provider,
-                snapshot_path=args.snapshot,
-                max_turns_override=args.max_turns,
-            )
-            dialog = {**dialog, "elapsed_seconds": round(time.time() - started, 3)}
-            transcripts.append(dialog)
-            judge_results.append(dict(dialog["judge_result"]))
-            completed_ids.add(str(dialog.get("dialog_id") or ""))
-            write_dynamic_outputs(
-                transcripts,
-                judge_results,
-                transcripts_path=transcripts_path,
-                judge_path=judge_path,
-                turns_path=turns_path,
-                review_queue_path=review_queue_path,
-                full_transcripts_md_path=full_transcripts_md_path,
-                per_dialog_dir=per_dialog_dir,
-                summary_path=summary_path,
-                summary_md_path=summary_md_path,
-                scenario_path=args.scenarios,
-                snapshot_path=args.snapshot,
-            )
-            print(
-                f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
-                flush=True,
-            )
+            if (args.only_failed or args.only_timeout) and dialog_id not in rerun_ids:
+                continue
+            pending_personas.append(persona)
+
+        if args.parallel == 1:
+            client_model = build_client_model(args)
+            judge_model = build_judge_model(args)
+            bot_provider = build_bot_provider(args)
+            for persona in pending_personas:
+                dialog_id = str(persona.get("dialog_id") or "")
+                print(f"run_dialog={dialog_id}", flush=True)
+                started = time.time()
+                try:
+                    dialog = run_one_dialog(
+                        persona,
+                        simulator_spec=sim_input.simulator_spec,
+                        judge_spec=sim_input.judge_spec,
+                        client_model=client_model,
+                        judge_model=judge_model,
+                        bot_provider=bot_provider,
+                        snapshot_path=args.snapshot,
+                        max_turns_override=args.max_turns,
+                    )
+                    dialog = {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
+                except Exception as exc:  # noqa: BLE001
+                    dialog = build_infra_error_dialog(
+                        persona,
+                        exc,
+                        elapsed_seconds=round(time.time() - started, 3),
+                    )
+                transcripts.append(dialog)
+                transcripts = sort_transcripts_by_persona_order(transcripts, persona_order)
+                judge_results = extract_judge_results(transcripts)
+                completed_ids.add(str(dialog.get("dialog_id") or ""))
+                write_dynamic_outputs(
+                    transcripts,
+                    judge_results,
+                    transcripts_path=transcripts_path,
+                    judge_path=judge_path,
+                    turns_path=turns_path,
+                    review_queue_path=review_queue_path,
+                    full_transcripts_md_path=full_transcripts_md_path,
+                    per_dialog_dir=per_dialog_dir,
+                    summary_path=summary_path,
+                    summary_md_path=summary_md_path,
+                    scenario_path=args.scenarios,
+                    snapshot_path=args.snapshot,
+                    judge_spec=sim_input.judge_spec,
+                    parallel=args.parallel,
+                )
+                print(
+                    f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
+                    flush=True,
+                )
+        else:
+            print(f"parallel_dialogs={args.parallel} pending={len(pending_personas)}", flush=True)
+            with ThreadPoolExecutor(max_workers=args.parallel) as executor:
+                future_to_persona = {
+                    executor.submit(
+                        run_one_dialog_isolated,
+                        persona,
+                        simulator_spec=sim_input.simulator_spec,
+                        judge_spec=sim_input.judge_spec,
+                        snapshot_path=args.snapshot,
+                        max_turns_override=args.max_turns,
+                        args=args,
+                    ): persona
+                    for persona in pending_personas
+                }
+                for future in as_completed(future_to_persona):
+                    persona = future_to_persona[future]
+                    dialog_id = str(persona.get("dialog_id") or "")
+                    try:
+                        dialog = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        dialog = build_infra_error_dialog(persona, exc, elapsed_seconds=None)
+                    transcripts.append(dialog)
+                    transcripts = sort_transcripts_by_persona_order(transcripts, persona_order)
+                    judge_results = extract_judge_results(transcripts)
+                    completed_ids.add(str(dialog.get("dialog_id") or ""))
+                    write_dynamic_outputs(
+                        transcripts,
+                        judge_results,
+                        transcripts_path=transcripts_path,
+                        judge_path=judge_path,
+                        turns_path=turns_path,
+                        review_queue_path=review_queue_path,
+                        full_transcripts_md_path=full_transcripts_md_path,
+                        per_dialog_dir=per_dialog_dir,
+                        summary_path=summary_path,
+                        summary_md_path=summary_md_path,
+                        scenario_path=args.scenarios,
+                        snapshot_path=args.snapshot,
+                        judge_spec=sim_input.judge_spec,
+                        parallel=args.parallel,
+                    )
+                    print(
+                        f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
+                        flush=True,
+                    )
         turn_rows = build_turn_rows(transcripts)
 
     summary = write_dynamic_outputs(
@@ -273,6 +377,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary_md_path=summary_md_path,
         scenario_path=args.scenarios,
         snapshot_path=args.snapshot,
+        judge_spec=sim_input.judge_spec,
+        parallel=args.parallel,
     )
     print(json.dumps({"ok": True, "out_dir": str(args.out_dir), **summary["totals"]}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -292,6 +398,8 @@ def write_dynamic_outputs(
     summary_md_path: Path,
     scenario_path: Path,
     snapshot_path: Path,
+    judge_spec: Mapping[str, Any] | None = None,
+    parallel: int = 1,
 ) -> Mapping[str, Any]:
     write_jsonl(transcripts_path, transcripts)
     write_jsonl(judge_path, judge_results)
@@ -302,7 +410,14 @@ def write_dynamic_outputs(
     for dialog in transcripts:
         dialog_path = per_dialog_dir / f"{safe_filename(str(dialog.get('dialog_id') or 'dialog'))}.md"
         dialog_path.write_text(render_one_dialog_md(dialog), encoding="utf-8")
-    summary = build_summary(transcripts, judge_results, scenario_path=scenario_path, snapshot_path=snapshot_path)
+    summary = build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=scenario_path,
+        snapshot_path=snapshot_path,
+        judge_spec=judge_spec,
+        parallel=parallel,
+    )
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
     return summary
@@ -339,6 +454,142 @@ def load_transcripts(path: Path) -> list[Mapping[str, Any]]:
     return rows
 
 
+def build_client_model(args: argparse.Namespace) -> Any:
+    if args.client_mode == "fake":
+        return FakeClientModel()
+    return CodexJsonModel(
+        model=args.model,
+        reasoning_effort=args.client_reasoning,
+        timeout_sec=args.timeout_sec,
+    )
+
+
+def build_judge_model(args: argparse.Namespace) -> Any:
+    if args.judge_mode == "fake":
+        return FakeJudgeModel()
+    return CodexJsonModel(
+        model=args.model,
+        reasoning_effort=args.judge_reasoning,
+        timeout_sec=args.timeout_sec,
+    )
+
+
+def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
+    if args.bot_mode == "fake":
+        return FakeBotProvider()
+    if getattr(args, "disable_bot_cache", False):
+        cache_dir = None
+    else:
+        cache_dir = Path(".codex_local/telegram_dynamic_client_sim/llm_cache")
+        if dialog_id:
+            cache_dir = cache_dir / safe_filename(dialog_id)
+    return SubscriptionLlmDraftProvider(
+        model=args.model,
+        reasoning_effort=args.bot_reasoning,
+        timeout_sec=args.timeout_sec,
+        cache_dir=cache_dir,
+    )
+
+
+def run_one_dialog_isolated(
+    persona: Mapping[str, Any],
+    *,
+    simulator_spec: Mapping[str, Any],
+    judge_spec: Mapping[str, Any],
+    snapshot_path: Path,
+    max_turns_override: int,
+    args: argparse.Namespace,
+) -> Mapping[str, Any]:
+    dialog_id = str(persona.get("dialog_id") or "")
+    started = time.time()
+    print(f"run_dialog={dialog_id}", flush=True)
+    dialog = run_one_dialog(
+        persona,
+        simulator_spec=simulator_spec,
+        judge_spec=judge_spec,
+        client_model=build_client_model(args),
+        judge_model=build_judge_model(args),
+        bot_provider=build_bot_provider(args, dialog_id=dialog_id),
+        snapshot_path=snapshot_path,
+        max_turns_override=max_turns_override,
+    )
+    return {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
+
+
+def _dialog_completed(dialog: Mapping[str, Any]) -> bool:
+    status = str(dialog.get("run_status") or "").strip()
+    if status:
+        return status == "completed"
+    return isinstance(dialog.get("judge_result"), Mapping) and bool(dialog.get("turns"))
+
+
+def _should_rerun_existing_dialog(
+    dialog: Mapping[str, Any],
+    *,
+    only_failed: bool,
+    only_timeout: bool,
+) -> bool:
+    if only_timeout:
+        return str(dialog.get("run_status") or "") == "timeout"
+    if not only_failed:
+        return False
+    status = str(dialog.get("run_status") or "")
+    judge = dialog.get("judge_result") if isinstance(dialog.get("judge_result"), Mapping) else {}
+    return status in {"infra_error", "timeout"} or str(judge.get("verdict") or "") == "FAIL"
+
+
+def build_infra_error_dialog(
+    persona: Mapping[str, Any],
+    exc: BaseException,
+    *,
+    elapsed_seconds: float | None,
+) -> Mapping[str, Any]:
+    dialog_id = str(persona.get("dialog_id") or "")
+    brand = str(persona.get("brand") or "")
+    status = "timeout" if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)) or "timeout" in str(exc).casefold() else "infra_error"
+    error_text = f"{exc.__class__.__name__}: {str(exc)}"
+    return {
+        "dialog_id": dialog_id,
+        "brand": brand,
+        "persona": dict(persona),
+        "turns": [],
+        "run_status": status,
+        "infra_error": error_text[-2000:],
+        "elapsed_seconds": elapsed_seconds,
+        "judge_result": {
+            "dialog_id": dialog_id,
+            "brand": brand,
+            "verdict": "FAIL",
+            "hard_gates_passed": False,
+            "violated_gates": [status],
+            "soft_flags_present": [],
+            "human_tone_score_0_100": 0,
+            "rationale": f"Диалог не был завершён из-за инфраструктурной ошибки: {error_text[-500:]}",
+        },
+    }
+
+
+def sort_transcripts_by_persona_order(
+    transcripts: Sequence[Mapping[str, Any]],
+    persona_order: Mapping[str, int],
+) -> list[Mapping[str, Any]]:
+    return sorted(
+        transcripts,
+        key=lambda dialog: (
+            persona_order.get(str(dialog.get("dialog_id") or ""), 10**9),
+            str(dialog.get("dialog_id") or ""),
+        ),
+    )
+
+
+def extract_judge_results(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [
+        dict(dialog.get("judge_result") or {})
+        for dialog in transcripts
+        if isinstance(dialog.get("judge_result"), Mapping)
+    ]
+
+
 def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     rows: list[Mapping[str, Any]] = []
     for dialog in transcripts:
@@ -352,7 +603,25 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                     "bot_text": turn.get("bot_text") or "",
                     "bot_route": turn.get("bot_route") or "",
                     "bot_topic_id": turn.get("bot_topic_id") or "",
+                    "bot_conversation_intent": (turn.get("bot_conversation_intent_plan") or {}).get("primary_intent")
+                    if isinstance(turn.get("bot_conversation_intent_plan"), Mapping)
+                    else "",
+                    "bot_conversation_topic_switch": (turn.get("bot_conversation_intent_plan") or {}).get("topic_switch_decision")
+                    if isinstance(turn.get("bot_conversation_intent_plan"), Mapping)
+                    else "",
+                    "bot_answer_contract_intent": (turn.get("bot_answer_contract") or {}).get("primary_intent")
+                    if isinstance(turn.get("bot_answer_contract"), Mapping)
+                    else "",
+                    "bot_answer_contract_direct_question": (turn.get("bot_answer_contract") or {}).get("direct_question")
+                    if isinstance(turn.get("bot_answer_contract"), Mapping)
+                    else "",
+                    "bot_answer_contract_p0_required": (turn.get("bot_answer_contract") or {}).get("p0_required")
+                    if isinstance(turn.get("bot_answer_contract"), Mapping)
+                    else "",
                     "bot_safety_flags": "|".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])),
+                    "bot_answer_quality_findings": "|".join(str(flag) for flag in (turn.get("bot_answer_quality_findings") or [])),
+                    "bot_answer_quality_rewritten": turn.get("bot_answer_quality_rewritten"),
+                    "context_parity_checked": turn.get("context_parity_checked"),
                     "client_stop": turn.get("client_stop"),
                 }
             )
@@ -363,6 +632,7 @@ def attach_context_facts_to_dialog(dialog: Mapping[str, Any], *, snapshot_path: 
     persona = dialog.get("persona") if isinstance(dialog.get("persona"), Mapping) else {}
     recent_messages: list[str] = []
     turns: list[Mapping[str, Any]] = []
+    dialogue_memory: Mapping[str, Any] = {}
     for raw_turn in dialog.get("turns") or []:
         turn = dict(raw_turn)
         client_message = str(turn.get("client_message") or "")
@@ -372,9 +642,24 @@ def attach_context_facts_to_dialog(dialog: Mapping[str, Any], *, snapshot_path: 
             persona=persona,
             recent_messages=recent_messages,
             snapshot_path=snapshot_path,
+            dialogue_memory=dialogue_memory,
         )
         turn["bot_confirmed_facts"] = compact_confirmed_facts(context)
         turn["bot_knowledge_snippets"] = compact_knowledge_snippets(context)
+        turn["bot_conversation_intent_plan"] = dict(context.get("conversation_intent_plan") or {}) if isinstance(
+            context.get("conversation_intent_plan"), Mapping
+        ) else {}
+        turn["bot_answer_contract"] = dict(context.get("answer_contract") or {}) if isinstance(
+            context.get("answer_contract"), Mapping
+        ) else {}
+        updated_memory = update_dialogue_memory_after_answer(
+            context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
+            answer_text=bot_text,
+            route=str(turn.get("bot_route") or ""),
+            fact_refs=(),
+            safety_flags=tuple(turn.get("bot_safety_flags") or ()),
+        )
+        dialogue_memory = updated_memory.to_json_dict()
         turns.append(turn)
         recent_messages.append(f"Клиент: {client_message}")
         recent_messages.append(f"Ответ: {bot_text}")
@@ -397,6 +682,7 @@ def run_one_dialog(
     max_turns = int(max_turns_override or persona.get("max_turns") or 6)
     turns: list[dict[str, Any]] = []
     recent_messages: list[str] = []
+    dialogue_memory: Mapping[str, Any] = {}
 
     for turn_index in range(1, max_turns + 1):
         client_payload = client_model.generate(build_client_prompt(simulator_spec, persona, turns, turn_index=turn_index))
@@ -411,15 +697,19 @@ def run_one_dialog(
             persona=persona,
             recent_messages=recent_messages,
             snapshot_path=snapshot_path,
+            dialogue_memory=dialogue_memory,
         )
         result = bot_provider.build_draft(client_message, context=context)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
+        updated_memory = update_dialogue_memory_after_answer(
+            context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
+            answer_text=bot_text,
+            route=result.route,
+            fact_refs=result.context_used,
+            safety_flags=result.safety_flags,
+        )
+        dialogue_memory = updated_memory.to_json_dict()
         confirmed_facts_for_judge = compact_confirmed_facts(context)
-        if _is_verified_client_safe_template(bot_text):
-            confirmed_facts_for_judge = [
-                f"verified_safe_template: {bot_text}",
-                *confirmed_facts_for_judge,
-            ]
         turn = {
             "turn": turn_index,
             "client_message": client_message,
@@ -432,6 +722,24 @@ def run_one_dialog(
             "bot_safety_flags": list(result.safety_flags),
             "bot_manager_checklist": list(result.manager_checklist),
             "bot_missing_facts": list(result.missing_facts),
+            "bot_answer_quality": dict(result.metadata.get("answer_quality") or {}) if isinstance(result.metadata, Mapping) else {},
+            "bot_answer_quality_findings": list((result.metadata.get("answer_quality") or {}).get("finding_codes") or [])
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answer_quality"), Mapping)
+            else [],
+            "bot_answer_quality_rewritten": bool((result.metadata.get("answer_quality") or {}).get("rewritten"))
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answer_quality"), Mapping)
+            else False,
+            "bot_dialogue_memory": dict(context.get("dialogue_memory_view") or {})
+            if isinstance(context.get("dialogue_memory_view"), Mapping)
+            else {},
+            "bot_conversation_intent_plan": dict(context.get("conversation_intent_plan") or {})
+            if isinstance(context.get("conversation_intent_plan"), Mapping)
+            else {},
+            "bot_answer_contract": dict(context.get("answer_contract") or {})
+            if isinstance(context.get("answer_contract"), Mapping)
+            else {},
+            "bot_dialogue_memory_after_answer": updated_memory.to_prompt_view(),
+            "context_parity_checked": bool(context.get("context_parity_checked")),
             "bot_confirmed_facts": confirmed_facts_for_judge,
             "bot_knowledge_snippets": compact_knowledge_snippets(context),
         }
@@ -459,9 +767,11 @@ def build_bot_prompt_context(
     persona: Mapping[str, Any],
     recent_messages: Sequence[str],
     snapshot_path: Path,
+    dialogue_memory: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     brand = str(persona.get("brand") or "unknown")
-    known_dialog = known_dialog_fields_from_client_messages([*recent_messages, f"Клиент: {client_message}"], active_brand=brand)
+    recent_slice = tuple(recent_messages[-10:])
+    known_dialog = known_dialog_fields_from_client_messages([*recent_slice, f"Клиент: {client_message}"], active_brand=brand)
     rop_policy = {
         "bot_permission": "bot_answer_self_for_pilot",
         "autonomy_policy": {
@@ -477,17 +787,54 @@ def build_bot_prompt_context(
         snapshot_path=snapshot_path,
         active_brand=brand,
         rop_policy=rop_policy,
-        recent_messages=tuple(recent_messages[-10:]),
+        recent_messages=recent_slice,
         client_identity={"channel": "dynamic_sim", "channel_thread_id": str(persona.get("dialog_id") or ""), "channel_user_id": "dynamic_sim"},
         customer_summary=f"Динамический тестовый клиент: {persona.get('persona')}. Не раскрывать это клиенту.",
+        known_slots=known_dialog,
+        dialogue_memory=dialogue_memory,
+        session_id=f"dynamic_sim:{brand}:{persona.get('dialog_id') or ''}",
     )
     payload = dict(pilot_context.to_prompt_context())
     payload["active_brand"] = brand
     payload["known_dialog_fields"] = known_dialog
+    if "dialogue_memory_view" not in payload:
+        payload["dialogue_memory_view"] = build_dialogue_memory(
+            current_message=client_message,
+            active_brand=brand,
+            recent_messages=recent_slice,
+            known_slots=known_dialog,
+            session_id=f"dynamic_sim:{brand}:{persona.get('dialog_id') or ''}",
+        ).to_prompt_view()
+    funnel_state = build_lead_funnel_state(
+        client_message,
+        active_brand=brand,
+        recent_messages=recent_slice,
+        context=payload,
+        topic_id=str(payload.get("topic_id") or ""),
+        message_type=str(payload.get("message_type") or ""),
+        risk_level=str(payload.get("risk_level") or ""),
+        route=str(payload.get("route") or ""),
+        safety_flags=tuple(payload.get("safety_flags") or ()),
+    )
+    funnel_payload = lead_funnel_context_payload(funnel_state)
+    payload["funnel_state"] = funnel_payload
+    payload["known_slots"] = dict(funnel_payload.get("filled_slots") or {})
+    payload["missing_slots"] = list(funnel_payload.get("missing_slots") or [])
+    payload["next_best_question"] = str(funnel_payload.get("next_best_question") or "")
+    payload["next_step_type"] = str(funnel_payload.get("next_step_type") or "")
+    payload["lead_stage"] = str(funnel_payload.get("lead_stage") or "")
+    payload["client_segment"] = str(funnel_payload.get("client_segment") or "")
+    payload["semantic_flags"] = list(funnel_payload.get("semantic_flags") or [])
+    payload["context_parity_checked"] = True
+    payload["answer_quality_llm_rewrite_enabled"] = (
+        os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
+        or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}
+    )
     payload["dynamic_client_sim"] = {
         "enabled": True,
         "dialog_id": persona.get("dialog_id"),
         "do_not_disclose_simulation": True,
+        "context_parity_checked": True,
     }
     return payload
 
@@ -525,7 +872,7 @@ def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any]
         f"route={turn['bot_route']}; topic={turn['bot_topic_id']}; safety={turn['bot_safety_flags']}; "
         f"checklist={turn.get('bot_manager_checklist') or []}; missing_facts={turn.get('bot_missing_facts') or []}\n"
         "Подтверждённые факты, доступные боту на этом ходу, клиент их НЕ видел как служебный блок: "
-        f"{turn.get('bot_confirmed_facts') or []}\n"
+        f"{_filter_judge_confirmed_facts(turn.get('bot_confirmed_facts') or [])}\n"
         "Фрагменты базы знаний, доступные боту на этом ходу, клиент их НЕ видел как служебный блок: "
         f"{turn.get('bot_knowledge_snippets') or []}"
         for turn in turns
@@ -538,7 +885,10 @@ def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any]
         "Они нужны тебе для оценки маршрутизации и выдумок, но клиент их НЕ видел как служебный блок. "
         "Не считай эти внутренние метаданные раскрытием ИИ, служебных данных или промпта. "
         "Оценивай раскрытие только по тексту в строках 'Клиент видел ответ бота'. "
+        "Не считай честную фразу «цифровой помощник Фотона/УНПК МФТИ/центра» раскрытием ИИ: это утверждённая политика на прямой вопрос клиента. "
+        "revealed_ai ставь только за модель/вендора (GPT/Claude/Codex/OpenAI), раскрытие prompt/system prompt или ложь «я человек/я не бот». "
         "Не ставь fabrication за факт, который прямо есть в подтверждённых фактах или фрагментах базы на этом ходу. "
+        "Сам текст ответа бота, safe-template и элементы с префиксом verified_safe_template не являются подтверждёнными фактами; если они попали в факты, игнорируй их. "
         "Но если бот приписывает клиенту предмет/цель/потребность, которую клиент не называл, отмечай soft flag assumed_unstated_need; "
         "если такого предмета/продукта ещё и нет в подтверждённых фактах бренда — это уже hard gate fabrication.\n\n"
         "Инструкция судьи:\n"
@@ -657,6 +1007,8 @@ def build_summary(
     *,
     scenario_path: Path,
     snapshot_path: Path,
+    judge_spec: Mapping[str, Any] | None = None,
+    parallel: int = 1,
 ) -> Mapping[str, Any]:
     verdicts = Counter(str(item.get("verdict") or "") for item in judge_results)
     brands = Counter(str(item.get("brand") or "") for item in judge_results)
@@ -674,11 +1026,20 @@ def build_summary(
     )
     hard_gate_failures = [item for item in judge_results if not item.get("hard_gates_passed")]
     scores = [int(item.get("human_tone_score_0_100") or 0) for item in judge_results]
+    run_statuses = Counter(str(dialog.get("run_status") or "completed") for dialog in transcripts)
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "scenario_path": str(scenario_path),
         "snapshot_path": str(snapshot_path),
+        "scenario_metadata": _scenario_metadata(judge_spec),
+        "run_config": {
+            "parallel": int(parallel),
+            "answer_quality_llm_rewrite_enabled": (
+                os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
+                or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}
+            ),
+        },
         "totals": {
             "dialogs": len(judge_results),
             "turns": sum(len(item.get("turns") or []) for item in transcripts),
@@ -692,7 +1053,100 @@ def build_summary(
         "verdicts": dict(verdicts),
         "soft_flags": dict(soft_flags),
         "violated_gates": dict(violated_gates),
+        "run_statuses": dict(run_statuses),
+        "infra_error_dialogs": [
+            {"dialog_id": dialog.get("dialog_id"), "run_status": dialog.get("run_status"), "infra_error": dialog.get("infra_error")}
+            for dialog in transcripts
+            if str(dialog.get("run_status") or "completed") != "completed"
+        ],
         "hard_gate_failure_dialogs": [item.get("dialog_id") for item in hard_gate_failures],
+        "answer_quality": {
+            "context_parity_checked": all(
+                bool(turn.get("context_parity_checked"))
+                for dialog in transcripts
+                for turn in (dialog.get("turns") or [])
+            )
+            if transcripts
+            else False,
+            "rewritten_turns": sum(
+                1
+                for dialog in transcripts
+                for turn in (dialog.get("turns") or [])
+                if turn.get("bot_answer_quality_rewritten")
+            ),
+            "finding_counts": dict(
+                Counter(
+                    str(code)
+                    for dialog in transcripts
+                    for turn in (dialog.get("turns") or [])
+                    for code in (turn.get("bot_answer_quality_findings") or [])
+                    if str(code).strip()
+                )
+            ),
+        },
+        "branch_metrics": _branch_count_metrics(transcripts),
+        "send_unedited_proxy": _send_unedited_proxy(transcripts, judge_results),
+    }
+
+
+def _scenario_metadata(judge_spec: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    text = json.dumps(judge_spec or {}, ensure_ascii=False).casefold()
+    return {
+        "is_holdout": "holdout" in text,
+        "eval_only": "eval_only" in text or "eval-only" in text or "только для оценки" in text,
+        "do_not_tune_against": "do_not_tune_against" in text or "не тюн" in text or "не подгон" in text,
+    }
+
+
+def _branch_count_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    template_suffixes = ("_safe_template_applied", "_fallback_applied", "_handoff_applied", "_template_applied")
+    template_flags: Counter[str] = Counter()
+    p0_flags: Counter[str] = Counter()
+    contract_controlled = 0
+    turns_count = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            turns_count += 1
+            flags = [str(flag) for flag in (turn.get("bot_safety_flags") or []) if str(flag).strip()]
+            for flag in flags:
+                if flag.endswith(template_suffixes):
+                    template_flags[flag] += 1
+                if "zero_collect" in flag or "high_risk" in flag or "p0" in flag or "manager_only" in flag:
+                    p0_flags[flag] += 1
+            contract = turn.get("bot_answer_contract") if isinstance(turn.get("bot_answer_contract"), Mapping) else {}
+            if contract.get("must_answer_first"):
+                contract_controlled += 1
+    return {
+        "turns": turns_count,
+        "template_branch_hits": sum(template_flags.values()),
+        "template_branch_flags": dict(template_flags),
+        "p0_branch_hits": sum(p0_flags.values()),
+        "p0_branch_flags": dict(p0_flags),
+        "answer_contract_controlled_turns": contract_controlled,
+    }
+
+
+def _send_unedited_proxy(
+    transcripts: Sequence[Mapping[str, Any]],
+    judge_results: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    judge_by_id = {str(item.get("dialog_id") or ""): item for item in judge_results}
+    candidate_turns = 0
+    unedited_turns = 0
+    for dialog in transcripts:
+        judge = judge_by_id.get(str(dialog.get("dialog_id") or "")) or {}
+        if str(judge.get("verdict") or "").upper() == "FAIL" or not judge.get("hard_gates_passed", True):
+            continue
+        for turn in dialog.get("turns") or []:
+            if str(turn.get("bot_route") or "") not in {"bot_answer_self", "bot_answer_self_for_pilot"}:
+                continue
+            candidate_turns += 1
+            if not turn.get("bot_answer_quality_rewritten") and not (turn.get("bot_answer_quality_findings") or []):
+                unedited_turns += 1
+    return {
+        "candidate_autonomous_turns": candidate_turns,
+        "unedited_autonomous_turns": unedited_turns,
+        "unedited_rate": round(unedited_turns / candidate_turns, 3) if candidate_turns else None,
     }
 
 
@@ -710,6 +1164,18 @@ def compact_confirmed_facts(context: Mapping[str, Any], *, limit: int = 12, max_
         result.append(f"{key}: {text}")
         if len(result) >= limit:
             break
+    return result
+
+
+def _filter_judge_confirmed_facts(items: Sequence[Any]) -> list[str]:
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if text.casefold().startswith("verified_safe_template:"):
+            continue
+        result.append(text)
     return result
 
 
@@ -745,6 +1211,10 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Средний human tone: `{totals.get('avg_human_tone_score')}`",
             f"- Violated gates: `{summary.get('violated_gates')}`",
             f"- Soft flags: `{summary.get('soft_flags')}`",
+            f"- Answer quality: `{summary.get('answer_quality')}`",
+            f"- Scenario metadata: `{summary.get('scenario_metadata')}`",
+            f"- Branch metrics: `{summary.get('branch_metrics')}`",
+            f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             "",
             "Что смотреть вручную:",
             "",
@@ -783,8 +1253,8 @@ def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
         f"- Violated gates: `{format_list(judge.get('violated_gates') or [])}`",
         f"- Soft flags: `{format_list(judge.get('soft_flags_present') or [])}`",
         f"- First failing turn: `{judge.get('first_failing_turn')}`",
-        f"- Human tone score: `{judge.get('human_tone_score_0_100')}`",
-        f"- Rationale: {judge.get('rationale') or ''}",
+            f"- Human tone score: `{judge.get('human_tone_score_0_100')}`",
+            f"- Rationale: {judge.get('rationale') or ''}",
         "",
     ]
     for turn in dialog.get("turns") or []:
@@ -804,11 +1274,19 @@ def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
                 "",
                 f"- route: `{turn.get('bot_route')}`",
                 f"- topic: `{turn.get('bot_topic_id')}`",
+                f"- conversation_intent: `{(turn.get('bot_conversation_intent_plan') or {}).get('primary_intent') if isinstance(turn.get('bot_conversation_intent_plan'), Mapping) else ''}`",
+                f"- conversation_topic_switch: `{(turn.get('bot_conversation_intent_plan') or {}).get('topic_switch_decision') if isinstance(turn.get('bot_conversation_intent_plan'), Mapping) else ''}`",
+                f"- answer_contract_intent: `{(turn.get('bot_answer_contract') or {}).get('primary_intent') if isinstance(turn.get('bot_answer_contract'), Mapping) else ''}`",
+                f"- answer_contract_direct_question: `{(turn.get('bot_answer_contract') or {}).get('direct_question') if isinstance(turn.get('bot_answer_contract'), Mapping) else ''}`",
+                f"- answer_contract_p0_required: `{(turn.get('bot_answer_contract') or {}).get('p0_required') if isinstance(turn.get('bot_answer_contract'), Mapping) else ''}`",
                 f"- message_type: `{turn.get('bot_message_type')}`",
                 f"- risk: `{turn.get('bot_risk_level')}`",
                 f"- safety_flags: `{format_list(turn.get('bot_safety_flags') or [])}`",
                 f"- manager_checklist: `{format_list(turn.get('bot_manager_checklist') or [])}`",
                 f"- missing_facts: `{format_list(turn.get('bot_missing_facts') or [])}`",
+                f"- answer_quality_findings: `{format_list(turn.get('bot_answer_quality_findings') or [])}`",
+                f"- answer_quality_rewritten: `{turn.get('bot_answer_quality_rewritten')}`",
+                f"- context_parity_checked: `{turn.get('context_parity_checked')}`",
                 f"- confirmed_facts_for_judge: `{format_list(turn.get('bot_confirmed_facts') or [])}`",
                 f"- knowledge_snippets_for_judge: `{format_list(turn.get('bot_knowledge_snippets') or [])}`",
                 f"- client_stop: `{turn.get('client_stop')}`",
@@ -872,7 +1350,12 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_text",
         "bot_route",
         "bot_topic_id",
+        "bot_conversation_intent",
+        "bot_conversation_topic_switch",
         "bot_safety_flags",
+        "bot_answer_quality_findings",
+        "bot_answer_quality_rewritten",
+        "context_parity_checked",
         "client_stop",
     ]
     with path.open("w", encoding="utf-8", newline="") as file:

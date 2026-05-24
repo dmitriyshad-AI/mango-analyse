@@ -25,6 +25,7 @@ from mango_mvp.channels.subscription_llm import (
     SubscriptionLlmDraftProvider,
     strip_internal_service_markers,
 )
+from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answer
 from mango_mvp.channels.manager_handoff_summary import build_manager_handoff_summary
 from mango_mvp.channels.new_lead_funnel import LeadFunnelState, build_lead_funnel_state, lead_funnel_context_payload
 from mango_mvp.channels.telegram_pilot_store import (
@@ -123,6 +124,7 @@ class ChatSession:
     crm_context: Mapping[str, Any] = field(default_factory=dict)
     debug_phone: str = ""
     debug_client: Mapping[str, Any] = field(default_factory=dict)
+    dialogue_memory: Mapping[str, Any] = field(default_factory=dict)
     processing_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -426,6 +428,15 @@ class PublicPilotBotRuntime:
             await message.reply_text(text, disable_web_page_preview=True)
             session.recent_messages.append(f"Клиент: {combined_text}")
             session.recent_messages.append(f"Ответ: {text}")
+            updated_memory = update_dialogue_memory_after_answer(
+                context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
+                answer_text=text,
+                route=result.route,
+                fact_refs=result.context_used,
+                safety_flags=result.safety_flags,
+            )
+            session.dialogue_memory = updated_memory.to_json_dict()
+            context = {**dict(context), "dialogue_memory_view": updated_memory.to_prompt_view()}
             latency = round((datetime.now(timezone.utc) - request_started_at).total_seconds(), 3)
             self.log_event(
                 "reply_sent",
@@ -582,6 +593,9 @@ class PublicPilotBotRuntime:
             if isinstance(crm_context.get("timeline_context"), Mapping)
             else None,
             risk_flags=tuple(crm_context.get("risk_flags") or ()),
+            known_slots=known_dialog_fields,
+            dialogue_memory=session.dialogue_memory,
+            session_id=f"telegram_public_pilot:{self.config.brand}:{chat_id}",
         )
         payload = dict(pilot_context.to_prompt_context())
         payload["active_brand"] = self.config.brand
@@ -699,6 +713,12 @@ class PublicPilotBotRuntime:
                 "client_send_executed": True,
                 "public_pilot_runtime": True,
                 "autonomy_enabled": self.config.autonomy_enabled,
+                "model": self.config.model,
+                "reasoning_effort": self.config.reasoning_effort,
+                "facts_used": list(result.context_used),
+                "facts_missing": list(result.missing_facts),
+                "post_filter_flags": list(result.metadata.get("post_filter_flags") or ()),
+                "route_reason": "; ".join(result.manager_checklist[:3]) if result.manager_checklist else "",
                 "llm_result": result.to_json_dict(),
             }
             if funnel_state is not None:
@@ -738,6 +758,15 @@ class PublicPilotBotRuntime:
                 draft_metadata=metadata,
                 actor="telegram_public_pilot_bot",
             )
+            memory_view = context.get("dialogue_memory_view")
+            if isinstance(memory_view, Mapping) and memory_view.get("schema_version"):
+                self.store.upsert_dialogue_memory_snapshot(
+                    message_key=store_result.message_key,
+                    session_id=str(memory_view.get("session_id") or f"telegram_public_pilot:{self.config.brand}:{chat_id}"),
+                    active_brand=self.config.brand,
+                    memory_snapshot=memory_view,
+                    created_at=request_started_at,
+                )
             self.log_event(
                 "pilot_store_write",
                 chat_id=chat_id,

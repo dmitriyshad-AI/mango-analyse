@@ -86,6 +86,12 @@ class PilotContext:
     context_warnings: Sequence[str] = field(default_factory=tuple)
     knowledge_base_version: str = ""
     risk_flags: Sequence[str] = field(default_factory=tuple)
+    dialogue_memory_view: Mapping[str, Any] = field(default_factory=dict)
+    conversation_intent_plan: Mapping[str, Any] = field(default_factory=dict)
+    answer_contract: Mapping[str, Any] = field(default_factory=dict)
+    answer_quality_reference: Mapping[str, Any] = field(default_factory=dict)
+    few_shot_style_examples: Sequence[str] = field(default_factory=tuple)
+    few_shot_correction_examples: Sequence[str] = field(default_factory=tuple)
     context_quality: PilotContextQuality = field(default_factory=PilotContextQuality)
 
     def __post_init__(self) -> None:
@@ -128,6 +134,36 @@ class PilotContext:
         )
         object.__setattr__(self, "knowledge_base_version", clean_text(self.knowledge_base_version, max_chars=160))
         object.__setattr__(self, "risk_flags", tuple(dedupe(clean_text(item, max_chars=120) for item in self.risk_flags)))
+        object.__setattr__(
+            self,
+            "dialogue_memory_view",
+            compact_dialogue_memory_view(self.dialogue_memory_view),
+        )
+        object.__setattr__(
+            self,
+            "conversation_intent_plan",
+            compact_mapping(self.conversation_intent_plan, max_items=24, max_chars=500),
+        )
+        object.__setattr__(
+            self,
+            "answer_contract",
+            compact_mapping(self.answer_contract, max_items=28, max_chars=500),
+        )
+        object.__setattr__(
+            self,
+            "answer_quality_reference",
+            compact_mapping(self.answer_quality_reference, max_items=16, max_chars=700),
+        )
+        object.__setattr__(
+            self,
+            "few_shot_style_examples",
+            tuple(dedupe(clean_text(item, max_chars=900) for item in self.few_shot_style_examples))[:4],
+        )
+        object.__setattr__(
+            self,
+            "few_shot_correction_examples",
+            tuple(dedupe(clean_text(item, max_chars=900) for item in self.few_shot_correction_examples))[:4],
+        )
 
     def to_prompt_context(self) -> Mapping[str, Any]:
         merged_context_warnings = dedupe((*self.context_warnings, *_context_warnings_for_quality(self.context_quality)))
@@ -150,6 +186,12 @@ class PilotContext:
             "knowledge_snippets": list(self.knowledge_snippets),
             "knowledge_base_version": self.knowledge_base_version,
             "risk_flags": list(self.risk_flags),
+            "dialogue_memory_view": dict(self.dialogue_memory_view),
+            "conversation_intent_plan": dict(self.conversation_intent_plan),
+            "answer_contract": dict(self.answer_contract),
+            "answer_quality_reference": dict(self.answer_quality_reference),
+            "few_shot_style_examples": list(self.few_shot_style_examples),
+            "few_shot_correction_examples": list(self.few_shot_correction_examples),
             "context_quality": self.context_quality.to_json_dict(),
             "context_warnings": list(merged_context_warnings),
             "pilot_context_safety": pilot_context_safety_contract(),
@@ -185,6 +227,12 @@ def build_pilot_context(
     context_warnings: Sequence[str] = (),
     knowledge_base_version: str = "",
     risk_flags: Sequence[str] = (),
+    dialogue_memory_view: Mapping[str, Any] | None = None,
+    conversation_intent_plan: Mapping[str, Any] | None = None,
+    answer_contract: Mapping[str, Any] | None = None,
+    answer_quality_reference: Mapping[str, Any] | None = None,
+    few_shot_style_examples: Sequence[str] = (),
+    few_shot_correction_examples: Sequence[str] = (),
 ) -> PilotContext:
     current_message = message.text if isinstance(message, ChannelMessage) else str(message or "")
     client = dict(client_identity or {})
@@ -234,6 +282,12 @@ def build_pilot_context(
         context_warnings=merged_context_warnings,
         knowledge_base_version=knowledge_base_version,
         risk_flags=tuple(merged_risks),
+        dialogue_memory_view=dialogue_memory_view or {},
+        conversation_intent_plan=conversation_intent_plan or {},
+        answer_contract=answer_contract or {},
+        answer_quality_reference=answer_quality_reference or {},
+        few_shot_style_examples=few_shot_style_examples,
+        few_shot_correction_examples=few_shot_correction_examples,
         context_quality=quality,
     )
 
@@ -291,6 +345,37 @@ def compact_mapping(value: Mapping[str, Any] | None, *, max_items: int, max_char
             result[clean_key] = clean_text(item, max_chars=max_chars) if isinstance(item, str) else item
         if len(result) >= max_items:
             break
+    return result
+
+
+def compact_dialogue_memory_view(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result = dict(compact_mapping(value, max_items=20, max_chars=700))
+    turns = value.get("recent_turns")
+    if isinstance(turns, Sequence) and not isinstance(turns, (str, bytes, bytearray)):
+        clean_turns: list[Mapping[str, str]] = []
+        for raw in turns:
+            if not isinstance(raw, Mapping):
+                continue
+            role = clean_text(raw.get("role"), max_chars=20)
+            text = clean_text(raw.get("text"), max_chars=500)
+            if role and text:
+                clean_turns.append({"role": role, "text": text})
+            if len(clean_turns) >= 6:
+                break
+        result["recent_turns"] = clean_turns
+    open_question = value.get("open_question")
+    if isinstance(open_question, Mapping):
+        result["open_question"] = compact_mapping(open_question, max_items=6, max_chars=260)
+    known_slots = value.get("known_slots")
+    if isinstance(known_slots, Mapping):
+        result["known_slots"] = compact_mapping(known_slots, max_items=16, max_chars=120)
+    do_not_ask_again = value.get("do_not_ask_again") or value.get("do_not_reask_slots")
+    if isinstance(do_not_ask_again, Sequence) and not isinstance(do_not_ask_again, (str, bytes, bytearray)):
+        result["do_not_ask_again"] = [
+            clean_text(item, max_chars=80) for item in do_not_ask_again if clean_text(item, max_chars=80)
+        ][:16]
     return result
 
 

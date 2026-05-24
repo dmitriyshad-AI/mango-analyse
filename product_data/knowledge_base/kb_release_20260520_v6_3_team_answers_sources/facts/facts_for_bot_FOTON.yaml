@@ -53,9 +53,7 @@ prices_regular_2026_27:
   online_5_11_class:
     before_2026_08_01:
       semester: 29750
-      year_range:
-      - 47250
-      - 52500
+      year: 47250
   online_1_4_class:
     before_2026_08_01:
       semester: 19000

@@ -750,7 +750,8 @@ def test_v3_bot_policy_uses_latest_dmitry_decisions(kb_v3: KbReleaseV3) -> None:
 
     complaint = ((kb_v3.bot_policy.get("theme_routes") or {}).get("complaint") or {})
     p0_phrase = str(complaint.get("bot_phrase_p0") or "")
-    assert "Ваше обращение принято" in p0_phrase
+    assert "передам" in p0_phrase.casefold()
+    assert "ответственному" in p0_phrase.casefold()
     assert "зафиксировано" not in p0_phrase.casefold()
     assert "автоматический" not in p0_phrase.casefold()
 

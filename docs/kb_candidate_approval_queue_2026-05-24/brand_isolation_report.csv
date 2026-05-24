@@ -1,0 +1,4 @@
+queue_item_id,active_brand,brand_check_status,notes
+D4-KB-001,foton,single_brand_foton,Foton price issue only.
+D4-KB-002,foton,single_brand_foton,Foton allowance for installment terms; UNPK blocking is represented as rule behavior, not mixed answer content.
+D4-KB-003,unpk,single_brand_unpk,Uses UNPK as one active-brand test row; canonical P0 spec itself is brand-neutral.

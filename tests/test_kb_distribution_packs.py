@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from scripts.build_kb_distribution_packs import build_distribution_packs
+from scripts.build_kb_release_v6_1_team_answers import gold_answers_v3_payload
 
 
 def test_distribution_packs_split_employee_and_bot_outputs(tmp_path: Path) -> None:
@@ -53,6 +54,7 @@ def test_distribution_packs_split_employee_and_bot_outputs(tmp_path: Path) -> No
     assert "не подставляет `client_safe_text` дословно" in bot_contract
     assert "`bot_template_required=true`" in bot_contract
     assert "`pattern_descriptions`" in bot_contract
+    assert "`phrases_by_active_brand[active_brand]`" in bot_contract
     template_registry = json.loads((bot_out / "bot_template_registry.json").read_text(encoding="utf-8"))
     required_fact_keys = {
         item["fact_key"]
@@ -62,6 +64,35 @@ def test_distribution_packs_split_employee_and_bot_outputs(tmp_path: Path) -> No
     template_fact_keys = {item["fact_key"] for item in template_registry["templates"]}
     assert required_fact_keys <= template_fact_keys
     assert template_registry["fallback_route_if_missing"] == "manager_only"
+
+
+def test_distribution_packs_render_gold_identity_policy_c(tmp_path: Path) -> None:
+    release = _write_release(tmp_path / "handoff")
+    snapshot_path = release / "kb_release_v3_snapshot.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["bot_policy"] = {"gold_answers_v3": gold_answers_v3_payload()}
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    full_release = _write_full_release(tmp_path / "full_release")
+    smoke = _write_smoke(tmp_path / "smoke")
+    bot_out = tmp_path / "bot_pack"
+
+    build_distribution_packs(
+        release_dir=release,
+        full_release_dir=full_release,
+        smoke_dir=smoke,
+        employee_out=tmp_path / "employee_pack",
+        bot_out=bot_out,
+    )
+
+    bot_gold = json.loads((bot_out / "bot_gold_answers.json").read_text(encoding="utf-8"))
+    rules_yaml = (bot_out / "gold_answer_rules.yaml").read_text(encoding="utf-8")
+    markdown = (bot_out / "GOLD_ANSWERS_FOR_BOT.md").read_text(encoding="utf-8")
+
+    assert "identity" in bot_gold["topics"]
+    assert "цифровой помощник Фотона" in markdown
+    assert "цифровой помощник УНПК МФТИ" in markdown
+    assert "OpenAI" in rules_yaml
+    assert "я человек" in rules_yaml
 
 
 def test_distribution_packs_reject_stable_runtime_outputs(tmp_path: Path) -> None:

@@ -939,9 +939,85 @@ def make_manual_fact(
 
 
 def build_post_filter_registry(handoff: Mapping[str, Any]) -> dict[str, Any]:
+    global_unique, descriptions = normalize_filter_phrases(collect_global_forbidden_phrases(handoff))
+    foton_unique, foton_descriptions = normalize_filter_phrases(collect_brand_forbidden_phrases(handoff, "foton"))
+    unpk_unique, unpk_descriptions = normalize_filter_phrases(collect_brand_forbidden_phrases(handoff, "unpk"))
+    descriptions = sorted({*descriptions, *foton_descriptions, *unpk_descriptions})
+    regex_patterns = [
+        r"(?<!не\s)скидки\s+суммируются",
+        r"\bоплат(?:ите|и)\s+(?:сейчас|сразу|сегодня)\b",
+        r"\bгарантир(?:уем|ую|уется|овать)\s+(?:поступление|результат|место|зачисление)\b",
+    ]
+    return {
+        "schema_version": "kb_release_v3_post_filter_v2",
+        "source": "Claude v3 handoff forbidden_to_say + brand rules + bot policy",
+        "violation_action": "manager_only",
+        "violation_flag": "brand_separation_violation",
+        "matcher_fields": ["phrases", "global_phrases", "phrases_by_active_brand", "regex_patterns"],
+        "human_only_fields": ["pattern_descriptions"],
+        "phrases": global_unique,
+        "phrases_total": len(global_unique),
+        "global_phrases": global_unique,
+        "global_phrases_total": len(global_unique),
+        "phrases_by_active_brand": {
+            "foton": foton_unique,
+            "unpk": unpk_unique,
+        },
+        "phrases_by_active_brand_total": {
+            "foton": len(foton_unique),
+            "unpk": len(unpk_unique),
+        },
+        "regex_patterns": regex_patterns,
+        "regex_patterns_total": len(regex_patterns),
+        "pattern_descriptions": descriptions,
+        "pattern_descriptions_total": len(descriptions),
+    }
+
+
+def collect_global_forbidden_phrases(handoff: Mapping[str, Any]) -> list[str]:
     phrases: list[str] = []
-    for key in ("brand_rules", "bot_policy", "facts_for_bot_FOTON", "facts_for_bot_UNPK", "facts_internal_only"):
-        collect_forbidden_phrases(handoff.get(key), phrases)
+    bot_policy = handoff.get("bot_policy")
+    if isinstance(bot_policy, Mapping):
+        post_filter = bot_policy.get("post_filter_draft_text")
+        if isinstance(post_filter, Mapping):
+            phrases.extend(flatten_scalars(post_filter.get("forbidden_in_any_brand")))
+            phrases.extend(flatten_scalars(post_filter.get("examples_blocked")))
+    collect_forbidden_phrases(handoff.get("facts_internal_only"), phrases)
+    brand_rules = handoff.get("brand_rules")
+    if isinstance(brand_rules, Mapping):
+        brand_rules_without_active_blocks = {
+            key: value for key, value in brand_rules.items() if str(key) != "forbidden_client_mentions"
+        }
+        collect_forbidden_phrases(brand_rules_without_active_blocks, phrases)
+    return phrases
+
+
+def collect_brand_forbidden_phrases(handoff: Mapping[str, Any], active_brand: str) -> list[str]:
+    phrases: list[str] = []
+    brand_rules = handoff.get("brand_rules")
+    if not isinstance(brand_rules, Mapping):
+        brand_rules = {}
+    mentions = brand_rules.get("forbidden_client_mentions")
+    if isinstance(mentions, Mapping):
+        active_block = mentions.get(f"when_active_brand_is_{active_brand}")
+        if isinstance(active_block, Mapping):
+            phrases.extend(flatten_scalars(active_block.get("blocked_terms")))
+    source_key = "facts_for_bot_FOTON" if active_brand == "foton" else "facts_for_bot_UNPK"
+    collect_forbidden_phrases(handoff.get(source_key), phrases)
+    bot_policy = handoff.get("bot_policy")
+    if isinstance(bot_policy, Mapping):
+        theme_routes = bot_policy.get("theme_routes")
+        if isinstance(theme_routes, Mapping):
+            for route in theme_routes.values():
+                if isinstance(route, Mapping):
+                    collect_forbidden_phrases(route.get(f"{active_brand}_specific"), phrases)
+        post_filter = bot_policy.get("post_filter_draft_text")
+        if isinstance(post_filter, Mapping):
+            collect_forbidden_phrases(post_filter.get(f"forbidden_when_active_brand_{active_brand}"), phrases)
+    return phrases
+
+
+def normalize_filter_phrases(phrases: Sequence[str]) -> tuple[list[str], list[str]]:
     literals: list[str] = []
     pattern_descriptions: list[str] = []
     for phrase in phrases:
@@ -955,27 +1031,7 @@ def build_post_filter_registry(handoff: Mapping[str, Any]) -> dict[str, Any]:
             pattern_descriptions.append(normalized)
         else:
             literals.append(normalized)
-    unique = sorted({phrase for phrase in literals if phrase})
-    descriptions = sorted({phrase for phrase in pattern_descriptions if phrase})
-    regex_patterns = [
-        r"(?<!не\s)скидки\s+суммируются",
-        r"\bоплат(?:ите|и)\s+(?:сейчас|сразу|сегодня)\b",
-        r"\bгарантир(?:уем|ую|уется|овать)\s+(?:поступление|результат|место|зачисление)\b",
-    ]
-    return {
-        "schema_version": "kb_release_v3_post_filter_v1",
-        "source": "Claude v3 handoff forbidden_to_say + brand rules + bot policy",
-        "violation_action": "manager_only",
-        "violation_flag": "brand_separation_violation",
-        "matcher_fields": ["phrases", "regex_patterns"],
-        "human_only_fields": ["pattern_descriptions"],
-        "phrases": unique,
-        "phrases_total": len(unique),
-        "regex_patterns": regex_patterns,
-        "regex_patterns_total": len(regex_patterns),
-        "pattern_descriptions": descriptions,
-        "pattern_descriptions_total": len(descriptions),
-    }
+    return sorted({phrase for phrase in literals if phrase}), sorted({phrase for phrase in pattern_descriptions if phrase})
 
 
 def split_matchable_filter_phrase(phrase: str) -> list[str]:

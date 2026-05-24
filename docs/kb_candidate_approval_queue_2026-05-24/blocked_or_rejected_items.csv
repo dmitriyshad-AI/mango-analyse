@@ -1,0 +1,5 @@
+blocked_item_id,source_channel,source_ref_masked,reason,action
+blocked-template-001,email,masked:future-email-candidates,Email candidates remain blocked for drafts until thread layer and recipient guard exist.,keep_as_evidence_only
+blocked-template-002,telegram,masked:future-telegram-candidates,Raw manager answers must not be copied verbatim into KB.,summarize_style_only
+blocked-template-003,calls,masked:future-call-candidates,Prices dates schedules and legal terms from calls need primary source.,needs_primary_source
+blocked-template-004,attachments,masked:future-ocr-candidates,OCR text is evidence only and may contain personal data.,redact_and_route_to_review

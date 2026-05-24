@@ -1,0 +1,66 @@
+schema_version: kb_release_manifest_v1
+release_id: kb_release_20260520_v6_3_team_answers
+builder_version: kb_release_v6_1_builder_2026_05_20
+freshness_check_date: '2026-05-20'
+source_mutation_policy: read_only_yaml_sources_no_business_patches_in_python
+control_numbers:
+  remove:
+  - '11900'
+  - '56500'
+  - '94000'
+  - '16900'
+  - '27720'
+  - '89900'
+  - '75000'
+  - '83800'
+  add:
+  - '93100'
+  - '114000'
+  - '120000'
+  - '98000'
+source_files:
+  gold_answers_v3:
+    filename: gold_answers_v3.yaml
+    source_id: dmitry_approved:gold_answers_v3_2026_05_22
+    kind: yaml
+    brand: brand_neutral
+    description: Эталонные ответы и правила живого тона для Telegram-бота.
+required_source_files:
+- UPDATE_REPORT_2026-05-19.md
+- facts/facts_for_bot_FOTON.yaml
+- facts/facts_for_bot_UNPK.yaml
+- facts/brand_rules.yaml
+- facts/bot_policy.yaml
+- facts/facts_internal_only.yaml
+- facts/gold_answers_v3.yaml
+required_yaml_paths:
+- file: facts/facts_for_bot_FOTON.yaml
+  path: contacts_foton.vk
+  reason: Foton VK must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: lvsh_mendeleevo_2026.pricing_2026.current_price
+  reason: Foton LVSH current price must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: lvsh_mendeleevo_2026.transfer_from_moscow
+  reason: Foton LVSH transfer facts must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: contacts_unpk.email
+  reason: UNPK email must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: lvsh_mendeleevo_2026.pricing_2026.current_price
+  reason: UNPK LVSH current price must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: lvsh_mendeleevo_2026.transfer_from_moscow
+  reason: UNPK LVSH transfer facts must come from YAML.
+- file: facts/brand_rules.yaml
+  path: forbidden_client_mentions.when_active_brand_is_foton.blocked_terms
+  reason: Brand-specific forbidden terms must come from YAML.
+- file: facts/brand_rules.yaml
+  path: forbidden_client_mentions.when_active_brand_is_unpk.blocked_terms
+  reason: Brand-specific forbidden terms must come from YAML.
+- file: facts/bot_policy.yaml
+  path: theme_routes.installment
+  reason: Installment policy must come from YAML.
+- file: facts/gold_answers_v3.yaml
+  path: topics
+  reason: Gold answers must come from YAML.

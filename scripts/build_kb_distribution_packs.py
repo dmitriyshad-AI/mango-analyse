@@ -48,11 +48,6 @@ FACT_TYPE_LABELS = {
     "refund": "возвраты",
     "promocode": "промокоды",
 }
-BRAND_FORBIDDEN = {
-    "foton": ("УНПК", "АНО ДПО", "НОУ УНПК", "kmipt.ru", "@unpk_mipt"),
-    "unpk": ("Фотон", "ЦДПО", "ЦРДО", "cdpofoton.ru", "edu@cdpofoton.ru", "Т-Банк", "Долями", "через банк"),
-}
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build human and bot distribution packs from KB v3.2.")
@@ -91,6 +86,7 @@ def build_distribution_packs(
     quality = load_json(release / "quality_report.json")
     semantic = load_json(release / "semantic_review.json")
     smoke = load_smoke_summaries(smoke_dir)
+    brand_forbidden = extract_brand_forbidden(load_yaml_mapping(full_release / "brand_rules.yaml"))
 
     build_employee_pack(
         employees,
@@ -101,6 +97,7 @@ def build_distribution_packs(
         smoke=smoke,
         release_dir=release,
         full_release_dir=full_release,
+        brand_forbidden=brand_forbidden,
     )
     build_bot_pack(
         bot,
@@ -111,6 +108,7 @@ def build_distribution_packs(
         quality=quality,
         semantic=semantic,
         smoke=smoke,
+        brand_forbidden=brand_forbidden,
     )
     return {
         "schema_version": PACK_SCHEMA_VERSION,
@@ -133,6 +131,7 @@ def build_employee_pack(
     smoke: Mapping[str, Any],
     release_dir: Path,
     full_release_dir: Path,
+    brand_forbidden: Mapping[str, Sequence[str]],
 ) -> None:
     allowed = [fact for fact in facts if truthy(fact.get("allowed_for_client_answer"))]
     manager_only = [fact for fact in facts if not truthy(fact.get("allowed_for_client_answer"))]
@@ -141,8 +140,8 @@ def build_employee_pack(
     write_markdown(out / "BRAND_ISOLATION.md", render_brand_isolation())
     write_markdown(out / "MANAGER_ONLY.md", render_manager_only(manager_only))
     write_markdown(out / "FOR_AI_AGENTS.md", render_employee_ai_agent_instructions())
-    write_markdown(out / "FOTON.md", render_brand_employee_doc("foton", allowed))
-    write_markdown(out / "UNPK.md", render_brand_employee_doc("unpk", allowed))
+    write_markdown(out / "FOTON.md", render_brand_employee_doc("foton", allowed, brand_forbidden))
+    write_markdown(out / "UNPK.md", render_brand_employee_doc("unpk", allowed, brand_forbidden))
     gold_answers = extract_gold_answers(snapshot)
     if gold_answers:
         write_markdown(out / "GOLD_ANSWERS.md", render_gold_answers_markdown(gold_answers, audience="employees"))
@@ -175,12 +174,13 @@ def build_bot_pack(
     quality: Mapping[str, Any],
     semantic: Mapping[str, Any],
     smoke: Mapping[str, Any],
+    brand_forbidden: Mapping[str, Sequence[str]],
 ) -> None:
     allowed = [fact for fact in facts if truthy(fact.get("allowed_for_client_answer"))]
     manager_only = [fact for fact in facts if not truthy(fact.get("allowed_for_client_answer"))]
     write_markdown(out / "README_FOR_BOT.md", render_bot_readme(snapshot, quality, semantic, smoke))
     write_markdown(out / "BOT_USAGE_CONTRACT.md", render_bot_contract())
-    write_markdown(out / "ACTIVE_BRAND_RULES.md", render_active_brand_rules())
+    write_markdown(out / "ACTIVE_BRAND_RULES.md", render_active_brand_rules(brand_forbidden))
     write_markdown(out / "SEMANTIC_REVIEW.md", render_pack_semantic_review(quality, semantic, smoke, audience="bot"))
     write_jsonl(out / "client_safe_facts_foton.jsonl", [fact for fact in allowed if fact.get("brand") == "foton"])
     write_jsonl(out / "client_safe_facts_unpk.jsonl", [fact for fact in allowed if fact.get("brand") == "unpk"])
@@ -266,7 +266,11 @@ def render_employee_start(
     )
 
 
-def render_brand_employee_doc(brand: str, facts: Sequence[Mapping[str, Any]]) -> str:
+def render_brand_employee_doc(
+    brand: str,
+    facts: Sequence[Mapping[str, Any]],
+    brand_forbidden: Mapping[str, Sequence[str]],
+) -> str:
     brand_facts = [fact for fact in facts if fact.get("brand") == brand]
     grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for fact in brand_facts:
@@ -279,7 +283,7 @@ def render_brand_employee_doc(brand: str, facts: Sequence[Mapping[str, Any]]) ->
         "## Быстрые запреты",
         "",
     ]
-    for marker in BRAND_FORBIDDEN[brand]:
+    for marker in brand_forbidden.get(brand, ()):
         lines.append(f"- Не писать клиенту: `{marker}`")
     lines.extend(["", "## Факты по разделам", ""])
     for fact_type in sorted(grouped, key=lambda item: FACT_TYPE_LABELS.get(item, item)):
@@ -367,7 +371,7 @@ def render_employee_ai_agent_instructions() -> str:
 3. Не смешивай бренды и не сравнивай их условия.
 4. Если факт не найден, не выдумывай. Напиши менеджеру, что нужно уточнить.
 5. Возвраты, жалобы, угрозы суда, спорные оплаты и юридические вопросы не решай самостоятельно.
-6. Не называй себя ботом, ИИ, GPT, Claude или Codex в тексте для клиента.
+6. Если клиент прямо спрашивает “вы бот?”, отвечай по policy C: цифровой помощник активного бренда, не живой оператор. Сам первым это не объявляй. Не называй GPT, Claude, Codex, OpenAI, модель или prompt и не ври “я человек”.
 7. Не раскрывай служебные источники, JSON, fact_id, source_id и внутренние правила.
 8. Любой текст клиенту должен быть черновиком для менеджера, если менеджер явно не сказал отправить.
 
@@ -452,13 +456,15 @@ def render_bot_contract() -> str:
 12. Бот не подставляет `client_safe_text` дословно в сообщение клиенту или менеджеру. Он использует факт как источник смысла и собирает нормальную фразу из утверждённого шаблона, `structured_value.raw_value` и контекста вопроса.
 13. Если у факта стоит `bot_template_required=true`, его нельзя использовать как готовую фразу: сначала нужно собрать человеческий ответ через шаблон с явным смыслом числа, срока, цены или условия.
 14. Все факты с `bot_template_required=true` должны иметь запись в `bot_template_registry.json`. Если записи нет или шаблон не подходит к вопросу клиента, маршрут `manager_only`.
-15. `pattern_descriptions` в `post_filter_registry.json` — это человекочитаемые пояснения, а не строки для поиска. Матчеры используют только поля `phrases` и `regex_patterns`.
+15. `pattern_descriptions` в `post_filter_registry.json` — это человекочитаемые пояснения, а не строки для поиска. Матчеры используют `global_phrases`, `phrases_by_active_brand[active_brand]` и `regex_patterns`; поле `phrases` оставлено как совместимая копия глобальных фраз.
 16. Для показа менеджеру использовать `manager_display_text`; `manager_check_text` может содержать служебные причины блокировки.
 """
 
 
-def render_active_brand_rules() -> str:
-    return """# Правила active_brand
+def render_active_brand_rules(brand_forbidden: Mapping[str, Sequence[str]]) -> str:
+    foton_block = "\n".join(f"- {item}" for item in brand_forbidden.get("foton", ())) or "- см. `brand_rules.yaml`"
+    unpk_block = "\n".join(f"- {item}" for item in brand_forbidden.get("unpk", ())) or "- см. `brand_rules.yaml`"
+    return f"""# Правила active_brand
 
 ## active_brand=foton
 
@@ -470,11 +476,7 @@ def render_active_brand_rules() -> str:
 
 Блокировать:
 
-- УНПК
-- АНО ДПО
-- НОУ УНПК
-- kmipt.ru
-- @unpk_mipt
+{foton_block}
 
 ## active_brand=unpk
 
@@ -486,14 +488,7 @@ def render_active_brand_rules() -> str:
 
 Блокировать:
 
-- Фотон
-- ЦДПО
-- ЦРДО
-- cdpofoton.ru
-- edu@cdpofoton.ru
-- Т-Банк
-- Долями
-- рассрочка через банк
+{unpk_block}
 """
 
 
@@ -771,6 +766,28 @@ def load_json(path: Path) -> dict[str, Any]:
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def load_yaml_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def extract_brand_forbidden(brand_rules: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    mentions = brand_rules.get("forbidden_client_mentions")
+    if not isinstance(mentions, Mapping):
+        return {"foton": (), "unpk": ()}
+    result: dict[str, tuple[str, ...]] = {}
+    for brand in ("foton", "unpk"):
+        block = mentions.get(f"when_active_brand_is_{brand}")
+        terms = block.get("blocked_terms") if isinstance(block, Mapping) else ()
+        if isinstance(terms, Sequence) and not isinstance(terms, (str, bytes, bytearray)):
+            result[brand] = tuple(str(term) for term in terms if str(term).strip())
+        else:
+            result[brand] = ()
+    return result
 
 
 def write_json(path: Path, payload: Any) -> None:

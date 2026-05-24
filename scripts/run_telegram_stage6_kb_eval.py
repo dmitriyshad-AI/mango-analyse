@@ -476,7 +476,7 @@ def apply_stage6_draft_text_safety(result: SubscriptionDraftResult) -> Subscript
     cleaned = strip_stage6_internal_metadata(raw_text)
     flags = list(result.safety_flags)
     route = result.route
-    if cleaned != raw_text:
+    if cleaned != raw_text or "internal_metadata_removed_from_draft" in flags:
         flags.extend(["internal_metadata_removed_from_draft", "stage6_internal_metadata_removed_from_draft"])
     if stage6_draft_has_forbidden_marker(cleaned):
         cleaned = STAGE6_DRAFT_FALLBACK_TEXT
@@ -530,7 +530,12 @@ def enforce_stage6_route_safety(row: Mapping[str, Any], baseline: Mapping[str, A
         updated["route"] = "manager_only"
         if "baseline_high_risk_preserved" not in safety_flags:
             safety_flags.append("baseline_high_risk_preserved")
-    if "unsupported_promise_detected" in serialize_cell(safety_flags):
+    safety_blob = serialize_cell(safety_flags)
+    if "brand_separation_guarded" in safety_blob:
+        updated["route"] = "manager_only"
+        if "stage6_brand_separation_guard_forced_manager_only" not in safety_flags:
+            safety_flags.append("stage6_brand_separation_guard_forced_manager_only")
+    if "unsupported_promise_detected" in safety_blob or "unsupported_promise_resolved_by_softener" in safety_blob:
         updated["route"] = "manager_only"
         updated["draft_text"] = (
             "Здравствуйте! Передам вопрос менеджеру: здесь нужно сверить актуальные условия "

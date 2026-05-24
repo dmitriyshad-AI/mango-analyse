@@ -1,0 +1,64 @@
+{
+  "audio_working_store": "product_data/audio_working_store_20260523_v1",
+  "candidate_audio_files": 137025,
+  "dir_targets": [
+    "product_data/canonical_audio_store_20260516_v1/audio",
+    "_local_archive_mango_api_downloads_20260507/recordings",
+    "_local_archive_mango_api_downloads_20260507/quarantine_import/audio",
+    "_local_archive_mango_api_downloads_20260507/product_appliance/asr_worker_pack_stage13/audio",
+    "_local_archive_mango_api_downloads_20260507/product_appliance/live_mango_capture_20260511/asr_ui_batch_20260511_v1/audio",
+    "_local_archive_mango_api_downloads_20260507/product_appliance/live_mango_capture_20260511/recordings",
+    "_local_archive_mango_api_downloads_20260507/product_appliance/live_mango_capture_20260516_incremental_v1/recordings",
+    "_local_archive_mango_api_downloads_20260507/product_appliance/recording_capture_downloads/recordings",
+    "_local_archive_mango_api_downloads_20260507/product_appliance/recording_quarantine_stage11/audio",
+    "_local_archive_mango_api_downloads_20260507/product_appliance/recording_quarantine_stage9/audio"
+  ],
+  "dry_run": false,
+  "extra_cleanup": {
+    "extra_audio_files": 25,
+    "extra_moved_entries": 2,
+    "rows": [
+      {
+        "audio_files": 4,
+        "covered_by_audio_working_store": true,
+        "operation": "move_dir_to_trash_extra",
+        "sha256": "",
+        "size_bytes": 2944800,
+        "source_path": "product_data/mango_incremental_4_asr_ra_20260516_v1/audio",
+        "trash_path": "/Users/dmitrijfabarisov/.Trash/MangoAnalyse_audio_cleanup_20260522T230404Z/dirs/product_data/mango_incremental_4_asr_ra_20260516_v1/audio"
+      },
+      {
+        "audio_files": 21,
+        "covered_by_audio_working_store": true,
+        "operation": "move_dir_to_trash_extra",
+        "sha256": "",
+        "size_bytes": 6706368,
+        "source_path": "product_data/mango_new_21_asr_ra_20260516_v1/audio",
+        "trash_path": "/Users/dmitrijfabarisov/.Trash/MangoAnalyse_audio_cleanup_20260522T230404Z/dirs/product_data/mango_new_21_asr_ra_20260516_v1/audio"
+      }
+    ],
+    "trash_root": "/Users/dmitrijfabarisov/.Trash/MangoAnalyse_audio_cleanup_20260522T230404Z"
+  },
+  "extra_cleanup_applied": true,
+  "file_glob_targets": [
+    "2026-03-09--26/*.mp3",
+    "2026-03-05-21-06-49-ч1/*.mp3",
+    "2026-03-05-21-06-49-ч2/*.mp3",
+    "product_data/mango_update_after_20260512_20260521_v1/asr_ui_batch/audio/*.mp3"
+  ],
+  "generated_at": "2026-05-22T23:05:17.616087+00:00",
+  "missing_uncovered_audio_files": 0,
+  "moved_csv": "docs/AUDIO_WORKING_STORE_OLD_AUDIO_MOVED_2026-05-23.csv",
+  "moved_entries": 70702,
+  "safety": {
+    "asr_run": false,
+    "crm_write": false,
+    "hash_coverage_required": true,
+    "missing_audio_aborts": true,
+    "ra_run": false,
+    "stable_runtime_modified": false,
+    "tallanto_write": false
+  },
+  "schema_version": "audio_working_store_old_audio_cleanup_v1",
+  "trash_root": "/Users/dmitrijfabarisov/.Trash/MangoAnalyse_audio_cleanup_20260522T230404Z"
+}

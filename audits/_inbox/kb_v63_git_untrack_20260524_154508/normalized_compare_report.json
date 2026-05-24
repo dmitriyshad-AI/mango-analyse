@@ -1,0 +1,18 @@
+{
+  "compared_dirs": [
+    "kb_release_20260520_v6_3_team_answers",
+    "kb_release_20260520_v6_3_team_answers_bot_pack",
+    "kb_release_20260520_v6_3_team_answers_employee_pack",
+    "kb_release_20260520_v6_3_team_answers_handoff_for_claude_and_team",
+    "kb_release_20260520_v6_3_team_answers_smoke_not_run"
+  ],
+  "files_compared": 69,
+  "missing_or_extra": [],
+  "normalizations": [
+    "audit output root path -> product_data/knowledge_base root path",
+    "ISO UTC build timestamps -> <utc_timestamp>"
+  ],
+  "normalized_mismatches": [],
+  "normalized_one_to_one": true,
+  "schema_version": "kb_v63_regeneration_compare_v1"
+}

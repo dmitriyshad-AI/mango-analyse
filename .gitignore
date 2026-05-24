@@ -155,6 +155,11 @@ product_data/knowledge_base/kb_release_20260517_v1*/
 product_data/knowledge_base/kb_release_20260520_v4*/
 product_data/knowledge_base/kb_release_20260520_v6_1*/
 product_data/knowledge_base/kb_release_20260520_v6_2*/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_employee_pack/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_handoff_for_claude_and_team/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_smoke_not_run/
 product_data/knowledge_base/**/llm_cache/
 product_data/knowledge_base/**/stage6_*_smoke/
 product_data/knowledge_base/**/stage6_fake_eval/

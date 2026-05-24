@@ -23,6 +23,21 @@ def test_extracts_known_slots_without_reasking_first_price_message() -> None:
     assert payload["next_step_type"] in {"ask_goal", "offer_group_check"}
 
 
+def test_format_extraction_does_not_treat_tochnoy_as_offline() -> None:
+    state = build_lead_funnel_state(
+        "29 750 это семестр, а 47 250 год, правильно? и без точной даты повышения?",
+        active_brand="foton",
+        topic_id="theme:001_pricing",
+        recent_messages=["Клиент: онлайн 8 класс физика, без воды"],
+    )
+
+    payload = state.to_json_dict()
+
+    assert payload["filled_slots"]["format"] == "online"
+    assert payload["filled_slots"]["grade"] == "8"
+    assert payload["filled_slots"]["subject"] == "физика"
+
+
 def test_missing_grade_becomes_next_best_question() -> None:
     state = build_lead_funnel_state(
         "Нужна онлайн-физика для подготовки к олимпиадам",
@@ -61,6 +76,17 @@ def test_funnel_slots_ignore_bot_answers_to_avoid_self_pollution() -> None:
 
     assert state.known_slots.subject == ""
     assert "программ" not in state.to_json_dict()["filled_slots"].get("subject", "")
+
+
+def test_funnel_does_not_treat_program_word_as_programming_subject() -> None:
+    state = build_lead_funnel_state(
+        "8 класс информатика очно, без подбора программы",
+        active_brand="foton",
+        topic_id="service:S5_general_consultation",
+    )
+
+    assert state.known_slots.subject == "информатика"
+    assert "программирование" not in state.to_json_dict()["filled_slots"].get("subject", "")
 
 
 def test_p0_composite_stops_qualification() -> None:

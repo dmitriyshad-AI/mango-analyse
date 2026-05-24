@@ -216,6 +216,7 @@ def build_draft_prompt(
         "- Если в контексте есть conversation_intent_plan, считай его внутренним контрактом ответа: он определяет главное намерение, продукт, известные данные и следующий шаг.\n"
         "- Отдельные слова клиента — это только сигналы. Не меняй тему и продукт по одному слову, если conversation_intent_plan говорит продолжать прежний контекст.\n"
         "- conversation_intent_plan.primary_intent важнее случайных keyword_signals. Например, «закрепить место» в контексте лагеря — это проверка наличия места, а не фиксация цены.\n"
+        "- conversation_intent_plan.fact_scope задаёт точную область фактов. Не заменяй её соседней областью: маткапитал не равен налоговому вычету, расписание занятий не равно часам работы офиса, дневной лагерь не равен выездной ЛВШ.\n"
         "- Если conversation_intent_plan.topic_switch_decision=clarify_before_switch, не прыгай в новую ветку: коротко уточни, правильно ли понял смену темы.\n"
         "- Если conversation_intent_plan.answer_policy=answer_directly_if_fact_verified, сначала дай проверенный факт по прямому вопросу, потом один следующий шаг.\n"
         "- Если conversation_intent_plan.answer_policy=answer_safe_parts_then_manager_live_check, ответь на безопасные части и передай менеджеру только live-проверку места/наличия/броней.\n\n"

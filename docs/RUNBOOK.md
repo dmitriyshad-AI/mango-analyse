@@ -1,6 +1,6 @@
 # Runbook
 
-Дата обновления: 2026-05-15
+Дата обновления: 2026-05-23
 
 Назначение: безопасные команды и рабочие правила для проекта.
 
@@ -53,11 +53,27 @@ sed -n '1,260p' docs/SEMANTIC_REVIEW_RULES.md
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_kb_semantic_review.py \
-  --release-dir product_data/knowledge_base/kb_release_20260518_v3_handoff_for_claude_and_team \
+  --release-dir product_data/knowledge_base/kb_release_20260520_v6_3_team_answers \
   --out-dir audits/_inbox/<block>/semantic_review
 ```
 
 Если `semantic_pass=false`, блок не считается завершенным, даже если `quality_passed=true`.
+
+## Разбор проблем бота по классам
+
+Для FAIL/PASS_WITH_NOTES в Telegram-пилоте использовать skill:
+
+```text
+/Users/dmitrijfabarisov/.codex/skills/bot-failure-class-review/SKILL.md
+```
+
+Реестр классов:
+
+```text
+docs/BOT_FAILURE_CLASSES_REGISTRY.md
+```
+
+Правило: не чинить один пример как отдельную фразу, пока не понятно, это единичный случай, проблема теста или повторяемый класс.
 
 ## Что не запускать без отдельного подтверждения
 
@@ -109,6 +125,121 @@ cat stable_runtime/CANONICAL_EXPORT.txt
 ```
 
 Но нельзя менять `stable_runtime` DB/audio/transcripts без отдельного подтверждения.
+
+## Telegram Pilot
+
+Токены и настройки локального пилота:
+
+```text
+/Users/dmitrijfabarisov/.codex/mango_telegram_pilot_bots.env
+```
+
+Безопасная проверка настроек без отправки клиентам:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_public_pilot_bots.py \
+  --env-file /Users/dmitrijfabarisov/.codex/mango_telegram_pilot_bots.env \
+  --mode getme \
+  --brand all
+```
+
+Перезапуск локальных публичных ботов:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src bash scripts/restart_telegram_public_pilot_bots.sh
+```
+
+Важно: `--mode poll` может реально отправлять ответы в публичные Telegram-боты. Запускать только когда понятно, что сотрудники тестируют пилот.
+
+Логи:
+
+```text
+.codex_local/telegram_pilot_bots/logs/
+.codex_local/telegram_pilot_bots/runtime/
+```
+
+Единый store пилота:
+
+```text
+.codex_local/telegram_pilot/telegram_pilot.sqlite
+```
+
+Дневной отчёт из store:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_telegram_pilot_daily_report.py \
+  --db .codex_local/telegram_pilot/telegram_pilot.sqlite \
+  --date YYYY-MM-DD \
+  --out-dir audits/_inbox/telegram_pilot_daily_YYYYMMDD
+```
+
+Импорт feedback сотрудников из `employee_review_sheet.csv`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/import_telegram_pilot_feedback.py \
+  --db .codex_local/telegram_pilot/telegram_pilot.sqlite \
+  --csv audits/_inbox/telegram_pilot_daily_YYYYMMDD/employee_review_sheet.csv \
+  --actor nastya
+```
+
+База знаний для ботов:
+
+```text
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack
+```
+
+Порядок быстрых проверок бота:
+
+1. preflight актуальности v8-фактов;
+2. точечные тесты DialogueMemory/answer-quality/journal;
+3. `v8_targeted16`;
+4. статичные `MEGA_autonomy_tests_v6` и `MEGA_multitopic_batch_v5`;
+5. полный v8 только отдельным длинным прогоном с `--resume`, полными транскриптами и review queue.
+
+Точечные тесты DialogueMemory:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
+  tests/test_dialogue_memory.py \
+  tests/test_telegram_pilot_context_builder.py \
+  tests/test_answer_quality_rewriter.py \
+  tests/test_telegram_pilot_journal_report.py \
+  tests/test_telegram_dynamic_client_sim.py \
+  tests/test_subscription_llm_draft_provider.py
+```
+
+Быстрый параллельный запуск динамического симулятора:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py \
+  --scenarios "/Users/dmitrijfabarisov/Claude Projects/Foton/v8_dynamic_sim_2026-05-22/v8_targeted16_2026-05-22.jsonl" \
+  --out-dir audits/_inbox/telegram_dynamic_v8_targeted16_YYYYMMDD_HHMMSS \
+  --parallel 2 \
+  --resume
+```
+
+Для `codex`-режима рекомендуемый старт: `--parallel 2`. Если нет таймаутов и деградации, можно пробовать `--parallel 3`. Параллельность 10-50 для LLM-прогона не использовать как обычный acceptance: это скорее нагрузочный эксперимент, может давать нестабильность из-за лимитов Codex/модели.
+
+Безопасный локальный smoke на одновременные обращения без Telegram-отправок:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_pilot_concurrency_smoke.py \
+  --mode fake \
+  --requests 50 \
+  --concurrency 10 \
+  --out-dir audits/_inbox/telegram_pilot_concurrency_smoke_YYYYMMDD
+```
+
+Если нужно проверить реальную LLM-задержку без отправки сообщений клиентам, можно запустить малый codex-smoke:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_pilot_concurrency_smoke.py \
+  --mode codex \
+  --requests 10 \
+  --concurrency 2 \
+  --out-dir audits/_inbox/telegram_pilot_concurrency_codex_smoke_YYYYMMDD
+```
 
 ## Audit Pack
 
@@ -164,19 +295,13 @@ Live write was not executed.
 
 ## Текущий порядок реализации
 
+Актуальный порядок для этого диалога:
+
 ```text
-G -> A -> PBF -> B -> C -> D -> E
+Telegram pilot journal -> dialogue strategy -> docs -> v8_targeted16 -> static v6/v5 -> audit pack
 ```
 
-Где:
-
-- `G` - git-границы и рабочее состояние;
-- `A` - AMO pre-write snapshot и rollback;
-- `PBF` - красный post-backfill тест;
-- `B` - коммерческие поля;
-- `C` - структурные возражения;
-- `D` - связь каталога вопросов и deal-aware gate;
-- `E` - customer timeline как read-only источник истории клиента.
+Исторический порядок `G -> A -> PBF -> B -> C -> D -> E` по AMO/deal-aware/customer timeline считать фундаментом, но не текущим основным блоком.
 
 ## Customer Timeline Coverage
 

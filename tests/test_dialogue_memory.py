@@ -97,6 +97,58 @@ def test_dialogue_memory_marks_p0_as_handoff_required() -> None:
     assert "legal_threat" in memory.risk_flags
     assert memory.handoff_state == "required"
     assert memory.sales_stage == "handoff_required"
+    assert memory.p0_latch.active is True
+    assert memory.p0_latch.primary_risk == "legal_threat"
+
+
+def test_dialogue_memory_does_not_latch_presale_refund_policy_question() -> None:
+    memory = build_dialogue_memory(
+        current_message="До оплаты хочу понять: если ребёнку не понравится, деньги вернёте?",
+        active_brand="foton",
+        recent_messages=["Клиент: 6 класс математика онлайн"],
+        session_id="s-presale-refund",
+    )
+
+    assert "refund" not in memory.risk_flags
+    assert memory.handoff_state != "required"
+    assert memory.p0_latch.active is False
+
+
+def test_dialogue_memory_does_not_latch_presale_refund_after_manager_check_draft() -> None:
+    memory = build_dialogue_memory(
+        current_message="До оплаты хочу понять условия возврата.",
+        active_brand="foton",
+        recent_messages=["Клиент: 6 класс математика онлайн"],
+        session_id="s-presale-refund-draft",
+    )
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Условия возврата подтвердит менеджер до оплаты.",
+        route="draft_for_manager",
+        safety_flags=(
+            "presale_refund_policy_manager_check",
+            "manager_approval_required",
+            "no_auto_send",
+            "high_risk_manager_only",
+        ),
+    )
+
+    assert updated.p0_latch.active is False
+    assert "p0" not in updated.risk_flags
+
+
+def test_dialogue_memory_latches_active_paid_refund_request() -> None:
+    memory = build_dialogue_memory(
+        current_message="Мы уже оплатили курс, ребёнку не понравилось, верните деньги.",
+        active_brand="foton",
+        recent_messages=["Клиент: 6 класс математика онлайн"],
+        session_id="s-active-refund",
+    )
+
+    assert "refund" in memory.risk_flags
+    assert memory.handoff_state == "required"
+    assert memory.p0_latch.active is True
 
 
 def test_dialogue_memory_current_terms_safe_next_action_asks_one_missing_slot() -> None:
@@ -188,3 +240,50 @@ def test_dialogue_memory_does_not_extract_slots_from_bot_answers() -> None:
 
     assert memory.to_prompt_view()["known_slots"]["grade"] == "6"
     assert "subject" not in memory.to_prompt_view()["known_slots"]
+
+
+def test_dialogue_memory_latches_payment_dispute_until_manager_event() -> None:
+    memory = build_dialogue_memory(
+        current_message="С меня дважды списали деньги за оплату, верните одну.",
+        active_brand="foton",
+        recent_messages=["Клиент: 8 класс, физика"],
+        session_id="s-p0-latch",
+    )
+
+    assert memory.p0_latch.active is True
+    assert "payment_dispute" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
+
+    followup = build_dialogue_memory(
+        current_message="А вообще сколько стоит год?",
+        active_brand="foton",
+        previous_memory=memory,
+        session_id="s-p0-latch",
+    )
+
+    assert followup.p0_latch.active is True
+    assert followup.handoff_state == "required"
+    assert followup.to_prompt_view()["next_best_action_hint"] == "handoff_required"
+
+    cleared = build_dialogue_memory(
+        current_message="Спасибо, теперь можно вернуться к цене?",
+        active_brand="foton",
+        previous_memory=followup,
+        context={"manager_clear_p0_latch": "manager_took_over_case"},
+        session_id="s-p0-latch",
+    )
+
+    assert cleared.p0_latch.active is False
+    assert cleared.p0_latch.release_event_id == "manager_took_over_case"
+
+
+def test_dialogue_memory_does_not_latch_benign_hypothetical_refund() -> None:
+    memory = build_dialogue_memory(
+        current_message="У знакомых был возврат, а у вас как с такими ситуациями?",
+        active_brand="foton",
+        session_id="s-benign-refund",
+    )
+
+    assert memory.p0_latch.active is False
+    assert "refund" not in memory.risk_flags
+    assert memory.handoff_state != "required"

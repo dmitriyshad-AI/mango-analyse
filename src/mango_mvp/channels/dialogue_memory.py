@@ -15,6 +15,7 @@ from mango_mvp.channels.new_lead_funnel import (
     normalize_brand,
     normalize_text,
 )
+from mango_mvp.channels.p0_recall_spec import memory_risk_flags_from_text
 
 
 DIALOGUE_MEMORY_SCHEMA_VERSION = "dialogue_memory_v2_2026_05_23"
@@ -48,13 +49,6 @@ QUESTION_KIND_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("platform", ("платформ", "запис", "мтс линк", "webinar", "вебинар")),
     ("identity", ("ты бот", "вы бот", "кто вы", "с кем я общаюсь", "ты gpt", "вы gpt")),
     ("off_topic", ("айфон", "iphone", "погода", "сочинение", "биткоин", "крипт")),
-)
-
-P0_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("refund", ("возврат", "вернуть деньги", "верните деньги", "деньги назад", "расторг")),
-    ("complaint", ("жалоб", "претензи", "недовол", "возмущ", "обман", "ужас")),
-    ("legal_threat", ("суд", "прокурат", "роспотреб", "иск", "адвокат", "по закону")),
-    ("payment_dispute", ("оплатил", "оплатила", "оплата не", "платеж не", "деньги списали")),
 )
 
 COMMITMENT_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -118,6 +112,26 @@ class DialogueQuestion:
 
 
 @dataclass(frozen=True)
+class DialogueP0Latch:
+    active: bool = False
+    codes: tuple[str, ...] = ()
+    primary_risk: str = ""
+    started_at: str = ""
+    trigger_turn_id: str = ""
+    release_event_id: str = ""
+
+    def to_json_dict(self) -> Mapping[str, Any]:
+        return {
+            "active": self.active,
+            "codes": list(self.codes),
+            "primary_risk": self.primary_risk,
+            "started_at": self.started_at,
+            "trigger_turn_id": self.trigger_turn_id,
+            "release_event_id": self.release_event_id,
+        }
+
+
+@dataclass(frozen=True)
 class DialogueMemory:
     session_id: str
     active_brand: str
@@ -130,6 +144,7 @@ class DialogueMemory:
     risk_flags: tuple[str, ...] = ()
     handoff_state: str = "none"
     fact_refs: tuple[str, ...] = ()
+    p0_latch: DialogueP0Latch = field(default_factory=DialogueP0Latch)
     route_history: tuple[str, ...] = ()
     topic_focus: Mapping[str, str] = field(default_factory=dict)
     unanswered_questions: tuple[str, ...] = ()
@@ -158,6 +173,7 @@ class DialogueMemory:
             "risk_flags": list(self.risk_flags),
             "handoff_state": self.handoff_state,
             "fact_refs": list(self.fact_refs),
+            "p0_latch": self.p0_latch.to_json_dict(),
             "route_history": list(self.route_history),
             "topic_focus": dict(self.topic_focus),
             "unanswered_questions": list(self.unanswered_questions),
@@ -188,6 +204,7 @@ class DialogueMemory:
             "risk_flags": list(self.risk_flags),
             "handoff_state": self.handoff_state,
             "fact_refs": list(self.fact_refs[-8:]),
+            "p0_latch": self.p0_latch.to_json_dict(),
             "route_history": list(self.route_history[-5:]),
             "topic_focus": dict(self.topic_focus),
             "unanswered_questions": list(self.unanswered_questions[-5:]),
@@ -228,15 +245,24 @@ def build_dialogue_memory(
     _merge_slots(slot_map, _extract_slots_from_text(current_text), source_name="dialogue_memory", confidence=0.95, override=True)
 
     open_question = _detect_open_question(current_text)
+    previous = dialogue_memory_from_mapping(previous_memory) if isinstance(previous_memory, Mapping) else previous_memory
     if not open_question.text:
-        previous = dialogue_memory_from_mapping(previous_memory) if isinstance(previous_memory, Mapping) else previous_memory
         if isinstance(previous, DialogueMemory) and previous.open_question.text and not previous.open_question.answered:
             open_question = previous.open_question
     risks = _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
+    p0_latch = _next_p0_latch(
+        previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(),
+        current_message=current_text,
+        current_risk_flags=_detect_risk_flags(current_text),
+        context=context,
+        session_id=session_id,
+    )
+    if p0_latch.active:
+        risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = _detect_commitments(turns)
     fact_refs = _fact_refs(context or {})
     route_history = _route_history(previous_memory)
-    handoff = "required" if risks else ("suggested" if any("manager" in item for item in commitments) else "none")
+    handoff = "required" if p0_latch.active or risks else ("suggested" if any("manager" in item for item in commitments) else "none")
     sales_stage = _sales_stage(slot_map, open_question=open_question, risk_flags=risks, handoff_state=handoff)
     unanswered = _unanswered_questions(previous_memory, open_question=open_question)
     topic_focus = _topic_focus(slot_map, open_question=open_question, active_brand=brand)
@@ -254,6 +280,7 @@ def build_dialogue_memory(
         risk_flags=risks,
         handoff_state=handoff,
         fact_refs=fact_refs,
+        p0_latch=p0_latch,
         route_history=route_history,
         topic_focus=topic_focus,
         unanswered_questions=unanswered,
@@ -282,7 +309,17 @@ def update_dialogue_memory_after_answer(
     if answer:
         turns = (*turns, DialogueTurn("bot", answer))[-MAX_TURNS:]
     route_history = tuple(dict.fromkeys([*current.route_history, str(route or "").strip()]))[-8:]
-    risks = tuple(dict.fromkeys([*current.risk_flags, *_risk_flags_from_safety(safety_flags)]))
+    safety_risks = _risk_flags_from_safety(safety_flags)
+    risks = tuple(dict.fromkeys([*current.risk_flags, *safety_risks]))
+    p0_latch = _next_p0_latch(
+        current.p0_latch,
+        current_message="",
+        current_risk_flags=safety_risks,
+        context={"route": route, "safety_flags": list(safety_flags)},
+        session_id=current.session_id,
+    )
+    if p0_latch.active:
+        risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = tuple(dict.fromkeys([*current.last_bot_commitments, *_detect_commitments(turns)]))[-8:]
     answered = current.answered_questions
     open_question = current.open_question
@@ -291,7 +328,7 @@ def update_dialogue_memory_after_answer(
         answered = (*answered, open_question.text)[-8:]
         open_question = DialogueQuestion(open_question.text, open_question.kind, True)
         unanswered = tuple(item for item in unanswered if item != current.open_question.text)
-    handoff = "required" if risks or route == "manager_only" else current.handoff_state
+    handoff = "required" if p0_latch.active or risks or route == "manager_only" else current.handoff_state
     safe_parts = tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
     pending_actions = _pending_manager_actions(commitments)
     return DialogueMemory(
@@ -306,6 +343,7 @@ def update_dialogue_memory_after_answer(
         risk_flags=risks,
         handoff_state=handoff,
         fact_refs=tuple(dict.fromkeys([*current.fact_refs, *[str(item) for item in fact_refs if str(item).strip()]]))[-12:],
+        p0_latch=p0_latch,
         route_history=route_history,
         topic_focus=dict(current.topic_focus),
         unanswered_questions=unanswered,
@@ -349,6 +387,7 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         risk_flags=tuple(str(item) for item in (data.get("risk_flags") or ()) if str(item).strip()),
         handoff_state=str(data.get("handoff_state") or "none"),
         fact_refs=tuple(str(item) for item in (data.get("fact_refs") or ()) if str(item).strip()),
+        p0_latch=_p0_latch_from_mapping(data.get("p0_latch")),
         route_history=tuple(str(item) for item in (data.get("route_history") or ()) if str(item).strip()),
         topic_focus=_plain_str_mapping(data.get("topic_focus")),
         unanswered_questions=tuple(str(item) for item in (data.get("unanswered_questions") or ()) if str(item).strip()),
@@ -364,7 +403,7 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
 
 
 def next_best_action_hint(memory: DialogueMemory) -> str:
-    if memory.risk_flags:
+    if memory.p0_latch.active or memory.risk_flags:
         return "handoff_required"
     if memory.open_question.text and not memory.open_question.answered:
         return f"answer_open_question:{memory.open_question.kind or 'other'}"
@@ -498,9 +537,7 @@ def _detect_open_question(text: str) -> DialogueQuestion:
 
 
 def _detect_risk_flags(text: str) -> tuple[str, ...]:
-    normalized = normalize_text(text)
-    flags = [flag for flag, markers in P0_MARKERS if any(marker in normalized for marker in markers)]
-    return tuple(dict.fromkeys(flags))
+    return memory_risk_flags_from_text(text)
 
 
 def _detect_commitments(turns: Sequence[DialogueTurn]) -> tuple[str, ...]:
@@ -650,6 +687,76 @@ def _plain_str_mapping(value: Any) -> Mapping[str, str]:
     return {str(key): str(raw)[:160] for key, raw in value.items() if str(key).strip() and str(raw or "").strip()}
 
 
+def _p0_latch_from_mapping(value: Any) -> DialogueP0Latch:
+    if not isinstance(value, Mapping):
+        return DialogueP0Latch()
+    return DialogueP0Latch(
+        active=bool(value.get("active")),
+        codes=tuple(str(item) for item in (value.get("codes") or ()) if str(item).strip()),
+        primary_risk=str(value.get("primary_risk") or ""),
+        started_at=str(value.get("started_at") or ""),
+        trigger_turn_id=str(value.get("trigger_turn_id") or ""),
+        release_event_id=str(value.get("release_event_id") or ""),
+    )
+
+
+def _next_p0_latch(
+    previous: DialogueP0Latch,
+    *,
+    current_message: str,
+    current_risk_flags: Sequence[str],
+    context: Mapping[str, Any] | None,
+    session_id: str,
+) -> DialogueP0Latch:
+    release_event = _p0_latch_release_event(context)
+    if release_event:
+        return DialogueP0Latch(release_event_id=release_event)
+    if previous.active:
+        return previous
+    codes = tuple(dict.fromkeys(_latchable_p0_codes(current_risk_flags)))
+    if not codes:
+        return DialogueP0Latch()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    trigger_seed = f"{session_id}|{current_message[:160]}|{','.join(codes)}"
+    trigger_id = hashlib.sha256(trigger_seed.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return DialogueP0Latch(
+        active=True,
+        codes=codes,
+        primary_risk=_primary_p0_risk(codes),
+        started_at=now,
+        trigger_turn_id=trigger_id,
+    )
+
+
+def _latchable_p0_codes(flags: Sequence[str]) -> tuple[str, ...]:
+    mapping = {
+        "refund": "refund",
+        "legal": "legal_threat",
+        "legal_threat": "legal_threat",
+        "complaint": "complaint",
+        "reputation_threat": "complaint",
+        "payment_dispute": "payment_dispute",
+    }
+    return tuple(mapping[str(item)] for item in flags if str(item) in mapping)
+
+
+def _primary_p0_risk(codes: Sequence[str]) -> str:
+    for code in ("legal_threat", "refund", "complaint", "payment_dispute"):
+        if code in codes:
+            return code
+    return str(codes[0]) if codes else ""
+
+
+def _p0_latch_release_event(context: Mapping[str, Any] | None) -> str:
+    if not isinstance(context, Mapping):
+        return ""
+    for key in ("manager_clear_p0_latch", "manager_resolved_p0", "manager_took_over", "p0_latch_release_event"):
+        value = context.get(key)
+        if value:
+            return str(value if not isinstance(value, bool) else key)[:120]
+    return ""
+
+
 def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) -> Mapping[str, str]:
     return {
         key: slot.value
@@ -778,14 +885,17 @@ def _open_loop_summary(
 
 def _risk_flags_from_safety(flags: Sequence[str]) -> tuple[str, ...]:
     text = normalize_text(" ".join(str(item) for item in flags))
+    benign_presale_refund = "presale_refund_policy" in text and "zero_collect_refund" not in text and "final_p0_text_override" not in text
     result: list[str] = []
-    if "refund" in text or "возврат" in text:
+    if not benign_presale_refund and ("refund" in text or "возврат" in text):
         result.append("refund")
     if "legal" in text or "суд" in text:
         result.append("legal_threat")
     if "complaint" in text or "жалоб" in text:
         result.append("complaint")
-    if "p0" in text or "high_risk" in text:
+    if "payment_dispute" in text or "спор по оплат" in text:
+        result.append("payment_dispute")
+    if "conversation_intent_plan_p0" in text or "final_p0_text_override" in text:
         result.append("p0")
     return tuple(dict.fromkeys(result))
 

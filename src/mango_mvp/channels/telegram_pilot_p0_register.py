@@ -2,22 +2,18 @@ from __future__ import annotations
 
 import csv
 import json
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.channels.conversation_orchestrator import P0_THEME_ROUTING_RULES
+from mango_mvp.channels.p0_recall_spec import codes_from_text
 from mango_mvp.channels.telegram_pilot_store import guard_telegram_pilot_path
 
 
 TELEGRAM_PILOT_P0_REGISTER_SCHEMA_VERSION = "telegram_pilot_p0_register_v1"
 AUTONOMOUS_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
-P0_TEXT_RE = re.compile(
-    r"возврат|верн\w+\s+деньг|отказ\w*\s+от\s+обуч|жалоб|недовол|претензи|суд|иск|прокуратур|роспотребнадзор",
-    re.I,
-)
 P0_FLAG_MARKERS = ("high_risk", "refund", "legal", "complaint", "negative_feedback", "combined_high_risk")
 P0_REGISTER_FIELDS = (
     "schema_version",
@@ -118,7 +114,7 @@ def p0_trigger(*, topic_id: str, input_text: str, safety_flags: Sequence[str] = 
     flags = " ".join(str(item or "").casefold() for item in safety_flags)
     if any(marker in flags for marker in P0_FLAG_MARKERS):
         return "safety_flags"
-    if P0_TEXT_RE.search(str(input_text or "")):
+    if codes_from_text(str(input_text or "")):
         return "input_text"
     return ""
 

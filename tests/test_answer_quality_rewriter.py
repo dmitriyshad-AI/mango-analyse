@@ -140,6 +140,28 @@ def test_rewrite_price_fixation_process_is_safe_without_booking_or_seat_promise(
     assert "гарантир" not in lowered
 
 
+def test_rewrite_price_fixation_process_understands_what_do_i_need() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:001_pricing",
+        topic_confidence=0.94,
+        draft_text="Да, это текущая цена. Если хотите, передам менеджеру.",
+    )
+
+    rewritten = apply_answer_quality_rewriter(
+        result,
+        client_message="Что от меня нужно, чтобы зафиксировать год за 74 500?",
+        context=_context(),
+    )
+
+    lowered = rewritten.draft_text.casefold()
+    assert rewritten.draft_text.startswith("Чтобы оформить по текущим условиям")
+    assert "передать заявку" in lowered
+    assert "74 500" in rewritten.draft_text
+    assert "заброниру" not in lowered
+    assert "закреплю" not in lowered
+
+
 def test_rewrite_price_fact_cleans_source_labels_and_normalizes_online_format() -> None:
     result = SubscriptionDraftResult(
         route="draft_for_manager",
@@ -168,6 +190,50 @@ def test_rewrite_price_fact_cleans_source_labels_and_normalizes_online_format() 
     assert "offline" not in rewritten.draft_text
     assert "(8 класс, физика, онлайн)" in rewritten.draft_text
     assert "74 500" not in rewritten.draft_text
+
+
+def test_assess_flags_offline_price_when_context_is_online() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:001_pricing",
+        topic_confidence=0.94,
+        draft_text="Да, это текущая подтверждённая цена на сейчас. очно, семестр — 44 600 ₽. очно, год — 74 500 ₽.",
+    )
+
+    assessment = assess_answer_quality(
+        result,
+        client_message="Это цена на сейчас? Я же онлайн спрашиваю.",
+        context=_context(
+            known_slots={"grade": "8", "subject": "физика", "format": "онлайн"},
+            knowledge_snippets=[
+                "prices regular 2026 27 / online 5 11 semester: Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн — 29 750 ₽.",
+                "prices regular 2026 27 / online 5 11 year: Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн — 47 250 ₽.",
+            ],
+        ),
+    )
+
+    assert "wrong_scope_fact_selected" in {finding.code for finding in assessment.findings}
+
+
+def test_rewrite_installment_does_not_repeat_availability_when_client_corrects_topic() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:006_installment",
+        topic_confidence=0.94,
+        draft_text="По местам не буду обещать без проверки. Передам менеджеру, чтобы он проверил наличие по конкретной группе.",
+    )
+
+    rewritten = apply_answer_quality_rewriter(
+        result,
+        client_message="Я про оплату спрашивала, не про места. Можно помесячно или за семестр? Долями можно?",
+        context=_context(confirmed_facts={"fact:installment": "Фотон: доступны 6, 10 или 12 месяцев и сервис Долями."}),
+    )
+
+    lowered = rewritten.draft_text.casefold()
+    assert "6, 10 или 12 месяцев" in rewritten.draft_text
+    assert "Долями" in rewritten.draft_text
+    assert "помесячную оплату" in lowered
+    assert "по местам" not in lowered
 
 
 def test_rewrite_booking_without_payment_answers_directly_before_price() -> None:
@@ -272,6 +338,95 @@ def test_rewrite_unpk_installment_monthly_discount_delta() -> None:
     assert "safe_template_repeated_across_turns" in rewritten.metadata["answer_quality"]["finding_codes"]
 
 
+def test_rewrite_foton_installment_answers_no_interest_followup_with_delta() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:006_installment",
+        topic_confidence=0.94,
+        draft_text="Да, в Фотоне можно оплатить обучение частями: есть варианты на 6, 10 или 12 месяцев и сервис Долями. "
+        "Менеджер поможет подобрать удобный вариант и оформить его дистанционно.",
+    )
+
+    rewritten = apply_answer_quality_rewriter(
+        result,
+        client_message="То есть без процентов для клиента?",
+        context=_context(
+            active_brand="foton",
+            confirmed_facts={
+                "fact:installment": "Фотон: рассрочка без переплаты для клиента; варианты оплаты частями 6, 10 или 12 месяцев и Долями."
+            },
+            dialogue_memory_view={
+                "recent_turns": [
+                    {
+                        "role": "bot",
+                        "text": "Да, в Фотоне можно оплатить обучение частями: есть варианты на 6, 10 или 12 месяцев и сервис Долями. "
+                        "Менеджер поможет подобрать удобный вариант и оформить его дистанционно.",
+                    }
+                ]
+            },
+        ),
+    )
+
+    assert "без переплаты для клиента" in rewritten.draft_text
+    assert "6, 10 или 12 месяцев" in rewritten.draft_text
+    assert "Долями" in rewritten.draft_text
+    assert rewritten.draft_text.count("Да, в Фотоне можно оплатить обучение частями") == 0
+
+
+def test_rewrite_foton_dolyami_parts_does_not_reintroduce_old_four_parts() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:006_installment",
+        topic_confidence=0.94,
+        draft_text="Да, в Фотоне можно оплатить обучение частями: есть варианты на 6, 10 или 12 месяцев и сервис Долями.",
+    )
+
+    rewritten = apply_answer_quality_rewriter(
+        result,
+        client_message="А Долями на сколько частей?",
+        context=_context(
+            active_brand="foton",
+            confirmed_facts={
+                "fact:installment": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."
+            },
+        ),
+    )
+
+    assert "Долями в Фотоне доступен" in rewritten.draft_text
+    assert "4 части" not in rewritten.draft_text
+    assert "6, 10 или 12 месяцев" in rewritten.draft_text
+    assert "платёжный сервис" in rewritten.draft_text
+
+
+def test_rewrite_repeated_template_to_short_ack_when_client_is_thinking() -> None:
+    repeated_text = (
+        "Да, в Фотоне можно оплатить обучение частями: есть варианты на 6, 10 или 12 месяцев и сервис Долями. "
+        "По обычным курсам также можно обсудить помесячную оплату или оплату за семестр. "
+        "Менеджер поможет подобрать удобный вариант и оформить его дистанционно."
+    )
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:006_installment",
+        topic_confidence=0.94,
+        draft_text=repeated_text,
+    )
+
+    rewritten = apply_answer_quality_rewriter(
+        result,
+        client_message="Спасибо, подумаю",
+        context=_context(
+            active_brand="foton",
+            known_slots={"grade": "8", "subject": "физика", "format": "онлайн"},
+            dialogue_memory_view={"recent_turns": [{"role": "bot", "text": repeated_text}]},
+        ),
+    )
+
+    assert "подумайте спокойно" in rewritten.draft_text
+    assert "Повторять условия заново не буду" in rewritten.draft_text
+    assert rewritten.draft_text.count("есть варианты на 6, 10 или 12 месяцев") == 0
+    assert "repeated_template_replaced_with_delta" in rewritten.missing_facts
+
+
 def test_assess_flags_wrong_scope_when_online_summer_gets_lvsh_fact() -> None:
     result = SubscriptionDraftResult(
         route="draft_for_manager",
@@ -336,6 +491,30 @@ def test_rewrite_foton_online_trial_answers_remote_no_visit_no_free_promise() ->
     assert "приезжать не нужно" in rewritten.draft_text
     assert "Напишите класс и предмет" not in rewritten.draft_text
     assert "бесплат" not in rewritten.draft_text.casefold()
+
+
+def test_rewrite_unpk_online_trial_fragment_keeps_online_context() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:023_trial_class",
+        topic_confidence=0.91,
+        draft_text="По очному формату сейчас не начинаем с бесплатного пробного занятия. По онлайн-формату можно прислать фрагмент занятия.",
+    )
+
+    rewritten = apply_answer_quality_rewriter(
+        result,
+        client_message="9 класс информатика онлайн, пришлите фрагмент занятия",
+        context=_context(
+            active_brand="unpk",
+            known_slots={"grade": "9", "subject": "информатика", "format": "онлайн"},
+            confirmed_facts={"fact:trial": "УНПК: по онлайн-формату можно прислать фрагмент занятия."},
+        ),
+    )
+
+    assert "онлайн-формату УНПК" in rewritten.draft_text
+    assert "фрагмент занятия" in rewritten.draft_text
+    assert "приезжать для этого не нужно" in rewritten.draft_text
+    assert "По очному формату" not in rewritten.draft_text
 
 
 def test_rewrite_seats_question_never_promises_availability_or_booking() -> None:

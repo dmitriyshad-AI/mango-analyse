@@ -11,6 +11,7 @@ from mango_mvp.channels.answer_contract import build_answer_contract
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
 from mango_mvp.channels.dialogue_memory import DialogueMemory, build_dialogue_memory
+from mango_mvp.channels.fact_scope_spec import detect_fact_scopes, fact_scopes_allowed, scope_family_for
 from mango_mvp.channels.few_shot_reference import build_few_shot_reference
 from mango_mvp.channels.pilot_context import PilotContext, build_pilot_context
 from mango_mvp.knowledge_base.fact_registry import classify_fact_types, fact_type_from_key
@@ -137,7 +138,7 @@ def build_telegram_pilot_context(
     intent_view = intent_plan.to_prompt_view()
     safety_decision = classify_answer_safety(
         client_message=current_message,
-        context={"conversation_intent_plan": intent_view, "recent_messages": recent_messages},
+        context={"conversation_intent_plan": intent_view, "dialogue_memory_view": memory_view, "recent_messages": recent_messages},
         topic_id=intent_plan.topic_id,
     )
     policy_for_snapshot = dict(merged_policy)
@@ -146,6 +147,10 @@ def build_telegram_pilot_context(
     policy_for_snapshot["required_fact_keys"] = list(
         dict.fromkeys([*existing_required, *intent_plan.required_fact_keys])
     )
+    if intent_plan.fact_scope:
+        policy_for_snapshot["fact_scope"] = intent_plan.fact_scope
+    if intent_plan.blocked_neighbor_scopes:
+        policy_for_snapshot["blocked_neighbor_scopes"] = list(intent_plan.blocked_neighbor_scopes)
     knowledge_query = intent_plan.fact_query_text or _contextual_message_for_knowledge_lookup(current_message, known_slots=merged_known_slots)
     knowledge_query = _contextual_message_with_recent_product(knowledge_query, current_message=current_message, recent_messages=recent_messages)
     snapshot_context = build_knowledge_snapshot_context(
@@ -311,10 +316,23 @@ def build_knowledge_snapshot_context(
         topic_id=_topic_id(theme=theme, rop_policy=policy),
         query=message_text,
     )
+    fact_scope = _clean_text(policy.get("fact_scope"))
+    blocked_neighbor_scopes = tuple(_text_list(policy.get("blocked_neighbor_scopes")))
     facts = _records(kc_snapshot.get("facts"))
     sources = _records(kc_snapshot.get("sources"))
     active = _normalize_active_brand(active_brand)
-    chunks = _chunk_records(kc_snapshot, active_brand=active)
+    scoped_facts = [
+        fact
+        for fact in facts
+        if _record_matches_scope_only(fact, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes)
+    ]
+    if fact_scope or blocked_neighbor_scopes:
+        facts = scoped_facts
+    chunks = [
+        chunk
+        for chunk in _chunk_records(kc_snapshot, active_brand=active)
+        if _chunk_matches_scope_only(chunk, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes)
+    ]
     selected_chunks = limit_context_chunks(
         chunks,
         query=f"{topic_id} {message_text}",
@@ -332,6 +350,8 @@ def build_knowledge_snapshot_context(
             required_fact_types=required_fact_types,
             topic_id=topic_id,
             query=message_text,
+            fact_scope=fact_scope,
+            blocked_neighbor_scopes=blocked_neighbor_scopes,
         )
     ]
     confirmed_facts = _select_confirmed_facts(
@@ -340,6 +360,8 @@ def build_knowledge_snapshot_context(
         topic_id=topic_id,
         query=message_text,
         active_brand=active,
+        fact_scope=fact_scope,
+        blocked_neighbor_scopes=blocked_neighbor_scopes,
     )
     missing_facts, stale_or_blocked = _missing_fact_keys(
         required_fact_keys=required_fact_keys,
@@ -359,9 +381,16 @@ def build_knowledge_snapshot_context(
 
     knowledge_snippets = _knowledge_snippets(selected_chunks)
     if len(knowledge_snippets) < MAX_KNOWLEDGE_SNIPPETS:
-        knowledge_snippets = (*knowledge_snippets, *_manager_pattern_snippets(kc_snapshot, topic_id=topic_id, active_brand=active))[
-            :MAX_KNOWLEDGE_SNIPPETS
-        ]
+        knowledge_snippets = (
+            *knowledge_snippets,
+            *_manager_pattern_snippets(
+                kc_snapshot,
+                topic_id=topic_id,
+                active_brand=active,
+                fact_scope=fact_scope,
+                blocked_neighbor_scopes=blocked_neighbor_scopes,
+            ),
+        )[:MAX_KNOWLEDGE_SNIPPETS]
     precise_answers_allowed = not missing_facts and not stale_or_blocked
     facts_fresh = bool(confirmed_facts) and precise_answers_allowed
     selected_source_ids = _dedupe(
@@ -394,6 +423,10 @@ def build_knowledge_snapshot_context(
         "source_ids": selected_source_ids[:12],
         "active_brand": active,
     }
+    if fact_scope:
+        facts_context["fact_scope"] = fact_scope
+    if blocked_neighbor_scopes:
+        facts_context["blocked_neighbor_scopes"] = list(blocked_neighbor_scopes)
     if confirmed_facts:
         facts_context["confirmed_facts"] = dict(confirmed_facts)
 
@@ -587,12 +620,21 @@ def _select_confirmed_facts(
     topic_id: str,
     query: str,
     active_brand: str = "unknown",
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
 ) -> dict[str, str]:
     candidates: list[tuple[int, int, Mapping[str, Any]]] = []
     for index, fact in enumerate(facts):
         if not _usable_for_precise_answer(fact, active_brand=active_brand):
             continue
-        if not _record_matches_context(fact, required_fact_types=required_fact_types, topic_id=topic_id, query=query):
+        if not _record_matches_context(
+            fact,
+            required_fact_types=required_fact_types,
+            topic_id=topic_id,
+            query=query,
+            fact_scope=fact_scope,
+            blocked_neighbor_scopes=blocked_neighbor_scopes,
+        ):
             continue
         score = _fact_match_score(fact, required_fact_types=required_fact_types, topic_id=topic_id, query=query)
         candidates.append((score, -index, fact))
@@ -660,10 +702,19 @@ def _knowledge_snippets(selected_chunks: Sequence[Any]) -> tuple[str, ...]:
     return tuple(_dedupe(snippets))
 
 
-def _manager_pattern_snippets(snapshot: Mapping[str, Any], *, topic_id: str, active_brand: str = "unknown") -> tuple[str, ...]:
+def _manager_pattern_snippets(
+    snapshot: Mapping[str, Any],
+    *,
+    topic_id: str,
+    active_brand: str = "unknown",
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
+) -> tuple[str, ...]:
     snippets: list[str] = []
     for pattern in _records(snapshot.get("manager_answer_patterns")):
         if not _record_allowed_for_active_brand(pattern, active_brand=active_brand):
+            continue
+        if not _record_matches_scope_only(pattern, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes):
             continue
         if topic_id and topic_id not in _text_list(pattern.get("related_theme_ids") or pattern.get("theme_ids")):
             continue
@@ -688,13 +739,82 @@ def _chunk_matches_context(
     required_fact_types: set[str],
     topic_id: str,
     query: str,
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
 ) -> bool:
     record = {
         "title": getattr(chunk, "title", ""),
         "text": getattr(chunk, "text", ""),
         "fact_types": list(getattr(chunk, "fact_types", ()) or ()),
     }
-    return _record_matches_context(record, required_fact_types=required_fact_types, topic_id=topic_id, query=query)
+    return _record_matches_context(
+        record,
+        required_fact_types=required_fact_types,
+        topic_id=topic_id,
+        query=query,
+        fact_scope=fact_scope,
+        blocked_neighbor_scopes=blocked_neighbor_scopes,
+    )
+
+
+def _chunk_matches_scope_only(
+    chunk: Any,
+    *,
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
+) -> bool:
+    if isinstance(chunk, Mapping):
+        record = {
+            "title": chunk.get("title", ""),
+            "text": chunk.get("text", ""),
+            "fact_types": list(chunk.get("fact_types", ()) or ()),
+            "fact_key": chunk.get("fact_key", ""),
+            "product": chunk.get("product", ""),
+            "source_path": chunk.get("source_path", ""),
+            "metadata": chunk.get("metadata") if isinstance(chunk.get("metadata"), Mapping) else {},
+        }
+        return _record_matches_scope_only(record, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes)
+    record = {
+        "title": getattr(chunk, "title", ""),
+        "text": getattr(chunk, "text", ""),
+        "fact_types": list(getattr(chunk, "fact_types", ()) or ()),
+    }
+    return _record_matches_scope_only(record, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes)
+
+
+def _record_matches_scope_only(
+    record: Mapping[str, Any],
+    *,
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
+) -> bool:
+    text = _normalize_match_text(
+        " ".join(
+            str(record.get(key) or "")
+            for key in (
+                "fact_scope",
+                "fact_key",
+                "title",
+                "product",
+                "source_path",
+                "client_safe_text",
+                "manager_display_text",
+                "short_fact",
+                "text",
+            )
+        )
+    )
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), Mapping) else {}
+    if metadata:
+        text = _normalize_match_text(
+            f"{text} {metadata.get('path', '')} {metadata.get('source_path', '')} {metadata.get('product', '')} {metadata.get('fact_key', '')}"
+        )
+    return _record_matches_fact_scope(
+        text,
+        fact_types=set(_fact_types(record)),
+        fact_scope=fact_scope,
+        blocked_neighbor_scopes=blocked_neighbor_scopes,
+    )
 
 
 def _record_matches_context(
@@ -703,6 +823,8 @@ def _record_matches_context(
     required_fact_types: set[str],
     topic_id: str,
     query: str,
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
 ) -> bool:
     fact_types = set(_fact_types(record))
     text = _normalize_match_text(
@@ -710,6 +832,8 @@ def _record_matches_context(
     )
     query_text = _normalize_match_text(query)
     if _record_is_objection_pattern(text):
+        return False
+    if not _record_matches_fact_scope(text, fact_types=fact_types, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes):
         return False
     if not _record_matches_product_markers(text, query_text):
         return False
@@ -729,6 +853,33 @@ def _record_matches_context(
     if required_fact_types or topic_id:
         return False
     return any(term in text for term in _query_terms(query))
+
+
+def _record_matches_fact_scope(
+    text: str,
+    *,
+    fact_types: set[str],
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
+) -> bool:
+    requested = _clean_text(fact_scope)
+    blocked = {str(item) for item in blocked_neighbor_scopes if str(item).strip()}
+    if not requested and not blocked:
+        return True
+    record_scopes = _record_fact_scopes(text, fact_types=fact_types)
+    if not fact_scopes_allowed(record_scopes, requested_scope=requested, blocked_neighbor_scopes=blocked):
+        return False
+    if not requested:
+        return True
+    family = scope_family_for(requested)
+    if record_scopes & family:
+        return requested in record_scopes
+    # Unknown-scope records can still be used when other matchers prove they are relevant.
+    return True
+
+
+def _record_fact_scopes(text: str, *, fact_types: set[str]) -> set[str]:
+    return detect_fact_scopes(text, fact_types=tuple(fact_types))
 
 
 def _record_matches_product_markers(text: str, query_text: str) -> bool:

@@ -4,8 +4,18 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.p0_recall_spec import (
+    COMPLAINT_RE,
+    LEGAL_RE,
+    PAYMENT_DISPUTE_RE,
+    REFUND_RE,
+    REPUTATION_RE,
+    codes_from_text,
+    has_complaint_signal,
+    is_benign_hypothetical_refund,
+)
 
-ANSWER_SAFETY_SCHEMA_VERSION = "answer_safety_v1_2026_05_24"
+ANSWER_SAFETY_SCHEMA_VERSION = "answer_safety_v2_2026_05_24"
 
 
 @dataclass(frozen=True)
@@ -33,49 +43,6 @@ class AnswerSafetyDecision:
             "semantic_non_p0": self.semantic_non_p0,
             "evidence": dict(self.evidence or {}),
         }
-
-
-REFUND_RE = re.compile(
-    r"\bвозв?рат(?!\w*\s+к\s+(?:тем|урок|материал|заняти))\w*"
-    r"|\bвозвращ\w*\s+(?:деньги|оплат\w*|плат[её]ж\w*|средств\w*|сумм\w*)"
-    r"|\bверн\w*(?:\s+мне|\s+нам|\s+пожалуйста)?\s+(?:деньги|оплат\w*|плат[её]ж\w*|средств\w*|сумм\w*)"
-    r"|\bденьги\s+назад\b"
-    r"|\bрасторг\w*\s+договор"
-    r"|\bотказ\w*\s+от\s+обучен"
-    r"|\bзабрать\s+деньги",
-    re.I,
-)
-
-LEGAL_RE = re.compile(
-    r"\bсуд\b|\bиск\b|претензи\w*|досудеб|роспотребнадзор|прокуратур|адвокат|юрист"
-    r"|прав[ао][^.!?\n]{0,60}потребител|защит[а-яё]*\s+прав\s+потребител"
-    r"|наруш\w*\s+прав|расторжен\w*\s+договор"
-    r"|по\s+закону[^.!?\n]{0,80}(?:обязан|должн|наруш)",
-    re.I,
-)
-
-COMPLAINT_RE = re.compile(
-    r"жалоб(?!а\s+на\s+сайт)\w*|жалуюсь|возмущ\w*|недовол\w*|претензи|конфликт"
-    r"|обман|ужасн|плохо\s+учит|плохо\s+пров[её]л|некомпетентн\w*",
-    re.I,
-)
-
-REPUTATION_RE = re.compile(
-    r"отзыв\w*\s+в\s+интернет|всех\s+предупреж\w*|напиш\w*\s+отзыв|остав\w*\s+отзыв",
-    re.I,
-)
-
-PAYMENT_DISPUTE_RE = re.compile(
-    r"(?:оплатил|оплатила|пров[её]л(?:и)?\s+плат[её]ж|списал[иось]*|деньги\s+списал)"
-    r"[^.!?\n]{0,100}(?:не\s+вид|не\s+прош|нет\s+оплат|не\s+зачисл|не\s+получ)"
-    r"|(?:оплат[ау]\s+не\s+вид|плат[её]ж\s+не\s+(?:прош[её]л|видно|зачисл))",
-    re.I,
-)
-
-SOFT_NEGATIVE_ONLY_RE = re.compile(
-    r"\b(?:подумаю|обсудить|обсудим|с менеджером обсудить|наверное\s+подумаем)\b",
-    re.I,
-)
 
 
 def classify_answer_safety(
@@ -112,13 +79,13 @@ def classify_answer_safety(
     evidence: dict[str, str] = {}
     codes: list[str] = []
 
-    if REFUND_RE.search(haystack):
+    if REFUND_RE.search(haystack) and not is_benign_hypothetical_refund(haystack):
         codes.append("refund")
         evidence["refund"] = _first_match(REFUND_RE, haystack)
     if LEGAL_RE.search(haystack):
         codes.append("legal")
         evidence["legal"] = _first_match(LEGAL_RE, haystack)
-    if _has_complaint_signal(haystack):
+    if has_complaint_signal(haystack):
         codes.append("complaint")
         evidence["complaint"] = _first_match(COMPLAINT_RE, haystack)
     if REPUTATION_RE.search(haystack):
@@ -132,7 +99,7 @@ def classify_answer_safety(
     plan_primary = str(plan.get("primary_intent") or "").strip()
     plan_risks = _text_list(plan.get("risk_signals"))
     plan_route_bias = str(plan.get("route_bias") or "").strip()
-    if plan_primary in {"refund", "legal_threat", "complaint"}:
+    if plan_primary in {"refund", "legal_threat", "complaint", "payment_dispute"}:
         codes.append(_risk_code_from_plan_primary(plan_primary))
         evidence.setdefault("conversation_intent_plan", plan_primary)
     for risk in plan_risks:
@@ -172,9 +139,15 @@ def classify_answer_safety(
         evidence.pop("topic_id", None)
         evidence.pop("safety_flags", None)
 
+    latch_codes = _p0_latch_codes(context)
+    if latch_codes:
+        codes.extend(latch_codes)
+        evidence["p0_latch"] = ",".join(latch_codes)
+        semantic_non_p0 = False
+
     codes = tuple(dict.fromkeys(code for code in codes if code))
     primary = _primary_risk(codes, current_codes=current_codes)
-    p0 = bool(codes) or plan_route_bias == "manager_only" and plan_primary in {"refund", "legal_threat", "complaint"}
+    p0 = bool(codes) or plan_route_bias == "manager_only" and plan_primary in {"refund", "legal_threat", "complaint", "payment_dispute"}
     if semantic_non_p0 and not codes_from_current_message(current):
         p0 = False
         primary = ""
@@ -194,25 +167,7 @@ def classify_answer_safety(
 
 
 def codes_from_current_message(client_message: str) -> tuple[str, ...]:
-    text = str(client_message or "")
-    result: list[str] = []
-    if REFUND_RE.search(text):
-        result.append("refund")
-    if LEGAL_RE.search(text):
-        result.append("legal")
-    if _has_complaint_signal(text):
-        result.append("complaint")
-    if REPUTATION_RE.search(text):
-        result.append("reputation_threat")
-    if PAYMENT_DISPUTE_RE.search(text):
-        result.append("payment_dispute")
-    return tuple(dict.fromkeys(result))
-
-
-def _has_complaint_signal(text: str) -> bool:
-    if SOFT_NEGATIVE_ONLY_RE.search(text) and not COMPLAINT_RE.search(text):
-        return False
-    return bool(COMPLAINT_RE.search(text))
+    return codes_from_text(str(client_message or ""))
 
 
 def _conversation_plan(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -222,15 +177,46 @@ def _conversation_plan(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return plan if isinstance(plan, Mapping) else {}
 
 
+def _p0_latch_codes(context: Mapping[str, Any] | None) -> tuple[str, ...]:
+    if not isinstance(context, Mapping):
+        return ()
+    latch = None
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        latch = memory.get("p0_latch")
+    if not isinstance(latch, Mapping):
+        memory = context.get("dialogue_memory")
+        if isinstance(memory, Mapping):
+            latch = memory.get("p0_latch")
+    if not isinstance(latch, Mapping) or not latch.get("active"):
+        return ()
+    mapping = {
+        "refund": "refund",
+        "legal": "legal",
+        "legal_threat": "legal",
+        "complaint": "complaint",
+        "reputation_threat": "complaint",
+        "payment_dispute": "payment_dispute",
+        "p0": "payment_dispute",
+    }
+    result = [mapping.get(str(code), str(code)) for code in _text_list(latch.get("codes"))]
+    primary = mapping.get(str(latch.get("primary_risk") or ""), "")
+    if primary:
+        result.insert(0, primary)
+    return tuple(dict.fromkeys(code for code in result if code))
+
+
 def _semantic_non_p0_by_plan(plan: Mapping[str, Any], *, current_norm: str) -> bool:
     if not plan:
         return False
     primary = str(plan.get("primary_intent") or "").strip()
-    if primary in {"refund", "legal_threat", "complaint"}:
+    if primary in {"refund", "legal_threat", "complaint", "payment_dispute"}:
         return False
     risks = _text_list(plan.get("risk_signals"))
     if risks:
         return False
+    if is_benign_hypothetical_refund(current_norm):
+        return True
     if codes_from_current_message(current_norm):
         return False
     return primary in {
@@ -255,6 +241,7 @@ def _risk_code_from_plan_primary(primary: str) -> str:
         "refund": "refund",
         "legal_threat": "legal",
         "complaint": "complaint",
+        "payment_dispute": "payment_dispute",
     }.get(primary, primary)
 
 

@@ -39,3 +39,13 @@ def test_foton_presentation_format_keeps_brand_domain_signal_internal() -> None:
     assert internal["internal_only"] is True
     assert "edu@kmipt.ru" in internal["brand_domain_signal"]["client_safe_text"]
     assert "бота Фотон" in internal["brand_domain_signal"]["client_safe_text"]
+
+
+def test_foton_regular_online_lesson_load_does_not_reuse_oge_intensive_cadence() -> None:
+    data = yaml.safe_load(SOURCE.read_text(encoding="utf-8"))
+    lesson_load = data["presentation_format_facts_2026_05_21"]["client_facts"]["lesson_load_by_age"]["client_safe_text"]
+
+    assert "для 9 и 11 классов онлайн возможен формат" not in lesson_load
+    assert "2 раза в неделю по 2 академических часа по будням" not in lesson_load
+    assert "по будням" not in lesson_load
+    assert data["intensives_2026"]["oge_foton"]["format"] == "онлайн, 2 занятия/нед после 18:00"

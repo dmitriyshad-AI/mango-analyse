@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, TYPE_CHECKING
 
+from mango_mvp.channels.p0_recall_spec import codes_from_text
+
 if TYPE_CHECKING:
     from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 
@@ -25,11 +27,6 @@ P0_FLAG_MARKERS = (
     "payment_confirmation_blocked",
     "brand_separation_blocked",
     "docs_safe_template_applied",
-)
-P0_TEXT_RE = re.compile(
-    r"возврат|верн(?:ите|уть|ули|ем)\s+(?:деньги|оплат|средств)|суд|прокуратур|роспотреб|жалоб|претензи|расторг|"
-    r"договорн\w+\s+претенз|сфр|фнс|статус\s+оплат|оплат[ау]\s+не\s+вид",
-    re.I,
 )
 QUESTION_MARKER_RE = re.compile(
     r"\?|сколько|стоим|цен[ауеы]?|можно|есть\s+ли|там\s+есть|это\s+через|приезжать|что\s+входит|"
@@ -150,7 +147,7 @@ def assess_answer_quality(
         repeated = _safe_template_repeated_finding(text, client_text, context)
         if repeated is not None:
             findings.append(repeated)
-        wrong_scope = _wrong_scope_fact_selected_finding(text, client_text)
+        wrong_scope = _wrong_scope_fact_selected_finding(text, client_text, known=known, context=context)
         if wrong_scope is not None:
             findings.append(wrong_scope)
         if direct_question and not _answers_direct_question(text, client_text, direct_question, context=context):
@@ -455,9 +452,17 @@ def _deterministic_rewrite(
         if fact:
             suffix = _known_selection_suffix(known)
             if _asks_price_fixation_process(client):
+                fact_sentence = _ensure_sentence(fact)
+                if "повтор" in client or "понял цену" in client:
+                    fact_sentence = re.sub(
+                        r"^(?:очно|онлайн|семестр|год)[^.!?]*[.!?]?\s*",
+                        "",
+                        fact_sentence,
+                        flags=re.I,
+                    ).strip() or _ensure_sentence(fact)
                 return (
                     f"Чтобы оформить по текущим условиям, нужно передать заявку на выбранный вариант оплаты{suffix}. "
-                    f"{_ensure_sentence(fact)} Я не буду обещать место или предоплату без проверки: менеджер проверит группу "
+                    f"{fact_sentence} Я не буду обещать место или предоплату без проверки: менеджер проверит группу "
                     "и подскажет следующий шаг по оформлению.",
                     "draft_for_manager",
                     ("price_fixation_process_needs_manager_confirmation",),
@@ -478,6 +483,31 @@ def _deterministic_rewrite(
         )
 
     if brand == "foton" and _asks_installment(client):
+        if _asks_no_interest_or_overpayment(client):
+            return (
+                "Да, в Фотоне рассрочка указана как вариант без переплаты для клиента. "
+                "Подтверждённые варианты оплаты частями — 6, 10 или 12 месяцев, также доступен сервис Долями. "
+                "Итоговые условия и оформление всё равно подтверждает банк или платёжный сервис, поэтому одобрение я не обещаю.",
+                "draft_for_manager",
+                (),
+            )
+        if _asks_dolyami_parts(client):
+            return (
+                "Долями в Фотоне доступен. Точное число частей именно по Долями я не буду обещать без оформления: "
+                "условия подтверждает платёжный сервис. Подтверждённые варианты оплаты частями в Фотоне — 6, 10 или 12 месяцев; "
+                "менеджер поможет выбрать удобный способ и оформить его дистанционно.",
+                "draft_for_manager",
+                (),
+            )
+        if _client_is_waiting_or_thinking(client):
+            suffix = _known_selection_suffix(known)
+            return (
+                f"Конечно, подумайте спокойно. Я уже держу в контексте ваш запрос{suffix}: "
+                "по оплате частями в Фотоне доступны 6, 10 или 12 месяцев и Долями. "
+                "Если решите двигаться дальше, передам менеджеру, чтобы он подобрал способ оплаты под выбранный курс.",
+                "draft_for_manager",
+                (),
+            )
         return (
             "Да, в Фотоне можно оплатить обучение частями: есть варианты на 6, 10 или 12 месяцев и сервис Долями. "
             "По обычным курсам также можно обсудить помесячную оплату или оплату за семестр. "
@@ -525,6 +555,23 @@ def _deterministic_rewrite(
             )
 
     if brand == "unpk" and _asks_trial(client):
+        if "онлайн" in client or known.get("format") == "онлайн" or "фрагмент" in client:
+            summary = _known_selection_suffix(known)
+            if _asks_trial_fragment_data_or_process(client):
+                return (
+                    f"Да, по онлайн-формату УНПК можно прислать фрагмент занятия; приезжать для этого не нужно{summary}. "
+                    "Для подбора фрагмента достаточно класса, предмета и формата. Если эти данные уже есть в диалоге, повторять их не нужно; "
+                    "личные документы, договор или оплату сейчас присылать не надо. Передам менеджеру запрос на фрагмент.",
+                    "draft_for_manager",
+                    (),
+                )
+            return (
+                f"По онлайн-формату УНПК можно прислать фрагмент занятия, чтобы посмотреть подачу и уровень{summary}. "
+                "Очный пробный формат здесь не подставляю: вы спрашиваете именно про онлайн. "
+                "Передам менеджеру запрос, он подберёт подходящий фрагмент и подтвердит условия просмотра.",
+                "draft_for_manager",
+                (),
+            )
         return (
             "По очному формату сейчас не начинаем с бесплатного пробного занятия: менеджер расскажет про формат, преподавателей "
             "и поможет понять, подойдёт ли программа. По онлайн-формату можно прислать фрагмент занятия, чтобы посмотреть подачу и уровень.",
@@ -551,6 +598,15 @@ def _deterministic_rewrite(
         )
 
     if _asks_camp_details(client):
+        if brand == "unpk" and any(marker in client for marker in ("питан", "прожив", "включено", "отдельно")):
+            suffix = _known_selection_suffix(known)
+            return (
+                "Да, в ЛВШ Менделеево УНПК есть проживание и 5-разовое питание. "
+                "Текущая цена сейчас — 114 000 ₽, полная стоимость — 120 000 ₽. "
+                f"По местам и применимости менеджер проверит запись{suffix}.",
+                "draft_for_manager",
+                ("availability_by_shift",),
+            )
         fact = _best_camp_fact(facts)
         if fact:
             intro = "По лагерю сориентирую по проверенным данным."
@@ -579,6 +635,11 @@ def _deterministic_rewrite(
                 "draft_for_manager",
                 (),
             )
+
+    if "safe_template_repeated_across_turns" in finding_codes:
+        repeated_delta = _non_repeating_delta_reply(brand=brand, client=client, known=known)
+        if repeated_delta:
+            return repeated_delta, "draft_for_manager", ("repeated_template_replaced_with_delta",)
 
     if "ignored_direct_question" in finding_codes and facts:
         fact = _best_relevant_fact(facts, client=client, known=known)
@@ -656,7 +717,10 @@ def _rewrite_validation_errors(rewrite_text: str, *, context: Mapping[str, Any] 
     for claim in _precise_claims(rewrite_text):
         if _normalize(claim) not in normalized_facts:
             errors.append(f"unsupported_precise_claim:{claim}")
-    if re.search(r"\b(?:сегодня|завтра|до\s+вечера|к\s+вечеру|не\s+позднее\s+завтра)\b", normalized):
+    if re.search(
+        r"\b(?:сегодня|завтра|до\s+вечера|к\s+вечеру|не\s+позднее\s+завтра|в\s+течение\s+(?:\d+\s+)?(?:минут|час|часов|дн|дней|суток|сутки|дня))\b",
+        normalized,
+    ):
         errors.append("unsupported_followup_deadline")
     if re.search(r"\b(?:места\s+есть|место\s+есть|заброниру\w*|закреплю|закрепим|гарантир\w*)\b", normalized):
         errors.append("unsupported_availability_or_booking_promise")
@@ -694,7 +758,9 @@ def _rewrite_locked(
     flags = " ".join(str(item or "") for item in getattr(result, "safety_flags", ()) or ()).casefold()
     if any(marker in flags for marker in P0_FLAG_MARKERS):
         return True
-    return bool(P0_TEXT_RE.search(str(client_message or "")))
+    if "direct_process_safe_template_applied" in flags:
+        return True
+    return bool(codes_from_text(str(client_message or "")))
 
 
 def _extract_direct_question(client_message: str, *, context: Mapping[str, Any] | None) -> str:
@@ -784,16 +850,61 @@ def _safe_template_repeated_finding(
     return None
 
 
-def _wrong_scope_fact_selected_finding(answer_text: str, client_text: str) -> AnswerQualityFinding | None:
-    if _asks_online_summer_not_residential(client_text) and (
-        ("менделеево" in answer_text or "лвш" in answer_text or "прожив" in answer_text)
-        and "онлайн" not in answer_text
+def _wrong_scope_fact_selected_finding(
+    answer_text: str,
+    client_text: str,
+    *,
+    known: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> AnswerQualityFinding | None:
+    answer = _normalize(answer_text)
+    client = _normalize(client_text)
+    plan = _conversation_intent_plan(context)
+    plan_scope = str(plan.get("product_scope") or "").casefold()
+    fmt = _normalize_known_format(str(known.get("format") or ""))
+    if _asks_online_summer_not_residential(client) and (
+        ("менделеево" in answer or "лвш" in answer or "прожив" in answer)
+        and "онлайн" not in answer
     ):
         return AnswerQualityFinding(
             code="wrong_scope_fact_selected",
             severity="rewrite",
             reason="Ответ выбрал факт про ЛВШ/лагерь, хотя клиент спрашивает про онлайн без проживания.",
             evidence="online_summer_not_residential",
+        )
+    if (fmt == "онлайн" or "онлайн" in client) and PRICE_RE.search(answer_text):
+        offline_price = "очно" in answer and "онлайн" not in answer
+        if offline_price and not any(marker in answer for marker in ("не очно", "не про очно", "а не очно", "очно не")):
+            return AnswerQualityFinding(
+                code="wrong_scope_fact_selected",
+                severity="rewrite",
+                reason="Ответ выбрал очную цену, хотя клиентский контекст про онлайн.",
+                evidence="online_vs_offline_price",
+            )
+    if _asks_installment(client) and any(marker in answer for marker in ("по местам", "наличие мест", "конкретной группе")):
+        if not any(marker in answer for marker in ("рассроч", "долями", "частями", "помесяч", "семестр", "банк")):
+            return AnswerQualityFinding(
+                code="wrong_scope_fact_selected",
+                severity="rewrite",
+                reason="Ответ ушёл в наличие мест вместо условий оплаты.",
+                evidence="installment_vs_availability",
+            )
+    if _asks_trial(client) and PRICE_RE.search(answer_text) and not any(marker in answer for marker in ("пробн", "фрагмент")):
+        return AnswerQualityFinding(
+            code="wrong_scope_fact_selected",
+            severity="rewrite",
+            reason="Ответ выбрал цену курса вместо ответа про пробное или фрагмент занятия.",
+            evidence="trial_vs_price",
+        )
+    if (
+        ("lvsh_mendeleevo" in plan_scope or "менделеево" in client or "выезд" in client or "смен" in client)
+        and ("городской летний лагерь" in answer or "долгопрудный" in answer or "37 500" in answer or "59 500" in answer)
+    ):
+        return AnswerQualityFinding(
+            code="wrong_scope_fact_selected",
+            severity="rewrite",
+            reason="Ответ выбрал городской лагерь вместо выездной ЛВШ/смены.",
+            evidence="lvsh_vs_city_camp",
         )
     return None
 
@@ -1135,19 +1246,38 @@ def _best_price_fact(facts: Sequence[str], *, known: Mapping[str, str] | None = 
     return ". ".join(matches) if matches else ""
 
 
-def _best_camp_fact(facts: Sequence[str]) -> str:
+def _best_camp_fact(
+    facts: Sequence[str],
+    *,
+    client: str = "",
+    known: Mapping[str, str] | None = None,
+    product_scope: str = "",
+) -> str:
+    known = known or {}
+    prefer_mendeleevo = any(marker in client for marker in ("лвш", "менделеево", "выезд", "смен")) or "lvsh_mendeleevo" in str(product_scope or "").casefold() or "лвш" in _normalize(known.get("product"))
+    preferred: list[str] = []
+    fallback: list[str] = []
     for fact in facts:
         normalized = _normalize(fact)
         if any(marker in normalized for marker in ("лвш", "лагер", "смен", "менделеево")) and (
             PRICE_RE.search(fact) or "прожив" in normalized or "питан" in normalized
         ):
-            return fact[:320]
+            if prefer_mendeleevo and not any(marker in normalized for marker in ("лвш", "менделеево")):
+                fallback.append(fact[:320])
+                continue
+            preferred.append(fact[:320])
+    if preferred:
+        return preferred[0]
+    if prefer_mendeleevo:
+        return ""
+    if fallback:
+        return fallback[0]
     return _best_price_fact(facts)
 
 
 def _best_relevant_fact(facts: Sequence[str], *, client: str, known: Mapping[str, str]) -> str:
     if _asks_camp_details(client):
-        return _best_camp_fact(facts)
+        return _best_camp_fact(facts, client=client, known=known)
     if _asks_transport_or_logistics(client):
         for fact in facts:
             normalized = _normalize(fact)
@@ -1294,6 +1424,44 @@ def _asks_installment(text: str) -> bool:
     return any(marker in text for marker in ("рассроч", "долями", "частями", "помесяч", "банк", "процент"))
 
 
+def _asks_no_interest_or_overpayment(text: str) -> bool:
+    return any(marker in text for marker in ("без процент", "безпроцент", "переплат", "проценты", "процентами", "процентами"))
+
+
+def _asks_dolyami_parts(text: str) -> bool:
+    if "долями" not in text:
+        return False
+    return any(marker in text for marker in ("сколько", "част", "месяц", "срок", "услов"))
+
+
+def _client_is_waiting_or_thinking(text: str) -> bool:
+    return any(marker in text for marker in ("подума", "спасибо", "понял", "поняла", "жду", "ок", "хорошо"))
+
+
+def _asks_trial_fragment_data_or_process(text: str) -> bool:
+    return bool(
+        re.search(r"\b(?:как|что|какие|какую|чего|сколько)\b[^.!?\n]{0,90}\b(?:получить|посмотреть|прислать|отправить|нужн|данн|фрагмент)", text)
+        or re.search(r"\b(?:пришлите|отправьте|давайте)\b[^.!?\n]{0,90}\b(?:фрагмент|пример|занят)", text)
+        or "фрагмент" in text and any(marker in text for marker in ("что нужно", "как", "пришл", "отправ", "данн"))
+    )
+
+
+def _non_repeating_delta_reply(*, brand: str, client: str, known: Mapping[str, str]) -> str:
+    suffix = _known_selection_suffix(known)
+    if _client_is_waiting_or_thinking(client) and not any(marker in client for marker in ("?", "как", "сколько", "можно", "есть")):
+        if brand == "foton":
+            return (
+                f"Конечно, подумайте спокойно. Повторять условия заново не буду: в контексте уже есть ваш запрос{suffix}. "
+                "Если решите продолжить, передам менеджеру именно его — без повторного сбора данных."
+            )
+        if brand == "unpk":
+            return (
+                f"Хорошо, подумайте спокойно. Повторять прежний текст не буду: в контексте уже есть ваш запрос{suffix}. "
+                "Если захотите продолжить, передам менеджеру именно его — без повторного сбора данных."
+            )
+    return ""
+
+
 def _asks_trial(text: str) -> bool:
     return "пробн" in text or "фрагмент" in text
 
@@ -1358,7 +1526,21 @@ def _asks_live_seat_or_booking_question(text: str) -> bool:
 def _asks_price_fixation_process(text: str) -> bool:
     if _asks_live_seat_or_booking_question(text):
         return False
-    return any(marker in text for marker in ("как зафикс", "как закреп", "что нужно", "что надо", "хочу зафикс", "хочу закреп", "оформ"))
+    return any(
+        marker in text
+        for marker in (
+            "как зафикс",
+            "как закреп",
+            "что нужно",
+            "что надо",
+            "что от меня нужно",
+            "что надо сделать",
+            "конкретно что надо",
+            "хочу зафикс",
+            "хочу закреп",
+            "оформ",
+        )
+    )
 
 
 def _asks_identity(text: str) -> bool:

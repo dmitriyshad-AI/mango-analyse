@@ -1195,7 +1195,7 @@ def _truthy(value: Any) -> bool:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build read-only canonical master preview from distributed call DBs.")
     parser.add_argument("--project-root", type=Path, default=Path("."))
-    parser.add_argument("--source-dir", type=Path, default=Path("2026-03-09--26"))
+    parser.add_argument("--source-dir", type=Path, default=Path("product_data/audio_working_store_20260523_v1/by_filename"))
     parser.add_argument("--included-dbs-tsv", type=Path, required=True)
     parser.add_argument("--excluded-no-asr-txt", type=Path, default=None)
     parser.add_argument("--out-root", type=Path, required=True)

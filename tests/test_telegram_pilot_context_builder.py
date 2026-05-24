@@ -647,6 +647,129 @@ def test_builder_treats_outbound_camp_as_lvsh_context() -> None:
     assert "городской летний лагерь" not in combined_facts.casefold()
 
 
+def test_builder_uses_offline_recordings_fact_not_online_or_camp_neighbors() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test_offline_recordings_scope",
+        "facts": [
+            {
+                "fact_id": "fact:offline_recordings",
+                "fact_type": "faq",
+                "fact_key": "offline_recordings",
+                "client_safe_text": "Запись очных занятий не ведётся; пропущенные материалы можно запросить в чате группы.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:013_schedule"],
+            },
+            {
+                "fact_id": "fact:online_recordings",
+                "fact_type": "faq",
+                "client_safe_text": "Онлайн-курсы УНПК проходят на МТС-Link; после каждого урока доступны записи.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:013_schedule"],
+            },
+            {
+                "fact_id": "fact:camp_extra",
+                "fact_type": "camp_lvsh",
+                "client_safe_text": "В ЛВШ есть кружки, медсестра и ноутбук для ИТ-направления.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:013_schedule"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "8 класс, математика очно. Если пропустим занятие, запись урока будет?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+        known_slots={"format": "очно"},
+    )
+    payload = context.to_prompt_context()
+
+    combined = " ".join(payload["confirmed_facts"].values())
+    assert "Запись очных занятий не ведётся" in combined
+    assert "МТС-Link" not in combined
+    assert "кружки" not in combined
+
+
+def test_builder_uses_online_recordings_fact_not_price_or_camp_neighbors() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_test_online_recordings_scope",
+        "facts": [
+            {
+                "fact_id": "fact:online_lesson_format",
+                "fact_type": "faq",
+                "client_safe_text": "Онлайн-занятия проходят в МТС Линк, а записи уроков доступны для пересмотра.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:013_schedule"],
+            },
+            {
+                "fact_id": "fact:price_deadline",
+                "fact_type": "price",
+                "client_safe_text": "Фотон: цены на 2026/27 учебный год — 15 мая 2026.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:013_schedule"],
+            },
+            {
+                "fact_id": "fact:lvsh_phone",
+                "fact_type": "camp_lvsh",
+                "client_safe_text": "Связаться с ребёнком можно; фото и видео смены публикуются в Telegram-канале.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:013_schedule"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "А записи занятий будут, если ребёнок пропустит?",
+        active_brand="foton",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+        known_slots={"grade": "7", "subject": "информатика", "format": "онлайн"},
+    )
+    payload = context.to_prompt_context()
+
+    combined = " ".join(payload["confirmed_facts"].values())
+    assert "записи уроков доступны" in combined
+    assert "15 мая" not in combined
+    assert "Telegram-канале" not in combined
+
+
 def test_builder_uses_recent_lvsh_context_for_transport_followup() -> None:
     snapshot = {
         "schema_version": "kc_knowledge_snapshot_v1",
@@ -801,3 +924,362 @@ def test_builder_uses_waitlist_fact_for_zvsh_when_dates_unknown() -> None:
         "fact:zvsh_waitlist": "УНПК: даты ЗВШ Менделеево пока не определены; можно записаться в лист ожидания."
     }
     assert payload["facts_context"]["client_safe_fact_verified"] is True
+
+
+def test_builder_scope_blocks_tax_fact_for_matkap_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_matkap",
+        "facts": [
+            {
+                "fact_id": "fact:tax_docs",
+                "fact_type": "documents",
+                "client_safe_text": "Налоговый вычет оформляется через ФНС; справка готовится до 10 дней.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:008_tax_deduction", "theme:007_matkap_payment"],
+            }
+        ],
+        "chunks": [
+            {
+                "chunk_id": "chunk:tax_docs",
+                "title": "Налоговый вычет",
+                "text": "Налоговый вычет оформляется через ФНС; справка готовится до 10 дней.",
+                "fact_types": ["documents"],
+                "freshness_status": "document_verified",
+                "brand": "unpk",
+            }
+        ],
+    }
+
+    context = build_telegram_pilot_context(
+        "Маткапиталом можно оплатить? Какие документы и сколько СФР смотрит?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:007_matkap_payment"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["matkap_documents.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert "confirmed_facts" not in payload
+    assert payload["facts_context"]["client_safe_fact_verified"] is False
+    assert "matkap_documents.current" in payload["missing_facts"]
+    assert "ФНС" not in " ".join(payload.get("knowledge_snippets", ()))
+
+
+def test_builder_scope_blocks_office_hours_for_class_schedule_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_schedule",
+        "facts": [
+            {
+                "fact_id": "fact:contact_hours",
+                "fact_type": "contact",
+                "client_safe_text": "Телефон центра; график: Пн-Вс с 10:00 до 18:00.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:013_schedule"],
+            }
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "По каким дням проходят занятия по физике?",
+        active_brand="foton",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+        known_slots={"subject": "физика"},
+    )
+    payload = context.to_prompt_context()
+
+    assert "confirmed_facts" not in payload
+    assert payload["facts_context"]["client_safe_fact_verified"] is False
+    assert "schedule.current" in payload["missing_facts"]
+
+
+def test_builder_scope_blocks_residential_lvsh_for_day_camp_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_day_camp",
+        "facts": [
+            {
+                "fact_id": "fact:foton_lvsh_price",
+                "fact_type": "price",
+                "client_safe_text": "Фотон: ЛВШ Менделеево с проживанием стоит 93 100 ₽.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:026_camp_general"],
+            }
+        ],
+        "chunks": [
+            {
+                "chunk_id": "chunk:lvsh",
+                "title": "ЛВШ Менделеево",
+                "text": "Фотон: ЛВШ Менделеево с проживанием стоит 93 100 ₽.",
+                "fact_types": ["price"],
+                "freshness_status": "document_verified",
+                "brand": "foton",
+            }
+        ],
+    }
+
+    context = build_telegram_pilot_context(
+        "Есть дневной летний лагерь без проживания?",
+        active_brand="foton",
+        theme={"topic_id": "theme:026_camp_general"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["programs.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert "confirmed_facts" not in payload
+    assert payload["facts_context"]["client_safe_fact_verified"] is False
+    assert "93 100" not in " ".join(payload.get("knowledge_snippets", ()))
+
+
+def test_builder_scope_uses_fact_key_to_block_lvsh_even_when_text_is_generic() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_key_alias",
+        "facts": [
+            {
+                "fact_id": "fact:lvsh_generic",
+                "fact_key": "lvsh_mendeleevo.current_price",
+                "fact_type": "program",
+                "client_safe_text": "Текущая цена смены — 114 000 ₽.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:026_camp_general"],
+            }
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Есть дневная летняя школа без проживания?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:026_camp_general"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["programs.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert "confirmed_facts" not in payload
+    assert "114 000" not in " ".join(payload.get("knowledge_snippets", ()))
+
+
+def test_builder_scope_blocks_camp_facts_for_offline_recordings_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_recordings",
+        "facts": [
+            {
+                "fact_id": "fact:offline_recordings",
+                "fact_type": "course_parameter",
+                "client_safe_text": "Записи очных занятий не ведутся; пропущенные материалы можно запросить в чате группы.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:014_format"],
+            },
+            {
+                "fact_id": "fact:camp_clubs",
+                "fact_type": "program",
+                "client_safe_text": "В ЛВШ есть кружки, медсестра и ноутбук для ИТ-направления.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:014_format"],
+            },
+        ],
+        "chunks": [
+            {
+                "chunk_id": "chunk:camp",
+                "title": "Лагерь",
+                "text": "В ЛВШ есть кружки, медсестра и ноутбук для ИТ-направления.",
+                "fact_types": ["program"],
+                "freshness_status": "document_verified",
+                "brand": "unpk",
+            }
+        ],
+    }
+
+    context = build_telegram_pilot_context(
+        "У очных занятий записи есть, если пропустим?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:014_format"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["formats.current"]},
+        kc_snapshot=snapshot,
+        known_slots={"format": "очно"},
+    )
+    payload = context.to_prompt_context()
+    facts = " ".join(payload["confirmed_facts"].values())
+
+    assert "Записи очных занятий не ведутся" in facts
+    assert "медсестра" not in facts
+    assert "медсестра" not in " ".join(payload.get("knowledge_snippets", ()))
+
+
+def test_builder_scope_blocks_multichild_for_second_subject_discount() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_discount",
+        "facts": [
+            {
+                "fact_id": "fact:second_subject",
+                "fact_type": "discount",
+                "client_safe_text": "На второй предмет одного ребёнка онлайн действует скидка 30%; скидки не суммируются.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:005_discounts"],
+            },
+            {
+                "fact_id": "fact:multichild",
+                "fact_type": "discount",
+                "client_safe_text": "Для многодетной семьи действует скидка 10% по удостоверению.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:005_discounts"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Если взять второй предмет онлайн одному ребёнку, какая скидка?",
+        active_brand="foton",
+        theme={"topic_id": "theme:005_discounts"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["discounts.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+    facts = " ".join(payload["confirmed_facts"].values())
+
+    assert "30%" in facts
+    assert "многодет" not in facts
+
+
+def test_builder_scope_blocks_online_fragment_for_offline_trial_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_trial",
+        "facts": [
+            {
+                "fact_id": "fact:offline_trial",
+                "fact_type": "program",
+                "client_safe_text": "Очного пробного на Пацаева и в МФТИ сейчас нет.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:023_trial_class"],
+            },
+            {
+                "fact_id": "fact:online_fragment",
+                "fact_type": "program",
+                "client_safe_text": "По онлайн-формату можно прислать фрагмент занятия.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:023_trial_class"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Бесплатное пробное очно на Пацаева есть?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:023_trial_class"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["trial_class.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+    facts = " ".join(payload["confirmed_facts"].values())
+
+    assert "Очного пробного" in facts
+    assert "онлайн-формату" not in facts
+
+
+def test_builder_scope_blocks_olympiad_online_for_regular_online_question() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_regular_online",
+        "facts": [
+            {
+                "fact_id": "fact:regular_online",
+                "fact_type": "program",
+                "client_safe_text": "Обычный онлайн 5-11 класс есть, но цены и расписание на 26/27 ещё уточняются.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:014_format", "theme:001_pricing"],
+            },
+            {
+                "fact_id": "fact:olympiad_online",
+                "fact_type": "program",
+                "client_safe_text": "Олимпиадная подготовка Физтех онлайн — для 9 и 11 классов.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "unpk",
+                "related_theme_ids": ["theme:014_format", "theme:001_pricing"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "Обычный онлайн 10 класс физика, сколько стоит и какое расписание?",
+        active_brand="unpk",
+        theme={"topic_id": "theme:001_pricing"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["prices.current"]},
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+    facts = " ".join(payload["confirmed_facts"].values())
+
+    assert "Обычный онлайн" in facts
+    assert "Олимпиадная подготовка" not in facts

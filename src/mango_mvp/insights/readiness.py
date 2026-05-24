@@ -792,7 +792,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build readiness report for sales insight / knowledge-base extraction.")
     parser.add_argument("--project-root", default=".")
     parser.add_argument("--coverage-root", default="stable_runtime/final_processing_coverage_report_20260507_v5")
-    parser.add_argument("--source-dir", default="2026-03-09--26")
+    parser.add_argument("--source-dir", default="product_data/audio_working_store_20260523_v1/by_filename")
     parser.add_argument("--out-root", default="stable_runtime/insight_readiness_report_20260507")
     parser.add_argument("--start-date", default="2025-01-01")
     parser.add_argument("--end-date", default="2026-05-31")

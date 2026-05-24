@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import codes_from_current_message
+from mango_mvp.channels.fact_scope_spec import blocked_neighbors_for
 from mango_mvp.channels.new_lead_funnel import (
     extract_format,
     extract_grade,
@@ -15,6 +16,7 @@ from mango_mvp.channels.new_lead_funnel import (
 
 
 CONVERSATION_INTENT_PLAN_SCHEMA_VERSION = "conversation_intent_plan_v1_2026_05_23"
+_WORD_CHARS = "0-9a-zа-я"
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,8 @@ class ConversationIntentPlan:
     keyword_signals: tuple[str, ...] = ()
     risk_signals: tuple[str, ...] = ()
     required_fact_keys: tuple[str, ...] = ()
+    fact_scope: str = ""
+    blocked_neighbor_scopes: tuple[str, ...] = ()
     answer_policy: str = "answer_directly_if_fact_verified"
     route_bias: str = "draft_for_manager"
     next_step_hint: str = ""
@@ -58,6 +62,8 @@ class ConversationIntentPlan:
             "keyword_signals": list(self.keyword_signals),
             "risk_signals": list(self.risk_signals),
             "required_fact_keys": list(self.required_fact_keys),
+            "fact_scope": self.fact_scope,
+            "blocked_neighbor_scopes": list(self.blocked_neighbor_scopes),
             "answer_policy": self.answer_policy,
             "route_bias": self.route_bias,
             "next_step_hint": self.next_step_hint,
@@ -118,6 +124,13 @@ def build_conversation_intent_plan(
     requested_slots = _requested_slots(normalized, primary_intent=primary_intent)
     do_not_reask = tuple(key for key, value in slots.items() if str(value or "").strip())
     required_fact_keys = _required_fact_keys(primary_intent, normalized)
+    fact_scope, blocked_neighbor_scopes, scope_notes = _fact_scope_constraints(
+        normalized,
+        primary_intent=primary_intent,
+        product_family=product_family,
+        product_scope=product_scope,
+        slots=slots,
+    )
     switch_decision, switch_confidence = _topic_switch_decision(
         normalized,
         primary_intent=primary_intent,
@@ -133,7 +146,7 @@ def build_conversation_intent_plan(
         switch_decision=switch_decision,
         previous_product_family=previous_product_family,
         product_family=product_family,
-    )
+    ) + scope_notes
     fact_query = _fact_query_text(
         text,
         primary_intent=primary_intent,
@@ -158,6 +171,8 @@ def build_conversation_intent_plan(
         keyword_signals=keyword_signals,
         risk_signals=risk_signals,
         required_fact_keys=required_fact_keys,
+        fact_scope=fact_scope,
+        blocked_neighbor_scopes=blocked_neighbor_scopes,
         answer_policy=answer_policy,
         route_bias=route_bias,
         next_step_hint=_next_step_hint(primary_intent, slots=slots, risk_signals=risk_signals),
@@ -187,7 +202,10 @@ def _primary_intent(
         return "live_availability"
     if _asks_price_fix(text):
         return "price_fix"
-    if "schedule" in keyword_signals and re.search(r"\bво\s+сколько\b|\bраспис|\bвремя\b|\bдни\b|\bкогда\b", text):
+    if "schedule" in keyword_signals and re.search(
+        r"\bво\s+сколько\b|\bраспис|\bвремя\b|\bдни\b|\bдням\b|\bкогда\b|раз\s+в\s+недел",
+        text,
+    ):
         return "schedule"
     if "tax" in keyword_signals:
         return "tax"
@@ -196,10 +214,10 @@ def _primary_intent(
     if "document" in keyword_signals:
         return "document"
     priority = (
+        ("discount", "discount"),
         ("installment", "installment"),
         ("trial", "trial"),
         ("price", "pricing"),
-        ("discount", "discount"),
         ("schedule", "schedule"),
         ("format", "format"),
         ("camp", "camp"),
@@ -220,6 +238,8 @@ def _primary_intent(
 def _asks_live_availability(text: str, *, previous_product_family: str, product_family: str) -> bool:
     if any(marker in text for marker in ("не про мест", "не о мест", "не места", "я не про места")):
         return False
+    if _is_payment_terms_question(text) and any(marker in text for marker in ("про оплат", "условия оплат", "не про мест")):
+        return False
     asks_place = bool(re.search(r"\b(?:мест(?:о|а)?|налич\w*|брон\w*|заброни\w*)\b", text))
     asks_fix_place = bool(re.search(r"\bзакреп\w*\b", text) and re.search(r"\bмест(?:о|а)?\b", text))
     camp_context = product_family == "camp" or previous_product_family == "camp"
@@ -227,11 +247,9 @@ def _asks_live_availability(text: str, *, previous_product_family: str, product_
 
 
 def _asks_price_fix(text: str) -> bool:
-    if any(marker in text for marker in ("мест", "брон", "заброни")):
+    if _has_any_marker(text, ("мест", "брон", "заброни")):
         return False
-    if any(marker in text for marker in ("зафикс", "закреп")) and any(
-        marker in text for marker in ("цен", "услов", "текущ", "сейчас", "стоим")
-    ):
+    if _has_any_marker(text, ("зафикс", "закреп")) and _has_any_marker(text, ("цен", "услов", "текущ", "сейчас", "стоим")):
         return True
     return any(marker in text for marker in ("по текущей цене", "по текущим условиям"))
 
@@ -240,10 +258,10 @@ def _keyword_signals(text: str) -> tuple[str, ...]:
     markers: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("price", ("цен", "стоим", "сколько", "прайс", "руб")),
         ("installment", ("рассроч", "долями", "частями", "помесяч", "банк", "одобр")),
-        ("discount", ("скид", "акци", "промокод", "льгот")),
+        ("discount", ("скид", "акци", "промокод", "льгот", "процент", "суммир")),
         ("trial", ("пробн", "фрагмент")),
         ("camp", ("лагер", "лвш", "смен", "менделеево", "прожив", "питан", "трансфер")),
-        ("schedule", ("распис", "когда", "во сколько", "дни", "время")),
+        ("schedule", ("распис", "когда", "во сколько", "дни", "дням", "время", "заняти")),
         ("format", ("онлайн", "очно", "офлайн", "дистанц", "формат")),
         ("address", ("адрес", "где", "площадк", "метро", "пацаева", "сретен", "красносель")),
         ("document", ("справк", "документ", "договор", "сертификат", "чек", "квитанц")),
@@ -252,7 +270,44 @@ def _keyword_signals(text: str) -> tuple[str, ...]:
         ("identity", ("вы бот", "ты бот", "кто вы", "с кем я общаюсь", "gpt")),
         ("off_topic", ("айфон", "iphone", "погода", "сочинение", "биткоин")),
     )
-    return tuple(code for code, values in markers if any(marker in text for marker in values))
+    return tuple(code for code, values in markers if _has_any_marker(text, values))
+
+
+def _is_payment_terms_question(text: str) -> bool:
+    return bool(
+        _has_any_marker(text, ("оплат", "рассроч", "долями", "частями", "помесяч", "семестр", "банк", "одобр"))
+        and _has_any_marker(text, ("услов", "как", "можно", "сколько", "част", "месяц", "семестр", "плат"))
+    )
+
+
+def _has_marker(text: str, marker: str) -> bool:
+    value = str(text or "")
+    needle = str(marker or "").strip()
+    if not needle:
+        return False
+    if re.search(rf"[^{_WORD_CHARS}]", needle):
+        return needle in value
+    return bool(re.search(rf"(?<![{_WORD_CHARS}]){re.escape(needle)}[{_WORD_CHARS}]*", value))
+
+
+def _has_any_marker(text: str, markers: Sequence[str]) -> bool:
+    return any(_has_marker(text, marker) for marker in markers)
+
+
+def _camp_scope_signals(text: str) -> tuple[bool, bool]:
+    """Return city-day and residential-LVSH signals from the current message.
+
+    Current-message signals intentionally win over previous dialogue context:
+    if the client asks "выездной или городская", we must not collapse it into
+    the city-day branch just because the word "городская" appears.
+    """
+
+    no_lodging_signal = any(marker in text for marker in ("без прожив", "без проживания", "без ночев"))
+    city_signal = _has_any_marker(text, ("городск", "дневн", "без прожив", "без проживания", "без ночев", "не выезд"))
+    residential_signal = _has_any_marker(text, ("лвш", "менделеево", "выездн", "трансфер")) or (
+        not no_lodging_signal and _has_any_marker(text, ("прожив", "питан"))
+    )
+    return city_signal, residential_signal
 
 
 def _risk_signals(text: str) -> tuple[str, ...]:
@@ -266,37 +321,6 @@ def _risk_signals(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(mapping.get(code, code) for code in codes_from_current_message(text)))
 
 
-def _has_refund_signal(text: str) -> bool:
-    if re.search(r"\b(?:верн(?:ите|уть|ули|ем)|забрать|получить\s+назад)\b[^.!?]{0,45}\b(?:деньги|оплат[ауые]?|средств[а-я]*)\b", text):
-        return True
-    if re.search(r"\bденьги\s+назад\b", text):
-        return True
-    if re.search(r"\bрасторг\w*\b[^.!?]{0,45}\bдоговор\b|\bотказ\w*\b[^.!?]{0,45}\bобучен", text):
-        return True
-    # "возврат к теме/уроку/материалам" is not a refund request.
-    if re.search(r"\bвозврат\w*\b", text) and not re.search(r"\bвозврат\w*\s+к\s+(?:тем|урок|материал|заняти)", text):
-        return True
-    return False
-
-
-def _has_legal_signal(text: str) -> bool:
-    return bool(
-        re.search(r"\b(?:суд|иск|адвокат|юрист)\b", text)
-        or re.search(r"\b(?:прокуратур|роспотреб|досудеб|претензионн)\w*\b", text)
-        or re.search(r"\bпо\s+закону\b[^.!?]{0,60}\b(?:обязан|должн|наруш)", text)
-    )
-
-
-def _has_complaint_signal(text: str) -> bool:
-    # Mild hesitation ("подумаю", "обсудить с менеджером") is not a complaint.
-    if re.search(r"\b(?:подумаю|обсудить|обсудим|с менеджером обсудить)\b", text) and not re.search(
-        r"\b(?:жалоб|претензи|недовол|возмущ|ужас|обман|плохо\s+уч|некомпетент)\w*\b",
-        text,
-    ):
-        return False
-    return bool(re.search(r"\b(?:жалоб|претензи|недовол|возмущ|ужас|обман|плохо\s+уч|некомпетент)\w*\b", text))
-
-
 def _product_focus(
     text: str,
     *,
@@ -305,15 +329,23 @@ def _product_focus(
     previous_product: str,
     recent_messages: Sequence[str],
 ) -> tuple[str, str]:
-    if any(marker in text for marker in ("вместо лагер", "не лагер", "не лвш")) and any(
-        marker in text for marker in ("курс", "онлайн", "очно", "физик", "математ", "информат")
+    city_camp_signal, residential_camp_signal = _camp_scope_signals(text)
+    explicit_camp = _has_any_marker(text, ("лвш", "лагер", "смен", "менделеево", "прожив", "питан", "трансфер"))
+    if _is_payment_terms_question(text) and not explicit_camp:
+        if previous_product_family and previous_product_family != "camp":
+            return previous_product_family, previous_product
+        return "regular_course", str(slots.get("format") or "")
+    if any(marker in text for marker in ("вместо лагер", "не лагер", "не лвш")) and _has_any_marker(
+        text, ("курс", "онлайн", "очно", "физик", "математ", "информат")
     ):
         return "regular_course", str(slots.get("format") or "")
-    if any(marker in text for marker in ("лвш", "лагер", "смен", "менделеево", "прожив", "питан", "трансфер")):
-        if "город" in text:
+    if explicit_camp:
+        if residential_camp_signal:
+            return "camp", "lvsh_mendeleevo"
+        if city_camp_signal:
             return "camp", "city_camp"
-        return "camp", "lvsh_mendeleevo"
-    if any(marker in text for marker in ("онлайн", "очно", "физик", "математ", "информат", "курс")):
+        return "camp", previous_product if previous_product_family == "camp" else "lvsh_mendeleevo"
+    if _has_any_marker(text, ("онлайн", "очно", "физик", "математ", "информат", "курс")):
         return "regular_course", str(slots.get("format") or "")
     if _is_followup(text) and previous_product_family:
         return previous_product_family, previous_product
@@ -405,6 +437,109 @@ def _required_fact_keys(intent: str, text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(keys))
 
 
+def _fact_scope_constraints(
+    text: str,
+    *,
+    primary_intent: str,
+    product_family: str,
+    product_scope: str,
+    slots: Mapping[str, str] | None = None,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    slot_values = slots or {}
+    known_format = str(slot_values.get("format") or "").casefold()
+    asks_recording = _asks_lesson_recording(text)
+    mentions_offline = _has_any_marker(text, ("очно", "очный", "очных", "офлайн", "обычные занят", "в классе"))
+    mentions_online = _has_any_marker(text, ("онлайн", "дистанц", "вебинар", "мтс", "link", "линк"))
+    if primary_intent == "matkap":
+        return _scope_tuple("matkap_process")
+    if primary_intent == "tax":
+        return _scope_tuple("tax_deduction")
+    if primary_intent == "discount":
+        if _has_any_marker(
+            text,
+            (
+                "второй предмет",
+                "вторым предметом",
+                "второго предмета",
+                "2-й предмет",
+                "последующий предмет",
+                "еще предмет",
+                "ещё предмет",
+                "второй онлайн-предмет",
+                "второй онлайн предмет",
+            )
+        ):
+            return _scope_tuple("discount_second_subject")
+        if _has_any_marker(text, ("второй ребенок", "второй ребёнок", "двое детей", "два ребенка", "два ребёнка", "многодет")):
+            return _scope_tuple("discount_multichild")
+    if primary_intent == "trial":
+        if _has_any_marker(text, ("очно", "очный", "офлайн", "пацаева", "мфти")):
+            return _scope_tuple("trial_offline")
+        if _has_any_marker(text, ("онлайн", "фрагмент")):
+            return _scope_tuple("trial_online_fragment")
+    if primary_intent == "installment":
+        if "долями" in text:
+            return _scope_tuple("dolyami_parts")
+        if _has_any_marker(text, ("рассроч", "банк", "месяц", "месяцев", "частями")):
+            return _scope_tuple("installment_bank")
+    if primary_intent in {"schedule", "format", "general_consultation"} and asks_recording:
+        if mentions_offline or known_format in {"offline", "очно", "очный"}:
+            return _scope_tuple("offline_recordings")
+        if mentions_online or known_format in {"online", "онлайн", "дистанционно"}:
+            return _scope_tuple("online_recordings")
+    if primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course":
+        if "онлайн" in text and _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "олимпиад", "физтех", "рсош", "перечнев")):
+            if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")) and "не олимпиад" not in text:
+                return _scope_tuple("olympiad_online")
+            return _scope_tuple("regular_online")
+    if primary_intent in {"schedule", "format", "address"}:
+        if any(marker in text for marker in ("запись очных", "записи очных", "запись по очным", "записи по очным", "очных занятий записи", "пропуск очных")):
+            return _scope_tuple("offline_recordings")
+        if any(marker in text for marker in ("записи онлайн", "запись онлайн", "мтс линк", "онлайн записи", "записи уроков онлайн")):
+            return _scope_tuple("online_recordings")
+        if _has_any_marker(text, ("до скольки работает", "как работает офис", "график офиса", "часы работы", "телефон", "контакт")):
+            return _scope_tuple("office_hours")
+        if _has_any_marker(text, ("распис", "во сколько", "по каким дням", "дни занятий", "занятия", "уроки")):
+            return _scope_tuple("class_schedule")
+    if primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course":
+        if "онлайн" in text:
+            if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")):
+                return _scope_tuple("olympiad_online")
+            if _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "цен", "стоим", "распис", "курс")):
+                return _scope_tuple("regular_online")
+    if product_family == "camp" or primary_intent in {"camp", "live_availability"}:
+        city_camp_signal, residential_camp_signal = _camp_scope_signals(text)
+        if product_scope == "lvsh_mendeleevo" or residential_camp_signal:
+            return _scope_tuple("residential_lvsh")
+        if product_scope == "city_camp" or city_camp_signal:
+            return _scope_tuple("city_day_camp")
+    return "", (), ()
+
+
+def _asks_enrollment_signup(text: str) -> bool:
+    value = str(text or "")
+    return bool(
+        re.search(r"\b(?:записаться|записат(?:ь|ся)|оформиться|оформить(?:ся)?)\b", value)
+        or re.search(r"\bзапис[ьи]\b[^.!?\n]{0,80}\b(?:на\s+)?(?:курс|программ|обучен|занятия)\b", value)
+        or re.search(r"\b(?:для|по|ради)\s+запис[ьи]\b", value)
+    )
+
+
+def _asks_lesson_recording(text: str) -> bool:
+    value = str(text or "")
+    if _asks_enrollment_signup(value) and not _has_any_marker(value, ("пропуст", "пропущен", "пересмотр", "урок", "заняти")):
+        return False
+    return bool(
+        re.search(r"\bзапис(?:ь|и|ью|ям|ями)\b[^.!?\n]{0,80}\b(?:урок|заняти|лекци|вебинар)", value)
+        or re.search(r"\b(?:урок|заняти|лекци|вебинар)[^.?!\n]{0,80}\bзапис(?:ь|и|ью|ям|ями)\b", value)
+        or _has_any_marker(value, ("пересмотр", "пропущен", "пропуст"))
+    )
+
+
+def _scope_tuple(scope: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    return scope, blocked_neighbors_for(scope), (f"fact_scope:{scope}",)
+
+
 def _answer_policy(intent: str, *, risk_signals: Sequence[str]) -> tuple[str, str]:
     if risk_signals or intent in {"refund", "legal_threat", "complaint", "payment_dispute"}:
         return "manager_only_p0", "manager_only"
@@ -417,11 +552,11 @@ def _answer_policy(intent: str, *, risk_signals: Sequence[str]) -> tuple[str, st
 
 def _requested_slots(text: str, *, primary_intent: str) -> tuple[str, ...]:
     slots: list[str] = []
-    if any(marker in text for marker in ("класс", "кл ")):
+    if _has_any_marker(text, ("класс", "кл ")):
         slots.append("grade")
-    if any(marker in text for marker in ("предмет", "физик", "математ", "информат", "хим", "англ")):
+    if _has_any_marker(text, ("предмет", "физик", "математ", "информат", "хим", "англ")):
         slots.append("subject")
-    if any(marker in text for marker in ("онлайн", "очно", "формат")):
+    if _has_any_marker(text, ("онлайн", "очно", "формат")):
         slots.append("format")
     if primary_intent == "live_availability":
         slots.append("availability")

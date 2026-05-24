@@ -4,24 +4,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.p0_recall_spec import codes_from_text
+
 
 NEW_LEAD_FUNNEL_SCHEMA_VERSION = "new_lead_funnel_v1_2026_05_23"
-
-P0_MARKERS = (
-    "возврат",
-    "верните",
-    "вернуть деньги",
-    "деньги назад",
-    "расторг",
-    "отказаться от обучения",
-    "жалоб",
-    "претензи",
-    "суд",
-    "прокурат",
-    "роспотреб",
-    "нарушили права",
-    "по закону обязаны",
-)
 
 OFF_TOPIC_MARKERS = (
     "айфон",
@@ -36,7 +22,7 @@ SUBJECT_MARKERS = (
     ("математ", "математика"),
     ("физик", "физика"),
     ("информат", "информатика"),
-    ("программ", "программирование"),
+    ("программирован", "программирование"),
     ("русск", "русский язык"),
     ("англий", "английский язык"),
     ("хими", "химия"),
@@ -384,7 +370,7 @@ def detect_safety_blockers(
 ) -> list[str]:
     flags = {normalize_text(item) for item in safety_flags}
     blockers: list[str] = []
-    if any(marker in text for marker in P0_MARKERS):
+    if codes_from_text(text):
         blockers.append("p0_keyword")
     if "high_risk_manager_only" in flags or "p0" in " ".join(flags):
         blockers.append("p0_safety_flag")
@@ -498,9 +484,14 @@ def _client_only_recent_text(recent_messages: Sequence[str]) -> str:
 
 
 def extract_format(text: str) -> str:
-    if "онлайн" in text or "дистанц" in text or "вебинар" in text:
+    normalized = normalize_text(text)
+    if re.search(r"(?<![a-zа-яё])онлайн(?:[а-яёa-z-]*)?\b", normalized) or "дистанц" in normalized or "вебинар" in normalized:
         return "online"
-    if "очно" in text or "офлайн" in text or "в классе" in text:
+    if (
+        re.search(r"(?<![a-zа-яё])очн(?:о|ый|ая|ое|ые|ых|ым|ом|ую|ого|ому|ыми)?\b", normalized)
+        or re.search(r"(?<![a-zа-яё])офлайн(?:[а-яёa-z-]*)?\b", normalized)
+        or "в классе" in normalized
+    ):
         return "offline"
     return ""
 

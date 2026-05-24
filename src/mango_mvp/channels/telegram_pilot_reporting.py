@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
+from mango_mvp.channels.p0_recall_spec import codes_from_text
 from mango_mvp.channels.telegram_pilot_metrics import build_daily_metrics
 from mango_mvp.channels.telegram_pilot_store import (
     PILOT_FEEDBACK_MANAGER_ONLY,
@@ -34,7 +35,6 @@ PRECISE_FACT_RE = re.compile(
     r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)",
     re.I,
 )
-P0_RE = re.compile(r"возврат|верн\w+\s+деньг|жалоб|суд|иск|претензи|прокуратур|роспотребнадзор", re.I)
 TEMPLATE_RE = re.compile(
     r"спасибо за обращение|ваш вопрос очень важен|оптимальн\w+\s+образовательн\w+\s+продукт|менеджер свяжется",
     re.I,
@@ -334,9 +334,10 @@ def review_reasons_for_row(row: Mapping[str, Any], *, raw_answer: str, raw_input
     flags_text = " ".join([str(row.get("safety_flags") or ""), str(row.get("semantic_flags") or "")]).casefold()
     topic = str(row.get("topic_id") or "")
     route = str(row.get("route") or "")
-    if topic in P0_TOPICS or P0_RE.search(raw_input) or any(flag in flags_text for flag in HIGH_RISK_FLAGS):
+    input_has_p0 = bool(codes_from_text(raw_input))
+    if topic in P0_TOPICS or input_has_p0 or any(flag in flags_text for flag in HIGH_RISK_FLAGS):
         reasons.append("p0_or_high_risk")
-    if route in AUTONOMOUS_ROUTES and (topic in P0_TOPICS or P0_RE.search(raw_input)):
+    if route in AUTONOMOUS_ROUTES and (topic in P0_TOPICS or input_has_p0):
         reasons.append("p0_autonomous_attempt")
     if str(row.get("asked_known_data_again") or "") == "true":
         reasons.append("asked_known_data_again")

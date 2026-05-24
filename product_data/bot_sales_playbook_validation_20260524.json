@@ -1,0 +1,42 @@
+{
+  "artifact": "product_data/bot_sales_playbook_20260524.jsonl",
+  "validated_at": "2026-05-24",
+  "status": "candidate_data",
+  "formal_validation": {
+    "jsonl_parse": "passed",
+    "required_fields": "passed",
+    "exact_field_set": [
+      "brand",
+      "topic",
+      "situation",
+      "example",
+      "forbidden",
+      "safe_next_step",
+      "requires_fact_ids",
+      "source",
+      "dedup_ref"
+    ],
+    "allowed_brands": ["foton", "unpk", "any"],
+    "rows": 32,
+    "brand_counts": {
+      "any": 20,
+      "foton": 6,
+      "unpk": 6
+    },
+    "error_count": 0,
+    "fact_id_lookup": "passed",
+    "absolute_path_check": "passed",
+    "pii_pattern_check": "passed",
+    "brand_mix_check": "passed"
+  },
+  "semantic_status": "PASS_WITH_NOTES",
+  "pilot_ready": false,
+  "production_ready": false,
+  "notes": [
+    "Это данные для будущего подключения, не код и не prompt patch.",
+    "Перед подключением нужен базовый замер качества.",
+    "Цены, даты, скидки, платежные условия и записи занятий допустимы только если requires_fact_ids найдены в активной базе.",
+    "brand=any очищен от конкретных брендовых условий; конкретика должна приходить из brand=foton или brand=unpk элементов.",
+    "channels/ не трогался."
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "source_root_status": "archived_to_batch4_trash_after_fixture_creation",
+  "fixture_contract": "self-contained; tests must not read deleted stable_runtime selector-fix layers",
+  "rows": 5269,
+  "buckets": {
+    "high": 1642,
+    "low": 1290,
+    "medium": 2337
+  },
+  "shares": {
+    "high": 0.31163408616435756,
+    "medium": 0.44353767318276716,
+    "low": 0.2448282406528753
+  }
+}

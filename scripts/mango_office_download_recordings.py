@@ -29,8 +29,8 @@ if str(SRC) not in sys.path:
 
 DEFAULT_BASE_URL = "https://app.mango-office.ru"
 DEFAULT_REPORT = "/tmp/mango_missing_vs_audio_20260507_fuzzy.json"
-DEFAULT_OUT_DIR = "_local_archive_mango_api_downloads_20260507/recordings"
-DEFAULT_MANIFEST = "_local_archive_mango_api_downloads_20260507/manifest.jsonl"
+DEFAULT_OUT_DIR = "product_data/legacy_mango_download_recordings/recordings"
+DEFAULT_MANIFEST = "product_data/legacy_mango_download_recordings/manifest.jsonl"
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

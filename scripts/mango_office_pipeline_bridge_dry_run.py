@@ -25,7 +25,7 @@ from mango_mvp.productization.pipeline_bridge import (  # noqa: E402
 
 
 DEFAULT_MANIFEST = "_local_archive_mango_api_downloads_20260507/capture_manifest.jsonl"
-DEFAULT_SOURCE_DIR = "2026-03-09--26"
+DEFAULT_SOURCE_DIR = "product_data/audio_working_store_20260523_v1/by_filename"
 DEFAULT_DB = "mango_mvp.db"
 DEFAULT_OUT = "_local_archive_mango_api_downloads_20260507/pipeline_bridge_plan.json"
 DEFAULT_CSV_OUT = "_local_archive_mango_api_downloads_20260507/pipeline_bridge_plan.csv"

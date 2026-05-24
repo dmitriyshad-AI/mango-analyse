@@ -1,0 +1,21 @@
+{
+  "schema_version": "archive_dealaware_cleanup_batch4_v1",
+  "generated_at": "2026-05-23T00:13:35.409920+00:00",
+  "trash_root": "/Users/dmitrijfabarisov/.Trash/MangoAnalyse_archive_dealaware_cleanup_batch4_20260523T001335Z",
+  "moved_count": 10,
+  "total_bytes_moved": 1304965262,
+  "total_gib_moved": 1.215,
+  "protected_kept": [
+    "_local_archive_20260424/source_archives/messages(1).zip",
+    "product_data/audio_working_store_20260523_v1",
+    "stable_runtime/canonical_master_20260523_audio_working_store_v1",
+    "stable_runtime/sales_master_export_20260523_audio_working_store_v1",
+    "stable_runtime/amo_writeback_queue_20260523_audio_working_store_v1",
+    "stable_runtime/crm_writeback_quality_gate_20260523_audio_working_store_v1",
+    "stable_runtime/deal_aware_stage100_rop_final_20260514_v1",
+    "stable_runtime/deal_aware_stage709_all_batches_20260514_v1",
+    "stable_runtime/deal_aware_stage709_review_20260514_selector_fix_phase2"
+  ],
+  "csv_manifest": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/ARCHIVE_DEALAWARE_CLEANUP_BATCH4_MOVED_2026-05-23.csv",
+  "md_manifest": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/ARCHIVE_DEALAWARE_CLEANUP_BATCH4_MANIFEST_2026-05-23.md"
+}

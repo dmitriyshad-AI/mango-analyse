@@ -1,0 +1,21 @@
+{
+  "schema_version": "local_archive_messages1_zip_audit_v1",
+  "generated_at": "2026-05-23T00:10:39.957345+00:00",
+  "zip_path": "/Users/dmitrijfabarisov/Projects/Mango analyse/_local_archive_20260424/source_archives/messages(1).zip",
+  "zip_exists": true,
+  "zip_size_bytes": 96833095,
+  "store_root": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/audio_working_store_20260523_v1",
+  "store_hashes": 66320,
+  "zip_files": 232,
+  "zip_audio_files": 231,
+  "zip_non_audio_files": 1,
+  "extension_counts": {
+    ".mp3": 231,
+    ".html": 1
+  },
+  "covered_audio_files": 0,
+  "uncovered_audio_files": 231,
+  "uncovered_audio_bytes": 95380416,
+  "passed_all_audio_covered": false,
+  "report_csv": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/LOCAL_ARCHIVE_MESSAGES1_ZIP_AUDIT_2026-05-23.csv"
+}

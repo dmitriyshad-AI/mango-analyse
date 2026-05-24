@@ -1,0 +1,60 @@
+{
+  "schema_version": "runtime_cleanup_batch3_v1",
+  "generated_at": "2026-05-22T23:38:39.111315+00:00",
+  "trash_root": "/Users/dmitrijfabarisov/.Trash/MangoAnalyse_runtime_cleanup_batch3_20260522T233839Z",
+  "moved_count": 30,
+  "skipped_missing_count": 0,
+  "total_bytes_moved": 2580161580,
+  "total_gib_moved": 2.403,
+  "csv_manifest": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/RUNTIME_CLEANUP_BATCH3_MOVED_2026-05-23.csv",
+  "md_manifest": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/RUNTIME_CLEANUP_BATCH3_MANIFEST_2026-05-23.md",
+  "moved": [
+    "stable_runtime/canonical_master_20260521_after_mango_update_v1",
+    "stable_runtime/sales_master_export_20260521_after_mango_update_v4_runtime_acceptance",
+    "product_data/canonical_audio_store_20260516_v1",
+    "stable_runtime/ra_pending_mango_api_20260517_v1",
+    "stable_runtime/history_remaining_excl_done_20260407",
+    "stable_runtime/start_remaining_history_resolve4.sh",
+    "АКТУАЛЬНО_AI_review.xlsx",
+    "АКТУАЛЬНО_AMO_ready.xlsx",
+    "АКТУАЛЬНО_Tallanto_match_issues.xlsx",
+    "АКТУАЛЬНО_Звонки_общая_таблица.xlsx",
+    "АКТУАЛЬНО_История_еще_не_добита.xlsx",
+    "АКТУАЛЬНО_Контакты_для_продаж.xlsx",
+    "АКТУАЛЬНО_Полный_пакет_экспорта.xlsx",
+    "АКТУАЛЬНО_РОП_очередь_сделок_30д_live.xlsx",
+    "stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v2_hybrid_reuse",
+    "stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v4_stage15_hardened",
+    "stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v5_claude_safety_fix",
+    "stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v6_claude_safety_fix",
+    "stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v7_location_fix",
+    "stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v8_orphan_surname_fix",
+    "stable_runtime/sales_insight_knowledge_base_after_quality_backfill_20260510_v10_fixpoint",
+    "stable_runtime/amo_live_stage51_summary_repair_20260512_v1",
+    "stable_runtime/amo_live_stage55_20260511_v2_wrong_person_gate_check",
+    "stable_runtime/crm_writeback_quality_gate_20260510_v5_product_gate",
+    "stable_runtime/amo_writeback_queue_20260516_after_mango_update_v1",
+    "stable_runtime/amo_writeback_queue_20260521_after_mango_update_v4_runtime_acceptance",
+    "stable_runtime/crm_writeback_quality_gate_20260513_human_history_v1",
+    "stable_runtime/crm_writeback_quality_gate_20260513_human_history_v2",
+    "stable_runtime/crm_writeback_quality_gate_20260513_human_history_v3",
+    "stable_runtime/crm_writeback_quality_gate_20260521_after_mango_update_v4_runtime_acceptance"
+  ],
+  "skipped_missing": [],
+  "restored_after_review": [
+    {
+      "relative_path": "stable_runtime/history_remaining_excl_done_20260407",
+      "action": "restored_from_trash",
+      "reason": "current DB/export provenance still references this source DB layer"
+    },
+    {
+      "relative_path": "stable_runtime/start_remaining_history_resolve4.sh",
+      "action": "restored_from_trash",
+      "reason": "paired legacy launcher restored with its referenced source layer"
+    }
+  ],
+  "restored_bytes_after_review": 89435228,
+  "net_bytes_moved_after_restore": 2490726352,
+  "net_gib_moved_after_restore": 2.32,
+  "audio_path_repair_report": "docs/ACTIVE_EXPORT_AUDIO_PATH_REPAIR_2026-05-23.json"
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": "runtime_cleanup_batch3_restore_v1",
+  "trash_root": "/Users/dmitrijfabarisov/.Trash/MangoAnalyse_runtime_cleanup_batch3_20260522T233839Z",
+  "restored": [
+    {
+      "relative_path": "stable_runtime/history_remaining_excl_done_20260407",
+      "action": "restored_from_trash",
+      "reason": "current DB/export provenance still references this source DB layer"
+    },
+    {
+      "relative_path": "stable_runtime/start_remaining_history_resolve4.sh",
+      "action": "restored_from_trash",
+      "reason": "paired legacy launcher restored with its referenced source layer"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "active_export_audio_path_repair_v1",
+  "generated_at": "2026-05-22T23:41:24.464972+00:00",
+  "export_root": "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/sales_master_export_20260523_audio_working_store_v1",
+  "canonical_db": "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/canonical_master_20260523_audio_working_store_v1/canonical_calls_master.db",
+  "audio_working_store": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/audio_working_store_20260523_v1",
+  "master_calls_csv": "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/sales_master_export_20260523_audio_working_store_v1/master_calls_ru.csv",
+  "total_rows": 65939,
+  "changed_rows": 65939,
+  "missing_mapping": 0,
+  "missing_new_files": 0,
+  "report_csv": "/Users/dmitrijfabarisov/Projects/Mango analyse/docs/ACTIVE_EXPORT_AUDIO_PATH_REPAIR_2026-05-23.csv",
+  "passed": true
+}

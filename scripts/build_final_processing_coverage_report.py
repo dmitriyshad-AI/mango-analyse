@@ -163,7 +163,7 @@ def _scan_db(db_path: Path, source_names: set[str]) -> tuple[dict[str, dict[str,
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build strict final processing coverage report.")
     parser.add_argument("--project-root", default=".")
-    parser.add_argument("--source-dir", default="2026-03-09--26")
+    parser.add_argument("--source-dir", default="product_data/audio_working_store_20260523_v1/by_filename")
     parser.add_argument("--start-date", default="2025-01-01")
     parser.add_argument("--end-date", default="2026-05-31")
     parser.add_argument("--baseline-included-dbs", required=True)

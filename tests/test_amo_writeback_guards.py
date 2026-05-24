@@ -50,6 +50,22 @@ def test_contact_writeback_script_defaults_to_dry_run() -> None:
     assert write_amo_ready_contacts._live_write_enabled(args) is False
 
 
+def test_contact_writeback_default_input_uses_active_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    active_root = tmp_path / "stable_runtime" / "sales_master_export_current"
+    active_root.mkdir(parents=True)
+    active_csv = active_root / "amo_export_ready_ru.csv"
+    active_csv.write_text("Телефон клиента\n+79990000000\n", encoding="utf-8")
+    pointer = tmp_path / "stable_runtime" / "CANONICAL_EXPORT.txt"
+    pointer.write_text("sales_master_export_current\n", encoding="utf-8")
+    legacy = tmp_path / "АКТУАЛЬНО_AMO_ready.xlsx"
+
+    monkeypatch.setattr(write_amo_ready_contacts, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(write_amo_ready_contacts, "CANONICAL_EXPORT_POINTER", pointer)
+    monkeypatch.setattr(write_amo_ready_contacts, "LEGACY_ROOT_AMO_READY_XLSX", legacy)
+
+    assert write_amo_ready_contacts._default_amo_ready_input() == active_csv
+
+
 def test_contact_writeback_script_reads_csv_without_pandas(tmp_path: Path) -> None:
     source = tmp_path / "amo_ready.csv"
     source.write_text(

@@ -32,7 +32,8 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT_XLSX = PROJECT_ROOT / "АКТУАЛЬНО_AMO_ready.xlsx"
+CANONICAL_EXPORT_POINTER = PROJECT_ROOT / "stable_runtime" / "CANONICAL_EXPORT.txt"
+LEGACY_ROOT_AMO_READY_XLSX = PROJECT_ROOT / "АКТУАЛЬНО_AMO_ready.xlsx"
 REPORT_ROOT = PROJECT_ROOT / "stable_runtime" / "amocrm_runtime" / "contact_writebacks"
 TARGET_CONTACT_FIELDS = (
     "Статус матчинга",
@@ -50,6 +51,17 @@ ENV_FILES = (
     PROJECT_ROOT / "stable_runtime" / "amocrm_runtime" / ".env.private",
     PROJECT_ROOT / "prod_runtime_transfer" / ".env.private",
 )
+
+
+def _default_amo_ready_input() -> Path:
+    """Use the active runtime export instead of the stale root Excel artifact."""
+    if CANONICAL_EXPORT_POINTER.exists():
+        export_name = CANONICAL_EXPORT_POINTER.read_text(encoding="utf-8").strip()
+        if export_name:
+            candidate = PROJECT_ROOT / "stable_runtime" / export_name / "amo_export_ready_ru.csv"
+            if candidate.exists():
+                return candidate
+    return LEGACY_ROOT_AMO_READY_XLSX
 LIVE_WRITE_CONFIRMATION = "WRITE_AMO_LIVE"
 TEXT_COMPACTION_SUFFIX = " [сжато]"
 MAX_AMO_TEXT_FIELD_CHARS = 240
@@ -175,6 +187,7 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
     blocks: list[str] = []
 
     history = normalize_manager_text(row.get("Краткая история общения"))
+    chronology = normalize_manager_text(row.get("Хронология общения (последние 5 касаний)"))
     objections = normalize_manager_text(row.get("Возражения"))
     next_step = normalize_manager_text(row.get("Следующий шаг"))
     follow_up = _safe_text(row.get("Рекомендуемая дата следующего контакта"))
@@ -202,6 +215,8 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
         facts.append(f"Приоритет лида: {priority}")
     if probability:
         facts.append(f"Вероятность продажи, %: {probability}")
+    if chronology:
+        facts.append("Хронология: есть в полной рабочей таблице")
     if facts:
         blocks.append("\n".join(facts))
 
@@ -430,8 +445,8 @@ def _preflight_runtime_db(session: Any) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Dry-run/live writeback АКТУАЛЬНО_AMO_ready в контакты amoCRM.")
-    parser.add_argument("--input", default=str(DEFAULT_INPUT_XLSX), help="Путь к .xlsx/.csv с AMO_ready.")
+    parser = argparse.ArgumentParser(description="Dry-run/live writeback AMO-ready export в контакты amoCRM.")
+    parser.add_argument("--input", default=str(_default_amo_ready_input()), help="Путь к .xlsx/.csv с AMO-ready. По умолчанию берется активный export из stable_runtime/CANONICAL_EXPORT.txt.")
     parser.add_argument("--limit", type=int, default=None, help="Ограничить число строк для записи.")
     parser.add_argument(
         "--skip-written-from-report",

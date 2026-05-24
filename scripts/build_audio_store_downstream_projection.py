@@ -155,7 +155,7 @@ def build_projection(args: argparse.Namespace) -> dict[str, Any]:
             "event_key": clean(row.get("event_key")),
             "provider_call_id": clean(row.get("provider_call_id")),
             "recording_id": clean(row.get("recording_id")) or clean(row.get("recording_ref")),
-            "package_ref": "canonical_audio_store_20260516_v1",
+            "package_ref": "audio_working_store_20260523_v1",
             "audio_path": rel(audio_path, project_root),
             "source_filename": audio_path.name,
             "checksum_sha256": record.sha256,
@@ -262,12 +262,15 @@ def build_projection(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build read-only downstream projection using canonical audio store paths.")
+    parser = argparse.ArgumentParser(description="Build read-only downstream projection using current audio working store paths.")
     parser.add_argument("--project-root", default=".")
-    parser.add_argument("--audio-store-mapping", default="product_data/canonical_audio_store_20260516_v1/audio_store_mapping.csv")
+    parser.add_argument(
+        "--audio-store-mapping",
+        default="product_data/audio_working_store_20260523_v1/manifests/audio_store_mapping_compat.csv",
+    )
     parser.add_argument("--canonical-db", default=default_canonical_db())
     parser.add_argument("--new-queue-csv", default="product_data/mango_audio_update_20260516_v1/asr_handoff_new_calls_20260516.csv")
-    parser.add_argument("--out-dir", default="product_data/canonical_audio_store_20260516_v1/downstream_projection")
+    parser.add_argument("--out-dir", default="product_data/audio_working_store_20260523_v1/downstream_projection")
     parser.add_argument("--no-verify-checksum", action="store_true")
     args = parser.parse_args(argv)
     args.verify_checksum = not args.no_verify_checksum

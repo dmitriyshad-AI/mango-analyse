@@ -904,9 +904,10 @@ def normalize_judge_result(payload: Mapping[str, Any], *, dialog_id: str, brand:
     result = dict(payload)
     result["dialog_id"] = dialog_id
     result["brand"] = brand
-    result["hard_gates_passed"] = bool(result.get("hard_gates_passed", False))
     if not isinstance(result.get("violated_gates"), list):
         result["violated_gates"] = []
+    result["violated_gates"] = [str(item) for item in result["violated_gates"] if str(item).strip()]
+    result["hard_gates_passed"] = not bool(result["violated_gates"])
     if not isinstance(result.get("soft_flags_present"), list):
         result["soft_flags_present"] = []
     if not isinstance(result.get("quality_scores"), Mapping):
@@ -916,6 +917,8 @@ def normalize_judge_result(payload: Mapping[str, Any], *, dialog_id: str, brand:
     except (TypeError, ValueError):
         result["human_tone_score_0_100"] = 0
     verdict = str(result.get("verdict") or "").strip().upper()
+    if result["violated_gates"]:
+        verdict = "FAIL"
     if verdict not in {"PASS", "PASS_WITH_NOTES", "FAIL"}:
         verdict = "FAIL" if not result["hard_gates_passed"] else "PASS_WITH_NOTES"
     result["verdict"] = verdict

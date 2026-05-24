@@ -389,6 +389,76 @@ def test_builder_uses_safe_fallback_when_snapshot_missing() -> None:
     assert "knowledge_snippets" not in payload
 
 
+def test_builder_retrieves_schedule_confirmation_fact_from_course_parameter() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_schedule_followup_test",
+        "facts": [
+            {
+                "fact_id": "fact:foton_weekly",
+                "fact_type": "course_parameter",
+                "client_safe_text": "Фотон: в учебном году 2026/27 занятия проходят 1 раз в неделю.",
+                "brand": "foton",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:016_program_content"],
+            }
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "То есть точного расписания по дням пока нет? И 1 раз в неделю точно подтверждено?",
+        active_brand="foton",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+        known_slots={"grade": "7", "subject": "информатика", "format": "онлайн"},
+    )
+    payload = context.to_prompt_context()
+
+    assert payload["confirmed_facts"]["fact:foton_weekly"].endswith("1 раз в неделю.")
+    assert payload["facts_context"]["facts_missing"] is False
+
+
+def test_builder_retrieves_online_recordings_fact_for_schedule_followup() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_recordings_followup_test",
+        "facts": [
+            {
+                "fact_id": "fact:foton_online_recording",
+                "fact_type": "program",
+                "client_safe_text": "Фотон: на онлайн-платформе доступны записи занятий.",
+                "brand": "foton",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:016_program_content"],
+            }
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "А записи занятий будут, если пропустим?",
+        active_brand="foton",
+        theme={"topic_id": "theme:013_schedule"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["schedule.current"]},
+        kc_snapshot=snapshot,
+        known_slots={"grade": "7", "subject": "информатика", "format": "онлайн"},
+    )
+    payload = context.to_prompt_context()
+
+    assert payload["confirmed_facts"]["fact:foton_online_recording"].endswith("доступны записи занятий.")
+    assert payload["facts_context"]["facts_missing"] is False
+
+
 def test_builder_keeps_metadata_only_price_as_missing_fact() -> None:
     snapshot = {
         "schema_version": "kc_knowledge_snapshot_v1",
@@ -1189,6 +1259,80 @@ def test_builder_scope_blocks_multichild_for_second_subject_discount() -> None:
 
     assert "30%" in facts
     assert "многодет" not in facts
+
+
+def test_builder_scope_uses_stacking_discount_without_referral_neighbor() -> None:
+    snapshot = {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_scope_discount_stacking",
+        "facts": [
+            {
+                "fact_id": "fact:second_subject",
+                "fact_type": "discount",
+                "client_safe_text": "На второй предмет одного ребёнка онлайн действует скидка 30%.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:005_discounts"],
+            },
+            {
+                "fact_id": "fact:multichild",
+                "fact_type": "discount",
+                "client_safe_text": "Для многодетной семьи действует скидка 10% по удостоверению.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:005_discounts"],
+            },
+            {
+                "fact_id": "fact:stacking",
+                "fact_type": "discount",
+                "client_safe_text": "Скидки не суммируются: применяется наибольшая доступная скидка.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:005_discounts"],
+            },
+            {
+                "fact_id": "fact:refer_friend",
+                "fact_type": "discount",
+                "client_safe_text": "Программа «приведи друга»: кэшбэк после оплаты другом.",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "brand": "foton",
+                "related_theme_ids": ["theme:005_discounts"],
+            },
+        ],
+        "chunks": [],
+    }
+
+    context = build_telegram_pilot_context(
+        "А с многодетной скидкой она суммируется или выбирается одна?",
+        active_brand="foton",
+        theme={"topic_id": "theme:005_discounts"},
+        rop_policy={"bot_permission": "allowed_after_fact_check", "required_fact_keys": ["discounts.current"]},
+        kc_snapshot=snapshot,
+        known_slots={"grade": "7", "subject": "физика", "format": "онлайн"},
+    )
+    payload = context.to_prompt_context()
+    facts = " ".join(payload["confirmed_facts"].values())
+
+    assert "не суммируются" in facts
+    assert "30%" in facts
+    assert "многодет" in facts
+    assert "приведи друга" not in facts.casefold()
 
 
 def test_builder_scope_blocks_online_fragment_for_offline_trial_question() -> None:

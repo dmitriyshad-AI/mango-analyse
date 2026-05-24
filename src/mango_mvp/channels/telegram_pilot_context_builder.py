@@ -407,6 +407,7 @@ def build_knowledge_snapshot_context(
     facts_context: dict[str, Any] = {
         "knowledge_base_version": version,
         "snapshot_found": True,
+        "active_brand": active,
         "fresh": facts_fresh,
         "facts_fresh": facts_fresh,
         "client_safe": facts_fresh,
@@ -421,7 +422,6 @@ def build_knowledge_snapshot_context(
         "confirmed_fact_ids": list(confirmed_facts.keys()),
         "selected_chunk_ids": [chunk.chunk_id for chunk in selected_chunks],
         "source_ids": selected_source_ids[:12],
-        "active_brand": active,
     }
     if fact_scope:
         facts_context["fact_scope"] = fact_scope
@@ -675,6 +675,8 @@ def _missing_fact_keys(
         acceptable_fact_types = _expand_required_fact_types({fact_type}, topic_id="", query="")
         if fact_type == "location" and required_fact_types & {"camp_lvsh", "camp_city"}:
             acceptable_fact_types.update({"camp_lvsh", "camp_city"})
+        if fact_type == "schedule":
+            acceptable_fact_types.update({"course_parameter", "program"})
         if confirmed_fact_types & acceptable_fact_types:
             continue
         candidate_statuses = [
@@ -837,7 +839,7 @@ def _record_matches_context(
         return False
     if not _record_matches_product_markers(text, query_text):
         return False
-    if not _record_matches_requested_format(text, query_text):
+    if "discount" not in fact_types and not _record_matches_requested_format(text, query_text):
         return False
     if not _record_matches_requested_class(text, query_text):
         return False
@@ -871,9 +873,6 @@ def _record_matches_fact_scope(
         return False
     if not requested:
         return True
-    family = scope_family_for(requested)
-    if record_scopes & family:
-        return requested in record_scopes
     # Unknown-scope records can still be used when other matchers prove they are relevant.
     return True
 
@@ -953,14 +952,23 @@ def _query_asks_for_date(query_text: str) -> bool:
 
 
 def _record_answers_date_question(text: str) -> bool:
-    return _looks_like_date_fact(text) or "дат" in text or "распис" in text or "лист ожид" in text or "ждем распис" in text
+    return (
+        _looks_like_date_fact(text)
+        or "дат" in text
+        or "распис" in text
+        or "лист ожид" in text
+        or "ждем распис" in text
+        or "раз в неделю" in text
+        or "записи занятий" in text
+        or "записи уроков" in text
+    )
 
 
 def _expand_required_fact_types(required_fact_types: set[str], *, topic_id: str, query: str) -> set[str]:
     expanded = set(required_fact_types)
     query_text = f"{topic_id} {query}".casefold()
     if "schedule" in expanded:
-        expanded.update({"deadline", "camp_lvsh", "camp_city"})
+        expanded.update({"deadline", "camp_lvsh", "camp_city", "course_parameter", "program"})
     if "program" in expanded:
         expanded.update({"course_parameter", "program", "intensive", "camp_lvsh", "camp_city", "teacher"})
     if "documents" in expanded:

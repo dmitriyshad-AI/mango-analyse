@@ -16,11 +16,12 @@ from mango_mvp.channels.new_lead_funnel import (
     normalize_text,
 )
 from mango_mvp.channels.p0_recall_spec import memory_risk_flags_from_text
+from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 
 DIALOGUE_MEMORY_SCHEMA_VERSION = "dialogue_memory_v2_2026_05_23"
-MAX_TURNS = 10
-MAX_PROMPT_TURNS = 4
+MAX_TURNS = 20
+MAX_PROMPT_TURNS = 20
 
 QUESTION_KIND_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("live_availability", ("мест", "налич", "брон", "заброни")),
@@ -521,7 +522,7 @@ def _detect_open_question(text: str) -> DialogueQuestion:
     is_question = (
         "?" in clean
         or _is_current_terms_question(normalized)
-        or any(marker in normalized for _, markers in QUESTION_KIND_MARKERS for marker in markers)
+        or any(has_any_marker(normalized, markers) for _, markers in QUESTION_KIND_MARKERS)
     )
     if not is_question:
         return DialogueQuestion()
@@ -530,7 +531,7 @@ def _detect_open_question(text: str) -> DialogueQuestion:
         kind = "price_fix"
     else:
         for candidate, markers in QUESTION_KIND_MARKERS:
-            if any(marker in normalized for marker in markers):
+            if has_any_marker(normalized, markers):
                 kind = candidate
                 break
     return DialogueQuestion(text=clean[:260], kind=kind, answered=False)
@@ -547,7 +548,7 @@ def _detect_commitments(turns: Sequence[DialogueTurn]) -> tuple[str, ...]:
             continue
         normalized = normalize_text(turn.text)
         for code, markers in COMMITMENT_MARKERS:
-            if any(marker in normalized for marker in markers):
+            if has_any_marker(normalized, markers):
                 commitments.append(code)
     return tuple(dict.fromkeys(commitments))[-8:]
 
@@ -557,17 +558,17 @@ def _answer_closes_question(answer: str, kind: str) -> bool:
     if not answer:
         return False
     if kind == "price_fix":
-        return "текущ" in normalized or "оформ" in normalized or "услов" in normalized
+        return has_any_marker(normalized, ("текущ", "оформ", "услов"))
     if kind == "price":
-        return bool(re.search(r"\d[\d\s\u00a0]{1,9}\s*(?:₽|руб)", answer, re.I)) or "зависит" in normalized
+        return bool(re.search(r"\d[\d\s\u00a0]{1,9}\s*(?:₽|руб)", answer, re.I)) or has_marker(normalized, "зависит")
     if kind == "installment":
-        return any(marker in normalized for marker in ("рассроч", "долями", "частями", "помесяч", "банк"))
+        return has_any_marker(normalized, ("рассроч", "долями", "частями", "помесяч", "банк"))
     if kind == "trial":
-        return "пробн" in normalized or "фрагмент" in normalized
+        return has_any_marker(normalized, ("пробн", "фрагмент"))
     if kind == "identity":
-        return "цифровой помощник" in normalized or "не живой оператор" in normalized
+        return has_any_marker(normalized, ("цифровой помощник", "не живой оператор"))
     if kind == "address":
-        return any(marker in normalized for marker in ("адрес", "сретенка", "красносельск", "пацаева", "мфти"))
+        return has_any_marker(normalized, ("адрес", "сретенка", "красносельск", "пацаева", "мфти"))
     return True
 
 
@@ -592,13 +593,13 @@ def _first_missing_current_terms_slot(slots: Mapping[str, DialogueSlot]) -> str:
 def _is_current_terms_question(normalized: str) -> bool:
     if not normalized:
         return False
-    if any(marker in normalized for marker in ("мест", "брон", "заброни")):
+    if has_any_marker(normalized, ("мест", "брон", "заброни")):
         return False
-    if any(marker in normalized for marker in ("зафикс", "закреп", "подраст", "выраст")):
+    if has_any_marker(normalized, ("зафикс", "закреп", "подраст", "выраст")):
         return True
-    if any(
-        marker in normalized
-        for marker in (
+    if has_any_marker(
+        normalized,
+        (
             "текущая цена",
             "цена на сейчас",
             "актуальная цена",
@@ -606,16 +607,14 @@ def _is_current_terms_question(normalized: str) -> bool:
             "по текущей цене",
             "по текущим условиям",
             "по этой цене",
-        )
+        ),
     ):
         return True
-    if "оформ" in normalized and any(marker in normalized for marker in ("текущ", "сейчас", "цен", "услов")):
+    if has_marker(normalized, "оформ") and has_any_marker(normalized, ("текущ", "сейчас", "цен", "услов")):
         return True
-    if ("брон" in normalized or "заброни" in normalized) and "цен" in normalized:
+    if has_any_marker(normalized, ("брон", "заброни")) and has_marker(normalized, "цен"):
         return True
-    if any(marker in normalized for marker in ("что нужно", "что надо", "какие данные нужны")) and any(
-        marker in normalized for marker in ("запис", "оформ")
-    ):
+    if has_any_marker(normalized, ("что нужно", "что надо", "какие данные нужны")) and has_any_marker(normalized, ("запис", "оформ")):
         return True
     return False
 
@@ -843,7 +842,7 @@ def _safe_answered_parts(answer: str, question_kind: str) -> tuple[str, ...]:
         ("availability_handoff", ("налич", "мест", "проверит менеджер")),
     )
     for code, markers in checks:
-        if any(marker in normalized for marker in markers):
+        if has_any_marker(normalized, markers):
             parts.append(code)
     if question_kind and not parts and _answer_closes_question(answer, question_kind):
         parts.append(question_kind)
@@ -908,9 +907,9 @@ def _stable_session_id(brand: str, turns: Sequence[DialogueTurn]) -> str:
 
 def _normalize_format(value: Any) -> str:
     text = normalize_text(value)
-    if "онлайн" in text or "online" in text or "дистан" in text:
+    if has_any_marker(text, ("онлайн", "online", "дистан")):
         return "онлайн"
-    if "очно" in text or "offline" in text or "офлайн" in text:
+    if has_any_marker(text, ("очно", "offline", "офлайн")):
         return "очно"
     return str(value or "").strip()
 

@@ -18,6 +18,7 @@ from mango_mvp.channels.answer_quality_rewriter import (
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
 from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
+from mango_mvp.channels.text_signals import has_any_marker, has_marker
 from mango_mvp.channels.draft_prompt_builder import (
     IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES,
     build_draft_prompt,
@@ -35,6 +36,7 @@ ANSWER_QUALITY_LLM_REWRITER_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITER"
 ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_REASONING"
 ANSWER_QUALITY_LLM_REWRITE_MODE_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_MODE"
 ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION_ENV = "TELEGRAM_ANSWER_CONTRACT_GREEN_TEMPLATE_REDUCTION"
+PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 SAFE_FALLBACK_DRAFT_TEXT = "Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
 UNKNOWN_TOPIC_FALLBACK_ID = "service:S2_unclear"
 REFUND_ZERO_COLLECT_SAFE_TEXT = (
@@ -581,6 +583,12 @@ OFFLINE_VISIT_INVITATION_RE = re.compile(
     r"\b(?:приезж\w*|подъезж\w*|приход\w*|жд[её]м\s+вас|можете\s+прийти|можно\s+прийти)\b"
     r"[^.!?\n]{0,140}?"
     r"\b(?:познаком\w*|посмотр\w*|оформ\w*|запис\w*|встреч\w*|на\s+площадк\w*|в\s+офис\w*)\b",
+    re.I,
+)
+CONTENT_DELIVERY_ACTION_RE = re.compile(
+    r"\b(?:я\s+)?(?:пришл[юеё]м?|отправл[юеё]м?|дам|скин[уe]|подготовл[юеё]м?)\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:фрагмент|ссылк\w*|запис[ьи]\w*|доступ)\b",
     re.I,
 )
 _RETRYABLE_MARKERS = (
@@ -1260,6 +1268,20 @@ def apply_unconfirmed_operational_specificity_guard(
             claims=visit_claims,
             checklist_item="Запись и оформление по умолчанию дистанционные; очную встречу не предлагать без согласования.",
         )
+
+    delivery_claims = find_unsupported_content_delivery_action_claims(result.draft_text, context=context)
+    if delivery_claims:
+        return _operational_specificity_guarded_result(
+            result,
+            draft_text=(
+                "Фрагмент занятия можно прислать для знакомства, но точный способ доступа — ссылка, запись или регистрация — "
+                "нужно подтвердить у менеджера. Передам ему ваш запрос; класс, предмет и онлайн-формат уже вижу."
+            ),
+            flag="unsupported_content_delivery_action_detected",
+            claims=delivery_claims,
+            checklist_item="Не обещать от лица бота отправить ссылку/фрагмент/запись без подтверждённого способа доступа.",
+            route="draft_for_manager",
+        )
     return result
 
 
@@ -1287,6 +1309,14 @@ def find_unsupported_offline_visit_invitation_claims(
     return _unsupported_claims_by_pattern(draft_text, pattern=OFFLINE_VISIT_INVITATION_RE, context=context)
 
 
+def find_unsupported_content_delivery_action_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=CONTENT_DELIVERY_ACTION_RE, context=context)
+
+
 def _unsupported_claims_by_pattern(
     draft_text: str,
     *,
@@ -1308,10 +1338,11 @@ def _operational_specificity_guarded_result(
     flag: str,
     claims: Sequence[str],
     checklist_item: str,
+    route: str = "manager_only",
 ) -> SubscriptionDraftResult:
     return replace(
         result,
-        route="manager_only",
+        route=route,
         draft_text=draft_text,
         forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, flag, "manager_approval_required", "no_auto_send"])),
@@ -1433,9 +1464,21 @@ def apply_high_risk_content_guards(
             or (contract_primary_intent == "installment" and _active_brand(context) == "unpk")
         )
     )
+    conversation_plan_controls_green_templates = _conversation_plan_controls_green_templates(
+        result,
+        context=context,
+        client_message=client_message,
+        risk_markers=markers,
+    )
     if answer_contract_controls_green_templates:
         metadata["answer_contract_controls_green_templates"] = True
-    skip_green_template_overwrite = skip_quality_template_overwrite or answer_contract_controls_green_templates
+    if conversation_plan_controls_green_templates:
+        metadata["conversation_plan_controls_green_templates"] = True
+    skip_green_template_overwrite = (
+        skip_quality_template_overwrite
+        or answer_contract_controls_green_templates
+        or conversation_plan_controls_green_templates
+    )
 
     if not skip_green_template_overwrite and _is_unpk_installment_case(result, client_message=client_message, context=context):
         route = result.route if result.route in AUTONOMOUS_ROUTES else "draft_for_manager"
@@ -1473,7 +1516,7 @@ def apply_high_risk_content_guards(
         checklist.append("Будущая цена: не называть суммы после повышения, передать менеджеру.")
         metadata["future_price_handoff_applied"] = True
 
-    direct_process_template = "" if cross_brand_guarded() or skip_green_template_overwrite else _direct_process_safe_template(
+    direct_process_template = "" if cross_brand_guarded() else _direct_process_safe_template(
         result, client_message=client_message, context=context
     )
     if direct_process_template:
@@ -1650,6 +1693,7 @@ def apply_high_risk_content_guards(
         ""
         if cross_brand_guarded()
         or metadata.get("terminal_safe_template_applied")
+        or metadata.get("direct_process_safe_template_applied")
         else _presale_refund_policy_template(result, client_message=client_message, context=context)
     )
     if presale_refund_template:
@@ -1737,7 +1781,7 @@ def apply_high_risk_content_guards(
         checklist.append("Преподаватели: не называть ФИО без привязки к конкретной группе.")
         metadata["teacher_safe_template_applied"] = True
 
-    scope_guard_template = "" if metadata.get("recordings_safe_template_applied") else _fact_scope_guard_template(draft_text, context=context)
+    scope_guard_template = _fact_scope_guard_template(draft_text, context=context)
     if scope_guard_template and not cross_brand_guarded():
         route = "draft_for_manager"
         draft_text = scope_guard_template
@@ -2096,28 +2140,28 @@ def _result_has_live_status_missing_fact(result: SubscriptionDraftResult, *, cli
     if not _asks_live_status_or_booking_question(client_text):
         return False
     missing_text = " ".join(str(item or "") for item in result.missing_facts).casefold()
-    return any(
-        marker in missing_text
-        for marker in (
+    return has_any_marker(
+        missing_text,
+        (
             "availability",
             "налич",
             "мест",
             "групп",
             "смен",
             "брон",
-        )
+        ),
     )
 
 
 def _asks_live_status_or_booking_question(text: str) -> bool:
     normalized = str(text or "").casefold().replace("ё", "е")
-    if any(marker in normalized for marker in ("про оплат", "условия оплат", "не про мест", "не о мест", "не места")) and any(
-        marker in normalized for marker in ("оплат", "рассроч", "долями", "частями", "помесяч", "семестр")
+    if has_any_marker(normalized, ("про оплат", "условия оплат", "не про мест", "не о мест", "не места")) and has_any_marker(
+        normalized, ("оплат", "рассроч", "долями", "частями", "помесяч", "семестр")
     ):
         return False
-    return any(
-        marker in normalized
-        for marker in (
+    return has_any_marker(
+        normalized,
+        (
             "мест",
             "налич",
             "брон",
@@ -2146,14 +2190,14 @@ def _live_status_manager_check_text(*, client_message: str = "", context: Option
         details.append(str(known["subject"]))
     suffix = f" по вашему запросу ({', '.join(details)})" if details else ""
     text = str(client_message or "").casefold()
-    if any(marker in text for marker in ("как можно закреп", "как закреп", "как заброн", "как оформить место")):
+    if has_any_marker(text, ("как можно закреп", "как закреп", "как заброн", "как оформить место")):
         return (
             f"Сначала менеджер проверит наличие{suffix}. Если место есть, он подскажет оформление заявки и оплату; "
             "до проверки я не буду обещать, что место точно доступно."
         )
-    if any(
-        marker in text
-        for marker in (
+    if has_any_marker(
+        text,
+        (
             "что от меня нужно",
             "какие данные нужны",
             "что нужно для проверки",
@@ -2162,16 +2206,15 @@ def _live_status_manager_check_text(*, client_message: str = "", context: Option
         )
     ):
         if details:
-            camp_context = any(
-                marker
-                in " ".join(
+            camp_context = has_any_marker(
+                " ".join(
                     [
                         text,
                         _dialog_context_haystack(context),
                         str(known.get("product") or known.get("known_course") or ""),
                     ]
-                ).casefold()
-                for marker in ("лагер", "лвш", "лш", "смен", "менделеево")
+                ),
+                ("лагер", "лвш", "лш", "смен", "менделеево"),
             )
             optional_detail = (
                 "Если есть предпочтение по датам смены, можно дописать его."
@@ -2186,7 +2229,7 @@ def _live_status_manager_check_text(*, client_message: str = "", context: Option
             "Для проверки мест нужны класс ребёнка, предмет или направление и желаемая смена/даты. "
             "После этого менеджер проверит наличие и подскажет следующий шаг."
         )
-    if any(marker in text for marker in ("лвш", "лагер", "смен", "менделеево")):
+    if has_any_marker(text, ("лвш", "лагер", "смен", "менделеево")):
         return f"По местам не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие по конкретной смене или группе."
     return f"По местам не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие по конкретной группе."
 
@@ -2332,6 +2375,113 @@ def _answer_contract_green_template_reduction_enabled(context: Optional[Mapping[
     if env_value is not None:
         return _truthy_value(env_value)
     return True
+
+
+def _conversation_plan_controls_green_templates(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+    client_message: str,
+    risk_markers: set[str],
+) -> bool:
+    existing_flags = " ".join(str(item) for item in result.safety_flags)
+    manager_only_due_to_numeric_review = result.route == "manager_only" and "unsupported_promise_detected" in existing_flags
+    if risk_markers or result.topic_id in HIGH_RISK_THEME_IDS or (result.route == "manager_only" and not manager_only_due_to_numeric_review):
+        return False
+    plan = _conversation_intent_plan(context)
+    intent = str(plan.get("primary_intent") or "").strip()
+    if intent not in {
+        "pricing",
+        "price_fix",
+        "installment",
+        "discount",
+        "trial",
+        "camp",
+        "schedule",
+        "format",
+        "address",
+        "document",
+        "matkap",
+        "tax",
+        "general_consultation",
+    }:
+        return False
+    if str(plan.get("answer_policy") or "") not in {
+        "answer_directly_if_fact_verified",
+        "answer_safe_parts_then_manager_live_check",
+        "help_then_one_question",
+    }:
+        return False
+    draft = _normalize_for_template_decision(result.draft_text)
+    if not draft:
+        return False
+    if _looks_like_low_value_handoff_only(draft):
+        return False
+    question = str(plan.get("direct_question") or client_message or "")
+    scope = str(plan.get("fact_scope") or "")
+    if scope:
+        answer_scopes = detect_fact_scopes(draft)
+        if answer_scopes and not answer_scopes_allowed(
+            answer_scopes,
+            requested_scope=scope,
+            blocked_neighbor_scopes=tuple(str(item) for item in plan.get("blocked_neighbor_scopes", ()) or ()),
+        ):
+            return False
+        if answer_scopes and scope in answer_scopes and len(draft) >= 60:
+            return True
+    if _draft_addresses_question(draft, question, intent=intent):
+        return True
+    return bool(scope and len(draft) >= 120 and not _looks_like_generic_template(draft))
+
+
+def _normalize_for_template_decision(value: object) -> str:
+    return " ".join(str(value or "").casefold().replace("ё", "е").split())
+
+
+def _looks_like_low_value_handoff_only(text: str) -> bool:
+    if len(text) >= 140 and not _looks_like_generic_template(text):
+        return False
+    return has_any_marker(text, ("передам вопрос менеджеру", "менеджер подскажет", "менеджер проверит")) and not any(
+        marker in text
+        for marker in ("₽", "руб", "%", "долями", "рассроч", "скид", "пробн", "фрагмент", "адрес", "сретен", "красносельск", "пацаева")
+    )
+
+
+def _looks_like_generic_template(text: str) -> bool:
+    generic = (
+        "чтобы не назвать невер",
+        "нужно уточнить у менеджера",
+        "менеджер подскажет варианты под вашу ситуацию",
+        "передам менеджеру запрос на точную проверку",
+    )
+    return has_any_marker(text, generic)
+
+
+def _draft_addresses_question(draft_text: str, question: str, *, intent: str) -> bool:
+    question_norm = _normalize_for_template_decision(question)
+    if not question_norm:
+        return False
+    if intent in {"pricing", "price_fix"}:
+        return bool(PRICE_AMOUNT_RE.search(draft_text)) or has_any_marker(draft_text, ("текущая цена", "стоимость", "цена"))
+    if intent == "installment":
+        return has_any_marker(draft_text, ("рассроч", "долями", "частями", "помесяч", "семестр", "год", "банк"))
+    if intent == "discount":
+        return has_any_marker(draft_text, ("скид", "процент", "%", "суммир", "многодет", "второй предмет"))
+    if intent == "trial":
+        return has_any_marker(draft_text, ("пробн", "фрагмент", "дистанц", "приезж", "оформление"))
+    if intent in {"camp", "live_availability"}:
+        return has_any_marker(draft_text, ("лагер", "лвш", "смен", "менделеево", "городск", "прожив", "мест", "налич"))
+    if intent == "schedule":
+        return has_any_marker(draft_text, ("распис", "дни", "время", "занятия", "группа"))
+    if intent == "format":
+        return has_any_marker(draft_text, ("онлайн", "очно", "дистанц", "формат", "платформ"))
+    if intent == "address":
+        return has_any_marker(draft_text, ("адрес", "сретенка", "красносельск", "пацаева", "мфти"))
+    if intent == "matkap":
+        return has_any_marker(draft_text, ("маткап", "сфр", "документ"))
+    if intent == "tax":
+        return has_any_marker(draft_text, ("налог", "вычет", "фнс", "13%"))
+    return len(draft_text) >= 120
 
 
 def _skip_missing_fact_template_by_answer_contract(
@@ -2873,25 +3023,35 @@ def _discount_safe_template(
             value = context.get(key)
             text = " ".join(str(item or "") for item in value) if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) else str(value or "")
             haystack += " " + text.casefold()
-    if "forced_discount" in haystack or ("скидк" in client_haystack and "конкурент" in client_haystack):
+    if "forced_discount" in haystack or (has_marker(client_haystack, "скидк") and has_marker(client_haystack, "конкурент")):
         return FORCED_DISCOUNT_SAFE_TEXT
-    asks_second_subject = (
-        plan_scope == "discount_second_subject"
-        or "second_subject" in haystack
-        or "два предмет" in client_haystack
-        or "второй предмет" in client_haystack
-        or "второй онлайн" in client_haystack
-        or "на второй онлайн" in client_haystack
-        or "последующий предмет" in client_haystack
-        or re.search(r"(физик\w*[^.!?\n]{0,80}математ\w*|математ\w*[^.!?\n]{0,80}физик\w*)", client_haystack)
+    asks_second_subject = plan_scope == "discount_second_subject" or (
+        plan_scope != "discount_multichild"
+        and (
+            "second_subject" in haystack
+            or has_any_marker(
+                client_haystack,
+                (
+                    "два предмет",
+                    "второй предмет",
+                    "второй онлайн",
+                    "на второй онлайн",
+                    "последующий предмет",
+                    "вторым предметом",
+                ),
+            )
+            or re.search(r"(физик\w*[^.!?\n]{0,80}математ\w*|математ\w*[^.!?\n]{0,80}физик\w*)", client_haystack)
+        )
     )
-    asks_multichild = (
-        plan_scope == "discount_multichild"
-        or "multichild" in haystack
-        or "многодет" in client_haystack
-        or re.search(r"\b(?:трое|три|четверо|пятеро)\s+дет", client_haystack)
+    asks_multichild = plan_scope == "discount_multichild" or (
+        plan_scope != "discount_second_subject"
+        and (
+            "multichild" in haystack
+            or has_marker(client_haystack, "многодет")
+            or re.search(r"\b(?:трое|три|четверо|пятеро)\s+дет", client_haystack)
+        )
     )
-    asks_stacking = "stacking" in haystack or "сложат" in client_haystack or "суммир" in client_haystack
+    asks_stacking = "stacking" in haystack or has_any_marker(client_haystack, ("сложат", "суммир"))
     if active_brand == "foton" and asks_second_subject and (asks_stacking or asks_multichild):
         return (
             "На второй онлайн-предмет в Фотоне действует скидка 30%, на второй очный предмет — 20%. "
@@ -2909,7 +3069,7 @@ def _discount_safe_template(
     if active_brand == "foton" and plan_scope != "discount_multichild" and (
         asks_second_subject
     ):
-        if "онлайн" in client_haystack:
+        if has_marker(client_haystack, "онлайн"):
             return (
                 "На второй онлайн-предмет в Фотоне действует скидка 30% для того же ребёнка. "
                 "Скидки не суммируются: если есть несколько оснований, применяется наибольшая доступная. "
@@ -2922,9 +3082,9 @@ def _discount_safe_template(
         return UNPK_SECOND_SUBJECT_DISCOUNT_TEXT
     if asks_multichild:
         return MULTICHILD_DISCOUNT_TEXT
-    if active_brand == "unpk" and ("monthly" in haystack or "помесяч" in client_haystack or "семестр" in client_haystack):
+    if active_brand == "unpk" and ("monthly" in haystack or has_any_marker(client_haystack, ("помесяч", "семестр"))):
         return UNPK_MONTHLY_SEMESTER_DISCOUNT_TEXT
-    if active_brand == "unpk" and ("mfti_employees" in haystack or "работаю в мфти" in client_haystack or "сотрудник" in client_haystack):
+    if active_brand == "unpk" and ("mfti_employees" in haystack or has_any_marker(client_haystack, ("работаю в мфти", "сотрудник"))):
         return UNPK_MFTI_EMPLOYEE_DISCOUNT_TEXT
     return ""
 
@@ -3046,11 +3206,11 @@ def _recordings_safe_template(
     known_format = str(known.get("format") or "").casefold()
     facts = " ".join(_confirmed_fact_texts(context, limit=10)).casefold().replace("ё", "е")
     active_brand = _active_brand(context)
-    wants_offline = scope == "offline_recordings" or known_format in {"очно", "offline"} or any(
-        marker in client_haystack for marker in ("очно", "очный", "обычные занят")
+    wants_offline = scope == "offline_recordings" or known_format in {"очно", "offline"} or has_any_marker(
+        client_haystack, ("очно", "очный", "обычные занят")
     )
-    wants_online = scope == "online_recordings" or known_format in {"онлайн", "online"} or any(
-        marker in client_haystack for marker in ("онлайн", "мтс", "линк")
+    wants_online = scope == "online_recordings" or known_format in {"онлайн", "online"} or has_any_marker(
+        client_haystack, ("онлайн", "мтс", "линк")
     )
     if wants_offline and ("запись очных занятий не ведется" in facts or "запись очных занятий не ведётся" in facts):
         return (
@@ -3108,10 +3268,7 @@ def _schedule_frequency_safe_template(
 ) -> str:
     client_haystack = str(client_message or "").casefold().replace("ё", "е")
     if not (
-        "сколько раз" in client_haystack
-        or "раз в неделю" in client_haystack
-        or "частот" in client_haystack
-        or "по каким дням" in client_haystack
+        has_any_marker(client_haystack, ("сколько раз", "раз в неделю", "частот", "по каким дням"))
     ):
         return ""
     plan = _conversation_intent_plan(context)
@@ -3142,16 +3299,16 @@ def _schedule_confirmation_safe_template(
     client_haystack = str(client_message or "").casefold().replace("ё", "е")
     if (
         "?" not in str(client_message or "")
-        and any(marker in client_haystack for marker in ("спасибо", "подожду", "жду"))
+        and has_any_marker(client_haystack, ("спасибо", "подожду", "жду"))
         and _mentions_schedule_day_or_time(client_haystack)
     ):
-        return "Хорошо, передам менеджеру запрос на точные дни и время по этой группе. Повторять условия заново не буду."
-    if not ("точн" in client_haystack and (_mentions_schedule_day_or_time(client_haystack) or "распис" in client_haystack)):
+        return "Хорошо, передам менеджеру запрос на точные дни и время по этой группе. Класс, предмет и формат уже вижу."
+    if not (has_marker(client_haystack, "точн") and (_mentions_schedule_day_or_time(client_haystack) or has_marker(client_haystack, "распис"))):
         return ""
-    if not any(marker in client_haystack for marker in ("нет", "пока", "правильно", "верно", "уточн", "жду")):
+    if not has_any_marker(client_haystack, ("нет", "пока", "правильно", "верно", "уточн", "жду")):
         return ""
     dialog_haystack = _dialog_context_haystack(context)
-    if not any(marker in " ".join([client_haystack, dialog_haystack]).casefold() for marker in ("распис", "по каким дням", "дни занятий", "онлайн")):
+    if not has_any_marker(" ".join([client_haystack, dialog_haystack]), ("распис", "по каким дням", "дни занятий", "онлайн")):
         return ""
     known = known_context_fields(context)
     grade = str(known.get("grade") or "").strip()
@@ -3169,22 +3326,11 @@ def _schedule_confirmation_safe_template(
 
 def _mentions_schedule_day_or_time(text: str) -> bool:
     value = str(text or "").casefold().replace("ё", "е")
-    return bool(re.search(r"\b(?:дни|дней|дням|день|дата|датам|время|часы|часов)\b", value) or "распис" in value)
+    return bool(re.search(r"\b(?:дни|дней|дням|день|дата|датам|время|часы|часов)\b", value) or has_marker(value, "распис"))
 
 
 def _has_word_marker(text: str, *markers: str) -> bool:
-    value = str(text or "").casefold().replace("ё", "е")
-    for marker in markers:
-        needle = str(marker or "").casefold().replace("ё", "е").strip()
-        if not needle:
-            continue
-        if re.search(r"[^0-9a-zа-я]", needle):
-            if needle in value:
-                return True
-            continue
-        if re.search(rf"(?<![0-9a-zа-я]){re.escape(needle)}[0-9a-zа-я]*", value):
-            return True
-    return False
+    return has_any_marker(text, markers)
 
 
 def _matkap_safe_template(
@@ -3214,22 +3360,27 @@ def _direct_process_safe_template(
     context: Optional[Mapping[str, Any]] = None,
 ) -> str:
     client_haystack = str(client_message or "").casefold().replace("ё", "е")
-    if any(
-        marker in client_haystack
-        for marker in (
+    if has_any_marker(
+        client_haystack,
+        (
             "передайте менеджеру",
             "передай менеджеру",
             "дайте менеджера",
             "хочу менеджера",
             "пусть менеджер",
+            "пусть подтверд",
             "менеджер тогда",
             "менеджер напиш",
             "менеджер скаж",
             "менеджер подтверд",
+            "жду от менеджер",
+            "жду менеджер",
             "лучше с менеджером",
             "с менеджером уточню",
-        )
+        ),
     ):
+        if is_benign_hypothetical_refund(" ".join([_dialog_context_haystack(context), str(client_message or "")])):
+            return _presale_refund_handoff_ack_text(context)
         return _manager_handoff_request_text(context)
     trial_signup_context = result.topic_id == "theme:023_trial_class" or "пробн" in client_haystack or "фрагмент" in client_haystack
     if _is_enrollment_process_question(client_haystack) and not trial_signup_context:
@@ -3257,6 +3408,23 @@ def _manager_handoff_request_text(context: Optional[Mapping[str, Any]]) -> str:
         details.append(str(known["format"]))
     suffix = f" Вижу уже: {', '.join(details)}." if details else ""
     return MANAGER_HANDOFF_REQUEST_SAFE_TEXT + suffix
+
+
+def _presale_refund_handoff_ack_text(context: Optional[Mapping[str, Any]]) -> str:
+    known = known_context_fields(context)
+    details = []
+    if known.get("grade"):
+        details.append(f"{known['grade']} класс")
+    if known.get("subject"):
+        details.append(str(known["subject"]))
+    if known.get("format"):
+        details.append(str(known["format"]))
+    suffix = f" Вижу уже: {', '.join(details)}." if details else ""
+    return (
+        "Да, передам менеджеру именно вопрос по условиям возврата до оплаты. "
+        "Он подтвердит актуальные правила по выбранному курсу; повторно писать класс, предмет и формат не нужно."
+        f"{suffix}"
+    )
 
 
 def _price_fix_process_text(context: Optional[Mapping[str, Any]]) -> str:
@@ -3569,8 +3737,8 @@ def _fact_scope_guard_template(draft_text: str, *, context: Optional[Mapping[str
     if scope == "discount_second_subject":
         direct_question = str(plan.get("direct_question") or "").casefold()
         if _active_brand(context) == "foton":
-            asks_multichild_or_stacking = "многодет" in direct_question or "суммир" in direct_question
-            if "онлайн" in direct_question and not asks_multichild_or_stacking:
+            asks_multichild_or_stacking = has_any_marker(direct_question, ("многодет", "суммир"))
+            if has_marker(direct_question, "онлайн") and not asks_multichild_or_stacking:
                 return (
                     "На второй онлайн-предмет в Фотоне действует скидка 30% для того же ребёнка. "
                     "Скидки не суммируются: если есть несколько оснований, применяется наибольшая доступная. "
@@ -3773,18 +3941,18 @@ def _confirmed_fact_texts(context: Optional[Mapping[str, Any]], *, limit: int = 
 
 def _prefer_format_facts(facts: Sequence[str], *, query: str = "") -> tuple[str, ...]:
     query_text = str(query or "").casefold().replace("ё", "е")
-    asks_online = "онлайн" in query_text or "дистанц" in query_text
-    asks_offline = "очно" in query_text or "офлайн" in query_text
+    asks_online = has_any_marker(query_text, ("онлайн", "дистанц"))
+    asks_offline = has_any_marker(query_text, ("очно", "офлайн"))
     preferred: list[str] = []
     for fact in facts:
         normalized = fact.casefold().replace("ё", "е")
-        if "учебный год" in normalized or "уровень обучения" in normalized:
+        if has_any_marker(normalized, ("учебный год", "уровень обучения")):
             continue
-        if asks_online and "очно" in normalized and "онлайн" not in normalized.replace("онлайн-платформа", ""):
+        if asks_online and has_marker(normalized, "очно") and not has_marker(normalized.replace("онлайн-платформа", ""), "онлайн"):
             continue
-        if asks_offline and "онлайн" in normalized and "очно" not in normalized:
+        if asks_offline and has_marker(normalized, "онлайн") and not has_marker(normalized, "очно"):
             continue
-        if any(marker in normalized for marker in ("онлайн-платформа", "мтс линк", "webinar", "запис", "очно", "онлайн")):
+        if has_any_marker(normalized, ("онлайн-платформа", "мтс линк", "webinar", "запис", "очно", "онлайн")):
             preferred.append(fact)
     return tuple(preferred)
 
@@ -3838,7 +4006,7 @@ def _camp_safe_template(
     plan_scope = str(plan.get("product_scope") or "").casefold()
     plan_product = str(plan.get("product_family") or "").casefold()
     current_message_has_camp = _has_word_marker(client_haystack, "лагер", "лвш", "лш", "смен", "менделеево")
-    current_no_lodging_signal = any(marker in client_haystack for marker in ("без прожив", "без проживания", "без ночев"))
+    current_no_lodging_signal = has_any_marker(client_haystack, ("без прожив", "без проживания", "без ночев"))
     current_residential_signal = _has_word_marker(client_haystack, "лвш", "менделеево", "выездн", "трансфер") or (
         not current_no_lodging_signal and _has_word_marker(client_haystack, "прожив", "питан")
     )
@@ -3855,9 +4023,8 @@ def _camp_safe_template(
         return ""
     if not _has_word_marker(combined_haystack, "лагер", "лвш", "лш", "смен", "менделеево"):
         return ""
-    if result.message_type != "question" and not any(
-        marker in client_haystack
-        for marker in ("?", "сколько", "цен", "стоим", "мест", "можно", "есть", "подходит", "подойд", "что входит", "какая")
+    if result.message_type != "question" and not has_any_marker(
+        client_haystack, ("?", "сколько", "цен", "стоим", "мест", "можно", "есть", "подходит", "подойд", "что входит", "какая")
     ):
         return ""
     price_question = _asks_money_price_question(client_haystack)
@@ -3881,7 +4048,7 @@ def _camp_safe_template(
         return FOTON_LVSH_LIVING_TRANSFER_SAFE_TEXT
     if active_brand == "unpk" and outbound_camp_context and client_asks_living_transfer:
         return UNPK_LVSH_LIVING_TRANSFER_SAFE_TEXT
-    if active_brand == "unpk" and ("онлайн" in client_haystack and ("лагер" in combined_haystack or "лвш" in combined_haystack or "летн" in combined_haystack)):
+    if active_brand == "unpk" and (has_marker(client_haystack, "онлайн") and has_any_marker(combined_haystack, ("лагер", "лвш", "летн"))):
         return UNPK_CAMP_ONLINE_FORMAT_SAFE_TEXT
     if active_brand == "unpk" and mendeleevo_context and known_grade >= 11 and _has_word_marker(client_haystack, "мест", "шанс", "попасть", "лучше сразу"):
         return UNPK_LVSH_GRADE_11_SEATS_SAFE_TEXT
@@ -3908,9 +4075,9 @@ def _camp_safe_template(
         return FOTON_CITY_CAMP_AUGUST_SAFE_TEXT
     if active_brand == "unpk" and "июн" in client_haystack:
         return UNPK_JUNE_CAMP_HANDOFF_TEXT
-    if active_brand == "foton" and ("лагер" in client_haystack or "летн" in client_haystack):
+    if active_brand == "foton" and has_any_marker(client_haystack, ("лагер", "летн")):
         return FOTON_CAMP_OVERVIEW_SAFE_TEXT
-    if active_brand == "unpk" and ("лагер" in client_haystack or "летн" in client_haystack):
+    if active_brand == "unpk" and has_any_marker(client_haystack, ("лагер", "летн")):
         return UNPK_CAMP_OVERVIEW_SAFE_TEXT
     return ""
 
@@ -3942,18 +4109,16 @@ def _trial_safe_template(
     haystack = " ".join([client_haystack, result.draft_text, result.topic_id, result.broad_group]).casefold()
     plan = _conversation_intent_plan(context)
     plan_intent = str(plan.get("primary_intent") or "")
+    plan_fact_scope = str(plan.get("fact_scope") or "")
     dialog_haystack = _dialog_context_haystack(context)
-    recent_trial_context = any(marker in dialog_haystack for marker in ("пробн", "фрагмент занятия", "фрагмент"))
+    recent_trial_context = has_any_marker(dialog_haystack, ("пробн", "фрагмент занятия", "фрагмент"))
     known = known_context_fields(context)
     known_product = str(known.get("product") or known.get("known_course") or "").casefold()
-    trial_requested = result.topic_id == "theme:023_trial_class" or plan_intent == "trial" or "пробн" in known_product or bool(
+    trial_requested = result.topic_id == "theme:023_trial_class" or plan_intent == "trial" or plan_fact_scope in {"trial_offline", "trial_online_fragment"} or has_marker(known_product, "пробн") or bool(
         re.search(r"пробн(?!ик)|фрагмент", client_haystack, flags=re.I)
         or (
             recent_trial_context
-            and any(
-                marker in client_haystack
-                for marker in ("онлайн", "приезж", "бесплат", "стоим", "смотреть", "посмотреть", "получ", "ссыл", "регистрац", "запись")
-            )
+            and has_any_marker(client_haystack, ("онлайн", "приезж", "бесплат", "стоим", "смотреть", "посмотреть", "получ", "ссыл", "регистрац", "запись"))
         )
     )
     if not trial_requested:
@@ -3986,6 +4151,7 @@ def _trial_safe_template(
     grade = str(known.get("grade") or "").strip()
     subject = str(known.get("subject") or "").strip()
     fmt = str(known.get("format") or "").strip().casefold()
+    online_trial_requested = plan_fact_scope == "trial_online_fragment" or has_marker(client_haystack, "онлайн") or has_marker(fmt, "онлайн")
     asks_live_or_recording_trial = bool(
         re.search(r"\b(?:живое|живой|с\s+преподавател\w*)\b", client_haystack, flags=re.I)
         or re.search(r"\bзапис(?:ь|и|ью|ями|ям)\b", client_haystack, flags=re.I)
@@ -4000,37 +4166,37 @@ def _trial_safe_template(
     ):
         return FOTON_TRIAL_FORMAT_CHECK_SAFE_TEXT
     if active_brand == "foton" and data_needed_question and (
-        "онлайн" in haystack or "онлайн" in fmt or recent_trial_context or "пробн" in client_haystack
+        online_trial_requested or recent_trial_context or has_marker(client_haystack, "пробн")
     ):
-        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if "онлайн" in fmt or "онлайн" in haystack else "") if item)
+        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if online_trial_requested else "") if item)
         prefix = f"Вижу уже: {summary}. " if summary else ""
         return prefix + FOTON_TRIAL_PROCESS_SAFE_TEXT
     if active_brand == "unpk" and data_needed_question and (
-        "онлайн" in haystack or "онлайн" in fmt or recent_trial_context or "фрагмент" in client_haystack
+        online_trial_requested or recent_trial_context or has_marker(client_haystack, "фрагмент")
     ):
         if asks_fragment_access_method:
             return TRIAL_FRAGMENT_METHOD_SAFE_TEXT
-        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if "онлайн" in fmt or "онлайн" in haystack else "") if item)
+        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if online_trial_requested else "") if item)
         prefix = f"Вижу уже: {summary}. " if summary else ""
         return prefix + TRIAL_FRAGMENT_DATA_SAFE_TEXT
     if active_brand == "foton" and fragment_request_ack and (
-        "онлайн" in haystack or "онлайн" in fmt or recent_trial_context or "пробн" in client_haystack
+        online_trial_requested or recent_trial_context or has_marker(client_haystack, "пробн")
     ):
-        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if "онлайн" in fmt or "онлайн" in haystack else "") if item)
+        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if online_trial_requested else "") if item)
         prefix = f"Вижу уже: {summary}. " if summary else ""
         return prefix + FOTON_TRIAL_PROCESS_SAFE_TEXT
     if active_brand == "unpk" and fragment_request_ack and (
-        "онлайн" in haystack or "онлайн" in fmt or recent_trial_context or "фрагмент" in client_haystack
+        online_trial_requested or recent_trial_context or has_marker(client_haystack, "фрагмент")
     ):
-        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if "онлайн" in fmt or "онлайн" in haystack else "") if item)
+        summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if online_trial_requested else "") if item)
         prefix = f"Вижу уже: {summary}. " if summary else ""
         return prefix + TRIAL_FRAGMENT_REQUEST_ACK_SAFE_TEXT
-    if active_brand == "foton" and ("онлайн" in haystack or _known_subject_or_format(context, "онлайн")):
+    if active_brand == "foton" and (online_trial_requested or _known_subject_or_format(context, "онлайн")):
         parts = [FOTON_ONLINE_TRIAL_SAFE_TEXT]
         if not payment_question:
             parts.append("Если хотите, передам менеджеру запрос на онлайн-пробное.")
-        if grade or subject or "онлайн" in fmt:
-            summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if "онлайн" in fmt else "") if item)
+        if grade or subject or online_trial_requested:
+            summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if online_trial_requested else "") if item)
             if summary:
                 parts.append(f"Данные уже вижу: {summary}. Повторно присылать их не нужно.")
         return " ".join(parts)
@@ -4039,8 +4205,8 @@ def _trial_safe_template(
             "Да, пробное занятие в Фотоне есть: для онлайн-курсов — по умолчанию, для очных — по согласованию с менеджером при записи. "
             "Оформление проходит дистанционно. Напишите класс, предмет и формат — подберём подходящий вариант."
         )
-    if active_brand == "unpk" and ("онлайн" in client_haystack or _known_subject_or_format(context, "онлайн")) and (
-        "бесплат" in client_haystack or "приезж" in client_haystack or "фрагмент" in client_haystack
+    if active_brand == "unpk" and (online_trial_requested or _known_subject_or_format(context, "онлайн")) and (
+        has_any_marker(client_haystack, ("бесплат", "приезж", "фрагмент"))
     ):
         return UNPK_ONLINE_FRAGMENT_DIRECT_SAFE_TEXT
     if active_brand == "unpk":
@@ -4061,6 +4227,8 @@ def _soften_current_price_deadline_text(text: str, *, client_message: str = "") 
     has_future_price_guarantee = bool(
         re.search(r"\bчерез\s+(?:недел\w*|месяц\w*)[^.?!]*(?:не\s+(?:должн\w*|будет)|остан\w*|сохран\w*)[^.?!]*(?:друг\w*|измен\w*|помен\w*|цен\w*)", value, flags=re.I)
         or re.search(r"\b(?:значит|по\s+этому\s+правилу)[^.?!]*(?:не\s+(?:должн\w*|будет)|остан\w*|сохран\w*)[^.?!]*(?:друг\w*|измен\w*|помен\w*|цен\w*)", value, flags=re.I)
+        or re.search(r"\bцен\w*[^.?!]{0,80}(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)", value, flags=re.I)
+        or re.search(r"\b(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)[^.?!]{0,80}\bцен\w*", value, flags=re.I)
     )
     has_fixation_claim = bool(re.search(r"\bзафиксировать\s+(?:текущ(?:ую|ие)|цену|условия)\b", value, flags=re.I))
     has_broken_fixation_fragment = "Оформление по текущим условиям проверит менеджер" in value
@@ -4116,6 +4284,18 @@ def _soften_current_price_deadline_text(text: str, *, client_message: str = "") 
         flags=re.I,
     )
     value = re.sub(
+        r"\bцен\w*[^.?!]{0,80}(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)[^.?!]*(?:[.?!]|$)",
+        "Точную дату изменения цены без проверки не называю. ",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(
+        r"\b(?:не\s+(?:измен\w*|поменя\w*)|остан\w*|сохран\w*)[^.?!]{0,80}\bцен\w*[^.?!]*(?:[.?!]|$)",
+        "Точную дату изменения цены без проверки не называю. ",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(
         r"\b(?:передать\s+)?оформление\s+по\s+текущим\s+условиям\b",
         "передать менеджеру проверку оформления по текущим условиям",
         value,
@@ -4151,7 +4331,7 @@ def _soften_current_price_deadline_text(text: str, *, client_message: str = "") 
     value = re.sub(r"\s{2,}", " ", value).strip()
     asks_validity = any(
         marker in str(client_message or "").casefold().replace("ё", "е")
-        for marker in ("сейчас", "поменяет", "изменит", "потом", "подраст", "повыс")
+        for marker in ("сейчас", "поменяет", "изменит", "остан", "сохран", "потом", "подраст", "повыс")
     )
     asks_date = "дат" in str(client_message or "").casefold().replace("ё", "е")
     if (asks_validity or had_deadline or has_fixation_claim) and "может измениться" not in value and "подраст" not in value:
@@ -4202,16 +4382,15 @@ def _without_known_grade_reask(text: str, *, context: Optional[Mapping[str, Any]
 def _known_subject_or_format(context: Optional[Mapping[str, Any]], marker: str) -> bool:
     if not isinstance(context, Mapping):
         return False
-    needle = marker.casefold()
     known = known_context_fields(context)
-    if any(needle in str(item or "").casefold() for item in known.values()):
+    if any(has_marker(item, marker) for item in known.values()):
         return True
     for key in ("known_dialog_fields", "known_client_fields", "customer_context_summary", "known_context_summary"):
         value = context.get(key)
         if isinstance(value, Mapping):
-            if any(needle in str(item or "").casefold() for item in value.values()):
+            if any(has_marker(item, marker) for item in value.values()):
                 return True
-        elif needle in str(value or "").casefold():
+        elif has_marker(value, marker):
             return True
     return False
 
@@ -4426,7 +4605,7 @@ def _pricing_safe_template(
 
 def _asks_money_price_question(text: str) -> bool:
     normalized = str(text or "").casefold().replace("ё", "е")
-    if "процент" in normalized and not any(marker in normalized for marker in ("стоим", "цена", "цену", "прайс", "руб", "почем", "почём")):
+    if has_marker(normalized, "процент") and not has_any_marker(normalized, ("стоим", "цена", "цену", "прайс", "руб", "почем", "почём")):
         return False
     return bool(
         re.search(r"\b(?:стоим\w*|цена|цену|цены|ценой|прайс|почем|почём|руб(?:\.|лей|ля|ль)?)\b", normalized)
@@ -4436,12 +4615,12 @@ def _asks_money_price_question(text: str) -> bool:
 
 def _is_generic_price_question_without_selection(client_haystack: str) -> bool:
     text = str(client_haystack or "").casefold().replace("ё", "е")
-    asks_price = any(marker in text for marker in ("сколько", "стоим", "цен", "почем", "почём", "прайс"))
+    asks_price = has_any_marker(text, ("сколько", "стоим", "цен", "почем", "почём", "прайс"))
     if not asks_price:
         return False
     has_grade = bool(re.search(r"\b(?:[1-9]|10|11)\s*(?:класс|классе|кл\.?)\b", text))
-    has_format = any(marker in text for marker in ("очно", "очный", "онлайн", "дистанц"))
-    has_product = any(marker in text for marker in ("лвш", "лагер", "интенсив", "4 недели", "четыре недели", "егэ", "огэ"))
+    has_format = has_any_marker(text, ("очно", "очный", "онлайн", "дистанц"))
+    has_product = has_any_marker(text, ("лвш", "лагер", "интенсив", "4 недели", "четыре недели", "егэ", "огэ"))
     return not (has_grade or has_format or has_product)
 
 

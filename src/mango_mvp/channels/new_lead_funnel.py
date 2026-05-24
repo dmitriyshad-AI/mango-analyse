@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import codes_from_text
+from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 
 NEW_LEAD_FUNNEL_SCHEMA_VERSION = "new_lead_funnel_v1_2026_05_23"
@@ -350,7 +351,7 @@ def choose_lead_stage(
 ) -> str:
     if brand_id == "unknown":
         return "first_contact"
-    if any(marker in current_text for marker in OFF_TOPIC_MARKERS):
+    if has_any_marker(current_text, OFF_TOPIC_MARKERS):
         return "closed_or_waiting"
     if str(message_type or "").strip() in {"non_question", "wait_for_more"}:
         return "closed_or_waiting"
@@ -401,23 +402,23 @@ def detect_client_segment(
 
 def detect_product_scope(text: str, *, topic_id: str = "") -> str:
     topic = str(topic_id or "").casefold()
-    if any(marker in text for marker in ("лвш", "выездн", "менделеево", "лагерь с прожив")):
+    if has_any_marker(text, ("лвш", "выездн", "менделеево", "лагерь с прожив")):
         return "lvsh"
     if "camp" in topic or topic in {"theme:026_camp_general", "theme:027_camp_living_conditions", "theme:028_transport_logistics"}:
         return "city_camp"
-    if any(marker in text for marker in ("городск", "лш", "летн", "лагер", "смен")):
+    if has_any_marker(text, ("городск", "лш", "летн", "лагер", "смен")):
         return "city_camp"
-    if "интенсив" in text:
+    if has_marker(text, "интенсив"):
         return "intensive"
-    if any(marker in text for marker in ("пробн", "фрагмент занят")) or "trial" in topic:
+    if has_any_marker(text, ("пробн", "фрагмент занят")) or "trial" in topic:
         return "trial"
     if any(marker in topic for marker in ("payment", "pricing", "discount", "installment")):
         return "payment"
     if any(marker in topic for marker in ("documents", "tax", "matkap", "certificate")):
         return "documents"
-    if "онлайн" in text:
+    if has_marker(text, "онлайн"):
         return "online_course"
-    if any(marker in text for marker in ("очно", "сретенка", "красносельск", "мфти", "пацаева", "долгопруд")):
+    if has_any_marker(text, ("очно", "сретенка", "красносельск", "мфти", "пацаева", "долгопруд")):
         return "offline_course"
     if any(marker in topic for marker in ("program", "schedule", "format", "trial")):
         return "regular_course"
@@ -440,7 +441,7 @@ def build_semantic_flags(
         flags.append("student_known_do_not_reask_name")
     if slots.phone_known:
         flags.append("phone_known_do_not_reask")
-    if any(marker in current_text for marker in OFF_TOPIC_MARKERS):
+    if has_any_marker(current_text, OFF_TOPIC_MARKERS):
         flags.append("off_topic_redirect")
     if "?" not in text and not current_text.endswith("?"):
         flags.append("may_be_context_update")
@@ -451,9 +452,9 @@ def extract_grade(text: str) -> str:
     match = re.search(r"\b(?P<grade>[1-9]|1[01])\s*(?:класс[ае]?|кл\.?)\b", text)
     if match:
         return match.group("grade")
-    if "огэ" in text:
+    if has_marker(text, "огэ"):
         return "9"
-    if "егэ" in text:
+    if has_marker(text, "егэ"):
         return "11"
     return ""
 
@@ -461,9 +462,22 @@ def extract_grade(text: str) -> str:
 def extract_subjects(text: str) -> str:
     subjects: list[str] = []
     for marker, subject in SUBJECT_MARKERS:
-        if marker in text:
+        if has_marker(text, marker) and not _marker_is_explicitly_negated_before_correction(text, marker):
             subjects.append(subject)
     return ", ".join(dict.fromkeys(subjects))
+
+
+def _marker_is_explicitly_negated_before_correction(text: str, marker: str) -> bool:
+    normalized = normalize_text(text)
+    needle = normalize_text(marker)
+    if not needle:
+        return False
+    return bool(
+        re.search(
+            rf"(?<![0-9a-zа-я])не\s+{re.escape(needle)}[0-9a-zа-я]*[^.?!\n]{{0,80}}(?<![0-9a-zа-я])а(?![0-9a-zа-я])",
+            normalized,
+        )
+    )
 
 
 def _client_only_recent_text(recent_messages: Sequence[str]) -> str:
@@ -485,61 +499,61 @@ def _client_only_recent_text(recent_messages: Sequence[str]) -> str:
 
 def extract_format(text: str) -> str:
     normalized = normalize_text(text)
-    if re.search(r"(?<![a-zа-яё])онлайн(?:[а-яёa-z-]*)?\b", normalized) or "дистанц" in normalized or "вебинар" in normalized:
+    if re.search(r"(?<![a-zа-яё])онлайн(?:[а-яёa-z-]*)?\b", normalized) or has_marker(normalized, "дистанц") or has_marker(normalized, "вебинар"):
         return "online"
     if (
         re.search(r"(?<![a-zа-яё])очн(?:о|ый|ая|ое|ые|ых|ым|ом|ую|ого|ому|ыми)?\b", normalized)
         or re.search(r"(?<![a-zа-яё])офлайн(?:[а-яёa-z-]*)?\b", normalized)
-        or "в классе" in normalized
+        or has_marker(normalized, "в классе")
     ):
         return "offline"
     return ""
 
 
 def extract_city_location(text: str) -> tuple[str, str]:
-    if "долгопруд" in text or "мфти" in text or "пацаева" in text:
+    if has_any_marker(text, ("долгопруд", "мфти", "пацаева")):
         return "Долгопрудный", "МФТИ/Пацаева"
-    if "сретенка" in text:
+    if has_marker(text, "сретенка"):
         return "Москва", "Сретенка"
-    if "красносельск" in text:
+    if has_marker(text, "красносельск"):
         return "Москва", "Верхняя Красносельская"
-    if "москв" in text:
+    if has_marker(text, "москв"):
         return "Москва", ""
-    if "менделеево" in text:
+    if has_marker(text, "менделеево"):
         return "Менделеево", "Менделеево"
     return "", ""
 
 
 def extract_goal(text: str) -> str:
-    if "олимпиад" in text:
+    if has_marker(text, "олимпиад"):
         return "олимпиадная подготовка"
-    if "огэ" in text:
+    if has_marker(text, "огэ"):
         return "подготовка к ОГЭ"
-    if "егэ" in text:
+    if has_marker(text, "егэ"):
         return "подготовка к ЕГЭ"
-    if any(marker in text for marker in ("подтянуть", "пробел", "школьн")):
+    if has_any_marker(text, ("подтянуть", "пробел", "школьн")):
         return "подтянуть школьную базу"
-    if any(marker in text for marker in ("углуб", "сильн", "глубже")):
+    if has_any_marker(text, ("углуб", "сильн", "глубже")):
         return "углублённое обучение"
     return ""
 
 
 def extract_product(text: str) -> str:
-    if "лвш" in text or "выездн" in text or "менделеево" in text:
+    if has_any_marker(text, ("лвш", "выездн", "менделеево")):
         return "ЛВШ"
-    if "лагер" in text or "лш" in text:
+    if has_any_marker(text, ("лагер", "лш")):
         return "летняя школа"
-    if "интенсив" in text:
+    if has_marker(text, "интенсив"):
         return "интенсив"
-    if "курс" in text:
+    if has_marker(text, "курс"):
         return "курс"
     return ""
 
 
 def extract_camp_direction(text: str) -> str:
-    if "выезд" in text or "менделеево" in text or "прожив" in text:
+    if has_any_marker(text, ("выезд", "менделеево", "прожив")):
         return "выездная"
-    if "город" in text or "москва" in text:
+    if has_any_marker(text, ("город", "москва")):
         return "городская"
     return ""
 

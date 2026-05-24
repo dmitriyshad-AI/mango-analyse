@@ -202,6 +202,19 @@ def test_intent_plan_current_residential_camp_signal_wins_over_city_neighbor() -
     assert "city_day_camp" in plan.blocked_neighbor_scopes
 
 
+def test_intent_plan_client_correction_to_residential_wins_over_city_memory() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Я как раз про выездной, а не городской. Что там по смене?",
+        active_brand="foton",
+        dialogue_memory_view={"topic_focus": {"product_family": "camp", "product": "city_camp"}},
+    )
+
+    assert plan.product_family == "camp"
+    assert plan.product_scope == "lvsh_mendeleevo"
+    assert plan.fact_scope == "residential_lvsh"
+    assert "city_day_camp" in plan.blocked_neighbor_scopes
+
+
 def test_intent_plan_scopes_second_subject_discount_away_from_multichild() -> None:
     plan = build_conversation_intent_plan(
         current_message="Если взять второй предмет онлайн одному ребёнку, какая скидка?",
@@ -224,6 +237,19 @@ def test_intent_plan_scopes_second_subject_discount_with_instrumental_wording() 
     assert "discount_multichild" in plan.blocked_neighbor_scopes
 
 
+def test_intent_plan_scopes_discount_stacking_as_delta_question() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="А с многодетной скидкой она суммируется или выбирается одна?",
+        active_brand="foton",
+        known_slots={"grade": "7", "subject": "физика", "format": "онлайн"},
+        dialogue_memory_view={"topic_focus": {"product_family": "regular_course", "product": "онлайн"}},
+    )
+
+    assert plan.primary_intent == "discount"
+    assert plan.fact_scope == "discount_stacking"
+    assert "discount_referral" in plan.blocked_neighbor_scopes
+
+
 def test_intent_plan_scopes_multichild_discount_away_from_second_subject() -> None:
     plan = build_conversation_intent_plan(
         current_message="Для многодетной семьи какая скидка, если учится один ребёнок?",
@@ -233,6 +259,23 @@ def test_intent_plan_scopes_multichild_discount_away_from_second_subject() -> No
     assert plan.primary_intent == "discount"
     assert plan.fact_scope == "discount_multichild"
     assert "discount_second_subject" in plan.blocked_neighbor_scopes
+
+
+def test_intent_plan_keeps_trial_fragment_followup_from_previous_context() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="А как его получить — ссылку пришлёте, запись или надо где-то регистрироваться?",
+        active_brand="unpk",
+        known_slots={"grade": "9", "subject": "физика", "format": "онлайн"},
+        dialogue_memory_view={
+            "known_slots": {"grade": "9", "subject": "физика", "format": "онлайн"},
+            "open_question": {"kind": "trial", "text": "Фрагмент занятия можно посмотреть?"},
+            "topic_focus": {"product_family": "regular_course", "product": "онлайн"},
+        },
+    )
+
+    assert plan.primary_intent == "trial"
+    assert plan.fact_scope == "trial_online_fragment"
+    assert "trial_offline" in plan.blocked_neighbor_scopes
 
 
 def test_intent_plan_scopes_offline_trial_away_from_online_fragment() -> None:
@@ -333,3 +376,28 @@ def test_intent_plan_presale_refund_policy_is_not_full_p0() -> None:
     assert plan.primary_intent != "refund"
     assert "refund" not in plan.risk_signals
     assert plan.route_bias != "manager_only"
+
+
+def test_intent_plan_token_traps_do_not_trigger_neighbor_intents() -> None:
+    tochnoy = build_conversation_intent_plan(
+        current_message="Цена на сейчас, но без точной даты повышения?",
+        active_brand="foton",
+        known_slots={"grade": "8", "subject": "физика", "format": "онлайн"},
+    )
+    assert tochnoy.primary_intent in {"pricing", "price_fix"}
+    assert tochnoy.known_slots["format"] == "онлайн"
+
+    multichild = build_conversation_intent_plan(
+        current_message="Для многодетной семьи какой процент скидки?",
+        active_brand="foton",
+    )
+    assert multichild.primary_intent == "discount"
+    assert multichild.fact_scope == "discount_multichild"
+    assert "schedule" not in multichild.keyword_signals
+
+    percent = build_conversation_intent_plan(
+        current_message="На второй предмет какой процент скидки?",
+        active_brand="foton",
+    )
+    assert percent.primary_intent == "discount"
+    assert percent.fact_scope == "discount_second_subject"

@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, TYPE_CHECKING
 
 from mango_mvp.channels.p0_recall_spec import codes_from_text
+from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 if TYPE_CHECKING:
     from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
@@ -863,8 +864,8 @@ def _wrong_scope_fact_selected_finding(
     plan_scope = str(plan.get("product_scope") or "").casefold()
     fmt = _normalize_known_format(str(known.get("format") or ""))
     if _asks_online_summer_not_residential(client) and (
-        ("менделеево" in answer or "лвш" in answer or "прожив" in answer)
-        and "онлайн" not in answer
+        has_any_marker(answer, ("менделеево", "лвш", "прожив"))
+        and not has_marker(answer, "онлайн")
     ):
         return AnswerQualityFinding(
             code="wrong_scope_fact_selected",
@@ -872,24 +873,24 @@ def _wrong_scope_fact_selected_finding(
             reason="Ответ выбрал факт про ЛВШ/лагерь, хотя клиент спрашивает про онлайн без проживания.",
             evidence="online_summer_not_residential",
         )
-    if (fmt == "онлайн" or "онлайн" in client) and PRICE_RE.search(answer_text):
-        offline_price = "очно" in answer and "онлайн" not in answer
-        if offline_price and not any(marker in answer for marker in ("не очно", "не про очно", "а не очно", "очно не")):
+    if (fmt == "онлайн" or has_marker(client, "онлайн")) and PRICE_RE.search(answer_text):
+        offline_price = has_marker(answer, "очно") and not has_marker(answer, "онлайн")
+        if offline_price and not has_any_marker(answer, ("не очно", "не про очно", "а не очно", "очно не")):
             return AnswerQualityFinding(
                 code="wrong_scope_fact_selected",
                 severity="rewrite",
                 reason="Ответ выбрал очную цену, хотя клиентский контекст про онлайн.",
                 evidence="online_vs_offline_price",
             )
-    if _asks_installment(client) and any(marker in answer for marker in ("по местам", "наличие мест", "конкретной группе")):
-        if not any(marker in answer for marker in ("рассроч", "долями", "частями", "помесяч", "семестр", "банк")):
+    if _asks_installment(client) and has_any_marker(answer, ("по местам", "наличие мест", "конкретной группе")):
+        if not has_any_marker(answer, ("рассроч", "долями", "частями", "помесяч", "семестр", "банк")):
             return AnswerQualityFinding(
                 code="wrong_scope_fact_selected",
                 severity="rewrite",
                 reason="Ответ ушёл в наличие мест вместо условий оплаты.",
                 evidence="installment_vs_availability",
             )
-    if _asks_trial(client) and PRICE_RE.search(answer_text) and not any(marker in answer for marker in ("пробн", "фрагмент")):
+    if _asks_trial(client) and PRICE_RE.search(answer_text) and not has_any_marker(answer, ("пробн", "фрагмент")):
         return AnswerQualityFinding(
             code="wrong_scope_fact_selected",
             severity="rewrite",
@@ -952,7 +953,7 @@ def _mentioned_subjects(text: str) -> set[str]:
     normalized = _normalize(text)
     result: set[str] = set()
     for subject, markers in SUBJECT_MARKERS.items():
-        if any(marker in normalized for marker in markers):
+        if has_any_marker(normalized, markers):
             result.add(subject)
     return result
 
@@ -975,7 +976,7 @@ def _answerable_parts(client_message: str) -> tuple[str, ...]:
         ("identity", ("бот", "ии", "кто вы", "с кем я общаюсь")),
     )
     for name, markers in checks:
-        if any(marker in text for marker in markers):
+        if has_any_marker(text, markers):
             parts.append(name)
     return tuple(dict.fromkeys(parts))
 
@@ -993,52 +994,51 @@ def _answers_direct_question(
     first_two = _first_sentences(answer_text, count=2)
     first_two_norm = _normalize(first_two)
     if intent == "schedule":
-        return any(marker in first_two_norm for marker in ("распис", "время", "дни", "во сколько", "когда")) and not (
-            PRICE_RE.search(first_two) and "цен" not in question_text and "стоим" not in question_text
+        return has_any_marker(first_two_norm, ("распис", "время", "дни", "во сколько", "когда")) and not (
+            PRICE_RE.search(first_two) and not has_any_marker(question_text, ("цен", "стоим"))
         )
     if intent == "address":
-        if any(marker in question_text for marker in ("справк", "документ", "вычет", "договор")):
+        if has_any_marker(question_text, ("справк", "документ", "вычет", "договор")):
             return False
-        return any(marker in first_two_norm for marker in ("адрес", "площадк", "метро", "сретен", "красносель", "пацаева", "институт"))
+        return has_any_marker(first_two_norm, ("адрес", "площадк", "метро", "сретен", "красносель", "пацаева", "институт"))
     if intent in {"tax", "matkap"}:
-        return any(marker in first_two_norm for marker in ("налог", "вычет", "фнс", "маткап", "сфр", "документ", "справк"))
+        return has_any_marker(first_two_norm, ("налог", "вычет", "фнс", "маткап", "сфр", "документ", "справк"))
     if intent == "format":
-        return any(marker in first_two_norm for marker in ("очно", "онлайн", "дистанц", "приезж", "платформ", "формат"))
+        return has_any_marker(first_two_norm, ("очно", "онлайн", "дистанц", "приезж", "платформ", "формат"))
     if intent == "trial":
-        return "пробн" in first_two_norm or "фрагмент" in first_two_norm or "приезжать не нужно" in first_two_norm
+        return has_any_marker(first_two_norm, ("пробн", "фрагмент", "приезжать не нужно"))
     if intent == "installment":
-        return any(marker in first_two_norm for marker in ("рассроч", "долями", "частями", "помесяч", "банк", "семестр", "год"))
+        return has_any_marker(first_two_norm, ("рассроч", "долями", "частями", "помесяч", "банк", "семестр", "год"))
     if intent in {"pricing", "price_fix"}:
-        return bool(PRICE_RE.search(first_two)) or any(marker in first_two_norm for marker in ("текущ", "сейчас", "оформ", "цена", "стоим"))
+        return bool(PRICE_RE.search(first_two)) or has_any_marker(first_two_norm, ("текущ", "сейчас", "оформ", "цена", "стоим"))
     if _asks_online_summer_not_residential(client_text):
-        return "онлайн" in answer_text and not (
-            ("менделеево" in answer_text or "лвш" in answer_text or "прожив" in answer_text)
-            and "не про" not in answer_text
-            and "а не" not in answer_text
+        return has_marker(answer_text, "онлайн") and not (
+            has_any_marker(answer_text, ("менделеево", "лвш", "прожив"))
+            and not has_any_marker(answer_text, ("не про", "а не"))
         )
     if _asks_price_fixation_or_current(client_text):
-        return ("текущ" in answer_text or "сейчас" in answer_text) and not _is_generic_price_template(answer_text)
+        return has_any_marker(answer_text, ("текущ", "сейчас")) and not _is_generic_price_template(answer_text)
     if _asks_installment(client_text):
-        if "банк" in client_text or "одобрен" in client_text or "одобр" in client_text:
-            return "банк" in answer_text or "банков" in answer_text or "одобрен" in answer_text or "одобр" in answer_text
-        return any(marker in answer_text for marker in ("рассроч", "долями", "частями", "помесяч", "банк"))
+        if has_any_marker(client_text, ("банк", "одобрен", "одобр")):
+            return has_any_marker(answer_text, ("банк", "банков", "одобрен", "одобр"))
+        return has_any_marker(answer_text, ("рассроч", "долями", "частями", "помесяч", "банк"))
     if _asks_trial(client_text):
-        return "пробн" in answer_text or "фрагмент" in answer_text
+        return has_any_marker(answer_text, ("пробн", "фрагмент"))
     if _asks_camp_details(client_text):
         needed = []
-        if "что входит" in client_text:
+        if has_marker(client_text, "что входит"):
             needed.append("camp_contents")
-        if "прожив" in client_text:
+        if has_marker(client_text, "прожив"):
             needed.append("прожив")
-        if "питан" in client_text:
+        if has_marker(client_text, "питан"):
             needed.append("питан")
-        if "стоим" in client_text or "цен" in client_text or "сколько" in client_text:
+        if has_any_marker(client_text, ("стоим", "цен", "сколько")):
             needed.append("price")
         return (
             all(
                 (item == "price" and PRICE_RE.search(answer_text))
-                or (item == "camp_contents" and any(marker in answer_text for marker in ("прожив", "питан", "трансфер", "занят")))
-                or item in answer_text
+                or (item == "camp_contents" and has_any_marker(answer_text, ("прожив", "питан", "трансфер", "занят")))
+                or has_marker(answer_text, item)
                 for item in needed
             )
             if needed
@@ -1172,11 +1172,11 @@ def _brand_safe_fact_texts(context: Mapping[str, Any] | None, *, brand: str) -> 
     result = []
     for item in texts:
         normalized = _normalize(item)
-        if forbidden and any(marker in normalized for marker in forbidden):
+        if forbidden and has_any_marker(normalized, forbidden):
             continue
-        if brand == "foton" and ("фотон" in normalized or not any(marker in normalized for marker in ("унпк", "мфти", "kmipt"))):
+        if brand == "foton" and (has_marker(normalized, "фотон") or not has_any_marker(normalized, ("унпк", "мфти", "kmipt"))):
             result.append(item)
-        elif brand == "unpk" and ("унпк" in normalized or "мфти" in normalized or not any(marker in normalized for marker in ("фотон", "cdpofoton"))):
+        elif brand == "unpk" and (has_any_marker(normalized, ("унпк", "мфти")) or not has_any_marker(normalized, ("фотон", "cdpofoton"))):
             result.append(item)
         elif brand == "unknown":
             result.append(item)
@@ -1239,7 +1239,7 @@ def _best_price_fact(facts: Sequence[str], *, known: Mapping[str, str] | None = 
     for fact in facts:
         if not _fact_matches_known_selection(fact, known):
             continue
-        if PRICE_RE.search(fact) and any(marker in _normalize(fact) for marker in ("цен", "стоим", "стоит", "₽", "руб")):
+        if PRICE_RE.search(fact) and has_any_marker(_normalize(fact), ("цен", "стоим", "стоит", "₽", "руб")):
             matches.append(fact[:220].rstrip("."))
         if len(matches) >= 2:
             break
@@ -1254,15 +1254,19 @@ def _best_camp_fact(
     product_scope: str = "",
 ) -> str:
     known = known or {}
-    prefer_mendeleevo = any(marker in client for marker in ("лвш", "менделеево", "выезд", "смен")) or "lvsh_mendeleevo" in str(product_scope or "").casefold() or "лвш" in _normalize(known.get("product"))
+    prefer_mendeleevo = (
+        has_any_marker(client, ("лвш", "менделеево", "выезд", "смен"))
+        or "lvsh_mendeleevo" in str(product_scope or "").casefold()
+        or has_marker(_normalize(known.get("product")), "лвш")
+    )
     preferred: list[str] = []
     fallback: list[str] = []
     for fact in facts:
         normalized = _normalize(fact)
-        if any(marker in normalized for marker in ("лвш", "лагер", "смен", "менделеево")) and (
-            PRICE_RE.search(fact) or "прожив" in normalized or "питан" in normalized
+        if has_any_marker(normalized, ("лвш", "лагер", "смен", "менделеево")) and (
+            PRICE_RE.search(fact) or has_any_marker(normalized, ("прожив", "питан"))
         ):
-            if prefer_mendeleevo and not any(marker in normalized for marker in ("лвш", "менделеево")):
+            if prefer_mendeleevo and not has_any_marker(normalized, ("лвш", "менделеево")):
                 fallback.append(fact[:320])
                 continue
             preferred.append(fact[:320])
@@ -1281,9 +1285,9 @@ def _best_relevant_fact(facts: Sequence[str], *, client: str, known: Mapping[str
     if _asks_transport_or_logistics(client):
         for fact in facts:
             normalized = _normalize(fact)
-            if any(marker in normalized for marker in ("трансфер", "дорог", "добир", "сбор", "из москв")):
+            if has_any_marker(normalized, ("трансфер", "дорог", "добир", "сбор", "из москв")):
                 return fact[:320].rstrip(".")
-    if _asks_price_fixation_or_current(client) or any(marker in client for marker in ("цен", "стоим", "сколько")):
+    if _asks_price_fixation_or_current(client) or has_any_marker(client, ("цен", "стоим", "сколько")):
         return _best_price_fact(facts, known=known)
     relevance_markers = {
         "discount": ("скид", "льгот", "акци", "процент"),
@@ -1295,10 +1299,10 @@ def _best_relevant_fact(facts: Sequence[str], *, client: str, known: Mapping[str
         "schedule": ("распис", "когда", "дни", "время"),
     }
     for markers in relevance_markers.values():
-        if any(marker in client for marker in markers):
+        if has_any_marker(client, markers):
             for fact in facts:
                 normalized = _normalize(fact)
-                if any(marker in normalized for marker in markers) and _fact_matches_known_selection(fact, known):
+                if has_any_marker(normalized, markers) and _fact_matches_known_selection(fact, known):
                     return fact[:320].rstrip(".")
     for fact in facts:
         if _fact_matches_known_selection(fact, known):
@@ -1328,10 +1332,10 @@ def _is_generic_price_template(text: str) -> bool:
 
 
 def _handoff_replaces_verified_fact(text: str) -> bool:
-    has_handoff = any(marker in text for marker in ("менеджер провер", "менеджер подскаж", "менеджер свяж", "передам менеджер"))
-    has_specific = bool(PRICE_RE.search(text)) or any(
-        marker in text
-        for marker in (
+    has_handoff = has_any_marker(text, ("менеджер провер", "менеджер подскаж", "менеджер свяж", "передам менеджер"))
+    has_specific = bool(PRICE_RE.search(text)) or has_any_marker(
+        text,
+        (
             "рассроч",
             "долями",
             "маткап",
@@ -1363,21 +1367,21 @@ def _single_topic_answer(answer_text: str, parts: Sequence[str]) -> bool:
         "identity": ("цифровой помощник", "не живой оператор"),
     }
     for part in parts:
-        if any(marker in answer_text for marker in markers.get(part, ())):
+        if has_any_marker(answer_text, markers.get(part, ())):
             covered += 1
     return covered < min(2, len(parts))
 
 
 def _templated_opening(text: str) -> bool:
     return text.startswith(("спасибо за обращение", "здравствуйте! помогу подобрать", "поможем подобрать программу")) or (
-        "ваш вопрос очень важен" in text or "оптимальный образовательный продукт" in text
+        has_any_marker(text, ("ваш вопрос очень важен", "оптимальный образовательный продукт"))
     )
 
 
 def _service_style_phrase(text: str) -> bool:
-    return any(
-        marker in text
-        for marker in (
+    return has_any_marker(
+        text,
+        (
             "в базе",
             "по текущей базе",
             "в текущем контексте",
@@ -1393,9 +1397,9 @@ def _service_style_phrase(text: str) -> bool:
 
 
 def _missing_next_step(text: str) -> bool:
-    if any(
-        marker in text
-        for marker in ("напишите", "подскажите", "можно начать", "следующий шаг", "менеджер провер", "передам менеджер", "передам заявку")
+    if has_any_marker(
+        text,
+        ("напишите", "подскажите", "можно начать", "следующий шаг", "менеджер провер", "передам менеджер", "передам заявку"),
     ):
         return False
     return len(text) < 260
@@ -1411,7 +1415,7 @@ def _build_rewrite_instruction(findings: Sequence[AnswerQualityFinding]) -> str:
 def _asks_price_fixation_or_current(text: str) -> bool:
     if _asks_live_seat_or_booking_question(text):
         return False
-    if any(marker in text for marker in ("зафикс", "закреп", "подраст", "вырос", "выраст", "повыс", "поменя", "изменит")):
+    if has_any_marker(text, ("зафикс", "закреп", "подраст", "вырос", "выраст", "повыс", "поменя", "изменит")):
         return True
     if re.search(r"(?:цен|стоим|руб|прайс|услови)[^.!?]{0,40}(?:на сейчас|текущ|актуальн)", text):
         return True
@@ -1421,61 +1425,61 @@ def _asks_price_fixation_or_current(text: str) -> bool:
 
 
 def _asks_installment(text: str) -> bool:
-    return any(marker in text for marker in ("рассроч", "долями", "частями", "помесяч", "банк", "процент"))
+    return has_any_marker(text, ("рассроч", "долями", "частями", "помесяч", "банк", "процент"))
 
 
 def _asks_no_interest_or_overpayment(text: str) -> bool:
-    return any(marker in text for marker in ("без процент", "безпроцент", "переплат", "проценты", "процентами", "процентами"))
+    return has_any_marker(text, ("без процент", "безпроцент", "переплат", "проценты", "процентами", "процентами"))
 
 
 def _asks_dolyami_parts(text: str) -> bool:
-    if "долями" not in text:
+    if not has_marker(text, "долями"):
         return False
-    return any(marker in text for marker in ("сколько", "част", "месяц", "срок", "услов"))
+    return has_any_marker(text, ("сколько", "част", "месяц", "срок", "услов"))
 
 
 def _client_is_waiting_or_thinking(text: str) -> bool:
-    return any(marker in text for marker in ("подума", "спасибо", "понял", "поняла", "жду", "ок", "хорошо"))
+    return has_any_marker(text, ("подума", "спасибо", "понял", "поняла", "жду", "ок", "хорошо"))
 
 
 def _asks_trial_fragment_data_or_process(text: str) -> bool:
     return bool(
         re.search(r"\b(?:как|что|какие|какую|чего|сколько)\b[^.!?\n]{0,90}\b(?:получить|посмотреть|прислать|отправить|нужн|данн|фрагмент)", text)
         or re.search(r"\b(?:пришлите|отправьте|давайте)\b[^.!?\n]{0,90}\b(?:фрагмент|пример|занят)", text)
-        or "фрагмент" in text and any(marker in text for marker in ("что нужно", "как", "пришл", "отправ", "данн"))
+        or has_marker(text, "фрагмент") and has_any_marker(text, ("что нужно", "как", "пришл", "отправ", "данн"))
     )
 
 
 def _non_repeating_delta_reply(*, brand: str, client: str, known: Mapping[str, str]) -> str:
     suffix = _known_selection_suffix(known)
-    if _client_is_waiting_or_thinking(client) and not any(marker in client for marker in ("?", "как", "сколько", "можно", "есть")):
+    if _client_is_waiting_or_thinking(client) and not has_any_marker(client, ("?", "как", "сколько", "можно", "есть")):
         if brand == "foton":
             return (
-                f"Конечно, подумайте спокойно. Повторять условия заново не буду: в контексте уже есть ваш запрос{suffix}. "
+                f"Конечно, подумайте спокойно. Ваш запрос{suffix} уже есть в контексте. "
                 "Если решите продолжить, передам менеджеру именно его — без повторного сбора данных."
             )
         if brand == "unpk":
             return (
-                f"Хорошо, подумайте спокойно. Повторять прежний текст не буду: в контексте уже есть ваш запрос{suffix}. "
+                f"Хорошо, подумайте спокойно. Ваш запрос{suffix} уже есть в контексте. "
                 "Если захотите продолжить, передам менеджеру именно его — без повторного сбора данных."
             )
     return ""
 
 
 def _asks_trial(text: str) -> bool:
-    return "пробн" in text or "фрагмент" in text
+    return has_any_marker(text, ("пробн", "фрагмент"))
 
 
 def _asks_camp_details(text: str) -> bool:
-    return any(marker in text for marker in ("лагер", "лвш", "смен", "менделеево", "прожив", "питан")) and any(
-        marker in text for marker in ("что входит", "прожив", "питан", "полная", "стоим", "цен", "сколько")
+    return has_any_marker(text, ("лагер", "лвш", "смен", "менделеево", "прожив", "питан")) and has_any_marker(
+        text, ("что входит", "прожив", "питан", "полная", "стоим", "цен", "сколько")
     )
 
 
 def _asks_online_summer_not_residential(text: str) -> bool:
-    if "онлайн" not in text:
+    if not has_marker(text, "онлайн"):
         return False
-    has_summer = any(marker in text for marker in ("лет", "июн", "июл", "август", "каникул"))
+    has_summer = has_any_marker(text, ("лет", "июн", "июл", "август", "каникул"))
     rejects_residential = any(
         marker in text
         for marker in (
@@ -1493,24 +1497,24 @@ def _asks_online_summer_not_residential(text: str) -> bool:
 
 
 def _asks_transport_or_logistics(text: str) -> bool:
-    return any(marker in text for marker in ("трансфер", "добир", "как туда", "из москв", "место сбора", "сбор"))
+    return has_any_marker(text, ("трансфер", "добир", "как туда", "из москв", "место сбора", "сбор"))
 
 
 def _asks_seats(text: str) -> bool:
-    return "мест" in text or "брон" in text or "заброни" in text
+    return has_any_marker(text, ("мест", "брон", "заброни"))
 
 
 def _asks_booking_without_payment(text: str) -> bool:
-    return ("брон" in text or "заброни" in text or "закреп" in text or "зафикс" in text) and any(
-        marker in text for marker in ("без оплат", "не платить", "потом оплат", "сразу платить", "оплат")
+    return has_any_marker(text, ("брон", "заброни", "закреп", "зафикс")) and has_any_marker(
+        text, ("без оплат", "не платить", "потом оплат", "сразу платить", "оплат")
     )
 
 
 def _asks_live_seat_or_booking_question(text: str) -> bool:
     normalized = str(text or "").casefold().replace("ё", "е")
-    return any(marker in normalized for marker in ("мест", "брон", "заброни")) and any(
-        marker in normalized
-        for marker in (
+    return has_any_marker(normalized, ("мест", "брон", "заброни")) and has_any_marker(
+        normalized,
+        (
             "закреп",
             "зафикс",
             "оформ",
@@ -1583,9 +1587,9 @@ def _safe_next_step_after_fact(*, client: str, known: Mapping[str, str]) -> str:
 
 def _normalize_known_format(text: str) -> str:
     value = _normalize(text)
-    if "online" in value or "онлайн" in value or "дистанц" in value:
+    if has_any_marker(value, ("online", "онлайн", "дистанц")):
         return "онлайн"
-    if "offline" in value or "очно" in value or "офлайн" in value:
+    if has_any_marker(value, ("offline", "очно", "офлайн")):
         return "очно"
     return str(text or "").strip()
 

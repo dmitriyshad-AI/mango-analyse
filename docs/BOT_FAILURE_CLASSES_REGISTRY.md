@@ -44,6 +44,12 @@
 | FC-014 | `stale_test_expectation` | open | Тест ждет старую политику. | Test regrading with decision log. | Test manifest check. |
 | FC-015 | `judge_issue` | open | Судья неверно пометил корректный ответ. | Judge rubric patch. | Judge fixture. |
 | FC-016 | `business_rule_missing` | needs_business_decision | Требуется решение Дмитрия/РОПа. | Decision log entry. | Manual control until decided. |
+| FC-017 | `p0_mid_dialog_recall` | fixed | P0-тема появляется в середине безопасного диалога и должна перебивать продажный сценарий. | Shared P0 recall + DialogueMemory P0 latch. | P0 mid-dialog regression. |
+| FC-018 | `matkap_tax_confusion` | fixed | Маткапитал/СФР смешивается с налоговым вычетом/ФНС. | Fact scope + blocked neighbor scopes. | Matkap vs tax scope tests. |
+| FC-019 | `schedule_office_hours_confusion` | fixed | Часы работы офиса используются как расписание занятий. | Fact scope + schedule retrieval guard. | Schedule vs office-hours tests. |
+| FC-020 | `camp_day_vs_residential_scope` | fixed | Дневной городской лагерь смешивается с выездной ЛВШ. | Product scope + blocked camp neighbors. | Day-camp vs LVSH tests. |
+| FC-021 | `substring_signal_false_positive` | fixed | Подстроки внутри слов (`очно` в `точной`, `дн` в `многодетной`) дают неверную ветку. | Shared token/sense matcher вместо raw substring checks. | Token-boundary signal tests. |
+| FC-022 | `presale_refund_policy_false_p0` | fixed | Предпродажный вопрос об условиях возврата/болезни трактуется как реальный спор. | Benign presale refund policy detector before P0 latch. | Presale refund vs active refund tests. |
 
 ## Последние важные выводы
 
@@ -117,3 +123,33 @@ Audit pack: `audits/_inbox/telegram_d1_holdout_clean_after_punchlist_20260524_16
 - Full collect-only: 1871 tests collected.
 
 Статус: формальные регрессии закрыты. Нужен новый независимый holdout от Claude для честного смыслового замера; старый holdout не использовать для тюнинга.
+
+## Итерация D1 Context Retention / Replace, Not Add 2026-05-25
+
+Audit pack: `audits/_inbox/telegram_d1_context_retention_root_cycle_20260525`
+
+- `FC-021 substring_signal_false_positive`: добавлен общий `text_signals`-слой с нормализацией и токенным/prefix-сопоставлением. Он заменяет часть старых подстрочных проверок в intent-plan, memory, funnel, rewriter и LLM guards; ловушки `вторым предметом`, `дн` в `многодетной`, `очно` в `точной` закрыты регрессиями.
+- `FC-002 context_loss`: генерация получает до 20 последних ходов и явное правило, что новая поправка клиента сильнее удержанного старого контекста. Добавлен сценарий: “городской лагерь” -> “я как раз про выездной”.
+- `FC-013 fact_selection_wrong_scope`: расширены fact-scope и neighbor-scope для скидок, trial, recordings, online/olympiad и camp/schedule классов. Подбор фактов и guard теперь жёстче отсекают чужой scope.
+- `FC-001 ignored_question`: прямой вопрос и fact_scope сильнее управляют зелёными шаблонами; точный ответ не должен затираться fallback-шаблоном.
+- `FC-022 presale_refund_policy_false_p0`: предпродажные вопросы “если ребёнок заболеет/пропустит, вернёте/перерасчёт?” больше не превращаются в полный P0-стоп; реальный возврат после оплаты остаётся P0.
+
+Анти-«крот»:
+
+- Подстрочные `if`/поиски: `421 -> 325` (`-96`).
+- Частные `any(... in ...)`: `137 -> 56` (`-81`).
+- Определения safe-шаблонов: `102 -> 102` (`+0`); новые зелёные шаблоны не добавлялись.
+
+Проверки:
+
+- Focused bot-quality set: `351 passed`.
+- Full collect-only: `1934 tests collected`.
+- Dev set after fact retrieval: FAIL 0, hard-gate 0.
+- Targeted16: FAIL 0, hard-gate 0, PASS 2, PASS_WITH_NOTES 14, tone 67.9.
+- Fresh holdout round3: FAIL 1, hard-gate 1, PASS 3, PASS_WITH_NOTES 20, tone 57.8. Единственный hard-gate - ложный P0 `presale_refund_policy_false_p0`; после регрессии класс исправлен unit-уровнем. Этот holdout уже засвечен, для честной оценки нужен новый независимый holdout.
+
+Открыто:
+
+- `FC-001 ignored_question`, `FC-004 templated_opening`, `FC-005 over_handoff` остаются основными soft-классами.
+- Решение 2 из ТЗ (тонкий deterministic gate + LLM-смысловая проверка сверху, оба только вычитают) помечено следующим слоем.
+- Решение 3 из ТЗ (если в генерацию пойдёт история клиента/CRM, клиентский контекст получает только активный бренд) помечено следующим слоем; текущий цикл не расширял клиентскую CRM-историю.

@@ -56,28 +56,42 @@ def test_telegram_manager_draft_pilot_can_use_kb_snapshot_when_env_set(tmp_path,
                     }
                 ],
                 "facts": [
-                    {
-                        "fact_id": "fact:unpk_offline_5_11_price",
-                        "fact_type": "price",
-                        "brand": "unpk",
-                        "client_safe_text": "УНПК очно для 5-11 классов: 49 000 или 82 000 рублей.",
-                        "source_id": "claude_layer_v3:facts_for_bot_UNPK",
-                        "freshness_status": "fresh_verified",
-                        "usable_for_precise_answer": True,
-                        "requires_manager_confirmation": False,
-                        "forbidden_for_client": False,
-                    },
-                    {
-                        "fact_id": "fact:foton_price",
+                        {
+                            "fact_id": "fact:unpk_offline_5_11_price",
+                            "fact_type": "price",
+                            "brand": "unpk",
+                            "client_safe_text": "УНПК очно для 5-11 классов: 49 000 или 82 000 рублей.",
+                            "source_id": "claude_layer_v3:facts_for_bot_UNPK",
+                            "freshness_status": "fresh_verified",
+                            "usable_for_precise_answer": True,
+                            "allowed_for_client_answer": True,
+                            "requires_manager_confirmation": False,
+                            "forbidden_for_client": False,
+                        },
+                        {
+                            "fact_id": "fact:unpk_offline_format",
+                            "fact_type": "format",
+                            "brand": "unpk",
+                            "client_safe_text": "УНПК очно: регулярные занятия проходят в очном формате.",
+                            "source_id": "claude_layer_v3:facts_for_bot_UNPK",
+                            "freshness_status": "fresh_verified",
+                            "usable_for_precise_answer": True,
+                            "allowed_for_client_answer": True,
+                            "requires_manager_confirmation": False,
+                            "forbidden_for_client": False,
+                        },
+                        {
+                            "fact_id": "fact:foton_price",
                         "fact_type": "price",
                         "brand": "foton",
-                        "client_safe_text": "Фотон: 120 000 рублей.",
-                        "source_id": "claude_layer_v3:facts_for_bot_FOTON",
-                        "freshness_status": "fresh_verified",
-                        "usable_for_precise_answer": True,
-                        "requires_manager_confirmation": False,
-                        "forbidden_for_client": False,
-                    },
+                            "client_safe_text": "Фотон: 120 000 рублей.",
+                            "source_id": "claude_layer_v3:facts_for_bot_FOTON",
+                            "freshness_status": "fresh_verified",
+                            "usable_for_precise_answer": True,
+                            "allowed_for_client_answer": True,
+                            "requires_manager_confirmation": False,
+                            "forbidden_for_client": False,
+                        },
                 ],
                 "chunks": [
                     {
@@ -137,7 +151,7 @@ def test_telegram_manager_draft_pilot_can_use_kb_snapshot_when_env_set(tmp_path,
     assert context["knowledge_base_version"] == "kb_release_v3_test"
     assert context["facts_context"]["snapshot_found"] is True
     assert context["facts_context"]["active_brand"] == "unpk"
-    assert list(context["confirmed_facts"]) == ["fact:unpk_offline_5_11_price"]
+    assert "fact:unpk_offline_5_11_price" in context["confirmed_facts"]
     assert "49 000" in " ".join(context["knowledge_snippets"])
     assert "Фотон" not in " ".join(context["knowledge_snippets"])
     assert preview.reply.requires_approval is True

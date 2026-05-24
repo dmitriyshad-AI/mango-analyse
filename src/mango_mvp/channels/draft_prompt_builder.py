@@ -204,6 +204,8 @@ def build_draft_prompt(
         "- Если в контексте есть dialogue_memory_view, считай его краткой рабочей памятью текущей переписки.\n"
         "- dialogue_memory_view.open_question — последний прямой вопрос клиента; сначала закрывай его, если это безопасно.\n"
         "- dialogue_memory_view.known_slots и dialogue_memory_view.do_not_ask_again — данные, которые уже известны; не спрашивай их заново.\n"
+        "- dialogue_memory_view.recent_turns — история последних реплик по порядку; отвечай на последнее сообщение в свете всей этой истории, а не как на новый чат.\n"
+        "- Если последнее сообщение явно исправляет прежний контекст («не X, а Y», «я как раз про выездной»), новая поправка клиента сильнее старого слота.\n"
         "- dialogue_memory_view.last_bot_commitments — то, что бот уже обещал; не меняй и не усиливай обещание без факта.\n"
         "- dialogue_memory_view.next_best_action_hint — подсказка следующего шага, но P0/brand/fact guards всегда важнее.\n\n"
         "План смысла диалога:\n"
@@ -364,7 +366,7 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
     _copy_clean_list(compact, "required_fact_keys", source.get("required_fact_keys"), max_items=8, max_chars=80)
     _copy_clean_list(compact, "missing_facts", source.get("missing_facts"), max_items=8, max_chars=160)
     _copy_clean_list(compact, "risk_flags", source.get("risk_flags"), max_items=8, max_chars=120)
-    _copy_clean_list(compact, "recent_messages", source.get("recent_messages"), max_items=10, max_chars=500)
+    _copy_clean_list(compact, "recent_messages", source.get("recent_messages"), max_items=20, max_chars=500)
     _copy_clean_list(compact, "alternative_themes", source.get("alternative_themes"), max_items=5, max_chars=120)
     _copy_clean_list(compact, "context_warnings", source.get("context_warnings"), max_items=10, max_chars=120)
     _copy_clean_list(compact, "manager_checklist", source.get("manager_checklist"), max_items=10, max_chars=240)
@@ -385,7 +387,6 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
         "autonomy_policy",
         "known_client_fields",
         "known_dialog_fields",
-        "dialogue_memory_view",
         "conversation_intent_plan",
         "funnel_state",
         "known_slots",
@@ -393,6 +394,9 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
         value = _compact_mapping(source.get(key), max_items=14, max_chars=300)
         if value:
             compact[key] = value
+    memory_view = _compact_dialogue_memory_view(source.get("dialogue_memory_view"))
+    if memory_view:
+        compact["dialogue_memory_view"] = memory_view
     for key in ("gold_answers_v3", "gold_answer_context", "answer_quality_reference"):
         value = _compact_mapping(source.get(key), max_items=16, max_chars=700)
         if value:
@@ -562,6 +566,72 @@ def _compact_mapping(value: Any, *, max_items: int, max_chars: int) -> Mapping[s
             result[clean_key] = _clean_text_list(item, max_items=5, max_chars=max_chars)
         if len(result) >= max_items:
             break
+    return result
+
+
+def _compact_dialogue_memory_view(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    scalar_keys = (
+        "schema_version",
+        "session_id",
+        "active_brand",
+        "sales_stage",
+        "handoff_state",
+        "conversation_summary_short",
+        "open_loop_summary",
+        "next_best_action_hint",
+    )
+    for key in scalar_keys:
+        if key in value:
+            cleaned = _clean_text(value.get(key), max_chars=500)
+            if cleaned:
+                result[key] = cleaned
+    for key in (
+        "known_slots",
+        "slot_sources",
+        "topic_focus",
+        "client_confirmed_slots",
+        "crm_known_slots",
+        "bot_inferred_slots",
+        "open_question",
+        "p0_latch",
+        "safe_next_action",
+    ):
+        mapped = _compact_mapping(value.get(key), max_items=18, max_chars=300)
+        if mapped:
+            result[key] = mapped
+    for key in (
+        "recent_turns",
+        "answered_questions",
+        "last_bot_commitments",
+        "risk_flags",
+        "fact_refs",
+        "route_history",
+        "unanswered_questions",
+        "safe_answered_parts",
+        "pending_manager_actions",
+        "do_not_ask_again",
+    ):
+        max_items = 20 if key == "recent_turns" else 8
+        if key == "recent_turns" and isinstance(value.get(key), Sequence) and not isinstance(value.get(key), (str, bytes, bytearray)):
+            turns: list[Mapping[str, str]] = []
+            for item in value.get(key, [])[-max_items:]:
+                if isinstance(item, Mapping):
+                    role = _clean_text(item.get("role"), max_chars=40)
+                    text = _clean_text(item.get("text"), max_chars=700)
+                else:
+                    role = ""
+                    text = _clean_text(item, max_chars=700)
+                if text:
+                    turns.append({"role": role, "text": text} if role else {"text": text})
+            if turns:
+                result[key] = turns
+            continue
+        items = _clean_text_list(value.get(key), max_items=max_items, max_chars=300)
+        if items:
+            result[key] = items
     return result
 
 

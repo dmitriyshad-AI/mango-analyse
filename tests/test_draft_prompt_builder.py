@@ -276,6 +276,27 @@ def test_prompt_contains_dialogue_memory_view_fields() -> None:
     assert "do_not_ask_again" in prompt
 
 
+def test_prompt_keeps_full_recent_dialogue_memory_history() -> None:
+    recent_turns = [{"role": "client", "text": f"реплика {index}"} for index in range(20)]
+    prompt = build_draft_prompt(
+        "Последний вопрос?",
+        context={
+            "active_brand": "foton",
+            "dialogue_memory_view": {
+                "active_brand": "foton",
+                "recent_turns": recent_turns,
+                "known_slots": {"grade": "8", "subject": "физика"},
+                "open_question": {"text": "Последний вопрос?", "kind": "price", "answered": False},
+            },
+            "recent_messages": [f"Клиент: реплика {index}" for index in range(20)],
+        },
+    )
+
+    assert "реплика 0" in prompt
+    assert "реплика 19" in prompt
+    assert "dialogue_memory_view.recent_turns" in prompt
+
+
 def test_prompt_says_funnel_p0_overrides_autonomy() -> None:
     prompt = build_draft_prompt(
         "Сколько стоит и как вернуть деньги?",

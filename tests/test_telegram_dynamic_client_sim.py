@@ -123,6 +123,40 @@ def test_judge_prompt_marks_metadata_as_internal():
     assert "Клиент видел ответ бота" in prompt
 
 
+def test_normalize_judge_result_does_not_count_empty_violations_as_hard_gate():
+    result = sim.normalize_judge_result(
+        {
+            "verdict": "PASS_WITH_NOTES",
+            "hard_gates_passed": False,
+            "violated_gates": [],
+            "human_tone_score_0_100": 61,
+        },
+        dialog_id="soft_only",
+        brand="foton",
+    )
+
+    assert result["hard_gates_passed"] is True
+    assert result["violated_gates"] == []
+    assert result["verdict"] == "PASS_WITH_NOTES"
+
+
+def test_normalize_judge_result_violated_gate_forces_fail():
+    result = sim.normalize_judge_result(
+        {
+            "verdict": "PASS",
+            "hard_gates_passed": True,
+            "violated_gates": ["fabrication"],
+            "human_tone_score_0_100": 80,
+        },
+        dialog_id="unsafe",
+        brand="unpk",
+    )
+
+    assert result["hard_gates_passed"] is False
+    assert result["violated_gates"] == ["fabrication"]
+    assert result["verdict"] == "FAIL"
+
+
 def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch):
     path = tmp_path / "v7.jsonl"
     out_dir = tmp_path / "out"

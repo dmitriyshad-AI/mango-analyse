@@ -13,10 +13,11 @@ from mango_mvp.channels.new_lead_funnel import (
     extract_subjects,
     normalize_text,
 )
+from mango_mvp.channels.text_signals import has_any_marker as _has_any_marker
+from mango_mvp.channels.text_signals import has_marker as _has_marker
 
 
 CONVERSATION_INTENT_PLAN_SCHEMA_VERSION = "conversation_intent_plan_v1_2026_05_23"
-_WORD_CHARS = "0-9a-zа-я"
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,8 @@ def _primary_intent(
         return "matkap"
     if "document" in keyword_signals:
         return "document"
+    if previous_question_kind == "trial" and _has_any_marker(text, ("как", "получ", "ссыл", "запис", "регист", "отправ")):
+        return "trial"
     priority = (
         ("discount", "discount"),
         ("installment", "installment"),
@@ -236,9 +239,9 @@ def _primary_intent(
 
 
 def _asks_live_availability(text: str, *, previous_product_family: str, product_family: str) -> bool:
-    if any(marker in text for marker in ("не про мест", "не о мест", "не места", "я не про места")):
+    if _has_any_marker(text, ("не про мест", "не о мест", "не места", "я не про места")):
         return False
-    if _is_payment_terms_question(text) and any(marker in text for marker in ("про оплат", "условия оплат", "не про мест")):
+    if _is_payment_terms_question(text) and _has_any_marker(text, ("про оплат", "условия оплат", "не про мест")):
         return False
     asks_place = bool(re.search(r"\b(?:мест(?:о|а)?|налич\w*|брон\w*|заброни\w*)\b", text))
     asks_fix_place = bool(re.search(r"\bзакреп\w*\b", text) and re.search(r"\bмест(?:о|а)?\b", text))
@@ -251,7 +254,7 @@ def _asks_price_fix(text: str) -> bool:
         return False
     if _has_any_marker(text, ("зафикс", "закреп")) and _has_any_marker(text, ("цен", "услов", "текущ", "сейчас", "стоим")):
         return True
-    return any(marker in text for marker in ("по текущей цене", "по текущим условиям"))
+    return _has_any_marker(text, ("по текущей цене", "по текущим условиям"))
 
 
 def _keyword_signals(text: str) -> tuple[str, ...]:
@@ -280,20 +283,6 @@ def _is_payment_terms_question(text: str) -> bool:
     )
 
 
-def _has_marker(text: str, marker: str) -> bool:
-    value = str(text or "")
-    needle = str(marker or "").strip()
-    if not needle:
-        return False
-    if re.search(rf"[^{_WORD_CHARS}]", needle):
-        return needle in value
-    return bool(re.search(rf"(?<![{_WORD_CHARS}]){re.escape(needle)}[{_WORD_CHARS}]*", value))
-
-
-def _has_any_marker(text: str, markers: Sequence[str]) -> bool:
-    return any(_has_marker(text, marker) for marker in markers)
-
-
 def _camp_scope_signals(text: str) -> tuple[bool, bool]:
     """Return city-day and residential-LVSH signals from the current message.
 
@@ -302,7 +291,7 @@ def _camp_scope_signals(text: str) -> tuple[bool, bool]:
     the city-day branch just because the word "городская" appears.
     """
 
-    no_lodging_signal = any(marker in text for marker in ("без прожив", "без проживания", "без ночев"))
+    no_lodging_signal = _has_any_marker(text, ("без прожив", "без проживания", "без ночев"))
     city_signal = _has_any_marker(text, ("городск", "дневн", "без прожив", "без проживания", "без ночев", "не выезд"))
     residential_signal = _has_any_marker(text, ("лвш", "менделеево", "выездн", "трансфер")) or (
         not no_lodging_signal and _has_any_marker(text, ("прожив", "питан"))
@@ -330,12 +319,12 @@ def _product_focus(
     recent_messages: Sequence[str],
 ) -> tuple[str, str]:
     city_camp_signal, residential_camp_signal = _camp_scope_signals(text)
-    explicit_camp = _has_any_marker(text, ("лвш", "лагер", "смен", "менделеево", "прожив", "питан", "трансфер"))
+    explicit_camp = _has_any_marker(text, ("лвш", "лагер", "смен", "менделеево", "выездн", "прожив", "питан", "трансфер"))
     if _is_payment_terms_question(text) and not explicit_camp:
         if previous_product_family and previous_product_family != "camp":
             return previous_product_family, previous_product
         return "regular_course", str(slots.get("format") or "")
-    if any(marker in text for marker in ("вместо лагер", "не лагер", "не лвш")) and _has_any_marker(
+    if _has_any_marker(text, ("вместо лагер", "не лагер", "не лвш")) and _has_any_marker(
         text, ("курс", "онлайн", "очно", "физик", "математ", "информат")
     ):
         return "regular_course", str(slots.get("format") or "")
@@ -352,7 +341,7 @@ def _product_focus(
     recent_text = normalize_text(" ".join(str(item or "") for item in recent_messages[-6:]))
     if previous_product_family:
         return previous_product_family, previous_product
-    if "лвш" in recent_text or "лагер" in recent_text:
+    if _has_any_marker(recent_text, ("лвш", "лагер")):
         return "camp", "lvsh_mendeleevo"
     return "", ""
 
@@ -367,7 +356,7 @@ def _topic_switch_decision(
 ) -> tuple[str, float]:
     if not previous_product_family:
         return "new_or_unknown", 0.4
-    explicit_switch = any(marker in text for marker in ("теперь", "другой", "вместо", "нет, все-таки", "не лагерь", "не курс"))
+    explicit_switch = _has_any_marker(text, ("теперь", "другой", "вместо", "нет, все-таки", "не лагерь", "не курс"))
     if explicit_switch:
         return "confirmed_switch", 0.9
     if product_family and product_family != previous_product_family:
@@ -432,7 +421,7 @@ def _required_fact_keys(intent: str, text: str) -> tuple[str, ...]:
         keys.append("matkap_documents.current")
     if intent == "tax":
         keys.append("tax_deduction_procedure.current")
-    if any(marker in text for marker in ("прожив", "питан", "трансфер", "что входит")):
+    if _has_any_marker(text, ("прожив", "питан", "трансфер", "что входит")):
         keys.append("programs.current")
     return tuple(dict.fromkeys(keys))
 
@@ -455,6 +444,8 @@ def _fact_scope_constraints(
     if primary_intent == "tax":
         return _scope_tuple("tax_deduction")
     if primary_intent == "discount":
+        if _has_any_marker(text, ("суммир", "складыв", "выбирается одна", "одна скидка", "наибольшая", "не суммируются")):
+            return _scope_tuple("discount_stacking")
         if _has_any_marker(
             text,
             (
@@ -475,10 +466,10 @@ def _fact_scope_constraints(
     if primary_intent == "trial":
         if _has_any_marker(text, ("очно", "очный", "офлайн", "пацаева", "мфти")):
             return _scope_tuple("trial_offline")
-        if _has_any_marker(text, ("онлайн", "фрагмент")):
+        if _has_any_marker(text, ("онлайн", "фрагмент", "ссыл", "регист", "получ", "отправ")) or known_format in {"online", "онлайн", "дистанционно"}:
             return _scope_tuple("trial_online_fragment")
     if primary_intent == "installment":
-        if "долями" in text:
+        if _has_marker(text, "долями"):
             return _scope_tuple("dolyami_parts")
         if _has_any_marker(text, ("рассроч", "банк", "месяц", "месяцев", "частями")):
             return _scope_tuple("installment_bank")
@@ -488,21 +479,21 @@ def _fact_scope_constraints(
         if mentions_online or known_format in {"online", "онлайн", "дистанционно"}:
             return _scope_tuple("online_recordings")
     if primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course":
-        if "онлайн" in text and _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "олимпиад", "физтех", "рсош", "перечнев")):
-            if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")) and "не олимпиад" not in text:
+        if _has_marker(text, "онлайн") and _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "олимпиад", "физтех", "рсош", "перечнев")):
+            if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")) and not _has_marker(text, "не олимпиад"):
                 return _scope_tuple("olympiad_online")
             return _scope_tuple("regular_online")
     if primary_intent in {"schedule", "format", "address"}:
-        if any(marker in text for marker in ("запись очных", "записи очных", "запись по очным", "записи по очным", "очных занятий записи", "пропуск очных")):
+        if _has_any_marker(text, ("запись очных", "записи очных", "запись по очным", "записи по очным", "очных занятий записи", "пропуск очных")):
             return _scope_tuple("offline_recordings")
-        if any(marker in text for marker in ("записи онлайн", "запись онлайн", "мтс линк", "онлайн записи", "записи уроков онлайн")):
+        if _has_any_marker(text, ("записи онлайн", "запись онлайн", "мтс линк", "онлайн записи", "записи уроков онлайн")):
             return _scope_tuple("online_recordings")
         if _has_any_marker(text, ("до скольки работает", "как работает офис", "график офиса", "часы работы", "телефон", "контакт")):
             return _scope_tuple("office_hours")
         if _has_any_marker(text, ("распис", "во сколько", "по каким дням", "дни занятий", "занятия", "уроки")):
             return _scope_tuple("class_schedule")
     if primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course":
-        if "онлайн" in text:
+        if _has_marker(text, "онлайн"):
             if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")):
                 return _scope_tuple("olympiad_online")
             if _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "цен", "стоим", "распис", "курс")):
@@ -702,7 +693,7 @@ def _is_followup(text: str) -> bool:
     stripped = str(text or "").strip()
     if len(stripped) <= 90 and re.match(r"^(а|и|да|нет|хорошо|понятно|тогда|это|как|что|сколько)\b", stripped):
         return True
-    return any(marker in stripped for marker in ("это цена", "по этой", "как можно", "что от меня", "а если"))
+    return _has_any_marker(stripped, ("это цена", "по этой", "как можно", "что от меня", "а если"))
 
 
 def _normalize_brand(value: Any) -> str:

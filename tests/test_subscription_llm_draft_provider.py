@@ -24,6 +24,7 @@ from mango_mvp.channels.subscription_llm import (
     UNPK_FOUR_WEEKS_NEW_PRICE_SAFE_TEXT,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
     apply_conversation_intent_plan_guard,
+    apply_unconfirmed_operational_specificity_guard,
     contains_bot_identity_disclosure,
     draft_has_internal_service_markers,
     detect_high_risk_input_markers,
@@ -401,6 +402,39 @@ def test_presale_refund_policy_draft_is_not_demoted_to_full_p0_by_autonomy() -> 
     assert "условия возврата должен подтвердить менеджер" in result.draft_text
 
 
+def test_presale_illness_absence_refund_question_is_not_full_p0() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "manager_only",
+            "topic_id": "theme:009_refund",
+            "risk_level": "high",
+            "draft_text": "Приняли обращение. Передам ответственному сотруднику.",
+            "message_type": "question",
+        }
+    )
+
+    result = provider.build_draft(
+        "Здравствуйте, подскажите пожалуйста, если ребёнок надолго заболеет, за пропущенное вернёте?",
+        context={
+            "active_brand": "unpk",
+            "conversation_intent_plan": {
+                "primary_intent": "general_consultation",
+                "topic_id": "service:S5_general_consultation",
+                "answer_policy": "help_then_one_question",
+                "route_bias": "draft_for_manager",
+                "risk_signals": [],
+            },
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "presale_refund_policy_manager_check" in result.safety_flags
+    assert "final_p0_text_override" not in result.safety_flags
+    assert "zero_collect_refund_guarded" not in result.safety_flags
+    assert "Приняли обращение" not in result.draft_text
+    assert "условия возврата должен подтвердить менеджер" in result.draft_text
+
+
 def test_presale_refund_followup_keeps_refund_context_without_full_p0_latch() -> None:
     provider = FakeDraftProvider(
         {
@@ -432,7 +466,44 @@ def test_presale_refund_followup_keeps_refund_context_without_full_p0_latch() ->
     )
 
     assert result.route == "draft_for_manager"
+    assert "direct_process_safe_template_applied" in result.safety_flags
+    assert "условиям возврата до оплаты" in result.draft_text
+    assert "final_p0_text_override" not in result.safety_flags
+    assert "zero_collect_refund_guarded" not in result.safety_flags
+
+
+def test_presale_illness_refund_followup_keeps_context_without_full_p0_latch() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "manager_only",
+            "topic_id": "service:S5_general_consultation",
+            "risk_level": "high",
+            "draft_text": "Да, передам менеджеру.",
+            "message_type": "context_update",
+        }
+    )
+
+    result = provider.build_draft(
+        "Я до оплаты просто уточняю условия, это не спор.",
+        context={
+            "active_brand": "unpk",
+            "recent_messages": [
+                "Клиент: Если ребёнок надолго заболеет, за пропущенное вернёте?",
+                "Ответ: Условия возврата должен подтвердить менеджер.",
+            ],
+            "conversation_intent_plan": {
+                "primary_intent": "general_consultation",
+                "topic_id": "service:S5_general_consultation",
+                "answer_policy": "help_then_one_question",
+                "route_bias": "draft_for_manager",
+                "risk_signals": [],
+            },
+        },
+    )
+
+    assert result.route == "draft_for_manager"
     assert "presale_refund_policy_manager_check" in result.safety_flags
+    assert "условия возврата должен подтвердить менеджер" in result.draft_text
     assert "final_p0_text_override" not in result.safety_flags
     assert "zero_collect_refund_guarded" not in result.safety_flags
 
@@ -779,7 +850,7 @@ def test_schedule_thanks_followup_does_not_repeat_confirmation_template() -> Non
     )
 
     assert "schedule_confirmation_safe_template_applied" in result.safety_flags
-    assert "Повторять условия заново не буду" in result.draft_text
+    assert "Класс, предмет и формат уже вижу" in result.draft_text
 
 
 def test_unpk_trial_fragment_uses_top_level_known_online_format() -> None:
@@ -1702,6 +1773,55 @@ def test_second_subject_discount_initial_question_not_overwritten_by_installment
     assert "pricing_safe_template_applied" not in result.safety_flags
     assert "30%" in result.draft_text
     assert "рассроч" not in result.draft_text.casefold()
+
+
+def test_contentful_direct_answer_is_not_replaced_by_discount_fallback_template() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "На второй онлайн-предмет действует скидка 30% для того же ребёнка. Скидки не суммируются.",
+            "message_type": "question",
+            "topic_id": "theme:005_discounts",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "На второй предмет какой процент скидки?",
+        context={
+            "active_brand": "foton",
+            "rop_policy": {"bot_permission": "allowed_after_fact_check"},
+            "conversation_intent_plan": {
+                "primary_intent": "discount",
+                "topic_id": "theme:005_discounts",
+                "fact_scope": "discount_second_subject",
+                "blocked_neighbor_scopes": ["discount_multichild", "installment_bank", "dolyami_parts"],
+                "answer_policy": "answer_directly_if_fact_verified",
+                "direct_question": "На второй предмет какой процент скидки?",
+            },
+        },
+    )
+
+    assert result.draft_text.startswith("На второй онлайн-предмет")
+    assert "discount_safe_template_applied" not in result.safety_flags
+    assert result.metadata.get("conversation_plan_controls_green_templates") is True
+
+
+def test_trial_fragment_answer_does_not_promise_bot_will_send_link() -> None:
+    result = apply_unconfirmed_operational_specificity_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            topic_id="theme:023_trial_class",
+            topic_confidence=0.9,
+            draft_text="Да, фрагмент занятия можно посмотреть. Пришлю фрагмент для знакомства.",
+        ),
+        context={"active_brand": "unpk"},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "unsupported_content_delivery_action_detected" in result.safety_flags
+    assert "Пришлю" not in result.draft_text
+    assert "точный способ доступа" in result.draft_text
 
 
 def test_multichild_discount_mentions_one_child_and_certificate() -> None:

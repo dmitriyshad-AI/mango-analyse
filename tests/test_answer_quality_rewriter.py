@@ -422,7 +422,7 @@ def test_rewrite_repeated_template_to_short_ack_when_client_is_thinking() -> Non
     )
 
     assert "подумайте спокойно" in rewritten.draft_text
-    assert "Повторять условия заново не буду" in rewritten.draft_text
+    assert "Ваш запрос" in rewritten.draft_text
     assert rewritten.draft_text.count("есть варианты на 6, 10 или 12 месяцев") == 0
     assert "repeated_template_replaced_with_delta" in rewritten.missing_facts
 

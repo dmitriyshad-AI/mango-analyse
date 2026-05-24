@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state
+from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, detect_product_scope
 
 
 def test_extracts_known_slots_without_reasking_first_price_message() -> None:
@@ -36,6 +36,10 @@ def test_format_extraction_does_not_treat_tochnoy_as_offline() -> None:
     assert payload["filled_slots"]["format"] == "online"
     assert payload["filled_slots"]["grade"] == "8"
     assert payload["filled_slots"]["subject"] == "физика"
+
+
+def test_product_scope_does_not_treat_tochnoy_as_offline_course() -> None:
+    assert detect_product_scope("без точной даты повышения", topic_id="theme:001_pricing") == "payment"
 
 
 def test_missing_grade_becomes_next_best_question() -> None:

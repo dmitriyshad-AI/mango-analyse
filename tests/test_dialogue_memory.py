@@ -200,6 +200,39 @@ def test_dialogue_memory_current_client_format_overrides_previous_format() -> No
     assert "format" in view["do_not_ask_again"]
 
 
+def test_dialogue_memory_current_client_subject_and_grade_override_previous_slots() -> None:
+    initial = build_dialogue_memory(
+        current_message="8 класс, математика, онлайн",
+        active_brand="foton",
+        session_id="s-slot-correction",
+    )
+
+    followup = build_dialogue_memory(
+        current_message="Нет, не математика, а физика. И не 8, а 9 класс.",
+        active_brand="foton",
+        previous_memory=initial,
+        session_id="s-slot-correction",
+    )
+
+    view = followup.to_prompt_view()
+    assert view["known_slots"]["grade"] == "9"
+    assert view["known_slots"]["subject"] == "физика"
+    assert "математика" not in view["conversation_summary_short"]
+
+
+def test_dialogue_memory_prompt_view_keeps_recent_history_cap_twenty_turns() -> None:
+    memory = build_dialogue_memory(
+        current_message="Последний вопрос: сколько стоит?",
+        active_brand="foton",
+        recent_messages=[f"Клиент: реплика {index}" for index in range(25)],
+        session_id="s-long-history",
+    )
+
+    turns = memory.to_prompt_view()["recent_turns"]
+    assert len(turns) == 20
+    assert turns[-1]["text"] == "Последний вопрос: сколько стоит?"
+
+
 def test_dialogue_memory_exposes_memory_2_fields_and_open_loop() -> None:
     memory = build_dialogue_memory(
         current_message="А трансфер из Москвы есть? И места есть?",

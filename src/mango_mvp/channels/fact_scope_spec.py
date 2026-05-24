@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from mango_mvp.channels.text_signals import has_any_marker, normalize_signal_text
+
 
 FACT_SCOPE_SPEC_SCHEMA_VERSION = "fact_scope_spec_v1_2026_05_24"
 
@@ -12,8 +14,10 @@ SCOPE_FAMILIES: dict[str, frozenset[str]] = {
     "office_hours": frozenset({"class_schedule", "office_hours"}),
     "city_day_camp": frozenset({"city_day_camp", "residential_lvsh"}),
     "residential_lvsh": frozenset({"city_day_camp", "residential_lvsh"}),
-    "discount_second_subject": frozenset({"discount_second_subject", "discount_multichild", "installment_bank", "dolyami_parts"}),
-    "discount_multichild": frozenset({"discount_second_subject", "discount_multichild", "installment_bank", "dolyami_parts"}),
+    "discount_second_subject": frozenset({"discount_second_subject", "discount_multichild", "discount_stacking", "discount_referral", "installment_bank", "dolyami_parts"}),
+    "discount_multichild": frozenset({"discount_second_subject", "discount_multichild", "discount_stacking", "discount_referral", "installment_bank", "dolyami_parts"}),
+    "discount_stacking": frozenset({"discount_second_subject", "discount_multichild", "discount_stacking", "discount_referral"}),
+    "discount_referral": frozenset({"discount_second_subject", "discount_multichild", "discount_stacking", "discount_referral"}),
     "trial_offline": frozenset({"trial_offline", "trial_online_fragment"}),
     "trial_online_fragment": frozenset({"trial_offline", "trial_online_fragment"}),
     "offline_recordings": frozenset({"offline_recordings", "camp_extra_facts", "online_recordings"}),
@@ -45,6 +49,8 @@ _SCOPE_MARKERS: dict[str, tuple[str, ...]] = {
         "одного ребенка",
     ),
     "discount_multichild": ("многодет", "удостоверение", "детей из", "ребенок из многодетной", "семьи учится"),
+    "discount_stacking": ("суммир", "складыв", "выбирается одна", "одна скидка", "наибольшая", "не суммируются"),
+    "discount_referral": ("приведи друга", "приглашенный друг", "приглашённый друг", "друг оплатит", "кэшбэк"),
     "trial_offline": ("очное пробное", "очного пробного", "пробное очно", "очно пробное", "пацаева и в мфти"),
     "trial_online_fragment": ("онлайн-формату", "онлайн формату", "фрагмент занятия", "фрагмент урока", "фрагмент"),
     "offline_recordings": (
@@ -70,11 +76,18 @@ _SCOPE_MARKERS: dict[str, tuple[str, ...]] = {
 ANSWER_COMPATIBLE_NEIGHBOR_SCOPES: dict[str, frozenset[str]] = {
     "installment_bank": frozenset({"dolyami_parts"}),
     "dolyami_parts": frozenset({"installment_bank"}),
+    "discount_stacking": frozenset({"discount_second_subject", "discount_multichild"}),
+}
+
+FACT_COMPATIBLE_NEIGHBOR_SCOPES: dict[str, frozenset[str]] = {
+    "discount_stacking": frozenset({"discount_second_subject", "discount_multichild"}),
+    "discount_second_subject": frozenset({"discount_stacking"}),
+    "discount_multichild": frozenset({"discount_stacking"}),
 }
 
 
 def normalize_scope_text(value: object) -> str:
-    return " ".join(str(value or "").casefold().replace("ё", "е").replace("\u00a0", " ").split())
+    return normalize_signal_text(value)
 
 
 def blocked_neighbors_for(scope: str) -> tuple[str, ...]:
@@ -96,7 +109,7 @@ def detect_fact_scopes(text: object, *, fact_types: Sequence[str] = ()) -> set[s
     if "contact" in fact_type_set:
         scopes.add("office_hours")
     for scope, markers in _SCOPE_MARKERS.items():
-        if any(marker in value for marker in markers):
+        if has_any_marker(value, markers):
             scopes.add(scope)
     if "camp_lvsh" in fact_type_set:
         scopes.add("residential_lvsh")
@@ -105,9 +118,9 @@ def detect_fact_scopes(text: object, *, fact_types: Sequence[str] = ()) -> set[s
     if "installment" in fact_type_set:
         scopes.add("installment_bank")
     if "discount" in fact_type_set:
-        if "второй предмет" in value or "second_subject" in value:
+        if has_any_marker(value, ("второй предмет", "second_subject")):
             scopes.add("discount_second_subject")
-        if "многодет" in value or "multichild" in value:
+        if has_any_marker(value, ("многодет", "multichild")):
             scopes.add("discount_multichild")
     return scopes
 
@@ -117,6 +130,11 @@ def fact_scopes_allowed(record_scopes: set[str], *, requested_scope: str = "", b
     blocked = {str(item) for item in blocked_neighbor_scopes if str(item).strip()}
     if requested and requested in record_scopes:
         return True
+    if requested:
+        compatible = set(FACT_COMPATIBLE_NEIGHBOR_SCOPES.get(requested, frozenset()))
+        if compatible and record_scopes and record_scopes <= compatible:
+            return True
+        blocked -= compatible
     if requested and not record_scopes:
         return False
     if record_scopes & blocked:

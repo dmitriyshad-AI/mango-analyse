@@ -135,16 +135,16 @@ def fact_scopes_allowed(record_scopes: set[str], *, requested_scope: str = "", b
         if compatible and record_scopes and record_scopes <= compatible:
             return True
         blocked -= compatible
-    if requested and not record_scopes:
-        return False
     if record_scopes & blocked:
         return False
+    if requested and not record_scopes:
+        return True
     if not requested:
         return True
     family = scope_family_for(requested)
     if family and record_scopes & family:
         return requested in record_scopes
-    return True
+    return False
 
 
 def answer_scopes_allowed(answer_scopes: set[str], *, requested_scope: str = "", blocked_neighbor_scopes: Sequence[str] = ()) -> bool:

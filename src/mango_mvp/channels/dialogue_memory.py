@@ -15,7 +15,9 @@ from mango_mvp.channels.new_lead_funnel import (
     normalize_brand,
     normalize_text,
 )
+from mango_mvp.channels.held_state import HeldState, held_state_from_mapping, update_held
 from mango_mvp.channels.p0_recall_spec import memory_risk_flags_from_text
+from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 
@@ -155,6 +157,8 @@ class DialogueMemory:
     crm_known_slots: Mapping[str, str] = field(default_factory=dict)
     bot_inferred_slots: Mapping[str, str] = field(default_factory=dict)
     do_not_reask_slots: tuple[str, ...] = ()
+    held_state: HeldState = field(default_factory=HeldState)
+    current_message_roles: Mapping[str, Any] = field(default_factory=dict)
     conversation_summary_short: str = ""
     open_loop_summary: str = ""
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -184,6 +188,8 @@ class DialogueMemory:
             "crm_known_slots": dict(self.crm_known_slots),
             "bot_inferred_slots": dict(self.bot_inferred_slots),
             "do_not_reask_slots": list(self.do_not_reask_slots),
+            "held_state": self.held_state.to_json_dict(),
+            "current_message_roles": dict(self.current_message_roles),
             "conversation_summary_short": self.conversation_summary_short,
             "open_loop_summary": self.open_loop_summary,
             "updated_at": self.updated_at,
@@ -215,6 +221,8 @@ class DialogueMemory:
             "crm_known_slots": dict(self.crm_known_slots),
             "bot_inferred_slots": dict(self.bot_inferred_slots),
             "do_not_ask_again": list(self.do_not_reask_slots) or sorted(known_values),
+            "held_state": self.held_state.to_prompt_view(),
+            "current_message_roles": dict(self.current_message_roles),
             "conversation_summary_short": self.conversation_summary_short,
             "open_loop_summary": self.open_loop_summary,
             "safe_next_action": safe_next_action(self),
@@ -250,11 +258,16 @@ def build_dialogue_memory(
     if not open_question.text:
         if isinstance(previous, DialogueMemory) and previous.open_question.text and not previous.open_question.answered:
             open_question = previous.open_question
+    previous_held = previous.held_state if isinstance(previous, DialogueMemory) else HeldState()
+    current_roles = tag_message_roles(current_text, context=previous_held.tagger_context())
+    current_risk_flags = _detect_risk_flags(current_text)
+    held_p0_required = bool(previous_held.p0_latched or current_risk_flags or current_roles.refund_frame == "dispute")
+    held_state = update_held(previous_held, current_text, current_roles, p0_required=held_p0_required)
     risks = _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
     p0_latch = _next_p0_latch(
         previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(),
         current_message=current_text,
-        current_risk_flags=_detect_risk_flags(current_text),
+        current_risk_flags=current_risk_flags,
         context=context,
         session_id=session_id,
     )
@@ -291,6 +304,8 @@ def build_dialogue_memory(
         crm_known_slots=crm_known,
         bot_inferred_slots=_bot_inferred_slots(previous_memory),
         do_not_reask_slots=_do_not_reask_slots(slot_map),
+        held_state=held_state,
+        current_message_roles=current_roles.to_prompt_view(),
         conversation_summary_short=_conversation_summary_short(slot_map, topic_focus=topic_focus, open_question=open_question),
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=_pending_manager_actions(commitments)),
     )
@@ -354,6 +369,8 @@ def update_dialogue_memory_after_answer(
         crm_known_slots=dict(current.crm_known_slots),
         bot_inferred_slots=dict(current.bot_inferred_slots),
         do_not_reask_slots=tuple(current.do_not_reask_slots),
+        held_state=current.held_state,
+        current_message_roles=dict(current.current_message_roles),
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
@@ -398,6 +415,8 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         crm_known_slots=_plain_str_mapping(data.get("crm_known_slots")),
         bot_inferred_slots=_plain_str_mapping(data.get("bot_inferred_slots")),
         do_not_reask_slots=tuple(str(item) for item in (data.get("do_not_reask_slots") or ()) if str(item).strip()),
+        held_state=held_state_from_mapping(data.get("held_state") if isinstance(data.get("held_state"), Mapping) else {}),
+        current_message_roles=dict(data.get("current_message_roles") or {}) if isinstance(data.get("current_message_roles"), Mapping) else {},
         conversation_summary_short=str(data.get("conversation_summary_short") or "")[:500],
         open_loop_summary=str(data.get("open_loop_summary") or "")[:500],
     )

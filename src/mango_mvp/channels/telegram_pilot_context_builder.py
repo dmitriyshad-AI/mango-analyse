@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -11,6 +11,7 @@ from mango_mvp.channels.answer_contract import build_answer_contract
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
 from mango_mvp.channels.dialogue_memory import DialogueMemory, build_dialogue_memory
+from mango_mvp.channels.fact_retrieval import key_matches, select_confirmed_facts as select_recall_confirmed_facts
 from mango_mvp.channels.fact_scope_spec import detect_fact_scopes, fact_scopes_allowed, scope_family_for
 from mango_mvp.channels.few_shot_reference import build_few_shot_reference
 from mango_mvp.channels.pilot_context import PilotContext, build_pilot_context
@@ -135,6 +136,15 @@ def build_telegram_pilot_context(
         dialogue_memory_view=memory_view,
         recent_messages=recent_messages,
     )
+    retrieval_topics = tuple(dict.fromkeys([*intent_plan.answer_topics, *intent_plan.topic_roles]))
+    held_state = replace(
+        memory.held_state,
+        active_fact_scope=intent_plan.fact_scope or memory.held_state.active_fact_scope,
+        active_topics=retrieval_topics or memory.held_state.active_topics,
+        required_fact_keys=tuple(intent_plan.required_fact_keys) or memory.held_state.required_fact_keys,
+    )
+    memory = replace(memory, held_state=held_state)
+    memory_view = memory.to_prompt_view()
     intent_view = intent_plan.to_prompt_view()
     safety_decision = classify_answer_safety(
         client_message=current_message,
@@ -144,11 +154,27 @@ def build_telegram_pilot_context(
     policy_for_snapshot = dict(merged_policy)
     policy_for_snapshot.setdefault("topic_id", intent_plan.topic_id)
     existing_required = _text_list(policy_for_snapshot.get("required_fact_keys"))
+    held_retrieval = memory.held_state.retrieval_context()
+    held_required = _text_list(held_retrieval.get("required_fact_keys"))
     policy_for_snapshot["required_fact_keys"] = list(
-        dict.fromkeys([*existing_required, *intent_plan.required_fact_keys])
+        dict.fromkeys([*existing_required, *intent_plan.required_fact_keys, *held_required])
     )
+    held_scope = _clean_text(held_retrieval.get("active_fact_scope"))
     if intent_plan.fact_scope:
         policy_for_snapshot["fact_scope"] = intent_plan.fact_scope
+    elif held_scope:
+        policy_for_snapshot["fact_scope"] = held_scope
+    active_topics = tuple(
+        dict.fromkeys(
+            [
+                *intent_plan.answer_topics,
+                *intent_plan.topic_roles,
+                *_text_list(held_retrieval.get("active_topics")),
+            ]
+        )
+    )
+    if active_topics:
+        policy_for_snapshot["active_topics"] = list(active_topics)
     if intent_plan.blocked_neighbor_scopes:
         policy_for_snapshot["blocked_neighbor_scopes"] = list(intent_plan.blocked_neighbor_scopes)
     knowledge_query = intent_plan.fact_query_text or _contextual_message_for_knowledge_lookup(current_message, known_slots=merged_known_slots)
@@ -317,6 +343,7 @@ def build_knowledge_snapshot_context(
         query=message_text,
     )
     fact_scope = _clean_text(policy.get("fact_scope"))
+    active_topics = tuple(_text_list(policy.get("active_topics")))
     blocked_neighbor_scopes = tuple(_text_list(policy.get("blocked_neighbor_scopes")))
     facts = _records(kc_snapshot.get("facts"))
     sources = _records(kc_snapshot.get("sources"))
@@ -357,6 +384,8 @@ def build_knowledge_snapshot_context(
     confirmed_facts = _select_confirmed_facts(
         facts,
         required_fact_types=required_fact_types,
+        required_fact_keys=required_fact_keys,
+        active_topics=active_topics,
         topic_id=topic_id,
         query=message_text,
         active_brand=active,
@@ -425,6 +454,8 @@ def build_knowledge_snapshot_context(
     }
     if fact_scope:
         facts_context["fact_scope"] = fact_scope
+    if active_topics:
+        facts_context["active_topics"] = list(active_topics)
     if blocked_neighbor_scopes:
         facts_context["blocked_neighbor_scopes"] = list(blocked_neighbor_scopes)
     if confirmed_facts:
@@ -617,17 +648,31 @@ def _select_confirmed_facts(
     facts: Sequence[Mapping[str, Any]],
     *,
     required_fact_types: set[str],
+    required_fact_keys: Sequence[str] = (),
+    active_topics: Sequence[str] = (),
     topic_id: str,
     query: str,
     active_brand: str = "unknown",
     fact_scope: str = "",
     blocked_neighbor_scopes: Sequence[str] = (),
 ) -> dict[str, str]:
-    candidates: list[tuple[int, int, Mapping[str, Any]]] = []
+    candidates: list[Mapping[str, Any]] = []
     for index, fact in enumerate(facts):
         if not _usable_for_precise_answer(fact, active_brand=active_brand):
             continue
-        if not _record_matches_context(
+        if not _record_matches_scope_only(
+            fact,
+            fact_scope=fact_scope,
+            blocked_neighbor_scopes=blocked_neighbor_scopes,
+        ):
+            continue
+        fact_id = _clean_text(fact.get("fact_id") or fact.get("id") or f"fact:{index + 1}", max_chars=120)
+        fact_key = _clean_text(fact.get("fact_key") or fact_id, max_chars=160)
+        is_required_answer = any(
+            key_matches(required_key, fact_key) or key_matches(required_key, fact_id)
+            for required_key in required_fact_keys
+        )
+        if not is_required_answer and not _record_matches_context(
             fact,
             required_fact_types=required_fact_types,
             topic_id=topic_id,
@@ -637,10 +682,35 @@ def _select_confirmed_facts(
         ):
             continue
         score = _fact_match_score(fact, required_fact_types=required_fact_types, topic_id=topic_id, query=query)
-        candidates.append((score, -index, fact))
+        scopes = _record_fact_scopes(
+            _scope_match_text(fact),
+            fact_types=set(_fact_types(fact)),
+        )
+        candidates.append(
+            {
+                "__fact": fact,
+                "__score": score,
+                "__index": index,
+                "brand": _clean_text(fact.get("brand")),
+                "fact_key": fact_key,
+                "scopes": scopes,
+            }
+        )
 
     confirmed: dict[str, str] = {}
-    for _, _, fact in sorted(candidates, key=lambda item: item[:2], reverse=True):
+    selected = select_recall_confirmed_facts(
+        sorted(candidates, key=lambda item: (int(item.get("__score") or 0), -int(item.get("__index") or 0)), reverse=True),
+        active_brand=active_brand,
+        required_fact_keys=required_fact_keys,
+        active_topics=active_topics,
+        blocked_scopes=blocked_neighbor_scopes,
+        k=10,
+    )
+    for candidate in selected:
+        raw_fact = candidate.get("__fact")
+        if not isinstance(raw_fact, Mapping):
+            continue
+        fact = raw_fact
         text = _fact_text(fact)
         if not text:
             continue
@@ -668,9 +738,19 @@ def _missing_fact_keys(
         if _clean_text(fact.get("fact_id") or fact.get("id")) in confirmed_facts
         for fact_type in _fact_types(fact)
     }
+    confirmed_records = [
+        fact
+        for fact in facts
+        if _clean_text(fact.get("fact_id") or fact.get("id")) in confirmed_facts
+    ]
     missing: list[str] = []
     stale_or_blocked = False
     for fact_key in required_fact_keys:
+        if any(
+            key_matches(fact_key, _clean_text(record.get("fact_key") or record.get("fact_id") or record.get("id")))
+            for record in confirmed_records
+        ):
+            continue
         fact_type = fact_type_from_key(fact_key)
         acceptable_fact_types = _expand_required_fact_types({fact_type}, topic_id="", query="")
         if fact_type == "location" and required_fact_types & {"camp_lvsh", "camp_city"}:
@@ -790,6 +870,16 @@ def _record_matches_scope_only(
     fact_scope: str = "",
     blocked_neighbor_scopes: Sequence[str] = (),
 ) -> bool:
+    text = _scope_match_text(record)
+    return _record_matches_fact_scope(
+        text,
+        fact_types=set(_fact_types(record)),
+        fact_scope=fact_scope,
+        blocked_neighbor_scopes=blocked_neighbor_scopes,
+    )
+
+
+def _scope_match_text(record: Mapping[str, Any]) -> str:
     text = _normalize_match_text(
         " ".join(
             str(record.get(key) or "")
@@ -811,12 +901,7 @@ def _record_matches_scope_only(
         text = _normalize_match_text(
             f"{text} {metadata.get('path', '')} {metadata.get('source_path', '')} {metadata.get('product', '')} {metadata.get('fact_key', '')}"
         )
-    return _record_matches_fact_scope(
-        text,
-        fact_types=set(_fact_types(record)),
-        fact_scope=fact_scope,
-        blocked_neighbor_scopes=blocked_neighbor_scopes,
-    )
+    return text
 
 
 def _record_matches_context(
@@ -873,8 +958,10 @@ def _record_matches_fact_scope(
         return False
     if not requested:
         return True
-    # Unknown-scope records can still be used when other matchers prove they are relevant.
-    return True
+    record_scopes = _record_fact_scopes(text, fact_types=fact_types)
+    if not record_scopes:
+        return True
+    return requested in record_scopes
 
 
 def _record_fact_scopes(text: str, *, fact_types: set[str]) -> set[str]:

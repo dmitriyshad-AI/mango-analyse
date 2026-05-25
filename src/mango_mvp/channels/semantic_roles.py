@@ -8,7 +8,7 @@ It is intentionally structural: generation still answers from facts and context.
 """
 
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
@@ -34,23 +34,55 @@ PAYMENT_SOURCE_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 TOPIC_MARKERS: dict[str, tuple[str, ...]] = {
-    "price": ("цен", "стоим", "сколько стоит", "прайс", "руб", "почем"),
+    "price": ("цен", "стои", "сколько стоит", "прайс", "руб", "почем"),
     "discount": ("скид", "акци", "льгот", "процент", "суммир", "дешевле"),
     "trial": ("пробн", "пробное", "фрагмент", "попроб"),
-    "camp": ("лагер", "лвш", "смена", "менделеево", "проживан", "питан", "трансфер"),
+    "camp": ("лагер", "лвш", "лш", "летняя школа", "смена", "менделеево", "проживан", "питан", "трансфер"),
     "schedule": ("распис", "во сколько", "по каким дням", "когда занят", "дни занят", "время занят", "раз в неделю"),
     "format": ("формат", "онлайн или очно", "очно или онлайн"),
-    "address": ("адрес", "где наход", "как добрат", "метро", "площадк"),
+    "address": ("адрес", "где наход", "наход", "как добрат", "метро", "площадк"),
     "document": ("справк", "договор", "квитанц", "чек", "документ"),
-    "identity": ("вы бот", "ты бот", "ты человек", "с кем я общаюсь", "это бот", "gpt", "нейросет"),
+    "identity": ("вы бот", "ты бот", "ты человек", "вы человек", "вы живой", "живой человек", "робот", "с кем я общаюсь", "это бот", "gpt", "нейросет"),
     "off_topic": ("айфон", "iphone", "погода", "биткоин", "сочинение про"),
+}
+
+DISCOUNT_SCOPE_MARKERS: dict[str, tuple[str, ...]] = {
+    "discount_stacking": ("суммир", "складыв", "выбирается одна", "одна скидка", "наибольшая", "не суммируются"),
+    "discount_second_subject": (
+        "второй предмет",
+        "вторым предметом",
+        "второго предмета",
+        "2-й предмет",
+        "последующий предмет",
+        "еще предмет",
+        "ещё предмет",
+        "второй онлайн-предмет",
+        "второй онлайн предмет",
+    ),
+    "discount_multichild": ("второй ребенок", "второй ребёнок", "двое детей", "два ребенка", "два ребёнка", "многодет"),
+    "discount_referral": ("приведи друга", "приглашенный друг", "приглашённый друг", "друг оплатит", "кэшбэк"),
+}
+
+CAMP_SCOPE_MARKERS: dict[str, tuple[str, ...]] = {
+    "city_day_camp": ("городск", "дневн", "без прожив", "без проживания", "без ночев", "не выезд"),
+    "residential_lvsh": ("лвш", "менделеево", "выездн", "с прожив", "проживан", "трансфер"),
+}
+
+ONLINE_TRACK_MARKERS: dict[str, tuple[str, ...]] = {
+    "olympiad_online": ("олимпиад", "физтех", "рсош", "перечнев"),
+    "regular_online": ("обычн", "регулярн", "не олимпиад", "онлайн-курс", "онлайн курс"),
+}
+
+SCHEDULE_SCOPE_MARKERS: dict[str, tuple[str, ...]] = {
+    "office_hours": ("до скольки работает", "как работает офис", "график офиса", "часы работы", "телефон", "контакт"),
+    "class_schedule": ("распис", "во сколько", "по каким дням", "дни занятий", "занятия", "уроки"),
 }
 
 ENROLL_NEIGHBORS = ("курс", "программ", "обучен", "группу", "занятия с", "к вам", "на физик", "на математ", "на информат")
 RECORDING_NEIGHBORS = ("урок", "заняти", "лекци", "вебинар", "пропущ", "пропуст", "пересмотр", "запис уроков")
 STRONG_RECORDING_MARKERS = ("пропущ", "пропуст", "пересмотр", "запис уроков")
 
-TRANSFER_GROUP_NEIGHBORS = ("группу", "группе", "другую группу", "класс", "на другой курс", "на курс")
+TRANSFER_GROUP_NEIGHBORS = ("групп", "класс", "на другой курс", "на курс", "сильнее", "послабее", "посильнее", "уровень")
 TRANSFER_MONEY_NEIGHBORS = ("деньги", "оплат", "платеж", "платёж", "банковск", "на счет", "на счёт", "реквизит")
 TRANSFER_MANAGER_NEIGHBORS = ("менеджер", "человек", "специалист", "оператор", "живой", "сотрудник")
 
@@ -125,6 +157,10 @@ class MessageRoles:
     payment_source: str = ""
     asks_place: bool = False
     refund_frame: str = "none"
+    discount_scope: str = ""
+    camp_scope: str = ""
+    online_track: str = ""
+    schedule_scope: str = ""
     topics: tuple[str, ...] = ()
     evidence: Mapping[str, str] = field(default_factory=dict)
 
@@ -138,16 +174,20 @@ class MessageRoles:
             "payment_source": self.payment_source,
             "asks_place": self.asks_place,
             "refund_frame": self.refund_frame,
+            "discount_scope": self.discount_scope,
+            "camp_scope": self.camp_scope,
+            "online_track": self.online_track,
+            "schedule_scope": self.schedule_scope,
             "topics": list(self.topics),
             "evidence": dict(self.evidence),
         }
 
 
-def tag_message_roles(text: object) -> MessageRoles:
+def tag_message_roles(text: object, *, context: Mapping[str, object] | None = None) -> MessageRoles:
     value = str(text or "")
     evidence: dict[str, str] = {}
 
-    training_format, fmt_ev = _first_axis_value(value, FORMAT_MARKERS)
+    training_format, fmt_ev = _single_axis_value(value, FORMAT_MARKERS)
     if fmt_ev:
         evidence["training_format"] = fmt_ev
 
@@ -160,11 +200,23 @@ def tag_message_roles(text: object) -> MessageRoles:
         evidence["payment_source"] = ps_ev
 
     enrollment_vs_recording = _enrollment_vs_recording(value)
-    transfer_sense = _transfer_sense(value)
+    transfer_sense = _transfer_sense(value, context=context)
     asks_place = has_any_marker(value, TOPIC_MARKERS["address"])
     refund_frame, refund_ev = _refund_frame(value)
     if refund_ev:
         evidence["refund_frame"] = refund_ev
+    discount_scope, discount_ev = _first_axis_value(value, DISCOUNT_SCOPE_MARKERS)
+    if discount_ev:
+        evidence["discount_scope"] = discount_ev
+    camp_scope, camp_ev = _single_axis_value(value, CAMP_SCOPE_MARKERS)
+    if camp_ev:
+        evidence["camp_scope"] = camp_ev
+    online_track, track_ev = _first_axis_value(value, ONLINE_TRACK_MARKERS)
+    if track_ev:
+        evidence["online_track"] = track_ev
+    schedule_scope, schedule_ev = _first_axis_value(value, SCHEDULE_SCOPE_MARKERS)
+    if schedule_ev:
+        evidence["schedule_scope"] = schedule_ev
 
     topics: list[str] = []
     for topic, markers in TOPIC_MARKERS.items():
@@ -193,6 +245,10 @@ def tag_message_roles(text: object) -> MessageRoles:
         payment_source=payment_source,
         asks_place=asks_place,
         refund_frame=refund_frame,
+        discount_scope=discount_scope,
+        camp_scope=camp_scope,
+        online_track=online_track,
+        schedule_scope=schedule_scope,
         topics=tuple(dict.fromkeys(topics)),
         evidence=evidence,
     )
@@ -206,9 +262,29 @@ def _first_axis_value(text: str, table: Mapping[str, tuple[str, ...]]) -> tuple[
     return "", ""
 
 
+def _single_axis_value(text: str, table: Mapping[str, tuple[str, ...]]) -> tuple[str, str]:
+    """Return one axis value unless the client is comparing alternatives.
+
+    Example: "онлайн или очно?" is a question about available formats, not a
+    confirmed choice. In that case we must not latch either format into memory.
+    """
+
+    matched: list[tuple[str, str]] = []
+    for value, markers in table.items():
+        for marker in markers:
+            if has_marker(text, marker):
+                matched.append((value, marker))
+                break
+    if not matched:
+        return "", ""
+    if len(matched) > 1 and has_marker(text, "или"):
+        return "", "ambiguous_question:" + "/".join(value for value, _ in matched)
+    return matched[0]
+
+
 def _enrollment_vs_recording(text: str) -> str:
     has_zapis = has_marker(text, "запис")
-    enroll_verb = has_any_marker(text, ("записаться", "записать", "оформит", "оформиться"))
+    enroll_verb = has_any_marker(text, ("записаться", "записать", "оформ"))
     near_recording = has_any_marker(text, RECORDING_NEIGHBORS)
     near_enroll = has_any_marker(text, ENROLL_NEIGHBORS)
     strong_recording = has_any_marker(text, STRONG_RECORDING_MARKERS)
@@ -221,7 +297,7 @@ def _enrollment_vs_recording(text: str) -> str:
     return "enroll"
 
 
-def _transfer_sense(text: str) -> str:
+def _transfer_sense(text: str, *, context: Mapping[str, object] | None = None) -> str:
     if not has_any_marker(text, ("перевод", "перевест", "перевед", "переведите", "переключите")):
         return ""
     if has_any_marker(text, TRANSFER_MANAGER_NEIGHBORS):
@@ -230,6 +306,12 @@ def _transfer_sense(text: str) -> str:
         return "money"
     if has_any_marker(text, TRANSFER_GROUP_NEIGHBORS):
         return "group"
+    if context:
+        last = str(context.get("last_transfer_sense") or "")
+        if last:
+            return last
+        if context.get("group_topic_active"):
+            return "group"
     return ""
 
 

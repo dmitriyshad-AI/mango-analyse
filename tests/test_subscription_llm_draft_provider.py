@@ -941,8 +941,8 @@ def test_foton_trial_process_does_not_use_unpk_fragment_wording() -> None:
         },
     )
 
-    assert "онлайн-пробное" in result.draft_text
-    assert "фрагмент" not in result.draft_text.casefold()
+    assert "онлайн-фрагмент" in result.draft_text
+    assert "пробное занятие есть по умолчанию" not in result.draft_text.casefold()
     assert "5 класс" in result.draft_text
     assert "математика" in result.draft_text
     assert "trial_safe_template_applied" in result.safety_flags
@@ -2862,17 +2862,17 @@ def test_foton_online_trial_question_uses_approved_safe_text() -> None:
             "active_brand": "foton",
             "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:023_trial_class"]},
             "facts_context": {"client_safe": True, "fresh": True, "facts_missing": False},
-            "confirmed_facts": {"fact:trial": "Фотон: пробное онлайн есть по умолчанию и оформляется дистанционно."},
+            "confirmed_facts": {"fact:trial": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное."},
         },
     )
 
     assert result.route == "bot_answer_self_for_pilot"
     assert result.topic_id == "theme:023_trial_class"
     assert "trial_safe_template_applied" in result.safety_flags
-    assert "пробное занятие есть по умолчанию" in result.draft_text
+    assert "можно прислать фрагмент занятия" in result.draft_text
     assert "дистанционно" in result.draft_text
     assert "приезжать не нужно" in result.draft_text
-    assert "фрагмент занятия" not in result.draft_text
+    assert "пробное занятие есть по умолчанию" not in result.draft_text
     assert "бесплат" not in result.draft_text.casefold()
 
 

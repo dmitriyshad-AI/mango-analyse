@@ -483,10 +483,10 @@ def test_rewrite_foton_online_trial_answers_remote_no_visit_no_free_promise() ->
     rewritten = apply_answer_quality_rewriter(
         result,
         client_message="Онлайн точно, никуда приезжать не надо? Пробное есть?",
-        context=_context(confirmed_facts={"fact:trial": "Фотон: пробное занятие есть, оформляется дистанционно при записи."}),
+        context=_context(confirmed_facts={"fact:trial": "Фотон: в онлайн-формате можно прислать фрагмент занятия, оформление дистанционное."}),
     )
 
-    assert "пробное занятие есть" in rewritten.draft_text
+    assert "фрагмент занятия" in rewritten.draft_text
     assert "дистанционно" in rewritten.draft_text
     assert "приезжать не нужно" in rewritten.draft_text
     assert "Напишите класс и предмет" not in rewritten.draft_text
@@ -673,14 +673,14 @@ def test_llm_rewrite_is_not_called_when_assessment_passed_even_with_polish_mode(
         route="draft_for_manager",
         topic_id="theme:023_trial_class",
         topic_confidence=0.91,
-        draft_text="Да, в онлайн-формате Фотона пробное занятие есть по умолчанию. Если хотите, передам менеджеру запрос на онлайн-пробное.",
+        draft_text="Да, в онлайн-формате Фотона можно прислать фрагмент занятия. Если хотите, передам менеджеру запрос на онлайн-фрагмент.",
     )
     calls = []
 
     rewritten = apply_answer_quality_rewriter(
         result,
         client_message="Пробное онлайн есть?",
-        context=_context(known_slots={"format": "онлайн"}, confirmed_facts={"fact:trial": "Фотон: онлайн-пробное есть."}),
+        context=_context(known_slots={"format": "онлайн"}, confirmed_facts={"fact:trial": "Фотон: онлайн-фрагмент есть."}),
         rewrite_runner=lambda **kwargs: calls.append(kwargs) or {"draft_text": "bad"},
         force_llm_polish=True,
     )

@@ -183,11 +183,11 @@ FOTON_LVSH_LIVING_TRANSFER_SAFE_TEXT = (
     "По вашему классу и предмету менеджер проверит наличие мест на подходящем направлении."
 )
 FOTON_ONLINE_TRIAL_SAFE_TEXT = (
-    "Да, в онлайн-формате Фотона пробное занятие есть по умолчанию, оформление проходит дистанционно — приезжать не нужно. "
-    "Условия по стоимости пробного отдельно подтвердит менеджер перед записью, чтобы не назвать неверное условие."
+    "В онлайн-формате Фотона можно прислать фрагмент занятия, чтобы посмотреть подачу и уровень; оформление проходит дистанционно — приезжать не нужно. "
+    "Условия просмотра фрагмента подтвердит менеджер перед записью."
 )
 FOTON_TRIAL_REMOTE_NO_VISIT_SAFE_TEXT = (
-    "Да, приезжать не нужно: запись и оформление проходят дистанционно. По онлайн-пробному менеджер подтвердит условия "
+    "Да, приезжать не нужно: запись и оформление проходят дистанционно. По онлайн-формату менеджер может прислать фрагмент занятия "
     "и подберёт вариант под класс и предмет; бесплатность сверх утверждённых правил я не обещаю."
 )
 UNPK_TRIAL_SAFE_TEXT = (
@@ -210,9 +210,9 @@ TRIAL_FRAGMENT_REQUEST_ACK_SAFE_TEXT = (
     "Личные документы, договор или оплату для этого сейчас присылать не нужно."
 )
 FOTON_TRIAL_PROCESS_SAFE_TEXT = (
-    "Для онлайн-пробного в Фотоне уже достаточно класса, предмета и формата. "
+    "Для подбора онлайн-фрагмента в Фотоне уже достаточно класса, предмета и формата. "
     "Если эти данные есть в диалоге, повторять их не нужно; личные документы, договор или оплату сейчас присылать не надо. "
-    "Передам менеджеру запрос на онлайн-пробное: он подтвердит условия и подскажет ближайший шаг по записи."
+    "Передам менеджеру запрос на фрагмент занятия: он подтвердит условия и подскажет ближайший шаг по записи."
 )
 FOTON_TRIAL_FORMAT_CHECK_SAFE_TEXT = (
     "Вы спрашиваете именно про формат пробного. По обычным онлайн-занятиям Фотона это живые вебинары на МТС Линк, "
@@ -744,6 +744,7 @@ class SubscriptionLlmDraftProvider:
         result = apply_input_policy_guards(result, client_message=client_message, context=context)
         result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
         result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
+        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
         result = apply_unsupported_promise_guard(result, context=context)
         result = apply_unconfirmed_operational_specificity_guard(result, context=context)
         result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
@@ -761,6 +762,7 @@ class SubscriptionLlmDraftProvider:
         result = apply_input_policy_guards(result, client_message=client_message, context=context)
         result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
         result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
+        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
         result = apply_unsupported_promise_guard(result, context=context)
         result = apply_unconfirmed_operational_specificity_guard(result, context=context)
         result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
@@ -934,6 +936,7 @@ class FakeSubscriptionLlmDraftProvider:
         result = apply_input_policy_guards(result, client_message=client_message, context=context)
         result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
         result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
+        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
         result = apply_unsupported_promise_guard(result, context=context)
         result = apply_unconfirmed_operational_specificity_guard(result, context=context)
         result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
@@ -943,6 +946,7 @@ class FakeSubscriptionLlmDraftProvider:
         result = apply_input_policy_guards(result, client_message=client_message, context=context)
         result = apply_conversation_intent_plan_guard(result, client_message=client_message, context=context)
         result = apply_high_risk_content_guards(result, client_message=client_message, context=context)
+        result = apply_unstated_subject_guard(result, client_message=client_message, context=context)
         result = apply_unsupported_promise_guard(result, context=context)
         result = apply_unconfirmed_operational_specificity_guard(result, context=context)
         result = apply_known_context_redundant_question_guard(result, client_message=client_message, context=context)
@@ -1517,7 +1521,7 @@ def apply_high_risk_content_guards(
         checklist.append("Будущая цена: не называть суммы после повышения, передать менеджеру.")
         metadata["future_price_handoff_applied"] = True
 
-    direct_process_template = "" if cross_brand_guarded() else _direct_process_safe_template(
+    direct_process_template = "" if cross_brand_guarded() or skip_green_template_overwrite else _direct_process_safe_template(
         result, client_message=client_message, context=context
     )
     if direct_process_template:
@@ -1648,6 +1652,7 @@ def apply_high_risk_content_guards(
         or metadata.get("terminal_safe_template_applied")
         or metadata.get("direct_process_safe_template_applied")
         or metadata.get("pricing_safe_template_applied")
+        or skip_green_template_overwrite
         else _schedule_frequency_safe_template(result, client_message=client_message, context=context)
     )
     if schedule_frequency_template:
@@ -1663,6 +1668,7 @@ def apply_high_risk_content_guards(
         or metadata.get("terminal_safe_template_applied")
         or metadata.get("direct_process_safe_template_applied")
         or metadata.get("schedule_frequency_safe_template_applied")
+        or skip_green_template_overwrite
         else _schedule_confirmation_safe_template(result, client_message=client_message, context=context)
     )
     if schedule_confirmation_template:
@@ -1695,6 +1701,7 @@ def apply_high_risk_content_guards(
         if cross_brand_guarded()
         or metadata.get("terminal_safe_template_applied")
         or metadata.get("direct_process_safe_template_applied")
+        or skip_green_template_overwrite
         else _presale_refund_policy_template(result, client_message=client_message, context=context)
     )
     if presale_refund_template:
@@ -1721,6 +1728,7 @@ def apply_high_risk_content_guards(
     recordings_template = (
         ""
         if cross_brand_guarded()
+        or skip_green_template_overwrite
         or metadata.get("terminal_safe_template_applied")
         or metadata.get("direct_process_safe_template_applied")
         or metadata.get("trial_safe_template_applied")
@@ -1856,6 +1864,7 @@ def apply_high_risk_content_guards(
         or metadata.get("fact_scope_guard_applied")
         or metadata.get("forbidden_pair_guard_applied")
         or metadata.get("schedule_confirmation_safe_template_applied")
+        or skip_green_template_overwrite
         or has_concrete_safe_template
         or _skip_missing_fact_template_by_answer_contract(
             context,
@@ -2729,6 +2738,68 @@ def find_redundant_questions_for_known_context(
     if known.get("active_brand") and re.search(r"(фотон\s+или\s+унпк|какой\s+центр|какой\s+учебн\w+\s+центр)", text):
         repeated.append("active_brand")
     return tuple(dict.fromkeys(repeated))
+
+
+def apply_unstated_subject_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    allowed = _allowed_subjects_from_context(context, client_message=client_message)
+    unexpected = sorted(_mentioned_subjects(result.draft_text) - allowed)
+    if not unexpected:
+        return result
+    return replace(
+        result,
+        route="draft_for_manager" if result.route != "manager_only" else result.route,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "unstated_subject_guarded", "manager_approval_required", "no_auto_send"])),
+        manager_checklist=tuple(
+            dict.fromkeys(
+                [
+                    *result.manager_checklist,
+                    "Черновик добавил предмет/направление, которого клиент не называл: проверить и убрать перед отправкой.",
+                ]
+            )
+        ),
+        metadata={**dict(result.metadata), "unstated_subjects": unexpected},
+    )
+
+
+SUBJECT_GUARD_MARKERS: Mapping[str, tuple[str, ...]] = {
+    "математика": ("математ",),
+    "физика": ("физик",),
+    "информатика": ("информат",),
+    "программирование": ("программирован",),
+    "русский язык": ("русск",),
+    "английский язык": ("англий",),
+    "химия": ("хим",),
+    "биология": ("биолог",),
+}
+
+
+def _allowed_subjects_from_context(context: Optional[Mapping[str, Any]], *, client_message: str = "") -> set[str]:
+    allowed = _mentioned_subjects(client_message)
+    known = known_context_fields(context)
+    for value in (known.get("subject"),):
+        allowed.update(_mentioned_subjects(value))
+    if isinstance(context, Mapping):
+        memory = context.get("dialogue_memory_view")
+        if isinstance(memory, Mapping):
+            for key in ("client_confirmed_slots", "crm_known_slots"):
+                slots = memory.get(key)
+                if isinstance(slots, Mapping):
+                    allowed.update(_mentioned_subjects(slots.get("subject")))
+    return allowed
+
+
+def _mentioned_subjects(text: object) -> set[str]:
+    value = str(text or "").casefold().replace("ё", "е")
+    return {
+        subject
+        for subject, markers in SUBJECT_GUARD_MARKERS.items()
+        if has_any_marker(value, markers)
+    }
 
 
 def known_context_fields(context: Optional[Mapping[str, Any]]) -> dict[str, str]:
@@ -4244,7 +4315,7 @@ def _trial_safe_template(
     if active_brand == "foton" and (online_trial_requested or _known_subject_or_format(context, "онлайн")):
         parts = [FOTON_ONLINE_TRIAL_SAFE_TEXT]
         if not payment_question:
-            parts.append("Если хотите, передам менеджеру запрос на онлайн-пробное.")
+            parts.append("Если хотите, передам менеджеру запрос на онлайн-фрагмент.")
         if grade or subject or online_trial_requested:
             summary = ", ".join(item for item in (f"{grade} класс" if grade else "", subject, "онлайн" if online_trial_requested else "") if item)
             if summary:
@@ -4252,8 +4323,9 @@ def _trial_safe_template(
         return " ".join(parts)
     if active_brand == "foton":
         return (
-            "Да, пробное занятие в Фотоне есть: для онлайн-курсов — по умолчанию, для очных — по согласованию с менеджером при записи. "
-            "Оформление проходит дистанционно. Напишите класс, предмет и формат — подберём подходящий вариант."
+            "В Фотоне пробный формат зависит от формата курса: по онлайну можно прислать фрагмент занятия, "
+            "по очному варианту менеджер согласует доступный следующий шаг при записи. "
+            "Напишите класс, предмет и формат — подберём подходящий вариант."
         )
     if active_brand == "unpk" and (online_trial_requested or _known_subject_or_format(context, "онлайн")) and (
         has_any_marker(client_haystack, ("бесплат", "приезж", "фрагмент"))

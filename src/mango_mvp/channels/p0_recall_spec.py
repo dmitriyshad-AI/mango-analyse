@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Sequence
 
+from mango_mvp.channels.semantic_roles import tag_message_roles
+
 
 P0_RECALL_SPEC_SCHEMA_VERSION = "p0_recall_spec_v1_2026_05_24"
 
@@ -50,25 +52,6 @@ PAYMENT_DISPUTE_RE = re.compile(
     r"|(?:оплат[ау]\s+не\s+вид|плат[её]ж\s+не\s+(?:прош[её]л|видно|зачисл))"
     r"|(?:дважды|два\s+раза|двойн\w*|повторно|ошибочно|лишн\w*)[^.!?\n]{0,80}(?:списал|списали|плат[её]ж|оплат|снял)"
     r"|(?:списал|списали|снял[ио]?)[^.!?\n]{0,80}(?:дважды|два\s+раза|двойн\w*|повторно|ошибочно|лишн\w*)",
-    re.I,
-)
-
-BENIGN_HYPOTHETICAL_REFUND_RE = re.compile(
-    r"(?:у\s+знаком\w*|у\s+друз\w*|у\s+подруг\w*|у\s+других|слышал[аи]?)"
-    r"[^.!?\n]{0,80}\bвозврат\w*[^.!?\n]{0,80}(?:у\s+вас\s+как|как\s+у\s+вас|какие\s+правила|с\s+такими\s+ситуац)",
-    re.I,
-)
-
-PRESALE_REFUND_POLICY_RE = re.compile(
-    r"(?:если|вдруг)[^.!?\n]{0,80}(?:не\s+понравит|не\s+подойд)[^.!?\n]{0,80}(?:верн\w*\s+деньги|деньги\s+верн\w*|возврат)"
-    r"|(?:если|вдруг)[^.!?\n]{0,100}(?:заболе|болезн|пропуст)[^.!?\n]{0,100}(?:верн\w*|возврат|перерасч|компенсац)"
-    r"|(?:условия|правила|порядок)[^.!?\n]{0,50}возврат"
-    r"|возврат[^.!?\n]{0,120}(?:до\s+оплат|перед\s+оплат|заранее|услов|правил|если\s+не\s+понравит)",
-    re.I,
-)
-PRESALE_REFUND_CONTEXT_RE = re.compile(
-    r"(?:заранее|до\s+оплат|перед\s+оплат|понять|понимать)[\s\S]{0,160}возврат"
-    r"|возврат[\s\S]{0,160}(?:заранее|до\s+оплат|перед\s+оплат|понять|понимать|услов|правил)",
     re.I,
 )
 
@@ -140,8 +123,9 @@ def has_complaint_signal(text: str) -> bool:
 def codes_from_text(text: str) -> tuple[str, ...]:
     value = str(text or "")
     result: list[str] = []
-    benign_refund_context = _is_benign_hypothetical_refund(value)
-    if REFUND_RE.search(value) and not benign_refund_context:
+    refund_frame = tag_message_roles(value).refund_frame
+    benign_refund_context = refund_frame == "presale_policy"
+    if refund_frame == "dispute" or (REFUND_RE.search(value) and not benign_refund_context):
         result.append("refund")
     if LEGAL_RE.search(value):
         result.append("legal")
@@ -172,19 +156,4 @@ def contains_any_p0(codes: Sequence[str]) -> bool:
 
 
 def is_benign_hypothetical_refund(text: str) -> bool:
-    return _is_benign_hypothetical_refund(text)
-
-
-def _is_benign_hypothetical_refund(text: str) -> bool:
-    value = str(text or "")
-    if not (
-        BENIGN_HYPOTHETICAL_REFUND_RE.search(value)
-        or PRESALE_REFUND_POLICY_RE.search(value)
-        or PRESALE_REFUND_CONTEXT_RE.search(value)
-    ):
-        return False
-    return not re.search(
-        r"\b(?:верните|хочу\s+(?:вернуть|возврат|деньги|отказ)|требую|мне\s+верн|нам\s+верн|за\s+наш|с\s+меня|у\s+меня|списал|оплатил|оплатила|договор|уже|после\s+оплат|не\s+понравилось)\b",
-        value,
-        re.I,
-    )
+    return tag_message_roles(text).refund_frame == "presale_policy"

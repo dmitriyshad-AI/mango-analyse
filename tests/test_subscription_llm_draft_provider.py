@@ -1283,6 +1283,33 @@ def test_fact_scope_guard_blocks_tax_answer_for_matkap_question() -> None:
     assert "fact_scope_guard_applied" in result.safety_flags
 
 
+def test_forbidden_pair_guard_blocks_matkap_installment_mix() -> None:
+    base = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"Маткапиталом можно оплатить, а ещё можно оформить рассрочку или Долями.",'
+        '"message_type":"question","topic_id":"theme:007_matkap_payment","confidence_theme":0.91}'
+    )
+
+    result = apply_high_risk_content_guards(
+        base,
+        client_message="Можно маткапиталом и сразу в рассрочку?",
+        context={
+            "active_brand": "foton",
+            "conversation_intent_plan": {
+                "primary_intent": "matkap",
+                "topic_id": "theme:007_matkap_payment",
+                "answer_topics": ["matkap", "installment"],
+                "forbidden_pairs": ["matkap+installment"],
+                "template_allowed": False,
+            },
+        },
+    )
+
+    assert "рассроч" not in result.draft_text.casefold()
+    assert "долями" not in result.draft_text.casefold()
+    assert "маткапитал" in result.draft_text.casefold()
+    assert "forbidden_pair_guard_applied" in result.safety_flags
+
+
 def test_group_vs_individual_question_does_not_force_individual_handoff() -> None:
     base = parse_llm_json(
         '{"route":"bot_answer_self_for_pilot","draft_text":"Есть групповые форматы, менеджер поможет выбрать по уровню.",'

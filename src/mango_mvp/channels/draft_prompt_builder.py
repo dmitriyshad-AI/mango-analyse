@@ -219,6 +219,10 @@ def build_draft_prompt(
         "- Отдельные слова клиента — это только сигналы. Не меняй тему и продукт по одному слову, если conversation_intent_plan говорит продолжать прежний контекст.\n"
         "- conversation_intent_plan.primary_intent важнее случайных keyword_signals. Например, «закрепить место» в контексте лагеря — это проверка наличия места, а не фиксация цены.\n"
         "- conversation_intent_plan.fact_scope задаёт точную область фактов. Не заменяй её соседней областью: маткапитал не равен налоговому вычету, расписание занятий не равно часам работы офиса, дневной лагерь не равен выездной ЛВШ.\n"
+        "- conversation_intent_plan.answer_topics — все безопасные темы, которые нужно закрыть в ответе. Если тем несколько, ответь на каждую коротко, не выбирай только первую.\n"
+        "- conversation_intent_plan.forbidden_pairs — связки, которые нельзя предлагать вместе. Например, matkap+installment означает: маткапитал как источник оплаты не смешивать в одном ответе с рассрочкой/Долями.\n"
+        "- conversation_intent_plan.refund_frame=presale_policy — это предпродажный вопрос о правилах возврата до покупки. Ответь спокойно о порядке через менеджера, без полного P0-стопа, без обещания вернуть деньги.\n"
+        "- conversation_intent_plan.template_allowed=false означает: не подменяй содержательный ответ общей заготовкой; шаблон допустим только если ответа по сути нет.\n"
         "- Если conversation_intent_plan.topic_switch_decision=clarify_before_switch, не прыгай в новую ветку: коротко уточни, правильно ли понял смену темы.\n"
         "- Если conversation_intent_plan.answer_policy=answer_directly_if_fact_verified, сначала дай проверенный факт по прямому вопросу, потом один следующий шаг.\n"
         "- Если conversation_intent_plan.answer_policy=answer_safe_parts_then_manager_live_check, ответь на безопасные части и передай менеджеру только live-проверку места/наличия/броней.\n\n"
@@ -387,13 +391,15 @@ def build_prompt_context(context: Mapping[str, Any], *, now: Optional[datetime] 
         "autonomy_policy",
         "known_client_fields",
         "known_dialog_fields",
-        "conversation_intent_plan",
         "funnel_state",
         "known_slots",
     ):
         value = _compact_mapping(source.get(key), max_items=14, max_chars=300)
         if value:
             compact[key] = value
+    intent_plan = _compact_mapping(source.get("conversation_intent_plan"), max_items=36, max_chars=500)
+    if intent_plan:
+        compact["conversation_intent_plan"] = intent_plan
     memory_view = _compact_dialogue_memory_view(source.get("dialogue_memory_view"))
     if memory_view:
         compact["dialogue_memory_view"] = memory_view

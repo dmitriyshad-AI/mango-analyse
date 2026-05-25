@@ -142,7 +142,7 @@ class PilotContext:
         object.__setattr__(
             self,
             "conversation_intent_plan",
-            compact_mapping(self.conversation_intent_plan, max_items=24, max_chars=500),
+            compact_mapping(self.conversation_intent_plan, max_items=36, max_chars=500),
         )
         object.__setattr__(
             self,

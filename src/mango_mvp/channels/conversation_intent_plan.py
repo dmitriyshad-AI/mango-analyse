@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.answer_plan import build_answer_plan
 from mango_mvp.channels.answer_safety_classifier import codes_from_current_message
 from mango_mvp.channels.fact_scope_spec import blocked_neighbors_for
 from mango_mvp.channels.new_lead_funnel import (
@@ -13,6 +14,7 @@ from mango_mvp.channels.new_lead_funnel import (
     extract_subjects,
     normalize_text,
 )
+from mango_mvp.channels.semantic_roles import MessageRoles, tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker as _has_any_marker
 from mango_mvp.channels.text_signals import has_marker as _has_marker
 
@@ -36,9 +38,18 @@ class ConversationIntentPlan:
     do_not_reask_slots: tuple[str, ...] = ()
     keyword_signals: tuple[str, ...] = ()
     risk_signals: tuple[str, ...] = ()
+    topic_roles: tuple[str, ...] = ()
+    payment_method: str = ""
+    payment_source: str = ""
+    refund_frame: str = "none"
+    enrollment_vs_recording: str = ""
+    transfer_sense: str = ""
     required_fact_keys: tuple[str, ...] = ()
     fact_scope: str = ""
     blocked_neighbor_scopes: tuple[str, ...] = ()
+    answer_topics: tuple[str, ...] = ()
+    forbidden_pairs: tuple[str, ...] = ()
+    template_allowed: bool = False
     answer_policy: str = "answer_directly_if_fact_verified"
     route_bias: str = "draft_for_manager"
     next_step_hint: str = ""
@@ -62,9 +73,18 @@ class ConversationIntentPlan:
             "do_not_reask_slots": list(self.do_not_reask_slots),
             "keyword_signals": list(self.keyword_signals),
             "risk_signals": list(self.risk_signals),
+            "topic_roles": list(self.topic_roles),
+            "payment_method": self.payment_method,
+            "payment_source": self.payment_source,
+            "refund_frame": self.refund_frame,
+            "enrollment_vs_recording": self.enrollment_vs_recording,
+            "transfer_sense": self.transfer_sense,
             "required_fact_keys": list(self.required_fact_keys),
             "fact_scope": self.fact_scope,
             "blocked_neighbor_scopes": list(self.blocked_neighbor_scopes),
+            "answer_topics": list(self.answer_topics),
+            "forbidden_pairs": list(self.forbidden_pairs),
+            "template_allowed": self.template_allowed,
             "answer_policy": self.answer_policy,
             "route_bias": self.route_bias,
             "next_step_hint": self.next_step_hint,
@@ -92,6 +112,7 @@ def build_conversation_intent_plan(
     brand = _normalize_brand(active_brand)
     text = str(current_message or "").strip()
     normalized = normalize_text(text)
+    roles = tag_message_roles(normalized)
     memory = dict(dialogue_memory_view or {})
     previous_focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), Mapping) else {}
     memory_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), Mapping) else {}
@@ -127,11 +148,13 @@ def build_conversation_intent_plan(
     required_fact_keys = _required_fact_keys(primary_intent, normalized)
     fact_scope, blocked_neighbor_scopes, scope_notes = _fact_scope_constraints(
         normalized,
+        roles=roles,
         primary_intent=primary_intent,
         product_family=product_family,
         product_scope=product_scope,
         slots=slots,
     )
+    answer_plan = build_answer_plan(roles, external_p0=bool(risk_signals))
     switch_decision, switch_confidence = _topic_switch_decision(
         normalized,
         primary_intent=primary_intent,
@@ -140,6 +163,8 @@ def build_conversation_intent_plan(
         previous_question_kind=previous_question_kind,
     )
     answer_policy, route_bias = _answer_policy(primary_intent, risk_signals=risk_signals)
+    if answer_plan.p0_required:
+        answer_policy, route_bias = "manager_only_p0", "manager_only"
     direct_question = _direct_question(text, previous_open=str(open_question.get("text") or ""))
     notes = _decision_notes(
         primary_intent=primary_intent,
@@ -147,7 +172,7 @@ def build_conversation_intent_plan(
         switch_decision=switch_decision,
         previous_product_family=previous_product_family,
         product_family=product_family,
-    ) + scope_notes
+    ) + scope_notes + tuple(answer_plan.notes)
     fact_query = _fact_query_text(
         text,
         primary_intent=primary_intent,
@@ -171,9 +196,18 @@ def build_conversation_intent_plan(
         do_not_reask_slots=do_not_reask,
         keyword_signals=keyword_signals,
         risk_signals=risk_signals,
+        topic_roles=roles.topics,
+        payment_method=roles.payment_method,
+        payment_source=roles.payment_source,
+        refund_frame=roles.refund_frame,
+        enrollment_vs_recording=roles.enrollment_vs_recording,
+        transfer_sense=roles.transfer_sense,
         required_fact_keys=required_fact_keys,
         fact_scope=fact_scope,
         blocked_neighbor_scopes=blocked_neighbor_scopes,
+        answer_topics=answer_plan.answer_topics,
+        forbidden_pairs=answer_plan.forbidden_pairs,
+        template_allowed=answer_plan.template_allowed,
         answer_policy=answer_policy,
         route_bias=route_bias,
         next_step_hint=_next_step_hint(primary_intent, slots=slots, risk_signals=risk_signals),
@@ -429,6 +463,7 @@ def _required_fact_keys(intent: str, text: str) -> tuple[str, ...]:
 def _fact_scope_constraints(
     text: str,
     *,
+    roles: MessageRoles,
     primary_intent: str,
     product_family: str,
     product_scope: str,
@@ -436,95 +471,113 @@ def _fact_scope_constraints(
 ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     slot_values = slots or {}
     known_format = str(slot_values.get("format") or "").casefold()
-    asks_recording = _asks_lesson_recording(text)
-    mentions_offline = _has_any_marker(text, ("очно", "очный", "очных", "офлайн", "обычные занят", "в классе"))
-    mentions_online = _has_any_marker(text, ("онлайн", "дистанц", "вебинар", "мтс", "link", "линк"))
-    if primary_intent == "matkap":
-        return _scope_tuple("matkap_process")
-    if primary_intent == "tax":
-        return _scope_tuple("tax_deduction")
-    if primary_intent == "discount":
-        if _has_any_marker(text, ("суммир", "складыв", "выбирается одна", "одна скидка", "наибольшая", "не суммируются")):
-            return _scope_tuple("discount_stacking")
-        if _has_any_marker(
-            text,
-            (
-                "второй предмет",
-                "вторым предметом",
-                "второго предмета",
-                "2-й предмет",
-                "последующий предмет",
-                "еще предмет",
-                "ещё предмет",
-                "второй онлайн-предмет",
-                "второй онлайн предмет",
-            )
-        ):
-            return _scope_tuple("discount_second_subject")
-        if _has_any_marker(text, ("второй ребенок", "второй ребёнок", "двое детей", "два ребенка", "два ребёнка", "многодет")):
-            return _scope_tuple("discount_multichild")
-    if primary_intent == "trial":
-        if _has_any_marker(text, ("очно", "очный", "офлайн", "пацаева", "мфти")):
-            return _scope_tuple("trial_offline")
-        if _has_any_marker(text, ("онлайн", "фрагмент", "ссыл", "регист", "получ", "отправ")) or known_format in {"online", "онлайн", "дистанционно"}:
-            return _scope_tuple("trial_online_fragment")
-    if primary_intent == "installment":
-        if _has_marker(text, "долями"):
-            return _scope_tuple("dolyami_parts")
-        if _has_any_marker(text, ("рассроч", "банк", "месяц", "месяцев", "частями")):
-            return _scope_tuple("installment_bank")
-    if primary_intent in {"schedule", "format", "general_consultation"} and asks_recording:
-        if mentions_offline or known_format in {"offline", "очно", "очный"}:
-            return _scope_tuple("offline_recordings")
-        if mentions_online or known_format in {"online", "онлайн", "дистанционно"}:
-            return _scope_tuple("online_recordings")
-    if primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course":
-        if _has_marker(text, "онлайн") and _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "олимпиад", "физтех", "рсош", "перечнев")):
-            if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")) and not _has_marker(text, "не олимпиад"):
-                return _scope_tuple("olympiad_online")
-            return _scope_tuple("regular_online")
-    if primary_intent in {"schedule", "format", "address"}:
-        if _has_any_marker(text, ("запись очных", "записи очных", "запись по очным", "записи по очным", "очных занятий записи", "пропуск очных")):
-            return _scope_tuple("offline_recordings")
-        if _has_any_marker(text, ("записи онлайн", "запись онлайн", "мтс линк", "онлайн записи", "записи уроков онлайн")):
-            return _scope_tuple("online_recordings")
-        if _has_any_marker(text, ("до скольки работает", "как работает офис", "график офиса", "часы работы", "телефон", "контакт")):
-            return _scope_tuple("office_hours")
-        if _has_any_marker(text, ("распис", "во сколько", "по каким дням", "дни занятий", "занятия", "уроки")):
-            return _scope_tuple("class_schedule")
-    if primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course":
-        if _has_marker(text, "онлайн"):
-            if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")):
-                return _scope_tuple("olympiad_online")
-            if _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "цен", "стоим", "распис", "курс")):
-                return _scope_tuple("regular_online")
-    if product_family == "camp" or primary_intent in {"camp", "live_availability"}:
-        city_camp_signal, residential_camp_signal = _camp_scope_signals(text)
-        if product_scope == "lvsh_mendeleevo" or residential_camp_signal:
-            return _scope_tuple("residential_lvsh")
-        if product_scope == "city_camp" or city_camp_signal:
-            return _scope_tuple("city_day_camp")
-    return "", (), ()
-
-
-def _asks_enrollment_signup(text: str) -> bool:
-    value = str(text or "")
-    return bool(
-        re.search(r"\b(?:записаться|записат(?:ь|ся)|оформиться|оформить(?:ся)?)\b", value)
-        or re.search(r"\bзапис[ьи]\b[^.!?\n]{0,80}\b(?:на\s+)?(?:курс|программ|обучен|занятия)\b", value)
-        or re.search(r"\b(?:для|по|ради)\s+запис[ьи]\b", value)
+    scope = (
+        _payment_source_scope(roles)
+        or _discount_scope(text, primary_intent=primary_intent)
+        or _trial_scope(text, roles=roles, primary_intent=primary_intent, known_format=known_format)
+        or _payment_method_scope(text, roles=roles, primary_intent=primary_intent)
+        or _recording_scope(roles=roles, known_format=known_format)
+        or _regular_online_scope(text, roles=roles, primary_intent=primary_intent, product_family=product_family)
+        or _schedule_scope(text, primary_intent=primary_intent)
+        or _camp_scope(text, primary_intent=primary_intent, product_family=product_family, product_scope=product_scope)
     )
+    return _scope_tuple(scope) if scope else ("", (), ())
 
 
-def _asks_lesson_recording(text: str) -> bool:
-    value = str(text or "")
-    if _asks_enrollment_signup(value) and not _has_any_marker(value, ("пропуст", "пропущен", "пересмотр", "урок", "заняти")):
-        return False
-    return bool(
-        re.search(r"\bзапис(?:ь|и|ью|ям|ями)\b[^.!?\n]{0,80}\b(?:урок|заняти|лекци|вебинар)", value)
-        or re.search(r"\b(?:урок|заняти|лекци|вебинар)[^.?!\n]{0,80}\bзапис(?:ь|и|ью|ям|ями)\b", value)
-        or _has_any_marker(value, ("пересмотр", "пропущен", "пропуст"))
+def _payment_source_scope(roles: MessageRoles) -> str:
+    return {"matkap": "matkap_process", "tax_deduction": "tax_deduction"}.get(roles.payment_source, "")
+
+
+_DISCOUNT_SCOPE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("discount_stacking", ("суммир", "складыв", "выбирается одна", "одна скидка", "наибольшая", "не суммируются")),
+    (
+        "discount_second_subject",
+        (
+            "второй предмет",
+            "вторым предметом",
+            "второго предмета",
+            "2-й предмет",
+            "последующий предмет",
+            "еще предмет",
+            "ещё предмет",
+            "второй онлайн-предмет",
+            "второй онлайн предмет",
+        ),
+    ),
+    ("discount_multichild", ("второй ребенок", "второй ребёнок", "двое детей", "два ребенка", "два ребёнка", "многодет")),
+)
+
+
+def _discount_scope(text: str, *, primary_intent: str) -> str:
+    if primary_intent != "discount":
+        return ""
+    return next((scope for scope, markers in _DISCOUNT_SCOPE_MARKERS if _has_any_marker(text, markers)), "")
+
+
+def _trial_scope(text: str, *, roles: MessageRoles, primary_intent: str, known_format: str) -> str:
+    if primary_intent != "trial":
+        return ""
+    if roles.training_format == "ochno":
+        return "trial_offline"
+    if roles.training_format == "online" or known_format in {"online", "онлайн", "дистанционно"} or _has_any_marker(text, ("фрагмент", "ссыл", "регист", "получ", "отправ")):
+        return "trial_online_fragment"
+    return ""
+
+
+def _payment_method_scope(text: str, *, roles: MessageRoles, primary_intent: str) -> str:
+    if primary_intent != "installment":
+        return ""
+    if roles.payment_method == "dolyami":
+        return "dolyami_parts"
+    if roles.payment_method == "rassrochka" and _has_any_marker(
+        text,
+        ("рассроч", "банк", "т-банк", "одобр", "месяцев", "6 месяцев", "10 месяцев", "12 месяцев", "6, 10 или 12"),
+    ):
+        return "installment_bank"
+    return ""
+
+
+def _recording_scope(*, roles: MessageRoles, known_format: str) -> str:
+    if roles.enrollment_vs_recording != "recording":
+        return ""
+    if roles.training_format == "ochno" or known_format in {"offline", "очно", "очный"}:
+        return "offline_recordings"
+    if roles.training_format == "online" or known_format in {"online", "онлайн", "дистанционно"}:
+        return "online_recordings"
+    return ""
+
+
+def _regular_online_scope(text: str, *, roles: MessageRoles, primary_intent: str, product_family: str) -> str:
+    if roles.training_format != "online" or not (
+        primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course"
+    ):
+        return ""
+    if _has_any_marker(text, ("олимпиад", "физтех", "рсош", "перечнев")) and not _has_marker(text, "не олимпиад"):
+        return "olympiad_online"
+    if _has_any_marker(text, ("обычн", "регулярн", "не олимпиад", "цен", "стоим", "распис", "курс")):
+        return "regular_online"
+    return ""
+
+
+def _schedule_scope(text: str, *, primary_intent: str) -> str:
+    if primary_intent not in {"schedule", "format", "address"}:
+        return ""
+    markers: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("office_hours", ("до скольки работает", "как работает офис", "график офиса", "часы работы", "телефон", "контакт")),
+        ("class_schedule", ("распис", "во сколько", "по каким дням", "дни занятий", "занятия", "уроки")),
     )
+    return next((scope for scope, values in markers if _has_any_marker(text, values)), "")
+
+
+def _camp_scope(text: str, *, primary_intent: str, product_family: str, product_scope: str) -> str:
+    if product_family != "camp" and primary_intent not in {"camp", "live_availability"}:
+        return ""
+    city_camp_signal, residential_camp_signal = _camp_scope_signals(text)
+    if product_scope == "lvsh_mendeleevo" or residential_camp_signal:
+        return "residential_lvsh"
+    if product_scope == "city_camp" or city_camp_signal:
+        return "city_day_camp"
+    return ""
 
 
 def _scope_tuple(scope: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:

@@ -1478,6 +1478,7 @@ def apply_high_risk_content_guards(
         skip_quality_template_overwrite
         or answer_contract_controls_green_templates
         or conversation_plan_controls_green_templates
+        or _conversation_plan_template_blocked_by_substantive_answer(result, context=context)
     )
 
     if not skip_green_template_overwrite and _is_unpk_installment_case(result, client_message=client_message, context=context):
@@ -1789,6 +1790,14 @@ def apply_high_risk_content_guards(
         checklist.append("Ответ ссылался на соседнюю область фактов: не подставлять её вместо спрошенной темы.")
         metadata["fact_scope_guard_applied"] = True
 
+    forbidden_pair_template = _forbidden_pair_guard_template(draft_text, context=context)
+    if forbidden_pair_template and not cross_brand_guarded():
+        route = "draft_for_manager"
+        draft_text = forbidden_pair_template
+        flags.append("forbidden_pair_guard_applied")
+        checklist.append("План ответа запретил смешивать разные оси в одном ответе.")
+        metadata["forbidden_pair_guard_applied"] = True
+
     if (
         not cross_brand_guarded()
         and not metadata.get("terminal_safe_template_applied")
@@ -1845,6 +1854,7 @@ def apply_high_risk_content_guards(
         ""
         if metadata.get("terminal_safe_template_applied")
         or metadata.get("fact_scope_guard_applied")
+        or metadata.get("forbidden_pair_guard_applied")
         or metadata.get("schedule_confirmation_safe_template_applied")
         or has_concrete_safe_template
         or _skip_missing_fact_template_by_answer_contract(
@@ -2434,6 +2444,23 @@ def _conversation_plan_controls_green_templates(
     return bool(scope and len(draft) >= 120 and not _looks_like_generic_template(draft))
 
 
+def _conversation_plan_template_blocked_by_substantive_answer(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    plan = _conversation_intent_plan(context)
+    if plan.get("template_allowed") is not False:
+        return False
+    if str(plan.get("route_bias") or "") == "manager_only" or plan.get("p0_required") is True:
+        return False
+    draft = _normalize_for_template_decision(result.draft_text)
+    if not draft or _looks_like_low_value_handoff_only(draft):
+        return False
+    answer_topics = tuple(str(item) for item in plan.get("answer_topics", ()) or () if str(item).strip())
+    return bool(answer_topics and len(draft) >= 80)
+
+
 def _normalize_for_template_decision(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
 
@@ -2511,6 +2538,15 @@ def _compact_conversation_intent_plan_for_metadata(plan: Mapping[str, Any]) -> M
         "required_fact_keys",
         "fact_scope",
         "blocked_neighbor_scopes",
+        "topic_roles",
+        "payment_method",
+        "payment_source",
+        "refund_frame",
+        "enrollment_vs_recording",
+        "transfer_sense",
+        "answer_topics",
+        "forbidden_pairs",
+        "template_allowed",
         "next_step_hint",
     )
     return {key: plan[key] for key in keys if key in plan}
@@ -3758,6 +3794,20 @@ def _fact_scope_guard_template(draft_text: str, *, context: Optional[Mapping[str
     return (
         "Не буду подставлять похожий, но другой факт вместо вашего вопроса. "
         "Передам менеджеру запрос на точную проверку по нужной теме."
+    )
+
+
+def _forbidden_pair_guard_template(draft_text: str, *, context: Optional[Mapping[str, Any]] = None) -> str:
+    plan = _conversation_intent_plan(context)
+    forbidden_pairs = {str(item) for item in plan.get("forbidden_pairs", ()) or () if str(item).strip()}
+    if "matkap+installment" not in forbidden_pairs:
+        return ""
+    text = str(draft_text or "").casefold().replace("ё", "е")
+    if not has_any_marker(text, ("рассроч", "долями", "частями", "помесяч", "банк", "т-банк", "месяц")):
+        return ""
+    return (
+        "Маткапитал — это отдельный источник оплаты через СФР, поэтому не буду смешивать его в одном ответе "
+        "с другими способами оплаты. По маткапиталу менеджер пришлёт актуальный перечень документов и подскажет порядок оформления."
     )
 
 

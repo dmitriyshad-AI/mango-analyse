@@ -72,7 +72,7 @@ Mango Analyse — внутренний проект для отдела прод
 | Долями | 4 равные части. Рассрочка 6/12 месяцев — через менеджера. |
 | Адрес Москвы | Скорняжный, не Скоряжный. |
 | Модульные М9/М11 | Продукта нет, статус discontinued. |
-| Возврат | Сразу менеджер по телефону, шаблоны клиенту не показывать. |
+| Возврат | Гипотетический вопрос до оплаты — автономно по факту про остаток неистраченных средств. Реальная претензия/спор оплаты/«верните деньги» — сразу менеджер. |
 | ЗВШ Менделеево 2026/27 | Дат нет, лист ожидания. |
 | УНПК очно 49 000 / 82 000 | Для 5-11 классов. |
 | УНПК онлайн 41 800 / 69 900 | Олимпиадная Физтех только 9 и 11 классы. |
@@ -92,54 +92,43 @@ Mango Analyse — внутренний проект для отдела прод
 3. Бот читает AMO/Tallanto/CRM только в read-only режиме.
 4. Бот не пишет в AMO/Tallanto/CRM без отдельного подтверждения Дмитрия.
 5. Бот не отправляет клиенту напрямую на первом этапе.
-6. Возврат, жалоба, юридическая угроза, гарантия результата, спорная оплата — `manager_only`.
+6. Реальная претензия по возврату, жалоба, юридическая угроза, гарантия результата, спорная оплата — `manager_only`; гипотетический возврат до оплаты можно объяснять только по подтверждённому факту.
 7. Маткапитал и налоговый вычет можно объяснять как справочные темы, если есть утверждённый факт и нет спорной ситуации.
 8. Подтверждение оплаты возможно только после надёжной read-only сверки AMO/Tallanto.
 9. Если факт не найден или устарел, бот не выдумывает и передаёт менеджеру.
 10. Любые новые смысловые ошибки переводятся в тест, semantic gate, чек-лист или ручной контроль.
 
-## Текущая база знаний v3.3
+## Текущая база знаний v6.3 (каноничная)
 
-Актуальный машинный релиз:
-
-```text
-product_data/knowledge_base/kb_release_20260518_v3_3/
-```
-
-Пакет для Claude и команды:
+Каноничный машинный релиз (его использует код бота и симулятор):
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/
 ```
 
-Пакет для сотрудников:
+Снимок для бота/симулятора: `kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json`
+(захардкожен в `src/mango_mvp/channels/dialogue_contract_pipeline.py` как `DEFAULT_KB_SNAPSHOT_PATH`).
 
-```text
-product_data/knowledge_base/kb_release_20260518_v3_3_employee_pack/
-```
+Важно про имена версий (три РАЗНЫХ оси, не путать):
 
-Пакет для бота:
+- релиз = **v6.3** (`kb_release_20260520_v6_3_team_answers`);
+- версия СХЕМЫ снимка = **v3** (поэтому файл называется `kb_release_v3_snapshot.json`);
+- версия СБОРЩИКА = **v6.1** (`kb_release_v6_1_builder`, скрипт `scripts/build_kb_release_v6_1_team_answers.py`).
 
-```text
-product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack/
-```
+Пакеты v6.3: `kb_release_20260520_v6_3_team_answers_bot_pack/`, `kb_release_20260520_v6_3_team_answers_employee_pack/`.
 
-Проверка Stage 6 на 20 вопросов на бренд через реальный Codex:
+Сборка: ТОЛЬКО через `scripts/build_kb_release_v6_1_team_answers.py` (применяет `release_manifest.yaml` из `_sources/`). НЕ использовать старый `build_kb_release_v3_from_claude_handoff.py`. См. `docs/KB_BUILD_RUNBOOK_2026-05-26.md`.
 
-```text
-product_data/knowledge_base/kb_release_20260518_v3_3_smoke20_codex/
-```
+Статус v6.3 (по актуальному `quality_report.json` / `semantic_review.json`):
 
-Статус v3.3:
-
-- `formal_pass=true`;
-- `semantic_pass=true`;
-- blocking findings: 0;
-- все 664 факта имеют `valid_until`;
-- bot pack не содержит `approval_queue_for_rop_v3.csv` и полный snapshot;
-- есть `bot_template_registry.json`;
-- Stage 6 через реальный Codex: Фотон 20/20 и УНПК 20/20, ошибок 0, брендовых нарушений 0, неподтверждённых числовых обещаний 0;
+- `quality_passed=true`, `semantic_pass=true`, blocking findings: 0;
+- гейты целостности зелёные: `text_number_grounded`, `field_ranges_ok`, `weekly_frequency_is_plausible`, `control_numbers_present`;
+- ~838 фактов, client-safe ~473 (точное число брать из `quality_report.json`, не хардкодить);
 - режим: внутренний пилот на сотрудниках и лояльной подготовленной группе клиентов только как черновики с обязательным одобрением менеджера; публичный трафик и автоотправка не разрешены.
+
+### Устаревшее (НЕ источник правды)
+
+- **v3.3** (`kb_release_20260518_v3_3*`) — устарела, оставлена для истории. Не использовать как текущую.
 
 ## Открытые замечания после Claude CLI review 2026-05-19
 
@@ -158,7 +147,7 @@ Claude CLI через `/kb-review product_data/knowledge_base/kb_release_2026051
 Для смыслового аудита базы знаний сначала проверять:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack/
 ```
 
 Почему: это пакет, который будет использовать будущий бот. Он содержит раздельные факты по брендам, фильтры, полный реестр и контракт использования.
@@ -166,7 +155,7 @@ product_data/knowledge_base/kb_release_20260518_v3_3_bot_pack/
 Для проверки удобства сотрудников отдельно смотреть:
 
 ```text
-product_data/knowledge_base/kb_release_20260518_v3_3_employee_pack/
+product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_employee_pack/
 ```
 
 Не выбирать «последнюю папку» автоматически: рядом лежат smoke, fake и input-папки, которые не являются релизом для аудита.
@@ -214,7 +203,7 @@ Claude CLI в этом проекте должен работать как read-
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_kb_semantic_review.py \
-  --release-dir product_data/knowledge_base/kb_release_20260518_v3_3_handoff_for_claude_and_team
+  --release-dir product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_handoff_for_claude_and_team
 ```
 
 Для bot pack дополнительно вручную проверить:

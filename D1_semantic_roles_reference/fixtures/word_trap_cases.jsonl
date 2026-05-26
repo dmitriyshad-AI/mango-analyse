@@ -1,0 +1,24 @@
+{"id": "trap_ochno_vs_tochnoy", "msg": "Подскажите по точной дате старта курса", "expect": {"training_format": ""}, "why": "«очно» внутри «тОЧНОй» не должно дать формат очно"}
+{"id": "format_ochno_real", "msg": "Хочу заниматься очно в классе", "expect": {"training_format": "ochno"}, "why": "реальный очный формат"}
+{"id": "format_online_real", "msg": "Можно онлайн дистанционно из дома?", "expect": {"training_format": "online"}, "why": "реальный онлайн"}
+{"id": "trap_mnogodetnoy_not_schedule", "msg": "Есть ли скидка для многодетной семьи?", "expect_topic_absent": "schedule", "expect_topic_present": "discount", "why": "«дн» внутри «многоДетНой» не должно дать расписание"}
+{"id": "zapis_enroll_course", "msg": "Как записаться на курс по физике?", "expect": {"enrollment_vs_recording": "enroll"}, "why": "запись = оформление на курс"}
+{"id": "zapis_enroll_verb", "msg": "Хочу оформиться к вам", "expect": {"enrollment_vs_recording": "enroll"}, "why": "оформиться = оформление"}
+{"id": "zapis_recording_lesson", "msg": "Будет ли запись урока, если пропущу занятие?", "expect": {"enrollment_vs_recording": "recording"}, "why": "запись урока = запись занятия, не оформление"}
+{"id": "zapis_recording_missed", "msg": "Я пропустил вебинар, можно пересмотреть?", "expect": {"enrollment_vs_recording": "recording"}, "why": "пересмотреть пропущенное = запись"}
+{"id": "perevod_manager", "msg": "Переведите меня на менеджера, пожалуйста", "expect": {"transfer_sense": "manager"}, "why": "перевод на человека"}
+{"id": "perevod_money", "msg": "Можно оплатить банковским переводом на счёт?", "expect": {"transfer_sense": "money"}, "why": "перевод денег"}
+{"id": "perevod_group", "msg": "Можно перевести ребёнка в другую группу?", "expect": {"transfer_sense": "group"}, "why": "перевод в группу"}
+{"id": "pay_dolyami", "msg": "А Долями можно оплатить?", "expect": {"payment_method": "dolyami"}, "why": "способ оплаты"}
+{"id": "pay_rassrochka", "msg": "Есть рассрочка на год?", "expect": {"payment_method": "rassrochka"}, "why": "способ оплаты"}
+{"id": "source_matkap", "msg": "Можно оплатить материнским капиталом?", "expect": {"payment_source": "matkap"}, "why": "источник оплаты"}
+{"id": "source_tax", "msg": "Дадите справку на налоговый вычет?", "expect": {"payment_source": "tax_deduction"}, "why": "источник/документ вычета"}
+{"id": "refund_presale_peredumayu", "msg": "А если передумаю до начала, деньги вернут?", "expect": {"refund_frame": "presale_policy"}, "why": "ПРОВАЛЬНЫЙ КЕЙС round-4: гипотеза до оплаты, без требования → НЕ P0"}
+{"id": "refund_presale_conditions", "msg": "Перед оплатой хочу понять условия возврата", "expect": {"refund_frame": "presale_policy"}, "why": "вопрос политики до оплаты"}
+{"id": "refund_presale_notlike", "msg": "Если ребёнку не понравится, можно вернуть деньги?", "expect": {"refund_frame": "presale_policy"}, "why": "условная рамка без требования"}
+{"id": "refund_dispute_demand", "msg": "Верните деньги за курс немедленно", "expect": {"refund_frame": "dispute"}, "why": "прямое требование = спор P0"}
+{"id": "refund_dispute_paid", "msg": "Я уже оплатил, хочу возврат", "expect": {"refund_frame": "dispute"}, "why": "оплата + требование = спор P0"}
+{"id": "multitopic_price_installment", "msg": "Сколько стоит и можно ли в рассрочку?", "expect_topics_present": ["price", "installment"], "why": "две темы в одной реплике"}
+{"id": "multitopic_format_schedule", "msg": "Это онлайн? И по каким дням занятия?", "expect_topics_present": ["schedule"], "expect": {"training_format": "online"}, "why": "формат + расписание"}
+{"id": "matkap_installment_forbid", "msg": "Можно маткапиталом и сразу в рассрочку?", "expect_forbidden_pair": "matkap+installment", "why": "запрет смешения источника и способа оплаты"}
+{"id": "identity_bot", "msg": "Вы бот или человек?", "expect_topics_present": ["identity"], "why": "вопрос о природе"}

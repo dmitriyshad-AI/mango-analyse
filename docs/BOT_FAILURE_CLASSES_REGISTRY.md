@@ -153,3 +153,24 @@ Audit pack: `audits/_inbox/telegram_d1_context_retention_root_cycle_20260525`
 - `FC-001 ignored_question`, `FC-004 templated_opening`, `FC-005 over_handoff` остаются основными soft-классами.
 - Решение 2 из ТЗ (тонкий deterministic gate + LLM-смысловая проверка сверху, оба только вычитают) помечено следующим слоем.
 - Решение 3 из ТЗ (если в генерацию пойдёт история клиента/CRM, клиентский контекст получает только активный бренд) помечено следующим слоем; текущий цикл не расширял клиентскую CRM-историю.
+
+## Итерация D1 Semantic Roles / Fact Retrieval round-5 addendum 2026-05-25
+
+Audit pack: `audits/_inbox/d1_round5_addendum_20260525_103002`
+
+- `FC-007 single_topic_answer_to_multitopic_question`: закрыт конкретный блок “цена + рассрочка” для Фотона. `ConversationIntentPlan` теперь запрашивает обе семьи фактов (`prices.current`, `installment_terms.current`), а ответ закрывает обе безопасные части. Регрессии: `test_intent_plan_multitopic_price_installment_requires_both_fact_families`, `test_foton_price_installment_multitopic_answers_both_safe_parts`.
+- `FC-013 fact_selection_wrong_scope`: исправлены удержание онлайн-формата УНПК при передаче менеджеру и распознавание “без проживания” как city-day camp, а не residential ЛВШ. Регрессии: `test_unpk_manager_check_context_update_preserves_online_format`, `test_fact_scope_detection_does_not_treat_no_lodging_as_residential_lvsh`.
+- `FC-001 ignored_question`: частично исправлены follow-up вопросы “куда писать / какой порядок, если передумаем до старта” и “что делают в городской летней школе”; бот теперь даёт полезный частичный ответ, а не повторяет общий шаблон или не просит нерелевантный предмет.
+- `FC-022 presale_refund_policy_false_p0`: предпродажный вопрос о возврате остаётся non-P0, но получил более полезный процессный ответ без обещания суммы/гарантии.
+- `FC-004 templated_opening` и `FC-005 over_handoff` остаются открытыми soft-классами: финальный round-5 без hard FAIL, но с большим числом `PASS_WITH_NOTES`.
+
+Проверки:
+
+- Full offline D1 suite: `422 passed`.
+- Final round-5: FAIL 0, hard-gate 0, PASS 5, PASS_WITH_NOTES 19, tone 71.8.
+- Recall probe: `7/7 = 100%` (в предыдущих контрольных re-run было `8/8 = 100%`).
+
+Решение:
+
+- Этот слой считать `formal_pass` и `semantic_pass_with_notes` для round-5.
+- Дальше не тюнить этот же holdout: отправить папку Claude на независимый regrade, затем работать по оставшимся soft-классам на новом dev-наборе.

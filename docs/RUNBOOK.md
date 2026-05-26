@@ -189,6 +189,12 @@ product_data/knowledge_base/kb_release_20260520_v6_3_team_answers
 product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack
 ```
 
+Каноничная сборка KB v6.3:
+
+```text
+docs/KB_BUILD_RUNBOOK_2026-05-26.md
+```
+
 Порядок быстрых проверок бота:
 
 1. preflight актуальности v8-фактов;

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mango_mvp.insights.sanitizers import has_money_or_terms_risk, sanitize_answer
+from mango_mvp.insights.sanitizers import has_any_safety_risk, has_money_or_terms_risk, sanitize_answer
 
 
 def test_sanitize_answer_keeps_non_money_counts() -> None:
@@ -52,3 +52,25 @@ def test_sanitize_answer_preserves_discount_percent_forms() -> None:
 
         assert ("[PAYMENT_OPTIONS]" in result.text) or ("актуальные варианты" in result.text)
         assert has_money_or_terms_risk(text) is True
+
+
+def test_sanitize_answer_removes_internal_fact_metadata() -> None:
+    result = sanitize_answer(
+        "Ответ клиенту. fact_id:abc fact:v3:foton:price source_id=fact:v3:price trace_id=run-1",
+        mode="bot",
+    )
+
+    assert "fact_id" not in result.text
+    assert "fact:v3" not in result.text
+    assert "source_id" not in result.text
+    assert "trace_id" not in result.text
+    assert "internal_metadata_redacted" in result.flags
+    assert has_any_safety_risk("Ответ fact_id:abc") is True
+
+
+def test_sanitize_answer_flags_raw_json_leak() -> None:
+    raw = '{"route":"draft_for_manager","draft_text":"Ответ","trace_id":"run-1"}'
+    result = sanitize_answer(raw, mode="bot")
+
+    assert "raw_json_redacted" in result.flags
+    assert has_any_safety_risk(raw) is True

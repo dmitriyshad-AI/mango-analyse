@@ -108,6 +108,16 @@ def test_known_dialog_fields_ignore_bot_answers_to_avoid_self_pollution() -> Non
     assert "format" not in fields
 
 
+def test_known_dialog_fields_do_not_treat_program_as_programming_subject() -> None:
+    fields = known_dialog_fields_from_messages(
+        ["Клиент: 6 класс, подскажите по программе городской школы"],
+        active_brand="foton",
+    )
+
+    assert fields["grade"] == "6"
+    assert "subject" not in fields
+
+
 def test_known_client_fields_include_debug_client_and_phone() -> None:
     session = ChatSession(
         debug_phone="79092009933",

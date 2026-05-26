@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -10,10 +11,16 @@ import yaml
 
 
 FEW_SHOT_REFERENCE_SCHEMA_VERSION = "telegram_few_shot_reference_v1_2026_05_23"
+GOLD_ANSWER_CONTEXT_SCHEMA_VERSION = "telegram_gold_answer_context_v1_2026_05_25"
 DEFAULT_WARM_PATH = Path("product_data/bot_improvement_candidates_20260523/01_gold_and_few_shot/few_shot_warm_answers_2026-05-23.yaml")
 DEFAULT_ADVANCED_PATH = Path("product_data/bot_improvement_candidates_20260523/01_gold_and_few_shot/few_shot_advanced_pack_2026-05-23.yaml")
+DEFAULT_GOLD_PATH = Path("product_data/bot_improvement_candidates_20260523/01_gold_and_few_shot/bot_gold_answers.json")
 WARM_PATH_ENV = "MANGO_TELEGRAM_FEW_SHOT_WARM_PATH"
 ADVANCED_PATH_ENV = "MANGO_TELEGRAM_FEW_SHOT_ADVANCED_PATH"
+GOLD_PATH_ENV = "MANGO_TELEGRAM_GOLD_ANSWERS_V3_PATH"
+GOLD_CONTEXT_ENV = "TELEGRAM_DRAFT_GOLD_V3_CONTEXT"
+STYLE_EXAMPLE_LIMIT = 6
+CORRECTION_EXAMPLE_LIMIT = 4
 
 _P0_RE = re.compile(
     r"возврат|верн(ите|уть|ули|у)|суд|прокуратур|роспотреб|жалоб|претензи|договор.*не то|оплатил.*не вид",
@@ -91,18 +98,103 @@ def build_few_shot_reference(
         "injection_rules": [
             "Примеры задают тон и структуру, но не являются источником фактов.",
             "Числа, даты, скидки, адреса, места и условия можно повторять только если они есть в confirmed_facts/facts_context.",
+            "Класс, предмет, формат, расписание, цель клиента и соседнюю тему нельзя додумывать из примера: только из confirmed_facts/facts_context или слов клиента.",
             "Если пример конфликтует с активным брендом или подтверждёнными фактами, игнорируй пример.",
             "Сначала ответь на прямой вопрос; если факта нет, честно скажи, что подтвердит менеджер, и дай полезный ориентир без конкретики.",
         ],
         "detected_topic_key": topic_key,
         "active_brand": brand,
         "precise_fact_available": confirmed_fact_available,
-        "style_examples": _dedupe(style_examples)[:3],
-        "correction_examples": _dedupe(correction_examples)[:3],
+        "style_examples": _dedupe(style_examples)[:STYLE_EXAMPLE_LIMIT],
+        "correction_examples": _dedupe(correction_examples)[:CORRECTION_EXAMPLE_LIMIT],
         "warm_openers": style_phrases.get("warm_openers", [])[:3],
         "forbidden_phrases": style_phrases.get("forbidden_anywhere", [])[:6],
     }
     return {key: value for key, value in result.items() if value not in ({}, [], "", None)}
+
+
+def build_gold_answer_context(
+    *,
+    message_text: str,
+    active_brand: str,
+    topic_id: str = "",
+    confirmed_facts: Mapping[str, Any] | None = None,
+    gold_path: str | Path | None = None,
+) -> Mapping[str, Any]:
+    """Build a compact gold-v3 context for tone and answer shape.
+
+    Gold answers are intentionally not facts. Brand/topic selection and a minimal
+    precise-claim check keep old or cross-brand examples out of the prompt.
+    """
+
+    if not _gold_context_enabled():
+        return {}
+    payload = load_gold_answers(gold_path)
+    topics = payload.get("topics")
+    if not isinstance(topics, Mapping):
+        return {}
+    brand = _normalize_brand(active_brand)
+    if brand not in {"foton", "unpk"}:
+        return {}
+    normalized = _normalize(message_text)
+    topic_key = _infer_gold_topic_key(normalized, topic_id=topic_id)
+    selected_topics = [topic_key] if topic_key != "unknown" else []
+    if topic_key == "unknown" and _identity_question(normalized):
+        selected_topics = ["identity"]
+    confirmed_blob = _confirmed_fact_blob(confirmed_facts or {})
+
+    examples: list[Mapping[str, Any]] = []
+    for key in selected_topics:
+        record = topics.get(key)
+        if not isinstance(record, Mapping):
+            continue
+        brand_record = record.get(brand) if isinstance(record.get(brand), Mapping) else record.get("common")
+        if not isinstance(brand_record, Mapping):
+            continue
+        answer = str(brand_record.get("gold_answer_example") or "").strip()
+        if not answer:
+            continue
+        if _precise_claims_need_confirmed_facts(answer) and not _precise_claims_are_supported(answer, confirmed_blob):
+            continue
+        examples.append(
+            {
+                "topic": key,
+                "brand": brand if isinstance(record.get(brand), Mapping) else "common",
+                "gold_answer_example": answer,
+                "must_include": _clean_sequence(brand_record.get("must_include"), limit=5),
+                "must_not_include": _clean_sequence(brand_record.get("must_not_include"), limit=5),
+            }
+        )
+
+    global_rules = _clean_sequence(payload.get("global_rules"), limit=8)
+    result = {
+        "schema_version": GOLD_ANSWER_CONTEXT_SCHEMA_VERSION,
+        "source_schema_version": str(payload.get("schema_version") or ""),
+        "purpose": "tone_and_structure_only_not_fact_source",
+        "active_brand": brand,
+        "detected_topic": topic_key,
+        "injection_rules": [
+            "Gold-ответы задают тон и структуру, но не являются источником фактов.",
+            "Числа, даты, скидки, адреса, места и условия повторять только при поддержке confirmed_facts/facts_context.",
+            "Класс, предмет, формат, расписание, цель клиента и соседнюю тему нельзя додумывать из gold-примера.",
+            "При конфликте с active_brand, confirmed_facts или правилами безопасности пример игнорируется.",
+        ],
+        "global_rules": global_rules,
+        "examples": examples[:4],
+    }
+    return {key: value for key, value in result.items() if value not in ({}, [], "", None)}
+
+
+def build_gold_answers_v3_summary(gold_context: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not gold_context:
+        return {}
+    return {
+        "schema_version": gold_context.get("source_schema_version") or "gold_answers_v3",
+        "purpose": "tone_and_structure_only_not_fact_source",
+        "active_brand": gold_context.get("active_brand"),
+        "detected_topic": gold_context.get("detected_topic"),
+        "rules": gold_context.get("injection_rules", ()),
+    }
 
 
 def load_warm_examples(path: str | Path | None = None) -> Mapping[str, Any]:
@@ -113,12 +205,26 @@ def load_advanced_examples(path: str | Path | None = None) -> Mapping[str, Any]:
     return _load_yaml_cached(str(_resolve_path(path, ADVANCED_PATH_ENV, DEFAULT_ADVANCED_PATH)))
 
 
+def load_gold_answers(path: str | Path | None = None) -> Mapping[str, Any]:
+    return _load_json_cached(str(_resolve_path(path, GOLD_PATH_ENV, DEFAULT_GOLD_PATH)))
+
+
 @lru_cache(maxsize=8)
 def _load_yaml_cached(path_text: str) -> Mapping[str, Any]:
     path = Path(path_text)
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError):
+        return {}
+    return payload if isinstance(payload, Mapping) else {}
+
+
+@lru_cache(maxsize=8)
+def _load_json_cached(path_text: str) -> Mapping[str, Any]:
+    path = Path(path_text)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, Mapping) else {}
 
@@ -265,6 +371,69 @@ def _infer_topic_key(normalized_message: str, *, topic_id: str) -> str:
     if "дорого" in normalized_message:
         return "objection_expensive"
     return "unknown"
+
+
+_GOLD_TOPIC_BY_FEW_SHOT_TOPIC: Mapping[str, str] = {
+    "01_pricing_with_validity": "pricing",
+    "02_installment_payment": "installment",
+    "03_trial_class": "trial_class",
+    "04_platform_records": "platform_records",
+    "05_schedule_availability": "schedule_groups",
+    "06_matkap": "matkap",
+    "07_tax_deduction": "tax",
+    "08_address": "addresses",
+    "09_discounts_conditional": "discounts",
+    "10_camps": "camps",
+}
+
+
+def _infer_gold_topic_key(normalized_message: str, *, topic_id: str) -> str:
+    if _identity_question(normalized_message):
+        return "identity"
+    few_shot_topic = _infer_topic_key(normalized_message, topic_id=topic_id)
+    return _GOLD_TOPIC_BY_FEW_SHOT_TOPIC.get(few_shot_topic, "unknown")
+
+
+def _identity_question(normalized_message: str) -> bool:
+    return any(marker in normalized_message for marker in ("ты бот", "вы бот", "ты ии", "вы ии", "кто отвечает", "с кем я общаюсь"))
+
+
+def _gold_context_enabled() -> bool:
+    value = os.environ.get(GOLD_CONTEXT_ENV)
+    if value is None:
+        return True
+    return value.strip().casefold() not in {"0", "false", "no", "off", "нет"}
+
+
+def _clean_sequence(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()][:limit]
+
+
+def _confirmed_fact_blob(confirmed_facts: Mapping[str, Any]) -> str:
+    try:
+        raw = json.dumps(confirmed_facts, ensure_ascii=False)
+    except TypeError:
+        raw = str(confirmed_facts)
+    return re.sub(r"\s+", "", raw.casefold())
+
+
+def _precise_claims_need_confirmed_facts(text: str) -> bool:
+    return bool(re.search(r"\d|₽|%|сретенк|красносельск|пацаев|мфти|мтс\s*линк", text, re.I))
+
+
+def _precise_claims_are_supported(text: str, confirmed_blob: str) -> bool:
+    if not confirmed_blob:
+        return False
+    numbers = [re.sub(r"\D", "", item) for item in re.findall(r"\d[\d\s\u00a0]*", text)]
+    numbers = [item for item in numbers if item]
+    for number in numbers:
+        if number not in confirmed_blob:
+            return False
+    address_markers = ("сретенк", "красносельск", "пацаев", "мфти", "мтслинк")
+    normalized_text = re.sub(r"\s+", "", text.casefold())
+    return all(marker in confirmed_blob for marker in address_markers if marker in normalized_text)
 
 
 def _topic_matches(topic_key: str, example_topic: str) -> bool:

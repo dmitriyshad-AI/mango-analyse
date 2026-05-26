@@ -148,10 +148,15 @@ def test_prompt_prioritizes_no_fabrication_over_direct_answer() -> None:
         context={"active_brand": "unpk", "facts_context": {"facts_missing": True}},
     )
 
-    assert "Сначала ответь на прямой вопрос клиента" in prompt
+    assert "первым содержательным предложением буквально ответь" in prompt
     assert "не выдумывать» важнее" in prompt
+    assert "Жёсткий анти-выдумочный барьер" in prompt
+    assert "расписание, класс, предмет, формат" in prompt
+    assert "важнее правил «отвечай живо»" in prompt
+    assert "если клиент спрашивает про запись урока" in prompt
     assert "Не называй неподтверждённые сроки связи менеджера" in prompt
     assert "Не делай догадки по расписанию без факта" in prompt
+    assert "будни" in prompt
 
 
 def test_prompt_requires_warm_human_consultant_tone() -> None:
@@ -196,6 +201,7 @@ def test_prompt_contains_gold_answers_v3_rules_and_context() -> None:
 
     assert "Gold-ответы v3" in prompt
     assert "не дословный скрипт" in prompt
+    assert "Gold/few-shot не разрешают додумывать класс" in prompt
     assert "6, 10 или 12 месяцев" in prompt
     assert "Не говорить старые условия" in prompt
     assert "Запись и оформление по умолчанию дистанционные" in prompt

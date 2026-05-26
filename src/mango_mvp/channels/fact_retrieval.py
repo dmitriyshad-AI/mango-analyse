@@ -14,15 +14,33 @@ FACT_RETRIEVAL_SCHEMA_VERSION = "fact_retrieval_v1_2026_05_25"
 KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "prices": ("price", "prices", "tuition", "year", "semester", "cost", "стоим"),
     "discounts": ("discount", "discounts", "payment_options"),
+    "discounts_year": ("year.discount", "year_discount", "discount_extra", "available_schedules", "год"),
+    "discounts_semester": ("semester.discount", "semester_discount", "discount_extra", "available_schedules", "семестр"),
     "installment_terms": ("installment", "dolyami", "payment_options", "rassroch"),
     "trial_class": ("trial", "fragment", "фрагмент", "probn"),
+    "trial_online_fragment": ("trial", "fragment", "фрагмент", "online_trial"),
     "programs": ("program", "camp", "ls_city", "lvsh", "senior_school", "direction", "subject", "olympiad"),
     "availability": ("availability", "seats", "places", "mest"),
     "schedule": ("schedule", "weekly_lessons", "available_schedules", "days", "lesson"),
+    "schedule_weekend": ("objection_responses.inconvenient_time", "weekend_slots", "выходн", "слоты"),
+    "online_recordings": ("online_recording", "online_recordings", "online_platform.recording", "recording", "запис", "сохран"),
+    "offline_recordings": ("offline_recording", "offline_recordings", "recording", "materials"),
+    "recordings": ("recording", "online_platform.recording", "materials", "запис", "сохран"),
+    "olympiad_online": (
+        "olympiad_online",
+        "online_olympiad",
+        "olympiad_phystech",
+        "phystech",
+        "физтех",
+        "физтех онлайн",
+        "9 и 11",
+    ),
     "formats": ("format", "online", "offline", "ochno"),
     "locations": ("location", "address", "addresses"),
     "documents": ("document", "spravka", "certificate", "cert"),
+    "refund_policy": ("refund_policy", "refund", "returns", "возврат"),
     "matkap_documents": ("matkap", "sfr", "materin"),
+    "matkap_timeline": ("matkap.timeline", "sfr_review", "transfer_days", "total_max_days", "маткап", "сфр"),
     "tax_deduction_procedure": ("tax", "deduction", "vychet", "ndfl", "fns"),
 }
 
@@ -50,7 +68,7 @@ def select_confirmed_facts(
     blocked = {str(item) for item in blocked_scopes if str(item or "").strip()}
     brand = str(active_brand or "").strip()
 
-    answer_facts: list[Mapping[str, object]] = []
+    answer_facts: list[tuple[int, int, Mapping[str, object]]] = []
     rest: list[tuple[int, Mapping[str, object]]] = []
 
     for fact in candidates:
@@ -61,15 +79,18 @@ def select_confirmed_facts(
         if scopes & blocked:
             continue
         fact_key = str(fact.get("fact_key") or "")
-        if any(key_matches(required_key, fact_key) for required_key in required):
-            answer_facts.append(fact)
+        matched_indexes = [idx for idx, required_key in enumerate(required) if key_matches(required_key, fact_key)]
+        if matched_indexes:
+            score = int(fact.get("__score") or 0) if isinstance(fact, Mapping) else 0
+            answer_facts.append((min(matched_indexes), score, fact))
             continue
         score = 0
         if scopes & topics:
             score += 10
         rest.append((score, fact))
 
+    answer_facts.sort(key=lambda item: (item[0], -item[1]))
     rest.sort(key=lambda item: -item[0])
-    result = [*answer_facts, *(fact for _, fact in rest)]
+    result = [fact for _, _, fact in answer_facts] + [fact for _, fact in rest]
     limit = max(k, len(answer_facts))
     return result[:limit]

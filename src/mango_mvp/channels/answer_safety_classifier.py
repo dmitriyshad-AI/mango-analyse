@@ -14,6 +14,7 @@ from mango_mvp.channels.p0_recall_spec import (
     has_complaint_signal,
     is_benign_hypothetical_refund,
 )
+from mango_mvp.channels.semantic_roles import is_negated_refund_topic
 
 ANSWER_SAFETY_SCHEMA_VERSION = "answer_safety_v2_2026_05_24"
 
@@ -79,7 +80,7 @@ def classify_answer_safety(
     evidence: dict[str, str] = {}
     codes: list[str] = []
 
-    if REFUND_RE.search(haystack) and not is_benign_hypothetical_refund(haystack):
+    if REFUND_RE.search(haystack) and not is_benign_hypothetical_refund(haystack) and not is_negated_refund_topic(current):
         codes.append("refund")
         evidence["refund"] = _first_match(REFUND_RE, haystack)
     if LEGAL_RE.search(haystack):
@@ -209,6 +210,8 @@ def _p0_latch_codes(context: Mapping[str, Any] | None) -> tuple[str, ...]:
 def _semantic_non_p0_by_plan(plan: Mapping[str, Any], *, current_norm: str) -> bool:
     if not plan:
         return False
+    if str(plan.get("refund_frame") or "") == "presale_policy" and not codes_from_current_message(current_norm):
+        return True
     primary = str(plan.get("primary_intent") or "").strip()
     if primary in {"refund", "legal_threat", "complaint", "payment_dispute"}:
         return False
@@ -227,11 +230,15 @@ def _semantic_non_p0_by_plan(plan: Mapping[str, Any], *, current_norm: str) -> b
         "trial",
         "camp",
         "schedule",
+        "recording",
         "format",
         "address",
         "document",
         "matkap",
         "tax",
+        "payment_method",
+        "payment_by_invoice_monthly",
+        "olympiad_online",
         "general_consultation",
     }
 

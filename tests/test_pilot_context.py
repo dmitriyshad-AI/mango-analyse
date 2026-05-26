@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 
 from mango_mvp.channels.contracts import ChannelDirection, ChannelMessage
 from mango_mvp.channels.pilot_context import build_pilot_context, pilot_context_safety_contract
+from mango_mvp.channels.draft_prompt_builder import build_prompt_context
+from mango_mvp.channels.few_shot_reference import build_gold_answer_context, build_few_shot_reference
 
 
 def test_pilot_context_marks_family_phone_and_quality() -> None:
@@ -69,3 +71,100 @@ def test_pilot_context_preserves_full_autonomy_topic_list() -> None:
     assert "theme:015_address" in preserved
     assert "theme:026_camp_general" in preserved
     assert len(preserved) == len(allowed)
+
+
+def test_pilot_context_compaction_preserves_held_state_and_focus() -> None:
+    context = build_pilot_context(
+        "А где её смотреть потом?",
+        active_brand="foton",
+        dialogue_memory_view={
+            "known_slots": {"grade": "8", "format": "онлайн"},
+            "held_state": {
+                "active_fact_scope": "online_recordings",
+                "active_topics": ["recording"],
+                "required_fact_keys": ["online_recordings.current"],
+            },
+            "topic_focus": {"product_family": "regular_course", "product": "онлайн"},
+            "safe_answered_parts": ["по онлайн-занятиям записи доступны"],
+        },
+    )
+
+    payload = context.to_prompt_context()
+    memory = payload["dialogue_memory_view"]
+    assert memory["held_state"]["active_fact_scope"] == "online_recordings"
+    assert memory["topic_focus"]["product_family"] == "regular_course"
+    assert "по онлайн-занятиям записи доступны" in memory["safe_answered_parts"]
+
+
+def test_gold_answer_context_is_brand_topic_filtered_and_not_fact_source(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_DRAFT_GOLD_V3_CONTEXT", raising=False)
+
+    context = build_gold_answer_context(
+        message_text="Сколько стоит ЛВШ Менделеево?",
+        active_brand="unpk",
+        topic_id="theme:026_camp_general",
+        confirmed_facts={"unpk_lvsh": "ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽, полная стоимость — 120 000 ₽."},
+    )
+
+    assert context["active_brand"] == "unpk"
+    assert context["detected_topic"] == "camps"
+    examples = context["examples"]
+    assert examples
+    assert examples[0]["brand"] == "unpk"
+    assert "114 000 ₽" in examples[0]["gold_answer_example"]
+    assert "tone_and_structure_only_not_fact_source" in context["purpose"]
+
+
+def test_gold_answer_context_skips_precise_example_without_confirmed_fact(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_DRAFT_GOLD_V3_CONTEXT", raising=False)
+
+    context = build_gold_answer_context(
+        message_text="Сколько стоит ЛВШ Менделеево?",
+        active_brand="unpk",
+        topic_id="theme:026_camp_general",
+        confirmed_facts={},
+    )
+
+    assert context.get("examples") in (None, [])
+    assert "Gold-ответы задают тон" in " ".join(context["injection_rules"])
+    assert "нельзя додумывать из gold-примера" in " ".join(context["injection_rules"])
+
+
+def test_gold_answer_context_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DRAFT_GOLD_V3_CONTEXT", "0")
+
+    context = build_gold_answer_context(
+        message_text="Сколько стоит ЛВШ Менделеево?",
+        active_brand="unpk",
+        topic_id="theme:026_camp_general",
+        confirmed_facts={"unpk_lvsh": "114 000 ₽"},
+    )
+
+    assert context == {}
+
+
+def test_prompt_context_keeps_expanded_few_shot_limits() -> None:
+    payload = build_prompt_context(
+        {
+            "few_shot_style_examples": [f"style {idx}" for idx in range(8)],
+            "few_shot_correction_examples": [f"correction {idx}" for idx in range(6)],
+        }
+    )
+
+    assert payload["few_shot_style_examples"] == [f"style {idx}" for idx in range(6)]
+    assert payload["few_shot_correction_examples"] == [f"correction {idx}" for idx in range(4)]
+
+
+def test_few_shot_reference_uses_expanded_limits(monkeypatch) -> None:
+    monkeypatch.delenv("MANGO_TELEGRAM_FEW_SHOT_WARM_PATH", raising=False)
+    monkeypatch.delenv("MANGO_TELEGRAM_FEW_SHOT_ADVANCED_PATH", raising=False)
+
+    reference = build_few_shot_reference(
+        message_text="Сколько стоит очно?",
+        active_brand="foton",
+        topic_id="theme:001_pricing",
+        confirmed_facts={"price": "Стоимость очного курса подтверждена."},
+    )
+
+    assert len(reference.get("style_examples", ())) <= 6
+    assert len(reference.get("correction_examples", ())) <= 4

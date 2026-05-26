@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mango_mvp.channels.fact_scope_spec import detect_fact_scopes
+from mango_mvp.channels.fact_scope_spec import blocked_neighbors_for, detect_fact_scopes
 
 
 def test_fact_scope_detection_uses_token_boundaries_for_ambiguous_words() -> None:
@@ -16,3 +16,22 @@ def test_fact_scope_detection_keeps_near_neighbor_scopes_distinct() -> None:
     assert detect_fact_scopes("программа приведи друга и кэшбэк") == {"discount_referral"}
     assert detect_fact_scopes("записи очных занятий можно запросить") == {"offline_recordings"}
     assert detect_fact_scopes("фрагмент занятия для онлайн-формата") == {"trial_online_fragment"}
+
+
+def test_fact_scope_detection_covers_rc2b_neighbor_classes() -> None:
+    assert "payment_methods" in detect_fact_scopes("оплатить по счёту банковским переводом")
+    assert "matkap_age_limit" in detect_fact_scopes("маткапитал можно использовать до 25 лет")
+    assert "program_subjects" in detect_fact_scopes("предметы: математика и физика")
+    assert "refund_policy" in detect_fact_scopes("порядок возврата по заявлению")
+    assert "office_hours" in blocked_neighbors_for("refund_policy")
+    assert "class_schedule" in blocked_neighbors_for("refund_policy")
+
+
+def test_fact_scope_detection_does_not_treat_no_lodging_as_residential_lvsh() -> None:
+    city_scopes = detect_fact_scopes("очная городская школа без проживания")
+    assert "city_day_camp" in city_scopes
+    assert "residential_lvsh" not in city_scopes
+
+    day_scopes = detect_fact_scopes("дневной формат без ночёвки и без проживания")
+    assert "city_day_camp" in day_scopes
+    assert "residential_lvsh" not in day_scopes

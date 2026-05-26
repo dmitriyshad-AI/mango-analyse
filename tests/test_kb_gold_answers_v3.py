@@ -51,6 +51,7 @@ def test_foton_installment_source_yaml_contains_confirmed_client_terms() -> None
     assert "6, 10 или 12 месяцев" in client_text
     assert "Долями" in client_text
     assert "до 36 месяцев" not in client_text
+    assert "term_months_confirmed_by_dmitry" not in facts["installment"]["services"]["rassrochka"]
 
 
 def test_foton_online_year_source_omits_unconfirmed_upper_bound() -> None:

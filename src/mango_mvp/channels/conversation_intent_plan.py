@@ -40,6 +40,7 @@ class ConversationIntentPlan:
     risk_signals: tuple[str, ...] = ()
     topic_roles: tuple[str, ...] = ()
     training_format: str = ""
+    training_formats: tuple[str, ...] = ()
     payment_method: str = ""
     payment_source: str = ""
     refund_frame: str = "none"
@@ -76,6 +77,7 @@ class ConversationIntentPlan:
             "risk_signals": list(self.risk_signals),
             "topic_roles": list(self.topic_roles),
             "training_format": self.training_format,
+            "training_formats": list(self.training_formats),
             "payment_method": self.payment_method,
             "payment_source": self.payment_source,
             "refund_frame": self.refund_frame,
@@ -119,13 +121,21 @@ def build_conversation_intent_plan(
     previous_focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), Mapping) else {}
     memory_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), Mapping) else {}
     slots = _merge_slots(known_slots or {}, memory_slots, _extract_slots(text, roles=roles))
+    if roles.training_formats and len(set(roles.training_formats)) > 1:
+        slots.pop("format", None)
     open_question = memory.get("open_question") if isinstance(memory.get("open_question"), Mapping) else {}
     previous_question_kind = str(open_question.get("kind") or "")
     previous_product_family = str(previous_focus.get("product_family") or "")
     previous_product = str(previous_focus.get("product") or "")
+    held_fact_scope = _held_active_fact_scope(memory)
+    held_active_topics = _held_active_topics(memory)
 
     risk_signals = _risk_signals(normalized)
     keyword_signals = _keyword_signals(normalized)
+    if roles.payment_method == "invoice_monthly":
+        keyword_signals = tuple(
+            dict.fromkeys(["payment_method" if signal == "installment" else signal for signal in keyword_signals])
+        )
     product_family, product_scope = _product_focus(
         normalized,
         slots=slots,
@@ -133,6 +143,9 @@ def build_conversation_intent_plan(
         previous_product=previous_product,
         recent_messages=recent_messages,
     )
+    if _is_camp_followup_from_held(normalized, held_fact_scope=held_fact_scope, held_active_topics=held_active_topics):
+        product_family = "camp"
+        product_scope = _camp_product_scope_from_fact_scope(held_fact_scope) or product_scope
     primary_intent = _primary_intent(
         normalized,
         keyword_signals=keyword_signals,
@@ -141,6 +154,8 @@ def build_conversation_intent_plan(
         previous_product_family=previous_product_family,
         product_family=product_family,
         roles=roles,
+        held_fact_scope=held_fact_scope,
+        held_active_topics=held_active_topics,
     )
     intent_topic = _topic_for_intent(primary_intent)
     resolved_topic = topic_id or intent_topic
@@ -148,7 +163,14 @@ def build_conversation_intent_plan(
         resolved_topic = intent_topic
     requested_slots = _requested_slots(normalized, primary_intent=primary_intent)
     do_not_reask = tuple(key for key, value in slots.items() if str(value or "").strip())
-    required_fact_keys = _required_fact_keys(primary_intent, normalized)
+    required_fact_keys = _required_fact_keys(
+        primary_intent,
+        normalized,
+        roles=roles,
+        slots=slots,
+        active_brand=active_brand,
+        held_fact_scope=held_fact_scope,
+    )
     fact_scope, blocked_neighbor_scopes, scope_notes = _fact_scope_constraints(
         normalized,
         roles=roles,
@@ -156,6 +178,7 @@ def build_conversation_intent_plan(
         product_family=product_family,
         product_scope=product_scope,
         slots=slots,
+        held_fact_scope=held_fact_scope,
     )
     answer_plan = build_answer_plan(roles, external_p0=bool(risk_signals) or bool(_held_p0_latched(memory)))
     switch_decision, switch_confidence = _topic_switch_decision(
@@ -201,6 +224,7 @@ def build_conversation_intent_plan(
         risk_signals=risk_signals,
         topic_roles=roles.topics,
         training_format=roles.training_format,
+        training_formats=roles.training_formats,
         payment_method=roles.payment_method,
         payment_source=roles.payment_source,
         refund_frame=roles.refund_frame,
@@ -229,9 +253,13 @@ def _primary_intent(
     previous_product_family: str,
     product_family: str,
     roles: MessageRoles,
+    held_fact_scope: str = "",
+    held_active_topics: Sequence[str] = (),
 ) -> str:
     if "legal" in risk_signals:
         return "legal_threat"
+    if roles.refund_frame == "presale_policy":
+        return "refund_policy"
     if "refund" in risk_signals:
         return "refund"
     if "complaint" in risk_signals:
@@ -240,8 +268,24 @@ def _primary_intent(
         return "payment_dispute"
     if _asks_live_availability(text, previous_product_family=previous_product_family, product_family=product_family):
         return "live_availability"
+    if _is_camp_followup_from_held(text, held_fact_scope=held_fact_scope, held_active_topics=held_active_topics):
+        return "camp"
     if _asks_price_fix(text):
         return "price_fix"
+    if _asks_price_without_installment_focus(text):
+        return "pricing"
+    if roles.payment_source == "matkap":
+        return "matkap"
+    if roles.payment_source == "tax_deduction":
+        return "tax"
+    if roles.payment_method == "invoice_monthly":
+        return "payment_by_invoice_monthly"
+    if roles.transfer_sense == "money":
+        return "payment_method"
+    if roles.enrollment_vs_recording == "recording":
+        return "recording"
+    if roles.online_track == "olympiad_online":
+        return "olympiad_online"
     if "schedule" in roles.topics and re.search(
         r"\bво\s+сколько\b|\bраспис|\bвремя\b|\bдни\b|\bдням\b|\bкогда\b|раз\s+в\s+недел",
         text,
@@ -296,6 +340,21 @@ def _asks_price_fix(text: str) -> bool:
     return _has_any_marker(text, ("по текущей цене", "по текущим условиям"))
 
 
+def _asks_price_without_installment_focus(text: str) -> bool:
+    return _asks_money_price_question(text) and _has_any_marker(
+        text,
+        (
+            "не про рассроч",
+            "рассрочку поняла",
+            "рассрочку уже",
+            "не рассрочку",
+            "нужна цена",
+            "стоимость за год",
+            "цена за год",
+        ),
+    )
+
+
 def _keyword_signals(text: str) -> tuple[str, ...]:
     markers: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("price", ("цен", "стоим", "сколько", "прайс", "руб")),
@@ -303,7 +362,7 @@ def _keyword_signals(text: str) -> tuple[str, ...]:
         ("discount", ("скид", "акци", "промокод", "льгот", "процент", "суммир")),
         ("trial", ("пробн", "фрагмент")),
         ("camp", ("лагер", "лвш", "смен", "менделеево", "прожив", "питан", "трансфер")),
-        ("schedule", ("распис", "когда", "во сколько", "дни", "дням", "время", "заняти")),
+        ("schedule", ("распис", "когда", "во сколько", "дни", "дням", "время", "заняти", "суббот", "воскрес", "выходн")),
         ("format", ("онлайн", "очно", "офлайн", "дистанц", "формат")),
         ("address", ("адрес", "где", "площадк", "метро", "пацаева", "сретен", "красносель")),
         ("document", ("справк", "документ", "договор", "сертификат", "чек", "квитанц")),
@@ -319,6 +378,14 @@ def _is_payment_terms_question(text: str) -> bool:
     return bool(
         _has_any_marker(text, ("оплат", "рассроч", "долями", "частями", "помесяч", "семестр", "банк", "одобр"))
         and _has_any_marker(text, ("услов", "как", "можно", "сколько", "част", "месяц", "семестр", "плат"))
+    )
+
+
+def _asks_money_price_question(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(r"\b(?:стоим\w*|цена|цену|цены|ценой|стоимость|прайс|почем|почём|руб(?:\.|лей|ля|ль)?)\b", normalized)
+        or re.search(r"\bсколько\b[^.!?\n]{0,80}\b(?:стоит|стоим|руб|₽)", normalized)
     )
 
 
@@ -414,11 +481,15 @@ def _topic_for_intent(intent: str) -> str:
         "pricing": "theme:001_pricing",
         "price_fix": "theme:001_pricing",
         "installment": "theme:006_installment",
+        "payment_method": "theme:002_payment_method",
+        "payment_by_invoice_monthly": "theme:002_payment_method",
         "discount": "theme:005_discounts",
         "trial": "theme:023_trial_class",
         "camp": "theme:026_camp_general",
         "live_availability": "theme:026_camp_general",
         "schedule": "theme:013_schedule",
+        "recording": "theme:018_materials_homework",
+        "olympiad_online": "theme:016_program",
         "format": "theme:014_format",
         "address": "theme:015_address",
         "document": "theme:012_certificates",
@@ -426,6 +497,7 @@ def _topic_for_intent(intent: str) -> str:
         "tax": "theme:008_tax_deduction",
         "identity": "service:S5_general_consultation",
         "off_topic": "service:S3_out_of_scope",
+        "refund_policy": "theme:009_refund",
         "refund": "theme:009_refund",
         "legal_threat": "theme:029_legal_question",
         "complaint": "theme:019b_negative_feedback",
@@ -434,34 +506,82 @@ def _topic_for_intent(intent: str) -> str:
     return mapping.get(intent, "service:S5_general_consultation")
 
 
-def _required_fact_keys(intent: str, text: str) -> tuple[str, ...]:
+def _required_fact_keys(
+    intent: str,
+    text: str,
+    *,
+    roles: MessageRoles | None = None,
+    slots: Mapping[str, str] | None = None,
+    active_brand: str = "",
+    held_fact_scope: str = "",
+) -> tuple[str, ...]:
     keys: list[str] = []
     if intent in {"pricing", "price_fix"}:
         keys.append("prices.current")
     if intent == "installment":
         keys.append("installment_terms.current")
+    if intent in {"payment_method", "payment_by_invoice_monthly"}:
+        keys.append("payment_methods.current")
     if intent == "discount":
         keys.append("discounts.current")
+        if _has_any_marker(text, ("за год", "годов", "год")):
+            keys.insert(0, "discounts_year.current")
+        if _has_any_marker(text, ("семестр", "полугод")):
+            keys.insert(0, "discounts_semester.current")
     if intent == "trial":
+        explicitly_offline = bool(roles and roles.training_format == "ochno")
+        if _has_any_marker(text, ("фрагмент", "онлайн", "дистанц")) or (
+            _normalize_brand(active_brand) == "foton" and _has_any_marker(text, ("пробн", "попроб"))
+        ) or (not explicitly_offline and _has_any_marker(text, ("пробн", "попроб"))):
+            keys.append("trial_online_fragment.current")
         keys.append("trial_class.current")
+    if intent == "refund_policy":
+        keys.append("refund_policy.current")
     if intent in {"camp", "live_availability"}:
         keys.append("programs.current")
         if intent == "live_availability":
             keys.append("availability.current")
     if intent == "schedule":
         keys.append("schedule.current")
+        if _has_any_marker(text, ("по каким дням", "выходн", "суббот", "воскрес")):
+            keys.insert(0, "schedule_weekend.current")
+    if intent == "recording":
+        known_format = str((slots or {}).get("format") or "").casefold()
+        if held_fact_scope == "online_recordings":
+            keys.append("online_recordings.current")
+        elif held_fact_scope == "offline_recordings":
+            keys.append("offline_recordings.current")
+        elif roles and roles.training_format == "ochno":
+            keys.append("offline_recordings.current")
+        elif roles and roles.training_format == "online":
+            keys.append("online_recordings.current")
+        elif known_format in {"online", "онлайн", "дистанционно"}:
+            keys.append("online_recordings.current")
+        elif known_format in {"offline", "очно", "очный", "офлайн"}:
+            keys.append("offline_recordings.current")
+        else:
+            keys.append("recordings.current")
     if intent == "format":
         keys.append("formats.current")
+    if intent == "olympiad_online":
+        keys.append("olympiad_online.current")
     if intent == "address":
         keys.append("locations.current")
     if intent == "document":
         keys.append("documents.current")
     if intent == "matkap":
         keys.append("matkap_documents.current")
+        if _has_any_marker(text, ("сфр", "рассматри", "срок", "сколько", "дней", "рабоч")):
+            keys.insert(0, "matkap_timeline.current")
     if intent == "tax":
         keys.append("tax_deduction_procedure.current")
     if _has_any_marker(text, ("прожив", "питан", "трансфер", "что входит")):
         keys.append("programs.current")
+    if roles:
+        if "price" in roles.topics or _asks_money_price_question(text):
+            keys.insert(0, "prices.current")
+        if "installment" in roles.topics and intent != "payment_method":
+            keys.append("installment_terms.current")
     return tuple(dict.fromkeys(keys))
 
 
@@ -473,6 +593,7 @@ def _fact_scope_constraints(
     product_family: str,
     product_scope: str,
     slots: Mapping[str, str] | None = None,
+    held_fact_scope: str = "",
 ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     slot_values = slots or {}
     known_format = str(slot_values.get("format") or "").casefold()
@@ -482,6 +603,7 @@ def _fact_scope_constraints(
         product_family=product_family,
         product_scope=product_scope,
         known_format=known_format,
+        held_fact_scope=held_fact_scope,
     )
     return _scope_tuple(scope) if scope else ("", (), ())
 
@@ -493,11 +615,14 @@ def _scope_from_roles(
     product_family: str,
     product_scope: str,
     known_format: str,
+    held_fact_scope: str = "",
 ) -> str:
     if roles.payment_source == "matkap":
         return "matkap_process"
     if roles.payment_source == "tax_deduction":
         return "tax_deduction"
+    if primary_intent == "refund_policy":
+        return "refund_policy"
     if primary_intent == "discount" and roles.discount_scope:
         return roles.discount_scope
     if primary_intent == "trial":
@@ -510,14 +635,19 @@ def _scope_from_roles(
             return "dolyami_parts"
         if roles.payment_method == "rassrochka":
             return "installment_bank"
+    if primary_intent in {"payment_method", "payment_by_invoice_monthly"}:
+        return "payment_methods"
     if roles.enrollment_vs_recording != "recording":
         pass
+    elif held_fact_scope in {"online_recordings", "offline_recordings"}:
+        return held_fact_scope
     elif roles.training_format == "ochno" or known_format in {"offline", "очно", "очный"}:
         return "offline_recordings"
     elif roles.training_format == "online" or known_format in {"online", "онлайн", "дистанционно"}:
         return "online_recordings"
     if roles.training_format == "online" and (
-        primary_intent in {"pricing", "format", "schedule", "general_consultation"} or product_family == "regular_course"
+        primary_intent in {"pricing", "format", "schedule", "general_consultation", "olympiad_online"}
+        or product_family == "regular_course"
     ):
         if roles.online_track:
             return roles.online_track
@@ -527,6 +657,8 @@ def _scope_from_roles(
         return roles.schedule_scope
     if product_family != "camp" and primary_intent not in {"camp", "live_availability"}:
         return ""
+    if primary_intent in {"camp", "live_availability"} and held_fact_scope in {"city_day_camp", "residential_lvsh"} and not roles.camp_scope:
+        return held_fact_scope
     if product_scope == "lvsh_mendeleevo" or roles.camp_scope == "residential_lvsh":
         return "residential_lvsh"
     if product_scope == "city_camp" or roles.camp_scope == "city_day_camp":
@@ -541,9 +673,11 @@ def _scope_tuple(scope: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
 def _answer_policy(intent: str, *, risk_signals: Sequence[str]) -> tuple[str, str]:
     if risk_signals or intent in {"refund", "legal_threat", "complaint", "payment_dispute"}:
         return "manager_only_p0", "manager_only"
+    if intent == "refund_policy":
+        return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     if intent == "live_availability":
         return "answer_safe_parts_then_manager_live_check", "draft_for_manager"
-    if intent in {"pricing", "price_fix", "installment", "discount", "trial", "camp", "schedule", "format", "address", "document", "matkap", "tax"}:
+    if intent in {"pricing", "price_fix", "installment", "payment_method", "payment_by_invoice_monthly", "discount", "trial", "camp", "schedule", "format", "address", "document", "matkap", "tax"}:
         return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     return "help_then_one_question", "draft_for_manager"
 
@@ -572,6 +706,8 @@ def _next_step_hint(intent: str, *, slots: Mapping[str, str], risk_signals: Sequ
         return "answer_known_price_or_ask_one_missing_selection_slot"
     if intent == "installment":
         return "answer_payment_options_then_offer_manager_setup"
+    if intent == "payment_by_invoice_monthly":
+        return "answer_invoice_monthly_payment_only_if_verified_otherwise_handoff"
     if intent == "trial":
         return "answer_trial_format_then_offer_manager_setup"
     if intent == "camp":
@@ -668,6 +804,8 @@ def _extract_slots(text: str, *, roles: MessageRoles | None = None) -> Mapping[s
 def _format_from_roles(roles: MessageRoles | None) -> str:
     if not roles:
         return ""
+    if roles.training_formats and len(set(roles.training_formats)) > 1:
+        return ""
     return {"online": "онлайн", "ochno": "очно"}.get(roles.training_format, "")
 
 
@@ -675,13 +813,66 @@ def _held_tagger_context(memory: Mapping[str, Any]) -> Mapping[str, object]:
     held = memory.get("held_state") if isinstance(memory.get("held_state"), Mapping) else {}
     return {
         "last_transfer_sense": str(held.get("transfer_sense") or ""),
+        "training_formats": list(held.get("training_formats") or ()),
         "group_topic_active": bool(held.get("group_topic_active")),
+        "active_fact_scope": str(held.get("active_fact_scope") or ""),
+        "active_topics": list(held.get("active_topics") or ()),
     }
+
+
+def _held_active_fact_scope(memory: Mapping[str, Any]) -> str:
+    held = memory.get("held_state") if isinstance(memory.get("held_state"), Mapping) else {}
+    return str(held.get("active_fact_scope") or "")
+
+
+def _held_active_topics(memory: Mapping[str, Any]) -> tuple[str, ...]:
+    held = memory.get("held_state") if isinstance(memory.get("held_state"), Mapping) else {}
+    raw = held.get("active_topics") or ()
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        return tuple(str(item) for item in raw if str(item).strip())
+    return ()
 
 
 def _held_p0_latched(memory: Mapping[str, Any]) -> bool:
     held = memory.get("held_state") if isinstance(memory.get("held_state"), Mapping) else {}
     return bool(held.get("p0_latched"))
+
+
+def _is_camp_followup_from_held(text: str, *, held_fact_scope: str, held_active_topics: Sequence[str]) -> bool:
+    if held_fact_scope not in {"city_day_camp", "residential_lvsh"} and "camp" not in set(held_active_topics):
+        return False
+    if _has_any_marker(text, ("не лагер", "не лвш", "не летн", "вместо лагер")):
+        return False
+    return _has_any_marker(
+        text,
+        (
+            "там",
+            "программ",
+            "что делают",
+            "что входит",
+            "для класса",
+            "для 1",
+            "для 2",
+            "для 3",
+            "для 4",
+            "для 5",
+            "для 6",
+            "для 7",
+            "для 8",
+            "для 9",
+            "для 10",
+            "для 11",
+            "подойд",
+            "занимаются",
+        ),
+    )
+
+
+def _camp_product_scope_from_fact_scope(scope: str) -> str:
+    return {
+        "city_day_camp": "city_camp",
+        "residential_lvsh": "lvsh_mendeleevo",
+    }.get(str(scope or ""), "")
 
 
 def _roles_from_memory_view(memory: Mapping[str, Any]) -> MessageRoles | None:
@@ -690,6 +881,7 @@ def _roles_from_memory_view(memory: Mapping[str, Any]) -> MessageRoles | None:
         return None
     return MessageRoles(
         training_format=str(raw.get("training_format") or ""),
+        training_formats=tuple(str(item) for item in (raw.get("training_formats") or ()) if str(item).strip()),
         enrollment_vs_recording=str(raw.get("enrollment_vs_recording") or ""),
         transfer_sense=str(raw.get("transfer_sense") or ""),
         payment_method=str(raw.get("payment_method") or ""),

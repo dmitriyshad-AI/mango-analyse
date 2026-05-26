@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from mango_mvp.channels.subscription_llm import normalize_subscription_draft_payload
 from scripts import run_telegram_dynamic_client_sim as sim
 
 
@@ -90,6 +91,16 @@ def test_known_dialog_fields_use_only_client_messages():
     assert fields["active_brand"] == "unpk"
 
 
+def test_known_dialog_fields_do_not_treat_program_as_programming_subject():
+    fields = sim.known_dialog_fields_from_client_messages(
+        ["Клиент: 6 класс. Что по программе городской школы?"],
+        active_brand="foton",
+    )
+
+    assert fields["grade"] == "6"
+    assert "subject" not in fields
+
+
 def test_judge_prompt_marks_metadata_as_internal():
     prompt = sim.build_judge_prompt(
         {"output_schema": {"verdict": "PASS|FAIL"}},
@@ -121,6 +132,81 @@ def test_judge_prompt_marks_metadata_as_internal():
     assert "fact:format" in prompt
     assert "verified_safe_template: Фотон" not in prompt
     assert "Клиент видел ответ бота" in prompt
+
+
+def test_v2_retrieved_facts_are_preferred_for_judge():
+    context = {
+        "confirmed_facts": {
+            "fact:old": "Фотон: старый отбор фактов без сроков.",
+        }
+    }
+    metadata = {
+        "retrieved_facts": {
+            "prices_regular_2026_27.signup_deadline": "Фотон: срок записи по раннему бронированию — до 1 мая 2026.",
+            "prices_regular_2026_27.payment_deadline": "Фотон: срок оплаты по раннему бронированию — до 15 мая 2026.",
+        },
+        "retrieved_fact_keys": ["prices_regular_2026_27.signup_deadline", "prices_regular_2026_27.payment_deadline"],
+    }
+
+    facts = sim.facts_for_judge(context, dialogue_contract_metadata=metadata)
+
+    assert facts[0].startswith("prices_regular_2026_27.signup_deadline:")
+    assert "1 мая 2026" in facts[0]
+    assert "15 мая 2026" in facts[1]
+    assert any("fact:old" in item for item in facts)
+
+
+def test_judge_prompt_includes_v2_metadata_and_x2_state():
+    prompt = sim.build_judge_prompt(
+        {"output_schema": {"verdict": "PASS|FAIL"}},
+        {"dialog_id": "v2", "brand": "foton"},
+        [
+            {
+                "turn": 1,
+                "client_message": "Когда срок?",
+                "bot_text": "До 1 мая.",
+                "bot_route": "bot_answer_self_for_pilot",
+                "bot_topic_id": "theme:001_pricing",
+                "bot_safety_flags": ["dialogue_contract_pipeline"],
+                "bot_manager_checklist": [],
+                "bot_missing_facts": [],
+                "bot_dialogue_contract_pipeline": {
+                    "retrieved_fact_keys": ["prices_regular_2026_27.signup_deadline"],
+                    "missing_fact_keys": [],
+                    "warmed": True,
+                    "repaired": False,
+                },
+                "bot_humanity_x2": {"enabled": True, "rewritten": True},
+                "bot_confirmed_facts": [
+                    "prices_regular_2026_27.signup_deadline: Фотон: срок записи — до 1 мая 2026."
+                ],
+                "bot_knowledge_snippets": [],
+            }
+        ],
+    )
+
+    assert "v2_pipeline=" in prompt
+    assert "prices_regular_2026_27.signup_deadline" in prompt
+    assert "x2={'enabled': True, 'rewritten': True}" in prompt
+
+
+def test_normalize_subscription_payload_preserves_v2_metadata():
+    result = normalize_subscription_draft_payload(
+        {
+            "message_type": "question",
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "До 1 мая.",
+            "metadata": {
+                "dialogue_contract_pipeline": {
+                    "retrieved_facts": {"deadline": "до 1 мая"},
+                    "warmed": True,
+                }
+            },
+        }
+    )
+
+    assert result.metadata["dialogue_contract_pipeline"]["retrieved_facts"]["deadline"] == "до 1 мая"
+    assert result.metadata["dialogue_contract_pipeline"]["warmed"] is True
 
 
 def test_normalize_judge_result_does_not_count_empty_violations_as_hard_gate():
@@ -299,6 +385,201 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
     assert summary["answer_quality"]["rewritten_turns"] == 1
     assert summary["answer_quality"]["context_parity_checked"] is True
     assert summary["soft_flags"]["ignored_question"] == 1
+    assert summary["metrics_intervals"]["dialog_pass_rate"]["level"] == "dialog"
+    assert summary["metrics_intervals"]["send_unedited_rate"]["level"] == "turn"
+    assert summary["metrics_intervals"]["human_tone_score"]["mean"] == 72.0
+    assert "needs_second_run" in summary
+
+
+def test_number_audit_levels_against_retrieved_client_and_snapshot(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "price.foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: цена 93 100 ₽.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "price.unpk",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: цена 114 000 ₽.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_number_claims(
+        "Можно оплатить 93 100 ₽, 42 ₽, 114 000 ₽ и 777 ₽?",
+        client_message="А 42 ₽ это тест?",
+        active_brand="foton",
+        retrieved_facts={"retrieved.price": "Фотон: подтверждённая цена 93 100 ₽."},
+        snapshot_path=snapshot_path,
+    )
+
+    levels = {item["normalized"]: item["level"] for item in audit["items"]}
+    assert levels["93100"] == "retrieved_match"
+    assert levels["42"] == "client_echo"
+    assert levels["114000"] == "other_brand_match"
+    assert levels["777"] == "no_match"
+    assert audit["has_risky_number"] is True
+
+
+def test_number_audit_ignores_years_urls_phones_and_academic_year(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_number_claims(
+        "В 2026/27 для 9 и 11 классов ссылка https://example.ru/course/2018411, телефон +7 999 123-45-67.",
+        client_message="",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+
+    assert audit["items"] == []
+
+
+def test_number_audit_dates_match_day_and_month_not_day_only(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "booking.deadline_may",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: бронь действует до 1 мая.",
+            }
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_number_claims(
+        "Бронь действует до 1 июня.",
+        client_message="",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+
+    assert audit["items"][0]["kind"] == "date"
+    assert audit["items"][0]["normalized"] == "date:01.06"
+    assert audit["items"][0]["level"] == "no_match"
+
+
+def test_number_audit_marks_absurd_weekly_frequency_as_kb_integrity_issue(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_number_claims(
+        "Занятия проходят 2 026 раз в неделю.",
+        client_message="",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+
+    assert audit["items"][0]["kind"] == "weekly_frequency"
+    assert audit["items"][0]["level"] == "kb_integrity_issue"
+    assert audit["worst_level"] == "kb_integrity_issue"
+    assert audit["has_risky_number"] is True
+
+
+def test_human_review_rows_classify_hard_gate_cause_from_number_audit():
+    rows = sim.build_human_review_rows(
+        [
+            {
+                "dialog_id": "bad_num",
+                "brand": "foton",
+                "turns": [{"number_audit": {"items": [{"level": "same_brand_global_match"}]}}],
+                "persona": {"persona": "p", "goal": "g"},
+            }
+        ],
+        [
+            {
+                "dialog_id": "bad_num",
+                "brand": "foton",
+                "verdict": "FAIL",
+                "hard_gates_passed": False,
+                "violated_gates": ["fabrication"],
+            }
+        ],
+    )
+
+    assert rows[0]["hard_gate_cause"] == "measurement_suspect"
+    assert rows[0]["number_audit_worst_level"] == "same_brand_global_match"
+
+
+def test_human_review_rows_prioritize_risky_number_over_global_match():
+    rows = sim.build_human_review_rows(
+        [
+            {
+                "dialog_id": "mixed_num",
+                "brand": "foton",
+                "turns": [
+                    {
+                        "number_audit": {
+                            "items": [
+                                {"level": "same_brand_global_match"},
+                                {"level": "no_match"},
+                            ]
+                        }
+                    }
+                ],
+                "persona": {"persona": "p", "goal": "g"},
+            }
+        ],
+        [
+            {
+                "dialog_id": "mixed_num",
+                "brand": "foton",
+                "verdict": "FAIL",
+                "hard_gates_passed": False,
+                "violated_gates": ["fabrication"],
+            }
+        ],
+    )
+
+    assert rows[0]["hard_gate_cause"] == "bot_issue"
+    assert rows[0]["number_audit_worst_level"] == "no_match"
+
+
+def test_human_review_rows_prioritize_explicit_hard_gate_over_number_audit():
+    rows = sim.build_human_review_rows(
+        [
+            {
+                "dialog_id": "brand",
+                "brand": "foton",
+                "turns": [{"number_audit": {"items": [{"level": "retrieved_match"}]}}],
+                "persona": {"persona": "p", "goal": "g"},
+            }
+        ],
+        [
+            {
+                "dialog_id": "brand",
+                "brand": "foton",
+                "verdict": "FAIL",
+                "hard_gates_passed": False,
+                "violated_gates": ["brand_leak"],
+            }
+        ],
+    )
+
+    assert rows[0]["hard_gate_cause"] == "bot_issue"
+
+
+def test_metric_intervals_request_second_run_when_hard_gate_ci_crosses_target():
+    intervals = sim.build_metric_intervals(
+        dialogs=10,
+        pass_count=10,
+        hard_gate_pass_count=10,
+        tone_scores=[90] * 10,
+        send_unedited={"unedited_rate": 1.0, "unedited_autonomous_turns": 10, "candidate_autonomous_turns": 10, "unedited_rate_ci": {"low": 0.9, "high": 1.0}},
+    )
+
+    assert "hard_gate_pass_rate_ci_crosses_target" in intervals["needs_second_run_reasons"]
 
 
 def test_fake_parallel_run_writes_all_dialogs(tmp_path, monkeypatch):

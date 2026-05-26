@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import subprocess
@@ -13,6 +14,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -32,6 +34,12 @@ DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
+METRIC_TARGETS = {
+    "pass_rate": 0.8,
+    "hard_gate_pass_rate": 0.95,
+    "send_unedited_rate": 0.45,
+    "avg_human_tone_score": 65.0,
+}
 
 
 @dataclass(frozen=True)
@@ -652,6 +660,13 @@ def attach_context_facts_to_dialog(dialog: Mapping[str, Any], *, snapshot_path: 
         turn["bot_answer_contract"] = dict(context.get("answer_contract") or {}) if isinstance(
             context.get("answer_contract"), Mapping
         ) else {}
+        turn["number_audit"] = audit_number_claims(
+            bot_text,
+            client_message=client_message,
+            active_brand=str(persona.get("brand") or ""),
+            retrieved_facts={},
+            snapshot_path=snapshot_path,
+        )
         updated_memory = update_dialogue_memory_after_answer(
             context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
             answer_text=bot_text,
@@ -701,6 +716,7 @@ def run_one_dialog(
         )
         result = bot_provider.build_draft(client_message, context=context)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
+        dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)
         updated_memory = update_dialogue_memory_after_answer(
             context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
             answer_text=bot_text,
@@ -709,7 +725,29 @@ def run_one_dialog(
             safety_flags=result.safety_flags,
         )
         dialogue_memory = updated_memory.to_json_dict()
-        confirmed_facts_for_judge = compact_confirmed_facts(context)
+        confirmed_facts_for_judge = facts_for_judge(context, dialogue_contract_metadata=dialogue_contract_metadata)
+        number_audit = audit_number_claims(
+            bot_text,
+            client_message=client_message,
+            active_brand=brand,
+            retrieved_facts=dialogue_contract_metadata.get("retrieved_facts")
+            if isinstance(dialogue_contract_metadata.get("retrieved_facts"), Mapping)
+            else {},
+            snapshot_path=snapshot_path,
+        )
+        humanity_x2_metadata = dict(result.metadata.get("humanity_x2") or {}) if isinstance(result.metadata.get("humanity_x2"), Mapping) else {}
+        if not humanity_x2_metadata and (
+            bool(dialogue_contract_metadata.get("warmed"))
+            or bool(dialogue_contract_metadata.get("warmth_attempted"))
+        ):
+            humanity_x2_metadata = {
+                "enabled": True,
+                "rewritten": bool(dialogue_contract_metadata.get("warmed")),
+                "source": "dialogue_contract_pipeline",
+                "mode": dialogue_contract_metadata.get("warmth_mode"),
+                "attempted": bool(dialogue_contract_metadata.get("warmth_attempted")),
+                "fallback_reason": dialogue_contract_metadata.get("warmth_rejected_reason"),
+            }
         turn = {
             "turn": turn_index,
             "client_message": client_message,
@@ -722,6 +760,10 @@ def run_one_dialog(
             "bot_safety_flags": list(result.safety_flags),
             "bot_manager_checklist": list(result.manager_checklist),
             "bot_missing_facts": list(result.missing_facts),
+            "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
+            "bot_humanity_x2": humanity_x2_metadata,
+            "bot_humanity_x2_rewritten": bool(humanity_x2_metadata.get("rewritten"))
+            or bool(dialogue_contract_metadata.get("warmed")),
             "bot_answer_quality": dict(result.metadata.get("answer_quality") or {}) if isinstance(result.metadata, Mapping) else {},
             "bot_answer_quality_findings": list((result.metadata.get("answer_quality") or {}).get("finding_codes") or [])
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answer_quality"), Mapping)
@@ -742,6 +784,7 @@ def run_one_dialog(
             "context_parity_checked": bool(context.get("context_parity_checked")),
             "bot_confirmed_facts": confirmed_facts_for_judge,
             "bot_knowledge_snippets": compact_knowledge_snippets(context),
+            "number_audit": number_audit,
         }
         turns.append(turn)
         recent_messages.append(f"Клиент: {client_message}")
@@ -871,6 +914,8 @@ def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any]
         "Внутренние метаданные, клиент их НЕ видел: "
         f"route={turn['bot_route']}; topic={turn['bot_topic_id']}; safety={turn['bot_safety_flags']}; "
         f"checklist={turn.get('bot_manager_checklist') or []}; missing_facts={turn.get('bot_missing_facts') or []}\n"
+        f"v2_pipeline={_compact_dialogue_contract_for_judge(turn.get('bot_dialogue_contract_pipeline') or {})}; "
+        f"x2={turn.get('bot_humanity_x2') or {}}\n"
         "Подтверждённые факты, доступные боту на этом ходу, клиент их НЕ видел как служебный блок: "
         f"{_filter_judge_confirmed_facts(turn.get('bot_confirmed_facts') or [])}\n"
         "Фрагменты базы знаний, доступные боту на этом ходу, клиент их НЕ видел как служебный блок: "
@@ -960,6 +1005,9 @@ def build_human_review_rows(
                 "rationale": judge.get("rationale") or "",
                 "persona": (dialog.get("persona") or {}).get("persona") or "",
                 "goal": (dialog.get("persona") or {}).get("goal") or "",
+                "hard_gate_cause": hard_gate_cause(dialog, judge),
+                "hard_gate_cause_evidence": hard_gate_cause_evidence(dialog, judge),
+                "number_audit_worst_level": dialog_number_audit_worst_level(dialog),
                 "manual_check_hint": manual_check_hint(judge, bot_flags),
             }
         )
@@ -1004,6 +1052,67 @@ def manual_check_hint(judge: Mapping[str, Any], bot_flags: Sequence[str]) -> str
     return "Проверить человечность, удержание контекста и полезный следующий шаг."
 
 
+def hard_gate_cause(dialog: Mapping[str, Any], judge: Mapping[str, Any]) -> str:
+    status = str(dialog.get("run_status") or "completed")
+    if status != "completed":
+        return "infra_error"
+    if judge.get("hard_gates_passed", True):
+        return ""
+    levels = dialog_number_audit_levels(dialog)
+    gates = {str(item) for item in (judge.get("violated_gates") or [])}
+    rationale = str(judge.get("rationale") or "").casefold()
+    if gates.intersection({"p0_mishandled", "brand_leak", "revealed_ai", "made_a_promise"}):
+        return "bot_issue"
+    if any(level == "kb_integrity_issue" for level in levels):
+        return "kb_integrity_issue"
+    if any(level in {"other_brand_match", "no_match"} for level in levels):
+        return "bot_issue"
+    if any(level in {"same_brand_global_match", "retrieved_match"} for level in levels):
+        return "measurement_suspect"
+    if "правил" in rationale or "policy" in rationale or "маршрут" in rationale:
+        return "business_rule_gap"
+    return "judge_issue_possible"
+
+
+def hard_gate_cause_evidence(dialog: Mapping[str, Any], judge: Mapping[str, Any]) -> str:
+    if judge.get("hard_gates_passed", True) and str(dialog.get("run_status") or "completed") == "completed":
+        return ""
+    levels = Counter(dialog_number_audit_levels(dialog))
+    gates = "|".join(str(item) for item in (judge.get("violated_gates") or []))
+    pieces = []
+    if gates:
+        pieces.append(f"gates={gates}")
+    if levels:
+        pieces.append("number_levels=" + ",".join(f"{key}:{value}" for key, value in sorted(levels.items())))
+    status = str(dialog.get("run_status") or "completed")
+    if status != "completed":
+        pieces.append(f"run_status={status}")
+    return "; ".join(pieces)
+
+
+def dialog_number_audit_levels(dialog: Mapping[str, Any]) -> list[str]:
+    levels: list[str] = []
+    for turn in dialog.get("turns") or []:
+        audit = turn.get("number_audit") if isinstance(turn, Mapping) else {}
+        if not isinstance(audit, Mapping):
+            continue
+        for item in audit.get("items") or []:
+            if isinstance(item, Mapping):
+                level = str(item.get("level") or "").strip()
+                if level:
+                    levels.append(level)
+    return levels
+
+
+def dialog_number_audit_worst_level(dialog: Mapping[str, Any]) -> str:
+    priority = ("other_brand_match", "no_match", "kb_integrity_issue", "same_brand_global_match", "retrieved_match", "client_echo")
+    levels = set(dialog_number_audit_levels(dialog))
+    for level in priority:
+        if level in levels:
+            return level
+    return ""
+
+
 def build_summary(
     transcripts: Sequence[Mapping[str, Any]],
     judge_results: Sequence[Mapping[str, Any]],
@@ -1030,6 +1139,14 @@ def build_summary(
     hard_gate_failures = [item for item in judge_results if not item.get("hard_gates_passed")]
     scores = [int(item.get("human_tone_score_0_100") or 0) for item in judge_results]
     run_statuses = Counter(str(dialog.get("run_status") or "completed") for dialog in transcripts)
+    send_unedited = _send_unedited_proxy(transcripts, judge_results)
+    metrics = build_metric_intervals(
+        dialogs=len(judge_results),
+        pass_count=verdicts.get("PASS", 0) + verdicts.get("PASS_WITH_NOTES", 0),
+        hard_gate_pass_count=len(judge_results) - len(hard_gate_failures),
+        tone_scores=scores,
+        send_unedited=send_unedited,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1086,9 +1203,38 @@ def build_summary(
                     if str(code).strip()
                 )
             ),
+            "humanity_x2_rewritten_turns": sum(
+                1
+                for dialog in transcripts
+                for turn in (dialog.get("turns") or [])
+                if turn.get("bot_humanity_x2_rewritten")
+            ),
+            "dialogue_contract_warmed_turns": sum(
+                1
+                for dialog in transcripts
+                for turn in (dialog.get("turns") or [])
+                if (turn.get("bot_dialogue_contract_pipeline") or {}).get("warmed")
+            ),
+            "dialogue_contract_warmth_attempted_turns": sum(
+                1
+                for dialog in transcripts
+                for turn in (dialog.get("turns") or [])
+                if (turn.get("bot_dialogue_contract_pipeline") or {}).get("warmth_attempted")
+            ),
+            "dialogue_contract_warmth_rejected_reasons": dict(
+                Counter(
+                    str((turn.get("bot_dialogue_contract_pipeline") or {}).get("warmth_rejected_reason") or "")
+                    for dialog in transcripts
+                    for turn in (dialog.get("turns") or [])
+                    if (turn.get("bot_dialogue_contract_pipeline") or {}).get("warmth_rejected_reason")
+                )
+            ),
         },
         "branch_metrics": _branch_count_metrics(transcripts),
-        "send_unedited_proxy": _send_unedited_proxy(transcripts, judge_results),
+        "send_unedited_proxy": send_unedited,
+        "metrics_intervals": metrics["metrics_intervals"],
+        "needs_second_run": metrics["needs_second_run"],
+        "needs_second_run_reasons": metrics["needs_second_run_reasons"],
     }
 
 
@@ -1150,6 +1296,103 @@ def _send_unedited_proxy(
         "candidate_autonomous_turns": candidate_turns,
         "unedited_autonomous_turns": unedited_turns,
         "unedited_rate": round(unedited_turns / candidate_turns, 3) if candidate_turns else None,
+        "unedited_rate_ci": wilson_interval(unedited_turns, candidate_turns) if candidate_turns else None,
+    }
+
+
+def build_metric_intervals(
+    *,
+    dialogs: int,
+    pass_count: int,
+    hard_gate_pass_count: int,
+    tone_scores: Sequence[int],
+    send_unedited: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    send_rate = send_unedited.get("unedited_rate")
+    intervals: dict[str, Any] = {
+        "dialog_pass_rate": {
+            "level": "dialog",
+            "numerator": pass_count,
+            "denominator": dialogs,
+            "value": round(pass_count / dialogs, 3) if dialogs else None,
+            "ci": wilson_interval(pass_count, dialogs) if dialogs else None,
+            "target": METRIC_TARGETS["pass_rate"],
+        },
+        "hard_gate_pass_rate": {
+            "level": "dialog",
+            "numerator": hard_gate_pass_count,
+            "denominator": dialogs,
+            "value": round(hard_gate_pass_count / dialogs, 3) if dialogs else None,
+            "ci": wilson_interval(hard_gate_pass_count, dialogs) if dialogs else None,
+            "target": METRIC_TARGETS["hard_gate_pass_rate"],
+        },
+        "send_unedited_rate": {
+            "level": "turn",
+            "numerator": send_unedited.get("unedited_autonomous_turns"),
+            "denominator": send_unedited.get("candidate_autonomous_turns"),
+            "value": send_rate,
+            "ci": send_unedited.get("unedited_rate_ci"),
+            "target": METRIC_TARGETS["send_unedited_rate"],
+        },
+        "human_tone_score": tone_stats(tone_scores),
+    }
+    intervals["human_tone_score"]["target"] = METRIC_TARGETS["avg_human_tone_score"]
+    reasons: list[str] = []
+    for key in ("dialog_pass_rate", "hard_gate_pass_rate", "send_unedited_rate"):
+        metric = intervals[key]
+        ci = metric.get("ci")
+        value = metric.get("value")
+        target = metric.get("target")
+        if value is None or not isinstance(ci, Mapping) or target is None:
+            continue
+        if ci.get("low") <= target <= ci.get("high"):
+            reasons.append(f"{key}_ci_crosses_target")
+    hard_metric = intervals["hard_gate_pass_rate"]
+    if hard_metric.get("value") is not None and hard_metric.get("value") < 1:
+        reasons.append("hard_gate_failure_observed")
+    tone = intervals["human_tone_score"]
+    tone_mean = tone.get("mean")
+    tone_target = tone.get("target")
+    if tone_mean is not None and tone_target is not None:
+        low = tone_mean - float(tone.get("stderr") or 0.0)
+        high = tone_mean + float(tone.get("stderr") or 0.0)
+        if low <= tone_target <= high:
+            reasons.append("human_tone_stderr_crosses_target")
+    return {
+        "metrics_intervals": intervals,
+        "needs_second_run": bool(reasons),
+        "needs_second_run_reasons": reasons,
+    }
+
+
+def wilson_interval(successes: int, total: int, *, z: float = 1.96) -> Mapping[str, float] | None:
+    if total <= 0:
+        return None
+    p = successes / total
+    denom = 1 + z * z / total
+    center = (p + z * z / (2 * total)) / denom
+    margin = z * math.sqrt((p * (1 - p) + z * z / (4 * total)) / total) / denom
+    return {"low": round(max(0.0, center - margin), 3), "high": round(min(1.0, center + margin), 3)}
+
+
+def tone_stats(scores: Sequence[int]) -> Mapping[str, Any]:
+    values = [float(score) for score in scores]
+    if not values:
+        return {"level": "dialog", "n": 0, "mean": None, "stddev": None, "stderr": None}
+    mean = sum(values) / len(values)
+    if len(values) > 1:
+        variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+        stddev = math.sqrt(variance)
+        stderr = stddev / math.sqrt(len(values))
+    else:
+        stddev = 0.0
+        stderr = 0.0
+    return {
+        "level": "dialog",
+        "n": len(values),
+        "mean": round(mean, 1),
+        "stddev": round(stddev, 2),
+        "stderr": round(stderr, 2),
     }
 
 
@@ -1168,6 +1411,282 @@ def compact_confirmed_facts(context: Mapping[str, Any], *, limit: int = 12, max_
         if len(result) >= limit:
             break
     return result
+
+
+def _dialogue_contract_metadata_from_result(result: Any) -> Mapping[str, Any]:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    pipeline = metadata.get("dialogue_contract_pipeline")
+    return dict(pipeline) if isinstance(pipeline, Mapping) else {}
+
+
+def facts_for_judge(
+    context: Mapping[str, Any],
+    *,
+    dialogue_contract_metadata: Mapping[str, Any] | None = None,
+    limit: int = 20,
+    max_chars: int = 320,
+) -> list[str]:
+    """Facts visible to judge should match what the bot actually retrieved.
+
+    For v2 turns, `retrieved_facts` is the cleanest source of truth. We append the
+    legacy context facts after it for continuity, but do not replace v2 facts with
+    the older selector output.
+    """
+    result: list[str] = []
+    seen: set[str] = set()
+    pipeline = dialogue_contract_metadata if isinstance(dialogue_contract_metadata, Mapping) else {}
+    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    for key, value in retrieved.items():
+        text = _compact_fact_for_judge(key, value, max_chars=max_chars)
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    for item in compact_confirmed_facts(context, limit=limit, max_chars=max_chars):
+        if item not in seen:
+            result.append(item)
+            seen.add(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _compact_fact_for_judge(key: object, value: object, *, max_chars: int) -> str:
+    clean_key = str(key or "").strip()
+    text = str(value or "").strip()
+    if not clean_key or not text:
+        return ""
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return f"{clean_key}: {text}"
+
+
+def _compact_dialogue_contract_for_judge(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    keep = {
+        "retrieved_fact_keys": value.get("retrieved_fact_keys") or [],
+        "missing_fact_keys": value.get("missing_fact_keys") or [],
+        "fallback_reason": value.get("fallback_reason") or "",
+        "warmed": bool(value.get("warmed")),
+        "repaired": bool(value.get("repaired")),
+    }
+    return keep
+
+
+def audit_number_claims(
+    text: str,
+    *,
+    client_message: str,
+    active_brand: str,
+    retrieved_facts: Mapping[str, Any] | None,
+    snapshot_path: Path,
+) -> Mapping[str, Any]:
+    claims = extract_number_claims(text)
+    client_values = {claim["normalized"] for claim in extract_number_claims(client_message)}
+    retrieved = {
+        str(key): str(value)
+        for key, value in (retrieved_facts or {}).items()
+        if str(key).strip() and str(value).strip()
+    }
+    snapshot_index = snapshot_number_index(snapshot_path)
+    brand = str(active_brand or "").casefold()
+    items: list[dict[str, Any]] = []
+    for claim in claims:
+        normalized = str(claim["normalized"])
+        retrieved_matches = [
+            key
+            for key, fact_text in retrieved.items()
+            if claim_matches_text(claim, fact_text)
+        ]
+        same_brand_matches = sorted(snapshot_index.get(brand, {}).get(normalized, set()))
+        other_brand_matches = sorted(
+            key
+            for item_brand, values in snapshot_index.items()
+            if item_brand != brand
+            for key in values.get(normalized, set())
+        )
+        if str(claim.get("kind") or "") == "weekly_frequency" and int(float(normalized)) > 7:
+            level = "kb_integrity_issue"
+        elif normalized in client_values:
+            level = "client_echo"
+        elif retrieved_matches:
+            level = "retrieved_match"
+        elif same_brand_matches:
+            level = "same_brand_global_match"
+        elif other_brand_matches:
+            level = "other_brand_match"
+        else:
+            level = "no_match"
+        items.append(
+            {
+                "claim_text": claim["text"],
+                "kind": claim["kind"],
+                "normalized": normalized,
+                "level": level,
+                "matched_fact_keys": retrieved_matches or same_brand_matches[:5] or other_brand_matches[:5],
+                "matched_brand": brand if retrieved_matches or same_brand_matches else ("other" if other_brand_matches else ""),
+            }
+        )
+    counts = Counter(str(item["level"]) for item in items)
+    return {
+        "items": items,
+        "counts_by_level": dict(counts),
+        "worst_level": worst_number_audit_level(counts.keys()),
+        "has_risky_number": any(level in {"kb_integrity_issue", "no_match", "other_brand_match"} for level in counts),
+    }
+
+
+_MONEY_AUDIT_RE = re.compile(r"(?<!\d)(\d[\d \u00a0]{2,})(?:\s*(?:₽|руб\.?|рубл(?:ей|я|ь)?))", re.I)
+_PERCENT_AUDIT_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%")
+_WEEKLY_AUDIT_RE = re.compile(r"(?<!\d)(\d{1,4})\s+раз(?:а)?\s+в\s+недел", re.I)
+_DATE_AUDIT_RE = re.compile(r"(?<!\d)(\d{1,2})[. ](?:\d{1,2}|январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)", re.I)
+_PLAIN_AUDIT_RE = re.compile(r"(?<![\w@/.-])(\d[\d \u00a0]{1,})(?![\w@/.-])")
+
+
+def extract_number_claims(text: str) -> list[Mapping[str, str]]:
+    source = str(text or "")
+    claims: list[dict[str, str]] = []
+    spans: list[tuple[int, int]] = []
+    ignored_spans = list(ignored_number_spans(source))
+    for kind, regex in (
+        ("money", _MONEY_AUDIT_RE),
+        ("percent", _PERCENT_AUDIT_RE),
+        ("weekly_frequency", _WEEKLY_AUDIT_RE),
+        ("date", _DATE_AUDIT_RE),
+    ):
+        for match in regex.finditer(source):
+            if any(start <= match.start() < end for start, end in ignored_spans):
+                continue
+            normalized = normalize_date_claim(match.group(0)) if kind == "date" else normalize_audit_number(match.group(1))
+            if normalized:
+                claims.append({"kind": kind, "text": match.group(0), "normalized": normalized})
+                spans.append(match.span())
+    for match in _PLAIN_AUDIT_RE.finditer(source):
+        if any(start <= match.start() < end for start, end in spans + ignored_spans):
+            continue
+        normalized = normalize_audit_number(match.group(1))
+        if not normalized:
+            continue
+        value = int(normalized)
+        if value in {2026, 2027}:
+            continue
+        claims.append({"kind": "plain_number", "text": match.group(0), "normalized": normalized})
+    return claims
+
+
+def ignored_number_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for regex in (
+        re.compile(r"https?://\S+|www\.\S+|\S+@\S+"),
+        re.compile(r"(?:\+7|8)[\s()_-]*\d[\d\s()_-]{7,}\d"),
+        re.compile(r"\b20\d{2}\s*/\s*\d{2}\b"),
+        re.compile(r"\b\d{1,2}(?:\s*(?:,|и|/|[–-])\s*\d{1,2})+\s+класс\w*", re.I),
+        re.compile(r"\b\d{1,2}\s+класс\w*", re.I),
+        re.compile(r"\b(?:\d{1,2}[:.]\d{2})\s*[–-]\s*(?:\d{1,2}[:.]\d{2})\b"),
+        re.compile(r"\b(?:Л\d+|№\s*\d+|\d+Л\d+)\b", re.I),
+    ):
+        spans.extend(match.span() for match in regex.finditer(str(text or "")))
+    return spans
+
+
+def normalize_audit_number(value: object) -> str:
+    raw = str(value or "").replace(" ", "").replace("\u00a0", "").replace(",", ".")
+    try:
+        number = float(raw)
+    except ValueError:
+        return ""
+    return str(int(number)) if number == int(number) else str(number)
+
+
+_MONTH_NUMBER_BY_TEXT = {
+    "январ": "01",
+    "феврал": "02",
+    "март": "03",
+    "апрел": "04",
+    "ма": "05",
+    "июн": "06",
+    "июл": "07",
+    "август": "08",
+    "сентябр": "09",
+    "октябр": "10",
+    "ноябр": "11",
+    "декабр": "12",
+}
+
+
+def normalize_date_claim(value: object) -> str:
+    text = str(value or "").casefold().replace("ё", "е")
+    match = re.search(
+        r"(?<!\d)(\d{1,2})[. ](0?\d{1,2}|январ\w*|феврал\w*|март\w*|апрел\w*|ма[йя]|июн\w*|июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*)(?:[. ](20\d{2}))?",
+        text,
+        re.I,
+    )
+    if not match:
+        return ""
+    day = int(match.group(1))
+    if day < 1 or day > 31:
+        return ""
+    month_raw = match.group(2)
+    month = ""
+    if month_raw.isdigit():
+        month_number = int(month_raw)
+        if 1 <= month_number <= 12:
+            month = f"{month_number:02d}"
+    else:
+        for prefix, number in _MONTH_NUMBER_BY_TEXT.items():
+            if month_raw.startswith(prefix):
+                month = number
+                break
+    if not month:
+        return ""
+    year = match.group(3) or ""
+    return f"date:{day:02d}.{month}" + (f".{year}" if year else "")
+
+
+def claim_matches_text(claim: Mapping[str, Any], text: str) -> bool:
+    normalized = str(claim.get("normalized") or "")
+    if not normalized:
+        return False
+    text_numbers = {str(item["normalized"]) for item in extract_number_claims(text)}
+    if normalized in text_numbers:
+        return True
+    return normalized in re.sub(r"\D+", " ", str(text or "")).split()
+
+
+@lru_cache(maxsize=8)
+def snapshot_number_index(snapshot_path: Path) -> Mapping[str, Mapping[str, frozenset[str]]]:
+    path = Path(snapshot_path)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    facts = payload.get("facts") if isinstance(payload, Mapping) else []
+    index: dict[str, dict[str, set[str]]] = {}
+    if not isinstance(facts, Sequence) or isinstance(facts, (str, bytes, bytearray)):
+        return {}
+    for fact in facts:
+        if not isinstance(fact, Mapping):
+            continue
+        if not fact.get("allowed_for_client_answer"):
+            continue
+        brand = str(fact.get("brand") or "").casefold()
+        key = str(fact.get("fact_key") or fact.get("fact_id") or "")
+        text = " ".join(str(fact.get(field) or "") for field in ("client_safe_text", "fact_text", "manager_check_text", "structured_value"))
+        for claim in extract_number_claims(text):
+            index.setdefault(brand, {}).setdefault(str(claim["normalized"]), set()).add(key)
+    return {brand: {number: frozenset(keys) for number, keys in values.items()} for brand, values in index.items()}
+
+
+def worst_number_audit_level(levels: Any) -> str:
+    present = {str(level) for level in levels if str(level)}
+    for level in ("kb_integrity_issue", "other_brand_match", "no_match", "same_brand_global_match", "retrieved_match", "client_echo"):
+        if level in present:
+            return level
+    return ""
 
 
 def _filter_judge_confirmed_facts(items: Sequence[Any]) -> list[str]:
@@ -1321,7 +1840,7 @@ def known_dialog_fields_from_client_messages(messages: Sequence[str], *, active_
         ("математ", "математика"),
         ("физик", "физика"),
         ("информат", "информатика"),
-        ("программ", "программирование"),
+        ("программирован", "программирование"),
         ("русск", "русский язык"),
         ("англий", "английский язык"),
         ("хими", "химия"),
@@ -1385,6 +1904,9 @@ def write_human_review_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> Non
         "rationale",
         "persona",
         "goal",
+        "hard_gate_cause",
+        "hard_gate_cause_evidence",
+        "number_audit_worst_level",
         "manual_check_hint",
     ]
     with path.open("w", encoding="utf-8", newline="") as file:

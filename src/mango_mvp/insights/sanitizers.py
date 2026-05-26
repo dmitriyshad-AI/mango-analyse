@@ -171,6 +171,17 @@ BOT_PLACEHOLDER_RE = re.compile(
 )
 BOT_UNSAFE_PLACEHOLDER_RE = re.compile(r"\[(?:АКТУАЛЬН|СТОИМОСТ|СКИДК|РАССРОЧ|ВОЗВРАТ|ТЕЛЕФОН|ПОЧТ|ИМЯ|КОМПАН)\w*\]", re.I)
 PERSONAL_PLACEHOLDER_RE = re.compile(r"\[(?:CLIENT_NAME|PHONE|EMAIL)\]")
+INTERNAL_METADATA_RE = re.compile(
+    r"\b(?:fact_id|source_id|trace_id)\s*[:=]\s*[^\s,;}\]]+|"
+    r"\bfact:v3:[A-Za-z0-9_:\-]+|"
+    r"\bsource:[A-Za-z0-9_:\-]+",
+    re.I,
+)
+RAW_JSON_LEAK_RE = re.compile(
+    r"^\s*[\{\[]\s*\"(?:message_type|route|topic_id|draft_text|safety_flags|manager_checklist|fact_id|source_id|trace_id)\"|"
+    r"\"(?:message_type|route|topic_id|draft_text|safety_flags|manager_checklist|fact_id|source_id|trace_id)\"\s*:",
+    re.I | re.S,
+)
 
 FLAG_GROUPS: dict[str, tuple[str, ...]] = {
     "brand_risk_flag": ("brand_normalized",),
@@ -230,6 +241,10 @@ def _sanitize_answer_pass(text: object, *, mode: SanitizerMode = "manager") -> S
         return SanitizedText("", (), "empty")
 
     result = source
+    if mode == "bot" and RAW_JSON_LEAK_RE.search(result):
+        flags.append("raw_json_redacted")
+        result = RAW_JSON_LEAK_RE.sub("", result)
+    result = _replace(INTERNAL_METADATA_RE, result, "", flags, "internal_metadata_redacted")
     result = _replace(EMAIL_RE, result, "[EMAIL]", flags, "email_redacted")
     result = _replace(BROKEN_EMAIL_RE, result, "[EMAIL]", flags, "email_redacted")
     result = _replace(MESSENGER_HANDLE_RE, result, "[EMAIL]", flags, "email_redacted")
@@ -362,7 +377,12 @@ def has_personal_data_risk(text: object) -> bool:
 
 
 def has_any_safety_risk(text: object) -> bool:
-    return has_brand_risk(text) or has_money_or_terms_risk(text) or has_personal_data_risk(text)
+    return has_brand_risk(text) or has_money_or_terms_risk(text) or has_personal_data_risk(text) or has_internal_metadata_risk(text)
+
+
+def has_internal_metadata_risk(text: object) -> bool:
+    value = clean_text(text)
+    return bool(INTERNAL_METADATA_RE.search(value) or RAW_JSON_LEAK_RE.search(value))
 
 
 def _replace(pattern: re.Pattern[str], text: str, replacement: str, flags: list[str], flag: str) -> str:

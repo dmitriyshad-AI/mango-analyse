@@ -786,6 +786,10 @@ def _rewrite_locked(
         return True
     if "direct_process_safe_template_applied" in flags:
         return True
+    if "camp_safe_template_applied" in flags and _conversation_intent_plan(context).get("primary_intent") == "camp":
+        return True
+    if "price_installment_multitopic_template_applied" in flags:
+        return True
     return bool(codes_from_text(str(client_message or "")))
 
 

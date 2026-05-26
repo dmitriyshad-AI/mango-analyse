@@ -499,14 +499,26 @@ def _client_only_recent_text(recent_messages: Sequence[str]) -> str:
 
 def extract_format(text: str) -> str:
     normalized = normalize_text(text)
-    if re.search(r"(?<![a-zа-яё])онлайн(?:[а-яёa-z-]*)?\b", normalized) or has_marker(normalized, "дистанц") or has_marker(normalized, "вебинар"):
-        return "online"
-    if (
+    online_hit = (
+        re.search(r"(?<![a-zа-яё])онлайн(?:[а-яёa-z-]*)?\b", normalized)
+        or has_marker(normalized, "дистанц")
+        or has_marker(normalized, "вебинар")
+    )
+    offline_hit = (
         re.search(r"(?<![a-zа-яё])очн(?:о|ый|ая|ое|ые|ых|ым|ом|ую|ого|ому|ыми)?\b", normalized)
         or re.search(r"(?<![a-zа-яё])офлайн(?:[а-яёa-z-]*)?\b", normalized)
         or has_marker(normalized, "в классе")
-    ):
+    )
+    online_negated = bool(re.search(r"\b(?:не|только\s+не)\s+онлайн\w*\b", normalized))
+    offline_negated = bool(re.search(r"\b(?:не|только\s+не)\s+очн\w*\b|\b(?:не|только\s+не)\s+офлайн\w*\b", normalized))
+    if online_hit and offline_hit and has_marker(normalized, "или") and not online_negated and not offline_negated:
+        return ""
+    if online_hit and not online_negated and not (offline_hit and not offline_negated):
+        return "online"
+    if offline_hit and not offline_negated:
         return "offline"
+    if online_hit and not online_negated:
+        return "online"
     return ""
 
 

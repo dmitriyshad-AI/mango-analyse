@@ -66,6 +66,76 @@ def test_intent_plan_does_not_treat_obsudit_as_court() -> None:
     assert plan.route_bias != "manager_only"
 
 
+def test_intent_plan_presale_refund_wins_over_schedule_word() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="А если передумаю до начала занятий, деньги вернут?",
+        active_brand="foton",
+        known_slots={"grade": "9", "subject": "физика", "format": "очно"},
+    )
+
+    assert plan.primary_intent == "refund_policy"
+    assert plan.topic_id == "theme:009_refund"
+    assert plan.route_bias == "bot_answer_self_for_pilot"
+    assert plan.refund_frame == "presale_policy"
+    assert "refund_policy.current" in plan.required_fact_keys
+    assert "schedule.current" not in plan.required_fact_keys
+
+
+def test_intent_plan_refund_process_followup_does_not_become_schedule() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="А это оформляется по заявлению? Какой порядок возврата?",
+        active_brand="foton",
+        known_slots={"grade": "9", "subject": "физика", "format": "очно"},
+        dialogue_memory_view={
+            "held_state": {
+                "active_fact_scope": "refund_policy",
+                "active_topics": ["refund_presale"],
+                "required_fact_keys": ["refund_policy.current"],
+            },
+            "open_question": {"kind": "refund_policy", "text": "Если передумаю до старта, деньги вернут?"},
+        },
+    )
+
+    assert plan.primary_intent == "refund_policy"
+    assert plan.topic_id == "theme:009_refund"
+    assert plan.fact_scope == "refund_policy"
+    assert "office_hours" in plan.blocked_neighbor_scopes
+    assert "refund_policy.current" in plan.required_fact_keys
+    assert "schedule.current" not in plan.required_fact_keys
+
+
+def test_intent_plan_negated_refund_keeps_recording_scope() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Я не про возврат, где смотреть запись в личном кабинете?",
+        active_brand="foton",
+        dialogue_memory_view={
+            "held_state": {
+                "active_fact_scope": "online_recordings",
+                "active_topics": ["recording"],
+                "required_fact_keys": ["online_recordings.current"],
+            },
+            "open_question": {"kind": "recording", "text": "Записи уроков будут?"},
+        },
+    )
+
+    assert plan.primary_intent == "recording"
+    assert plan.topic_id == "theme:018_materials_homework"
+    assert plan.fact_scope == "online_recordings"
+    assert "online_recordings.current" in plan.required_fact_keys
+    assert "refund" not in plan.risk_signals
+
+
+def test_intent_plan_olympiad_online_uses_specific_fact_key() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Есть олимпиадная подготовка Физтех онлайн для 10 класса?",
+        active_brand="unpk",
+    )
+
+    assert plan.primary_intent == "olympiad_online"
+    assert plan.fact_scope == "olympiad_online"
+    assert "olympiad_online.current" in plan.required_fact_keys
+
+
 def test_intent_plan_keeps_real_legal_threat_p0() -> None:
     plan = build_conversation_intent_plan(
         current_message="Если не решите вопрос, пойду в суд и Роспотребнадзор.",
@@ -113,6 +183,75 @@ def test_intent_plan_treats_plain_document_request_as_documents() -> None:
     assert "documents.current" in plan.required_fact_keys
 
 
+def test_intent_plan_keeps_recording_followup_from_held_scope() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="А где её смотреть потом?",
+        active_brand="foton",
+        known_slots={"grade": "8", "subject": "физика", "format": "онлайн"},
+        dialogue_memory_view={
+            "held_state": {
+                "active_fact_scope": "online_recordings",
+                "active_topics": ["recording"],
+                "required_fact_keys": ["online_recordings.current"],
+            },
+            "topic_focus": {"product_family": "regular_course", "product": "онлайн"},
+        },
+    )
+
+    assert plan.primary_intent == "recording"
+    assert plan.topic_id == "theme:018_materials_homework"
+    assert plan.fact_scope == "online_recordings"
+    assert "online_recordings.current" in plan.required_fact_keys
+    assert "locations.current" not in plan.required_fact_keys
+
+
+def test_intent_plan_treats_bank_transfer_as_payment_method_not_installment() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Можно оплатить банковским переводом на счёт?",
+        active_brand="foton",
+        known_slots={"grade": "8", "subject": "физика", "format": "очно"},
+    )
+
+    assert plan.primary_intent == "payment_method"
+    assert plan.topic_id == "theme:002_payment_method"
+    assert "payment_methods.current" in plan.required_fact_keys
+    assert "installment_terms.current" not in plan.required_fact_keys
+
+
+def test_intent_plan_treats_invoice_monthly_as_payment_method_not_installment() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Я про счёт каждый месяц, не рассрочку через банк",
+        active_brand="foton",
+        known_slots={"grade": "8", "subject": "физика", "format": "очно"},
+        dialogue_memory_view={
+            "held_state": {
+                "active_topics": ["installment"],
+                "required_fact_keys": ["installment_terms.current"],
+            },
+            "open_question": {"kind": "installment", "text": "Можно помесячно?"},
+        },
+    )
+
+    assert plan.primary_intent == "payment_by_invoice_monthly"
+    assert plan.topic_id == "theme:002_payment_method"
+    assert "payment_methods.current" in plan.required_fact_keys
+    assert "installment_terms.current" not in plan.required_fact_keys
+    assert "installment" not in plan.answer_topics
+
+
+def test_intent_plan_preserves_explicit_both_formats_without_single_slot() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Я просила оба формата: и очно, и онлайн. По каким дням занятия?",
+        active_brand="unpk",
+        known_slots={"grade": "8", "subject": "физика", "format": "очно"},
+        dialogue_memory_view={"held_state": {"training_format": "ochno", "training_formats": ["ochno"]}},
+    )
+
+    assert plan.primary_intent == "schedule"
+    assert set(plan.training_formats) == {"online", "ochno"}
+    assert "format" not in plan.known_slots
+
+
 def test_intent_plan_does_not_force_individual_when_client_asks_group_vs_individual() -> None:
     plan = build_conversation_intent_plan(
         current_message="Есть группы по физике или только индивидуально?",
@@ -122,6 +261,38 @@ def test_intent_plan_does_not_force_individual_when_client_asks_group_vs_individ
 
     assert plan.primary_intent in {"format", "general_consultation"}
     assert plan.route_bias != "manager_only"
+
+
+def test_intent_plan_multitopic_price_installment_requires_both_fact_families() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Сколько стоит год онлайн 11 класс физика и можно ли в рассрочку?",
+        active_brand="foton",
+        known_slots={"grade": "11", "subject": "физика", "format": "онлайн"},
+    )
+
+    assert "price" in plan.answer_topics
+    assert "installment" in plan.answer_topics
+    assert "prices.current" in plan.required_fact_keys
+    assert "installment_terms.current" in plan.required_fact_keys
+
+
+def test_intent_plan_price_followup_can_supersede_installment_context() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Я не про рассрочку уже, мне нужна цена за год онлайн по физике 11 класс",
+        active_brand="foton",
+        known_slots={"grade": "11", "subject": "физика", "format": "онлайн"},
+        dialogue_memory_view={
+            "held_state": {
+                "active_topics": ["installment"],
+                "required_fact_keys": ["installment_terms.current"],
+            },
+            "open_question": {"kind": "installment", "text": "Можно в рассрочку?"},
+        },
+    )
+
+    assert plan.primary_intent == "pricing"
+    assert "prices.current" in plan.required_fact_keys
+    assert plan.topic_id == "theme:001_pricing"
 
 
 def test_intent_plan_keeps_payment_question_in_installment_not_camp_from_recent_bot_text() -> None:
@@ -186,6 +357,28 @@ def test_intent_plan_scopes_day_camp_away_from_residential_lvsh() -> None:
     assert plan.product_scope == "city_camp"
     assert plan.fact_scope == "city_day_camp"
     assert "residential_lvsh" in plan.blocked_neighbor_scopes
+
+
+def test_intent_plan_keeps_city_camp_scope_on_program_followup() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="а что по программе там для 6 класса?",
+        active_brand="foton",
+        known_slots={"grade": "6"},
+        dialogue_memory_view={
+            "held_state": {
+                "active_fact_scope": "city_day_camp",
+                "active_topics": ["camp"],
+                "required_fact_keys": ["programs.current"],
+            },
+            "topic_focus": {"product_family": "camp", "product": "city_camp"},
+        },
+    )
+
+    assert plan.primary_intent == "camp"
+    assert plan.product_family == "camp"
+    assert plan.product_scope == "city_camp"
+    assert plan.fact_scope == "city_day_camp"
+    assert "programs.current" in plan.required_fact_keys
 
 
 def test_intent_plan_current_residential_camp_signal_wins_over_city_neighbor() -> None:
@@ -307,7 +500,8 @@ def test_intent_plan_scopes_offline_recording_question_with_word_zapis_uroka() -
         known_slots={"format": "очно"},
     )
 
-    assert plan.primary_intent == "schedule"
+    assert plan.primary_intent == "recording"
+    assert "offline_recordings.current" in plan.required_fact_keys
     assert plan.fact_scope == "offline_recordings"
     assert "online_recordings" in plan.blocked_neighbor_scopes
 
@@ -331,9 +525,32 @@ def test_intent_plan_scopes_online_recording_followup_from_known_format() -> Non
         known_slots={"grade": "7", "subject": "информатика", "format": "онлайн"},
     )
 
-    assert plan.primary_intent == "schedule"
+    assert plan.primary_intent == "recording"
+    assert "online_recordings.current" in plan.required_fact_keys
     assert plan.fact_scope == "online_recordings"
     assert "offline_recordings" in plan.blocked_neighbor_scopes
+
+
+def test_intent_plan_uses_matkap_timeline_key_for_sfr_timing() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Маткапиталом можно оплатить? Сколько СФР рассматривает заявление?",
+        active_brand="unpk",
+    )
+
+    assert plan.primary_intent == "matkap"
+    assert "matkap_timeline.current" in plan.required_fact_keys
+    assert "matkap_documents.current" in plan.required_fact_keys
+
+
+def test_intent_plan_uses_specific_year_discount_key() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Если оплатить сразу за год, какая скидка?",
+        active_brand="unpk",
+    )
+
+    assert plan.primary_intent == "discount"
+    assert plan.required_fact_keys[0] == "discounts_year.current"
+    assert "discounts.current" in plan.required_fact_keys
 
 
 def test_intent_plan_treats_skolko_raz_v_nedelyu_as_schedule_not_price() -> None:
@@ -357,6 +574,18 @@ def test_intent_plan_scopes_dolyami_away_from_bank_installment_terms() -> None:
     assert "installment_bank" in plan.blocked_neighbor_scopes
 
 
+def test_intent_plan_scopes_payment_method_away_from_office_and_camp_facts() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Можно оплатить по счёту банковским переводом?",
+        active_brand="foton",
+    )
+
+    assert plan.primary_intent == "payment_method"
+    assert plan.fact_scope == "payment_methods"
+    assert "office_hours" in plan.blocked_neighbor_scopes
+    assert "camp_extra_facts" in plan.blocked_neighbor_scopes
+
+
 def test_intent_plan_scopes_regular_online_away_from_olympiad_online() -> None:
     plan = build_conversation_intent_plan(
         current_message="Обычный онлайн 10 класс физика, сколько стоит и какое расписание?",
@@ -376,6 +605,7 @@ def test_intent_plan_presale_refund_policy_is_not_full_p0() -> None:
     assert plan.primary_intent != "refund"
     assert "refund" not in plan.risk_signals
     assert plan.route_bias != "manager_only"
+    assert plan.route_bias == "bot_answer_self_for_pilot"
 
 
 def test_intent_plan_token_traps_do_not_trigger_neighbor_intents() -> None:

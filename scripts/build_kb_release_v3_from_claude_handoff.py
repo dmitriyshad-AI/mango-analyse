@@ -561,6 +561,8 @@ def is_internal_child(path: tuple[str, ...], key: str, item: Any, context: Mappi
         return True
     if "teacher" in normalized_path or "prepodavat" in normalized_path or "teachers" in normalized_path:
         return True
+    if "refund_presale_policy" in normalized_path:
+        return False
     if "refund" in normalized_path or "vozvrat" in normalized_path:
         return True
     if "vat" in normalized_path or "nds" in normalized_path or "ндс" in normalized_path:
@@ -693,6 +695,9 @@ def build_policy_facts(handoff: Mapping[str, Any], source_lookup: Mapping[str, M
                     continue
                 if str(theme_key) == "theme_12_certificate":
                     text = "Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше."
+                    structured_value = {"days": 10, "raw_value": {"lead_time_days": 10}}
+                else:
+                    structured_value = None
                 facts.append(
                     make_manual_fact(
                         fact_key=f"bot_policy.approved_phrases.{theme_key}.{brand}",
@@ -705,6 +710,7 @@ def build_policy_facts(handoff: Mapping[str, Any], source_lookup: Mapping[str, M
                         status="verified",
                         route_policy=str(payload.get("bot_route") or "bot_answer_self_for_pilot"),
                         linked_open_question=theme_key,
+                        structured_value=structured_value,
                     )
                 )
 
@@ -1259,6 +1265,33 @@ def build_quality_report(snapshot: Mapping[str, Any], *, approval_queue: Sequenc
         if fact.get("allowed_for_client_answer")
         and re.search(r"(Л035|50Л01|№77753|70369|АНО ДПО)", str(fact.get("client_safe_text") or ""), re.IGNORECASE)
     ]
+    invalid_weekly_frequency_facts = [
+        str(fact.get("fact_id"))
+        for fact in facts
+        if invalid_weekly_frequency_fact(fact)
+    ]
+    raw_text_number_grounding_findings = [
+        finding
+        for fact in facts
+        for finding in text_number_grounding_findings_for_fact(fact)
+    ]
+    grounded_number_index = grounded_number_index_for_facts(facts)
+    text_number_grounding_findings: list[dict[str, Any]] = []
+    text_number_global_match_suspects: list[dict[str, Any]] = []
+    for finding in raw_text_number_grounding_findings:
+        matches = same_brand_global_fact_matches(finding, grounded_number_index)
+        if matches:
+            suspect = dict(finding)
+            suspect["reason"] = "global_fact_match_requires_review"
+            suspect["matched_fact_keys"] = matches[:5]
+            text_number_global_match_suspects.append(suspect)
+        else:
+            text_number_grounding_findings.append(finding)
+    field_range_findings = [
+        finding
+        for fact in facts
+        for finding in field_range_findings_for_fact(fact)
+    ]
     control_found = [number for number in CONTROL_NUMBERS if number in fact_blob]
     control_missing = [number for number in CONTROL_NUMBERS if number not in fact_blob]
     approval_counts = Counter(str(item.get("item_type") or "") for item in approval_queue)
@@ -1269,6 +1302,9 @@ def build_quality_report(snapshot: Mapping[str, Any], *, approval_queue: Sequenc
         "no_empty_fact_text": not empty_fact_text,
         "forbidden_to_say_not_in_facts": not forbidden_to_say_hits,
         "allowed_client_text_has_no_license_numbers": not allowed_license_hits,
+        "weekly_frequency_is_plausible": not invalid_weekly_frequency_facts,
+        "text_number_grounded": not text_number_grounding_findings,
+        "field_ranges_ok": not field_range_findings,
         "allowed_client_text_passes_brand_safety": not allowed_violations,
         "approval_queue_has_required_columns": approval_queue_has_required_columns(approval_queue),
         "approval_queue_has_400_plus_items": len(approval_queue) >= 400,
@@ -1302,6 +1338,10 @@ def build_quality_report(snapshot: Mapping[str, Any], *, approval_queue: Sequenc
             "allowed_client_text_violations": allowed_violations[:100],
             "forbidden_to_say_fact_ids": forbidden_to_say_hits[:100],
             "allowed_license_fact_ids": allowed_license_hits[:100],
+            "invalid_weekly_frequency_fact_ids": invalid_weekly_frequency_facts[:100],
+            "text_number_grounding_findings": text_number_grounding_findings[:100],
+            "text_number_global_match_suspects": text_number_global_match_suspects[:100],
+            "field_range_findings": field_range_findings[:100],
         },
         "stage6": {
             "status": "not_run_by_builder",
@@ -1332,6 +1372,274 @@ def approval_queue_has_required_columns(queue: Sequence[Mapping[str, Any]]) -> b
 def required_approval_types_present(counts: Mapping[str, int]) -> bool:
     required = {"price", "discount", "promocode", "deadline", "camp_lvsh", "program", "installment", "tax", "matkap"}
     return required <= {key for key, value in counts.items() if value}
+
+
+def invalid_weekly_frequency_fact(fact: Mapping[str, Any]) -> bool:
+    key = str(fact.get("fact_key") or "").casefold()
+    if "weekly_lessons" not in key:
+        return False
+    text = " ".join(
+        str(fact.get(field) or "")
+        for field in ("fact_text", "client_safe_text", "manager_check_text", "manager_display_text")
+    )
+    if re.search(r"\b20\d{2}\s+раз(?:а)?\s+в\s+недел", text, re.I):
+        return True
+    structured = fact.get("structured_value")
+    if isinstance(structured, Mapping):
+        weeks = numeric_value(structured.get("weeks"))
+        if weeks is not None and (weeks < 1 or weeks > 7):
+            return True
+        count = numeric_value(structured.get("count"))
+        unit = str(structured.get("unit") or "").casefold()
+        if unit == "lessons" and count is not None and count > 20:
+            return True
+    return False
+
+
+_MONEY_CLAIM_RE = re.compile(r"(?<!\d)(\d[\d \u00a0]{2,})(?:\s*(?:₽|руб\.?|рубл(?:ей|я|ь)?))", re.I)
+_PERCENT_CLAIM_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%")
+_WEEKLY_FREQUENCY_CLAIM_RE = re.compile(r"(?<!\d)(\d{1,4})\s+раз(?:а)?\s+в\s+недел", re.I)
+_MONTH_CLAIM_RE = re.compile(r"(?<!\d)(\d{1,3})\s+месяц", re.I)
+_DAY_CLAIM_RE = re.compile(r"(?<!\d)(\d{1,3})\s+(?:рабоч(?:их|ие)\s+)?дн", re.I)
+_MINUTE_CLAIM_RE = re.compile(r"(?<!\d)(\d{1,3})\s+мин", re.I)
+
+
+def text_number_grounding_findings_for_fact(fact: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Find client-visible business numbers that are not grounded in this fact.
+
+    This is intentionally conservative: dates, classes, phones, URLs and bare
+    academic years are ignored here. They are useful context but too noisy for a
+    blocking build gate. Business numbers are blocked only when the same fact's
+    structured_value or raw_value cannot support the numeric claim.
+    """
+
+    if not fact.get("allowed_for_client_answer"):
+        return []
+    structured = fact.get("structured_value")
+    structured_map = structured if isinstance(structured, Mapping) else {}
+    raw_value = structured_map.get("raw_value", fact.get("value"))
+    findings: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for field in ("client_safe_text", "fact_text"):
+        text = clean_text(fact.get(field) or "")
+        if not text:
+            continue
+        for claim in business_number_claims(text):
+            if claim_supported_by_same_fact(claim, structured_map, raw_value, path=str(fact.get("fact_key") or "")):
+                continue
+            key = (field, str(claim["kind"]), str(claim["normalized"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(
+                {
+                    "fact_id": fact.get("fact_id"),
+                    "fact_key": fact.get("fact_key"),
+                    "brand": fact.get("brand"),
+                    "field": field,
+                    "kind": claim["kind"],
+                    "claim": claim["text"],
+                    "value": claim["normalized"],
+                    "reason": "number_not_grounded_in_same_fact",
+                }
+            )
+    return findings
+
+
+def grounded_number_index_for_facts(facts: Sequence[Mapping[str, Any]]) -> Mapping[tuple[str, str, str], frozenset[str]]:
+    index: dict[tuple[str, str, str], set[str]] = {}
+    for fact in facts:
+        if not fact.get("allowed_for_client_answer"):
+            continue
+        structured = fact.get("structured_value")
+        structured_map = structured if isinstance(structured, Mapping) else {}
+        raw_value = structured_map.get("raw_value", fact.get("value"))
+        fact_key = str(fact.get("fact_key") or "")
+        brand = str(fact.get("brand") or "").casefold()
+        for field in ("client_safe_text", "fact_text"):
+            text = clean_text(fact.get(field) or "")
+            if not text:
+                continue
+            for claim in business_number_claims(text):
+                if not claim_supported_by_same_fact(claim, structured_map, raw_value, path=fact_key):
+                    continue
+                key = (brand, str(claim.get("kind") or ""), str(claim.get("normalized") or ""))
+                index.setdefault(key, set()).add(fact_key)
+    return {key: frozenset(values) for key, values in index.items()}
+
+
+def same_brand_global_fact_matches(
+    finding: Mapping[str, Any],
+    grounded_number_index: Mapping[tuple[str, str, str], frozenset[str]],
+) -> list[str]:
+    key = (
+        str(finding.get("brand") or "").casefold(),
+        str(finding.get("kind") or ""),
+        str(finding.get("value") or ""),
+    )
+    current_fact_key = str(finding.get("fact_key") or "")
+    return sorted(fact_key for fact_key in grounded_number_index.get(key, frozenset()) if fact_key != current_fact_key)
+
+
+def business_number_claims(text: str) -> list[dict[str, Any]]:
+    claims: list[dict[str, Any]] = []
+    for kind, regex in (
+        ("money", _MONEY_CLAIM_RE),
+        ("percentage", _PERCENT_CLAIM_RE),
+        ("weekly_frequency", _WEEKLY_FREQUENCY_CLAIM_RE),
+        ("months", _MONTH_CLAIM_RE),
+        ("days", _DAY_CLAIM_RE),
+        ("minutes", _MINUTE_CLAIM_RE),
+    ):
+        for match in regex.finditer(str(text or "")):
+            normalized = normalize_numeric_claim(match.group(1))
+            if normalized is None:
+                continue
+            claims.append({"kind": kind, "text": match.group(0), "normalized": normalized})
+    return claims
+
+
+def normalize_numeric_claim(value: object) -> float | None:
+    raw = str(value or "").replace(" ", "").replace("\u00a0", "").replace(",", ".")
+    try:
+        number = float(raw)
+    except ValueError:
+        return None
+    return int(number) if number == int(number) else number
+
+
+def claim_supported_by_same_fact(
+    claim: Mapping[str, Any],
+    structured: Mapping[str, Any],
+    raw_value: object,
+    *,
+    path: str = "",
+) -> bool:
+    kind = str(claim.get("kind") or "")
+    value = normalize_numeric_claim(claim.get("normalized"))
+    if value is None:
+        return True
+    if claim_supported_by_structured_value(kind, value, structured):
+        return True
+    if claim_supported_by_path(kind, value, path):
+        return True
+    return claim_supported_by_raw_value(kind, value, raw_value)
+
+
+def claim_supported_by_structured_value(kind: str, value: float, structured: Mapping[str, Any]) -> bool:
+    if not structured:
+        return False
+    candidate_keys_by_kind = {
+        "money": ("amount", "amount_min", "amount_max", "limit", "price"),
+        "percentage": ("percentage",),
+        "weekly_frequency": ("weeks",),
+        "months": ("months",),
+        "days": ("days",),
+    }
+    if kind == "minutes":
+        return str(structured.get("unit") or "").casefold() == "minutes" and _same_number(value, structured.get("count"))
+    for key in candidate_keys_by_kind.get(kind, ()):
+        if _same_number(value, structured.get(key)):
+            return True
+    return False
+
+
+def claim_supported_by_path(kind: str, value: float, path: str) -> bool:
+    text = str(path or "").casefold()
+    if kind == "minutes":
+        return bool(re.search(rf"(?<!\d){re.escape(format_number_for_match(value))}\s*min\b", text, re.I))
+    return False
+
+
+def claim_supported_by_raw_value(kind: str, value: float, raw_value: object) -> bool:
+    if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+        return _same_number(value, raw_value)
+    return claim_supported_by_raw_text(kind, value, clean_text(raw_value or ""))
+
+
+def claim_supported_by_raw_text(kind: str, value: float, raw_text: str) -> bool:
+    text = clean_text(raw_text).casefold().replace("\u00a0", " ")
+    if not text:
+        return False
+    for claim in business_number_claims(text):
+        if str(claim.get("kind") or "") == kind and _same_number(value, claim.get("normalized")):
+            return True
+    number = format_number_for_match(value)
+    if kind == "money":
+        return bool(re.search(rf"(?<!\d){re.escape(number)}(?:\s*(?:₽|руб|рубл))", text, re.I))
+    if kind == "percentage":
+        return bool(re.search(rf"(?<!\d){re.escape(number)}\s*%", text, re.I))
+    if kind == "weekly_frequency":
+        return bool(re.search(rf"(?<!\d){re.escape(number)}\s+раз(?:а)?\s+в\s+недел", text, re.I))
+    if kind == "months":
+        return bool(re.search(rf"(?<!\d){re.escape(number)}\s+месяц", text, re.I))
+    if kind == "days":
+        return bool(re.search(rf"(?<!\d){re.escape(number)}\s+(?:рабоч(?:их|ие)\s+)?дн", text, re.I))
+    if kind == "minutes":
+        return bool(re.search(rf"(?<!\d){re.escape(number)}\s+мин", text, re.I))
+    return False
+
+
+def format_number_for_match(value: float) -> str:
+    return str(int(value)) if value == int(value) else str(value).replace(".", ",")
+
+
+def _same_number(left: object, right: object) -> bool:
+    left_num = normalize_numeric_claim(left)
+    right_num = normalize_numeric_claim(right)
+    return left_num is not None and right_num is not None and abs(float(left_num) - float(right_num)) < 0.0001
+
+
+def field_range_findings_for_fact(fact: Mapping[str, Any]) -> list[dict[str, Any]]:
+    structured = fact.get("structured_value")
+    if not isinstance(structured, Mapping):
+        return []
+    findings: list[dict[str, Any]] = []
+    fact_id = fact.get("fact_id")
+    fact_key = str(fact.get("fact_key") or "")
+    path = str(structured.get("path") or fact_key)
+
+    def add(field: str, value: object, reason: str) -> None:
+        findings.append({"fact_id": fact_id, "fact_key": fact_key, "field": field, "value": value, "reason": reason})
+
+    weeks = numeric_value(structured.get("weeks"))
+    if weeks is not None:
+        upper = 7 if "weekly_lessons" in path.casefold() else 52
+        if weeks < 1 or weeks > upper:
+            add("weeks", structured.get("weeks"), f"expected_1_to_{upper}")
+    percentage = numeric_value(structured.get("percentage"))
+    if percentage is not None and (percentage < 0 or percentage > 100):
+        add("percentage", structured.get("percentage"), "expected_0_to_100")
+    months = numeric_value(structured.get("months"))
+    if months is not None and (months < 1 or months > 120):
+        add("months", structured.get("months"), "expected_1_to_120")
+    days = numeric_value(structured.get("days"))
+    if days is not None and (days < 1 or days > 365):
+        add("days", structured.get("days"), "expected_1_to_365")
+    unit = str(structured.get("unit") or "").casefold()
+    count = numeric_value(structured.get("count"))
+    if count is not None:
+        if unit == "minutes" and (count < 20 or count > 300):
+            add("count", structured.get("count"), "minutes_expected_20_to_300")
+        elif unit == "hours" and (count < 1 or count > 24):
+            add("count", structured.get("count"), "hours_expected_1_to_24")
+        elif unit == "pairs" and (count < 1 or count > 20):
+            add("count", structured.get("count"), "pairs_expected_1_to_20")
+        elif unit == "lessons":
+            upper = 7 if "weekly_lessons" in path.casefold() else 500
+            if count < 1 or count > upper:
+                add("count", structured.get("count"), f"lessons_expected_1_to_{upper}")
+    for field in ("amount", "amount_min", "amount_max"):
+        amount = numeric_value(structured.get(field))
+        if amount is not None and amount <= 0:
+            add(field, structured.get(field), "money_expected_positive")
+    classes = structured.get("classes")
+    if isinstance(classes, Sequence) and not isinstance(classes, (str, bytes, bytearray)):
+        for item in classes:
+            cls = numeric_value(item)
+            if cls is not None and (cls < 1 or cls > 11):
+                add("classes", item, "class_expected_1_to_11")
+    return findings
 
 
 def write_outputs(
@@ -1527,7 +1835,7 @@ def render_fact_text(
     fact_type: str,
     structured_value: Mapping[str, Any],
 ) -> str:
-    if "client_safe_text" in path and isinstance(value, str):
+    if any(part == "client_safe_text" or part.endswith("_client_safe_text") for part in path) and isinstance(value, str):
         return clean_text(value, max_chars=1400)
     contextual = render_contextual_fact_text(
         path,
@@ -1592,7 +1900,7 @@ def render_contextual_fact_text(
         return f"{brand_label}: сервис «Долями» делит оплату на {format_number(numeric_value(raw_value) or 4)} равные части."
     if "installment.services.dolyami.interest_for_client" in text:
         return f"{brand_label}: при оплате через «Долями» для клиента указана переплата 0%."
-    if "installment.services.rassrochka.term_months" in text:
+    if text.endswith("installment.services.rassrochka.term_months"):
         return f"{brand_label}: срок рассрочки может составлять {rendered_value} месяцев."
     if "installment.services.rassrochka.limit" in text:
         return f"{brand_label}: лимит рассрочки по текущим данным — {rendered_value}."
@@ -1708,7 +2016,7 @@ def render_contextual_fact_text(
         )
 
     if "academic_year_2026_27.weekly_lessons" in text:
-        return f"{brand_label}: в учебном году 2026/27 занятия проходят {format_number(numeric_value(raw_value) or 1)} раз в неделю."
+        return f"{brand_label}: в учебном году 2026/27 занятия проходят {format_number(weekly_lessons_value(path, raw_value) or 1)} раз в неделю."
     if "lvsh_mendeleevo_2026.accommodation.meals_per_day" in text:
         return f"{brand_label}: в ЛВШ Менделеево предусмотрено {format_number(numeric_value(raw_value) or 5)} приёмов пищи в день."
     if "lvsh_mendeleevo_2026.pricing_2026.main_with_25_pct_discount" in text:
@@ -2067,16 +2375,26 @@ def build_structured_value(path: tuple[str, ...], value: Any, *, fact_type: str)
         if period:
             structured["period"] = period
         return structured
-    numeric = numeric_value(value)
+    weekly_lessons = weekly_lessons_value(path, value)
+    if weekly_lessons is not None:
+        structured["weeks"] = weekly_lessons
+        numeric = None
+    else:
+        numeric = numeric_value(value)
     if numeric is not None:
-        if percent_from_path(path) is not None or "%" in clean_text(value):
-            structured["percentage"] = numeric
+        path_percentage = percent_from_path(path)
+        value_percentage = percentage_value(value)
+        if path_percentage is not None:
+            structured["percentage"] = path_percentage
             structured["unit"] = "percent"
-        elif is_month_path(path):
+        elif value_percentage is not None:
+            structured["percentage"] = int(value_percentage) if value_percentage == int(value_percentage) else value_percentage
+            structured["unit"] = "percent"
+        elif is_month_path(path) and has_month_value(value):
             structured["months"] = int(numeric)
         elif is_day_path(path):
             structured["days"] = int(numeric)
-        elif is_week_path(path):
+        elif is_week_path(path) and weekly_lessons is None:
             structured["weeks"] = int(numeric)
         elif is_duration_minutes_path(path):
             structured["count"] = int(numeric)
@@ -2125,6 +2443,8 @@ def infer_fact_type(path: tuple[str, ...], value: Any) -> str:
         return "deadline"
     if "tax" in text or "deduction" in text or "вычет" in clean_text(value).casefold():
         return "tax"
+    if "refund_presale_policy" in text:
+        return "policy"
     if "refund" in text or "return" in text or "withholding" in text:
         return "refund"
     if is_non_money_numeric_path(path):
@@ -2219,6 +2539,12 @@ def should_force_internal(path: tuple[str, ...], value: Any) -> bool:
         return True
     if any(marker in text for marker in ("note_internal", "legal_entity_internal", "responsible_person_internal", "license_basis_internal")):
         return True
+    if "installment.services.rassrochka.limit" in text:
+        return True
+    if "installment.services.rassrochka.term_months" in text:
+        return True
+    if "term_months_confirmed_by_dmitry" in text:
+        return True
     if "teachers" in text or "teacher_" in text:
         return True
     value_text = clean_text(value).casefold()
@@ -2255,6 +2581,12 @@ def client_allowed(
         reasons.append("discontinued_product")
     if "rassrochka_6_12_months" in path_text:
         reasons.append("individual_bank_terms")
+    if "installment.services.rassrochka.limit" in path_text:
+        reasons.append("installment_limit_internal")
+    if "installment.services.rassrochka.term_months" in path_text:
+        reasons.append("installment_term_months_internal")
+    if "term_months_confirmed_by_dmitry" in path_text:
+        reasons.append("installment_confirmation_date_not_term")
     if fact_type in {"refund"} or route_policy in {"manager_only", "manager_handoff_only"}:
         reasons.append("manager_only_route")
     if fact_type in {"teacher"} and "approved_phrases" not in path_text:
@@ -2462,6 +2794,36 @@ def numeric_value(value: Any) -> float | None:
         return float(raw)
     except ValueError:
         return None
+
+
+def percentage_value(value: Any) -> float | None:
+    text = clean_text(value)
+    match = re.search(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%", text)
+    if not match:
+        return None
+    raw = match.group(1).replace(",", ".")
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def has_month_value(value: Any) -> bool:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return True
+    return bool(re.search(r"(?<!\d)\d{1,3}\s*(?:мес\.?|месяц)", clean_text(value), re.I))
+
+
+def weekly_lessons_value(path: tuple[str, ...], value: Any) -> int | None:
+    if "weekly_lessons" not in ".".join(path).casefold():
+        return None
+    text = clean_text(value).casefold().replace("ё", "е")
+    match = re.search(r"(?<!\d)([1-7])\s+раз(?:а)?\s+в\s+недел", text, re.I)
+    if match:
+        return int(match.group(1))
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and 1 <= int(value) <= 7:
+        return int(value)
+    return None
 
 
 def is_range_mapping(value: Any) -> bool:

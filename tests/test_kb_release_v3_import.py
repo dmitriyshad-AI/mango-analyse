@@ -391,6 +391,165 @@ def test_v3_phystech_products_are_not_collapsed(kb_v3: KbReleaseV3) -> None:
     assert {fact.get("product") for fact in old_general_facts} == {"fiztech_olympiad_general"}
 
 
+def test_v3_rc2a_client_safe_discount_and_olympiad_facts(kb_v3: KbReleaseV3) -> None:
+    allowed = list(_allowed_client_facts(kb_v3.facts))
+    by_key_brand = {
+        (str(fact.get("brand") or ""), str(fact.get("fact_key") or "")): fact
+        for fact in allowed
+    }
+
+    for brand in ("foton", "unpk"):
+        fact = by_key_brand[(brand, "discounts.second_subject.offline.client_safe_text")]
+        text = str(fact.get("client_safe_text") or fact.get("fact_text") or "")
+        assert "Скидка на второй предмет очно" in text
+        assert "20%" in text
+        assert "не суммируются" in text
+        assert fact.get("usable_for_precise_answer") is True
+
+    olymp = by_key_brand[("unpk", "prices_regular_2026_27.online_olympiad_phystech_classes.client_safe_text")]
+    olymp_text = str(olymp.get("client_safe_text") or olymp.get("fact_text") or "")
+    assert "Олимпиадная подготовка Физтех онлайн" in olymp_text
+    assert "9 и 11 классов" in olymp_text
+    assert olymp.get("usable_for_precise_answer") is True
+
+
+def test_v3_weekly_lessons_do_not_parse_academic_year_as_frequency(kb_v3: KbReleaseV3) -> None:
+    allowed = list(_allowed_client_facts(kb_v3.facts))
+    weekly = [
+        fact
+        for fact in allowed
+        if str(fact.get("fact_key") or "") == "academic_year_2026_27.weekly_lessons"
+    ]
+    assert {fact.get("brand") for fact in weekly} == {"foton", "unpk"}
+    for fact in weekly:
+        text = " ".join(
+            str(fact.get(field) or "")
+            for field in ("fact_text", "client_safe_text", "manager_check_text", "manager_display_text")
+        )
+        structured = _jsonish(fact.get("structured_value"))
+        assert "1 раз в неделю" in text
+        assert "2 026 раз в неделю" not in text
+        assert structured.get("weeks") == 1
+        assert structured.get("count") != 2026
+        assert not (structured.get("unit") == "lessons" and structured.get("count") == 2026)
+
+
+def test_v3_quality_report_includes_general_integrity_gates(kb_v3: KbReleaseV3) -> None:
+    checks = kb_v3.quality_report.get("checks") or {}
+    assert checks.get("text_number_grounded") is True
+    assert checks.get("field_ranges_ok") is True
+    assert checks.get("weekly_frequency_is_plausible") is True
+    details = kb_v3.quality_report.get("details") or {}
+    assert details.get("text_number_grounding_findings") == []
+    assert details.get("field_range_findings") == []
+
+
+def test_v3_integrity_helpers_do_not_block_dates_classes_urls_or_multivalue_raw() -> None:
+    from scripts import build_kb_release_v3_from_claude_handoff as builder
+
+    safe_fact = {
+        "fact_id": "safe",
+        "fact_key": "safe.multivalue",
+        "brand": "foton",
+        "allowed_for_client_answer": True,
+        "fact_text": "Фотон: в 2026/27 для 9 и 11 классов доступна рассрочка на 6, 10 или 12 месяцев; ссылка https://example.ru/course/2018411; телефон +7 999 123-45-67.",
+        "client_safe_text": "Фотон: в 2026/27 для 9 и 11 классов доступна рассрочка на 6, 10 или 12 месяцев.",
+        "structured_value": {"raw_value": "Рассрочка на 6, 10 или 12 месяцев для 9 и 11 классов в 2026/27."},
+    }
+    assert builder.text_number_grounding_findings_for_fact(safe_fact) == []
+
+
+def test_v3_integrity_helpers_block_contradictory_business_numbers() -> None:
+    from scripts import build_kb_release_v3_from_claude_handoff as builder
+
+    fact = {
+        "fact_id": "bad_price",
+        "fact_key": "bad.price",
+        "brand": "foton",
+        "allowed_for_client_answer": True,
+        "client_safe_text": "Фотон: занятие стоит 9 900 ₽.",
+        "structured_value": {"amount": 6900, "currency": "RUB", "raw_value": "6900 ₽"},
+    }
+    findings = builder.text_number_grounding_findings_for_fact(fact)
+    assert findings
+    assert findings[0]["kind"] == "money"
+    assert findings[0]["value"] == 9900
+
+
+def test_v3_integrity_helpers_block_bad_field_ranges() -> None:
+    from scripts import build_kb_release_v3_from_claude_handoff as builder
+
+    fact = {
+        "fact_id": "bad_ranges",
+        "fact_key": "academic_year_2026_27.weekly_lessons",
+        "structured_value": {"path": "academic_year_2026_27.weekly_lessons", "weeks": 2026, "percentage": 101, "amount": 0},
+    }
+    findings = builder.field_range_findings_for_fact(fact)
+    reasons = {item["reason"] for item in findings}
+    assert "expected_1_to_7" in reasons
+    assert "expected_0_to_100" in reasons
+    assert "money_expected_positive" in reasons
+
+
+def test_v3_structured_value_does_not_parse_dates_as_business_values() -> None:
+    from scripts import build_kb_release_v3_from_claude_handoff as builder
+
+    discount_note = builder.build_structured_value(
+        ("discounts", "multichild", "note"),
+        "Поправка Дмитрия 2026-05-18: один ребёнок из многодетной семьи получает скидку 10%.",
+        fact_type="discount",
+    )
+    assert discount_note.get("percentage") == 10
+
+    installment_note = builder.build_structured_value(
+        ("installment", "term_months", "internal_note"),
+        "Старая широкая формулировка срока рассрочки не используется после подтверждения Дмитрия 2026-05-22.",
+        fact_type="installment",
+    )
+    assert "months" not in installment_note
+
+
+def test_v3_b2_separates_global_match_suspect_from_blocking() -> None:
+    from scripts import build_kb_release_v3_from_claude_handoff as builder
+
+    facts = [
+        {
+            "fact_id": "grounded",
+            "fact_key": "discount.grounded",
+            "brand": "foton",
+            "allowed_for_client_answer": True,
+            "client_safe_text": "Фотон: скидка 20%.",
+            "structured_value": {"percentage": 20, "raw_value": "20%"},
+        },
+        {
+            "fact_id": "suspect",
+            "fact_key": "discount.summary",
+            "brand": "foton",
+            "allowed_for_client_answer": True,
+            "client_safe_text": "Фотон: в кратком описании тоже указана скидка 20%.",
+            "structured_value": {},
+        },
+        {
+            "fact_id": "blocking",
+            "fact_key": "discount.bad",
+            "brand": "foton",
+            "allowed_for_client_answer": True,
+            "client_safe_text": "Фотон: неподтверждённая скидка 33%.",
+            "structured_value": {},
+        },
+    ]
+    raw_findings = [
+        finding
+        for fact in facts
+        for finding in builder.text_number_grounding_findings_for_fact(fact)
+    ]
+    index = builder.grounded_number_index_for_facts(facts)
+    by_key = {finding["fact_key"]: builder.same_brand_global_fact_matches(finding, index) for finding in raw_findings}
+
+    assert by_key["discount.summary"] == ["discount.grounded"]
+    assert by_key["discount.bad"] == []
+
+
 def test_v3_client_facts_do_not_use_machine_slug_text(kb_v3: KbReleaseV3) -> None:
     bad = []
     technical_english_re = re.compile(
@@ -637,6 +796,47 @@ def test_v3_brand_scope_blocks_cross_brand_prices(kb_v3: KbReleaseV3) -> None:
     assert 41800 not in foton_amounts and 69900 not in foton_amounts
     assert 44600 not in unpk_amounts and 74500 not in unpk_amounts
     assert 29750 not in unpk_amounts and 47250 not in unpk_amounts
+
+
+def test_v3_unpk_bank_installment_absence_is_client_safe_and_brand_clean(kb_v3: KbReleaseV3) -> None:
+    matches = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if fact.get("brand") == "unpk"
+        and "payment_options.bank_installment.absent.client_safe_text" == str(fact.get("fact_key") or "")
+    ]
+    assert len(matches) == 1
+    text = str(matches[0].get("client_safe_text") or "")
+    lowered = text.casefold()
+    assert "отдельной банковской рассрочки нет" in lowered
+    assert "помесяч" in lowered
+    assert "семестр" in lowered
+    assert "год" in lowered
+    assert "фотон" not in lowered
+    assert "т-банк" not in lowered
+    assert "долями" not in lowered
+    assert "в унпк рассрочки нет" not in lowered
+
+
+def test_v3_presale_refund_policy_is_client_safe_for_both_brands(kb_v3: KbReleaseV3) -> None:
+    matches = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if "refund_presale_policy.client_safe_text" in str(fact.get("fact_key") or "")
+    ]
+    assert {fact.get("brand") for fact in matches} == {"foton", "unpk"}
+    for fact in matches:
+        text = str(fact.get("client_safe_text") or "")
+        lowered = text.casefold()
+        assert "остаток неистраченных средств" in lowered
+        assert "все деньги" not in lowered
+        assert fact.get("allowed_for_client_answer") is True
+        assert fact.get("usable_for_precise_answer") is True
+        assert fact.get("route_policy") == "bot_answer_self_for_pilot"
+        if fact.get("brand") == "foton":
+            assert "унпк" not in lowered
+        if fact.get("brand") == "unpk":
+            assert "фотон" not in lowered
 
 
 def test_v3_tax_deduction_facts_are_restored_and_client_safe(kb_v3: KbReleaseV3) -> None:

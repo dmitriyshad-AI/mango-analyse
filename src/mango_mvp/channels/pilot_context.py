@@ -89,6 +89,8 @@ class PilotContext:
     dialogue_memory_view: Mapping[str, Any] = field(default_factory=dict)
     conversation_intent_plan: Mapping[str, Any] = field(default_factory=dict)
     answer_contract: Mapping[str, Any] = field(default_factory=dict)
+    gold_answers_v3: Mapping[str, Any] = field(default_factory=dict)
+    gold_answer_context: Mapping[str, Any] = field(default_factory=dict)
     answer_quality_reference: Mapping[str, Any] = field(default_factory=dict)
     few_shot_style_examples: Sequence[str] = field(default_factory=tuple)
     few_shot_correction_examples: Sequence[str] = field(default_factory=tuple)
@@ -151,13 +153,23 @@ class PilotContext:
         )
         object.__setattr__(
             self,
+            "gold_answers_v3",
+            compact_mapping(self.gold_answers_v3, max_items=12, max_chars=700),
+        )
+        object.__setattr__(
+            self,
+            "gold_answer_context",
+            compact_mapping(self.gold_answer_context, max_items=20, max_chars=700),
+        )
+        object.__setattr__(
+            self,
             "answer_quality_reference",
             compact_mapping(self.answer_quality_reference, max_items=16, max_chars=700),
         )
         object.__setattr__(
             self,
             "few_shot_style_examples",
-            tuple(dedupe(clean_text(item, max_chars=900) for item in self.few_shot_style_examples))[:4],
+            tuple(dedupe(clean_text(item, max_chars=900) for item in self.few_shot_style_examples))[:6],
         )
         object.__setattr__(
             self,
@@ -189,6 +201,8 @@ class PilotContext:
             "dialogue_memory_view": dict(self.dialogue_memory_view),
             "conversation_intent_plan": dict(self.conversation_intent_plan),
             "answer_contract": dict(self.answer_contract),
+            "gold_answers_v3": dict(self.gold_answers_v3),
+            "gold_answer_context": dict(self.gold_answer_context),
             "answer_quality_reference": dict(self.answer_quality_reference),
             "few_shot_style_examples": list(self.few_shot_style_examples),
             "few_shot_correction_examples": list(self.few_shot_correction_examples),
@@ -230,6 +244,8 @@ def build_pilot_context(
     dialogue_memory_view: Mapping[str, Any] | None = None,
     conversation_intent_plan: Mapping[str, Any] | None = None,
     answer_contract: Mapping[str, Any] | None = None,
+    gold_answers_v3: Mapping[str, Any] | None = None,
+    gold_answer_context: Mapping[str, Any] | None = None,
     answer_quality_reference: Mapping[str, Any] | None = None,
     few_shot_style_examples: Sequence[str] = (),
     few_shot_correction_examples: Sequence[str] = (),
@@ -285,6 +301,8 @@ def build_pilot_context(
         dialogue_memory_view=dialogue_memory_view or {},
         conversation_intent_plan=conversation_intent_plan or {},
         answer_contract=answer_contract or {},
+        gold_answers_v3=gold_answers_v3 or {},
+        gold_answer_context=gold_answer_context or {},
         answer_quality_reference=answer_quality_reference or {},
         few_shot_style_examples=few_shot_style_examples,
         few_shot_correction_examples=few_shot_correction_examples,
@@ -340,7 +358,19 @@ def compact_mapping(value: Mapping[str, Any] | None, *, max_items: int, max_char
         if isinstance(item, Mapping):
             result[clean_key] = compact_mapping(item, max_items=8, max_chars=max_chars)
         elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
-            result[clean_key] = [clean_text(part, max_chars=max_chars) for part in item if clean_text(part, max_chars=max_chars)][:8]
+            compact_items: list[Any] = []
+            for part in item:
+                if isinstance(part, Mapping):
+                    compact_part = compact_mapping(part, max_items=8, max_chars=max_chars)
+                    if compact_part:
+                        compact_items.append(compact_part)
+                    continue
+                text = clean_text(part, max_chars=max_chars)
+                if text:
+                    compact_items.append(text)
+                if len(compact_items) >= 8:
+                    break
+            result[clean_key] = compact_items
         elif isinstance(item, (str, int, float, bool)) or item is None:
             result[clean_key] = clean_text(item, max_chars=max_chars) if isinstance(item, str) else item
         if len(result) >= max_items:
@@ -368,6 +398,17 @@ def compact_dialogue_memory_view(value: Mapping[str, Any] | None) -> Mapping[str
     open_question = value.get("open_question")
     if isinstance(open_question, Mapping):
         result["open_question"] = compact_mapping(open_question, max_items=6, max_chars=260)
+    held_state = value.get("held_state")
+    if isinstance(held_state, Mapping):
+        result["held_state"] = compact_mapping(held_state, max_items=16, max_chars=180)
+    topic_focus = value.get("topic_focus")
+    if isinstance(topic_focus, Mapping):
+        result["topic_focus"] = compact_mapping(topic_focus, max_items=10, max_chars=180)
+    safe_answered_parts = value.get("safe_answered_parts")
+    if isinstance(safe_answered_parts, Sequence) and not isinstance(safe_answered_parts, (str, bytes, bytearray)):
+        result["safe_answered_parts"] = [
+            clean_text(item, max_chars=160) for item in safe_answered_parts if clean_text(item, max_chars=160)
+        ][:8]
     known_slots = value.get("known_slots")
     if isinstance(known_slots, Mapping):
         result["known_slots"] = compact_mapping(known_slots, max_items=16, max_chars=120)

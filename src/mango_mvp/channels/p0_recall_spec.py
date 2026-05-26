@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Sequence
 
-from mango_mvp.channels.semantic_roles import tag_message_roles
+from mango_mvp.channels.semantic_roles import is_negated_refund_topic, tag_message_roles
 
 
 P0_RECALL_SPEC_SCHEMA_VERSION = "p0_recall_spec_v1_2026_05_24"
@@ -17,9 +17,11 @@ REFUND_RE = re.compile(
     r"|\bверн\w*(?:\s+мне|\s+нам|\s+пожалуйста)?\s+(?:деньги|оплат\w*|плат[её]ж\w*|средств\w*|сумм\w*)"
     r"|\bверн\w*(?:\s+мне|\s+нам|\s+пожалуйста)?\s+(?:одну|один|лишн\w*|повторн\w*|дублирующ\w*)"
     r"|\bвернуть\s+оплат\w*"
+    r"|\b(?:отдайте|отдать|отдаю|забрать|заберу)\s+(?:деньги|оплат\w*|плат[её]ж\w*|средств\w*|сумм\w*)\s+(?:назад|обратно)\b"
     r"|\bхочу\s+деньги\s+назад\b"
     r"|\bденьги\s+назад\b"
     r"|\bрасторг\w*\s+договор"
+    r"|\bаннулир\w*\s+договор"
     r"|\bотказ\w*\s+от\s+обучен"
     r"|\bзабрать\s+деньги",
     re.I,
@@ -27,8 +29,9 @@ REFUND_RE = re.compile(
 
 LEGAL_RE = re.compile(
     r"\bсуд\b|\bиск\b|претензи\w*|досудеб|роспотребнадзор|прокуратур|адвокат|юрист"
-    r"|прав[ао][^.!?\n]{0,60}потребител|защит[а-яё]*\s+прав\s+потребител"
-    r"|наруш\w*\s+прав|расторжен\w*\s+договор"
+    r"|прав[ао]?[^.!?\n]{0,60}потребител|защит[а-яё]*\s+прав\s+потребител"
+    r"|наруш\w*[^.!?\n]{0,60}прав[^.!?\n]{0,60}потребител"
+    r"|наруш\w*\s+(?:моих|наших|своих|ваших\s+)?прав|расторжен\w*\s+договор"
     r"|по\s+закону[^.!?\n]{0,80}(?:обязан|должн|наруш)"
     r"|незаконн\w*",
     re.I,
@@ -37,7 +40,7 @@ LEGAL_RE = re.compile(
 COMPLAINT_RE = re.compile(
     r"\bжал(?:об|у|ова)\w*|пожал(?:уюсь|уемся|уетесь|оваться|овались|уется|уются)\b"
     r"|возмущ\w*|недовол\w*|претензи|конфликт"
-    r"|обман|мошенн\w*|ужасн|плохо\s+учит|плохо\s+пров[её]л|некомпетентн\w*",
+    r"|обман|мошенн\w*|развод|развел[аи]?\w*|ужасн|плохо\s+учит|плохо\s+пров[её]л|некомпетентн\w*",
     re.I,
 )
 
@@ -48,10 +51,16 @@ REPUTATION_RE = re.compile(
 
 PAYMENT_DISPUTE_RE = re.compile(
     r"(?:оплатил|оплатила|пров[её]л(?:и)?\s+плат[её]ж|списал[иось]*|деньги\s+списал)"
-    r"[^.!?\n]{0,100}(?:не\s+вид|не\s+прош|нет\s+оплат|не\s+зачисл|не\s+получ)"
+    r"[^.!?\n]{0,100}(?:не\s+вид|не\s+прош|нет\s+оплат|не\s+зачисл|не\s+получ|не\s+откр|курс\s+не\s+откр|доступ\w*\s+нет)"
+    r"|(?:деньги|оплат\w*|плат[её]ж\w*)\s+(?:ушл\w*|списал\w*|прошл\w*)[^.!?\n]{0,100}(?:доступ\w*\s+нет|не\s+откр|курс\s+не\s+откр|кабинет\w*\s+пуст)"
+    r"|(?:курс|доступ|кабинет)[^.!?\n]{0,100}(?:не\s+откр|не\s+появ|пуст)[^.!?\n]{0,100}(?:оплат|плат[её]ж|списал|деньги)"
     r"|(?:оплат[ау]\s+не\s+вид|плат[её]ж\s+не\s+(?:прош[её]л|видно|зачисл))"
     r"|(?:дважды|два\s+раза|двойн\w*|повторно|ошибочно|лишн\w*)[^.!?\n]{0,80}(?:списал|списали|плат[её]ж|оплат|снял)"
-    r"|(?:списал|списали|снял[ио]?)[^.!?\n]{0,80}(?:дважды|два\s+раза|двойн\w*|повторно|ошибочно|лишн\w*)",
+    r"|(?:списал|списали|снял[ио]?)[^.!?\n]{0,80}(?:дважды|два\s+раза|двойн\w*|повторно|ошибочно|лишн\w*)"
+    r"|чарджб[еэ]к|chargeback"
+    r"|оспор\w*\s+(?:операци\w*|плат[её]ж\w*|списан\w*)"
+    r"|отмен\w*\s+плат[её]ж\w*\s+через\s+банк"
+    r"|не\s+буду\s+платить[^.!?\n]{0,80}(?:развод|обман|мошенн)",
     re.I,
 )
 
@@ -87,6 +96,15 @@ P0_TRUE_POSITIVE_CASES: tuple[tuple[str, str], ...] = (
     ("Оплатил, но оплату не видно.", "payment_dispute"),
     ("С меня дважды списали деньги за оплату, верните одну.", "refund"),
     ("Ошибочно списали оплату второй раз.", "payment_dispute"),
+    ("Напишу в банк чарджбек.", "payment_dispute"),
+    ("Оспорю операцию в банке.", "payment_dispute"),
+    ("Отменю платёж через банк.", "payment_dispute"),
+    ("Деньги ушли, а доступа нет.", "payment_dispute"),
+    ("Оплатил, а курс так и не открыли.", "payment_dispute"),
+    ("Не буду платить, это развод.", "complaint"),
+    ("Отдайте оплату обратно.", "refund"),
+    ("Аннулировать договор.", "refund"),
+    ("Нарушение моих прав потребителя.", "legal"),
 )
 
 P0_BENIGN_CASES: tuple[str, ...] = (
@@ -99,6 +117,8 @@ P0_BENIGN_CASES: tuple[str, ...] = (
     "А если ребёнку не понравится, деньги вернёте?",
     "Перед оплатой хочу понять условия возврата.",
     "Если ребёнок надолго заболеет, за пропущенное вернёте?",
+    "Вернуться к теме цены.",
+    "Верните меня в список рассылки.",
 )
 
 
@@ -125,7 +145,8 @@ def codes_from_text(text: str) -> tuple[str, ...]:
     result: list[str] = []
     refund_frame = tag_message_roles(value).refund_frame
     benign_refund_context = refund_frame == "presale_policy"
-    if refund_frame == "dispute" or (REFUND_RE.search(value) and not benign_refund_context):
+    negated_refund_topic = is_negated_refund_topic(value)
+    if refund_frame == "dispute" or (REFUND_RE.search(value) and not benign_refund_context and not negated_refund_topic):
         result.append("refund")
     if LEGAL_RE.search(value):
         result.append("legal")
@@ -135,7 +156,7 @@ def codes_from_text(text: str) -> tuple[str, ...]:
         result.append("reputation_threat")
     if PAYMENT_DISPUTE_RE.search(value):
         result.append("payment_dispute")
-    if "payment_dispute" in result and REFUND_RE.search(value) and not benign_refund_context:
+    if "payment_dispute" in result and REFUND_RE.search(value) and not benign_refund_context and not negated_refund_topic:
         result.insert(0, "refund")
     return tuple(dict.fromkeys(result))
 

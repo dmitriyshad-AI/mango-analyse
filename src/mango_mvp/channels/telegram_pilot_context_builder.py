@@ -12,8 +12,17 @@ from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
 from mango_mvp.channels.dialogue_memory import DialogueMemory, build_dialogue_memory
 from mango_mvp.channels.fact_retrieval import key_matches, select_confirmed_facts as select_recall_confirmed_facts
-from mango_mvp.channels.fact_scope_spec import detect_fact_scopes, fact_scopes_allowed, scope_family_for
-from mango_mvp.channels.few_shot_reference import build_few_shot_reference
+from mango_mvp.channels.fact_scope_spec import (
+    FACT_COMPATIBLE_NEIGHBOR_SCOPES,
+    detect_fact_scopes,
+    fact_scopes_allowed,
+    scope_family_for,
+)
+from mango_mvp.channels.few_shot_reference import (
+    build_few_shot_reference,
+    build_gold_answer_context,
+    build_gold_answers_v3_summary,
+)
 from mango_mvp.channels.pilot_context import PilotContext, build_pilot_context
 from mango_mvp.knowledge_base.fact_registry import classify_fact_types, fact_type_from_key
 from mango_mvp.knowledge_base.kc_context import limit_context_chunks
@@ -199,6 +208,13 @@ def build_telegram_pilot_context(
         missing_facts=snapshot_context.missing_facts,
         known_slots=merged_known_slots,
     )
+    gold_answer_context = build_gold_answer_context(
+        message_text=current_message,
+        active_brand=active_brand,
+        topic_id=topic_id,
+        confirmed_facts=snapshot_context.confirmed_facts,
+    )
+    gold_answers_v3 = build_gold_answers_v3_summary(gold_answer_context)
     answer_contract = build_answer_contract(
         active_brand=active_brand,
         conversation_intent_plan=intent_view,
@@ -245,6 +261,8 @@ def build_telegram_pilot_context(
         dialogue_memory_view=memory_view,
         conversation_intent_plan=intent_view,
         answer_contract=answer_contract.to_prompt_view(),
+        gold_answers_v3=gold_answers_v3,
+        gold_answer_context=gold_answer_context,
         answer_quality_reference=few_shot_reference,
         few_shot_style_examples=tuple(few_shot_reference.get("style_examples") or ()),
         few_shot_correction_examples=tuple(few_shot_reference.get("correction_examples") or ()),
@@ -279,7 +297,20 @@ def _contextual_message_with_recent_product(
     recent = _normalize_match_text(" ".join(str(item or "") for item in recent_messages[-8:]))
     if not current or not recent:
         return query
-    followup_markers = ("трансфер", "добир", "дорог", "заезд", "из москв", "прожив", "питан", "что входит", "мест", "смен")
+    followup_markers = (
+        "трансфер",
+        "добир",
+        "дорог",
+        "заезд",
+        "из москв",
+        "прожив",
+        "питан",
+        "что входит",
+        "мест",
+        "смен",
+        "программ",
+        "там",
+    )
     if not any(marker in current for marker in followup_markers):
         return query
     additions: list[str] = []
@@ -287,7 +318,7 @@ def _contextual_message_with_recent_product(
         additions.append("ЛВШ Менделеево выездной лагерь")
     elif any(marker in recent for marker in ("лвш", "менделеево", "выездн")):
         additions.append("ЛВШ Менделеево выездной лагерь")
-    elif "городск" in recent and "лагер" in recent:
+    elif ("городск" in recent and "лагер" in recent) or "без прожив" in recent or ("летн" in recent and "школ" in recent):
         additions.append("городской лагерь")
     if not additions:
         return query
@@ -332,6 +363,12 @@ def build_knowledge_snapshot_context(
 ) -> KnowledgeSnapshotContext:
     policy = merge_theme_and_rop_policy(theme=theme, rop_policy=rop_policy)
     required_fact_keys = required_fact_keys_for_message(message_text, theme=theme, rop_policy=policy)
+    active = _normalize_active_brand(active_brand)
+    policy_fact_scope = _clean_text(policy.get("fact_scope"))
+    if active == "unpk" and policy_fact_scope == "trial_offline":
+        required_fact_keys = tuple(
+            key for key in required_fact_keys if str(key or "").split(".", 1)[0] != "trial_online_fragment"
+        )
     if not kc_snapshot:
         return _missing_snapshot_context(required_fact_keys, snapshot_warnings=snapshot_warnings)
 
@@ -342,12 +379,20 @@ def build_knowledge_snapshot_context(
         topic_id=_topic_id(theme=theme, rop_policy=policy),
         query=message_text,
     )
-    fact_scope = _clean_text(policy.get("fact_scope"))
+    fact_scope = policy_fact_scope
+    if fact_scope == "city_day_camp":
+        required_fact_types.update({"camp_city", "program", "price", "deadline", "location"})
+    elif fact_scope == "residential_lvsh":
+        required_fact_types.update({"camp_lvsh", "program", "price", "deadline", "location"})
     active_topics = tuple(_text_list(policy.get("active_topics")))
-    blocked_neighbor_scopes = tuple(_text_list(policy.get("blocked_neighbor_scopes")))
+    blocked_neighbor_scopes = _effective_recall_blocked_scopes(
+        _text_list(policy.get("blocked_neighbor_scopes")),
+        required_fact_keys=required_fact_keys,
+        fact_scope=_clean_text(policy.get("fact_scope")),
+        active_brand=active_brand,
+    )
     facts = _records(kc_snapshot.get("facts"))
     sources = _records(kc_snapshot.get("sources"))
-    active = _normalize_active_brand(active_brand)
     scoped_facts = [
         fact
         for fact in facts
@@ -525,20 +570,53 @@ def required_fact_keys_for_message(
     requirement_message = requirement_message.split("Известные данные:", 1)[0]
     requirement_message = requirement_message.split("Нужные факты:", 1)[0]
     text = f"{topic_text} {requirement_message}".casefold()
+    is_refund_topic = "theme:009_refund" in topic_text or "refund" in topic_text
+    if (
+        re.search(r"физтех|олимпиад", text)
+        and re.search(r"онлайн|дистанц", text)
+        and not re.search(r"не\s+олимпиад|обычн|регулярн", text)
+    ):
+        keys.append("olympiad_online.current")
     if re.search(r"стоим|цен[аы]|сколько стоит|прайс|руб", text):
         keys.append("prices.current")
-    if re.search(r"распис|когда|во сколько|суббот|воскрес|слот|занят", text):
+    recording_question = re.search(r"запис[ьи]\s+(?:урок|занят)|урок[ауы]\s+в\s+запис|посмотреть\s+запис|запис\w*\s+сохраня", text)
+    if not is_refund_topic and re.search(r"распис|когда|во сколько|суббот|воскрес|слот|занят", text) and not recording_question:
         keys.append("schedule.current")
+        if re.search(r"по каким дням|выходн|суббот|воскрес|слот", text):
+            keys.insert(0, "schedule_weekend.current")
+    if recording_question:
+        if re.search(r"онлайн|дистанц", text):
+            keys.append("online_recordings.current")
+        elif re.search(r"очно|офлайн", text):
+            keys.append("offline_recordings.current")
+        else:
+            keys.append("recordings.current")
     if re.search(r"скид|льгот|промокод|акци", text):
         keys.append("discounts.current")
-    if re.search(r"рассроч", text):
+        if re.search(r"за\s+год|годов|год\s", text):
+            keys.insert(0, "discounts_year.current")
+        if re.search(r"семестр|полугод", text):
+            keys.insert(0, "discounts_semester.current")
+    invoice_monthly_question = bool(
+        re.search(r"помесяч|каждый\s+месяц|ежемесяч|по\s+месяцам", text)
+        and re.search(r"по\s+сч[её]ту|сч[её]т|банковск\w*\s+перевод|реквизит|не\s+рассроч|не\s+долями|не\s+частями", text)
+    )
+    if re.search(r"рассроч", text) and not invoice_monthly_question:
         keys.append("installment_terms.current")
-    if re.search(r"оплат|сбп|реквизит|карт|ссылк[ау] на оплат", text):
+    payment_method_question = re.search(r"сбп|реквизит|карт|ссылк[ау] на оплат|как\s+оплат|куда\s+оплат|банковск\w*\s+перевод|на\s+сч[её]т|по\s+сч[её]ту", text)
+    payment_terms_question = re.search(r"скид|за\s+год|семестр|помесяч|рассроч|долями|частями", text)
+    if invoice_monthly_question or (payment_method_question and not payment_terms_question):
         keys.append("payment_methods.current")
-    if re.search(r"договор|справ|налог|маткап|возврат|чек|квитанц", text):
+    if re.search(r"маткап|материн", text):
+        keys.append("matkap_documents.current")
+        if re.search(r"сфр|рассматри|срок|сколько|дней|рабоч", text):
+            keys.insert(0, "matkap_timeline.current")
+    if not is_refund_topic and re.search(r"договор|справ|налог|возврат|чек|квитанц", text):
         keys.append("documents.current")
     if re.search(r"формат|онлайн|очно|офлайн|дистанц", text):
         keys.append("formats.current")
+    if re.search(r"пробн|фрагмент|попроб", text):
+        keys.insert(0, "trial_online_fragment.current")
     if re.search(r"программ|предмет|летн|пробн|чему учат|содержание", text):
         keys.append("programs.current")
     if re.search(r"трансфер|добир|дорог|заезд|из москв|самостоятельн", text):
@@ -672,6 +750,17 @@ def _select_confirmed_facts(
             key_matches(required_key, fact_key) or key_matches(required_key, fact_id)
             for required_key in required_fact_keys
         )
+        if is_required_answer and not _record_matches_retrieval_core(
+            fact,
+            query=query,
+            fact_scope=fact_scope,
+            blocked_neighbor_scopes=blocked_neighbor_scopes,
+            allow_objection_pattern=any(
+                str(required_key or "").split(".", 1)[0] == "schedule_weekend"
+                for required_key in required_fact_keys
+            ),
+        ):
+            continue
         if not is_required_answer and not _record_matches_context(
             fact,
             required_fact_types=required_fact_types,
@@ -703,7 +792,12 @@ def _select_confirmed_facts(
         active_brand=active_brand,
         required_fact_keys=required_fact_keys,
         active_topics=active_topics,
-        blocked_scopes=blocked_neighbor_scopes,
+        blocked_scopes=_effective_recall_blocked_scopes(
+            blocked_neighbor_scopes,
+            required_fact_keys=required_fact_keys,
+            fact_scope=fact_scope,
+            active_brand=active_brand,
+        ),
         k=10,
     )
     for candidate in selected:
@@ -719,6 +813,27 @@ def _select_confirmed_facts(
         if len(confirmed) >= 10:
             break
     return confirmed
+
+
+def _effective_recall_blocked_scopes(
+    blocked_neighbor_scopes: Sequence[str],
+    *,
+    required_fact_keys: Sequence[str],
+    fact_scope: str = "",
+    active_brand: str = "",
+) -> tuple[str, ...]:
+    required = {str(item or "").split(".", 1)[0] for item in required_fact_keys if str(item or "").strip()}
+    blocked = [str(item) for item in blocked_neighbor_scopes if str(item).strip()]
+    normalized_brand = _normalize_active_brand(active_brand)
+    scope = str(fact_scope or "").strip()
+    compatible = FACT_COMPATIBLE_NEIGHBOR_SCOPES.get(scope, frozenset())
+    if scope == "trial_offline" and normalized_brand != "foton":
+        compatible = frozenset()
+    if compatible:
+        blocked = [scope for scope in blocked if scope not in compatible]
+    if "trial_online_fragment" in required and normalized_brand == "foton":
+        blocked = [scope for scope in blocked if scope != "trial_online_fragment"]
+    return tuple(blocked)
 
 
 def _missing_fact_keys(
@@ -942,6 +1057,50 @@ def _record_matches_context(
     return any(term in text for term in _query_terms(query))
 
 
+_EXPLICIT_SCOPE_REQUIRED = {
+    "city_day_camp",
+    "residential_lvsh",
+    "trial_offline",
+    "trial_online_fragment",
+    "offline_recordings",
+    "online_recordings",
+    "camp_extra_facts",
+    "olympiad_online",
+}
+
+
+def _record_matches_retrieval_core(
+    record: Mapping[str, Any],
+    *,
+    query: str,
+    fact_scope: str = "",
+    blocked_neighbor_scopes: Sequence[str] = (),
+    allow_objection_pattern: bool = False,
+) -> bool:
+    fact_types = set(_fact_types(record))
+    text = _normalize_match_text(
+        f"{record.get('title', '')} {record.get('fact_key', '')} {_fact_text(record)} {record.get('text', '')}"
+    )
+    query_text = _normalize_match_text(query)
+    if _record_is_objection_pattern(text) and not allow_objection_pattern:
+        return False
+    if not _record_matches_fact_scope(text, fact_types=fact_types, fact_scope=fact_scope, blocked_neighbor_scopes=blocked_neighbor_scopes):
+        return False
+    if not _record_matches_product_markers(text, query_text):
+        return False
+    if not _record_matches_requested_format(text, query_text) and not (
+        fact_scope == "trial_offline" and "фрагмент" in text
+    ):
+        return False
+    if not _record_matches_requested_class(text, query_text):
+        return False
+    if _record_is_unrequested_special_product(text, query_text):
+        return False
+    if _query_asks_for_date(query_text) and not _record_answers_date_question(text):
+        return False
+    return True
+
+
 def _record_matches_fact_scope(
     text: str,
     *,
@@ -958,10 +1117,11 @@ def _record_matches_fact_scope(
         return False
     if not requested:
         return True
-    record_scopes = _record_fact_scopes(text, fact_types=fact_types)
     if not record_scopes:
+        if requested in _EXPLICIT_SCOPE_REQUIRED:
+            return False
         return True
-    return requested in record_scopes
+    return True
 
 
 def _record_fact_scopes(text: str, *, fact_types: set[str]) -> set[str]:
@@ -991,6 +1151,12 @@ def _record_is_objection_pattern(text: str) -> bool:
 
 
 def _record_is_unrequested_special_product(text: str, query_text: str) -> bool:
+    asks_city_day_camp = (
+        ("городск" in query_text and ("лагер" in query_text or "школ" in query_text))
+        or "без прожив" in query_text
+        or ("летн" in query_text and "школ" in query_text)
+        or "лш москва" in query_text
+    )
     special_markers = (
         ("индивидуаль",),
         ("интенсив",),
@@ -999,6 +1165,8 @@ def _record_is_unrequested_special_product(text: str, query_text: str) -> bool:
         ("городск", "лагер"),
     )
     for group in special_markers:
+        if group == ("городск", "лагер") and asks_city_day_camp:
+            continue
         if any(marker in text for marker in group) and not any(marker in query_text for marker in group):
             return True
     return False
@@ -1021,6 +1189,13 @@ def _record_matches_requested_format(text: str, query_text: str) -> bool:
 def _record_matches_requested_class(text: str, query_text: str) -> bool:
     numbers = _query_class_numbers(query_text)
     if not numbers or "класс" not in text:
+        return True
+    if (
+        "для других класс" in text
+        or "других классов" in text
+        or "другим класс" in text
+        or "другому классу" in text
+    ):
         return True
     return any(_record_mentions_number_or_range(text, number) for number in numbers)
 

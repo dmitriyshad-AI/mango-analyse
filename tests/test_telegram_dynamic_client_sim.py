@@ -129,6 +129,7 @@ def test_judge_prompt_marks_metadata_as_internal():
     assert "цифровой помощник Фотона/УНПК МФТИ/центра" in prompt
     assert "GPT/Claude/Codex/OpenAI" in prompt
     assert "Не ставь fabrication за факт" in prompt
+    assert sim.JUDGE_FACT_AUDIT_VERSION in prompt
     assert "fact:format" in prompt
     assert "verified_safe_template: Фотон" not in prompt
     assert "Клиент видел ответ бота" in prompt
@@ -569,6 +570,180 @@ def test_number_audit_marks_absurd_weekly_frequency_as_kb_integrity_issue(tmp_pa
     assert audit["items"][0]["level"] == "kb_integrity_issue"
     assert audit["worst_level"] == "kb_integrity_issue"
     assert audit["has_risky_number"] is True
+
+
+def test_judge_fact_audit_matches_full_brand_client_safe_facts(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "payment.installment_foton",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: рассрочка через Т-Банк доступна на 6, 10 или 12 месяцев.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "payment.annual_discount_unpk",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: при оплате за год действует скидка 14%.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "refund.unspent_balance",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: при возврате возвращается остаток неистраченных средств.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "format.online_2x90",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: онлайн-формат проходит 2 раза в неделю по 90 минут.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "locations.sretenka",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: адрес площадки — Сретенка, 20.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    foton_audit = sim.audit_fact_claims_for_judge(
+        "Фотон может оформить рассрочку через Т-Банк на 6, 10 или 12 месяцев. При возврате возвращается остаток неистраченных средств.",
+        client_message="Какие есть варианты оплаты и возврата?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    foton_levels = {item["claim_type"]: item["level"] for item in foton_audit["items"]}
+    assert foton_levels["tbank_installment"] == "same_brand_global_match"
+    assert foton_levels["foton_installment_terms"] == "same_brand_global_match"
+    assert foton_levels["refund_unspent_balance"] == "same_brand_global_match"
+    assert foton_audit["has_unverified_claim"] is False
+
+    unpk_audit = sim.audit_fact_claims_for_judge(
+        "УНПК: скидка 14% при оплате за год. Онлайн проходит 2 раза в неделю по 90 минут. Адрес — Сретенка, 20.",
+        client_message="Какие условия?",
+        active_brand="unpk",
+        retrieved_facts={"format.online_2x90": "УНПК: онлайн-формат проходит 2 раза в неделю по 90 минут."},
+        snapshot_path=snapshot_path,
+    )
+    unpk_levels = {item["claim_type"]: item["level"] for item in unpk_audit["items"]}
+    assert unpk_levels["annual_discount"] == "same_brand_global_match"
+    assert unpk_levels["online_frequency_2x90"] == "retrieved_match"
+    assert unpk_levels["address_sretenka"] == "same_brand_global_match"
+
+
+def test_judge_fact_audit_separates_wrong_scope_from_fabrication(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "unpk",
+                "fact_key": "contacts.office_hours",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: контактный центр работает Пн-Вс 10:00-18:00.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "locations.sretenka",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: адрес площадки — Сретенка, 20.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    schedule_audit = sim.audit_fact_claims_for_judge(
+        "Занятия проходят Пн-Вс 10:00-18:00.",
+        client_message="По каким дням занятия?",
+        active_brand="unpk",
+        retrieved_facts={"contacts.office_hours": "УНПК: контактный центр работает Пн-Вс 10:00-18:00."},
+        snapshot_path=snapshot_path,
+    )
+    assert schedule_audit["items"][0]["level"] == "wrong_scope"
+    assert schedule_audit["items"][0]["claim_type"] == "contact_hours_as_class_schedule"
+    assert schedule_audit["has_wrong_scope"] is True
+    assert schedule_audit["has_unverified_claim"] is False
+
+    address_audit = sim.audit_fact_claims_for_judge(
+        "Занятия проходят на Сретенке, 20.",
+        client_message="Интересует 9 класс информатика очно, помесячно без банка?",
+        active_brand="unpk",
+        retrieved_facts={"locations.sretenka": "УНПК: адрес площадки — Сретенка, 20."},
+        snapshot_path=snapshot_path,
+    )
+    assert address_audit["items"][0]["level"] == "wrong_scope"
+    assert address_audit["items"][0]["claim_type"] == "address_on_non_address_question"
+
+    legit_address_audit = sim.audit_fact_claims_for_judge(
+        "Адрес площадки — Сретенка, 20.",
+        client_message="Где находится площадка?",
+        active_brand="unpk",
+        retrieved_facts={"locations.sretenka": "УНПК: адрес площадки — Сретенка, 20."},
+        snapshot_path=snapshot_path,
+    )
+    legit_levels = {item["claim_type"]: item["level"] for item in legit_address_audit["items"]}
+    assert "address_on_non_address_question" not in legit_levels
+    assert legit_levels["address_sretenka"] == "retrieved_match"
+
+
+def test_judge_fact_audit_flags_unmatched_business_claim(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_fact_claims_for_judge(
+        "Можно оплатить переводом на счет каждый месяц.",
+        client_message="Можно переводом на счет?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+
+    assert audit["items"][0]["claim_type"] == "bank_transfer_invoice"
+    assert audit["items"][0]["level"] == "no_match"
+    assert audit["has_unverified_claim"] is True
+
+
+def test_summary_includes_judge_fact_audit_counts(tmp_path):
+    summary = sim.build_summary(
+        [
+            {
+                "dialog_id": "j1",
+                "brand": "unpk",
+                "turns": [
+                    {
+                        "judge_fact_audit": {
+                            "items": [
+                                {"claim_type": "office_hours", "level": "same_brand_global_match"},
+                                {"claim_type": "contact_hours_as_class_schedule", "level": "wrong_scope"},
+                            ]
+                        }
+                    }
+                ],
+            }
+        ],
+        [
+            {
+                "dialog_id": "j1",
+                "brand": "unpk",
+                "verdict": "PASS_WITH_NOTES",
+                "hard_gates_passed": True,
+                "soft_flags_present": [],
+                "human_tone_score_0_100": 60,
+            }
+        ],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    assert summary["run_config"]["judge_version"] == sim.JUDGE_FACT_AUDIT_VERSION
+    assert summary["judge_fact_audit"]["counts_by_level"]["same_brand_global_match"] == 1
+    assert summary["judge_fact_audit"]["counts_by_level"]["wrong_scope"] == 1
+    assert summary["judge_fact_audit"]["wrong_scope_count"] == 1
 
 
 def test_human_review_rows_classify_hard_gate_cause_from_number_audit():

@@ -28,6 +28,7 @@ from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pil
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
 from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_funnel_context_payload
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
+from mango_mvp.channels.fact_retrieval import key_matches
 
 
 DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke_tests_v7_dynamic_sim_2026-05-21/v7_dynamic_client_sim_2026-05-21.jsonl")
@@ -1140,6 +1141,7 @@ def build_summary(
     scores = [int(item.get("human_tone_score_0_100") or 0) for item in judge_results]
     run_statuses = Counter(str(dialog.get("run_status") or "completed") for dialog in transcripts)
     send_unedited = _send_unedited_proxy(transcripts, judge_results)
+    over_handoff = _over_handoff_metrics(transcripts)
     metrics = build_metric_intervals(
         dialogs=len(judge_results),
         pass_count=verdicts.get("PASS", 0) + verdicts.get("PASS_WITH_NOTES", 0),
@@ -1231,6 +1233,7 @@ def build_summary(
             ),
         },
         "branch_metrics": _branch_count_metrics(transcripts),
+        "over_handoff": over_handoff,
         "send_unedited_proxy": send_unedited,
         "metrics_intervals": metrics["metrics_intervals"],
         "needs_second_run": metrics["needs_second_run"],
@@ -1273,6 +1276,158 @@ def _branch_count_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
         "p0_branch_flags": dict(p0_flags),
         "answer_contract_controlled_turns": contract_controlled,
     }
+
+
+def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    total_turns = 0
+    handoff_turns: list[dict[str, Any]] = []
+    false_handoff: list[dict[str, Any]] = []
+    levels: Counter[str] = Counter()
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            total_turns += 1
+            if not _is_over_handoff_turn(turn):
+                continue
+            level = _handoff_fact_level(turn)
+            levels[level] += 1
+            item = {
+                "dialog_id": dialog.get("dialog_id"),
+                "brand": dialog.get("brand"),
+                "turn": turn.get("turn"),
+                "route": turn.get("bot_route"),
+                "fact_level": level,
+                "client_message": turn.get("client_message"),
+                "fallback_reason": (turn.get("bot_dialogue_contract_pipeline") or {}).get("fallback_reason"),
+                "retrieved_fact_keys": list(((turn.get("bot_dialogue_contract_pipeline") or {}).get("retrieved_facts") or {}).keys())[:8],
+                "missing_fact_keys": list((turn.get("bot_dialogue_contract_pipeline") or {}).get("missing_fact_keys") or [])[:8],
+            }
+            handoff_turns.append(item)
+            if level == "retrieved_match":
+                false_handoff.append(item)
+    return {
+        "turns": total_turns,
+        "handoff_turns": len(handoff_turns),
+        "over_handoff_turn_rate": round(len(handoff_turns) / total_turns, 3) if total_turns else None,
+        "levels": dict(levels),
+        "false_handoff_count": len(false_handoff),
+        "false_handoff": false_handoff,
+        "candidates": handoff_turns[:80],
+    }
+
+
+def _is_over_handoff_turn(turn: Mapping[str, Any]) -> bool:
+    if _turn_is_real_p0(turn):
+        return False
+    route = str(turn.get("bot_route") or "")
+    text = str(turn.get("bot_text") or "").casefold()
+    if route in {"draft_for_manager", "manager_only"}:
+        return True
+    return bool(
+        re.search(
+            r"^\s*(передам|(?:менеджер|сотрудник)\s+(?:уточнит|подтвердит|сверит|ответит|свяжется|напишет))",
+            text,
+            re.I,
+        )
+    )
+
+
+def _turn_is_real_p0(turn: Mapping[str, Any]) -> bool:
+    pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
+    contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
+    fallback = str(pipeline.get("fallback_reason") or "")
+    flags = " ".join(str(flag) for flag in (turn.get("bot_safety_flags") or []))
+    return bool(contract.get("is_p0")) or fallback.startswith("p0") or bool(re.search(r"high_risk|p0|manager_only_p0", flags, re.I))
+
+
+def _handoff_fact_level(turn: Mapping[str, Any]) -> str:
+    pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
+    contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
+    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    missing = set(str(item) for item in (pipeline.get("missing_fact_keys") or []))
+    if _turn_has_retrieved_match_for_contract(contract, retrieved, missing):
+        return "retrieved_match"
+    audit = turn.get("number_audit") if isinstance(turn.get("number_audit"), Mapping) else {}
+    audit_levels = set(str(item.get("level") or "") for item in (audit.get("items") or []) if isinstance(item, Mapping))
+    if "same_brand_global_match" in audit_levels:
+        return "same_brand_global_match"
+    if retrieved:
+        return "wrong_scope"
+    return "no_match"
+
+
+def _turn_has_retrieved_match_for_contract(
+    contract: Mapping[str, Any],
+    retrieved_facts: Mapping[str, Any],
+    missing: set[str],
+) -> bool:
+    if not contract or not retrieved_facts:
+        return False
+    retrieved_keys = tuple(str(key) for key in retrieved_facts.keys())
+    subquestions = contract.get("subquestions") if isinstance(contract.get("subquestions"), Sequence) else []
+    if not subquestions:
+        subquestions = (contract,)
+    for subquestion in subquestions:
+        if not isinstance(subquestion, Mapping):
+            continue
+        required = tuple(str(key) for key in (subquestion.get("needed_fact_keys") or []) if str(key))
+        if not required:
+            continue
+        if any(key in missing for key in required):
+            continue
+        if all(any(_fact_key_matches_required(key, retrieved_key) for retrieved_key in retrieved_keys) for key in required) and _summary_scope_exact(
+            contract,
+            subquestion,
+            required,
+            retrieved_facts,
+        ):
+            return True
+    return False
+
+
+def _summary_scope_exact(
+    contract: Mapping[str, Any],
+    subquestion: Mapping[str, Any],
+    required: Sequence[str],
+    retrieved_facts: Mapping[str, Any],
+) -> bool:
+    text = " ".join(
+        str(part or "")
+        for part in (
+            contract.get("current_question"),
+            contract.get("existence_target"),
+            subquestion.get("text"),
+            subquestion.get("existence_target"),
+        )
+    ).casefold().replace("ё", "е")
+    fact_text = " ".join(f"{key} {value}" for key, value in retrieved_facts.items()).casefold().replace("ё", "е")
+    if re.search(r"(прям\w*\s+перевод|перевод\w*\s+на\s+счет|перевод\w*\s+на\s+сч[её]т|по\s+счету|по\s+сч[её]ту|напрямую\s+(?:вам|центру)|без\s+банка|вам\s+платить)", text, re.I):
+        return bool(re.search(r"(прям\w*\s+перевод|перевод\w*\s+на\s+счет|перевод\w*\s+на\s+сч[её]т|по\s+счету|по\s+сч[её]ту|реквизит|квитанц|qr-?код|qr\s)", fact_text, re.I))
+    if re.search(r"помесячн\w*.*сумм|сумм\w*\s+в\s+месяц|сколько\s+.*(?:в|за)\s+месяц|месячн\w*\s+сумм", text, re.I):
+        return bool(
+            re.search(
+                r"сумм\w*\s+в\s+месяц|ежемесячн\w*\s+сумм|помесячн\w*\s+сумм|руб\w*\s+в\s+месяц|₽\s*/\s*мес",
+                fact_text,
+                re.I,
+            )
+        )
+    if re.search(r"выходн|суббот|воскрес|будн|по\s+каким\s+дням|дни\s+занят", text, re.I):
+        if re.search(r"objection|возраж", fact_text, re.I):
+            return False
+        return bool(re.search(r"выходн|суббот|воскрес|будн", fact_text, re.I))
+    if re.search(r"возврат|верн[её]т|вернут|передума", text, re.I):
+        return bool(re.search(r"возврат|неистраченн", fact_text, re.I))
+    return True
+
+
+def _fact_key_matches_required(required: str, fact_key: str) -> bool:
+    if required == fact_key:
+        return True
+    try:
+        return bool(key_matches(required, fact_key))
+    except Exception:
+        required_norm = re.sub(r"[^a-zа-яё0-9]+", "", required.casefold())
+        fact_norm = re.sub(r"[^a-zа-яё0-9]+", "", fact_key.casefold())
+        return bool(required_norm and (required_norm in fact_norm or fact_norm in required_norm))
 
 
 def _send_unedited_proxy(
@@ -1720,6 +1875,7 @@ def compact_knowledge_snippets(context: Mapping[str, Any], *, limit: int = 8, ma
 
 def render_summary_md(summary: Mapping[str, Any]) -> str:
     totals = summary.get("totals") if isinstance(summary.get("totals"), Mapping) else {}
+    over_handoff = summary.get("over_handoff") if isinstance(summary.get("over_handoff"), Mapping) else {}
     return "\n".join(
         [
             "# Dynamic Telegram Client Simulation v7",
@@ -1737,6 +1893,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Scenario metadata: `{summary.get('scenario_metadata')}`",
             f"- Branch metrics: `{summary.get('branch_metrics')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
+            f"- Over-handoff: `{over_handoff}`",
             "",
             "Что смотреть вручную:",
             "",

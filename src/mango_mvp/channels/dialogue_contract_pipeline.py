@@ -19,7 +19,7 @@ import json
 import os
 import re
 from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -904,21 +904,19 @@ def run_pipeline(
         context=context,
     )
     if contract.is_p0:
-        if _asks_refund_policy(contract) and _refund_topic_already_active(conversation):
+        if _asks_refund_policy(contract) and not _current_refund_dispute_signal(
+            client_words=client_words,
+            contract=contract,
+        ):
+            contract = replace(contract, is_p0=False, p0_reason="", answerability="answer_self")
+        else:
             return DialogueContractPipelineResult(
-                draft_text=_refund_policy_handoff_text(conversation=conversation),
+                draft_text=_dry_p0_text(conversation=conversation),
                 route="manager_only",
                 manager_only=True,
                 contract=contract,
-                fallback_reason="p0_refund_policy",
+                fallback_reason="p0",
             )
-        return DialogueContractPipelineResult(
-            draft_text=_dry_p0_text(conversation=conversation),
-            route="manager_only",
-            manager_only=True,
-            contract=contract,
-            fallback_reason="p0",
-        )
 
     retrieval = retrieve_facts(
         needed_fact_keys=contract.all_needed_fact_keys(),
@@ -926,6 +924,7 @@ def run_pipeline(
         fact_store=fact_store,
     )
     retrieval = _augment_with_soft_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
+    retrieval = _augment_with_format_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
     retrieval = _augment_with_known_absence(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
     retrieval = _augment_with_presale_refund_policy(
         retrieval,
@@ -954,8 +953,44 @@ def run_pipeline(
             missing=retrieval.missing,
             fallback_reason="single_missing_slot_question",
         )
+    exact_answer_available = _has_exact_retrieved_answer_part(contract, retrieval)
+    soft_weekend = _soft_weekend_guidance_text(retrieval.facts)
+    if soft_weekend and _asks_weekend_or_slot(contract):
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
+            route="bot_answer_self",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="soft_weekend_guidance",
+        )
+    schedule_answer = _class_schedule_publication_answer(contract, retrieval.facts, conversation=conversation)
+    if schedule_answer:
+        return DialogueContractPipelineResult(
+            draft_text=schedule_answer,
+            route="bot_answer_self",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="schedule_publication_answer",
+        )
+    direct_answer = _direct_exact_fact_answer(contract, retrieval)
+    if direct_answer:
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(direct_answer, conversation=conversation, contract=contract, facts=retrieval.facts),
+            route="bot_answer_self",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="direct_exact_fact_answer",
+        )
     force_draft_for_manager = (
         contract.answerability != "answer_self"
+        and not exact_answer_available
         and not _has_retrieved_self_answer_part(contract, retrieval)
         and not (_asks_refund_policy(contract) and _presale_refund_policy_text(retrieval.facts))
     )
@@ -964,8 +999,9 @@ def run_pipeline(
         or not retrieval.facts
         or (_soft_weekend_guidance_text(retrieval.facts) and not _has_self_answerable_subquestion(contract))
     ):
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract, facts=retrieval.facts),
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
@@ -974,8 +1010,9 @@ def run_pipeline(
             fallback_reason="contract_manager_only",
         )
     if draft_fn is None:
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract),
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
@@ -997,8 +1034,9 @@ def run_pipeline(
     except Exception:
         draft = ""
     if not draft:
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract),
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
@@ -1007,6 +1045,7 @@ def run_pipeline(
             fallback_reason="draft_error",
         )
 
+    draft = _specialize_grade_range_answer(draft, contract=contract, facts=retrieval.facts)
     repaired = False
     findings, unsupported, semantic_available = _hard_check(
         draft,
@@ -1018,8 +1057,9 @@ def run_pipeline(
         context=context,
     )
     if not semantic_available:
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract),
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
@@ -1053,8 +1093,9 @@ def run_pipeline(
             context=context,
         )
         if not semantic_available:
+            fallback = _safe_fallback_text(contract, facts=retrieval.facts)
             return DialogueContractPipelineResult(
-                draft_text=_safe_fallback_text(contract),
+                draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
                 route="draft_for_manager",
                 manager_only=False,
                 contract=contract,
@@ -1065,8 +1106,38 @@ def run_pipeline(
             )
 
     if findings or unsupported:
+        verified_fallback = _hard_failure_exact_fact_fallback(contract, retrieval)
+        if verified_fallback and _can_autonomously_replace_failed_draft(findings):
+            fallback_findings, fallback_unsupported, fallback_semantic_available = _hard_check(
+                verified_fallback,
+                facts=retrieval.facts,
+                contract=contract,
+                client_words=client_words,
+                faithfulness_fn=faithfulness_fn,
+                toggles=toggles,
+                context=context,
+            )
+            if fallback_semantic_available and not fallback_findings and not fallback_unsupported:
+                return DialogueContractPipelineResult(
+                    draft_text=_avoid_repeating_text(
+                        verified_fallback,
+                        conversation=conversation,
+                        contract=contract,
+                        facts=retrieval.facts,
+                    ),
+                    route="bot_answer_self",
+                    manager_only=False,
+                    contract=contract,
+                    facts=retrieval.facts,
+                    missing=retrieval.missing,
+                    findings=tuple(findings),
+                    unsupported_claims=tuple(unsupported),
+                    repaired=repaired,
+                    fallback_reason="verified_fact_fallback_after_hard_check",
+                )
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract, facts=retrieval.facts),
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
@@ -1117,7 +1188,7 @@ def run_pipeline(
                 )
                 added_warm_anchors = new_concrete_anchors(warm_candidate, original=draft, facts=retrieval.facts)
                 if warm_semantic_available and not warm_findings and (not warm_unsupported or not added_warm_anchors):
-                    draft = warm_candidate
+                    draft = _specialize_grade_range_answer(warm_candidate, contract=contract, facts=retrieval.facts)
                     warmed = True
                 else:
                     warmth_rejected_findings = tuple(warm_findings)
@@ -1134,7 +1205,7 @@ def run_pipeline(
                         warmth_rejected_reason = "unknown_rejection"
 
     return DialogueContractPipelineResult(
-        draft_text=draft,
+        draft_text=_avoid_repeating_text(draft, conversation=conversation, contract=contract, facts=retrieval.facts),
         route="draft_for_manager" if force_draft_for_manager else "bot_answer_self",
         manager_only=False,
         contract=contract,
@@ -1157,6 +1228,7 @@ def verify_output(
     *,
     facts: Mapping[str, str],
     active_brand: str,
+    contract: AnswerContract | None = None,
     denied_topics: Sequence[str] = (),
     forbidden_substitutions: Sequence[str] = (),
     client_message: str = "",
@@ -1184,6 +1256,8 @@ def verify_output(
     )
     if unsupported_entities:
         findings.append(VerificationFinding("unsupported_entity", f"сущность вне фактов хода: {unsupported_entities}"))
+    if contract is not None:
+        findings.extend(_wrong_intent_fact_findings(text, contract=contract, facts=facts))
     for topic in tuple(denied_topics) + tuple(forbidden_substitutions):
         normalized = str(topic or "").strip().casefold()
         if normalized and normalized in low:
@@ -1216,6 +1290,7 @@ def _hard_check(
             draft,
             facts=facts,
             active_brand=contract.active_brand,
+            contract=contract,
             denied_topics=contract.denied_topics,
             forbidden_substitutions=contract.forbidden_substitutions,
             client_message=client_words,
@@ -1272,10 +1347,143 @@ def _safe_fallback_text(contract: AnswerContract, *, facts: Mapping[str, str] | 
             "По общему ориентиру бывают разные варианты слотов, в том числе по выходным. "
             "Но точное расписание конкретной группы без проверки не подтверждаю — менеджер сверит ваш класс, предмет и площадку."
         )
+    schedule_publication = _class_schedule_publication_answer(contract, facts or {})
+    if schedule_publication:
+        return schedule_publication
     if _asks_refund_policy(contract):
         return _refund_policy_handoff_text()
     question = contract.current_question or "этот вопрос"
+    secondary = _secondary_fact_text(contract, facts or {})
+    if secondary:
+        return (
+            f"По спрошенному пункту точного подтверждения нет — менеджер уточнит именно это: {question}. "
+            f"Из подтверждённого, как отдельная справка: {secondary} "
+            "Если хотите, передам менеджеру именно ваш способ или условие."
+        )
     return f"Передам менеджеру уточнить именно это: {question}. Он подтвердит точную информацию."
+
+
+def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    if not facts:
+        return ""
+    payment_targets = _payment_method_target_anchors(contract)
+    if payment_targets:
+        for key, text in facts.items():
+            if _is_camp_or_lvsh_fact(key, str(text or "")) and not _contract_mentions_camp_or_lvsh(contract):
+                continue
+            fact_anchors = _payment_method_anchors_from_text(str(text or ""))
+            if fact_anchors and not payment_targets.issubset(fact_anchors):
+                return _short_fact_sentence(str(text or ""))
+    return ""
+
+
+def _short_fact_sentence(text: str, *, max_chars: int = 170) -> str:
+    cleaned = " ".join(str(text or "").split())
+    first = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0].strip()
+    value = first or cleaned
+    if len(value) > max_chars:
+        value = value[: max_chars - 1].rstrip() + "…"
+    return value
+
+
+def _avoid_repeating_text(
+    text: str,
+    *,
+    conversation: Sequence[Mapping[str, str]] | None,
+    contract: AnswerContract,
+    facts: Mapping[str, str] | None = None,
+) -> str:
+    source = str(text or "").strip()
+    if not source or not _is_handoff_text(source):
+        return source
+    prior_bot_texts = [str(item.get("text") or "") for item in (conversation or ()) if str(item.get("role") or "") == "bot"]
+    if not any(_near_repeat(source, prior) for prior in prior_bot_texts[-4:]):
+        return source
+    if _asks_refund_policy(contract) and _presale_refund_policy_text(facts or {}):
+        fact = _presale_refund_policy_text(facts or {})
+        return (
+            f"По возврату ориентир тот же: {_short_fact_sentence(fact)} "
+            "Точные пункты договора менеджер подтвердит по выбранному курсу."
+        )
+    return (
+        "Не буду повторять общий ответ: точную деталь по этому вопросу подтвердит менеджер. "
+        "Передам ему именно этот пункт."
+    )
+
+
+def _is_handoff_text(text: str) -> bool:
+    low = str(text or "").casefold()
+    return bool(re.search(r"менеджер|передам|уточнит|подтвердит|сверит", low, re.I))
+
+
+def _near_repeat(left: str, right: str) -> bool:
+    left_norm = _repeat_norm(left)
+    right_norm = _repeat_norm(right)
+    if not left_norm or not right_norm:
+        return False
+    if left_norm == right_norm:
+        return True
+    if _is_handoff_text(left) and _is_handoff_text(right):
+        if _payment_method_anchors_from_text(left) & _payment_method_anchors_from_text(right):
+            return True
+    left_tokens = set(left_norm.split())
+    right_tokens = set(right_norm.split())
+    if len(left_tokens | right_tokens) < 5:
+        return False
+    if len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens))) >= 0.78:
+        return True
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens) >= 0.82
+
+
+def _repeat_norm(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-zа-яё0-9]+", " ", str(text or "").casefold().replace("ё", "е"))).strip()
+
+
+def _specialize_grade_range_answer(draft: str, *, contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    grade = _client_grade_from_contract(contract)
+    if not grade:
+        return draft
+    value = int(grade)
+    fact_text = " ".join(str(item or "") for item in facts.values())
+    supported_ranges: list[tuple[int, int]] = []
+    for match in re.finditer(r"\b(\d{1,2})\s*[–-]\s*(\d{1,2})\s+класс", fact_text, re.I):
+        low, high = int(match.group(1)), int(match.group(2))
+        if low <= value <= high:
+            supported_ranges.append((low, high))
+    if not supported_ranges:
+        return draft
+    result = str(draft or "")
+    for low, high in supported_ranges:
+        result = re.sub(
+            rf"\b{low}\s*[–-]\s*{high}\s+классов\b",
+            f"{value} класса",
+            result,
+            flags=re.I,
+        )
+        result = re.sub(
+            rf"\b{low}\s*[–-]\s*{high}\s+класс\b",
+            f"{value} класс",
+            result,
+            flags=re.I,
+        )
+    return result
+
+
+def _client_grade_from_contract(contract: AnswerContract) -> str:
+    text = " ".join(
+        part
+        for part in (
+            contract.current_question,
+            contract.client_state,
+            " ".join(item.text for item in contract.subquestions),
+            " ".join(str(slot.value) for slot in contract.known_slots.values() if slot.source),
+        )
+        if part
+    )
+    match = re.search(r"(?<!\d)([1-9]|10|11)\s*(?:класс|кл\b)", text, re.I)
+    if match:
+        return match.group(1)
+    return ""
 
 
 def _augment_with_soft_guidance(
@@ -1307,6 +1515,33 @@ def _augment_with_soft_guidance(
         facts.setdefault(key, text)
     matched = dict(retrieval.matched_keys)
     matched["soft_guidance.weekend_slots"] = tuple(extra.keys())
+    return RetrievalResult(facts=facts, missing=retrieval.missing, matched_keys=matched)
+
+
+def _augment_with_format_guidance(
+    retrieval: RetrievalResult,
+    *,
+    contract: AnswerContract,
+    active_brand: str,
+    fact_store: FactStore,
+) -> RetrievalResult:
+    if not _asks_training_format_choice(contract):
+        return retrieval
+    brand = _normalize_brand(active_brand)
+    store = fact_store.store.get(brand, {})
+    extra: dict[str, str] = {}
+    for key, text in store.items():
+        combined = f"{key} {text}".casefold().replace("ё", "е")
+        if "online_courses_format" in combined or "онлайн-курсы" in combined:
+            extra[key] = text
+            break
+    if not extra:
+        return retrieval
+    facts = dict(retrieval.facts)
+    for key, text in extra.items():
+        facts.setdefault(key, text)
+    matched = dict(retrieval.matched_keys)
+    matched["format.online"] = tuple(extra.keys())
     return RetrievalResult(facts=facts, missing=retrieval.missing, matched_keys=matched)
 
 
@@ -1390,6 +1625,156 @@ def _soft_weekend_guidance_text(facts: Mapping[str, str]) -> str:
     return ""
 
 
+def _wrong_intent_fact_findings(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    facts: Mapping[str, str],
+) -> list[VerificationFinding]:
+    findings: list[VerificationFinding] = []
+    if _asks_class_schedule_days(contract) and _draft_uses_contact_hours_as_schedule(draft, facts):
+        findings.append(
+            VerificationFinding(
+                "wrong_intent_fact",
+                "Контактные часы нельзя выдавать как дни занятий группы.",
+            )
+        )
+    if not _asks_address(contract) and _draft_uses_address_fact(draft, facts):
+        findings.append(
+            VerificationFinding(
+                "wrong_intent_fact",
+                "Адресный факт нельзя выдавать как ответ на неадресный вопрос.",
+            )
+        )
+    if not _contract_mentions_camp_or_lvsh(contract) and _draft_uses_camp_or_lvsh_fact(draft, facts):
+        findings.append(
+            VerificationFinding(
+                "wrong_intent_fact",
+                "Лагерный/ЛВШ факт нельзя выдавать как справку вне лагерного контекста.",
+            )
+        )
+    return findings
+
+
+def _class_schedule_publication_answer(
+    contract: AnswerContract,
+    facts: Mapping[str, str],
+    *,
+    conversation: Sequence[Mapping[str, str]] | None = None,
+) -> str:
+    if not _asks_class_schedule_days(contract):
+        return ""
+    for key, text in facts.items():
+        combined = f"{key} {text}".casefold().replace("ё", "е")
+        if not re.search(r"расписани", combined, re.I):
+            continue
+        if not re.search(r"появ|опубли|июн|середин[ае]\s+сентябр", combined, re.I):
+            continue
+        if re.search(r"контакт|contacts|10[:.]?00|18[:.]?00|пн\s*[–-]\s*вс", combined, re.I):
+            continue
+        fact = _short_fact_sentence(str(text or ""), max_chars=220)
+        if not fact:
+            continue
+        prefix = _format_context_prefix(contract, facts)
+        answer = f"{prefix}{fact} Точные дни конкретной группы сейчас не подтверждаю."
+        prior_bot_texts = [str(item.get("text") or "") for item in (conversation or ()) if str(item.get("role") or "") == "bot"]
+        if any(_near_repeat(answer, prior) for prior in prior_bot_texts[-4:]):
+            return (
+                f"{prefix}По дням точного ответа пока нет: расписание опубликуют в июне. "
+                "Без подтверждения не буду называть будни или выходные как факт."
+            )
+        return answer
+    return ""
+
+
+def _format_context_prefix(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    if not _asks_training_format_choice(contract):
+        return ""
+    facts_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
+    parts: list[str] = []
+    if re.search(r"онлайн-?курс|онлайн\s+формат|online", facts_text, re.I):
+        parts.append("Есть онлайн-формат.")
+    if re.search(r"очн\w+\s+курс|очные\s+курсы|очно", facts_text, re.I):
+        parts.append("Есть очные курсы.")
+    return (" ".join(dict.fromkeys(parts)) + " ") if parts else ""
+
+
+def _asks_training_format_choice(contract: AnswerContract) -> bool:
+    text = _contract_intent_text(contract)
+    return bool(re.search(r"онлайн\s+или\s+очно|очно\s+или\s+онлайн|онлайн.+очно|очно.+онлайн|формат", text, re.I))
+
+
+def _asks_class_schedule_days(contract: AnswerContract) -> bool:
+    text = _contract_intent_text(contract)
+    if re.search(r"контакт|на\s+связи|звонить|телефон|офис\s+работ", text, re.I):
+        return False
+    return bool(
+        re.search(r"по\s+каким\s+дням|дни\s+занят|когда\s+занят|расписани", text, re.I)
+        and re.search(r"занят|групп|курс|класс|предмет|математ|физик|информат|очно|онлайн", text, re.I)
+    )
+
+
+def _contract_intent_text(contract: AnswerContract) -> str:
+    return " ".join(
+        part
+        for part in (
+            contract.current_question,
+            contract.client_state,
+            contract.existence_target,
+            " ".join(contract.continued_topics),
+            " ".join(contract.switched_topics),
+            " ".join(item.text for item in contract.subquestions),
+            " ".join(item.existence_target for item in contract.subquestions),
+        )
+        if part
+    ).casefold().replace("ё", "е")
+
+
+def _draft_uses_contact_hours_as_schedule(draft: str, facts: Mapping[str, str]) -> bool:
+    text = str(draft or "").casefold().replace("ё", "е")
+    contact_values = [
+        str(value or "").casefold().replace("ё", "е")
+        for key, value in facts.items()
+        if re.search(r"contact|contacts|schedule|режим|график", str(key or ""), re.I)
+        and re.search(r"10[:.]?00|18[:.]?00|пн\s*[–-]\s*вс|понедельник|ежедневн|на\s+связи", str(value or "").casefold(), re.I)
+    ]
+    if not contact_values:
+        return False
+    if not re.search(r"10[:.]?00|18[:.]?00|пн\s*[–-]\s*вс|понедельник|ежедневн", text, re.I):
+        return False
+    return bool(re.search(r"расписани|занят|по\s+дням|дни", text, re.I))
+
+
+def _draft_uses_address_fact(draft: str, facts: Mapping[str, str]) -> bool:
+    text = str(draft or "").casefold().replace("ё", "е")
+    if not text:
+        return False
+    for key, value in facts.items():
+        key_low = str(key or "").casefold()
+        if not re.search(r"address|addresses|metro|location", key_low, re.I):
+            continue
+        tail = _fact_tail(str(value or "")).casefold().replace("ё", "е")
+        if tail and len(tail) >= 4 and tail in text:
+            return True
+    return False
+
+
+def _draft_uses_camp_or_lvsh_fact(draft: str, facts: Mapping[str, str]) -> bool:
+    text = str(draft or "").casefold().replace("ё", "е")
+    if not re.search(r"лвш|менделеев|лагер", text, re.I):
+        return False
+    return any(_is_camp_or_lvsh_fact(key, str(value or "")) for key, value in facts.items())
+
+
+def _is_camp_or_lvsh_fact(key: str, text: str) -> bool:
+    combined = f"{key} {text}".casefold().replace("ё", "е")
+    return bool(re.search(r"лвш|lvsh|менделеев|лагер|camp", combined, re.I))
+
+
+def _contract_mentions_camp_or_lvsh(contract: AnswerContract) -> bool:
+    return bool(re.search(r"лвш|менделеев|лагер|camp|летн", _contract_intent_text(contract), re.I))
+
+
 def _has_self_answerable_subquestion(contract: AnswerContract) -> bool:
     return any(item.answerable == "self" for item in contract.subquestions)
 
@@ -1406,6 +1791,295 @@ def _has_retrieved_self_answer_part(contract: AnswerContract, retrieval: Retriev
     return False
 
 
+def _has_exact_retrieved_answer_part(contract: AnswerContract, retrieval: RetrievalResult) -> bool:
+    """True only for a fact matched to the current subquestion and its scope.
+
+    This deliberately does not mean "any fact exists": neighboring payment, refund
+    or schedule facts must not promote a cautious manager route to an autonomous
+    client answer.
+    """
+
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys:
+            continue
+        if any(key in retrieval.missing or not retrieval.matched_keys.get(key) for key in keys):
+            continue
+        if _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            return True
+    return False
+
+
+def _direct_exact_fact_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    if not _has_exact_retrieved_answer_part(contract, retrieval):
+        return ""
+    if _asks_address(contract):
+        address = _first_address_from_facts(retrieval.facts)
+        if not address:
+            return ""
+        city = address.get("city") or "Москве"
+        location = address.get("address") or ""
+        metro = address.get("metro") or ""
+        if not location:
+            return ""
+        parts = [f"В {city}: {location}"]
+        if metro:
+            parts.append(f"метро {metro}")
+        return "; ".join(parts) + ". Если хотите, менеджер поможет выбрать удобную площадку."
+    payment = _direct_payment_answer_from_facts(contract, retrieval.facts)
+    if payment:
+        return payment
+    return ""
+
+
+def _hard_failure_exact_fact_fallback(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    if not _has_exact_retrieved_answer_part(contract, retrieval):
+        return ""
+    price = _direct_price_answer_from_facts(contract, retrieval.facts)
+    if price:
+        return price
+    format_answer = _direct_format_answer_from_facts(contract, retrieval.facts)
+    if format_answer:
+        return format_answer
+    recording = _direct_recording_answer_from_facts(contract, retrieval.facts)
+    if recording:
+        return recording
+    return _direct_exact_fact_answer(contract, retrieval)
+
+
+def _can_autonomously_replace_failed_draft(findings: Sequence[VerificationFinding]) -> bool:
+    """Only factual drift may be repaired into an autonomous exact-fact answer.
+
+    Brand leaks, meta leaks, P0 promises and wrong-scope facts stay fail-safe and
+    go to manager review.
+    """
+
+    return all(finding.code == "fact_grounding" for finding in findings)
+
+
+def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    if not _asks_price(contract):
+        return ""
+    items: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    facts_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
+    for key, text in facts.items():
+        combined = f"{key} {text}"
+        if "₽" not in combined:
+            continue
+        if not re.search(r"цен|стоим|price|₽", combined, re.I):
+            continue
+        low = combined.casefold().replace("ё", "е")
+        label = ""
+        if re.search(r"semester|семестр", low, re.I):
+            label = "семестр"
+        elif re.search(r"(?:^|[._\s])year(?:$|[._\s])|\bгод\b", low, re.I):
+            label = "год"
+        amount_match = re.search(r"\d[\d\s]{2,}\s*₽", str(text or ""))
+        if not label or not amount_match:
+            continue
+        amount = " ".join(amount_match.group(0).replace("₽", " ₽").split())
+        marker = (label, amount)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        items.append(marker)
+    if not items:
+        return ""
+    order = {"семестр": 0, "год": 1}
+    items.sort(key=lambda item: order.get(item[0], 99))
+    price_part = ", ".join(f"{label} — {amount}" for label, amount in items[:2])
+    scope_parts: list[str] = []
+    if re.search(r"онлайн", facts_text, re.I):
+        scope_parts.append("онлайн")
+    if re.search(r"5\s*[-–]\s*11\s+класс", facts_text, re.I):
+        scope_parts.append("5-11 классы")
+    if re.search(r"2026\s*/\s*27", facts_text, re.I):
+        scope_parts.append("2026/27 учебный год")
+    scope = f" ({', '.join(scope_parts)})" if scope_parts else ""
+    return f"По подтверждённым ценам{scope}: {price_part}."
+
+
+def _direct_format_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    if not _asks_training_format_choice(contract):
+        return ""
+    online_fact = ""
+    offline_fact = ""
+    for key, text in facts.items():
+        combined = f"{key} {text}".casefold().replace("ё", "е")
+        if not online_fact and ("online_courses_format" in combined or "онлайн-курсы" in combined):
+            online_fact = _short_fact_sentence(str(text or ""), max_chars=220)
+        if not offline_fact and re.search(r"очные\s+курсы|очно", combined, re.I):
+            offline_fact = _short_fact_sentence(str(text or ""), max_chars=180)
+    parts: list[str] = []
+    if online_fact:
+        parts.append(f"По онлайн-формату подтверждено: {online_fact}")
+    if offline_fact and not re.search(r"контакт|10[:.]?00|18[:.]?00|пн\s*[–-]\s*вс", offline_fact.casefold(), re.I):
+        parts.append(f"По очному формату: {offline_fact}")
+    if not parts:
+        return ""
+    return " ".join(parts) + " Конкретную группу по предмету и классу менеджер подтвердит."
+
+
+def _direct_recording_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    text = _contract_intent_text(contract)
+    if not re.search(r"запис|пересмотр|мтс|mts|link|линк", text, re.I):
+        return ""
+    recording_fact = ""
+    platform_fact = ""
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not recording_fact and re.search(r"record|запис|пересмотр", combined, re.I):
+            recording_fact = _short_fact_sentence(str(value or ""), max_chars=180)
+        if not platform_fact and (re.search(r"мтс|mts|link|линк|webinar", combined, re.I) or str(key or "").endswith(".name")):
+            platform_fact = _short_fact_sentence(str(value or ""), max_chars=140)
+    if recording_fact and platform_fact:
+        return f"Да: {recording_fact} {platform_fact}"
+    if recording_fact:
+        return f"Да: {recording_fact}"
+    return ""
+
+
+def _asks_address(contract: AnswerContract) -> bool:
+    text = " ".join(
+        [
+            contract.current_question,
+            contract.client_state,
+            " ".join(item.text for item in contract.subquestions),
+        ]
+    ).casefold().replace("ё", "е")
+    return bool(re.search(r"адрес|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I))
+
+
+def _asks_price(contract: AnswerContract) -> bool:
+    text = " ".join(
+        [
+            contract.current_question,
+            contract.client_state,
+            " ".join(item.text for item in contract.subquestions),
+            " ".join(contract.needed_fact_keys),
+        ]
+    ).casefold().replace("ё", "е")
+    return bool(re.search(r"цен|стоим|price|сколько\s+стоит", text, re.I))
+
+
+def _first_address_from_facts(facts: Mapping[str, str]) -> dict[str, str]:
+    groups: dict[str, dict[str, str]] = {}
+    for key, text in facts.items():
+        match = re.search(r"addresses\.(\d+)\.(address|city|metro)", str(key or ""), re.I)
+        if not match:
+            continue
+        group, field = match.group(1), match.group(2).casefold()
+        value = _fact_tail(text)
+        if value:
+            groups.setdefault(group, {})[field] = value
+    for group in sorted(groups, key=lambda item: int(item) if item.isdigit() else 999):
+        if groups[group].get("address"):
+            return groups[group]
+    return {}
+
+
+def _direct_payment_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    targets = _payment_method_target_anchors(contract)
+    if "monthly_no_bank" in targets and _has_monthly_no_bank_support(facts):
+        return (
+            "Да: отдельной банковской рассрочки нет, а помесячная оплата доступна. "
+            "Условия по выбранной программе менеджер подтвердит."
+        )
+    if "direct_invoice" not in targets:
+        return ""
+    for text in facts.values():
+        if "direct_invoice" not in _payment_method_anchors_from_text(str(text or "")):
+            continue
+        fact = _short_fact_sentence(str(text or ""), max_chars=220)
+        if not fact:
+            continue
+        return f"По подтверждённым способам оплаты: {fact} Детали по выбранной программе менеджер подтвердит."
+    return ""
+
+
+def _fact_tail(text: str) -> str:
+    value = str(text or "").strip()
+    if "—" in value:
+        value = value.rsplit("—", 1)[-1].strip()
+    elif ":" in value:
+        value = value.rsplit(":", 1)[-1].strip()
+    return value.strip(" .")
+
+
+def _retrieved_keys_match_question_scope(
+    contract: AnswerContract,
+    subquestion: Subquestion,
+    retrieval: RetrievalResult,
+    keys: Sequence[str],
+) -> bool:
+    matched_text = _matched_fact_text_for_required_keys(retrieval, keys)
+    if not matched_text:
+        return False
+    if _asks_refund_policy(contract):
+        return bool(_presale_refund_policy_text(_matched_fact_mapping_for_required_keys(retrieval, keys)))
+    payment_targets = _payment_method_target_anchors(contract)
+    if "monthly_no_bank" in payment_targets:
+        if _has_monthly_no_bank_support(retrieval.facts):
+            return True
+        payment_targets = set(payment_targets) - {"monthly_no_bank"}
+    if payment_targets:
+        return any(_fact_supports_payment_target(text, target_anchors=payment_targets) for text in matched_text.values())
+    question_text = _subquestion_scope_text(contract, subquestion)
+    question_low = question_text.casefold().replace("ё", "е")
+    if re.search(r"помесячн\w*.*сумм|сумм\w*\s+в\s+месяц|сколько\s+.*(?:в|за)\s+месяц|месячн\w*\s+сумм", question_low, re.I):
+        return any(
+            re.search(r"сумм\w*\s+в\s+месяц|ежемесячн\w*\s+сумм|помесячн\w*\s+сумм|руб\w*\s+в\s+месяц|₽\s*/\s*мес", value.casefold(), re.I)
+            for value in matched_text.values()
+        )
+    if re.search(r"выходн|суббот|воскрес|будн|по\s+каким\s+дням|дни\s+занят", question_low, re.I):
+        # Publication/contact-hour facts are useful context, but they are not an
+        # exact answer to "which days/weekends?" unless the same fact names that
+        # schedule scope directly.
+        return any(
+            re.search(r"выходн|суббот|воскрес|будн|слот", f"{key} {value}".casefold(), re.I)
+            and "возраж" not in f"{key} {value}".casefold()
+            and "objection" not in f"{key} {value}".casefold()
+            for key, value in matched_text.items()
+        )
+    return True
+
+
+def _matched_fact_text_for_required_keys(retrieval: RetrievalResult, keys: Sequence[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for required in keys:
+        for key in retrieval.matched_keys.get(required) or ():
+            if key in retrieval.facts:
+                result[key] = str(retrieval.facts[key])
+    return result
+
+
+def _matched_fact_mapping_for_required_keys(retrieval: RetrievalResult, keys: Sequence[str]) -> dict[str, str]:
+    return _matched_fact_text_for_required_keys(retrieval, keys)
+
+
+def _subquestion_scope_text(contract: AnswerContract, subquestion: Subquestion) -> str:
+    return " ".join(
+        part
+        for part in (
+            contract.current_question,
+            contract.existence_target,
+            subquestion.text,
+            subquestion.existence_target,
+        )
+        if part
+    )
+
+
 def _asks_refund_policy(contract: AnswerContract) -> bool:
     text = " ".join(
         [
@@ -1418,22 +2092,76 @@ def _asks_refund_policy(contract: AnswerContract) -> bool:
     ).casefold()
     if re.search(r"налог|вычет|фнс|ндфл|маткап|материнск", text, re.I):
         return False
-    return bool(re.search(r"возврат|верн[её]т|вернут|деньг|отмен|передума", text, re.I))
+    return bool(re.search(r"refund|возврат|верн[её]т|вернут|деньг|отмен|передума", text, re.I))
+
+
+def _current_turn_asks_refund_policy(contract: AnswerContract, *, client_words: str) -> bool:
+    text = " ".join(
+        part
+        for part in (
+            client_words,
+            contract.current_question,
+            " ".join(item.text for item in contract.subquestions),
+            contract.existence_target,
+            " ".join(item.existence_target for item in contract.subquestions),
+        )
+        if part
+    ).casefold().replace("ё", "е")
+    if re.search(r"налог|вычет|фнс|ндфл|маткап|материнск", text, re.I):
+        return False
+    return bool(re.search(r"refund|возврат|верн[её]т|вернут|деньг|отмен|передума", text, re.I))
 
 
 def _presale_refund_policy_text(facts: Mapping[str, str]) -> str:
     for key, text in facts.items():
         combined = f"{key} {text}".casefold().replace("ё", "е")
         if "refund_presale_policy" in combined or "остаток неистраченных средств" in combined:
-            return str(text or "")
+            return _client_presale_refund_text(str(text or ""))
     return ""
 
 
-def _refund_topic_already_active(conversation: Sequence[Mapping[str, str]] | None) -> bool:
-    if not conversation or len(conversation) < 2:
+def _client_presale_refund_text(text: str) -> str:
+    low = str(text or "").casefold().replace("ё", "е")
+    if "остаток неистраченных средств" in low:
+        return (
+            "Да, при досрочном отказе возвращается остаток неистраченных средств. "
+            "Конкретный порядок оформления менеджер подтвердит по выбранному курсу и договору."
+        )
+    return _short_fact_sentence(text, max_chars=220)
+
+
+def _current_refund_dispute_signal(*, client_words: str, contract: AnswerContract) -> bool:
+    current_text = " ".join(
+        part
+        for part in (
+            client_words,
+            contract.current_question,
+            " ".join(item.text for item in contract.subquestions),
+            contract.client_state,
+        )
+        if part
+    )
+    normalized = current_text.casefold().replace("ё", "е")
+    if not normalized.strip():
         return False
-    prior_text = " ".join(str(item.get("text") or "") for item in conversation[:-1]).casefold().replace("ё", "е")
-    return bool(re.search(r"возврат|вернут|вернет|вернуть|передума|отмен", prior_text, re.I))
+    p0_codes = set(codes_from_text(normalized))
+    if p0_codes.intersection({"refund", "payment_dispute", "complaint", "legal"}):
+        return True
+    safety = classify_answer_safety(client_message=normalized)
+    if safety.p0_required:
+        return True
+    return bool(
+        re.search(
+            r"верните\s+(?:мне\s+)?деньг|отдайте\s+(?:мне\s+)?(?:деньг|оплат)|"
+            r"хочу\s+вернуть\s+(?:деньг|оплат)|требую\s+верн|"
+            r"заняти[йя]\s+нет|доступа\s+нет|оплатил[аи]?\b|недовол|обман|развод|"
+            r"уже\s+(?:месяц|недел\w*|дн\w*)\s+жд|жду\s+(?:месяц|недел\w*|дн\w*)|"
+            r"никто\s+.*не\s+отвеч|нормально\s+не\s+отвеч|"
+            r"чарджб[еэ]к|оспор(?:ю|ить|ил)|наруш\w*\s+(?:моих\s+|наших\s+)?прав",
+            normalized,
+            re.I,
+        )
+    )
 
 
 def _single_missing_slot_question(contract: AnswerContract, retrieval: RetrievalResult) -> str:
@@ -1572,8 +2300,10 @@ def _payment_method_target_anchors(contract: AnswerContract) -> set[str]:
         anchors.add("dolyami")
     if re.search(r"банк|банковск|т-банк|t-банк", text, re.I) and re.search(r"рассроч|кредит|частями", text, re.I):
         anchors.add("bank_installment")
-    if re.search(r"(прям\w*\s+перевод|перевод\w*\s+на\s+счет|перевод\w*\s+на\s+сч[её]т|по\s+счету|по\s+сч[её]ту|ежемесячн\w*\s+счет|ежемесячн\w*\s+сч[её]т)", text, re.I):
+    if re.search(r"(прям\w*\s+перевод|перевод\w*\s+на\s+счет|перевод\w*\s+на\s+сч[её]т|по\s+счету|по\s+сч[её]ту|ежемесячн\w*\s+счет|ежемесячн\w*\s+сч[её]т|напрямую\s+(?:вам|центру)|без\s+банка|вам\s+платить)", text, re.I):
         anchors.add("direct_invoice")
+    if re.search(r"помесячн", text, re.I) and re.search(r"без\s+банка|банк\s+не\s+участв|не\s+через\s+банк", text, re.I):
+        anchors.add("monthly_no_bank")
     return anchors
 
 
@@ -1584,12 +2314,25 @@ def _payment_method_anchors_from_text(text: str) -> set[str]:
         anchors.add("dolyami")
     if re.search(r"т-банк|t-банк|банковск\w*\s+рассроч|рассроч\w*\s+через\s+банк|рассроч", low, re.I):
         anchors.add("bank_installment")
-    if re.search(r"(прям\w*\s+перевод|перевод\w*\s+на\s+счет|перевод\w*\s+на\s+сч[её]т|по\s+счету|по\s+сч[её]ту|счет\s+кажд\w*\s+месяц|сч[её]т\s+кажд\w*\s+месяц)", low, re.I):
+    if re.search(r"(прям\w*\s+перевод|перевод\w*\s+на\s+счет|перевод\w*\s+на\s+сч[её]т|по\s+счету|по\s+сч[её]ту|счет\s+кажд\w*\s+месяц|сч[её]т\s+кажд\w*\s+месяц|реквизит|квитанц|qr-?код|qr\s)", low, re.I):
         anchors.add("direct_invoice")
+    if re.search(r"помесячн", low, re.I):
+        anchors.add("monthly")
+    if re.search(r"банковск\w*\s+рассроч\w*\s+нет|отдельн\w*\s+банковск\w*\s+рассроч\w*\s+нет|без\s+банка|банк\s+не\s+участв", low, re.I):
+        anchors.add("no_bank")
     return anchors
 
 
+def _has_monthly_no_bank_support(facts: Mapping[str, str]) -> bool:
+    anchors: set[str] = set()
+    for text in facts.values():
+        anchors.update(_payment_method_anchors_from_text(str(text or "")))
+    return "monthly" in anchors and "no_bank" in anchors
+
+
 def _fact_supports_payment_target(text: str, *, target_anchors: set[str]) -> bool:
+    if "monthly_no_bank" in target_anchors:
+        return False
     fact_anchors = _payment_method_anchors_from_text(text)
     return bool(target_anchors) and target_anchors.issubset(fact_anchors)
 

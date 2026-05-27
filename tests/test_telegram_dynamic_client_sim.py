@@ -391,6 +391,90 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
     assert "needs_second_run" in summary
 
 
+def test_dynamic_summary_counts_over_handoff_turns_and_false_handoff_only_retrieved(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "handoff_cases",
+            "brand": "unpk",
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "где адрес?",
+                    "bot_text": "Передам менеджеру уточнить адрес.",
+                    "bot_route": "draft_for_manager",
+                    "bot_safety_flags": [],
+                    "context_parity_checked": True,
+                    "bot_dialogue_contract_pipeline": {
+                        "contract": {
+                            "is_p0": False,
+                            "subquestions": [
+                                {
+                                    "text": "адрес",
+                                    "needed_fact_keys": ["locations.address"],
+                                }
+                            ],
+                        },
+                        "retrieved_facts": {"locations.address": "Адрес: Сретенка, 20."},
+                        "missing_fact_keys": [],
+                    },
+                    "number_audit": {"items": []},
+                },
+                {
+                    "turn": 2,
+                    "client_message": "по каким дням?",
+                    "bot_text": "Менеджер подтвердит дни.",
+                    "bot_route": "draft_for_manager",
+                    "bot_safety_flags": [],
+                    "context_parity_checked": True,
+                    "bot_dialogue_contract_pipeline": {
+                        "contract": {
+                            "is_p0": False,
+                            "subquestions": [
+                                {
+                                    "text": "дни занятий",
+                                    "needed_fact_keys": ["schedule.exact_days"],
+                                }
+                            ],
+                        },
+                        "retrieved_facts": {"contacts.schedule": "Контакты работают Пн-Вс 10:00-18:00."},
+                        "missing_fact_keys": ["schedule.exact_days"],
+                    },
+                    "number_audit": {"items": [{"level": "same_brand_global_match"}]},
+                },
+            ],
+        }
+    ]
+    judge_results = [
+        {
+            "dialog_id": "handoff_cases",
+            "brand": "unpk",
+            "hard_gates_passed": True,
+            "soft_flags_present": [],
+            "verdict": "PASS_WITH_NOTES",
+            "human_tone_score_0_100": 60,
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    handoff = summary["over_handoff"]
+    assert handoff["handoff_turns"] == 2
+    assert handoff["over_handoff_turn_rate"] == 1.0
+    assert handoff["levels"]["retrieved_match"] == 1
+    assert handoff["levels"]["same_brand_global_match"] == 1
+    assert handoff["false_handoff_count"] == 1
+    assert handoff["false_handoff"][0]["turn"] == 1
+    rendered = sim.render_summary_md(summary)
+    assert "Over-handoff" in rendered
+    assert "false_handoff_count" in rendered
+
+
 def test_number_audit_levels_against_retrieved_client_and_snapshot(tmp_path):
     snapshot = {
         "facts": [

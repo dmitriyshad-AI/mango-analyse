@@ -26,6 +26,25 @@ def _understanding(payload: Mapping[str, Any]):
     return lambda _prompt: payload
 
 
+def _refund_fact() -> str:
+    return (
+        "Если клиент заранее спрашивает про возврат до оплаты, можно спокойно ответить, "
+        "что при досрочном отказе возвращается остаток неистраченных средств; можно не переживать. "
+        "Конкретный порядок оформления менеджер подтвердит по выбранному курсу и договору."
+    )
+
+
+def _refund_store() -> FactStore:
+    return FactStore(
+        catalog=("presentation.client_safe_facts.refund_presale_policy.client_safe_text",),
+        store={
+            "foton": {
+                "presentation.client_safe_facts.refund_presale_policy.client_safe_text": _refund_fact(),
+            }
+        },
+    )
+
+
 def test_flag_default_off() -> None:
     assert pipeline_enabled({}) is False
 
@@ -147,10 +166,120 @@ def test_refund_p0_pregate_followup_uses_refund_handoff_not_dry_repeat() -> None
     )
     assert result.route == "manager_only"
     assert result.contract.is_p0
-    assert result.fallback_reason == "p0_refund_policy"
-    assert "возврат" in result.draft_text.casefold()
-    assert "приняли обращение" not in result.draft_text.casefold()
-    assert "обращение принято" not in result.draft_text.casefold()
+    assert result.fallback_reason == "p0"
+    assert "ответственному сотруднику" in result.draft_text.casefold()
+
+
+def test_presale_refund_multiturn_followups_keep_answering_from_fact() -> None:
+    store = _refund_store()
+    prior_bot_text = (
+        "Да, если передумаете до начала занятий, возвращается остаток неистраченных средств. "
+        "Точный порядок оформления менеджер подтвердит по выбранному курсу и договору."
+    )
+    followups = (
+        "а это в договоре прописано?",
+        "то есть можно правило понять до оплаты?",
+        "я не спорю, просто хочу заранее понимать без звонков",
+    )
+    conversation: tuple[dict[str, str], ...] = (
+        {"role": "client", "text": "а если передумаю до начала занятий, деньги вернут?"},
+        {"role": "bot", "text": prior_bot_text},
+    )
+    for followup in followups:
+        current_conversation = (*conversation, {"role": "client", "text": followup})
+        result = run_pipeline(
+            conversation=current_conversation,
+            active_brand="foton",
+            fact_store=store,
+            understand_fn=_understanding(
+                {
+                    "current_question": followup,
+                    "continued_topics": ["refund_policy"],
+                    "needed_fact_keys": ["refund_policy.current"],
+                    "answerability": "manager_only",
+                    "is_p0": True,
+                    "p0_reason": "llm_false_positive_refund",
+                }
+            ),
+            draft_fn=lambda _prompt: (
+                "Можно спокойно ориентироваться на это правило: при досрочном отказе возвращается "
+                "остаток неистраченных средств. Точные пункты договора менеджер подтвердит по выбранному курсу."
+            ),
+            faithfulness_fn=lambda _prompt: {"unsupported": []},
+            toggles=Toggles(warmth_mode="all_eligible"),
+        )
+
+        assert result.route == "bot_answer_self"
+        assert not result.manager_only
+        assert result.fallback_reason == ""
+        assert "остаток неистраченных средств" in result.draft_text.casefold()
+        assert "если клиент заранее спрашивает" not in result.draft_text.casefold()
+        assert "можно спокойно ответить" not in result.draft_text.casefold()
+        assert "передам менеджеру" not in result.draft_text.casefold()
+        assert "не буду подменять" not in result.draft_text.casefold()
+        conversation = (*current_conversation, {"role": "bot", "text": result.draft_text})
+
+
+def test_presale_refund_thread_escalates_on_real_refund_claim_turn() -> None:
+    conversation = (
+        {"role": "client", "text": "если передумаю до начала занятий, деньги вернут?"},
+        {
+            "role": "bot",
+            "text": "Да, возвращается остаток неистраченных средств. Точный порядок менеджер подтвердит.",
+        },
+        {"role": "client", "text": "занятий нет, верните деньги, я недоволен"},
+    )
+    result = run_pipeline(
+        conversation=conversation,
+        active_brand="foton",
+        fact_store=_refund_store(),
+        understand_fn=_understanding(
+            {
+                "current_question": "занятий нет, верните деньги, я недоволен",
+                "continued_topics": ["refund_policy"],
+                "needed_fact_keys": ["refund_policy.current"],
+                "answerability": "answer_self",
+                "is_p0": False,
+            }
+        ),
+        draft_fn=lambda _prompt: "Возвращается остаток неистраченных средств.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        toggles=Toggles(warmth_mode="all_eligible"),
+    )
+
+    assert result.route == "manager_only"
+    assert result.manager_only
+    assert result.contract.is_p0
+    assert result.fallback_reason in {"p0", "p0_refund_policy"}
+    assert "остаток неистраченных средств" not in result.draft_text.casefold()
+
+
+def test_refund_waiting_month_followup_stays_p0_manager_only() -> None:
+    conversation = (
+        {"role": "client", "text": "я оплатил месяц назад, а занятий нет. верните деньги"},
+        {"role": "bot", "text": "Обращение принято. Передам ответственному сотруднику."},
+        {"role": "client", "text": "ну так вернёте или нет? я уже месяц жду"},
+    )
+    result = run_pipeline(
+        conversation=conversation,
+        active_brand="foton",
+        fact_store=_refund_store(),
+        understand_fn=_understanding(
+            {
+                "current_question": "ну так вернёте или нет? я уже месяц жду",
+                "continued_topics": ["refund_policy"],
+                "needed_fact_keys": ["refund_policy.current"],
+                "answerability": "answer_self",
+                "is_p0": True,
+            }
+        ),
+        draft_fn=lambda _prompt: "Возвращается остаток неистраченных средств.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert "остаток неистраченных средств" not in result.draft_text.casefold()
 
 
 def test_pipeline_verifier_blocks_brand_leak() -> None:
@@ -212,6 +341,119 @@ def test_pipeline_unsupported_entity_falls_back_to_manager_draft() -> None:
     assert any(finding.code == "unsupported_entity" for finding in result.findings)
 
 
+def test_pricing_hard_check_fallback_answers_from_verified_price_facts() -> None:
+    store = FactStore(
+        catalog=(
+            "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+            "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year",
+        ),
+        store={
+            "foton": {
+                "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester": (
+                    "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽."
+                ),
+                "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year": (
+                    "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽."
+                ),
+            }
+        },
+    )
+
+    def faithfulness(prompt: str) -> dict[str, list[str]]:
+        if "до 1 августа" in prompt:
+            return {"unsupported": ["до 1 августа 2026"]}
+        return {"unsupported": []}
+
+    result = run_pipeline(
+        conversation=_conv("подскажите цену на онлайн математику для 7 класса?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена на онлайн математику для 7 класса",
+                "needed_fact_keys": [
+                    "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+                    "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year",
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "До 1 августа семестр стоит 29 750 ₽, год — 47 250 ₽.",
+        faithfulness_fn=faithfulness,
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "verified_fact_fallback_after_hard_check"
+    assert "29 750 ₽" in result.draft_text
+    assert "47 250 ₽" in result.draft_text
+    assert "до 1 августа" not in result.draft_text.casefold()
+
+
+def test_recording_hard_check_fallback_answers_from_recording_facts() -> None:
+    store = FactStore(
+        catalog=("online_platform.recording_client_safe_text", "online_platform.name"),
+        store={
+            "foton": {
+                "online_platform.recording_client_safe_text": "Онлайн-записи занятий сохраняются и доступны для пересмотра.",
+                "online_platform.name": "Онлайн-платформа Фотон: МТС Линк (бывший Webinar).",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("значит потом в мтс линке можно будет пересмотреть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "значит потом в МТС Линк можно будет пересмотреть запись урока",
+                "needed_fact_keys": ["online_platform.recording_client_safe_text", "online_platform.name"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Подтверждаю: это подтверждено целиком.",
+        faithfulness_fn=lambda prompt: {"unsupported": ["слишком общий ответ"]} if "Подтверждаю" in prompt else {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "verified_fact_fallback_after_hard_check"
+    assert "доступны для пересмотра" in result.draft_text.casefold()
+    assert "мтс линк" in result.draft_text.casefold()
+
+
+def test_format_hard_check_fallback_answers_from_online_format_fact() -> None:
+    store = FactStore(
+        catalog=("tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text",),
+        store={
+            "unpk": {
+                "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text": (
+                    "Онлайн-курсы УНПК проходят на платформе МТС-Link. После каждого урока доступны записи."
+                )
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("а онлайн по математике для 9 класса тоже есть или только очно?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "Есть ли онлайн-курс по математике для 9 класса в УНПК или обучение только очное?",
+                "needed_fact_keys": ["tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не знаю, уточнит менеджер.",
+        faithfulness_fn=lambda prompt: {"unsupported": ["нет ответа из факта"]} if "Не знаю" in prompt else {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "verified_fact_fallback_after_hard_check"
+    assert "онлайн-формату подтверждено" in result.draft_text.casefold()
+    assert "конкретную группу по предмету и классу" in result.draft_text.casefold()
+
+
 def test_pipeline_missing_fact_uses_narrow_handoff() -> None:
     store = FactStore(catalog=("schedule.exact_day",), store={"unpk": {}})
     result = run_pipeline(
@@ -248,7 +490,7 @@ def test_t5_single_missing_slot_asks_one_question_without_manager_handoff() -> N
     assert "менеджер" not in result.draft_text.casefold()
 
 
-def test_manager_only_contract_is_not_promoted_by_retrieved_facts() -> None:
+def test_r1_manager_only_contract_with_exact_retrieved_fact_is_promoted() -> None:
     store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
     result = run_pipeline(
         conversation=_conv("сколько онлайн?"),
@@ -260,9 +502,244 @@ def test_manager_only_contract_is_not_promoted_by_retrieved_facts() -> None:
         draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
-    assert result.route == "draft_for_manager"
+    assert result.route == "bot_answer_self"
     assert result.fallback_reason == ""
     assert "29 750" in result.draft_text
+
+
+def test_r1_neighbor_payment_fact_does_not_promote_manager_only_to_autonomous_answer() -> None:
+    store = FactStore(
+        catalog=("installment.tbank",),
+        store={"foton": {"installment.tbank": "Фотон: есть рассрочка через Т-Банк на 6, 10 или 12 месяцев."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("а помесячно прямым переводом на счёт можно?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а помесячно прямым переводом на счёт можно?",
+                "needed_fact_keys": ["installment.tbank"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "no_draft_fn"
+    assert "точного подтверждения нет" in result.draft_text.casefold()
+    assert result.draft_text.casefold().index("точного подтверждения нет") < result.draft_text.casefold().index("из подтверждённого")
+    assert "т-банк" in result.draft_text.casefold()
+
+
+def test_secondary_payment_fact_skips_lvsh_when_client_did_not_ask_camp() -> None:
+    store = FactStore(
+        catalog=("lvsh_mendeleevo_2026.payment_options_2026.client_safe_text",),
+        store={
+            "foton": {
+                "lvsh_mendeleevo_2026.payment_options_2026.client_safe_text": "Для ЛВШ Фотона доступны варианты оплаты частями на 6, 10 или 12 месяцев, а также сервис Долями."
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("можно оплатить банковским переводом на счёт?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "Можно ли оплатить банковским переводом на счёт?",
+                "needed_fact_keys": ["lvsh_mendeleevo_2026.payment_options_2026.client_safe_text"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "Для ЛВШ Фотона доступны варианты оплаты частями на 6, 10 или 12 месяцев.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert "лвш" not in result.draft_text.casefold()
+    assert "менделеев" not in result.draft_text.casefold()
+    assert "долями" not in result.draft_text.casefold()
+
+
+def test_r1_address_exact_fact_answers_without_manager_handoff() -> None:
+    store = FactStore(
+        catalog=(
+            "locations_unpk.addresses.1.address",
+            "locations_unpk.addresses.1.city",
+            "locations_unpk.addresses.1.metro",
+        ),
+        store={
+            "unpk": {
+                "locations_unpk.addresses.1.address": "УНПК: адрес и место занятий — Сретенка, 20.",
+                "locations_unpk.addresses.1.city": "УНПК: адрес и место занятий — Москва.",
+                "locations_unpk.addresses.1.metro": "УНПК: адрес и место занятий — Чистые Пруды.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("где вы находитесь в Москве?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "Где вы находитесь в Москве?",
+                "needed_fact_keys": [
+                    "locations_unpk.addresses.1.address",
+                    "locations_unpk.addresses.1.city",
+                    "locations_unpk.addresses.1.metro",
+                ],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["адрес"]},
+    )
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "direct_exact_fact_answer"
+    assert "Сретенка, 20" in result.draft_text
+    assert "менеджер уточнит" not in result.draft_text.casefold()
+
+
+def test_address_fact_does_not_answer_non_address_slot_fill() -> None:
+    store = FactStore(
+        catalog=(
+            "locations_unpk.addresses.1.address",
+            "locations_unpk.addresses.1.city",
+            "locations_unpk.addresses.1.metro",
+        ),
+        store={
+            "unpk": {
+                "locations_unpk.addresses.1.address": "УНПК: адрес и место занятий — Сретенка, 20.",
+                "locations_unpk.addresses.1.city": "УНПК: адрес и место занятий — Москва.",
+                "locations_unpk.addresses.1.metro": "УНПК: адрес и место занятий — Чистые Пруды.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("понятно, тогда интересует 9 класс информатика очно"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "интересует 9 класс информатика очно",
+                "needed_fact_keys": [
+                    "locations_unpk.addresses.1.address",
+                    "locations_unpk.addresses.1.city",
+                    "locations_unpk.addresses.1.metro",
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "В Москва: Сретенка, 20; метро Чистые Пруды.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert "Сретенка, 20" not in result.draft_text
+
+
+def test_r1_direct_payment_fact_answers_without_neighbor_scope() -> None:
+    store = FactStore(
+        catalog=("payment.methods",),
+        store={
+            "unpk": {
+                "payment.methods": "Оплатить можно по QR-коду или по квитанции/реквизитам в банке. Ссылку формирует бухгалтерия и присылает на email или по СМС."
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("а помесячно это без банка просто напрямую вам платить?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "помесячно это без банка просто напрямую вам платить?",
+                "needed_fact_keys": ["payment.methods"],
+                "answerability": "answer_self",
+                "question_type": "existence_yes_no",
+                "existence_target": "оплата напрямую УНПК без банка",
+            }
+        ),
+        draft_fn=lambda _prompt: "Да, можно платить помесячно, за семестр или за год.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "direct_exact_fact_answer"
+    assert "qr" in result.draft_text.casefold() or "реквизит" in result.draft_text.casefold()
+    assert "за год" not in result.draft_text.casefold()
+
+
+def test_monthly_no_bank_question_answers_from_two_exact_payment_facts() -> None:
+    store = FactStore(
+        catalog=(
+            "payment_options.bank_installment.absent.client_safe_text",
+            "payment_options.available_schedules.1.monthly.discount_extra",
+        ),
+        store={
+            "unpk": {
+                "payment_options.bank_installment.absent.client_safe_text": "В УНПК отдельной банковской рассрочки нет.",
+                "payment_options.available_schedules.1.monthly.discount_extra": "У нас оплата возможна помесячно, за семестр или за год.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "у вас есть рассрочка через банк?"},
+            {"role": "bot", "text": "В УНПК отдельной банковской рассрочки нет. Оплата возможна помесячно."},
+            {"role": "client", "text": "а помесячно это без банка, просто каждый месяц платить?"},
+        ),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "помесячно это без банка, просто каждый месяц платить?",
+                "needed_fact_keys": [
+                    "payment_options.bank_installment.absent.client_safe_text",
+                    "payment_options.available_schedules.1.monthly.discount_extra",
+                ],
+                "answerability": "answer_self",
+                "question_type": "existence_yes_no",
+                "existence_target": "помесячная оплата без банка",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "direct_exact_fact_answer"
+    assert "банковской рассрочки нет" in result.draft_text.casefold()
+    assert "помесячная оплата доступна" in result.draft_text.casefold()
+    assert "уже отметил" not in result.draft_text.casefold()
+
+
+def test_r1_semester_price_is_not_exact_monthly_amount_fact() -> None:
+    store = FactStore(
+        catalog=("price.semester", "payment.monthly"),
+        store={
+            "unpk": {
+                "price.semester": "Семестр — 51 700 ₽.",
+                "payment.monthly": "Доступна помесячная оплата, но сумма зависит от выбранной программы.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("а помесячно какая сумма выходит?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "помесячно какая сумма выходит?",
+                "needed_fact_keys": ["price.semester", "payment.monthly"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "Семестр — 51 700 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason in {"", "hard_verification_failed"}
 
 
 def test_p9_self_subquestion_with_fact_is_autonomous_without_global_override() -> None:
@@ -438,9 +915,233 @@ def test_c8_direct_invoice_question_is_not_answered_with_bank_installment_neighb
     assert result.fallback_reason == "hard_verification_failed"
     assert any(finding.code == "neighbor_payment_method_as_answer" for finding in result.findings)
     assert any(finding.code == "unsupported_payment_method_affirmation" for finding in result.findings)
-    assert "т-банк" not in result.draft_text.casefold()
-    assert "рассроч" not in result.draft_text.casefold()
+    assert result.draft_text.casefold().index("точного подтверждения нет") < result.draft_text.casefold().index("т-банк")
     assert "прямым переводом" in result.draft_text.casefold()
+
+
+def test_t6_specific_grade_replaces_supported_range_in_answer() -> None:
+    store = FactStore(
+        catalog=("price.online_5_11"),
+        store={"foton": {"price.online_5_11": "Онлайн для 5–11 классов: семестр — 29 750 ₽, год — 47 250 ₽."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн для 7 класса?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн для 7 класса",
+                "needed_fact_keys": ["price.online_5_11"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Для онлайн-формата 5–11 классов: семестр — 29 750 ₽, год — 47 250 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "bot_answer_self"
+    assert "7 класса" in result.draft_text
+    assert "5–11 классов" not in result.draft_text
+
+
+def test_t3_repeat_handoff_changes_tactic_without_new_fact() -> None:
+    store = FactStore(catalog=("installment.tbank",), store={"foton": {"installment.tbank": "Рассрочка через Т-Банк на 6, 10 или 12 месяцев."}})
+    prior = "Передам менеджеру уточнить именно это: прямой перевод на счёт. Он подтвердит точную информацию."
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "а переводом на счёт можно?"},
+            {"role": "bot", "text": prior},
+            {"role": "client", "text": "так переводом на счёт всё-таки можно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "прямой перевод на счёт",
+                "needed_fact_keys": ["installment.tbank"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "draft_for_manager"
+    assert result.draft_text != prior
+    assert "уже отметил" not in result.draft_text.casefold()
+    assert "клиент" not in result.draft_text.casefold()
+    assert "точную деталь" in result.draft_text.casefold()
+    assert "6, 10 или 12" not in result.draft_text
+
+
+def test_contact_hours_are_not_class_schedule_days() -> None:
+    store = FactStore(
+        catalog=("contacts_unpk.schedule",),
+        store={"unpk": {"contacts_unpk.schedule": "УНПК на связи ежедневно Пн–Вс 10:00–18:00."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("а по каким дням там занятия?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "по каким дням там занятия?",
+                "needed_fact_keys": ["contacts_unpk.schedule"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "УНПК: расписание — Пн–Вс 10:00–18:00.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert "10:00" not in result.draft_text
+
+
+def test_schedule_publication_fact_answers_without_contact_hours() -> None:
+    store = FactStore(
+        catalog=("contacts_unpk.schedule", "regular_courses_schedule_publication"),
+        store={
+            "unpk": {
+                "contacts_unpk.schedule": "УНПК: контакты, расписание — Пн-Вс 10:00-18:00.",
+                "regular_courses_schedule_publication": "Очные курсы 2026/27 стартуют в середине сентября; расписание и подробная информация появятся в июне.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("подскажите расписание очных занятий по физике для 9 класса"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "расписание очных занятий по физике для 9 класса",
+                "needed_fact_keys": ["regular_courses_schedule_publication", "contacts_unpk.schedule"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "УНПК: расписание — Пн–Вс 10:00–18:00.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "schedule_publication_answer"
+    assert "появятся в июне" in result.draft_text.casefold()
+    assert "10:00" not in result.draft_text
+
+
+def test_multitopic_format_and_schedule_answers_both_parts() -> None:
+    store = FactStore(
+        catalog=("online.format", "regular_courses_schedule_publication", "contacts_unpk.schedule"),
+        store={
+            "unpk": {
+                "online.format": "Онлайн-курсы УНПК проходят на платформе МТС-Link.",
+                "regular_courses_schedule_publication": "Очные курсы 2026/27 стартуют в середине сентября; расписание и подробная информация появятся в июне.",
+                "contacts_unpk.schedule": "УНПК: контакты, расписание — Пн-Вс 10:00-18:00.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("это онлайн или очно? и по каким дням занятия?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "это онлайн или очно? и по каким дням занятия?",
+                "needed_fact_keys": ["online.format", "regular_courses_schedule_publication", "contacts_unpk.schedule"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "УНПК: расписание — Пн–Вс 10:00–18:00.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "schedule_publication_answer"
+    assert "онлайн-формат" in result.draft_text.casefold()
+    assert "очные курсы" in result.draft_text.casefold()
+    assert "появятся в июне" in result.draft_text.casefold()
+    assert "10:00" not in result.draft_text
+
+
+def test_weekend_question_prefers_soft_guidance_over_schedule_publication() -> None:
+    store = FactStore(
+        catalog=("regular_courses_schedule_publication", "objection_responses.inconvenient_time"),
+        store={
+            "unpk": {
+                "regular_courses_schedule_publication": "Очные курсы 2026/27 стартуют в середине сентября; расписание и подробная информация появятся в июне.",
+                "objection_responses.inconvenient_time": "УНПК: черновик для ситуации «возражение о неудобном времени»: Разные слоты по выходным.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("по выходным группы обычно бывают?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "по выходным группы обычно бывают?",
+                "needed_fact_keys": ["regular_courses_schedule_publication"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Расписание появится в июне.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "soft_weekend_guidance"
+    assert "разные варианты слотов" in result.draft_text.casefold()
+    assert "в том числе по выходным" in result.draft_text.casefold()
+
+
+def test_schedule_publication_repeat_changes_wording() -> None:
+    store = FactStore(
+        catalog=("regular_courses_schedule_publication",),
+        store={
+            "unpk": {
+                "regular_courses_schedule_publication": "Очные курсы 2026/27 стартуют в середине сентября; расписание и подробная информация появятся в июне."
+            }
+        },
+    )
+    prior = "Очные курсы 2026/27 стартуют в середине сентября; расписание и подробная информация появятся в июне. Точные дни конкретной группы сейчас не подтверждаю."
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "по каким дням занятия?"},
+            {"role": "bot", "text": prior},
+            {"role": "client", "text": "вы уже это написали, а дни какие?"},
+        ),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "дни занятий",
+                "needed_fact_keys": ["regular_courses_schedule_publication"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: prior,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "bot_answer_self"
+    assert result.draft_text != prior
+    assert "опубликуют в июне" in result.draft_text.casefold()
+
+
+def test_m6_real_p0_composite_does_not_answer_sales_part() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("занятий нет, верните деньги, и сколько стоит продление?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги и цена продления",
+                "needed_fact_keys": ["price.online"],
+                "answerability": "answer_self",
+                "is_p0": False,
+            }
+        ),
+        draft_fn=lambda _prompt: "Продление стоит 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert result.route == "manager_only"
+    assert "29 750" not in result.draft_text
+    assert result.contract.is_p0
 
 
 def test_c8_direct_invoice_fact_allows_direct_invoice_answer() -> None:
@@ -496,7 +1197,8 @@ def test_soft_weekend_guidance_is_partial_not_exact_schedule() -> None:
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert result.route == "draft_for_manager"
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "soft_weekend_guidance"
     assert "разные варианты слотов" in result.draft_text.casefold()
     assert "точное расписание" in result.draft_text.casefold()
     assert "точно есть занятия" not in result.draft_text.casefold()
@@ -859,6 +1561,34 @@ def test_p0_dry_text_rotates_by_previous_bot_turns() -> None:
     assert first.draft_text != second.draft_text
     assert "ответственному сотруднику" in first.draft_text
     assert "ответственному сотруднику" in second.draft_text
+
+
+def test_non_refund_complaint_p0_does_not_use_refund_template() -> None:
+    store = FactStore(catalog=(), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "преподаватель ужасно ведёт физику, это возмутительно"},
+            {"role": "bot", "text": "Обращение принято. Передам ответственному сотруднику."},
+            {"role": "client", "text": "ну хорошо, тогда жду ответа от ответственного"},
+        ),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "клиент ждёт ответа по жалобе на преподавателя",
+                "continued_topics": ["refund_policy"],
+                "client_state": "жалоба на преподавателя, недовольство",
+                "answerability": "manager_only",
+                "is_p0": True,
+                "p0_reason": "complaint",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+    )
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert "возврат" not in result.draft_text.casefold()
+    assert "отмен" not in result.draft_text.casefold()
 
 
 def test_p0_pregate_does_not_call_warmth() -> None:

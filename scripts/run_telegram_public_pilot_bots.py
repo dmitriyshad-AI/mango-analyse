@@ -35,6 +35,24 @@ from mango_mvp.channels.telegram_pilot_store import (
 )
 from mango_mvp.channels.telegram_pilot_p0_register import append_p0_register_record, build_p0_register_record
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
+from mango_mvp.channels.night_funnel_shadow import (
+    DEFAULT_CONTROL_PATH as NIGHT_FUNNEL_DEFAULT_CONTROL_PATH,
+    DEFAULT_LEAD_STORE_PATH as NIGHT_FUNNEL_DEFAULT_LEAD_STORE_PATH,
+    DEFAULT_SHADOW_LOG_PATH as NIGHT_FUNNEL_DEFAULT_SHADOW_LOG_PATH,
+    DEFAULT_STATUS_PATH as NIGHT_FUNNEL_DEFAULT_STATUS_PATH,
+    MANAGER_QUEUE,
+    NightFunnelControl,
+    append_lead_card,
+    append_shadow_log,
+    assert_live_send_allowed,
+    brand_from_channel,
+    build_lead_card,
+    build_shadow_record,
+    evaluate_night_gate,
+    extract_utm,
+    load_bot_control,
+    write_bot_status,
+)
 
 
 DEFAULT_ENV_FILE = Path("/Users/dmitrijfabarisov/.codex/mango_telegram_pilot_bots.env")
@@ -60,6 +78,14 @@ PILOT_STORE_PATH_ENV = "MANGO_TELEGRAM_PILOT_STORE_PATH"
 PILOT_STORE_ENABLED_ENV = "MANGO_TELEGRAM_PILOT_STORE_ENABLED"
 PILOT_P0_REGISTER_PATH_ENV = "MANGO_TELEGRAM_P0_REGISTER_PATH"
 PILOT_AUTONOMY_ENABLED_ENV = "TELEGRAM_PILOT_AUTONOMY_ENABLED"
+NIGHT_FUNNEL_SHADOW_ENABLED_ENV = "TELEGRAM_NIGHT_FUNNEL_SHADOW_ENABLED"
+NIGHT_FUNNEL_SHADOW_ONLY_ENV = "TELEGRAM_NIGHT_FUNNEL_SHADOW_ONLY"
+NIGHT_FUNNEL_CONTROL_PATH_ENV = "TELEGRAM_NIGHT_FUNNEL_CONTROL_PATH"
+NIGHT_FUNNEL_STATUS_PATH_ENV = "TELEGRAM_NIGHT_FUNNEL_STATUS_PATH"
+NIGHT_FUNNEL_LOG_PATH_ENV = "TELEGRAM_NIGHT_FUNNEL_SHADOW_LOG_PATH"
+NIGHT_FUNNEL_LEAD_STORE_PATH_ENV = "TELEGRAM_NIGHT_FUNNEL_LEAD_STORE_PATH"
+NIGHT_FUNNEL_LIVE_TOKEN_ENV = "TELEGRAM_NIGHT_FUNNEL_LIVE_TOKEN"
+NIGHT_FUNNEL_EXPECTED_LIVE_TOKEN_ENV = "TELEGRAM_NIGHT_FUNNEL_EXPECTED_LIVE_TOKEN"
 
 DEBUG_PHONE_RE = re.compile(
     r"^\s*[\"'«»“”]*\s*представь\s*,?\s*что\s+я\s+пишу\s+с\s+номера\s+"
@@ -91,6 +117,14 @@ class BrandBotConfig:
     store_enabled: bool = True
     p0_register_path: Path = DEFAULT_P0_REGISTER_PATH
     autonomy_enabled: bool = True
+    night_funnel_shadow_enabled: bool = False
+    night_funnel_shadow_only: bool = True
+    night_funnel_control_path: Path = NIGHT_FUNNEL_DEFAULT_CONTROL_PATH
+    night_funnel_status_path: Path = NIGHT_FUNNEL_DEFAULT_STATUS_PATH
+    night_funnel_shadow_log_path: Path = NIGHT_FUNNEL_DEFAULT_SHADOW_LOG_PATH
+    night_funnel_lead_store_path: Path = NIGHT_FUNNEL_DEFAULT_LEAD_STORE_PATH
+    night_funnel_live_token: str = ""
+    night_funnel_expected_live_token: str = ""
 
     def __post_init__(self) -> None:
         brand = self.brand.casefold().strip()
@@ -113,6 +147,10 @@ class BrandBotConfig:
         object.__setattr__(self, "crm_server_api_key", str(self.crm_server_api_key or ""))
         object.__setattr__(self, "store_path", Path(self.store_path))
         object.__setattr__(self, "p0_register_path", Path(self.p0_register_path))
+        object.__setattr__(self, "night_funnel_control_path", Path(self.night_funnel_control_path))
+        object.__setattr__(self, "night_funnel_status_path", Path(self.night_funnel_status_path))
+        object.__setattr__(self, "night_funnel_shadow_log_path", Path(self.night_funnel_shadow_log_path))
+        object.__setattr__(self, "night_funnel_lead_store_path", Path(self.night_funnel_lead_store_path))
 
 
 @dataclass
@@ -125,6 +163,8 @@ class ChatSession:
     debug_phone: str = ""
     debug_client: Mapping[str, Any] = field(default_factory=dict)
     dialogue_memory: Mapping[str, Any] = field(default_factory=dict)
+    utm: Mapping[str, str] = field(default_factory=dict)
+    channel_source: str = ""
     processing_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -217,6 +257,14 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
     store_enabled = env_flag(env, PILOT_STORE_ENABLED_ENV, default=True)
     p0_register_path = Path(env.get(PILOT_P0_REGISTER_PATH_ENV) or DEFAULT_P0_REGISTER_PATH)
     autonomy_enabled = env_flag(env, PILOT_AUTONOMY_ENABLED_ENV, default=True)
+    night_shadow_enabled = env_flag(env, NIGHT_FUNNEL_SHADOW_ENABLED_ENV, default=False)
+    night_shadow_only = env_flag(env, NIGHT_FUNNEL_SHADOW_ONLY_ENV, default=True)
+    night_control_path = Path(env.get(NIGHT_FUNNEL_CONTROL_PATH_ENV) or NIGHT_FUNNEL_DEFAULT_CONTROL_PATH)
+    night_status_path = Path(env.get(NIGHT_FUNNEL_STATUS_PATH_ENV) or NIGHT_FUNNEL_DEFAULT_STATUS_PATH)
+    night_log_path = Path(env.get(NIGHT_FUNNEL_LOG_PATH_ENV) or NIGHT_FUNNEL_DEFAULT_SHADOW_LOG_PATH)
+    night_lead_store_path = Path(env.get(NIGHT_FUNNEL_LEAD_STORE_PATH_ENV) or NIGHT_FUNNEL_DEFAULT_LEAD_STORE_PATH)
+    night_live_token = str(env.get(NIGHT_FUNNEL_LIVE_TOKEN_ENV) or "")
+    night_expected_live_token = str(env.get(NIGHT_FUNNEL_EXPECTED_LIVE_TOKEN_ENV) or "")
     selected = {"foton", "unpk"} if brand == "all" else {brand}
     configs: list[BrandBotConfig] = []
     if "foton" in selected:
@@ -239,6 +287,14 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 store_enabled=store_enabled,
                 p0_register_path=p0_register_path,
                 autonomy_enabled=autonomy_enabled,
+                night_funnel_shadow_enabled=night_shadow_enabled,
+                night_funnel_shadow_only=night_shadow_only,
+                night_funnel_control_path=night_control_path,
+                night_funnel_status_path=night_status_path,
+                night_funnel_shadow_log_path=night_log_path,
+                night_funnel_lead_store_path=night_lead_store_path,
+                night_funnel_live_token=night_live_token,
+                night_funnel_expected_live_token=night_expected_live_token,
             )
         )
     if "unpk" in selected:
@@ -261,6 +317,14 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 store_enabled=store_enabled,
                 p0_register_path=p0_register_path,
                 autonomy_enabled=autonomy_enabled,
+                night_funnel_shadow_enabled=night_shadow_enabled,
+                night_funnel_shadow_only=night_shadow_only,
+                night_funnel_control_path=night_control_path,
+                night_funnel_status_path=night_status_path,
+                night_funnel_shadow_log_path=night_log_path,
+                night_funnel_lead_store_path=night_lead_store_path,
+                night_funnel_live_token=night_live_token,
+                night_funnel_expected_live_token=night_expected_live_token,
             )
         )
     return configs
@@ -278,6 +342,7 @@ class PublicPilotBotRuntime:
             cache_dir=config.cache_dir / config.brand,
         )
         self.store: TelegramPilotSQLiteStore | None = TelegramPilotSQLiteStore(config.store_path) if config.store_enabled else None
+        self.night_shadow_decisions: deque[Mapping[str, Any]] = deque(maxlen=200)
 
     def session(self, chat_id: int) -> ChatSession:
         item = self.sessions.get(chat_id)
@@ -291,10 +356,14 @@ class PublicPilotBotRuntime:
             self.store.close()
 
     async def handle_start(self, update: Any, context: Any) -> None:
-        del context
         chat_id = update.effective_chat.id
+        session = self.session(int(chat_id))
+        payload = " ".join(str(item) for item in getattr(context, "args", []) or [])
+        if payload:
+            session.utm = extract_utm(payload)
+            session.channel_source = payload[:240]
         await update.effective_message.reply_text(greeting_for_brand(self.config.brand))
-        self.log_event("start", chat_id=chat_id, payload={"brand": self.config.brand})
+        self.log_event("start", chat_id=chat_id, payload={"brand": self.config.brand, "utm": dict(session.utm), "channel_source": session.channel_source})
 
     async def handle_reset(self, update: Any, context: Any) -> None:
         del context
@@ -424,6 +493,14 @@ class PublicPilotBotRuntime:
                 result=result,
                 funnel_state=funnel_state,
                 context=context,
+            )
+            self.record_night_shadow_decision(
+                chat_id=chat_id,
+                input_text=combined_text,
+                answer_text=text,
+                result=result,
+                context=context,
+                session=session,
             )
             await message.reply_text(text, disable_web_page_preview=True)
             session.recent_messages.append(f"Клиент: {combined_text}")
@@ -677,6 +754,97 @@ class PublicPilotBotRuntime:
             funnel_state=funnel_state,
             context=context,
         )
+
+    def record_night_shadow_decision(
+        self,
+        *,
+        chat_id: int,
+        input_text: str,
+        answer_text: str,
+        result: SubscriptionDraftResult,
+        context: Mapping[str, Any],
+        session: ChatSession,
+    ) -> None:
+        if not self.config.night_funnel_shadow_enabled:
+            return
+        try:
+            control = load_bot_control(self.config.night_funnel_control_path)
+            control = NightFunnelControl(
+                enabled=control.enabled,
+                mode=control.mode,
+                shadow_only=True,
+                manual_kill_switch=control.manual_kill_switch,
+                live_token=self.config.night_funnel_live_token or control.live_token,
+                expected_live_token=self.config.night_funnel_expected_live_token or control.expected_live_token,
+                night_limit=control.night_limit,
+                auto_trip_hold_rate=control.auto_trip_hold_rate,
+                auto_trip_error_count=control.auto_trip_error_count,
+                morning_followup_hour=control.morning_followup_hour,
+                morning_followup_process_confirmed=control.morning_followup_process_confirmed,
+            )
+            pipeline = result.metadata.get("dialogue_contract_pipeline") if isinstance(result.metadata, Mapping) else {}
+            retrieved_facts = pipeline.get("retrieved_facts") if isinstance(pipeline, Mapping) and isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+            gate = evaluate_night_gate(
+                client_text=input_text,
+                draft_text=answer_text,
+                route=result.route,
+                active_brand=self.config.brand,
+                snapshot_path=self.config.snapshot_path,
+                retrieved_facts=retrieved_facts,
+                safety_flags=result.safety_flags,
+                control=control,
+                prior_decisions=tuple(self.night_shadow_decisions),
+            )
+            channel_source = session.channel_source or self.config.display_name
+            channel_brand = brand_from_channel(channel_source)
+            if channel_brand and channel_brand != self.config.brand:
+                gate = {
+                    **dict(gate),
+                    "decision": MANAGER_QUEUE,
+                    "reason": f"channel_brand_mismatch:{channel_brand}!={self.config.brand}",
+                    "shadow_only": True,
+                }
+            record = build_shadow_record(
+                brand=self.config.brand,
+                channel_source=channel_source,
+                utm=session.utm,
+                client_text=input_text,
+                draft_text=answer_text,
+                gate=gate,
+                context=context,
+            )
+            lead_card = build_lead_card(
+                brand=self.config.brand,
+                utm=session.utm,
+                client_text=input_text,
+                draft_text=answer_text,
+                decision=str(gate.get("decision") or ""),
+                reason=str(gate.get("reason") or ""),
+                context=context,
+            )
+            append_shadow_log(self.config.night_funnel_shadow_log_path, record)
+            append_lead_card(self.config.night_funnel_lead_store_path, lead_card)
+            self.night_shadow_decisions.append({"decision": gate.get("decision"), "reason": gate.get("reason")})
+            write_bot_status(
+                self.config.night_funnel_status_path,
+                brand=self.config.brand,
+                control=control,
+                decisions=tuple(self.night_shadow_decisions),
+                auto_tripped=bool(gate.get("auto_tripped")),
+            )
+            self.log_event(
+                "night_funnel_shadow_decision",
+                chat_id=chat_id,
+                payload={
+                    "brand": self.config.brand,
+                    "decision": gate.get("decision"),
+                    "reason": gate.get("reason"),
+                    "shadow_only": True,
+                    "fact_levels": (gate.get("fact_audit") or {}).get("counts_by_level") if isinstance(gate.get("fact_audit"), Mapping) else {},
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log_event("night_funnel_shadow_error", chat_id=chat_id, payload={"brand": self.config.brand, "error": str(exc)[:240]})
 
     def log_event(self, event: str, *, chat_id: int, payload: Mapping[str, Any]) -> None:
         self.config.log_dir.mkdir(parents=True, exist_ok=True)

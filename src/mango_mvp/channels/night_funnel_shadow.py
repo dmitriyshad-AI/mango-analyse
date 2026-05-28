@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from urllib import parse as url_parse
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -13,6 +14,7 @@ from mango_mvp.channels.fact_claim_audit import audit_fact_claims
 
 
 NIGHT_FUNNEL_SCHEMA_VERSION = "night_funnel_shadow_v1_2026_05_28"
+INBOUND_TEE_SCHEMA_VERSION = "night_inbound_tee_v1_2026_05_28"
 AUTO_SEND = "AUTO_SEND"
 SAFE_HOLD = "SAFE_HOLD"
 MANAGER_QUEUE = "MANAGER_QUEUE"
@@ -22,6 +24,9 @@ DEFAULT_CONTROL_PATH = Path(".codex_local/telegram_night_funnel/bot_control.json
 DEFAULT_STATUS_PATH = Path(".codex_local/telegram_night_funnel/bot_status.json")
 DEFAULT_SHADOW_LOG_PATH = Path(".codex_local/telegram_night_funnel/shadow_log.jsonl")
 DEFAULT_LEAD_STORE_PATH = Path(".codex_local/telegram_night_funnel/night_leads.jsonl")
+DEFAULT_INBOUND_TEE_PATH = Path(".codex_local/telegram_night_funnel/inbound_tee.jsonl")
+DEFAULT_REPLAY_CURSOR_PATH = Path(".codex_local/telegram_night_funnel/replay_cursor.json")
+DEFAULT_TEE_RETENTION_DAYS = 7
 PRIVATE_KNOWN_SLOT_KEYS = {"parent_name", "student_name"}
 
 
@@ -259,6 +264,155 @@ def append_lead_card(path: Path, card: Mapping[str, Any]) -> Path:
     return path
 
 
+def build_inbound_tee_record(
+    *,
+    source: str,
+    brand: str,
+    channel_source: str,
+    utm: Mapping[str, Any],
+    chat_id: int | str,
+    message_id: int | str,
+    message_at: datetime | str | None,
+    text: str,
+    known_context: Mapping[str, Any] | None = None,
+    owner_runtime: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    known_context = known_context if isinstance(known_context, Mapping) else {}
+    owner_runtime = owner_runtime if isinstance(owner_runtime, Mapping) else {}
+    private_values = _private_values_from_context(known_context)
+    return {
+        "schema_version": INBOUND_TEE_SCHEMA_VERSION,
+        "source": str(source or "telegram_public_pilot")[:120],
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "brand": str(brand or "").casefold().strip(),
+        "channel_source": str(channel_source or "")[:500],
+        "utm": {str(key): str(value)[:240] for key, value in dict(utm or {}).items()},
+        "chat_id_hash": _hash_identifier(str(chat_id or "")),
+        "message_id": str(message_id or "")[:120],
+        "message_at": _datetime_text(message_at),
+        "text": str(text or "")[:4000],
+        "text_masked": mask_pii(str(text or ""), private_values=private_values),
+        "known_context": _sanitize_known_context_for_tee(known_context),
+        "owner_runtime": dict(owner_runtime),
+    }
+
+
+def append_inbound_tee_record(path: Path, record: Mapping[str, Any]) -> Path:
+    _assert_local_runtime_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(dict(record), ensure_ascii=False, sort_keys=True) + "\n")
+    return path
+
+
+def tee_record_id(record: Mapping[str, Any]) -> str:
+    raw = "|".join(
+        [
+            str(record.get("source") or ""),
+            str(record.get("brand") or ""),
+            str(record.get("chat_id_hash") or ""),
+            str(record.get("message_id") or ""),
+            str(record.get("message_at") or ""),
+            str(record.get("text") or "")[:500],
+        ]
+    )
+    return _hash_identifier(raw)
+
+
+def load_replay_cursor(path: Path) -> Mapping[str, Any]:
+    if not Path(path).exists():
+        return {"byte_offset": 0, "processed_ids": []}
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {"byte_offset": 0, "processed_ids": []}
+    if not isinstance(payload, Mapping):
+        return {"byte_offset": 0, "processed_ids": []}
+    return {
+        "byte_offset": max(0, int(payload.get("byte_offset") or 0)),
+        "processed_ids": [str(item) for item in payload.get("processed_ids") or [] if str(item).strip()][-10000:],
+    }
+
+
+def save_replay_cursor(path: Path, cursor: Mapping[str, Any]) -> None:
+    _assert_local_runtime_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "night_replay_cursor_v1_2026_05_28",
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "byte_offset": max(0, int(cursor.get("byte_offset") or 0)),
+        "processed_ids": [str(item) for item in cursor.get("processed_ids") or [] if str(item).strip()][-10000:],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def read_unprocessed_tee_records(
+    tee_path: Path,
+    cursor_path: Path,
+    *,
+    max_records: int | None = None,
+) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
+    cursor = dict(load_replay_cursor(cursor_path))
+    processed = set(str(item) for item in cursor.get("processed_ids") or [])
+    offset = max(0, int(cursor.get("byte_offset") or 0))
+    path = Path(tee_path)
+    if not path.exists():
+        return [], cursor
+    size = path.stat().st_size
+    if offset > size:
+        offset = 0
+    records: list[Mapping[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        file.seek(offset)
+        while True:
+            start = file.tell()
+            line = file.readline()
+            if not line:
+                offset = file.tell()
+                break
+            offset = file.tell()
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, Mapping):
+                continue
+            record_id = tee_record_id(payload)
+            if record_id in processed:
+                continue
+            item = {**dict(payload), "tee_record_id": record_id, "tee_byte_offset": start}
+            records.append(item)
+            processed.add(record_id)
+            if max_records is not None and len(records) >= max(0, int(max_records)):
+                break
+    new_cursor = {"byte_offset": offset, "processed_ids": list(processed)[-10000:]}
+    return records, new_cursor
+
+
+def rotate_inbound_tee(path: Path, *, retention_days: int = DEFAULT_TEE_RETENTION_DAYS) -> Mapping[str, Any]:
+    _assert_local_runtime_path(path)
+    retention_days = max(1, int(retention_days or DEFAULT_TEE_RETENTION_DAYS))
+    source = Path(path)
+    if not source.exists():
+        return {"kept": 0, "removed": 0, "path": str(source)}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    kept_lines: list[str] = []
+    removed = 0
+    for line in source.read_text(encoding="utf-8").splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            removed += 1
+            continue
+        recorded_at = _parse_datetime(payload.get("recorded_at") if isinstance(payload, Mapping) else "")
+        if recorded_at is not None and recorded_at < cutoff:
+            removed += 1
+            continue
+        kept_lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    source.write_text(("\n".join(kept_lines) + "\n") if kept_lines else "", encoding="utf-8")
+    return {"kept": len(kept_lines), "removed": removed, "path": str(source), "retention_days": retention_days}
+
+
 def build_lead_card(
     *,
     brand: str,
@@ -325,10 +479,14 @@ def should_auto_trip(decisions: Sequence[Mapping[str, Any]], *, control: NightFu
     return (holdish / len(window)) >= control.auto_trip_hold_rate or errors >= control.auto_trip_error_count
 
 
-def mask_pii(text: str) -> str:
+def mask_pii(text: str, *, private_values: Sequence[str] = ()) -> str:
     value = str(text or "")
     value = re.sub(r"\b[\w.+-]+@[\w.-]+\.\w+\b", "[email]", value)
     value = re.sub(r"(?:\+7|8)?[\s(.-]*\d{3}[\s)./-]*\d{3}[\s.-]*\d{2}[\s.-]*\d{2}", "[phone]", value)
+    for private in private_values:
+        item = str(private or "").strip()
+        if len(item) >= 2:
+            value = re.sub(re.escape(item), "[name]", value, flags=re.I)
     return value[:2000]
 
 
@@ -441,6 +599,60 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _hash_identifier(value: str) -> str:
+    return "sha256:" + hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def _datetime_text(value: datetime | str | None) -> str:
+    if isinstance(value, datetime):
+        item = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return item.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return str(value or "")[:120]
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _private_values_from_context(context: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for bucket_name in ("known_slots", "known_dialog_fields", "known_client_fields"):
+        bucket = context.get(bucket_name)
+        if isinstance(bucket, Mapping):
+            for key in PRIVATE_KNOWN_SLOT_KEYS:
+                if bucket.get(key):
+                    values.append(str(bucket[key]))
+    return values
+
+
+def _sanitize_known_context_for_tee(context: Mapping[str, Any]) -> Mapping[str, Any]:
+    result = dict(context)
+    for bucket_name in ("known_slots", "known_dialog_fields", "known_client_fields"):
+        bucket = result.get(bucket_name)
+        if isinstance(bucket, Mapping):
+            result[bucket_name] = {
+                str(key): str(value)[:240]
+                for key, value in bucket.items()
+                if str(key) not in PRIVATE_KNOWN_SLOT_KEYS
+            }
+    if isinstance(result.get("recent_messages"), Sequence) and not isinstance(result.get("recent_messages"), (str, bytes)):
+        private_values = _private_values_from_context(context)
+        result["recent_messages"] = [
+            mask_pii(str(item), private_values=private_values)
+            for item in list(result.get("recent_messages") or [])[-12:]
+        ]
+    return result
 
 
 def _assert_local_runtime_path(path: Path) -> None:

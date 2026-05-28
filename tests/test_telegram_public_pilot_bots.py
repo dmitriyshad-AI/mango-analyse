@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.run_telegram_public_pilot_bots import (
@@ -28,15 +29,21 @@ from mango_mvp.channels.night_funnel_shadow import (
     MANAGER_QUEUE,
     SAFE_HOLD,
     NightFunnelControl,
+    append_inbound_tee_record,
     append_lead_card,
     assert_live_send_allowed,
     brand_from_channel,
+    build_inbound_tee_record,
     build_lead_card,
     build_shadow_record,
     detect_prompt_injection,
     evaluate_night_gate,
     extract_utm,
+    read_unprocessed_tee_records,
+    rotate_inbound_tee,
+    save_replay_cursor,
 )
+from scripts.run_telegram_night_shadow_replay import replay_tee_records
 
 
 def test_parse_debug_phone_command_without_payload() -> None:
@@ -182,6 +189,10 @@ def test_configs_from_env_builds_two_brand_isolated_configs(tmp_path: Path) -> N
         "TELEGRAM_NIGHT_FUNNEL_STATUS_PATH": str(tmp_path / "bot_status.json"),
         "TELEGRAM_NIGHT_FUNNEL_SHADOW_LOG_PATH": str(tmp_path / "shadow.jsonl"),
         "TELEGRAM_NIGHT_FUNNEL_LEAD_STORE_PATH": str(tmp_path / "leads.jsonl"),
+        "TELEGRAM_NIGHT_FUNNEL_TEE_ENABLED": "1",
+        "TELEGRAM_NIGHT_FUNNEL_TEE_PATH": str(tmp_path / "inbound_tee.jsonl"),
+        "TELEGRAM_NIGHT_FUNNEL_TEE_SOURCE": "test_owner",
+        "TELEGRAM_NIGHT_FUNNEL_TEE_RETENTION_DAYS": "3",
     }
 
     configs = configs_from_env(env, brand="all")
@@ -200,6 +211,10 @@ def test_configs_from_env_builds_two_brand_isolated_configs(tmp_path: Path) -> N
     assert all(config.night_funnel_shadow_enabled is True for config in configs)
     assert all(config.night_funnel_shadow_only is True for config in configs)
     assert all(config.night_funnel_control_path == tmp_path / "bot_control.json" for config in configs)
+    assert all(config.night_funnel_tee_enabled is True for config in configs)
+    assert all(config.night_funnel_tee_path == tmp_path / "inbound_tee.jsonl" for config in configs)
+    assert all(config.night_funnel_tee_source == "test_owner" for config in configs)
+    assert all(config.night_funnel_tee_retention_days == 3 for config in configs)
 
 
 def test_public_reply_text_strips_internal_markers() -> None:
@@ -636,3 +651,204 @@ def test_runtime_shadow_blocks_channel_brand_mismatch(tmp_path: Path) -> None:
     shadow_record = json.loads((tmp_path / "shadow.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert shadow_record["decision"] == MANAGER_QUEUE
     assert "channel_brand_mismatch" in shadow_record["decision_reason"]
+
+
+def test_inbound_tee_masks_review_fields_and_rejects_stable_runtime(tmp_path: Path) -> None:
+    record = build_inbound_tee_record(
+        source="test_owner",
+        brand="foton",
+        channel_source="https://cdpofoton.ru/?utm_source=direct",
+        utm={"utm_source": "direct"},
+        chat_id=123,
+        message_id=456,
+        message_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
+        text="Я Анна, телефон +7 999 123-45-67, почта test@example.com",
+        known_context={"known_slots": {"grade": "9", "parent_name": "Анна", "student_name": "Петя"}},
+        owner_runtime={"answered_by_owner": True, "owner_route": "bot_answer_self_for_pilot"},
+    )
+    tee_path = tmp_path / "inbound_tee.jsonl"
+    append_inbound_tee_record(tee_path, record)
+    stored = json.loads(tee_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert stored["text"].startswith("Я Анна")
+    assert "[name]" in stored["text_masked"]
+    assert "[phone]" in stored["text_masked"]
+    assert "[email]" in stored["text_masked"]
+    assert stored["known_context"]["known_slots"] == {"grade": "9"}
+    try:
+        append_inbound_tee_record(Path("stable_runtime/inbound_tee.jsonl"), record)
+    except ValueError as exc:
+        assert "stable_runtime" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected stable_runtime rejection")
+
+
+def test_replay_cursor_deduplicates_processed_tee_records(tmp_path: Path) -> None:
+    tee_path = tmp_path / "inbound_tee.jsonl"
+    cursor_path = tmp_path / "cursor.json"
+    record = build_inbound_tee_record(
+        source="test_owner",
+        brand="foton",
+        channel_source="cdpofoton.ru",
+        utm={},
+        chat_id=123,
+        message_id=456,
+        message_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
+        text="Если передумаю, деньги вернут?",
+        known_context={},
+        owner_runtime={"answered_by_owner": True},
+    )
+    append_inbound_tee_record(tee_path, record)
+    first, cursor = read_unprocessed_tee_records(tee_path, cursor_path)
+    save_replay_cursor(cursor_path, cursor)
+    second, _ = read_unprocessed_tee_records(tee_path, cursor_path)
+
+    assert len(first) == 1
+    assert second == []
+
+
+def test_rotate_inbound_tee_removes_old_raw_records(tmp_path: Path) -> None:
+    tee_path = tmp_path / "inbound_tee.jsonl"
+    old = {
+        **dict(
+            build_inbound_tee_record(
+                source="test_owner",
+                brand="foton",
+                channel_source="cdpofoton.ru",
+                utm={},
+                chat_id=1,
+                message_id=1,
+                message_at=datetime.now(timezone.utc) - timedelta(days=10),
+                text="старое",
+                known_context={},
+                owner_runtime={},
+            )
+        ),
+        "recorded_at": (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(timespec="seconds"),
+    }
+    fresh = build_inbound_tee_record(
+        source="test_owner",
+        brand="foton",
+        channel_source="cdpofoton.ru",
+        utm={},
+        chat_id=2,
+        message_id=2,
+        message_at=datetime.now(timezone.utc),
+        text="новое",
+        known_context={},
+        owner_runtime={},
+    )
+    append_inbound_tee_record(tee_path, old)
+    append_inbound_tee_record(tee_path, fresh)
+
+    result = rotate_inbound_tee(tee_path, retention_days=7)
+    rows = [json.loads(line) for line in tee_path.read_text(encoding="utf-8").splitlines()]
+
+    assert result["removed"] == 1
+    assert len(rows) == 1
+    assert rows[0]["text"] == "новое"
+
+
+def test_runtime_records_inbound_tee_after_owner_reply(tmp_path: Path) -> None:
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=tmp_path / "snapshot.json",
+        store_enabled=False,
+        night_funnel_tee_enabled=True,
+        night_funnel_tee_path=tmp_path / "inbound_tee.jsonl",
+        night_funnel_tee_source="test_owner",
+    )
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+    session = ChatSession(utm={"utm_source": "direct"}, channel_source="cdpofoton.ru")
+
+    class _Message:
+        message_id = 111
+        date = datetime(2026, 5, 28, tzinfo=timezone.utc)
+
+    class _OwnerMessage:
+        message_id = 222
+
+    runtime.record_night_inbound_tee(
+        chat_id=123,
+        input_text="Я Анна, 9 класс",
+        context={"known_slots": {"grade": "9", "parent_name": "Анна"}},
+        session=session,
+        source_message=_Message(),
+        owner_message=_OwnerMessage(),
+        owner_route="bot_answer_self_for_pilot",
+    )
+    runtime.close()
+    stored = json.loads((tmp_path / "inbound_tee.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert stored["owner_runtime"]["answered_by_owner"] is True
+    assert stored["owner_runtime"]["owner_message_id"] == "222"
+    assert stored["known_context"]["known_slots"] == {"grade": "9"}
+    assert "[name]" in stored["text_masked"]
+
+
+def test_shadow_replay_is_idempotent_and_tokenless(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    tee_path = tmp_path / "inbound_tee.jsonl"
+    cursor_path = tmp_path / "cursor.json"
+    shadow_path = tmp_path / "shadow.jsonl"
+    lead_path = tmp_path / "leads.jsonl"
+    status_path = tmp_path / "status.json"
+    append_inbound_tee_record(
+        tee_path,
+        build_inbound_tee_record(
+            source="test_owner",
+            brand="foton",
+            channel_source="cdpofoton.ru",
+            utm={"utm_source": "direct"},
+            chat_id=123,
+            message_id=456,
+            message_at=datetime(2026, 5, 28, tzinfo=timezone.utc),
+            text="Если передумаю, деньги вернут?",
+            known_context={"known_slots": {"grade": "9"}},
+            owner_runtime={"answered_by_owner": True},
+        ),
+    )
+
+    class _FakeProvider:
+        def build_draft(self, client_message: str, *, context):
+            assert context["night_shadow_replay_mode"]["no_telegram_token"] is True
+            return SubscriptionDraftResult(
+                route="bot_answer_self_for_pilot",
+                draft_text="Да, возвращается остаток неистраченных средств.",
+                metadata={
+                    "dialogue_contract_pipeline": {
+                        "retrieved_facts": {
+                            "refund.unspent_balance": "Фотон: при возврате возвращается остаток неистраченных средств."
+                        }
+                    }
+                },
+            )
+
+    first = replay_tee_records(
+        tee_path=tee_path,
+        cursor_path=cursor_path,
+        snapshot_path=snapshot,
+        shadow_log_path=shadow_path,
+        lead_store_path=lead_path,
+        status_path=status_path,
+        provider=_FakeProvider(),
+    )
+    second = replay_tee_records(
+        tee_path=tee_path,
+        cursor_path=cursor_path,
+        snapshot_path=snapshot,
+        shadow_log_path=shadow_path,
+        lead_store_path=lead_path,
+        status_path=status_path,
+        provider=_FakeProvider(),
+    )
+    shadow_rows = shadow_path.read_text(encoding="utf-8").splitlines()
+    lead_rows = lead_path.read_text(encoding="utf-8").splitlines()
+
+    assert first["processed"] == 1
+    assert second["processed"] == 0
+    assert len(shadow_rows) == 1
+    assert len(lead_rows) == 1
+    assert json.loads(shadow_rows[0])["decision"] == AUTO_SEND

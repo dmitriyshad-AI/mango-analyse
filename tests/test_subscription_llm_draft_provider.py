@@ -28,6 +28,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_conversation_intent_plan_guard,
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
+    apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
     contains_bot_identity_disclosure,
     draft_has_internal_service_markers,
@@ -2955,6 +2956,111 @@ def test_draft_with_numeric_discount_from_fresh_fact_is_allowed() -> None:
 
     assert result.route == "draft_for_manager"
     assert "unsupported_promise_detected" not in result.safety_flags
+
+
+def test_v2_unsupported_promise_guard_uses_retrieved_fact_metadata_for_discount_percent() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="При онлайн-обучении скидка на второй предмет составляет 20%.",
+        message_type="question",
+        topic_id="theme:005_discounts",
+        topic_confidence=0.91,
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "discounts.second_subject.online.pct": (
+                        "УНПК: при онлайн-обучении скидка на второй предмет составляет 20%."
+                    )
+                }
+            }
+        },
+    )
+
+    guarded = apply_unsupported_promise_guard(result, context={"active_brand": "unpk"})
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "unsupported_promise_detected" not in guarded.safety_flags
+
+
+def test_v2_unsupported_promise_guard_blocks_100_points_without_retrieved_fact() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="На курсе можно гарантированно набрать 100 баллов.",
+        message_type="question",
+        topic_id="theme:016_program",
+        topic_confidence=0.91,
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = apply_unsupported_promise_guard(result, context={"active_brand": "unpk"})
+
+    assert guarded.route == "manager_only"
+    assert "unsupported_promise_detected" in guarded.safety_flags
+    assert guarded.metadata["unsupported_promises"] == ["100 баллов"]
+
+
+def test_v2_unsupported_promise_guard_numeric_siblings_from_rfk() -> None:
+    cases = (
+        (
+            "При онлайн-обучении скидка на второй предмет составляет 20%.",
+            {"discounts.second_subject.online.pct": "УНПК: при онлайн-обучении скидка на второй предмет составляет 20%."},
+            False,
+        ),
+        (
+            "При онлайн-обучении скидка на второй предмет составляет 25%.",
+            {"discounts.second_subject.online.pct": "УНПК: при онлайн-обучении скидка на второй предмет составляет 20%."},
+            True,
+        ),
+        (
+            "Для 9 класса онлайн-курс стоит 69 900 ₽.",
+            {"prices.online.year": "УНПК: онлайн-курс для 9 класса, год — 69 900 ₽."},
+            False,
+        ),
+        (
+            "Для 9 класса онлайн-курс стоит 70 900 ₽.",
+            {"prices.online.year": "УНПК: онлайн-курс для 9 класса, год — 69 900 ₽."},
+            True,
+        ),
+        (
+            "Эта цена действует до 1 июля.",
+            {"prices.before_2026_07_01": "УНПК: ранняя цена действует до 1 июля."},
+            False,
+        ),
+        (
+            "Эта цена действует до 15 мая.",
+            {},
+            True,
+        ),
+        (
+            "По результатам ученики могут набрать 100 баллов.",
+            {"results.max_score": "УНПК: по результатам ученики могут набрать 100 баллов."},
+            False,
+        ),
+        (
+            "По результатам ученики могут набрать 100 баллов.",
+            {},
+            True,
+        ),
+    )
+
+    for draft_text, retrieved_facts, should_block in cases:
+        result = SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=draft_text,
+            message_type="question",
+            topic_id="theme:005_discounts",
+            topic_confidence=0.91,
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": retrieved_facts}},
+        )
+
+        guarded = apply_unsupported_promise_guard(result, context={"active_brand": "unpk"})
+
+        if should_block:
+            assert guarded.route == "manager_only", draft_text
+            assert "unsupported_promise_detected" in guarded.safety_flags, draft_text
+        else:
+            assert guarded.route == "bot_answer_self_for_pilot", draft_text
+            assert "unsupported_promise_detected" not in guarded.safety_flags, draft_text
 
 
 def test_neutral_price_question_is_not_forced_by_input_guard() -> None:

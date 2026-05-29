@@ -619,6 +619,7 @@ BRAND_FORBIDDEN_TERMS = {
 UNSUPPORTED_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{1,3}(?:[,.]\d{1,2})?\s*(?:%|процент\w*)", re.I),
     re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:руб(?:\.|лей|ля|ль)?|₽|р\.)", re.I),
+    re.compile(r"\b\d{1,3}\s*балл\w*", re.I),
     re.compile(r"\b\d+\s*(?:к|тыс\.?|тысяч)\b", re.I),
     re.compile(
         r"\b(?:до|по)\s+\d{1,2}(?:[./-]\d{1,2}(?:[./-]\d{2,4})?|\s+"
@@ -1592,7 +1593,8 @@ def apply_unsupported_promise_guard(
 ) -> SubscriptionDraftResult:
     if result.draft_text == UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT:
         return result
-    claims = find_unsupported_numeric_promises(result.draft_text, context=context)
+    promise_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    claims = find_unsupported_numeric_promises(result.draft_text, context=promise_context)
     if not claims:
         return result
     flags = tuple(dict.fromkeys([*result.safety_flags, "unsupported_promise_detected"]))
@@ -1612,6 +1614,59 @@ def apply_unsupported_promise_guard(
         manager_checklist=checklist,
         metadata={**dict(result.metadata), "unsupported_promises": list(claims)},
     )
+
+
+def _context_with_dialogue_contract_retrieved_facts(
+    context: Optional[Mapping[str, Any]],
+    result: SubscriptionDraftResult,
+) -> Optional[Mapping[str, Any]]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    facts = {
+        str(key): str(value)
+        for key, value in retrieved.items()
+        if str(key).strip() and str(value).strip()
+    }
+    if not facts:
+        return context
+
+    merged: dict[str, Any] = dict(context) if isinstance(context, Mapping) else {}
+    confirmed = dict(merged.get("confirmed_facts")) if isinstance(merged.get("confirmed_facts"), Mapping) else {}
+    confirmed.update(facts)
+
+    facts_context = dict(merged.get("facts_context")) if isinstance(merged.get("facts_context"), Mapping) else {}
+    facts_context_confirmed = (
+        dict(facts_context.get("confirmed_facts"))
+        if isinstance(facts_context.get("confirmed_facts"), Mapping)
+        else {}
+    )
+    facts_context_confirmed.update(facts)
+    facts_context.update(
+        {
+            "stale": False,
+            "facts_stale": False,
+            "fresh": True,
+            "facts_fresh": True,
+            "fresh_facts": True,
+            "client_safe_fact_verified": True,
+            "confirmed_facts": facts_context_confirmed,
+        }
+    )
+
+    quality = dict(merged.get("context_quality")) if isinstance(merged.get("context_quality"), Mapping) else {}
+    quality["facts_stale"] = False
+
+    merged.update(
+        {
+            "confirmed_facts": confirmed,
+            "facts_context": facts_context,
+            "context_quality": quality,
+            "facts_fresh": True,
+            "facts_stale": False,
+        }
+    )
+    return merged
 
 
 def find_unsupported_numeric_promises(

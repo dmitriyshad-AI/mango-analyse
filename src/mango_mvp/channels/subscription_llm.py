@@ -809,6 +809,14 @@ def _produce_cross_brand_template(
     return _cross_brand_safe_template(result, client_message=client_message, context=context)
 
 
+def _produce_terminal_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    return _terminal_safe_template(result, client_message=client_message, context=context)
+
+
 DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
     SafeTemplateSpec(
         name="cross_brand",
@@ -817,6 +825,14 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
         route_on_apply="keep_or_draft",
         flag="cross_brand_safe_template_applied",
         checklist="Кросс-бренд: не консультировать по другому бренду и не сравнивать условия.",
+    ),
+    SafeTemplateSpec(
+        name="terminal",
+        priority=20,
+        produce=_produce_terminal_template,
+        route_on_apply="terminal",
+        flag="terminal_safe_template_applied",
+        checklist="Терминальный случай: identity/адрес/контакты/офф-топик — безопасный шаблон.",
     ),
 )
 
@@ -828,14 +844,33 @@ def _safe_template_already_applied(result: SubscriptionDraftResult) -> bool:
     return any(spec.flag in result.safety_flags or metadata.get(spec.flag) for spec in DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY)
 
 
-def _safe_template_route(result: SubscriptionDraftResult, spec: SafeTemplateSpec) -> str:
+def _safe_template_route(result: SubscriptionDraftResult, spec: SafeTemplateSpec, text: str) -> str:
     if spec.route_on_apply == "manager_only":
         return "manager_only"
     if spec.route_on_apply == "draft_for_manager":
         return "draft_for_manager"
     if spec.route_on_apply == "keep_or_draft":
         return "manager_only" if result.route == "manager_only" else "draft_for_manager"
+    if spec.route_on_apply == "terminal":
+        return "draft_for_manager" if _is_terminal_direct_info_template(text) else "manager_only"
     return result.route
+
+
+def _is_terminal_direct_info_template(text: str) -> bool:
+    return str(text or "") in {
+        ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
+        ADDRESS_UNPK_SAFE_TEXT,
+        ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
+        CONTACT_FOTON_SAFE_TEXT,
+        CONTACT_UNPK_SAFE_TEXT,
+        IDENTITY_PROMPT_SAFE_TEXT,
+        IDENTITY_FOTON_SAFE_TEXT,
+        IDENTITY_UNPK_SAFE_TEXT,
+        OFF_TOPIC_FOTON_SAFE_TEXT,
+        OFF_TOPIC_UNPK_SAFE_TEXT,
+        OFF_TOPIC_GENERIC_SAFE_TEXT,
+        SOFT_NEGATIVE_HANDOFF_SAFE_TEXT,
+    }
 
 
 def _apply_safe_template_spec(
@@ -853,10 +888,12 @@ def _apply_safe_template_spec(
         "priority": spec.priority,
     }
     flags = tuple(dict.fromkeys([*result.safety_flags, spec.flag, *spec.extra_flags]))
+    if spec.name == "terminal" and not _is_terminal_direct_info_template(clean_text):
+        flags = tuple(dict.fromkeys([*flags, "placeholder_in_draft"]))
     checklist = tuple(dict.fromkeys([*result.manager_checklist, spec.checklist]))
     return replace(
         result,
-        route=_safe_template_route(result, spec),
+        route=_safe_template_route(result, spec, clean_text),
         draft_text=clean_text,
         safety_flags=flags,
         manager_checklist=checklist,
@@ -1119,7 +1156,9 @@ class SubscriptionLlmDraftProvider:
 
         result = apply_funnel_policy_guard(result, context=context)
         result = self._dialogue_contract_v2_route_permission_guard(result, client_message=client_message, context=context)
-        return _sanitize_dialogue_contract_client_text(result)
+        guarded = guard_identity_disclosure(result)
+        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        return _sanitize_dialogue_contract_client_text(guarded)
 
     def _reverify_dialogue_contract_text_change(
         self,
@@ -1643,7 +1682,18 @@ def draft_has_identity_disclosure(text: str) -> bool:
 
 def find_identity_disclosure_phrases(text: str) -> tuple[str, ...]:
     lowered = str(text or "").casefold()
-    return tuple(phrase for phrase in IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES if phrase.casefold() in lowered)
+    return tuple(phrase for phrase in IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES if _identity_phrase_present(lowered, phrase))
+
+
+def _identity_phrase_present(lowered_text: str, phrase: str) -> bool:
+    value = str(phrase or "").casefold().strip()
+    if not value:
+        return False
+    if value == "gpt":
+        pattern = r"(?:chat\s*)?gpt"
+    else:
+        pattern = r"\s+".join(re.escape(part) for part in value.split())
+    return bool(re.search(rf"(?<!\w){pattern}(?!\w)", lowered_text, flags=re.I))
 
 
 def guard_identity_disclosure(result: SubscriptionDraftResult) -> SubscriptionDraftResult:

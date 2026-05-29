@@ -1,0 +1,23 @@
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'v2_terminal or identity_disclosure_detector or v2_identity_output_guard or v2_cross_brand'
+
+Result:
+8 passed, 227 deselected in 0.72s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+
+Result:
+235 passed in 4.21s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+
+Result:
+75 passed in 0.79s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+
+Result:
+2249 tests collected in 4.56s

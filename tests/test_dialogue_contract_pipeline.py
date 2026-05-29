@@ -469,6 +469,141 @@ def test_pipeline_missing_fact_uses_narrow_handoff() -> None:
     assert result.route == "bot_answer_self"
 
 
+def test_handoff_paraphrase_without_claim_does_not_fail_hard_check() -> None:
+    store = FactStore(catalog=(), store={"unpk": {}})
+    handoffs = (
+        "Передам менеджеру уточнить именно этот вопрос.",
+        "Сейчас точно ответить не могу. Передам вопрос менеджеру — он уточнит и свяжется с вами.",
+        "Менеджер сверит эту деталь и вернётся с ответом.",
+        "По этому пункту нужна проверка менеджера.",
+        "Передам менеджеру именно этот пункт, чтобы он подтвердил точную информацию.",
+    )
+
+    for handoff in handoffs:
+        result = run_pipeline(
+            conversation=_conv("сколько стоит онлайн для 9 класса?"),
+            active_brand="unpk",
+            fact_store=store,
+            understand_fn=_understanding(
+                {
+                    "current_question": "цена онлайн для 9 класса",
+                    "needed_fact_keys": [],
+                    "answerability": "answer_self",
+                }
+            ),
+            draft_fn=lambda _prompt, handoff=handoff: handoff,
+            faithfulness_fn=lambda _prompt: {"unsupported": ["нет факта"]},
+        )
+
+        assert result.draft_text == handoff
+        assert result.fallback_reason == ""
+        assert not result.findings
+        assert not result.unsupported_claims
+
+
+def test_handoff_with_unsupported_price_claim_fails_hard_check() -> None:
+    store = FactStore(catalog=(), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн для 9 класса",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру; цена 99 999 ₽ за семестр.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert any(finding.code == "fact_grounding" for finding in result.findings)
+    assert "99 999" not in result.draft_text
+
+
+def test_handoff_with_unsupported_date_claim_fails_hard_check() -> None:
+    store = FactStore(catalog=(), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=_conv("когда смена?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "дата смены",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру; смена начнётся 1 февраля 2030 года.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert any(finding.code == "fact_grounding" for finding in result.findings)
+    assert "2030" not in result.draft_text
+
+
+def test_handoff_with_supported_price_claim_passes_hard_check() -> None:
+    store = FactStore(catalog=("price.online",), store={"unpk": {"price.online": "Онлайн: семестр — 69 900 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн для 9 класса",
+                "needed_fact_keys": ["price.online"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру; семестр — 69 900 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == ""
+    assert "69 900" in result.draft_text
+
+
+def test_safe_fallback_does_not_leak_third_person_question() -> None:
+    store = FactStore(catalog=("price.online",), store={"unpk": {}})
+    questions = (
+        "Клиент спрашивает точный порядок оформления",
+        "Клиент уточняет индивидуальное условие",
+        "клиент хочет понять порядок согласования",
+        "Клиент спрашивает про оплату переводом",
+        "Клиент интересуется датой старта группы",
+    )
+
+    for question in questions:
+        result = run_pipeline(
+            conversation=_conv("сколько стоит?"),
+            active_brand="unpk",
+            fact_store=store,
+            understand_fn=_understanding(
+                {
+                    "current_question": question,
+                    "needed_fact_keys": ["price.online"],
+                    "answerability": "manager_only",
+                }
+            ),
+            draft_fn=None,
+            faithfulness_fn=lambda _prompt: {"unsupported": []},
+        )
+
+        assert result.route == "draft_for_manager"
+        assert result.fallback_reason == "contract_manager_only"
+        assert "клиент" not in result.draft_text.casefold()
+        assert "спрашивает" not in result.draft_text.casefold()
+        assert "уточняет" not in result.draft_text.casefold()
+        assert "интересуется" not in result.draft_text.casefold()
+        assert "менеджер" in result.draft_text.casefold()
+
+
 def test_t5_single_missing_slot_asks_one_question_without_manager_handoff() -> None:
     store = FactStore(catalog=("student.grade",), store={"foton": {}})
     result = run_pipeline(

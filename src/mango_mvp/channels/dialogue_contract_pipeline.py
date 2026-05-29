@@ -53,6 +53,12 @@ _P0_PROMISE_RE = re.compile(
     r"обязательно\s+(?:поступит|сдаст)|точно\s+верн[её]м",
     re.I,
 )
+_FACTUAL_CLAIM_RE = re.compile(
+    r"(?:₽|руб(?:\.|лей|ля|ль)?|%|\b\d{1,3}\s*балл\w*|\b\d{1,2}\s+"
+    r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)"
+    r"(?:\s+\d{4})?\b|\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b)",
+    re.I,
+)
 _BRAND_TOKENS: dict[str, tuple[str, ...]] = {
     "foton": ("унпк", "унпк мфти", "мфти", "kmipt", "@unpk", "ноу унпк", "ано дпо"),
     "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "foton", "долями", "т-банк"),
@@ -1285,9 +1291,12 @@ def _hard_check(
     toggles: Toggles,
     context: Mapping[str, Any] | None,
 ) -> tuple[tuple[VerificationFinding, ...], tuple[str, ...], bool]:
+    verification_text = _handoff_factual_claim_text(draft)
+    pure_handoff = _is_pure_handoff_text(draft) and verification_text is None
+    text_to_check = verification_text or draft
     findings = list(
         verify_output(
-            draft,
+            text_to_check,
             facts=facts,
             active_brand=contract.active_brand,
             contract=contract,
@@ -1297,13 +1306,13 @@ def _hard_check(
             context=context,
         )
     )
-    findings.extend(_existence_yes_no_findings(draft, contract=contract, facts=facts))
-    findings.extend(_payment_method_findings(draft, contract=contract, facts=facts))
+    findings.extend(_existence_yes_no_findings(text_to_check, contract=contract, facts=facts))
+    findings.extend(_payment_method_findings(text_to_check, contract=contract, facts=facts))
     unsupported: tuple[str, ...] = ()
     semantic_available = True
-    if toggles.semantic_faithfulness:
+    if toggles.semantic_faithfulness and not pure_handoff:
         result = check_claim_faithfulness(
-            draft,
+            text_to_check,
             facts=facts,
             client_words=client_words,
             faithfulness_fn=faithfulness_fn,
@@ -1311,6 +1320,36 @@ def _hard_check(
         unsupported = result.unsupported
         semantic_available = result.available
     return tuple(findings), unsupported, semantic_available
+
+
+def _handoff_factual_claim_text(text: str) -> str | None:
+    source = " ".join(str(text or "").split())
+    if not source or not _is_handoff_text(source):
+        return None
+    parts = [
+        part.strip(" \t\n\r-—:;,.")
+        for part in re.split(r"[.;]\s+|\s+[—-]\s+", source)
+        if part.strip(" \t\n\r-—:;,.")
+    ]
+    claim_parts = [
+        part
+        for part in parts
+        if _FACTUAL_CLAIM_RE.search(part) and not _is_handoff_text(part)
+    ]
+    if claim_parts:
+        return ". ".join(claim_parts)
+    if _FACTUAL_CLAIM_RE.search(source) and not _is_pure_handoff_text(source):
+        return source
+    return None
+
+
+def _is_pure_handoff_text(text: str) -> bool:
+    low = str(text or "").casefold()
+    return (
+        _is_handoff_text(low)
+        and not re.search(r"\b(?:не\s+знаю|нет\s+(?:информации|данных|ответа)|не\s+могу\s+ответить)\b", low, re.I)
+        and not _FACTUAL_CLAIM_RE.search(low)
+    )
 
 
 def _dry_p0_text(*, conversation: Sequence[Mapping[str, str]] | None = None) -> str:
@@ -1352,15 +1391,35 @@ def _safe_fallback_text(contract: AnswerContract, *, facts: Mapping[str, str] | 
         return schedule_publication
     if _asks_refund_policy(contract):
         return _refund_policy_handoff_text()
-    question = contract.current_question or "этот вопрос"
+    detail = _client_safe_question_detail(contract.current_question)
     secondary = _secondary_fact_text(contract, facts or {})
     if secondary:
+        detail_part = f": {detail}" if detail else ""
         return (
-            f"По спрошенному пункту точного подтверждения нет — менеджер уточнит именно это: {question}. "
+            f"По спрошенному пункту точного подтверждения нет — менеджер уточнит точную деталь{detail_part}. "
             f"Из подтверждённого, как отдельная справка: {secondary} "
             "Если хотите, передам менеджеру именно ваш способ или условие."
         )
-    return f"Передам менеджеру уточнить именно это: {question}. Он подтвердит точную информацию."
+    if detail:
+        return f"Сейчас точно ответить не могу. Передам менеджеру уточнить точную деталь: {detail}. Он свяжется с вами."
+    return "Сейчас точно ответить не могу. Передам вопрос менеджеру — он уточнит и свяжется с вами."
+
+
+def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    text = re.sub(
+        r"^\s*клиент\s+(?:спрашивает|уточняет|интересуется|хочет\s+понять|просит\s+уточнить)\s*(?:,|:|—|-)?\s*",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" \t\n\r:;,.—-")
+    if not text or text.casefold().startswith("клиент "):
+        return ""
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
 
 
 def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:

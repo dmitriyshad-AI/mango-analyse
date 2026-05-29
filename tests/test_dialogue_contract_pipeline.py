@@ -952,6 +952,85 @@ def test_phase1_composition_counts_three_subjects_without_stacking_discounts() -
     assert "не суммируются" in result.draft_text.casefold()
 
 
+def test_phase1_composition_counts_ordinal_third_subject_as_discounted_subject() -> None:
+    store = FactStore(
+        catalog=("price.offline.year", "discounts.second_subject.offline.pct", "discounts.stacking_rule"),
+        store={
+            "foton": {
+                "price.offline.year": "Фотон очно за год — 74 500 ₽.",
+                "discounts.second_subject.offline.pct": "Фотон: на второй и последующий очный предмет одного ребёнка действует скидка 20%.",
+                "discounts.stacking_rule": "Скидки не суммируются; применяется наибольшая.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("а третий предмет очно тому же ребенку тоже со скидкой?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "третий предмет очно тому же ребенку",
+                "subquestions": [
+                    {
+                        "text": "третий предмет очно тому же ребенку",
+                        "answerable": "self",
+                        "needed_fact_keys": [
+                            "price.offline.year",
+                            "discounts.second_subject.offline.pct",
+                            "discounts.stacking_rule",
+                        ],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Третий предмет пока без скидки, менеджер уточнит.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "3-й предмет со скидкой 20%" in result.draft_text
+    assert result.draft_text.count("59 600 ₽") == 2
+    assert "третий предмет пока без скидки" not in result.draft_text.casefold()
+    assert "Итого — 193 700 ₽" in result.draft_text
+
+
+def test_phase1_composition_does_not_apply_second_subject_discount_to_first_subject() -> None:
+    store = FactStore(
+        catalog=("price.offline.year", "discounts.second_subject.offline.pct"),
+        store={
+            "foton": {
+                "price.offline.year": "Фотон очно за год — 74 500 ₽.",
+                "discounts.second_subject.offline.pct": "Фотон: на второй и последующий очный предмет действует скидка 20%.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("первый предмет очно на год сколько стоит?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "первый предмет очно год",
+                "subquestions": [
+                    {
+                        "text": "первый предмет очно год",
+                        "answerable": "self",
+                        "needed_fact_keys": ["price.offline.year", "discounts.second_subject.offline.pct"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Очно за год — 74 500 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "59 600 ₽" not in result.draft_text
+    assert "Итого" not in result.draft_text
+    assert "74 500 ₽" in result.draft_text
+
+
 def test_phase1_composition_camp_date_price_and_included() -> None:
     store = FactStore(
         catalog=("camp.dates", "camp.price", "camp.included"),
@@ -987,6 +1066,86 @@ def test_phase1_composition_camp_date_price_and_included() -> None:
     assert "3-14 августа" in result.draft_text
     assert "89 900 ₽" in result.draft_text
     assert "обучение и проживание" in result.draft_text
+
+
+def test_phase1_camp_scope_does_not_substitute_regular_online_price_or_format() -> None:
+    store = FactStore(
+        catalog=("ls_city_2026_foton_format", "regular_online.price.year", "online_courses_format"),
+        store={
+            "foton": {
+                "ls_city_2026_foton_format": "Фотон: городской летний лагерь — очная городская школа, без проживания.",
+                "regular_online.price.year": "Фотон онлайн-курс 2026/27: год — 47 250 ₽.",
+                "online_courses_format": "Фотон: онлайн-курсы проходят дистанционно.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("по смене это онлайн или очно, с проживанием или дневная?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "формат лагерной смены с проживанием или дневная",
+                "subquestions": [
+                    {
+                        "text": "формат лагерной смены с проживанием или дневная",
+                        "answerable": "self",
+                        "needed_fact_keys": [
+                            "ls_city_2026_foton_format",
+                            "regular_online.price.year",
+                            "online_courses_format",
+                        ],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн-курс стоит 47 250 ₽ за год и проходит дистанционно.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "без проживания" in result.draft_text.casefold()
+    assert "очная городская школа" in result.draft_text.casefold()
+    assert "47 250" not in result.draft_text
+    assert "онлайн-курс" not in result.draft_text.casefold()
+    assert "дистанционно" not in result.draft_text.casefold()
+
+
+def test_phase1_regular_online_price_still_answers_outside_camp_scope() -> None:
+    store = FactStore(
+        catalog=("regular_online.price.year", "online_courses_format"),
+        store={
+            "foton": {
+                "regular_online.price.year": "Фотон онлайн-курс 2026/27: год — 47 250 ₽.",
+                "online_courses_format": "Фотон: онлайн-курсы проходят дистанционно.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("онлайн или очно и сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "формат и цена онлайн-курса",
+                "subquestions": [
+                    {
+                        "text": "формат и цена онлайн-курса",
+                        "answerable": "self",
+                        "needed_fact_keys": ["regular_online.price.year", "online_courses_format"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн-курс стоит 47 250 ₽ за год и проходит дистанционно.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "47 250 ₽" in result.draft_text
+    assert "онлайн" in result.draft_text.casefold()
 
 
 def test_phase1_composition_does_not_apply_subject_discount_without_subject_count() -> None:

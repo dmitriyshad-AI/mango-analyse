@@ -1844,6 +1844,15 @@ def _compose_nearest_camp_shift(contract: AnswerContract, retrieval: RetrievalRe
 def _compose_price_plus_format(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
     if not (_asks_price(contract) or _asks_training_format_choice(contract)):
         return ""
+    if _contract_mentions_camp_or_lvsh(contract):
+        camp_facts = _camp_or_lvsh_facts(retrieval.facts)
+        if not camp_facts:
+            return ""
+        price = _direct_price_answer_from_facts(contract, camp_facts)
+        format_answer = _direct_camp_format_answer_from_facts(contract, camp_facts)
+        if price and format_answer:
+            return f"{price} {format_answer}"
+        return price or format_answer
     price = _direct_price_answer_from_facts(contract, retrieval.facts)
     if not price:
         return ""
@@ -1883,6 +1892,13 @@ def _requested_subject_count(text: str) -> int:
     for word, value in number_words.items():
         if re.search(rf"\b{word}\b", low, re.I):
             return value
+    ordinal_stems = {"втор": 2, "трет": 3, "четверт": 4}
+    for stem, value in ordinal_stems.items():
+        if re.search(rf"\b{stem}\w*\s+предмет", low, re.I):
+            return value
+    ordinal_match = re.search(r"\b([2-4])\s*[-–]?\s*(?:й|ии|ий|ой|го|му|м)?\s+предмет", low, re.I)
+    if ordinal_match:
+        return int(ordinal_match.group(1))
     match = re.search(r"\b([2-4])\s*(?:предмет|курс)", low, re.I)
     if match:
         return int(match.group(1))
@@ -1926,7 +1942,11 @@ def _second_subject_discount_pct(contract: AnswerContract, facts: Mapping[str, s
     candidates: list[tuple[int, int]] = []
     for key, value in facts.items():
         combined = f"{key} {value}".casefold().replace("ё", "е")
-        if not re.search(r"втор\w+\s+предмет|2-?й\s+предмет|second[_\s-]?subject", combined, re.I):
+        if not re.search(
+            r"втор\w+\s+предмет|последующ\w+\s+предмет|2-?й\s+предмет|second[_\s-]?subject",
+            combined,
+            re.I,
+        ):
             continue
         match = re.search(r"\b(\d{1,2})\s*%", combined)
         if not match:
@@ -2375,6 +2395,8 @@ def _augment_with_format_guidance(
 ) -> RetrievalResult:
     if not _asks_training_format_choice(contract):
         return retrieval
+    if _contract_mentions_camp_or_lvsh(contract):
+        return retrieval
     brand = _normalize_brand(active_brand)
     store = fact_store.store.get(brand, {})
     extra: dict[str, str] = {}
@@ -2614,6 +2636,14 @@ def _draft_uses_camp_or_lvsh_fact(draft: str, facts: Mapping[str, str]) -> bool:
     return any(_is_camp_or_lvsh_fact(key, str(value or "")) for key, value in facts.items())
 
 
+def _camp_or_lvsh_facts(facts: Mapping[str, str]) -> dict[str, str]:
+    return {
+        str(key): str(value or "")
+        for key, value in facts.items()
+        if _is_camp_or_lvsh_fact(str(key), str(value or ""))
+    }
+
+
 def _is_camp_or_lvsh_fact(key: str, text: str) -> bool:
     combined = f"{key} {text}".casefold().replace("ё", "е")
     return bool(re.search(r"лвш|lvsh|менделеев|лагер|camp", combined, re.I))
@@ -2717,6 +2747,10 @@ def _can_autonomously_replace_failed_draft(findings: Sequence[VerificationFindin
 def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
     if not _asks_price(contract):
         return ""
+    if _contract_mentions_camp_or_lvsh(contract):
+        facts = _camp_or_lvsh_facts(facts)
+        if not facts:
+            return ""
     items: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     facts_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
@@ -2760,6 +2794,8 @@ def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str
 def _direct_format_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
     if not _asks_training_format_choice(contract):
         return ""
+    if _contract_mentions_camp_or_lvsh(contract):
+        return _direct_camp_format_answer_from_facts(contract, facts)
     online_fact = ""
     offline_fact = ""
     for key, text in facts.items():
@@ -2776,6 +2812,22 @@ def _direct_format_answer_from_facts(contract: AnswerContract, facts: Mapping[st
     if not parts:
         return ""
     return " ".join(parts) + " Конкретную группу по предмету и классу менеджер подтвердит."
+
+
+def _direct_camp_format_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    if not _contract_mentions_camp_or_lvsh(contract):
+        return ""
+    text = _contract_intent_text(contract)
+    if not re.search(r"формат|очно|онлайн|прожив|дневн|ночев", text, re.I):
+        return ""
+    for key, value in _camp_or_lvsh_facts(facts).items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not re.search(r"без\s+прожив|дневн|очная\s+городск|городск\w+\s+школ|городск\w+\s+лагер", combined, re.I):
+            continue
+        fact = _short_fact_sentence(str(value or ""), max_chars=220)
+        if fact:
+            return f"По лагерной смене подтверждено: {fact}"
+    return ""
 
 
 def _direct_recording_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:

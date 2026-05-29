@@ -16,6 +16,8 @@ from mango_mvp.channels.subscription_llm import (
     LEGAL_THREAT_SAFE_TEXT,
     KNOWN_CONTEXT_REPAIR_TEXT,
     MATKAP_FEDERAL_TIMING_SAFE_TEXT,
+    MATKAP_REGIONAL_SAFE_TEXT,
+    MATKAP_SFR_REVIEW_SAFE_TEXT,
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_UNPK_SAFE_TEXT,
     PAYMENT_DISPUTE_SAFE_TEXT,
@@ -3122,6 +3124,111 @@ def test_v2_enrollment_question_is_not_admission_guarantee() -> None:
     )
 
     assert "admission_guarantee_safe_template_applied" not in guarded.safety_flags
+
+
+def test_v2_matkap_sfr_approval_uses_safe_template() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="СФР точно одобрит маткапитал.",
+        message_type="question",
+        topic_id="theme:007_matkap_payment",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Одобрят маткапитал через СФР?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == MATKAP_SFR_REVIEW_SAFE_TEXT
+    assert "matkap_safe_template_applied" in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+    assert "не можем обещать одобрение" in guarded.draft_text
+
+
+def test_v2_matkap_regional_uses_safe_template() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Региональный маткапитал примем.",
+        message_type="question",
+        topic_id="theme:007_matkap_payment",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Примете региональный маткапитал?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == MATKAP_REGIONAL_SAFE_TEXT
+    assert "matkap_safe_template_applied" in guarded.safety_flags
+    assert "только с федеральным" in guarded.draft_text
+
+
+def test_v2_matkap_timing_template_keeps_verified_numbers() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Маткапитал обычно проходит быстро.",
+        message_type="question",
+        topic_id="theme:007_matkap_payment",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "За сколько проходит маткапитал через СФР?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == MATKAP_FEDERAL_TIMING_SAFE_TEXT
+    assert "matkap_safe_template_applied" in guarded.safety_flags
+    assert "unsupported_promise_detected" not in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+    assert "до 10 рабочих дней" in guarded.draft_text
+    assert "до 5 рабочих дней" in guarded.draft_text
+    assert "до 15 рабочих дней" in guarded.draft_text
+
+
+def test_v2_matkap_general_question_is_safe_reference_not_rejection() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Маткапитал можно использовать.",
+        message_type="question",
+        topic_id="theme:007_matkap_payment",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Можно оплатить маткапиталом?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == MATKAP_FEDERAL_TIMING_SAFE_TEXT
+    assert "matkap_safe_template_applied" in guarded.safety_flags
+    assert "региональный не принимаем" not in guarded.draft_text.casefold()
+    assert "не можем обещать одобрение" not in guarded.draft_text.casefold()
+
+
+def test_v2_regular_payment_question_is_not_matkap() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Оплату можно обсудить с менеджером.",
+        message_type="question",
+        topic_id="theme:006_installment",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Можно оплатить картой или переводом?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "matkap_safe_template_applied" not in guarded.safety_flags
 
 
 def test_v2_olympiad_online_does_not_replace_regular_online_question() -> None:

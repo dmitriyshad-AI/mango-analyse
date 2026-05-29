@@ -836,6 +836,14 @@ def _produce_admission_guarantee_template(
     return ADMISSION_GUARANTEE_SAFE_TEXT if _is_admission_guarantee_case(result, client_message=client_message, context=context) else ""
 
 
+def _produce_matkap_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    return _matkap_safe_template(result, client_message=client_message, context=context)
+
+
 def _produce_olympiad_online_template(
     result: SubscriptionDraftResult,
     client_message: str,
@@ -887,6 +895,14 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
         flag="admission_guarantee_safe_template_applied",
         checklist="Не гарантировать поступление: только программа и статистика.",
         extra_flags=("placeholder_in_draft",),
+    ),
+    SafeTemplateSpec(
+        name="matkap",
+        priority=40,
+        produce=_produce_matkap_template,
+        route_on_apply="keep_or_draft",
+        flag="matkap_safe_template_applied",
+        checklist="Маткапитал: не обещать одобрение СФР и не принимать региональный маткапитал.",
     ),
     SafeTemplateSpec(
         name="olympiad_online",

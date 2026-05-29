@@ -121,6 +121,10 @@ def extract_semantic_fact_claims(text: str) -> list[Mapping[str, Any]]:
     )
     result: list[Mapping[str, Any]] = []
     for claim_type, terms, triggers in patterns:
+        if claim_type == "annual_discount" and not _discount_term_near_number(text, percent="14", term="год"):
+            continue
+        if claim_type == "semester_discount" and not _discount_term_near_number(text, percent="10", term="семестр"):
+            continue
         if not all(trigger in normalized for trigger in triggers):
             continue
         if claim_type == "bank_transfer_invoice" and re.search(r"(можно\s+ли|уточн|подтверд|передам)", normalized, re.I):
@@ -133,6 +137,16 @@ def extract_semantic_fact_claims(text: str) -> list[Mapping[str, Any]]:
             }
         )
     return result
+
+
+def _discount_term_near_number(text: str, *, percent: str, term: str) -> bool:
+    source = str(text or "").casefold().replace("ё", "е")
+    pct = re.escape(str(percent))
+    term_re = re.escape(str(term).casefold())
+    return bool(
+        re.search(rf"{pct}\s*%?[^.!?\n]{{0,30}}{term_re}", source, re.I)
+        or re.search(rf"{term_re}[^.!?\n]{{0,30}}{pct}\s*%?", source, re.I)
+    )
 
 
 def fact_text_supports_terms(text: str, terms: Sequence[Any]) -> bool:

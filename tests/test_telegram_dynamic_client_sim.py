@@ -775,6 +775,61 @@ def test_judge_fact_audit_flags_unmatched_business_claim(tmp_path):
     assert audit["has_unverified_claim"] is True
 
 
+def test_judge_fact_audit_discount_claims_require_local_percent_context(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "unpk",
+                "fact_key": "payment_options.semester_discount",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: при оплате за семестр действует скидка 10%.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "payment_options.annual_discount",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: при оплате за год действует скидка 14%.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    listed_foton_discounts = sim.audit_fact_claims_for_judge(
+        "У Фотона есть скидка 10% для многодетных, скидка 30% на второй предмет. "
+        "После семестра возможен кэшбэк, скидки не суммируются.",
+        client_message="Какие скидки есть?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    claim_types = [item["claim_type"] for item in listed_foton_discounts["items"]]
+    assert "semester_discount" not in claim_types
+    assert listed_foton_discounts["has_unverified_claim"] is False
+
+    wrong_brand_semester_claim = sim.audit_fact_claims_for_judge(
+        "За семестр действует скидка 10%.",
+        client_message="Какая скидка за семестр?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    levels = {item["claim_type"]: item["level"] for item in wrong_brand_semester_claim["items"]}
+    assert levels["semester_discount"] == "other_brand_match"
+    assert wrong_brand_semester_claim["has_unverified_claim"] is True
+
+    wrong_brand_annual_claim = sim.audit_fact_claims_for_judge(
+        "При оплате за год действует скидка 14%.",
+        client_message="Какая скидка за год?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    annual_levels = {item["claim_type"]: item["level"] for item in wrong_brand_annual_claim["items"]}
+    assert annual_levels["annual_discount"] == "other_brand_match"
+    assert wrong_brand_annual_claim["has_unverified_claim"] is True
+
+
 def test_summary_includes_judge_fact_audit_counts(tmp_path):
     summary = sim.build_summary(
         [

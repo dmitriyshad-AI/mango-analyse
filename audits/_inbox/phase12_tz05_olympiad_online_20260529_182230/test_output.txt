@@ -1,0 +1,23 @@
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'v2_olympiad_online or olympiad_online or v2_admission_guarantee or v2_result_guarantee'
+
+Result:
+9 passed, 238 deselected in 0.69s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+
+Result:
+247 passed in 4.14s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+
+Result:
+75 passed in 0.76s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+
+Result:
+2261 tests collected in 4.53s

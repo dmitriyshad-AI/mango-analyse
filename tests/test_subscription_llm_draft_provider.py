@@ -26,6 +26,8 @@ from mango_mvp.channels.subscription_llm import (
     UNPK_EGE_INTENSIVE_PRICE_SAFE_TEXT,
     UNPK_FOUR_WEEKS_NEW_PRICE_SAFE_TEXT,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
+    UNPK_OLYMPIAD_PHYSTECH_HANDOFF_TEXT,
+    UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT,
     apply_brand_separation_guard,
     apply_conversation_intent_plan_guard,
     apply_humanity_guards,
@@ -3120,6 +3122,123 @@ def test_v2_enrollment_question_is_not_admission_guarantee() -> None:
     )
 
     assert "admission_guarantee_safe_template_applied" not in guarded.safety_flags
+
+
+def test_v2_olympiad_online_does_not_replace_regular_online_question() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Олимпиадная подготовка Физтех онлайн — для 9 и 11 классов.",
+        message_type="question",
+        topic_id="theme:001_pricing",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Математика и физика, 11 класс, онлайн, сколько стоит?",
+        {
+            "active_brand": "unpk",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "conversation_intent_plan": {
+                "primary_intent": "pricing",
+                "fact_scope": "regular_online",
+                "blocked_neighbor_scopes": ["olympiad_online"],
+            },
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "olympiad_online_safe_template_applied" in guarded.safety_flags
+    assert "program_topic_normalized" in guarded.safety_flags
+    assert guarded.topic_id == "theme:016_program"
+    assert "похожий, но другой факт" in guarded.draft_text.casefold()
+    assert "олимпиадная подготовка" not in guarded.draft_text.casefold()
+
+
+def test_v2_olympiad_online_explicit_10th_grade_gets_handoff() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, есть олимпиадная онлайн-группа по физике для 10 класса.",
+        message_type="question",
+        topic_id="theme:014_format",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "prices_regular_2026_27.online_olympiad_phystech_classes": UNPK_OLYMPIAD_PHYSTECH_HANDOFF_TEXT
+                }
+            }
+        },
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Есть олимпиадная подготовка Физтех онлайн для 10 класса?",
+        {
+            "active_brand": "unpk",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "conversation_intent_plan": {
+                "primary_intent": "olympiad_online",
+                "fact_scope": "olympiad_online",
+                "blocked_neighbor_scopes": ["regular_online"],
+            },
+        },
+    )
+
+    assert guarded.draft_text == UNPK_OLYMPIAD_PHYSTECH_HANDOFF_TEXT
+    assert "olympiad_online_safe_template_applied" in guarded.safety_flags
+    assert "10 класса" not in guarded.draft_text.casefold()
+    assert "9 и 11" in guarded.draft_text
+
+
+def test_v2_olympiad_online_explicit_9th_or_11th_grade_is_allowed() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По олимпиадной подготовке Физтех онлайн сориентирую.",
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "prices_regular_2026_27.online_olympiad_phystech_classes": UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT
+                }
+            }
+        },
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Есть олимпиадная подготовка Физтех онлайн для 11 класса?",
+        {
+            "active_brand": "unpk",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "conversation_intent_plan": {
+                "primary_intent": "olympiad_online",
+                "fact_scope": "olympiad_online",
+                "blocked_neighbor_scopes": ["regular_online"],
+            },
+        },
+    )
+
+    assert guarded.draft_text == UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT
+    assert "olympiad_online_safe_template_applied" in guarded.safety_flags
+
+
+def test_v2_olympiad_online_does_not_fire_for_offline_question() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Очные группы подбираются по площадке и расписанию.",
+        message_type="question",
+        topic_id="theme:014_format",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Есть олимпиадная подготовка Физтех очно?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "olympiad_online_safe_template_applied" not in guarded.safety_flags
 
 
 def test_humanity_x2_rewriter_disabled_by_default() -> None:

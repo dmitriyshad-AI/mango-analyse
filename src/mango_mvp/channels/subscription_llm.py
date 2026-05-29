@@ -800,6 +800,8 @@ class SafeTemplateSpec:
     flag: str
     checklist: str
     extra_flags: tuple[str, ...] = ()
+    topic_on_apply: str = ""
+    topic_flag: str = ""
 
 
 def _produce_cross_brand_template(
@@ -832,6 +834,23 @@ def _produce_admission_guarantee_template(
     context: Optional[Mapping[str, Any]],
 ) -> str:
     return ADMISSION_GUARANTEE_SAFE_TEXT if _is_admission_guarantee_case(result, client_message=client_message, context=context) else ""
+
+
+def _produce_olympiad_online_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    plan = _conversation_intent_plan(context)
+    scope = str(plan.get("fact_scope") or "").strip()
+    blocked = {str(item) for item in plan.get("blocked_neighbor_scopes", ()) or () if str(item).strip()}
+    client_text = str(client_message or "").casefold().replace("ё", "е")
+    client_asks_olympiad = has_any_marker(client_text, ("олимпиад", "физтех"))
+    if scope == "regular_online" and "olympiad_online" in blocked and not client_asks_olympiad:
+        scope_guard = _fact_scope_guard_template(result.draft_text, context=context)
+        if scope_guard:
+            return scope_guard
+    return _olympiad_online_safe_template(result, client_message=client_message, context=context)
 
 
 DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
@@ -868,6 +887,16 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
         flag="admission_guarantee_safe_template_applied",
         checklist="Не гарантировать поступление: только программа и статистика.",
         extra_flags=("placeholder_in_draft",),
+    ),
+    SafeTemplateSpec(
+        name="olympiad_online",
+        priority=50,
+        produce=_produce_olympiad_online_template,
+        route_on_apply="draft_for_manager",
+        flag="olympiad_online_safe_template_applied",
+        checklist="Олимпиадный онлайн: не подтверждать класс/группу вне проверенного факта; не подменять обычный курс олимпиадным.",
+        topic_on_apply="theme:016_program",
+        topic_flag="program_topic_normalized",
     ),
 )
 
@@ -925,9 +954,17 @@ def _apply_safe_template_spec(
     flags = tuple(dict.fromkeys([*result.safety_flags, spec.flag, *spec.extra_flags]))
     if spec.name == "terminal" and not _is_terminal_direct_info_template(clean_text):
         flags = tuple(dict.fromkeys([*flags, "placeholder_in_draft"]))
+    topic_id = result.topic_id
+    if spec.topic_on_apply and topic_id != spec.topic_on_apply:
+        topic_id = spec.topic_on_apply
+        if spec.topic_flag:
+            flags = tuple(dict.fromkeys([*flags, spec.topic_flag]))
     checklist = tuple(dict.fromkeys([*result.manager_checklist, spec.checklist]))
+    if spec.topic_flag and spec.topic_flag in flags:
+        metadata[spec.topic_flag] = True
     return replace(
         result,
+        topic_id=topic_id,
         route=_safe_template_route(result, spec, clean_text),
         draft_text=clean_text,
         safety_flags=flags,
@@ -6271,7 +6308,7 @@ def _known_grade_int(context: Optional[Mapping[str, Any]], *, client_message: st
     known = known_context_fields(context)
     value = str(known.get("grade") or "").strip()
     if not value:
-        match = re.search(r"\b(?P<grade>[1-9]|10|11)\s*(?:класс|классе|кл\.?)\b", str(client_message or ""), flags=re.I)
+        match = re.search(r"\b(?P<grade>[1-9]|10|11)\s*(?:класс|класса|классе|кл\.?)\b", str(client_message or ""), flags=re.I)
         value = match.group("grade") if match else ""
     try:
         return int(value)

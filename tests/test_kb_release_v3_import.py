@@ -454,6 +454,27 @@ def test_v3_refund_post_payment_is_client_safe_but_limited(kb_v3: KbReleaseV3) -
         assert fact.get("usable_for_precise_answer") is True
 
 
+def test_v3_confirmed_manager_only_candidates_move_to_client_safe(kb_v3: KbReleaseV3) -> None:
+    allowed = list(_allowed_client_facts(kb_v3.facts))
+    by_key_brand = {
+        (str(fact.get("brand") or ""), str(fact.get("fact_key") or "")): fact
+        for fact in allowed
+    }
+
+    installment = by_key_brand[("foton", "installment.client_confirmed_terms.client_safe_text")]
+    installment_text = str(installment.get("client_safe_text") or "")
+    assert "6, 10 или 12 месяцев" in installment_text
+    assert "Долями" in installment_text
+    assert "УНПК" not in installment_text
+    assert installment.get("usable_for_precise_answer") is True
+
+    q15_handoff = by_key_brand[("unpk", "team_answers.q15.unpk_online_other_classes.manager_handoff")]
+    q15_text = str(q15_handoff.get("client_safe_text") or "")
+    assert "вне подтверждённого формата 2 раза в неделю" in q15_text
+    assert "точные условия должен проверить менеджер" in q15_text
+    assert "41 800" not in q15_text and "69 900" not in q15_text
+
+
 def test_v3_weekly_lessons_do_not_parse_academic_year_as_frequency(kb_v3: KbReleaseV3) -> None:
     allowed = list(_allowed_client_facts(kb_v3.facts))
     weekly = [

@@ -800,13 +800,13 @@ def build_manual_decision_facts(source_lookup: Mapping[str, Mapping[str, Any]]) 
         },
         {
             "fact_key": "team_answers.q15.unpk_online_other_classes.manager_handoff",
-            "fact_type": "price",
+            "fact_type": "program",
             "brand": "unpk",
             "product": "online_olympiad_phystech_9_and_11",
             "fact_text": "По онлайн-направлениям УНПК вне подтверждённого формата 2 раза в неделю для 5-11 классов точные условия должен проверить менеджер.",
             "source": changelog_source,
             "status": "verified",
-            "route_policy": "manager_handoff_only",
+            "route_policy": "bot_answer_self_for_pilot",
             "linked_open_question": "q15_closed",
             "structured_value": {"scope_exception": "other_unpk_online_classes_require_manager"},
         },
@@ -2763,6 +2763,8 @@ def infer_linked_question(value: Any, path: tuple[str, ...]) -> str:
 
 def normalize_status(value: Any) -> str:
     text = clean_text(value).casefold()
+    if text.startswith("approved_by_dmitry"):
+        return "verified"
     mapping = {
         "verified": "verified",
         "document_verified": "document_verified",

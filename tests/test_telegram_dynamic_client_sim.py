@@ -725,6 +725,18 @@ def test_judge_fact_audit_separates_wrong_scope_from_fabrication(tmp_path):
     assert schedule_audit["has_wrong_scope"] is True
     assert schedule_audit["has_unverified_claim"] is False
 
+    schedule_disclaimer_audit = sim.audit_fact_claims_for_judge(
+        "Фотон на связи Пн-Вс с 10:00 до 18:00 — это время работы контактов, а не дни занятий. "
+        "Расписание группы уточнит менеджер.",
+        client_message="По каким дням занятия?",
+        active_brand="foton",
+        retrieved_facts={"contacts.office_hours": "Фотон: контактный центр работает Пн-Вс 10:00-18:00."},
+        snapshot_path=snapshot_path,
+    )
+    disclaimer_levels = {item["claim_type"]: item["level"] for item in schedule_disclaimer_audit["items"]}
+    assert "contact_hours_as_class_schedule" not in disclaimer_levels
+    assert disclaimer_levels["office_hours"] == "retrieved_match"
+
     address_audit = sim.audit_fact_claims_for_judge(
         "Занятия проходят на Сретенке, 20.",
         client_message="Интересует 9 класс информатика очно, помесячно без банка?",

@@ -201,7 +201,7 @@ def _wrong_scope_fact_findings(
     findings: list[dict[str, Any]] = []
     bot = normalize_fact_text(text)
     client = normalize_fact_text(client_message)
-    if _asks_class_schedule_days(client) and _mentions_contact_hours(bot):
+    if _asks_class_schedule_days(client) and _mentions_contact_hours(bot) and not _separates_contact_hours_from_schedule(bot):
         findings.append(
             {
                 "claim_type": "contact_hours_as_class_schedule",
@@ -248,6 +248,18 @@ def _mentions_contact_hours(text: str) -> bool:
         re.search(
             r"(пн\s*[-–]?\s*вс|10[:\s]*00\s*[-–]?\s*18[:\s]*00|с\s*10\s*до\s*18|10\s*[-–]\s*18|"
             r"контакт|контактн\w*\s+центр|на\s+связи|ежедневно|часы\s+работы|работае[тм])",
+            text,
+            re.I,
+        )
+    )
+
+
+def _separates_contact_hours_from_schedule(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(не\s+дни\s+занят|не\s+расписан|а\s+не\s+дни|а\s+не\s+расписан|"
+            r"это\s+(?:время|часы)\s+(?:работы\s+)?(?:контакт|связи)|"
+            r"часы\s+(?:работы\s+)?(?:контакт|связи)[^.!?\n]{0,80}(?:не\s+дни|не\s+расписан))",
             text,
             re.I,
         )

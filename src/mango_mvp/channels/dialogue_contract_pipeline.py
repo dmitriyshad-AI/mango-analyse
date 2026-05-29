@@ -1192,6 +1192,22 @@ def run_pipeline(
             fallback_reason="hard_verification_failed",
         )
 
+    composition = _composition_answer(contract, retrieval, current_draft=draft)
+    if composition and composition != draft:
+        composition_facts = _facts_with_derived_answer(retrieval.facts, composition)
+        comp_findings, comp_unsupported, comp_semantic_available = _hard_check(
+            composition,
+            facts=composition_facts,
+            contract=contract,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+        )
+        if comp_semantic_available and not comp_findings and not comp_unsupported:
+            draft = composition
+            repaired = True
+
     coverage_findings = _coverage_findings(
         draft,
         contract=contract,
@@ -1247,11 +1263,12 @@ def run_pipeline(
         coverage_findings = candidate_coverage
 
     if coverage_findings:
-        cite_only = _coverage_cite_only_answer(contract, retrieval)
+        cite_only = _composition_answer(contract, retrieval, current_draft=draft) or _coverage_cite_only_answer(contract, retrieval)
         if cite_only:
+            cite_facts = _facts_with_derived_answer(retrieval.facts, cite_only)
             cite_findings, cite_unsupported, cite_semantic_available = _hard_check(
                 cite_only,
-                facts=retrieval.facts,
+                facts=cite_facts,
                 contract=contract,
                 client_words=client_words,
                 faithfulness_fn=faithfulness_fn,
@@ -1618,6 +1635,194 @@ def _coverage_cite_only_answer(contract: AnswerContract, retrieval: RetrievalRes
     if len(snippets) == 1:
         return f"По подтверждённым данным: {snippets[0]}"
     return "По подтверждённым данным: " + " ".join(snippets[:3])
+
+
+def _composition_answer(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    for builder in (
+        _compose_n_subjects_discount,
+        _compose_nearest_camp_shift,
+        _compose_price_plus_format,
+        _compose_installment_summary,
+    ):
+        answer = builder(contract, retrieval, current_draft=current_draft)
+        if answer:
+            return answer
+    return ""
+
+
+def _facts_with_derived_answer(facts: Mapping[str, str], answer: str) -> Mapping[str, str]:
+    merged = dict(facts)
+    if answer:
+        merged["__derived.phase1_composition"] = answer
+    return merged
+
+
+def _compose_n_subjects_discount(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    text = _contract_intent_text(contract)
+    subject_count = _requested_subject_count(text)
+    if subject_count < 2:
+        return ""
+    base = _price_for_composition(contract, retrieval.facts)
+    pct = _second_subject_discount_pct(contract, retrieval.facts)
+    if base is None or pct is None:
+        return ""
+    discounted = [round(base * (100 - pct) / 100) for _ in range(subject_count - 1)]
+    total = base + sum(discounted)
+    total_text = _format_rub(total)
+    if total_text in str(current_draft or ""):
+        return ""
+    parts = [f"первый предмет — {_format_rub(base)}"]
+    for index, amount in enumerate(discounted, start=2):
+        parts.append(f"{index}-й предмет со скидкой {pct}% — {_format_rub(amount)}")
+    return (
+        f"Если брать {subject_count} предмета, по подтверждённым фактам: "
+        f"{', '.join(parts)}. Итого — {total_text}. "
+        "Скидки не суммируются; менеджер подтвердит группу и оформление."
+    )
+
+
+def _compose_nearest_camp_shift(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    if not _contract_mentions_camp_or_lvsh(contract):
+        return ""
+    text = _contract_intent_text(contract)
+    if not re.search(r"ближайш|даты|когда|смен", text, re.I):
+        return ""
+    date_fact = ""
+    price_fact = ""
+    included_fact = ""
+    for key, value in retrieval.facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not _is_camp_or_lvsh_fact(key, str(value or "")):
+            continue
+        sentence = _short_fact_sentence(str(value or ""), max_chars=220)
+        if not date_fact and re.search(r"\d{1,2}\s*[–-]\s*\d{1,2}|январ|феврал|март|апрел|ма[йя]|июн|июл|август", combined, re.I):
+            date_fact = sentence
+        elif not price_fact and re.search(r"₽|руб|цен|стоим", combined, re.I):
+            price_fact = sentence
+        elif not included_fact and re.search(r"входит|включ", combined, re.I):
+            included_fact = sentence
+    if not date_fact:
+        return ""
+    parts = [date_fact]
+    if price_fact:
+        parts.append(price_fact)
+    if included_fact:
+        parts.append(included_fact)
+    return " ".join(parts) + " По наличию мест менеджер сверит актуальную группу."
+
+
+def _compose_price_plus_format(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    if not (_asks_price(contract) or _asks_training_format_choice(contract)):
+        return ""
+    price = _direct_price_answer_from_facts(contract, retrieval.facts)
+    if not price:
+        return ""
+    if _answer_cites_fact(current_draft, " ".join(retrieval.facts.values())):
+        return ""
+    format_answer = _direct_format_answer_from_facts(contract, retrieval.facts)
+    if format_answer:
+        return f"{price} {format_answer}"
+    return price
+
+
+def _compose_installment_summary(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    targets = _payment_method_target_anchors(contract)
+    text = _contract_intent_text(contract)
+    if not targets and not re.search(r"рассроч|частями|оплат", text, re.I):
+        return ""
+    if _is_existence_yes_no_contract(contract) and _answer_cites_fact(current_draft, " ".join(retrieval.facts.values())):
+        return ""
+    payment = _direct_payment_answer_from_facts(contract, retrieval.facts)
+    if payment:
+        return payment
+    installment_facts: list[str] = []
+    for key, value in retrieval.facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if re.search(r"рассроч|частями|долями|т-банк|t-банк", combined, re.I):
+            installment_facts.append(_short_fact_sentence(str(value or ""), max_chars=220))
+    if not installment_facts:
+        return ""
+    return "По подтверждённым вариантам оплаты: " + " ".join(dict.fromkeys(installment_facts[:2]))
+
+
+def _requested_subject_count(text: str) -> int:
+    low = str(text or "").casefold().replace("ё", "е")
+    if not re.search(r"предмет", low, re.I):
+        return 0
+    number_words = {"два": 2, "две": 2, "три": 3, "четыре": 4}
+    for word, value in number_words.items():
+        if re.search(rf"\b{word}\b", low, re.I):
+            return value
+    match = re.search(r"\b([2-4])\s*(?:предмет|курс)", low, re.I)
+    if match:
+        return int(match.group(1))
+    if re.search(r"втор\w+\s+предмет|2-?й\s+предмет", low, re.I):
+        return 2
+    return 0
+
+
+def _price_for_composition(contract: AnswerContract, facts: Mapping[str, str]) -> int | None:
+    preferred_period = "year" if re.search(r"\bгод\b|year", _contract_intent_text(contract), re.I) else ""
+    preferred_format = "online" if re.search(r"онлайн|online", _contract_intent_text(contract), re.I) else ""
+    if not preferred_format and re.search(r"очно|очная|очный|offline", _contract_intent_text(contract), re.I):
+        preferred_format = "offline"
+    candidates: list[tuple[int, int]] = []
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if "₽" not in combined and "руб" not in combined:
+            continue
+        if "discount" in combined or "скидк" in combined:
+            continue
+        score = 0
+        if preferred_period and (preferred_period in combined or "год" in combined):
+            score += 3
+        if preferred_format == "online" and re.search(r"онлайн|online", combined, re.I):
+            score += 2
+        if preferred_format == "offline" and re.search(r"очно|очная|очный|offline", combined, re.I):
+            score += 2
+        amount = _first_money_amount(value)
+        if amount:
+            candidates.append((score, amount))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _second_subject_discount_pct(contract: AnswerContract, facts: Mapping[str, str]) -> int | None:
+    preferred_format = "online" if re.search(r"онлайн|online", _contract_intent_text(contract), re.I) else ""
+    if not preferred_format and re.search(r"очно|очная|очный|offline", _contract_intent_text(contract), re.I):
+        preferred_format = "offline"
+    candidates: list[tuple[int, int]] = []
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not re.search(r"втор\w+\s+предмет|2-?й\s+предмет|second[_\s-]?subject", combined, re.I):
+            continue
+        match = re.search(r"\b(\d{1,2})\s*%", combined)
+        if not match:
+            continue
+        score = 0
+        if preferred_format == "online" and re.search(r"онлайн|online", combined, re.I):
+            score += 2
+        if preferred_format == "offline" and re.search(r"очно|очная|очный|offline", combined, re.I):
+            score += 2
+        candidates.append((score, int(match.group(1))))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _first_money_amount(text: str) -> int | None:
+    match = re.search(r"\d[\d\s\u00a0]{2,}\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.)", str(text or ""), re.I)
+    if not match:
+        return None
+    digits = re.sub(r"\D", "", match.group(0))
+    return int(digits) if digits else None
+
+
+def _format_rub(value: int) -> str:
+    return f"{int(value):,}".replace(",", " ") + " ₽"
 
 
 def _unsupported_claims_without_current_fact_support(

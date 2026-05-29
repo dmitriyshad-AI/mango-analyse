@@ -676,32 +676,32 @@ def test_handoff_with_supported_price_claim_passes_hard_check() -> None:
 
 def test_phase1_coverage_repairs_self_answer_that_omits_retrieved_date() -> None:
     store = FactStore(
-        catalog=("camp.shift.dates",),
-        store={"foton": {"camp.shift.dates": "Ближайшая смена лагеря Фотон — 3-14 августа."}},
+        catalog=("course.start.dates",),
+        store={"foton": {"course.start.dates": "Старт ближайшего курса Фотон — 3-14 августа."}},
     )
     repair_prompts: list[str] = []
     result = run_pipeline(
-        conversation=_conv("когда ближайшая смена лагеря?"),
+        conversation=_conv("когда стартует ближайший курс?"),
         active_brand="foton",
         fact_store=store,
         understand_fn=_understanding(
             {
-                "current_question": "даты ближайшей смены лагеря",
+                "current_question": "даты ближайшего курса",
                 "subquestions": [
-                    {"text": "даты ближайшей смены", "answerable": "self", "needed_fact_keys": ["camp.shift.dates"]}
+                    {"text": "даты ближайшего курса", "answerable": "self", "needed_fact_keys": ["course.start.dates"]}
                 ],
                 "answerability": "answer_self",
             }
         ),
-        draft_fn=lambda _prompt: "Ближайшую смену подберём под возраст ребёнка.",
-        repair_fn=lambda prompt: repair_prompts.append(prompt) or "Ближайшая смена лагеря Фотон — 3-14 августа.",
+        draft_fn=lambda _prompt: "Ближайший курс подберём под возраст ребёнка.",
+        repair_fn=lambda prompt: repair_prompts.append(prompt) or "Старт ближайшего курса Фотон — 3-14 августа.",
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
     assert result.route == "bot_answer_self"
     assert result.repaired is True
     assert "3-14 августа" in result.draft_text
-    assert repair_prompts and "camp.shift.dates" in repair_prompts[0]
+    assert repair_prompts and "course.start.dates" in repair_prompts[0]
 
 
 def test_phase1_coverage_repair_requires_price_when_draft_only_mentions_format() -> None:
@@ -833,6 +833,248 @@ def test_phase1_coverage_noop_when_retrieved_fact_is_already_cited() -> None:
     assert result.repaired is False
     assert calls == []
     assert "29 750" in result.draft_text
+
+
+def test_phase1_composition_counts_two_offline_subjects_total() -> None:
+    store = FactStore(
+        catalog=("price.offline.year", "discounts.second_subject.offline.pct", "discounts.stacking_rule"),
+        store={
+            "foton": {
+                "price.offline.year": "Фотон очно за год — 74 500 ₽.",
+                "discounts.second_subject.offline.pct": "Фотон: на второй очный предмет действует скидка 20%.",
+                "discounts.stacking_rule": "Скидки не суммируются.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("два предмета очно на год сколько выйдет?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "два предмета очно год",
+                "subquestions": [
+                    {
+                        "text": "два предмета очно год",
+                        "answerable": "self",
+                        "needed_fact_keys": [
+                            "price.offline.year",
+                            "discounts.second_subject.offline.pct",
+                            "discounts.stacking_rule",
+                        ],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Первый предмет 74 500 ₽, второй со скидкой 20%.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "134 100 ₽" in result.draft_text
+    assert "59 600 ₽" in result.draft_text
+
+
+def test_phase1_composition_counts_two_online_subjects_total() -> None:
+    store = FactStore(
+        catalog=("price.online.year", "discounts.second_subject.online.pct"),
+        store={
+            "foton": {
+                "price.online.year": "Фотон онлайн за год — 47 250 ₽.",
+                "discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("два предмета онлайн на год сколько получится?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "два предмета онлайн год",
+                "subquestions": [
+                    {
+                        "text": "два предмета онлайн год",
+                        "answerable": "self",
+                        "needed_fact_keys": ["price.online.year", "discounts.second_subject.online.pct"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "47 250 ₽ + скидка 30% на второй предмет.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "80 325 ₽" in result.draft_text
+    assert "33 075 ₽" in result.draft_text
+
+
+def test_phase1_composition_counts_three_subjects_without_stacking_discounts() -> None:
+    store = FactStore(
+        catalog=("price.offline.year", "discounts.second_subject.offline.pct", "discounts.stacking_rule"),
+        store={
+            "unpk": {
+                "price.offline.year": "УНПК очно за год — 82 000 ₽.",
+                "discounts.second_subject.offline.pct": "УНПК: на второй очный предмет действует скидка 20%.",
+                "discounts.stacking_rule": "Скидки не суммируются; применяется наибольшая.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("три предмета очно за год, какая сумма?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "три предмета очно год",
+                "subquestions": [
+                    {
+                        "text": "три предмета очно год",
+                        "answerable": "self",
+                        "needed_fact_keys": [
+                            "price.offline.year",
+                            "discounts.second_subject.offline.pct",
+                            "discounts.stacking_rule",
+                        ],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "82 000 ₽ за первый, скидка 20% на следующие.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "213 200 ₽" in result.draft_text
+    assert result.draft_text.count("65 600 ₽") == 2
+    assert "не суммируются" in result.draft_text.casefold()
+
+
+def test_phase1_composition_camp_date_price_and_included() -> None:
+    store = FactStore(
+        catalog=("camp.dates", "camp.price", "camp.included"),
+        store={
+            "foton": {
+                "camp.dates": "ЛВШ Менделеево — смена 3-14 августа.",
+                "camp.price": "ЛВШ Менделеево — цена 89 900 ₽.",
+                "camp.included": "ЛВШ Менделеево — в стоимость входит обучение и проживание.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("когда ближайшая ЛВШ и что входит?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "даты ближайшей ЛВШ и что входит",
+                "subquestions": [
+                    {
+                        "text": "даты ближайшей ЛВШ и что входит",
+                        "answerable": "self",
+                        "needed_fact_keys": ["camp.dates", "camp.price", "camp.included"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "По ЛВШ сориентирует менеджер.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "3-14 августа" in result.draft_text
+    assert "89 900 ₽" in result.draft_text
+    assert "обучение и проживание" in result.draft_text
+
+
+def test_phase1_composition_does_not_apply_subject_discount_without_subject_count() -> None:
+    store = FactStore(
+        catalog=("price.offline.year", "discounts.second_subject.offline.pct"),
+        store={
+            "foton": {
+                "price.offline.year": "Фотон очно за год — 74 500 ₽.",
+                "discounts.second_subject.offline.pct": "Фотон: на второй очный предмет действует скидка 20%.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("сколько стоит очно за год?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена очно год",
+                "subquestions": [
+                    {
+                        "text": "цена очно год",
+                        "answerable": "self",
+                        "needed_fact_keys": ["price.offline.year", "discounts.second_subject.offline.pct"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Очно за год — 74 500 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "134 100" not in result.draft_text
+    assert "74 500 ₽" in result.draft_text
+
+
+def test_phase1_composition_does_not_calculate_when_discount_fact_missing() -> None:
+    store = FactStore(
+        catalog=("price.offline.year", "discounts.second_subject.offline.pct"),
+        store={"foton": {"price.offline.year": "Фотон очно за год — 74 500 ₽."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("два предмета очно на год сколько выйдет?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "два предмета очно год",
+                "subquestions": [
+                    {
+                        "text": "два предмета очно год",
+                        "answerable": "self",
+                        "needed_fact_keys": ["price.offline.year", "discounts.second_subject.offline.pct"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Очно за год — 74 500 ₽. Скидку на второй предмет уточнит менеджер.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "134 100" not in result.draft_text
+    assert "74 500 ₽" in result.draft_text
+
+
+def test_phase1_composition_does_not_emit_monthly_orientir_before_math_tolerance() -> None:
+    store = FactStore(catalog=("price.year",), store={"unpk": {"price.year": "УНПК очно за год — 82 000 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("сколько примерно в месяц?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "примерная сумма в месяц",
+                "subquestions": [
+                    {"text": "примерная сумма в месяц", "answerable": "self", "needed_fact_keys": ["price.year"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Годовая цена — 82 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "9 100" not in result.draft_text
+    assert "82 000 ₽" in result.draft_text
 
 
 def test_narrow_discount_subquestion_ignores_unrelated_rfk_facts() -> None:

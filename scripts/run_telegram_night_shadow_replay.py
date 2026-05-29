@@ -132,6 +132,7 @@ def replay_tee_records(
             safety_flags=result.safety_flags,
             control=control,
             prior_decisions=tuple(decisions),
+            is_live_runtime=False,
         )
         channel_source = str(record.get("channel_source") or "")
         channel_brand = brand_from_channel(channel_source)

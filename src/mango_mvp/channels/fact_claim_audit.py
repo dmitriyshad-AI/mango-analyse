@@ -230,7 +230,14 @@ def _asks_class_schedule_days(text: str) -> bool:
 
 
 def _mentions_contact_hours(text: str) -> bool:
-    return bool(re.search(r"(пн\s*вс|10\s*00\s*18\s*00|10\s*18|контакт|работае[тм])", text, re.I))
+    return bool(
+        re.search(
+            r"(пн\s*[-–]?\s*вс|10[:\s]*00\s*[-–]?\s*18[:\s]*00|с\s*10\s*до\s*18|10\s*[-–]\s*18|"
+            r"контакт|контактн\w*\s+центр|на\s+связи|ежедневно|часы\s+работы|работае[тм])",
+            text,
+            re.I,
+        )
+    )
 
 
 def _mentions_address(text: str) -> bool:

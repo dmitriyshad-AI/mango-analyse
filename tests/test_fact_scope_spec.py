@@ -27,6 +27,11 @@ def test_fact_scope_detection_covers_rc2b_neighbor_classes() -> None:
     assert "class_schedule" in blocked_neighbors_for("refund_policy")
 
 
+def test_fact_scope_detection_covers_contact_hours_wording() -> None:
+    assert "office_hours" in detect_fact_scopes("Фотон на связи ежедневно с 10:00 до 18:00")
+    assert "office_hours" in detect_fact_scopes("контактный центр работает Пн–Вс")
+
+
 def test_fact_scope_detection_does_not_treat_no_lodging_as_residential_lvsh() -> None:
     city_scopes = detect_fact_scopes("очная городская школа без проживания")
     assert "city_day_camp" in city_scopes

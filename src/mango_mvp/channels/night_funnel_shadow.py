@@ -143,28 +143,30 @@ def evaluate_night_gate(
     route: str,
     active_brand: str,
     snapshot_path: Path,
-    retrieved_facts: Mapping[str, Any] | None,
+    retrieved_facts: Mapping[str, str] | None,
     safety_flags: Sequence[str] = (),
     control: NightFunnelControl | None = None,
     prior_decisions: Sequence[Mapping[str, Any]] = (),
+    is_live_runtime: bool = True,
 ) -> Mapping[str, Any]:
     control = control or NightFunnelControl()
     brand = str(active_brand or "").casefold().strip()
+    facts = _normalize_retrieved_facts(retrieved_facts)
     fact_audit = audit_fact_claims(
         draft_text,
         client_message=client_text,
         active_brand=brand,
-        retrieved_facts=retrieved_facts or {},
+        retrieved_facts=facts,
         snapshot_path=snapshot_path,
     )
     injection = detect_prompt_injection(client_text)
-    auto_tripped = should_auto_trip(prior_decisions, control=control)
+    auto_tripped = should_auto_trip(prior_decisions, control=control, is_live_runtime=is_live_runtime)
     unsafe_reasons = _unsafe_output_reasons(
         client_text=client_text,
         draft_text=draft_text,
         active_brand=brand,
         route=route,
-        retrieved_facts=retrieved_facts or {},
+        retrieved_facts=facts,
         safety_flags=safety_flags,
         fact_audit=fact_audit,
     )
@@ -192,7 +194,7 @@ def evaluate_night_gate(
         "reason": reason,
         "shadow_only": True,
         "fact_audit": fact_audit,
-        "retrieved_fact_keys": list((retrieved_facts or {}).keys())[:20],
+        "retrieved_fact_keys": list(facts.keys())[:20],
         "safety_flags": list(safety_flags),
         "anti_provocation": injection,
         "auto_tripped": auto_tripped,
@@ -468,7 +470,14 @@ def assert_live_send_allowed(control: NightFunnelControl) -> None:
         raise RuntimeError("night funnel live send blocked: live token missing or invalid")
 
 
-def should_auto_trip(decisions: Sequence[Mapping[str, Any]], *, control: NightFunnelControl) -> bool:
+def should_auto_trip(
+    decisions: Sequence[Mapping[str, Any]],
+    *,
+    control: NightFunnelControl,
+    is_live_runtime: bool = True,
+) -> bool:
+    if not is_live_runtime:
+        return False
     if control.night_limit and len(decisions) >= control.night_limit:
         return True
     if not decisions:
@@ -477,6 +486,16 @@ def should_auto_trip(decisions: Sequence[Mapping[str, Any]], *, control: NightFu
     holdish = sum(1 for item in window if str(item.get("decision") or "") in {SAFE_HOLD, MANAGER_QUEUE})
     errors = sum(1 for item in window if str(item.get("reason") or "").startswith(("brand", "unsupported", "meta", "anti_provocation")))
     return (holdish / len(window)) >= control.auto_trip_hold_rate or errors >= control.auto_trip_error_count
+
+
+def _normalize_retrieved_facts(retrieved_facts: Mapping[str, str] | None) -> dict[str, str]:
+    if not isinstance(retrieved_facts, Mapping):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in retrieved_facts.items()
+        if str(key).strip() and str(value).strip()
+    }
 
 
 def mask_pii(text: str, *, private_values: Sequence[str] = ()) -> str:

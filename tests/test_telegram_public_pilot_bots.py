@@ -479,6 +479,41 @@ def test_night_gate_blocks_p0_wrong_scope_and_no_match(tmp_path: Path) -> None:
     assert no_match_gate["decision"] == MANAGER_QUEUE
 
 
+def test_night_gate_normalizes_retrieved_fact_mapping_values(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    gate = evaluate_night_gate(
+        client_text="Сколько стоит?",
+        draft_text="Цена 50000 ₽.",
+        route="bot_answer_self_for_pilot",
+        active_brand="foton",
+        snapshot_path=snapshot,
+        retrieved_facts={"price.current": 50000},
+        safety_flags=(),
+        control=NightFunnelControl(enabled=True),
+    )
+
+    assert gate["retrieved_fact_keys"] == ["price.current"]
+    assert "unsupported_number" not in gate["unsafe_reasons"]
+
+
+def test_night_gate_flags_contact_hours_as_schedule_days_with_daily_wording(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    gate = evaluate_night_gate(
+        client_text="По каким дням проходят занятия?",
+        draft_text="Фотон на связи ежедневно с 10:00 до 18:00.",
+        route="bot_answer_self_for_pilot",
+        active_brand="foton",
+        snapshot_path=snapshot,
+        retrieved_facts={"contacts.office_hours": "Фотон на связи ежедневно с 10:00 до 18:00."},
+        safety_flags=(),
+        control=NightFunnelControl(enabled=True),
+    )
+
+    assert gate["decision"] == SAFE_HOLD
+    assert gate["fact_audit"]["items"][0]["claim_type"] == "contact_hours_as_class_schedule"
+    assert gate["fact_audit"]["items"][0]["level"] == "wrong_scope"
+
+
 def test_night_funnel_brand_from_channel_and_live_send_blocker() -> None:
     assert brand_from_channel("https://kmipt.ru/start?utm_source=direct") == "unpk"
     assert brand_from_channel("https://cdpofoton.ru/?utm_campaign=math") == "foton"
@@ -852,3 +887,52 @@ def test_shadow_replay_is_idempotent_and_tokenless(tmp_path: Path) -> None:
     assert len(shadow_rows) == 1
     assert len(lead_rows) == 1
     assert json.loads(shadow_rows[0])["decision"] == AUTO_SEND
+
+
+def test_shadow_replay_does_not_auto_trip_synthetic_batch(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    tee_path = tmp_path / "inbound_tee.jsonl"
+    cursor_path = tmp_path / "cursor.json"
+    shadow_path = tmp_path / "shadow.jsonl"
+    lead_path = tmp_path / "leads.jsonl"
+    status_path = tmp_path / "status.json"
+    for index in range(28):
+        append_inbound_tee_record(
+            tee_path,
+            build_inbound_tee_record(
+                source="synthetic_test",
+                brand="foton",
+                channel_source="cdpofoton.ru",
+                utm={"utm_source": "synthetic"},
+                chat_id=f"chat-{index}",
+                message_id=str(index),
+                message_at=datetime(2026, 5, 28, 22, index % 60, tzinfo=timezone.utc),
+                text="Можно оплатить переводом на счёт?",
+                owner_runtime={"answered_by_owner": True},
+            ),
+        )
+
+    class _NoFactProvider:
+        def build_draft(self, client_message: str, *, context):
+            assert context["night_shadow_replay_mode"]["no_telegram_token"] is True
+            return SubscriptionDraftResult(
+                route="bot_answer_self_for_pilot",
+                draft_text="Да, можно оплатить переводом на счёт.",
+                metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+            )
+
+    summary = replay_tee_records(
+        tee_path=tee_path,
+        cursor_path=cursor_path,
+        snapshot_path=snapshot,
+        shadow_log_path=shadow_path,
+        lead_store_path=lead_path,
+        status_path=status_path,
+        provider=_NoFactProvider(),
+    )
+    shadow_rows = [json.loads(line) for line in shadow_path.read_text(encoding="utf-8").splitlines()]
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+
+    assert summary["processed"] == 28
+    assert all(row["decision_reason"] != "auto_trip_or_night_limit" for row in shadow_rows)
+    assert status["auto_tripped"] is False

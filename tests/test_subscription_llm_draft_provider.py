@@ -20,6 +20,7 @@ from mango_mvp.channels.subscription_llm import (
     OFF_TOPIC_UNPK_SAFE_TEXT,
     PAYMENT_DISPUTE_SAFE_TEXT,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
+    ADMISSION_GUARANTEE_SAFE_TEXT,
     RESULT_GUARANTEE_SAFE_TEXT,
     SubscriptionDraftResult,
     UNPK_EGE_INTENSIVE_PRICE_SAFE_TEXT,
@@ -3037,6 +3038,88 @@ def test_v2_price_question_is_not_result_guarantee() -> None:
     )
 
     assert "result_guarantee_safe_template_applied" not in guarded.safety_flags
+
+
+def test_v2_admission_guarantee_uses_safe_template_with_verified_statistic() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, поступление гарантировано: 97% проходят.",
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Гарантируете поступление в МФТИ?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == ADMISSION_GUARANTEE_SAFE_TEXT
+    assert "admission_guarantee_safe_template_applied" in guarded.safety_flags
+    assert "placeholder_in_draft" in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+    assert "97%" in guarded.draft_text
+
+
+def test_v2_admission_guarantee_handles_exact_admission_wording() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Подготовка помогает выстроить траекторию.",
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Точно поступит после ваших курсов?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == ADMISSION_GUARANTEE_SAFE_TEXT
+    assert "admission_guarantee_safe_template_applied" in guarded.safety_flags
+
+
+def test_v2_admission_statistic_question_is_not_guarantee_template() -> None:
+    retrieved_facts = {"results.admission_pct": "УНПК: 97% учеников поступают в желаемые вузы."}
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По нашей статистике, 97% учеников поступают в желаемые вузы.",
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": retrieved_facts}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Какой процент поступает?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1", "autonomy_enabled": True},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == result.draft_text
+    assert "admission_guarantee_safe_template_applied" not in guarded.safety_flags
+    assert "unsupported_promise_detected" not in guarded.safety_flags
+
+
+def test_v2_enrollment_question_is_not_admission_guarantee() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Записаться можно дистанционно, менеджер подскажет следующий шаг.",
+        message_type="question",
+        topic_id="theme:020_enrollment",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Как поступить на ваш курс?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "admission_guarantee_safe_template_applied" not in guarded.safety_flags
 
 
 def test_humanity_x2_rewriter_disabled_by_default() -> None:

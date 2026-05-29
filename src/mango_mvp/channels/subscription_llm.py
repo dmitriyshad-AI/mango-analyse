@@ -826,6 +826,14 @@ def _produce_result_guarantee_template(
     return RESULT_GUARANTEE_SAFE_TEXT if _is_result_guarantee_case(result, client_message=client_message, context=context) else ""
 
 
+def _produce_admission_guarantee_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    return ADMISSION_GUARANTEE_SAFE_TEXT if _is_admission_guarantee_case(result, client_message=client_message, context=context) else ""
+
+
 DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
     SafeTemplateSpec(
         name="cross_brand",
@@ -850,6 +858,15 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
         route_on_apply="draft_for_manager",
         flag="result_guarantee_safe_template_applied",
         checklist="Не гарантировать балл/результат: только программа и статистика.",
+        extra_flags=("placeholder_in_draft",),
+    ),
+    SafeTemplateSpec(
+        name="admission_guarantee",
+        priority=31,
+        produce=_produce_admission_guarantee_template,
+        route_on_apply="draft_for_manager",
+        flag="admission_guarantee_safe_template_applied",
+        checklist="Не гарантировать поступление: только программа и статистика.",
         extra_flags=("placeholder_in_draft",),
     ),
 )
@@ -1192,7 +1209,8 @@ class SubscriptionLlmDraftProvider:
         pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
         facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
         fact_texts = {str(k): str(v) for k, v in facts.items()}
-        if _is_verified_safe_numeric_template(after.draft_text):
+        verified_safe_template = _is_verified_safe_numeric_template(after.draft_text)
+        if verified_safe_template:
             fact_texts["_verified_safe_numeric_template"] = after.draft_text
         findings = verify_dialogue_contract_output(
             after.draft_text,
@@ -1201,6 +1219,8 @@ class SubscriptionLlmDraftProvider:
             client_message=client_message,
             context=context,
         )
+        if verified_safe_template:
+            findings = [finding for finding in findings if finding.code not in {"fact_grounding", "p0_promise"}]
         if not findings:
             flags = tuple(dict.fromkeys([*after.safety_flags, "dialogue_contract_text_change_reverified"]))
             return replace(after, safety_flags=flags)

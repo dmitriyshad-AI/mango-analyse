@@ -146,6 +146,7 @@ FORBIDDEN_KEYS = {
     "forbidden_phrasings",
     "forbidden_in_this_response",
 }
+REFUND_CLIENT_SAFE_POLICY_MARKERS = ("refund_presale_policy", "refund_post_payment")
 INTERNAL_PATH_MARKERS = {
     "legal_entities",
     "legal_entities_full_map",
@@ -344,6 +345,7 @@ def build_kb_release_v3(
     facts.extend(build_manual_decision_facts(source_lookup))
     facts = attach_source_details(dedupe_facts(facts), source_lookup=source_lookup)
     facts = ensure_fact_refresh_dates(facts)
+    facts = enrich_phase2_structured_metadata(facts)
     facts = sorted(facts, key=lambda item: (str(item.get("brand")), str(item.get("product")), str(item.get("fact_key"))))
 
     approval_queue = build_approval_queue_v3(facts)
@@ -561,7 +563,7 @@ def is_internal_child(path: tuple[str, ...], key: str, item: Any, context: Mappi
         return True
     if "teacher" in normalized_path or "prepodavat" in normalized_path or "teachers" in normalized_path:
         return True
-    if "refund_presale_policy" in normalized_path:
+    if any(marker in normalized_path for marker in REFUND_CLIENT_SAFE_POLICY_MARKERS):
         return False
     if "refund" in normalized_path or "vozvrat" in normalized_path:
         return True
@@ -798,13 +800,13 @@ def build_manual_decision_facts(source_lookup: Mapping[str, Mapping[str, Any]]) 
         },
         {
             "fact_key": "team_answers.q15.unpk_online_other_classes.manager_handoff",
-            "fact_type": "price",
+            "fact_type": "program",
             "brand": "unpk",
             "product": "online_olympiad_phystech_9_and_11",
-            "fact_text": "По онлайн-направлениям УНПК вне олимпиадной подготовки Физтех для 9 и 11 классов точные условия должен проверить менеджер.",
+            "fact_text": "По онлайн-направлениям УНПК вне подтверждённого формата 2 раза в неделю для 5-11 классов точные условия должен проверить менеджер.",
             "source": changelog_source,
             "status": "verified",
-            "route_policy": "manager_handoff_only",
+            "route_policy": "bot_answer_self_for_pilot",
             "linked_open_question": "q15_closed",
             "structured_value": {"scope_exception": "other_unpk_online_classes_require_manager"},
         },
@@ -1810,6 +1812,35 @@ def ensure_fact_refresh_dates(facts: Sequence[Mapping[str, Any]]) -> list[dict[s
     return result
 
 
+def enrich_phase2_structured_metadata(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for fact in facts:
+        item = dict(fact)
+        fact_key = str(item.get("fact_key") or "")
+        brand = str(item.get("brand") or "")
+        structured = dict(item.get("structured_value") or {})
+        applies_to = dict(structured.get("applies_to") or {})
+
+        if brand == "unpk" and fact_key.startswith("prices_regular_2026_27.online_olympiad_phystech_classes."):
+            applies_to.setdefault("grades", [9, 11])
+            applies_to.setdefault("formats", ["online"])
+            applies_to.setdefault("products", ["online_olympiad_phystech"])
+            structured["is_positive_statement"] = True
+
+        if brand == "unpk" and fact_key.startswith("prices_regular_2026_27.online_5_11_class_regular."):
+            applies_to.setdefault("grades", [5, 6, 7, 8, 9, 10, 11])
+            applies_to.setdefault("formats", ["online"])
+            applies_to.setdefault("frequency", "2 раза в неделю")
+            applies_to.setdefault("lesson_minutes", 90)
+            structured["is_positive_statement"] = True
+
+        if applies_to:
+            structured["applies_to"] = applies_to
+            item["structured_value"] = structured
+        result.append(item)
+    return result
+
+
 def dedupe_facts(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str, str]] = set()
     result: list[dict[str, Any]] = []
@@ -1941,6 +1972,16 @@ def render_contextual_fact_text(
             return f"{brand_label}: при оплате за семестр действует дополнительная скидка {rendered_value}."
         if ".year." in text:
             return f"{brand_label}: при оплате за год действует дополнительная скидка {rendered_value}."
+
+    if "prices_regular_2026_27.online_5_11_class_regular" in text:
+        if text.endswith(".semester"):
+            return f"{brand_label}: онлайн-курсы для 5-11 классов, формат 2 раза в неделю по 90 минут, семестр — {rendered_value}."
+        if text.endswith(".year"):
+            return f"{brand_label}: онлайн-курсы для 5-11 классов, формат 2 раза в неделю по 90 минут, год — {rendered_value}."
+        if text.endswith(".weekly_lessons"):
+            return f"{brand_label}: онлайн-курсы для 5-11 классов проходят {clean_text(raw_value)}."
+        if text.endswith(".pair_duration_minutes"):
+            return f"{brand_label}: занятие онлайн-курса для 5-11 классов длится {rendered_value}."
 
     if "matkap.child_age.sertificate_owner_min" in text:
         return f"{brand_label}: материнский капитал можно использовать, если ребёнку, на которого оформлен сертификат, исполнилось {format_number(numeric_value(raw_value) or 3)} года."
@@ -2443,7 +2484,7 @@ def infer_fact_type(path: tuple[str, ...], value: Any) -> str:
         return "deadline"
     if "tax" in text or "deduction" in text or "вычет" in clean_text(value).casefold():
         return "tax"
-    if "refund_presale_policy" in text:
+    if any(marker in text for marker in REFUND_CLIENT_SAFE_POLICY_MARKERS):
         return "policy"
     if "refund" in text or "return" in text or "withholding" in text:
         return "refund"
@@ -2722,6 +2763,8 @@ def infer_linked_question(value: Any, path: tuple[str, ...]) -> str:
 
 def normalize_status(value: Any) -> str:
     text = clean_text(value).casefold()
+    if text.startswith("approved_by_dmitry"):
+        return "verified"
     mapping = {
         "verified": "verified",
         "document_verified": "document_verified",

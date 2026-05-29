@@ -1,0 +1,25 @@
+Commands run:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_memory.py
+Result: 22 passed in 1.80s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_answer_safety_classifier.py tests/test_dialogue_contract_pipeline.py
+Result: 109 passed in 3.03s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+Result: 227 passed in 13.77s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_memory.py tests/test_answer_safety_classifier.py tests/test_dialogue_contract_pipeline.py tests/test_subscription_llm_draft_provider.py
+Result: 358 passed in 10.70s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_semantic_roles_multiturn.py tests/test_semantic_roles_v8_anomaly.py
+Result: 10 passed in 2.70s
+
+git diff --check
+Result: passed
+
+Not run:
+- 212-dialog full eval.
+- KB rebuild.
+- Shadow/synthetic replay with real model.
+- Wave 1a.

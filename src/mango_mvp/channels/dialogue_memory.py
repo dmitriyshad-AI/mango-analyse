@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
@@ -84,6 +84,9 @@ CURRENT_TERMS_FORBIDDEN_PROMISES_RU = (
     "скидка",
     "запись без проверки",
 )
+AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS = 5
+AUTONOMOUS_P0_LATCH_RELEASE_EVENT = "autonomous_neutral_p0_latch_release_5_turns"
+HARD_P0_LATCH_CODES = {"legal", "legal_threat", "payment_dispute"}
 
 
 @dataclass(frozen=True)
@@ -264,14 +267,18 @@ def build_dialogue_memory(
     current_risk_flags = _detect_risk_flags(current_text)
     held_p0_required = bool(previous_held.p0_latched or current_risk_flags or current_roles.refund_frame == "dispute")
     held_state = update_held(previous_held, current_text, current_roles, p0_required=held_p0_required)
-    risks = _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
     p0_latch = _next_p0_latch(
         previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(),
         current_message=current_text,
         current_risk_flags=current_risk_flags,
         context=context,
         session_id=session_id,
+        turns=turns,
     )
+    latch_released = _p0_latch_released(previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(), p0_latch)
+    if latch_released:
+        held_state = replace(held_state, p0_latched=False, p0_codes=())
+    risks = current_risk_flags if latch_released else _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = _detect_commitments(turns)
@@ -334,6 +341,7 @@ def update_dialogue_memory_after_answer(
         current_risk_flags=safety_risks,
         context={"route": route, "safety_flags": list(safety_flags)},
         session_id=current.session_id,
+        turns=turns,
     )
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
@@ -726,11 +734,19 @@ def _next_p0_latch(
     current_risk_flags: Sequence[str],
     context: Mapping[str, Any] | None,
     session_id: str,
+    turns: Sequence[DialogueTurn] = (),
 ) -> DialogueP0Latch:
     release_event = _p0_latch_release_event(context)
     if release_event:
         return DialogueP0Latch(release_event_id=release_event)
     if previous.active:
+        autonomous_release = _autonomous_p0_latch_release_event(
+            previous,
+            turns=turns,
+            current_risk_flags=current_risk_flags,
+        )
+        if autonomous_release:
+            return DialogueP0Latch(release_event_id=autonomous_release)
         return previous
     codes = tuple(dict.fromkeys(_latchable_p0_codes(current_risk_flags)))
     if not codes:
@@ -774,6 +790,33 @@ def _p0_latch_release_event(context: Mapping[str, Any] | None) -> str:
         if value:
             return str(value if not isinstance(value, bool) else key)[:120]
     return ""
+
+
+def _autonomous_p0_latch_release_event(
+    previous: DialogueP0Latch,
+    *,
+    turns: Sequence[DialogueTurn],
+    current_risk_flags: Sequence[str],
+) -> str:
+    if not previous.active or _has_hard_p0_latch_code(previous.codes):
+        return ""
+    if _latchable_p0_codes(current_risk_flags):
+        return ""
+    client_texts = [turn.text for turn in turns if turn.role == "client"]
+    recent_client_texts = client_texts[-AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS:]
+    if len(recent_client_texts) < AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS:
+        return ""
+    if any(_latchable_p0_codes(_detect_risk_flags(text)) for text in recent_client_texts):
+        return ""
+    return AUTONOMOUS_P0_LATCH_RELEASE_EVENT
+
+
+def _has_hard_p0_latch_code(codes: Sequence[str]) -> bool:
+    return any(str(code or "").strip() in HARD_P0_LATCH_CODES for code in codes)
+
+
+def _p0_latch_released(previous: DialogueP0Latch, current: DialogueP0Latch) -> bool:
+    return bool(previous.active and not current.active and current.release_event_id)
 
 
 def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) -> Mapping[str, str]:

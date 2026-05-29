@@ -308,6 +308,8 @@ def test_dialogue_memory_latches_payment_dispute_until_manager_event() -> None:
 
     assert cleared.p0_latch.active is False
     assert cleared.p0_latch.release_event_id == "manager_took_over_case"
+    assert "p0" not in cleared.risk_flags
+    assert "payment_dispute" not in cleared.risk_flags
 
 
 def test_dialogue_memory_does_not_latch_benign_hypothetical_refund() -> None:
@@ -319,4 +321,111 @@ def test_dialogue_memory_does_not_latch_benign_hypothetical_refund() -> None:
 
     assert memory.p0_latch.active is False
     assert "refund" not in memory.risk_flags
+    assert memory.handoff_state != "required"
+
+
+def _build_memory_sequence(messages: list[str], *, session_id: str = "s-p0-auto-release"):
+    memory = None
+    for message in messages:
+        memory = build_dialogue_memory(
+            current_message=message,
+            active_brand="foton",
+            previous_memory=memory,
+            session_id=session_id,
+        )
+    assert memory is not None
+    return memory
+
+
+def test_dialogue_memory_autonomously_releases_refund_latch_after_five_neutral_turns() -> None:
+    memory = _build_memory_sequence(
+        [
+            "Верните деньги за курс.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+            "Какой адрес очной площадки?",
+        ]
+    )
+
+    assert memory.p0_latch.active is False
+    assert memory.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
+    assert "p0" not in memory.risk_flags
+    assert "refund" not in memory.risk_flags
+    assert memory.handoff_state != "required"
+    assert memory.held_state.p0_latched is False
+
+
+def test_dialogue_memory_soft_negative_does_not_start_p0_latch() -> None:
+    memory = _build_memory_sequence(
+        [
+            "Вы не отвечаете нормально, но вопрос по расписанию.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+        ],
+        session_id="s-soft-negative",
+    )
+
+    assert memory.p0_latch.active is False
+    assert "p0" not in memory.risk_flags
+    assert memory.handoff_state != "required"
+
+
+def test_dialogue_memory_does_not_autonomously_release_legal_latch() -> None:
+    memory = _build_memory_sequence(
+        [
+            "Пойду в суд, если вопрос не решите.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+            "Какой адрес очной площадки?",
+            "А цена какая?",
+        ],
+        session_id="s-legal-latch",
+    )
+
+    assert memory.p0_latch.active is True
+    assert "legal_threat" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
+
+
+def test_dialogue_memory_does_not_autonomously_release_payment_dispute_latch() -> None:
+    memory = _build_memory_sequence(
+        [
+            "С меня двойное списание за оплату.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+            "Какой адрес очной площадки?",
+            "А цена какая?",
+        ],
+        session_id="s-payment-latch",
+    )
+
+    assert memory.p0_latch.active is True
+    assert "payment_dispute" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
+
+
+def test_dialogue_memory_autonomous_release_treats_bot_frustration_as_neutral() -> None:
+    memory = _build_memory_sequence(
+        [
+            "Верните деньги за курс.",
+            "Вы не отвечаете нормально.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+        ],
+        session_id="s-refund-plus-frustration",
+    )
+
+    assert memory.p0_latch.active is False
+    assert memory.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
+    assert "p0" not in memory.risk_flags
     assert memory.handoff_state != "required"

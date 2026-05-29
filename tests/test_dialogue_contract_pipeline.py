@@ -1077,6 +1077,150 @@ def test_phase1_composition_does_not_emit_monthly_orientir_before_math_tolerance
     assert "82 000 ₽" in result.draft_text
 
 
+def test_phase1_empty_handoff_replaced_when_answer_self_has_rfk() -> None:
+    store = FactStore(catalog=("price.online",), store={"unpk": {"price.online": "УНПК онлайн: семестр — 69 900 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно это.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.repaired is True
+    assert "69 900 ₽" in result.draft_text
+    assert "Передам менеджеру уточнить именно это" not in result.draft_text
+
+
+def test_phase1_empty_handoff_replaced_after_no_draft_fn() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "fact_composer_after_no_draft_fn"
+    assert "29 750 ₽" in result.draft_text
+
+
+def test_phase1_empty_handoff_replaced_after_draft_error() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "fact_composer_after_draft_error"
+    assert "29 750 ₽" in result.draft_text
+
+
+def test_phase1_empty_handoff_does_not_override_manager_no_fact() -> None:
+    store = FactStore(catalog=("schedule.exact_day",), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=_conv("в какой день группа?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "точный день группы",
+                "subquestions": [
+                    {"text": "точный день группы", "answerable": "manager", "needed_fact_keys": ["schedule.exact_day"]}
+                ],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно это.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "contract_manager_only"
+    assert "менеджер" in result.draft_text.casefold()
+
+
+def test_phase1_empty_handoff_does_not_override_p0() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн стоит 29 750 ₽.",
+    )
+
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert "29 750" not in result.draft_text
+
+
+def test_phase1_empty_handoff_keeps_handoff_when_answer_self_has_no_rfk() -> None:
+    store = FactStore(catalog=("schedule.exact_day",), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=_conv("в какой день группа?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "точный день группы",
+                "subquestions": [
+                    {"text": "точный день группы", "answerable": "self", "needed_fact_keys": ["schedule.exact_day"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно этот вопрос.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "менеджер" in result.draft_text.casefold()
+    assert result.missing == ("schedule.exact_day",)
+
+
 def test_narrow_discount_subquestion_ignores_unrelated_rfk_facts() -> None:
     store = FactStore(
         catalog=(

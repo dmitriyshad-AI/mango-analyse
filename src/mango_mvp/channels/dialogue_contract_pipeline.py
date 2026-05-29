@@ -1047,6 +1047,26 @@ def run_pipeline(
         )
     if draft_fn is None:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        replacement = _verified_empty_handoff_replacement(
+            fallback,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+        )
+        if replacement:
+            return DialogueContractPipelineResult(
+                draft_text=_avoid_repeating_text(replacement, conversation=conversation, contract=contract, facts=retrieval.facts),
+                route="bot_answer_self",
+                manager_only=False,
+                contract=contract,
+                facts=retrieval.facts,
+                missing=retrieval.missing,
+                repaired=True,
+                fallback_reason="fact_composer_after_no_draft_fn",
+            )
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1078,6 +1098,26 @@ def run_pipeline(
         trace["draft"] = draft
     if not draft:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        replacement = _verified_empty_handoff_replacement(
+            fallback,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+        )
+        if replacement:
+            return DialogueContractPipelineResult(
+                draft_text=_avoid_repeating_text(replacement, conversation=conversation, contract=contract, facts=retrieval.facts),
+                route="bot_answer_self",
+                manager_only=False,
+                contract=contract,
+                facts=retrieval.facts,
+                missing=retrieval.missing,
+                repaired=True,
+                fallback_reason="fact_composer_after_draft_error",
+            )
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1285,6 +1325,19 @@ def run_pipeline(
             if cite_semantic_available and not cite_findings and not cite_unsupported and not cite_coverage:
                 draft = cite_only
                 repaired = True
+
+    replacement = _verified_empty_handoff_replacement(
+        draft,
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+    )
+    if replacement:
+        draft = replacement
+        repaired = True
 
     form_findings: tuple[FormFinding, ...] = ()
     warmed = False
@@ -1648,6 +1701,83 @@ def _composition_answer(contract: AnswerContract, retrieval: RetrievalResult, *,
         if answer:
             return answer
     return ""
+
+
+def _verified_empty_handoff_replacement(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+) -> str:
+    if not _should_replace_empty_handoff(draft, contract=contract, retrieval=retrieval):
+        return ""
+    replacement = (
+        _composition_answer(contract, retrieval, current_draft=draft)
+        or _hard_failure_exact_fact_fallback(contract, retrieval)
+        or _coverage_cite_only_answer(contract, retrieval)
+    )
+    if not replacement:
+        return ""
+    replacement_facts = _facts_with_derived_answer(retrieval.facts, replacement)
+    findings, unsupported, semantic_available = _hard_check(
+        replacement,
+        facts=replacement_facts,
+        contract=contract,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+    )
+    if semantic_available and not findings and not unsupported:
+        return replacement
+    return ""
+
+
+def _should_replace_empty_handoff(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+) -> bool:
+    if contract.is_p0 or contract.answerability != "answer_self":
+        return False
+    if not _has_exact_retrieved_answer_part(contract, retrieval):
+        return False
+    if _draft_cites_any_retrieved_self_fact(draft, contract=contract, retrieval=retrieval):
+        return False
+    return _is_handoff_text(draft) and _handoff_factual_claim_text(draft) is None
+
+
+def _draft_cites_any_retrieved_self_fact(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+) -> bool:
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        if subquestion.answerable != "self":
+            continue
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys or not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            continue
+        for required_key in keys:
+            for fact_key in retrieval.matched_keys.get(required_key, ()):
+                if fact_key in retrieval.facts and _answer_cites_fact(draft, retrieval.facts[fact_key]):
+                    return True
+    return False
 
 
 def _facts_with_derived_answer(facts: Mapping[str, str], answer: str) -> Mapping[str, str]:

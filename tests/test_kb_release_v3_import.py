@@ -66,8 +66,8 @@ EXPECTED_NUMERIC_FACTS: tuple[dict[str, Any], ...] = (
     {"amount": 23000, "brand": "foton", "tokens": ("individual", "lesson")},
     {"amount": 49000, "brand": "unpk", "tokens": ("offline", "5", "11")},
     {"amount": 82000, "brand": "unpk", "tokens": ("offline", "5", "11")},
-    {"amount": 41800, "brand": "unpk", "tokens": ("online", "olympiad", "phystech")},
-    {"amount": 69900, "brand": "unpk", "tokens": ("online", "olympiad", "phystech")},
+    {"amount": 41800, "brand": "unpk", "tokens": ("online", "5", "11")},
+    {"amount": 69900, "brand": "unpk", "tokens": ("online", "5", "11")},
     {"amount": 114000, "brand": "unpk", "tokens": ("lvsh", "mendeleevo")},
     {"amount": 33000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
     {"amount": 50000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
@@ -291,11 +291,23 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
         assert not _is_true(fact.get("usable_for_precise_answer")), fact
         assert _is_true(fact.get("internal_only")) or "stale_previous_year_not_current" in _fact_blob(fact), fact
         q15_scope = _fact_scope_blob(fact)
-        assert _has_any(q15_scope, ("прошлого учебного года", "previous_year", "stale_previous_year")), fact
+        assert _has_any(q15_scope, ("старая ветка", "previous_year", "stale_previous_year")), fact
         assert _has_class_scope(q15_scope, first="9", last="11"), fact
         assert not _has_any(q15_scope, ("5-11", "5_11", "1-4", "1_4")), fact
 
-    other_unpk_online_precise_prices = [
+    by_key = {str(fact.get("fact_key") or ""): fact for fact in kb_v3.facts if fact.get("brand") == "unpk"}
+    online_regular_semester = by_key["prices_regular_2026_27.online_5_11_class_regular.semester"]
+    online_regular_year = by_key["prices_regular_2026_27.online_5_11_class_regular.year"]
+    for fact in (online_regular_semester, online_regular_year):
+        assert _is_true(fact.get("allowed_for_client_answer")), fact
+        assert _is_true(fact.get("usable_for_precise_answer")), fact
+        blob = _fact_scope_blob(fact)
+        assert _has_class_scope(blob, first="5", last="11"), fact
+        assert "2 раза" in blob, fact
+        structured = _jsonish(fact.get("structured_value"))
+        assert (structured.get("applies_to") or {}).get("frequency") == "2 раза в неделю"
+
+    unexpected_unpk_online_precise_prices = [
         fact
         for fact in kb_v3.facts
         if fact.get("brand") == "unpk"
@@ -304,10 +316,11 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
         and _has_money_amount(fact)
         and _is_true(fact.get("allowed_for_client_answer"))
         and _is_true(fact.get("usable_for_precise_answer"))
+        and not str(fact.get("fact_key") or "").startswith("prices_regular_2026_27.online_5_11_class_regular.")
     ]
-    assert not other_unpk_online_precise_prices, (
-        "UNPK online precise prices outside q15 must stay manager-handoff only: "
-        f"{_fact_ids(other_unpk_online_precise_prices[:20])}"
+    assert not unexpected_unpk_online_precise_prices, (
+        "UNPK online precise prices outside confirmed 2x/week regular online scope must stay manager-handoff only: "
+        f"{_fact_ids(unexpected_unpk_online_precise_prices[:20])}"
     )
 
 
@@ -411,6 +424,9 @@ def test_v3_rc2a_client_safe_discount_and_olympiad_facts(kb_v3: KbReleaseV3) -> 
     assert "Олимпиадная подготовка Физтех онлайн" in olymp_text
     assert "9 и 11 классов" in olymp_text
     assert olymp.get("usable_for_precise_answer") is True
+    applies_to = (_jsonish(olymp.get("structured_value")).get("applies_to") or {})
+    assert applies_to.get("grades") == [9, 11]
+    assert applies_to.get("formats") == ["online"]
 
 
 def test_v3_refund_post_payment_is_client_safe_but_limited(kb_v3: KbReleaseV3) -> None:

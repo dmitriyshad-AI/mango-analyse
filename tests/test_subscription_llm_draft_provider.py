@@ -33,6 +33,7 @@ from mango_mvp.channels.subscription_llm import (
     contains_bot_identity_disclosure,
     draft_has_internal_service_markers,
     detect_high_risk_input_markers,
+    find_unsupported_numeric_promises,
     find_unsupported_followup_deadline_claims,
     find_redundant_questions_for_known_context,
     parse_llm_json,
@@ -2997,6 +2998,63 @@ def test_v2_unsupported_promise_guard_blocks_100_points_without_retrieved_fact()
     assert guarded.route == "manager_only"
     assert "unsupported_promise_detected" in guarded.safety_flags
     assert guarded.metadata["unsupported_promises"] == ["100 баллов"]
+
+
+def test_v2_unsupported_promise_guard_allows_result_statistics_points() -> None:
+    cases = (
+        (
+            "Средний результат ЕГЭ выше среднего по стране на 25 баллов.",
+            {"results_social_proof.ege_avg_above_country_pts": "УНПК: средний результат ЕГЭ у учеников выше среднего по стране на 25 баллов."},
+        ),
+        (
+            "В среднем наши выпускники получают 85 баллов на ЕГЭ.",
+            {"results.average_ege_score": "УНПК: в среднем выпускники получают 85 баллов на ЕГЭ."},
+        ),
+        (
+            "Прошлый поток показал 90+ баллов на ЕГЭ по информатике.",
+            {"results.previous_cohort_informatics": "УНПК: прошлый поток показал 90+ баллов на ЕГЭ по информатике."},
+        ),
+    )
+
+    for draft_text, retrieved_facts in cases:
+        result = SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=draft_text,
+            message_type="question",
+            topic_id="theme:016_program",
+            topic_confidence=0.91,
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": retrieved_facts}},
+        )
+
+        guarded = apply_unsupported_promise_guard(result, context={"active_brand": "unpk"})
+
+        assert guarded.route == "bot_answer_self_for_pilot", draft_text
+        assert "unsupported_promise_detected" not in guarded.safety_flags, draft_text
+        assert not find_unsupported_numeric_promises(draft_text, context={}), draft_text
+
+
+def test_v2_unsupported_promise_guard_blocks_points_promise_context_without_fact() -> None:
+    cases = (
+        ("Гарантируем 100 баллов на ЕГЭ.", "100 баллов"),
+        ("Ваш ребёнок наберёт 90+ баллов.", "90+ баллов"),
+        ("Обещаем 80 баллов минимум.", "80 баллов"),
+    )
+
+    for draft_text, expected_claim in cases:
+        result = SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=draft_text,
+            message_type="question",
+            topic_id="theme:016_program",
+            topic_confidence=0.91,
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        )
+
+        guarded = apply_unsupported_promise_guard(result, context={"active_brand": "unpk"})
+
+        assert guarded.route == "manager_only", draft_text
+        assert "unsupported_promise_detected" in guarded.safety_flags, draft_text
+        assert guarded.metadata["unsupported_promises"] == [expected_claim]
 
 
 def test_v2_unsupported_promise_guard_numeric_siblings_from_rfk() -> None:

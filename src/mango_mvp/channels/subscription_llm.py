@@ -616,10 +616,19 @@ BRAND_FORBIDDEN_TERMS = {
     "foton": ("унпк", "унпк мфти", "ано дпо", "ноу унпк", "kmipt.ru"),
     "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "т-банк", "долями", "рассрочка через банк", "через банк"),
 }
+_BARE_N_POINTS_RE = re.compile(r"\b\d{1,3}\+?\s*балл\w*", re.I)
+_N_POINTS_PROMISE_CONTEXT_RE = re.compile(
+    r"(?:гарантир\w*|обеща\w*|получит\w*|получите|набрать|набер[её]т\w*|набер[её]те|сдаст\w*|"
+    r"сдадите|поступит\w*|ваш\w*\s+реб[её]н\w*|ученик\w*)"
+    r"[^.!?\n]{0,80}\b\d{1,3}\+?\s*балл\w*"
+    r"|\b\d{1,3}\+?\s*балл\w*[^.!?\n]{0,80}"
+    r"(?:гарантир\w*|обеща\w*|получит\w*|набрать|набер[её]т\w*|набер[её]те|сдаст\w*|сдадите|поступит\w*)",
+    re.I,
+)
 UNSUPPORTED_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{1,3}(?:[,.]\d{1,2})?\s*(?:%|процент\w*)", re.I),
     re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:руб(?:\.|лей|ля|ль)?|₽|р\.)", re.I),
-    re.compile(r"\b\d{1,3}\s*балл\w*", re.I),
+    _N_POINTS_PROMISE_CONTEXT_RE,
     re.compile(r"\b\d+\s*(?:к|тыс\.?|тысяч)\b", re.I),
     re.compile(
         r"\b(?:до|по)\s+\d{1,2}(?:[./-]\d{1,2}(?:[./-]\d{2,4})?|\s+"
@@ -7278,6 +7287,12 @@ def _extract_numeric_promise_claims(text: str) -> tuple[str, ...]:
     claims: list[str] = []
     for pattern in UNSUPPORTED_PROMISE_PATTERNS:
         for match in pattern.finditer(source):
+            if pattern is _N_POINTS_PROMISE_CONTEXT_RE:
+                for points_match in _BARE_N_POINTS_RE.finditer(match.group(0)):
+                    claim = " ".join(points_match.group(0).split())
+                    if claim:
+                        claims.append(claim)
+                continue
             claim = " ".join(match.group(0).split())
             if claim:
                 claims.append(claim)

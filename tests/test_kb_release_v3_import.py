@@ -413,6 +413,31 @@ def test_v3_rc2a_client_safe_discount_and_olympiad_facts(kb_v3: KbReleaseV3) -> 
     assert olymp.get("usable_for_precise_answer") is True
 
 
+def test_v3_refund_post_payment_is_client_safe_but_limited(kb_v3: KbReleaseV3) -> None:
+    allowed = list(_allowed_client_facts(kb_v3.facts))
+    by_key_brand = {
+        (str(fact.get("brand") or ""), str(fact.get("fact_key") or "")): fact
+        for fact in allowed
+    }
+
+    expected_text = (
+        "По возврату средств после оплаты — здесь нужен расчёт от менеджера: он посмотрит, "
+        "какая часть курса уже пройдена, и пришлёт точную сумму к возврату. Я уже передал "
+        "ему ваш запрос — он свяжется с вами в рабочее время."
+    )
+    for brand in ("foton", "unpk"):
+        fact = by_key_brand[
+            (brand, "presentation_format_facts_2026_05_21.client_safe_facts.refund_post_payment.client_safe_text")
+            if brand == "foton"
+            else (brand, "tg_unpk_verified_2026_05_21.client_safe_facts.refund_post_payment.client_safe_text")
+        ]
+        text = str(fact.get("client_safe_text") or "")
+        assert text == expected_text
+        assert "все деньги" not in text.casefold()
+        assert "полный возврат" not in text.casefold()
+        assert fact.get("usable_for_precise_answer") is True
+
+
 def test_v3_weekly_lessons_do_not_parse_academic_year_as_frequency(kb_v3: KbReleaseV3) -> None:
     allowed = list(_allowed_client_facts(kb_v3.facts))
     weekly = [

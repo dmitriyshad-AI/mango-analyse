@@ -146,6 +146,7 @@ FORBIDDEN_KEYS = {
     "forbidden_phrasings",
     "forbidden_in_this_response",
 }
+REFUND_CLIENT_SAFE_POLICY_MARKERS = ("refund_presale_policy", "refund_post_payment")
 INTERNAL_PATH_MARKERS = {
     "legal_entities",
     "legal_entities_full_map",
@@ -561,7 +562,7 @@ def is_internal_child(path: tuple[str, ...], key: str, item: Any, context: Mappi
         return True
     if "teacher" in normalized_path or "prepodavat" in normalized_path or "teachers" in normalized_path:
         return True
-    if "refund_presale_policy" in normalized_path:
+    if any(marker in normalized_path for marker in REFUND_CLIENT_SAFE_POLICY_MARKERS):
         return False
     if "refund" in normalized_path or "vozvrat" in normalized_path:
         return True
@@ -2443,7 +2444,7 @@ def infer_fact_type(path: tuple[str, ...], value: Any) -> str:
         return "deadline"
     if "tax" in text or "deduction" in text or "вычет" in clean_text(value).casefold():
         return "tax"
-    if "refund_presale_policy" in text:
+    if any(marker in text for marker in REFUND_CLIENT_SAFE_POLICY_MARKERS):
         return "policy"
     if "refund" in text or "return" in text or "withholding" in text:
         return "refund"

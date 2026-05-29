@@ -1192,6 +1192,83 @@ def run_pipeline(
             fallback_reason="hard_verification_failed",
         )
 
+    coverage_findings = _coverage_findings(
+        draft,
+        contract=contract,
+        retrieval=retrieval,
+        force_draft_for_manager=force_draft_for_manager,
+        context=context,
+    )
+    coverage_attempts = 0
+    while coverage_findings and repair_fn is not None and coverage_attempts < MAX_REPAIR_ATTEMPTS:
+        coverage_attempts += 1
+        try:
+            candidate = str(
+                repair_fn(_coverage_repair_prompt(draft, coverage_findings, retrieval.facts))
+                or ""
+            ).strip()
+        except Exception:
+            break
+        if not candidate:
+            break
+        candidate = _specialize_grade_range_answer(candidate, contract=contract, facts=retrieval.facts)
+        candidate_findings, candidate_unsupported, candidate_semantic_available = _hard_check(
+            candidate,
+            facts=retrieval.facts,
+            contract=contract,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+        )
+        if not candidate_semantic_available:
+            fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+            return DialogueContractPipelineResult(
+                draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
+                route="draft_for_manager",
+                manager_only=False,
+                contract=contract,
+                facts=retrieval.facts,
+                missing=retrieval.missing,
+                repaired=repaired,
+                fallback_reason="semantic_check_unavailable",
+            )
+        if candidate_findings or candidate_unsupported:
+            break
+        candidate_coverage = _coverage_findings(
+            candidate,
+            contract=contract,
+            retrieval=retrieval,
+            force_draft_for_manager=force_draft_for_manager,
+            context=context,
+        )
+        draft = candidate
+        repaired = True
+        coverage_findings = candidate_coverage
+
+    if coverage_findings:
+        cite_only = _coverage_cite_only_answer(contract, retrieval)
+        if cite_only:
+            cite_findings, cite_unsupported, cite_semantic_available = _hard_check(
+                cite_only,
+                facts=retrieval.facts,
+                contract=contract,
+                client_words=client_words,
+                faithfulness_fn=faithfulness_fn,
+                toggles=toggles,
+                context=context,
+            )
+            cite_coverage = _coverage_findings(
+                cite_only,
+                contract=contract,
+                retrieval=retrieval,
+                force_draft_for_manager=force_draft_for_manager,
+                context=context,
+            )
+            if cite_semantic_available and not cite_findings and not cite_unsupported and not cite_coverage:
+                draft = cite_only
+                repaired = True
+
     form_findings: tuple[FormFinding, ...] = ()
     warmed = False
     warmth_attempted = False
@@ -1373,6 +1450,174 @@ def _hard_check(
         },
     )
     return tuple(findings), unsupported, semantic_available
+
+
+@dataclass(frozen=True)
+class _CoverageFinding:
+    subquestion: str
+    required_key: str
+    fact_key: str
+    fact_text: str
+
+
+def _coverage_findings(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    force_draft_for_manager: bool,
+    context: Mapping[str, Any] | None = None,
+) -> tuple[_CoverageFinding, ...]:
+    if force_draft_for_manager or contract.is_p0 or contract.answerability != "answer_self":
+        return ()
+    if _is_handoff_text(draft) and not _handoff_factual_claim_text(draft):
+        return ()
+    findings: list[_CoverageFinding] = []
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        if subquestion.answerable != "self":
+            continue
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys:
+            continue
+        if not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            continue
+        for required_key in keys:
+            matched = [key for key in retrieval.matched_keys.get(required_key, ()) if key in retrieval.facts]
+            if not matched:
+                continue
+            if any(_answer_cites_fact(draft, retrieval.facts[key]) for key in matched):
+                continue
+            first_key = matched[0]
+            findings.append(
+                _CoverageFinding(
+                    subquestion=subquestion.text or contract.current_question,
+                    required_key=required_key,
+                    fact_key=first_key,
+                    fact_text=str(retrieval.facts[first_key]),
+                )
+            )
+    trace_event(
+        context,
+        "coverage_check",
+        {
+            "findings": [
+                {"required_key": item.required_key, "fact_key": item.fact_key}
+                for item in findings
+            ]
+        },
+    )
+    return tuple(findings)
+
+
+def _answer_cites_fact(answer: str, fact_text: str) -> bool:
+    answer_text = str(answer or "")
+    fact = str(fact_text or "")
+    if not answer_text.strip() or not fact.strip():
+        return False
+    fact_value_anchors = _coverage_value_anchors(fact)
+    if fact_value_anchors:
+        return bool(fact_value_anchors & _coverage_value_anchors(answer_text))
+    answer_anchors = concrete_anchors(answer_text)
+    fact_anchors = concrete_anchors(fact)
+    if fact_anchors:
+        return bool(answer_anchors & fact_anchors)
+    if _semantic_topic_anchors(answer_text) & _semantic_topic_anchors(fact):
+        return True
+    answer_low = answer_text.casefold().replace("ё", "е")
+    return any(token in answer_low for token in _coverage_terms(fact))
+
+
+def _coverage_value_anchors(text: str) -> set[str]:
+    source = str(text or "")
+    low = source.casefold().replace("ё", "е")
+    anchors: set[str] = set()
+    for match in re.finditer(r"\d[\d\s\u00a0]{2,}\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.)", source, re.I):
+        digits = re.sub(r"\D", "", match.group(0))
+        if digits:
+            anchors.add(f"money:{digits}")
+    for match in re.finditer(r"\b(\d{1,3})\s*%", source, re.I):
+        anchors.add(f"percent:{match.group(1)}")
+    for match in _DATE_ANCHOR_RE.finditer(source):
+        normalized = _normalize_date_anchor(match)
+        if normalized:
+            anchors.add(f"date:{normalized}")
+    if re.search(r"январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр", low, re.I):
+        for number in _numbers(source):
+            anchors.add(f"date_number:{number}")
+    return anchors
+
+
+def _coverage_terms(text: str) -> tuple[str, ...]:
+    low = str(text or "").casefold().replace("ё", "е")
+    tokens = re.findall(r"[а-яa-z][а-яa-z0-9-]{4,}", low, re.I)
+    stop = {
+        "фотон",
+        "унпк",
+        "клиент",
+        "клиента",
+        "можно",
+        "действует",
+        "подтвердит",
+        "менеджер",
+        "учебный",
+        "учебного",
+        "курса",
+        "курсы",
+    }
+    return tuple(dict.fromkeys(token for token in tokens if token not in stop))[:8]
+
+
+def _coverage_repair_prompt(
+    draft: str,
+    findings: Sequence[_CoverageFinding],
+    facts: Mapping[str, str],
+) -> str:
+    required = "\n".join(
+        f"- {item.fact_key}: {_short_fact_sentence(item.fact_text, max_chars=220)}"
+        for item in findings
+    )
+    facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(нет фактов)"
+    return (
+        "Исправь ответ: он обязан прямо использовать подтверждённые факты ниже. "
+        "Не добавляй новых чисел, дат, адресов или условий.\n"
+        f"Факты, которые обязательно надо назвать:\n{required}\n"
+        f"Все факты хода:\n{facts_block}\n"
+        f"Черновик:\n{draft}\n"
+        "Верни только клиентский ответ."
+    )
+
+
+def _coverage_cite_only_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    findings = _coverage_findings(
+        "",
+        contract=contract,
+        retrieval=retrieval,
+        force_draft_for_manager=False,
+    )
+    if not findings:
+        return ""
+    snippets: list[str] = []
+    seen: set[str] = set()
+    for item in findings:
+        snippet = _short_fact_sentence(item.fact_text, max_chars=220)
+        if not snippet or snippet in seen:
+            continue
+        seen.add(snippet)
+        snippets.append(snippet)
+    if not snippets:
+        return ""
+    if len(snippets) == 1:
+        return f"По подтверждённым данным: {snippets[0]}"
+    return "По подтверждённым данным: " + " ".join(snippets[:3])
 
 
 def _unsupported_claims_without_current_fact_support(

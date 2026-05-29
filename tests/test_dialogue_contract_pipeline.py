@@ -674,6 +674,167 @@ def test_handoff_with_supported_price_claim_passes_hard_check() -> None:
     assert "69 900" in result.draft_text
 
 
+def test_phase1_coverage_repairs_self_answer_that_omits_retrieved_date() -> None:
+    store = FactStore(
+        catalog=("camp.shift.dates",),
+        store={"foton": {"camp.shift.dates": "Ближайшая смена лагеря Фотон — 3-14 августа."}},
+    )
+    repair_prompts: list[str] = []
+    result = run_pipeline(
+        conversation=_conv("когда ближайшая смена лагеря?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "даты ближайшей смены лагеря",
+                "subquestions": [
+                    {"text": "даты ближайшей смены", "answerable": "self", "needed_fact_keys": ["camp.shift.dates"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ближайшую смену подберём под возраст ребёнка.",
+        repair_fn=lambda prompt: repair_prompts.append(prompt) or "Ближайшая смена лагеря Фотон — 3-14 августа.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.repaired is True
+    assert "3-14 августа" in result.draft_text
+    assert repair_prompts and "camp.shift.dates" in repair_prompts[0]
+
+
+def test_phase1_coverage_repair_requires_price_when_draft_only_mentions_format() -> None:
+    store = FactStore(
+        catalog=("price.online",),
+        store={"unpk": {"price.online": "УНПК онлайн для 9 класса: семестр — 69 900 ₽."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("онлайн для 9 класса сколько стоит?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн для 9 класса",
+                "subquestions": [
+                    {"text": "цена онлайн для 9 класса", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Да, онлайн-формат для 9 класса есть.",
+        repair_fn=lambda _prompt: "Онлайн для 9 класса: семестр — 69 900 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.repaired is True
+    assert "69 900" in result.draft_text
+
+
+def test_phase1_coverage_cite_only_fallback_uses_retrieved_fact_without_repair_fn() -> None:
+    store = FactStore(
+        catalog=("price.year",),
+        store={"foton": {"price.year": "Фотон очно за год — 82 000 ₽."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("сколько стоит год очно?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена очно за год",
+                "subquestions": [
+                    {"text": "цена очно за год", "answerable": "self", "needed_fact_keys": ["price.year"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Очный формат доступен.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.repaired is True
+    assert "82 000" in result.draft_text
+
+
+def test_phase1_coverage_does_not_force_manager_subquestion() -> None:
+    store = FactStore(catalog=("schedule.exact_day",), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=_conv("в какой день группа?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "точный день группы",
+                "subquestions": [
+                    {"text": "точный день группы", "answerable": "manager", "needed_fact_keys": ["schedule.exact_day"]}
+                ],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "Точный день группы подтвердит менеджер.",
+        repair_fn=lambda _prompt: "Не должно вызываться",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "contract_manager_only"
+    assert "менеджер" in result.draft_text.casefold()
+
+
+def test_phase1_coverage_noop_when_no_rfk() -> None:
+    store = FactStore(catalog=("price.online",), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Точную цену подтвердит менеджер.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.missing == ("price.online",)
+    assert result.route == "bot_answer_self"
+    assert "менеджер" in result.draft_text.casefold()
+
+
+def test_phase1_coverage_noop_when_retrieved_fact_is_already_cited() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+    calls: list[str] = []
+    result = run_pipeline(
+        conversation=_conv("сколько онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
+        repair_fn=lambda prompt: calls.append(prompt) or "Не должно вызываться",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.repaired is False
+    assert calls == []
+    assert "29 750" in result.draft_text
+
+
 def test_narrow_discount_subquestion_ignores_unrelated_rfk_facts() -> None:
     store = FactStore(
         catalog=(

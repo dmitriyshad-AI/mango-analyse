@@ -656,6 +656,12 @@ def test_judge_fact_audit_matches_full_brand_client_safe_facts(tmp_path):
                 "allowed_for_client_answer": True,
                 "client_safe_text": "УНПК: адрес площадки — Сретенка, 20.",
             },
+            {
+                "brand": "unpk",
+                "fact_key": "lvsh_mendeleevo_2026.location.name",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: выездная ЛВШ проходит в Менделеево.",
+            },
         ]
     }
     snapshot_path = tmp_path / "snapshot.json"
@@ -739,6 +745,17 @@ def test_judge_fact_audit_separates_wrong_scope_from_fabrication(tmp_path):
     legit_levels = {item["claim_type"]: item["level"] for item in legit_address_audit["items"]}
     assert "address_on_non_address_question" not in legit_levels
     assert legit_levels["address_sretenka"] == "retrieved_match"
+
+    lvsh_location_audit = sim.audit_fact_claims_for_judge(
+        "Подтверждена выездная ЛВШ в Менделеево. Другие форматы менеджер проверит отдельно.",
+        client_message="А выездных форматов больше нет?",
+        active_brand="unpk",
+        retrieved_facts={"lvsh_mendeleevo_2026.location.name": "УНПК: выездная ЛВШ проходит в Менделеево."},
+        snapshot_path=snapshot_path,
+    )
+    lvsh_levels = {item["claim_type"]: item["level"] for item in lvsh_location_audit["items"]}
+    assert "address_on_non_address_question" not in lvsh_levels
+    assert lvsh_levels["address_mendeleevo"] == "retrieved_match"
 
 
 def test_judge_fact_audit_flags_unmatched_business_claim(tmp_path):

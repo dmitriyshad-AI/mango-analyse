@@ -241,7 +241,7 @@ def _mentions_contact_hours(text: str) -> bool:
 
 
 def _mentions_address(text: str) -> bool:
-    return bool(re.search(r"(сретенк|лялин|менделеево|адрес)", text, re.I))
+    return bool(re.search(r"(сретенк|лялин|адрес)", text, re.I))
 
 
 def _asks_address(text: str) -> bool:

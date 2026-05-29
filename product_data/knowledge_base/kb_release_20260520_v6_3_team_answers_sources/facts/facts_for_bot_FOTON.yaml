@@ -70,7 +70,6 @@ prices_regular_2026_27:
 discounts:
   status: verified
   brand: foton
-  stacking_rule: non_stacking_largest_applies
   stacking_rule_text: Скидки не суммируются — применяется наибольшая из доступных.
   second_subject:
     offline:
@@ -519,16 +518,6 @@ objection_responses:
   - Разные слоты выходных
   - Онлайн с записью
   is_it_bot: Я помощник менеджера, помогу с вопросом или передам коллеге
-  brand_link_question:
-    approved_response: Это отдельные организации, по вашему вопросу сориентирую в
-      рамках текущего учебного центра.
-    followup_phrase: Я могу подсказать только про ЦДПО Фотон и, к сожалению, не владею
-      информацией про другие организации.
-    forbidden_to_say:
-    - Раньше были одно
-    - Раньше сотрудничали
-    - Это наш партнёр
-    - У них есть
 presentation_format_facts_2026_05_21:
   status: verified
   freshness_status: document_verified

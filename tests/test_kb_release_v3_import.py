@@ -787,6 +787,15 @@ def test_v3_forbidden_brand_relationship_phrase_is_not_client_allowed(kb_v3: KbR
     assert not bad, _fact_ids(bad)
 
 
+def test_v3_safe_key_unification_removes_known_duplicate_sources(kb_v3: KbReleaseV3) -> None:
+    fact_keys = {str(fact.get("fact_key") or "") for fact in kb_v3.facts}
+    assert "discounts.stacking_rule" not in fact_keys
+    assert "objection_responses.brand_link_question.approved_response" not in fact_keys
+    assert "brand_rules.approved_brand_relationship_answer.foton" in fact_keys
+    assert "brand_rules.approved_brand_relationship_answer.unpk" in fact_keys
+    assert "objection_responses.too_expensive_course.3" in fact_keys
+
+
 def test_v3_certificate_phrase_does_not_collect_unconfirmed_fields(kb_v3: KbReleaseV3) -> None:
     bad = [
         fact

@@ -129,6 +129,10 @@ def test_judge_prompt_marks_metadata_as_internal():
     assert "цифровой помощник Фотона/УНПК МФТИ/центра" in prompt
     assert "GPT/Claude/Codex/OpenAI" in prompt
     assert "Не ставь fabrication за факт" in prompt
+    assert "5-11 класс" in prompt
+    assert "НЕ является fabrication" in prompt
+    assert "класс вне диапазона" in prompt
+    assert "риск fabrication сохраняется" in prompt
     assert sim.JUDGE_FACT_AUDIT_VERSION in prompt
     assert "fact:format" in prompt
     assert "verified_safe_template: Фотон" not in prompt

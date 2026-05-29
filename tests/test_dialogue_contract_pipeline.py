@@ -569,6 +569,268 @@ def test_handoff_with_supported_price_claim_passes_hard_check() -> None:
     assert "69 900" in result.draft_text
 
 
+def test_narrow_discount_subquestion_ignores_unrelated_rfk_facts() -> None:
+    store = FactStore(
+        catalog=(
+            "discounts.multichild.pct",
+            "discounts.second_subject_offline.pct",
+            "discounts.refer_a_friend.pct",
+            "discounts.year_payment.pct",
+            "discounts.early_booking.pct",
+        ),
+        store={
+            "unpk": {
+                "discounts.multichild.pct": "УНПК: для семьи с двумя детьми действует скидка 10%.",
+                "discounts.second_subject_offline.pct": "УНПК: на второй очный предмет действует скидка 20%.",
+                "discounts.refer_a_friend.pct": "УНПК: по акции «приведи друга» скидка 5%.",
+                "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 7%.",
+                "discounts.early_booking.pct": "УНПК: раннее бронирование даёт скидку 3%.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("у нас двое детей, скидка есть?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "скидка для семьи с двумя детьми",
+                "subquestions": [
+                    {
+                        "text": "двое детей — скидка?",
+                        "answerable": "self",
+                        "needed_fact_keys": [
+                            "discounts.multichild.pct",
+                            "discounts.second_subject_offline.pct",
+                            "discounts.refer_a_friend.pct",
+                            "discounts.year_payment.pct",
+                            "discounts.early_booking.pct",
+                        ],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Для семьи с двумя детьми действует скидка 10%.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["для семьи с двумя детьми действует скидка 10%"]},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == ""
+    assert not result.unsupported_claims
+
+
+def test_narrow_grade_price_subquestion_ignores_other_price_facts() -> None:
+    store = FactStore(
+        catalog=("prices.grade6.semester", "prices.grade9.semester", "prices.grade11.year"),
+        store={
+            "unpk": {
+                "prices.grade6.semester": "УНПК: для 6 класса семестр стоит 49 000 ₽.",
+                "prices.grade9.semester": "УНПК: для 9 класса семестр стоит 69 900 ₽.",
+                "prices.grade11.year": "УНПК: для 11 класса год стоит 119 000 ₽.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("6 класс цена за семестр?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "6 класс цена",
+                "subquestions": [
+                    {
+                        "text": "6 класс цена за семестр",
+                        "answerable": "self",
+                        "needed_fact_keys": ["prices.grade6.semester", "prices.grade9.semester", "prices.grade11.year"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Для 6 класса семестр стоит 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["для 6 класса семестр стоит 49 000 ₽"]},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == ""
+    assert not result.unsupported_claims
+
+
+def test_narrow_supported_claim_siblings_pass_when_claim_matches_current_subquestion_fact() -> None:
+    rows = (
+        {
+            "message": "на второй предмет скидка есть?",
+            "question": "скидка на второй предмет",
+            "keys": ("discounts.second_subject.online.pct", "discounts.multichild.pct"),
+            "facts": {
+                "discounts.second_subject.online.pct": "УНПК: на второй онлайн-предмет действует скидка 20%.",
+                "discounts.multichild.pct": "УНПК: семейная скидка составляет 10%.",
+            },
+            "draft": "На второй онлайн-предмет действует скидка 20%.",
+            "claim": "на второй онлайн-предмет действует скидка 20%",
+        },
+        {
+            "message": "у нас двое детей, семейная скидка есть?",
+            "question": "семейная скидка для двух детей",
+            "keys": ("discounts.family.pct", "discounts.second_subject.online.pct"),
+            "facts": {
+                "discounts.family.pct": "УНПК: семейная скидка для двух детей составляет 10%.",
+                "discounts.second_subject.online.pct": "УНПК: на второй онлайн-предмет действует скидка 20%.",
+            },
+            "draft": "Семейная скидка для двух детей составляет 10%.",
+            "claim": "семейная скидка для двух детей составляет 10%",
+        },
+        {
+            "message": "по акции с другом есть скидка?",
+            "question": "скидка приведи друга",
+            "keys": ("discounts.referral.pct", "discounts.multichild.pct"),
+            "facts": {
+                "discounts.referral.pct": "УНПК: по акции «приведи друга» действует скидка 5%.",
+                "discounts.multichild.pct": "УНПК: для семьи с двумя детьми действует скидка 10%.",
+            },
+            "draft": "По акции «приведи друга» действует скидка 5%.",
+            "claim": "по акции приведи друга действует скидка 5%",
+        },
+        {
+            "message": "если платить за год, скидка есть?",
+            "question": "скидка при оплате за год",
+            "keys": ("discounts.year_payment.pct", "discounts.referral.pct"),
+            "facts": {
+                "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 7%.",
+                "discounts.referral.pct": "УНПК: по акции «приведи друга» действует скидка 5%.",
+            },
+            "draft": "При оплате за год действует скидка 7%.",
+            "claim": "при оплате за год действует скидка 7%",
+        },
+        {
+            "message": "ранняя скидка бывает?",
+            "question": "раннее бронирование скидка",
+            "keys": ("discounts.early_booking.pct", "discounts.year_payment.pct"),
+            "facts": {
+                "discounts.early_booking.pct": "УНПК: раннее бронирование даёт скидку 3%.",
+                "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 7%.",
+            },
+            "draft": "Раннее бронирование даёт скидку 3%.",
+            "claim": "раннее бронирование даёт скидку 3%",
+        },
+    )
+    for row in rows:
+        store = FactStore(catalog=tuple(row["keys"]), store={"unpk": row["facts"]})
+        result = run_pipeline(
+            conversation=_conv(row["message"]),
+            active_brand="unpk",
+            fact_store=store,
+            understand_fn=_understanding(
+                {
+                    "current_question": row["question"],
+                    "subquestions": [
+                        {
+                            "text": row["question"],
+                            "answerable": "self",
+                            "needed_fact_keys": list(row["keys"]),
+                        }
+                    ],
+                    "answerability": "answer_self",
+                }
+            ),
+            draft_fn=lambda _prompt, draft=row["draft"]: draft,
+            faithfulness_fn=lambda _prompt, claim=row["claim"]: {"unsupported": [claim]},
+        )
+
+        assert result.route == "bot_answer_self", row["message"]
+        assert result.fallback_reason == "", row["message"]
+        assert not result.unsupported_claims, row["message"]
+
+
+def test_narrow_discount_wrong_value_stays_unsupported_even_if_other_rfk_fact_has_number() -> None:
+    store = FactStore(
+        catalog=("discounts.multichild.pct", "discounts.refer_a_friend.pct"),
+        store={
+            "unpk": {
+                "discounts.multichild.pct": "УНПК: для семьи с двумя детьми действует скидка 10%.",
+                "discounts.refer_a_friend.pct": "УНПК: по акции «приведи друга» действует скидка 15%.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("у нас двое детей, скидка есть?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "скидка для семьи с двумя детьми",
+                "subquestions": [
+                    {
+                        "text": "двое детей — скидка?",
+                        "answerable": "self",
+                        "needed_fact_keys": ["discounts.multichild.pct", "discounts.refer_a_friend.pct"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Для семьи с двумя детьми действует скидка 15%.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["для семьи с двумя детьми действует скидка 15%"]},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert result.unsupported_claims == ("для семьи с двумя детьми действует скидка 15%",)
+
+
+def test_narrow_claim_outside_rfk_stays_blocked() -> None:
+    store = FactStore(
+        catalog=("discounts.multichild.pct",),
+        store={"unpk": {"discounts.multichild.pct": "УНПК: для семьи с двумя детьми действует скидка 10%."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("какие результаты будут?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "результаты обучения",
+                "subquestions": [
+                    {
+                        "text": "результаты обучения",
+                        "answerable": "self",
+                        "needed_fact_keys": ["discounts.multichild.pct"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "По итогам курса ученик наберёт 100 баллов.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["ученик наберёт 100 баллов"]},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert result.unsupported_claims == ("ученик наберёт 100 баллов",)
+
+
+def test_narrow_claim_with_empty_rfk_stays_blocked() -> None:
+    store = FactStore(catalog=(), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена",
+                "subquestions": [{"text": "цена", "answerable": "self", "needed_fact_keys": []}],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Семестр стоит 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["семестр стоит 49 000 ₽"]},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+
+
 def test_safe_fallback_does_not_leak_third_person_question() -> None:
     store = FactStore(catalog=("price.online",), store={"unpk": {}})
     questions = (

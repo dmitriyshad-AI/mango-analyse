@@ -1317,9 +1317,145 @@ def _hard_check(
             client_words=client_words,
             faithfulness_fn=faithfulness_fn,
         )
-        unsupported = result.unsupported
+        unsupported = _unsupported_claims_without_current_fact_support(
+            result.unsupported,
+            facts=facts,
+            contract=contract,
+        )
         semantic_available = result.available
     return tuple(findings), unsupported, semantic_available
+
+
+def _unsupported_claims_without_current_fact_support(
+    unsupported: Sequence[str],
+    *,
+    facts: Mapping[str, str],
+    contract: AnswerContract,
+) -> tuple[str, ...]:
+    kept: list[str] = []
+    for claim in unsupported:
+        text = str(claim or "").strip()
+        if not text:
+            continue
+        if _claim_supported_by_current_subquestion_fact(text, facts=facts, contract=contract):
+            continue
+        kept.append(text)
+    return tuple(dict.fromkeys(kept))
+
+
+def _claim_supported_by_current_subquestion_fact(
+    claim: str,
+    *,
+    facts: Mapping[str, str],
+    contract: AnswerContract,
+) -> bool:
+    if not concrete_anchors(claim):
+        return False
+    for fact_key, fact_text in facts.items():
+        if not claim_anchors_supported_by_fact(claim, fact_text):
+            continue
+        if _fact_matches_current_subquestion(str(fact_key), str(fact_text or ""), contract=contract, claim=claim):
+            return True
+    return False
+
+
+def _fact_matches_current_subquestion(
+    fact_key: str,
+    fact_text: str,
+    *,
+    contract: AnswerContract,
+    claim: str,
+) -> bool:
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    fact_topics = _semantic_topic_anchors(f"{fact_key} {fact_text}")
+    claim_topics = _semantic_topic_anchors(claim)
+    for subquestion in subquestions:
+        key_matches_subquestion = any(
+            _fact_key_matches_required_key(fact_key, required)
+            for required in subquestion.needed_fact_keys
+            if required
+        )
+        subq_text = " ".join(
+            part
+            for part in (subquestion.text, subquestion.existence_target, contract.current_question)
+            if part
+        )
+        subq_topics = _semantic_topic_anchors(subq_text)
+        specific_subq_topics = _specific_semantic_topics(subq_topics)
+        specific_claim_topics = _specific_semantic_topics(claim_topics)
+        if specific_subq_topics and not (specific_subq_topics & fact_topics):
+            continue
+        if specific_claim_topics and not (specific_claim_topics & fact_topics):
+            continue
+        shared_subq_fact = subq_topics & fact_topics
+        shared_subq_claim = subq_topics & claim_topics
+        if key_matches_subquestion and (not subq_topics or shared_subq_fact or shared_subq_claim):
+            return True
+        if shared_subq_fact and (not claim_topics or claim_topics & fact_topics) and (not claim_topics or shared_subq_claim):
+            return True
+    return False
+
+
+def _specific_semantic_topics(topics: set[str]) -> set[str]:
+    generic = {"topic:discount", "topic:price", "period:semester", "period:year"}
+    return {topic for topic in topics if topic not in generic}
+
+
+def _fact_key_matches_required_key(fact_key: str, required_key: str) -> bool:
+    if str(fact_key or "").strip() == str(required_key or "").strip():
+        return True
+    return key_matches(required_key, fact_key)
+
+
+def _semantic_topic_anchors(text: str) -> set[str]:
+    source = str(text or "").casefold().replace("ё", "е")
+    anchors: set[str] = set()
+    if re.search(r"скидк|discount", source, re.I):
+        anchors.add("topic:discount")
+    if re.search(
+        r"многодет|двое\s+дет|двумя\s+детьми|двух\s+дет|два\s+реб[её]н|2\s*(?:реб[её]н|дет)|семейн",
+        source,
+        re.I,
+    ):
+        anchors.add("topic:discount_family")
+    if re.search(r"втор\w+\s+предмет|2-?й\s+предмет|second[_\s-]?subject", source, re.I):
+        anchors.add("topic:discount_second_subject")
+    if re.search(r"друг|refer|привед", source, re.I):
+        anchors.add("topic:discount_referral")
+    if re.search(r"цен|стоим|сколько\s+стоит|price|tuition|руб|₽", source, re.I):
+        anchors.add("topic:price")
+    if re.search(r"семестр|semester", source, re.I):
+        anchors.add("period:semester")
+    if re.search(r"\bгод\b|year", source, re.I):
+        anchors.add("period:year")
+    if re.search(r"онлайн|online", source, re.I):
+        anchors.add("format:online")
+    if re.search(r"очно|очная|очный|offline|ochno", source, re.I):
+        anchors.add("format:offline")
+    if re.search(r"рассроч|installment|банк|т-банк|tbank|t-bank", source, re.I):
+        anchors.add("payment:installment")
+    if re.search(r"долями|dolyami", source, re.I):
+        anchors.add("payment:dolyami")
+    if re.search(r"перевод|по\s+сч[её]ту|квитанц|реквизит|invoice", source, re.I):
+        anchors.add("payment:invoice")
+    if re.search(r"запис|пересмотр|recording", source, re.I):
+        anchors.add("topic:recording")
+    if re.search(r"расписан|дни\s+занят|по\s+дням|schedule", source, re.I):
+        anchors.add("topic:schedule")
+    if re.search(r"адрес|где\s+вы|находит|метро|location|address", source, re.I):
+        anchors.add("topic:address")
+    for match in re.finditer(r"(?<!\d)([1-9]|10|11)\s*(?:класс|кл\b|class)", source, re.I):
+        anchors.add(f"class:{match.group(1)}")
+    for match in re.finditer(r"(?:grade|class)[_.\s-]?([1-9]|10|11)", source, re.I):
+        anchors.add(f"class:{match.group(1)}")
+    return anchors
 
 
 def _handoff_factual_claim_text(text: str) -> str | None:

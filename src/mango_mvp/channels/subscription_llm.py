@@ -16,6 +16,7 @@ from mango_mvp.channels.answer_quality_rewriter import (
     apply_answer_quality_rewriter,
 )
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
+from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
 from mango_mvp.channels.dialogue_contract_pipeline import (
     Toggles as DialogueContractToggles,
@@ -1027,11 +1028,44 @@ def apply_dialogue_contract_v2_template_dispatcher(
     context: Optional[Mapping[str, Any]],
 ) -> SubscriptionDraftResult:
     if _safe_template_already_applied(result):
+        trace_event(
+            context,
+            "safe_template_dispatcher",
+            {
+                "skipped": "already_applied",
+                "route": result.route,
+                "safety_flags": result.safety_flags,
+            },
+        )
         return result
     for spec in sorted(DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY, key=lambda item: item.priority):
         text = spec.produce(result, client_message, context)
         if text:
-            return _apply_safe_template_spec(result, spec, text)
+            guarded = _apply_safe_template_spec(result, spec, text)
+            trace_event(
+                context,
+                "safe_template_dispatcher",
+                {
+                    "applied": spec.name,
+                    "priority": spec.priority,
+                    "flag": spec.flag,
+                    "route_before": result.route,
+                    "route_after": guarded.route,
+                    "topic_before": result.topic_id,
+                    "topic_after": guarded.topic_id,
+                    "draft_text": guarded.draft_text,
+                },
+            )
+            return guarded
+    trace_event(
+        context,
+        "safe_template_dispatcher",
+        {
+            "applied": "",
+            "route": result.route,
+            "topic_id": result.topic_id,
+        },
+    )
     return result
 
 
@@ -1244,40 +1278,82 @@ class SubscriptionLlmDraftProvider:
         context: Optional[Mapping[str, Any]],
     ) -> SubscriptionDraftResult:
         """v2 post-chain: safety verifiers only; no old intent/template rewrites."""
+        guard_steps: list[dict[str, Any]] = []
+
+        def record_step(name: str, before: SubscriptionDraftResult, after: SubscriptionDraftResult) -> None:
+            before_flags = set(before.safety_flags)
+            after_flags = set(after.safety_flags)
+            guard_steps.append(
+                {
+                    "name": name,
+                    "route_before": before.route,
+                    "route_after": after.route,
+                    "text_changed": before.draft_text != after.draft_text,
+                    "added_flags": sorted(after_flags - before_flags),
+                }
+            )
+
         guarded = result
         guarded = apply_payment_confirmation_guard(guarded, client_message=client_message, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        record_step("payment_confirmation", result, guarded)
         result = guarded
 
         guarded = apply_brand_separation_guard(result, client_message=client_message, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        record_step("brand_separation", result, guarded)
         result = guarded
 
         guarded = apply_input_policy_guards(result, client_message=client_message, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        record_step("input_policy", result, guarded)
         result = guarded
 
         guarded = apply_unstated_subject_guard(result, client_message=client_message, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        record_step("unstated_subject", result, guarded)
         result = guarded
 
         guarded = apply_unsupported_promise_guard(result, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        record_step("unsupported_promise", result, guarded)
         result = guarded
 
         guarded = apply_unconfirmed_operational_specificity_guard(result, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        record_step("unconfirmed_operational_specificity", result, guarded)
         result = guarded
 
         guarded = apply_dialogue_contract_v2_template_dispatcher(result, client_message=client_message, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        record_step("safe_template_dispatcher", result, guarded)
         result = guarded
 
-        result = apply_funnel_policy_guard(result, context=context)
-        result = self._dialogue_contract_v2_route_permission_guard(result, client_message=client_message, context=context)
+        guarded = apply_funnel_policy_guard(result, context=context)
+        record_step("funnel_policy", result, guarded)
+        result = guarded
+
+        guarded = self._dialogue_contract_v2_route_permission_guard(result, client_message=client_message, context=context)
+        record_step("route_permission", result, guarded)
+        result = guarded
+
         guarded = guard_identity_disclosure(result)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
-        return _sanitize_dialogue_contract_client_text(guarded)
+        record_step("identity_disclosure", result, guarded)
+
+        sanitized = _sanitize_dialogue_contract_client_text(guarded)
+        record_step("sanitize", guarded, sanitized)
+        trace_event(
+            context,
+            "_apply_dialogue_contract_v2_guard_chain",
+            {
+                "applied_guards": [step["name"] for step in guard_steps],
+                "steps": guard_steps,
+                "route": sanitized.route,
+                "safety_flags": sanitized.safety_flags,
+            },
+        )
+        return sanitized
 
     def _reverify_dialogue_contract_text_change(
         self,
@@ -1869,10 +1945,28 @@ def apply_unsupported_promise_guard(
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
     if result.draft_text == UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT:
+        trace_event(
+            context,
+            "apply_unsupported_promise_guard",
+            {
+                "skipped": "verified_installment_fallback",
+                "route": result.route,
+            },
+        )
         return result
     promise_context = _context_with_dialogue_contract_retrieved_facts(context, result)
     claims = find_unsupported_numeric_promises(result.draft_text, context=promise_context)
     if not claims:
+        trace_event(
+            context,
+            "apply_unsupported_promise_guard",
+            {
+                "claims": (),
+                "route_before": result.route,
+                "route_after": result.route,
+                "blocked": False,
+            },
+        )
         return result
     flags = tuple(dict.fromkeys([*result.safety_flags, "unsupported_promise_detected"]))
     checklist = tuple(
@@ -1883,7 +1977,7 @@ def apply_unsupported_promise_guard(
             ]
         )
     )
-    return replace(
+    guarded = replace(
         result,
         route="manager_only",
         forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
@@ -1891,6 +1985,18 @@ def apply_unsupported_promise_guard(
         manager_checklist=checklist,
         metadata={**dict(result.metadata), "unsupported_promises": list(claims)},
     )
+    trace_event(
+        context,
+        "apply_unsupported_promise_guard",
+        {
+            "claims": claims,
+            "route_before": result.route,
+            "route_after": guarded.route,
+            "blocked": True,
+            "safety_flags": guarded.safety_flags,
+        },
+    )
+    return guarded
 
 
 def _context_with_dialogue_contract_retrieved_facts(

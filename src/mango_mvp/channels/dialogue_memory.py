@@ -16,6 +16,7 @@ from mango_mvp.channels.new_lead_funnel import (
     normalize_text,
 )
 from mango_mvp.channels.held_state import HeldState, held_state_from_mapping, update_held
+from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.p0_recall_spec import memory_risk_flags_from_text
 from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
@@ -738,7 +739,21 @@ def _next_p0_latch(
 ) -> DialogueP0Latch:
     release_event = _p0_latch_release_event(context)
     if release_event:
-        return DialogueP0Latch(release_event_id=release_event)
+        result = DialogueP0Latch(release_event_id=release_event)
+        trace_event(
+            context,
+            "_next_p0_latch",
+            {
+                "previous_active": previous.active,
+                "previous_codes": list(previous.codes),
+                "current_risk_flags": list(current_risk_flags),
+                "release_event": release_event,
+                "autonomous_release": False,
+                "next_active": result.active,
+                "next_codes": list(result.codes),
+            },
+        )
+        return result
     if previous.active:
         autonomous_release = _autonomous_p0_latch_release_event(
             previous,
@@ -746,21 +761,76 @@ def _next_p0_latch(
             current_risk_flags=current_risk_flags,
         )
         if autonomous_release:
-            return DialogueP0Latch(release_event_id=autonomous_release)
+            result = DialogueP0Latch(release_event_id=autonomous_release)
+            trace_event(
+                context,
+                "_next_p0_latch",
+                {
+                    "previous_active": previous.active,
+                    "previous_codes": list(previous.codes),
+                    "current_risk_flags": list(current_risk_flags),
+                    "release_event": autonomous_release,
+                    "autonomous_release": True,
+                    "next_active": result.active,
+                    "next_codes": list(result.codes),
+                },
+            )
+            return result
+        trace_event(
+            context,
+            "_next_p0_latch",
+            {
+                "previous_active": previous.active,
+                "previous_codes": list(previous.codes),
+                "current_risk_flags": list(current_risk_flags),
+                "release_event": "",
+                "autonomous_release": False,
+                "next_active": previous.active,
+                "next_codes": list(previous.codes),
+            },
+        )
         return previous
     codes = tuple(dict.fromkeys(_latchable_p0_codes(current_risk_flags)))
     if not codes:
-        return DialogueP0Latch()
+        result = DialogueP0Latch()
+        trace_event(
+            context,
+            "_next_p0_latch",
+            {
+                "previous_active": previous.active,
+                "previous_codes": list(previous.codes),
+                "current_risk_flags": list(current_risk_flags),
+                "release_event": "",
+                "autonomous_release": False,
+                "next_active": result.active,
+                "next_codes": list(result.codes),
+            },
+        )
+        return result
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     trigger_seed = f"{session_id}|{current_message[:160]}|{','.join(codes)}"
     trigger_id = hashlib.sha256(trigger_seed.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return DialogueP0Latch(
+    result = DialogueP0Latch(
         active=True,
         codes=codes,
         primary_risk=_primary_p0_risk(codes),
         started_at=now,
         trigger_turn_id=trigger_id,
     )
+    trace_event(
+        context,
+        "_next_p0_latch",
+        {
+            "previous_active": previous.active,
+            "previous_codes": list(previous.codes),
+            "current_risk_flags": list(current_risk_flags),
+            "release_event": "",
+            "autonomous_release": False,
+            "next_active": result.active,
+            "next_codes": list(result.codes),
+        },
+    )
+    return result
 
 
 def _latchable_p0_codes(flags: Sequence[str]) -> tuple[str, ...]:

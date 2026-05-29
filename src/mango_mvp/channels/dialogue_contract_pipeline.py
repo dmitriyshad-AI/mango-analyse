@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
+from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
 from mango_mvp.channels.p0_recall_spec import codes_from_text
@@ -442,10 +443,19 @@ def understand(
 def p0_pre_gate(text: str, *, context: Mapping[str, Any] | None = None) -> str | None:
     codes = codes_from_text(text)
     if codes:
-        return ",".join(codes)
+        result = ",".join(codes)
+        trace_event(context, "p0_pre_gate", {"source": "regex", "codes": list(codes), "result": result})
+        return result
     decision = classify_answer_safety(client_message=text, context=context)
     if decision.p0_required:
-        return ",".join(decision.risk_codes or (decision.primary_risk or "p0",))
+        result = ",".join(decision.risk_codes or (decision.primary_risk or "p0",))
+        trace_event(
+            context,
+            "p0_pre_gate",
+            {"source": "classifier", "codes": list(decision.risk_codes or ()), "primary_risk": decision.primary_risk, "result": result},
+        )
+        return result
+    trace_event(context, "p0_pre_gate", {"source": "classifier", "codes": [], "result": ""})
     return None
 
 
@@ -902,13 +912,23 @@ def run_pipeline(
 ) -> DialogueContractPipelineResult:
     toggles = toggles or Toggles()
     client_words = str(conversation[-1].get("text") or "") if conversation else ""
-    contract = understand(
-        conversation=conversation,
-        active_brand=active_brand,
-        fact_key_catalog=fact_store.catalog,
-        understand_fn=understand_fn,
-        context=context,
-    )
+    with trace_span(context, "understand", {"client_message": client_words, "active_brand": active_brand}) as trace:
+        contract = understand(
+            conversation=conversation,
+            active_brand=active_brand,
+            fact_key_catalog=fact_store.catalog,
+            understand_fn=understand_fn,
+            context=context,
+        )
+        trace.update(
+            {
+                "answerability": contract.answerability,
+                "is_p0": contract.is_p0,
+                "p0_reason": contract.p0_reason,
+                "needed_fact_keys": list(contract.all_needed_fact_keys()),
+                "subquestions": [item.to_json_dict() for item in contract.subquestions],
+            }
+        )
     if contract.is_p0:
         if _asks_refund_policy(contract) and not _current_refund_dispute_signal(
             client_words=client_words,
@@ -916,31 +936,41 @@ def run_pipeline(
         ):
             contract = replace(contract, is_p0=False, p0_reason="", answerability="answer_self")
         else:
+            text = _dry_p0_text(conversation=conversation)
+            trace_event(context, "build_draft", {"route": "manager_only", "fallback_reason": "p0", "draft": text})
             return DialogueContractPipelineResult(
-                draft_text=_dry_p0_text(conversation=conversation),
+                draft_text=text,
                 route="manager_only",
                 manager_only=True,
                 contract=contract,
                 fallback_reason="p0",
             )
 
-    retrieval = retrieve_facts(
-        needed_fact_keys=contract.all_needed_fact_keys(),
-        active_brand=active_brand,
-        fact_store=fact_store,
-    )
-    retrieval = _augment_with_soft_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
-    retrieval = _augment_with_format_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
-    retrieval = _augment_with_known_absence(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
-    retrieval = _augment_with_presale_refund_policy(
-        retrieval,
-        contract=contract,
-        active_brand=active_brand,
-        fact_store=fact_store,
-    )
+    with trace_span(context, "retrieve_facts", {"needed_fact_keys": list(contract.all_needed_fact_keys())}) as trace:
+        retrieval = retrieve_facts(
+            needed_fact_keys=contract.all_needed_fact_keys(),
+            active_brand=active_brand,
+            fact_store=fact_store,
+        )
+        retrieval = _augment_with_soft_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
+        retrieval = _augment_with_format_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
+        retrieval = _augment_with_known_absence(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
+        retrieval = _augment_with_presale_refund_policy(
+            retrieval,
+            contract=contract,
+            active_brand=active_brand,
+            fact_store=fact_store,
+        )
+        trace.update(
+            {
+                "fact_keys": list(retrieval.facts.keys()),
+                "missing": list(retrieval.missing),
+                "matched_keys": {key: list(value) for key, value in retrieval.matched_keys.items()},
+            }
+        )
     if _asks_refund_policy(contract) and not _presale_refund_policy_text(retrieval.facts):
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract, facts=retrieval.facts),
+            draft_text=_safe_fallback_text(contract, facts=retrieval.facts, context=context),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
@@ -962,7 +992,7 @@ def run_pipeline(
     exact_answer_available = _has_exact_retrieved_answer_part(contract, retrieval)
     soft_weekend = _soft_weekend_guidance_text(retrieval.facts)
     if soft_weekend and _asks_weekend_or_slot(contract):
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="bot_answer_self",
@@ -1005,7 +1035,7 @@ def run_pipeline(
         or not retrieval.facts
         or (_soft_weekend_guidance_text(retrieval.facts) and not _has_self_answerable_subquestion(contract))
     ):
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1016,7 +1046,7 @@ def run_pipeline(
             fallback_reason="contract_manager_only",
         )
     if draft_fn is None:
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1026,21 +1056,28 @@ def run_pipeline(
             missing=retrieval.missing,
             fallback_reason="no_draft_fn",
         )
-    prompt = build_draft_prompt(
-        conversation=conversation,
-        contract=contract,
-        facts=retrieval.facts,
-        missing=retrieval.missing,
-        tone_guide=tone_guide,
-        style_examples=style_examples,
-        toggles=toggles,
-    )
-    try:
-        draft = str(draft_fn(prompt) or "").strip()
-    except Exception:
-        draft = ""
+    with trace_span(
+        context,
+        "build_draft",
+        {"answerability": contract.answerability, "fact_keys": list(retrieval.facts.keys()), "missing": list(retrieval.missing)},
+    ) as trace:
+        prompt = build_draft_prompt(
+            conversation=conversation,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            tone_guide=tone_guide,
+            style_examples=style_examples,
+            toggles=toggles,
+        )
+        trace["prompt_chars"] = len(prompt)
+        try:
+            draft = str(draft_fn(prompt) or "").strip()
+        except Exception:
+            draft = ""
+        trace["draft"] = draft
     if not draft:
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1063,7 +1100,7 @@ def run_pipeline(
         context=context,
     )
     if not semantic_available:
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1099,7 +1136,7 @@ def run_pipeline(
             context=context,
         )
         if not semantic_available:
-            fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+            fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
             return DialogueContractPipelineResult(
                 draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
                 route="draft_for_manager",
@@ -1141,7 +1178,7 @@ def run_pipeline(
                     repaired=repaired,
                     fallback_reason="verified_fact_fallback_after_hard_check",
                 )
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1323,6 +1360,18 @@ def _hard_check(
             contract=contract,
         )
         semantic_available = result.available
+    trace_event(
+        context,
+        "_hard_check",
+        {
+            "draft": draft,
+            "pure_handoff": pure_handoff,
+            "verification_text": text_to_check,
+            "findings": [{"code": finding.code, "detail": finding.detail} for finding in findings],
+            "unsupported": list(unsupported),
+            "semantic_available": semantic_available,
+        },
+    )
     return tuple(findings), unsupported, semantic_available
 
 
@@ -1509,36 +1558,60 @@ def _refund_policy_handoff_text(*, conversation: Sequence[Mapping[str, str]] | N
     return _REFUND_POLICY_TEXTS[bot_turns % len(_REFUND_POLICY_TEXTS)]
 
 
-def _safe_fallback_text(contract: AnswerContract, *, facts: Mapping[str, str] | None = None) -> str:
+def _safe_fallback_text(
+    contract: AnswerContract,
+    *,
+    facts: Mapping[str, str] | None = None,
+    context: Mapping[str, Any] | None = None,
+) -> str:
+    def traced(text: str, reason: str) -> str:
+        trace_event(
+            context,
+            "_safe_fallback_text",
+            {
+                "reason": reason,
+                "current_question": contract.current_question,
+                "answerability": contract.answerability,
+                "fact_keys": list((facts or {}).keys()),
+                "text": text,
+            },
+        )
+        return text
+
     known_absence = _known_absence_text(contract, facts or {})
     if known_absence:
-        return known_absence
+        return traced(known_absence, "known_absence")
     presale_refund = _presale_refund_policy_text(facts or {})
     if presale_refund and _asks_refund_policy(contract):
-        return presale_refund
+        return traced(presale_refund, "presale_refund")
     soft_weekend = _soft_weekend_guidance_text(facts or {})
     if soft_weekend and _asks_weekend_or_slot(contract):
-        return (
+        return traced(
             "По общему ориентиру бывают разные варианты слотов, в том числе по выходным. "
-            "Но точное расписание конкретной группы без проверки не подтверждаю — менеджер сверит ваш класс, предмет и площадку."
+            "Но точное расписание конкретной группы без проверки не подтверждаю — менеджер сверит ваш класс, предмет и площадку.",
+            "soft_weekend",
         )
     schedule_publication = _class_schedule_publication_answer(contract, facts or {})
     if schedule_publication:
-        return schedule_publication
+        return traced(schedule_publication, "schedule_publication")
     if _asks_refund_policy(contract):
-        return _refund_policy_handoff_text()
+        return traced(_refund_policy_handoff_text(), "refund_policy_handoff")
     detail = _client_safe_question_detail(contract.current_question)
     secondary = _secondary_fact_text(contract, facts or {})
     if secondary:
         detail_part = f": {detail}" if detail else ""
-        return (
+        return traced(
             f"По спрошенному пункту точного подтверждения нет — менеджер уточнит точную деталь{detail_part}. "
             f"Из подтверждённого, как отдельная справка: {secondary} "
-            "Если хотите, передам менеджеру именно ваш способ или условие."
+            "Если хотите, передам менеджеру именно ваш способ или условие.",
+            "secondary_fact",
         )
     if detail:
-        return f"Сейчас точно ответить не могу. Передам менеджеру уточнить точную деталь: {detail}. Он свяжется с вами."
-    return "Сейчас точно ответить не могу. Передам вопрос менеджеру — он уточнит и свяжется с вами."
+        return traced(
+            f"Сейчас точно ответить не могу. Передам менеджеру уточнить точную деталь: {detail}. Он свяжется с вами.",
+            "question_detail",
+        )
+    return traced("Сейчас точно ответить не могу. Передам вопрос менеджеру — он уточнит и свяжется с вами.", "generic")
 
 
 def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:

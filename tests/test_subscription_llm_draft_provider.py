@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from mango_mvp.channels.subscription_llm import (
     ADMISSION_GUARANTEE_SAFE_TEXT,
     RESULT_GUARANTEE_SAFE_TEXT,
     SubscriptionDraftResult,
+    SubscriptionLlmDraftProvider,
     TAX_AMOUNT_SAFE_TEXT,
     TAX_FNS_REVIEW_SAFE_TEXT,
     TAX_LICENSE_SAFE_TEXT,
@@ -51,6 +53,10 @@ from mango_mvp.channels.subscription_llm import (
     known_context_fields,
 )
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
+
+
+def _trace_rows(path: Path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -> None:
@@ -103,6 +109,42 @@ def test_provider_blocks_internal_manager_note_without_safe_variant() -> None:
     assert "Автономный ответ не требуется" not in result.draft_text
     assert result.draft_text == "Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
     assert "internal_metadata_removed_from_draft" in result.safety_flags
+
+
+def test_dialogue_contract_v2_guard_chain_debug_trace_writes_guard_nodes(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DIALOGUE_CONTRACT_DEBUG_TRACE", raising=False)
+    provider = SubscriptionLlmDraftProvider(runner=lambda *args, **kwargs: None)
+    context = {
+        "active_brand": "foton",
+        "dialogue_contract_debug_trace": {
+            "enabled": True,
+            "run_dir": str(tmp_path),
+            "dialog_id": "guard_trace",
+            "turn": 1,
+        },
+    }
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, гарантируем 100 баллов на ЕГЭ.",
+        message_type="question",
+        topic_id="theme:016_program",
+        safety_flags=(),
+    )
+
+    guarded = provider._apply_dialogue_contract_v2_guard_chain(  # noqa: SLF001
+        result,
+        client_message="Вы гарантируете 100 баллов?",
+        context=context,
+    )
+
+    assert "result_guarantee_safe_template_applied" in guarded.safety_flags
+    rows = _trace_rows(tmp_path / "debug_trace.jsonl")
+    nodes = {row["node"] for row in rows}
+    assert {"apply_unsupported_promise_guard", "safe_template_dispatcher", "_apply_dialogue_contract_v2_guard_chain"} <= nodes
+    dispatcher = next(row for row in rows if row["node"] == "safe_template_dispatcher")
+    assert dispatcher["values"]["applied"] == "result_guarantee"
+    chain = next(row for row in rows if row["node"] == "_apply_dialogue_contract_v2_guard_chain")
+    assert "safe_template_dispatcher" in chain["values"]["applied_guards"]
 
 
 def test_provider_normalizes_unknown_topic_ids_to_unclear_manager_only() -> None:

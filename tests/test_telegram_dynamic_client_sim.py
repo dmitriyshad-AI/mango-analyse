@@ -331,6 +331,53 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
 
 
+def test_run_one_dialog_injects_debug_trace_context_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIALOGUE_CONTRACT_DEBUG_TRACE", "1")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    class CapturingBotProvider:
+        def __init__(self):
+            self.contexts = []
+
+        def build_draft(self, client_message, *, context=None):
+            self.contexts.append(dict(context or {}))
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "service:S5_general_consultation",
+                    "route": "draft_for_manager",
+                    "draft_text": "Передам менеджеру, он уточнит.",
+                    "safety_flags": ["manager_approval_required", "no_auto_send"],
+                }
+            )
+
+    provider = CapturingBotProvider()
+    dialog = sim.run_one_dialog(
+        {
+            "dialog_id": "trace_dynamic",
+            "brand": "unpk",
+            "persona": "родитель",
+            "goal": "проверить trace",
+            "max_turns": 1,
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.FakeClientModel(),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=provider,
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+        debug_trace_run_dir=tmp_path,
+    )
+
+    assert dialog["dialog_id"] == "trace_dynamic"
+    trace_cfg = provider.contexts[0]["dialogue_contract_debug_trace"]
+    assert trace_cfg["enabled"] is True
+    assert trace_cfg["run_dir"] == str(tmp_path)
+    assert trace_cfg["dialog_id"] == "trace_dynamic"
+    assert trace_cfg["turn"] == 1
+
+
 def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_findings(tmp_path):
     transcripts = [
         {

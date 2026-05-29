@@ -294,6 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bot_provider=bot_provider,
                         snapshot_path=args.snapshot,
                         max_turns_override=args.max_turns,
+                        debug_trace_run_dir=args.out_dir,
                     )
                     dialog = {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
                 except Exception as exc:  # noqa: BLE001
@@ -522,6 +523,7 @@ def run_one_dialog_isolated(
         bot_provider=build_bot_provider(args, dialog_id=dialog_id),
         snapshot_path=snapshot_path,
         max_turns_override=max_turns_override,
+        debug_trace_run_dir=args.out_dir,
     )
     return {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
 
@@ -709,6 +711,7 @@ def run_one_dialog(
     bot_provider: Any,
     snapshot_path: Path,
     max_turns_override: int = 0,
+    debug_trace_run_dir: Path | None = None,
 ) -> Mapping[str, Any]:
     dialog_id = str(persona.get("dialog_id") or "")
     brand = str(persona.get("brand") or "unknown")
@@ -732,6 +735,16 @@ def run_one_dialog(
             snapshot_path=snapshot_path,
             dialogue_memory=dialogue_memory,
         )
+        if os.getenv("DIALOGUE_CONTRACT_DEBUG_TRACE") == "1":
+            context = dict(context)
+            context["dialog_id"] = dialog_id
+            context["turn"] = turn_index
+            context["dialogue_contract_debug_trace"] = {
+                "enabled": True,
+                "run_dir": str(debug_trace_run_dir or ""),
+                "dialog_id": dialog_id,
+                "turn": turn_index,
+            }
         result = bot_provider.build_draft(client_message, context=context)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
         dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)

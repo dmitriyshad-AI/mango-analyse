@@ -45,6 +45,10 @@ def _refund_store() -> FactStore:
     )
 
 
+def _trace_rows(path: Path) -> list[Mapping[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 def test_flag_default_off() -> None:
     assert pipeline_enabled({}) is False
 
@@ -93,6 +97,107 @@ def test_pipeline_happy_path_with_key_retrieval() -> None:
     assert result.route == "bot_answer_self"
     assert not result.findings
     assert "29 750" in result.draft_text
+
+
+def test_dialogue_contract_debug_trace_off_does_not_write_or_change_result(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DIALOGUE_CONTRACT_DEBUG_TRACE", raising=False)
+    store = FactStore(
+        catalog=("price.online",),
+        store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽, год — 47 250 ₽."}},
+    )
+    context = {
+        "dialogue_contract_debug_trace": {
+            "enabled": False,
+            "run_dir": str(tmp_path),
+            "dialog_id": "trace_off",
+            "turn": 1,
+        }
+    }
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {"current_question": "цена онлайн", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}
+        ),
+        draft_fn=lambda _prompt: "По онлайну: семестр — 29 750 ₽, год — 47 250 ₽. Подобрать группу?",
+        context=context,
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "29 750" in result.draft_text
+    assert not (tmp_path / "debug_trace.jsonl").exists()
+
+
+def test_dialogue_contract_debug_trace_on_writes_expected_nodes(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DIALOGUE_CONTRACT_DEBUG_TRACE", raising=False)
+    long_question = "сколько стоит онлайн? " + ("очень длинное уточнение " * 20)
+    store = FactStore(
+        catalog=("price.online",),
+        store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽, год — 47 250 ₽."}},
+    )
+    context = {
+        "dialogue_contract_debug_trace": {
+            "enabled": True,
+            "run_dir": str(tmp_path),
+            "dialog_id": "trace_on",
+            "turn": 2,
+        }
+    }
+
+    result = run_pipeline(
+        conversation=_conv(long_question),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {"current_question": "цена онлайн", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}
+        ),
+        draft_fn=lambda _prompt: "По онлайну: семестр — 29 750 ₽, год — 47 250 ₽. Подобрать группу?",
+        context=context,
+    )
+
+    assert result.route == "bot_answer_self"
+    rows = _trace_rows(tmp_path / "debug_trace.jsonl")
+    nodes = {row["node"] for row in rows}
+    assert {"p0_pre_gate", "understand", "retrieve_facts", "build_draft", "_hard_check"} <= nodes
+    assert all(row["dialog_id"] == "trace_on" for row in rows)
+    assert all(row["turn"] == 2 for row in rows)
+    understand_row = next(row for row in rows if row["node"] == "understand")
+    assert len(understand_row["values"]["client_message"]) <= 200
+
+
+def test_dialogue_contract_debug_trace_synthetic_paths_cover_fallback_and_p0(tmp_path) -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "цена 29 750 ₽"}})
+    trace_file = tmp_path / "debug_trace.jsonl"
+    common_trace = {"enabled": True, "run_dir": str(tmp_path), "dialog_id": "synthetic", "turn": 1}
+
+    p0_result = run_pipeline(
+        conversation=_conv("я оплатил, доступа нет, верните деньги"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {"current_question": "цена", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}
+        ),
+        draft_fn=lambda _prompt: "цена 29 750 ₽",
+        context={"dialogue_contract_debug_trace": {**common_trace, "dialog_id": "synthetic_p0"}},
+    )
+    fallback_result = run_pipeline(
+        conversation=_conv("какая цена?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {"current_question": "цена", "needed_fact_keys": ["price.online"], "answerability": "manager_only"}
+        ),
+        draft_fn=None,
+        context={"dialogue_contract_debug_trace": {**common_trace, "dialog_id": "synthetic_fallback", "turn": 2}},
+    )
+
+    assert p0_result.route == "manager_only"
+    assert fallback_result.route == "draft_for_manager"
+    rows = _trace_rows(trace_file)
+    nodes = {row["node"] for row in rows}
+    assert {"understand", "retrieve_facts", "build_draft", "_safe_fallback_text", "p0_pre_gate"} <= nodes
 
 
 def test_pipeline_p0_pregate_overrides_llm_contract() -> None:

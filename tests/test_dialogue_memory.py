@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+
 from mango_mvp.channels.dialogue_memory import (
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
 )
+
+
+def _trace_rows(path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_dialogue_memory_extracts_slots_and_open_question_from_multiturn_context() -> None:
@@ -99,6 +105,30 @@ def test_dialogue_memory_marks_p0_as_handoff_required() -> None:
     assert memory.sales_stage == "handoff_required"
     assert memory.p0_latch.active is True
     assert memory.p0_latch.primary_risk == "legal_threat"
+
+
+def test_dialogue_memory_debug_trace_records_p0_latch_transition(tmp_path) -> None:
+    memory = build_dialogue_memory(
+        current_message="Хочу вернуть деньги, иначе пойду в суд.",
+        active_brand="foton",
+        recent_messages=["Клиент: 8 класс математика"],
+        context={
+            "dialogue_contract_debug_trace": {
+                "enabled": True,
+                "run_dir": str(tmp_path),
+                "dialog_id": "memory_trace",
+                "turn": 1,
+            }
+        },
+        session_id="s4-trace",
+    )
+
+    assert memory.p0_latch.active is True
+    rows = _trace_rows(tmp_path / "debug_trace.jsonl")
+    latch = next(row for row in rows if row["node"] == "_next_p0_latch")
+    assert latch["dialog_id"] == "memory_trace"
+    assert latch["values"]["next_active"] is True
+    assert "legal_threat" in latch["values"]["next_codes"]
 
 
 def test_dialogue_memory_does_not_latch_presale_refund_policy_question() -> None:

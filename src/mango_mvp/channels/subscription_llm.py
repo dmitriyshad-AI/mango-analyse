@@ -790,6 +790,95 @@ class SubscriptionDraftResult:
         return payload
 
 
+@dataclass(frozen=True)
+class SafeTemplateSpec:
+    name: str
+    priority: int
+    produce: Callable[[SubscriptionDraftResult, str, Optional[Mapping[str, Any]]], str]
+    route_on_apply: str
+    flag: str
+    checklist: str
+    extra_flags: tuple[str, ...] = ()
+
+
+def _produce_cross_brand_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    return _cross_brand_safe_template(result, client_message=client_message, context=context)
+
+
+DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
+    SafeTemplateSpec(
+        name="cross_brand",
+        priority=10,
+        produce=_produce_cross_brand_template,
+        route_on_apply="keep_or_draft",
+        flag="cross_brand_safe_template_applied",
+        checklist="Кросс-бренд: не консультировать по другому бренду и не сравнивать условия.",
+    ),
+)
+
+
+def _safe_template_already_applied(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    if isinstance(metadata.get("dialogue_contract_v2_template_dispatcher"), Mapping):
+        return True
+    return any(spec.flag in result.safety_flags or metadata.get(spec.flag) for spec in DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY)
+
+
+def _safe_template_route(result: SubscriptionDraftResult, spec: SafeTemplateSpec) -> str:
+    if spec.route_on_apply == "manager_only":
+        return "manager_only"
+    if spec.route_on_apply == "draft_for_manager":
+        return "draft_for_manager"
+    if spec.route_on_apply == "keep_or_draft":
+        return "manager_only" if result.route == "manager_only" else "draft_for_manager"
+    return result.route
+
+
+def _apply_safe_template_spec(
+    result: SubscriptionDraftResult,
+    spec: SafeTemplateSpec,
+    text: str,
+) -> SubscriptionDraftResult:
+    clean_text = str(text or "").strip()
+    if not clean_text:
+        return result
+    metadata = dict(result.metadata)
+    metadata[spec.flag] = True
+    metadata["dialogue_contract_v2_template_dispatcher"] = {
+        "applied": spec.name,
+        "priority": spec.priority,
+    }
+    flags = tuple(dict.fromkeys([*result.safety_flags, spec.flag, *spec.extra_flags]))
+    checklist = tuple(dict.fromkeys([*result.manager_checklist, spec.checklist]))
+    return replace(
+        result,
+        route=_safe_template_route(result, spec),
+        draft_text=clean_text,
+        safety_flags=flags,
+        manager_checklist=checklist,
+        metadata=metadata,
+    )
+
+
+def apply_dialogue_contract_v2_template_dispatcher(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    if _safe_template_already_applied(result):
+        return result
+    for spec in sorted(DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY, key=lambda item: item.priority):
+        text = spec.produce(result, client_message, context)
+        if text:
+            return _apply_safe_template_spec(result, spec, text)
+    return result
+
+
 class SubscriptionLlmDraftProvider:
     def __init__(
         self,
@@ -1021,6 +1110,10 @@ class SubscriptionLlmDraftProvider:
         result = guarded
 
         guarded = apply_unconfirmed_operational_specificity_guard(result, context=context)
+        guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
+        result = guarded
+
+        guarded = apply_dialogue_contract_v2_template_dispatcher(result, client_message=client_message, context=context)
         guarded = self._reverify_dialogue_contract_text_change(result, guarded, client_message=client_message, context=context)
         result = guarded
 

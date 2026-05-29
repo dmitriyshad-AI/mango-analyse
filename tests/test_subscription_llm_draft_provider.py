@@ -2790,6 +2790,97 @@ def test_cross_brand_discount_does_not_get_overwritten_by_discount_fallback() ->
     assert "cross_brand_safe_template_applied" in result.safety_flags
 
 
+def _apply_v2_guard_chain(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: dict,
+) -> SubscriptionDraftResult:
+    provider = CodexExecDraftProvider(max_attempts=1)
+    return provider._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
+
+
+def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, сориентирую по условиям нашего центра.",
+        message_type="question",
+        topic_id="service:S5_general_consultation",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Вы партнёры с УНПК?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "cross_brand_safe_template_applied" in guarded.safety_flags
+    assert "dialogue_contract_text_change_reverified" in guarded.safety_flags
+    assert guarded.metadata["dialogue_contract_v2_template_dispatcher"]["applied"] == "cross_brand"
+    assert "отдельные организации" in guarded.draft_text.casefold()
+    assert "унпк" not in guarded.draft_text.casefold()
+
+
+def test_v2_cross_brand_dispatcher_has_precedence_over_terminal_template() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Я цифровой помощник Фотона.",
+        message_type="question",
+        topic_id="service:S5_general_consultation",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Вы бот? И это та же организация, что УНПК?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    template_flags = [flag for flag in guarded.safety_flags if flag.endswith("_safe_template_applied")]
+    assert template_flags == ["cross_brand_safe_template_applied"]
+    assert "отдельные организации" in guarded.draft_text.casefold()
+    assert "цифровой помощник" not in guarded.draft_text.casefold()
+
+
+def test_v2_cross_brand_dispatcher_does_not_fire_on_brand_confirmation() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, это Фотон. Менеджер подскажет адрес и подходящую группу.",
+        message_type="question",
+        topic_id="service:S5_general_consultation",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Это точно Фотон?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "cross_brand_safe_template_applied" not in guarded.safety_flags
+    assert guarded.draft_text == result.draft_text
+
+
+def test_v2_cross_brand_dispatcher_does_not_treat_mfti_as_other_brand_for_unpk() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, УНПК МФТИ. Подберу вариант по классу и предмету.",
+        message_type="question",
+        topic_id="service:S5_general_consultation",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "УНПК МФТИ — это точно при МФТИ?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "cross_brand_safe_template_applied" not in guarded.safety_flags
+    assert guarded.draft_text == result.draft_text
+
+
 def test_humanity_x2_rewriter_disabled_by_default() -> None:
     base = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

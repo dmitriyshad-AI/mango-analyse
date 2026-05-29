@@ -844,6 +844,29 @@ def _produce_matkap_template(
     return _matkap_safe_template(result, client_message=client_message, context=context)
 
 
+def _produce_tax_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    haystack = _semantic_haystack(result, client_message=client_message, context=context)
+    if not has_any_marker(haystack, ("налог", "вычет", "фнс")):
+        return ""
+    client_haystack = str(client_message or "").casefold().replace("ё", "е")
+    asks_amount = has_any_marker(client_haystack, ("сумм", "сколько", "13%", "110 000", "14 300", "2023", "прошл", "двое", "два"))
+    asks_fns_decision = (
+        has_any_marker(client_haystack, ("точно", "гарант", "одобр", "фнс", "налогов"))
+        and has_any_marker(client_haystack, ("верн", "примет", "одобрит", "получ"))
+    )
+    if asks_fns_decision and not asks_amount:
+        return TAX_FNS_REVIEW_SAFE_TEXT
+    if has_any_marker(client_haystack, ("как оформить", "оформить вычет", "подать на вычет", "подача")) and has_any_marker(
+        haystack, ("онлайн", "дистанц", "заоч")
+    ):
+        return TAX_ONLINE_FORM_SAFE_TEXT
+    return _tax_safe_template(result, client_message=client_message, context=context)
+
+
 def _produce_olympiad_online_template(
     result: SubscriptionDraftResult,
     client_message: str,
@@ -903,6 +926,14 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
         route_on_apply="keep_or_draft",
         flag="matkap_safe_template_applied",
         checklist="Маткапитал: не обещать одобрение СФР и не принимать региональный маткапитал.",
+    ),
+    SafeTemplateSpec(
+        name="tax",
+        priority=41,
+        produce=_produce_tax_template,
+        route_on_apply="keep_or_draft",
+        flag="tax_safe_template_applied",
+        checklist="Налоговый вычет: не гарантировать возврат от ФНС; лицензия без номеров.",
     ),
     SafeTemplateSpec(
         name="olympiad_online",

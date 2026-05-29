@@ -1,0 +1,23 @@
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'v2_tax or tax_amount_question or tax_deduction_ack or block_a_tax or v2_matkap or v2_result_guarantee or v2_admission_guarantee'
+
+Result:
+16 passed, 242 deselected in 0.97s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+
+Result:
+75 passed in 0.80s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+
+Result:
+258 passed in 4.34s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+
+Result:
+2272 tests collected in 4.60s

@@ -25,6 +25,10 @@ from mango_mvp.channels.subscription_llm import (
     ADMISSION_GUARANTEE_SAFE_TEXT,
     RESULT_GUARANTEE_SAFE_TEXT,
     SubscriptionDraftResult,
+    TAX_AMOUNT_SAFE_TEXT,
+    TAX_FNS_REVIEW_SAFE_TEXT,
+    TAX_LICENSE_SAFE_TEXT,
+    TAX_ONLINE_FORM_SAFE_TEXT,
     UNPK_EGE_INTENSIVE_PRICE_SAFE_TEXT,
     UNPK_FOUR_WEEKS_NEW_PRICE_SAFE_TEXT,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
@@ -3229,6 +3233,137 @@ def test_v2_regular_payment_question_is_not_matkap() -> None:
     )
 
     assert "matkap_safe_template_applied" not in guarded.safety_flags
+
+
+def test_v2_tax_fns_decision_uses_safe_template() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="ФНС точно вернёт вычет.",
+        message_type="question",
+        topic_id="theme:008_tax_deduction",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "ФНС точно вернёт налоговый вычет?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == TAX_FNS_REVIEW_SAFE_TEXT
+    assert "tax_safe_template_applied" in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+    assert "ФНС рассматривает" in guarded.draft_text
+
+
+def test_v2_tax_amount_question_uses_verified_limit_template() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Налоговый вычет возможен.",
+        message_type="question",
+        topic_id="theme:008_tax_deduction",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Сколько вернут через налоговый вычет за год?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == TAX_AMOUNT_SAFE_TEXT
+    assert "tax_safe_template_applied" in guarded.safety_flags
+    assert "unsupported_promise_detected" not in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+    assert "14 300" in guarded.draft_text
+    assert "13%" in guarded.draft_text
+    assert "110 000" in guarded.draft_text
+    assert find_unsupported_numeric_promises(guarded.draft_text, context={}) == ()
+
+
+def test_v2_tax_license_question_uses_public_license_text_without_number() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Лицензия есть, номер 123456.",
+        message_type="question",
+        topic_id="theme:008_tax_deduction",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "У вас есть лицензия для налогового вычета?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == TAX_LICENSE_SAFE_TEXT
+    assert "tax_safe_template_applied" in guarded.safety_flags
+    assert "123456" not in guarded.draft_text
+    assert "лицензия" in guarded.draft_text.casefold()
+
+
+def test_v2_tax_online_form_question_uses_safe_template() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По онлайн-курсу вычет оформляется автоматически.",
+        message_type="question",
+        topic_id="theme:008_tax_deduction",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Как оформить вычет по онлайн-курсу?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == TAX_ONLINE_FORM_SAFE_TEXT
+    assert "tax_safe_template_applied" in guarded.safety_flags
+    assert "зависит от трактовки налоговой" in guarded.draft_text.casefold()
+
+
+def test_v2_tax_certificate_request_is_not_high_risk_or_license_number_leak() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, справку для налогового вычета подготовит менеджер.",
+        message_type="context_update",
+        topic_id="theme:012_certificates",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {"tax.certificate": "Для налогового вычета менеджер поможет подготовить документы."}
+            }
+        },
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Дайте справку для налогового вычета",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.route != "manager_only"
+    assert "high_risk_input_manager_only" not in guarded.safety_flags
+    assert "tax_safe_template_applied" not in guarded.safety_flags
+    assert "лицензия №" not in guarded.draft_text.casefold()
+
+
+def test_v2_regular_refund_question_is_not_tax() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По возврату менеджер подтвердит условия.",
+        message_type="question",
+        topic_id="theme:010_refund_policy",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Если передумаю, вернут остаток?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "tax_safe_template_applied" not in guarded.safety_flags
 
 
 def test_v2_olympiad_online_does_not_replace_regular_online_question() -> None:

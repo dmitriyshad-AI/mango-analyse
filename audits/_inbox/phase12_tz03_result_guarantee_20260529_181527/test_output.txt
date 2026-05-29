@@ -1,0 +1,18 @@
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'v2_result_guarantee or result_guarantee or v2_terminal or v2_cross_brand'
+
+Result:
+11 passed, 228 deselected in 0.88s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+
+Result:
+239 passed in 4.16s
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+
+Result:
+75 passed in 0.81s
+

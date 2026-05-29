@@ -20,6 +20,7 @@ from mango_mvp.channels.subscription_llm import (
     OFF_TOPIC_UNPK_SAFE_TEXT,
     PAYMENT_DISPUTE_SAFE_TEXT,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
+    RESULT_GUARANTEE_SAFE_TEXT,
     SubscriptionDraftResult,
     UNPK_EGE_INTENSIVE_PRICE_SAFE_TEXT,
     UNPK_FOUR_WEEKS_NEW_PRICE_SAFE_TEXT,
@@ -2950,6 +2951,92 @@ def test_v2_identity_output_guard_blocks_leaked_draft_without_identity_question(
     assert guarded.route == "manager_only"
     assert "identity_disclosure_guarded" in guarded.safety_flags
     assert "gpt" not in guarded.draft_text.casefold()
+
+
+def test_v2_result_guarantee_applies_over_unsupported_promise() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Гарантируем 100 баллов на ЕГЭ.",
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Гарантируете, что ребёнок сдаст ЕГЭ на 100 баллов?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == RESULT_GUARANTEE_SAFE_TEXT
+    assert "result_guarantee_safe_template_applied" in guarded.safety_flags
+    assert "unsupported_promise_detected" in guarded.safety_flags
+    assert "placeholder_in_draft" in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+
+
+def test_v2_result_guarantee_handles_exact_score_question_without_word_points() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По подготовке к ЕГЭ сориентирую.",
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Точно сдаст на 90+?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert guarded.draft_text == RESULT_GUARANTEE_SAFE_TEXT
+    assert "result_guarantee_safe_template_applied" in guarded.safety_flags
+
+
+def test_v2_result_statistics_is_not_result_guarantee_or_unsupported_promise() -> None:
+    retrieved_facts = {
+        "results_social_proof.ege_avg_above_country_pts": (
+            "УНПК: средний результат ЕГЭ у учеников выше среднего по стране на 25 баллов."
+        )
+    }
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Средний результат ЕГЭ выше среднего по стране на 25 баллов.",
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": retrieved_facts}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Какой у вас средний результат?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1", "autonomy_enabled": True},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == result.draft_text
+    assert "result_guarantee_safe_template_applied" not in guarded.safety_flags
+    assert "unsupported_promise_detected" not in guarded.safety_flags
+
+
+def test_v2_price_question_is_not_result_guarantee() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Стоимость зависит от формата, менеджер уточнит подходящий вариант.",
+        message_type="question",
+        topic_id="theme:001_pricing",
+        metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Сколько стоит подготовка к ЕГЭ?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "result_guarantee_safe_template_applied" not in guarded.safety_flags
 
 
 def test_humanity_x2_rewriter_disabled_by_default() -> None:

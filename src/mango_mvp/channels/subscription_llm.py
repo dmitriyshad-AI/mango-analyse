@@ -557,6 +557,7 @@ COMBINED_NON_RISK_INPUT_RE = re.compile(
 RESULT_GUARANTEE_INPUT_RE = re.compile(
     r"гарантир\w*[^.!?\n]{0,80}(?:балл|егэ|огэ|результат|сдаст)"
     r"|(?:сдаст|балл\w*|результат)[^.!?\n]{0,80}гарантир\w*"
+    r"|точно[^.!?\n]{0,60}сдаст[^.!?\n]{0,60}(?:егэ|огэ|на\s*\d{2,3}\+?\s*(?:балл\w*)?)"
     r"|(?:\b90\b|\b100\b)[^.!?\n]{0,80}балл\w*"
     r"|гарантир\w*[^.!?\n]{0,80}диплом\w*"
     r"|диплом\w*[^.!?\n]{0,80}гарантир\w*",
@@ -817,6 +818,14 @@ def _produce_terminal_template(
     return _terminal_safe_template(result, client_message=client_message, context=context)
 
 
+def _produce_result_guarantee_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    return RESULT_GUARANTEE_SAFE_TEXT if _is_result_guarantee_case(result, client_message=client_message, context=context) else ""
+
+
 DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
     SafeTemplateSpec(
         name="cross_brand",
@@ -833,6 +842,15 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
         route_on_apply="terminal",
         flag="terminal_safe_template_applied",
         checklist="Терминальный случай: identity/адрес/контакты/офф-топик — безопасный шаблон.",
+    ),
+    SafeTemplateSpec(
+        name="result_guarantee",
+        priority=30,
+        produce=_produce_result_guarantee_template,
+        route_on_apply="draft_for_manager",
+        flag="result_guarantee_safe_template_applied",
+        checklist="Не гарантировать балл/результат: только программа и статистика.",
+        extra_flags=("placeholder_in_draft",),
     ),
 )
 
@@ -1173,9 +1191,12 @@ class SubscriptionLlmDraftProvider:
         metadata = dict(after.metadata)
         pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
         facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+        fact_texts = {str(k): str(v) for k, v in facts.items()}
+        if _is_verified_safe_numeric_template(after.draft_text):
+            fact_texts["_verified_safe_numeric_template"] = after.draft_text
         findings = verify_dialogue_contract_output(
             after.draft_text,
-            facts={str(k): str(v) for k, v in facts.items()},
+            facts=fact_texts,
             active_brand=_active_brand(context),
             client_message=client_message,
             context=context,

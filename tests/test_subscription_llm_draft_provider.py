@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from mango_mvp.channels.dialogue_contract_pipeline import FactStore, run_pipeline
 from mango_mvp.channels.subscription_llm import (
     ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
     ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
@@ -36,6 +37,7 @@ from mango_mvp.channels.subscription_llm import (
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
     UNPK_OLYMPIAD_PHYSTECH_HANDOFF_TEXT,
     UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT,
+    apply_payment_confirmation_guard,
     apply_brand_separation_guard,
     apply_conversation_intent_plan_guard,
     apply_humanity_guards,
@@ -46,6 +48,7 @@ from mango_mvp.channels.subscription_llm import (
     _claim_supported_by_facts,
     _fresh_fact_texts,
     contains_bot_identity_disclosure,
+    decide_route,
     draft_has_internal_service_markers,
     detect_high_risk_input_markers,
     find_unsupported_numeric_promises,
@@ -2852,6 +2855,267 @@ def _apply_v2_guard_chain(
 ) -> SubscriptionDraftResult:
     provider = CodexExecDraftProvider(max_attempts=1)
     return provider._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
+
+
+def _route_shield_fact_store(facts: dict[str, str] | None = None) -> FactStore:
+    store_facts = dict(facts or {})
+    return FactStore(catalog=tuple(store_facts.keys()), store={"unpk": store_facts, "foton": store_facts})
+
+
+def _route_shield_contract(
+    *,
+    question: str = "Сколько стоит курс?",
+    answerability: str = "answer_self",
+    keys: tuple[str, ...] = (),
+    is_p0: bool = False,
+    forbidden: tuple[str, ...] = (),
+) -> dict:
+    return {
+        "current_question": question,
+        "answerability": answerability,
+        "is_p0": is_p0,
+        "forbidden_substitutions": list(forbidden),
+        "subquestions": [
+            {
+                "text": question,
+                "answerable": "self" if answerability == "answer_self" else "manager",
+                "needed_fact_keys": list(keys),
+            }
+        ],
+        "confidence": 0.93,
+    }
+
+
+def _route_shield_pipeline_result(
+    *,
+    client_message: str = "Сколько стоит курс?",
+    draft_text: str | None = "По подтверждённым данным: курс стоит 49 000 ₽.",
+    contract: dict | None = None,
+    facts: dict[str, str] | None = None,
+    faithfulness_fn=None,
+):
+    return run_pipeline(
+        conversation=({"role": "client", "text": client_message},),
+        active_brand="unpk",
+        fact_store=_route_shield_fact_store(facts),
+        understand_fn=lambda _prompt: contract or _route_shield_contract(keys=tuple((facts or {}).keys())),
+        draft_fn=None if draft_text is None else (lambda _prompt: draft_text),
+        faithfulness_fn=faithfulness_fn,
+    )
+
+
+def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
+    p0 = apply_high_risk_content_guards(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Подберу курс и цену.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+        ),
+        client_message="Оплатил, занятий нет, верните деньги.",
+        context={"active_brand": "foton"},
+    )
+    assert p0.route == "manager_only"
+
+    pregate = _route_shield_pipeline_result(
+        client_message="Пойду в суд, если не вернёте деньги.",
+        contract=_route_shield_contract(is_p0=False, keys=("price.current",)),
+        facts={"price.current": "УНПК: курс стоит 49 000 ₽."},
+    )
+    assert pregate.route == "manager_only"
+    assert pregate.fallback_reason == "p0"
+
+    refund_without_fact = _route_shield_pipeline_result(
+        client_message="Если передумаю, деньги вернут?",
+        contract=_route_shield_contract(question="возврат до оплаты", keys=("refund_policy.current",)),
+        facts={},
+    )
+    assert refund_without_fact.route == "draft_for_manager"
+    assert refund_without_fact.fallback_reason == "refund_policy_manager_only"
+
+    cross_brand = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="У Фотона и УНПК одинаковые условия.",
+            message_type="question",
+            topic_id="service:S5_general_consultation",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        "Это один центр?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+    assert cross_brand.route in {"draft_for_manager", "manager_only"}
+    assert "cross_brand_safe_template_applied" in cross_brand.safety_flags
+
+    fabricated_number = _route_shield_pipeline_result(
+        draft_text="Курс стоит 999 999 ₽.",
+        contract=_route_shield_contract(keys=()),
+        facts={},
+    )
+    assert fabricated_number.route == "draft_for_manager"
+    assert fabricated_number.fallback_reason == "hard_verification_failed"
+
+    unsupported_entity = _route_shield_pipeline_result(
+        draft_text="Запись занятия будет доступна на МТС Линк.",
+        contract=_route_shield_contract(keys=()),
+        facts={},
+    )
+    assert unsupported_entity.route == "draft_for_manager"
+    assert unsupported_entity.fallback_reason == "hard_verification_failed"
+
+    forbidden_scope = _route_shield_pipeline_result(
+        draft_text="Курс стоит 49 000 ₽, также есть рассрочка.",
+        contract=_route_shield_contract(keys=(), forbidden=("рассрочка",)),
+        facts={},
+    )
+    assert forbidden_scope.route == "draft_for_manager"
+    assert forbidden_scope.fallback_reason == "hard_verification_failed"
+
+    meta_leak = _route_shield_pipeline_result(
+        draft_text="Передам информацию. fact_id=price.current trace_id=abc",
+        contract=_route_shield_contract(keys=()),
+        facts={},
+    )
+    assert meta_leak.route == "draft_for_manager"
+    assert meta_leak.fallback_reason == "hard_verification_failed"
+
+    ai_disclosure = _route_shield_pipeline_result(
+        client_message="Сколько стоит курс?",
+        draft_text="Я GPT, помогу с вопросом.",
+        contract=_route_shield_contract(keys=()),
+        facts={},
+    )
+    assert ai_disclosure.route == "draft_for_manager"
+    assert ai_disclosure.fallback_reason == "hard_verification_failed"
+
+    p0_promise = _route_shield_pipeline_result(
+        client_message="Сколько стоит курс?",
+        draft_text="Точно вернём деньги, если курс не подойдёт.",
+        contract=_route_shield_contract(keys=()),
+        facts={},
+    )
+    assert p0_promise.route == "draft_for_manager"
+    assert p0_promise.fallback_reason == "hard_verification_failed"
+
+    unsupported_promise = apply_unsupported_promise_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Гарантируем 100 баллов на ЕГЭ.",
+            message_type="question",
+            topic_id="theme:016_program",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        context={"active_brand": "unpk"},
+    )
+    assert unsupported_promise.route == "manager_only"
+    assert "unsupported_promise_detected" in unsupported_promise.safety_flags
+
+    operational = apply_unconfirmed_operational_specificity_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Менеджер свяжется до вечера.",
+            message_type="question",
+            topic_id="theme:013_schedule",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        context={"active_brand": "unpk"},
+    )
+    assert operational.route == "manager_only"
+    assert "unsupported_followup_deadline_detected" in operational.safety_flags
+
+    unstated = apply_unstated_subject_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Для 9 класса по физике курс подходит.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        client_message="Сколько стоит для 9 класса?",
+        context={"active_brand": "unpk"},
+    )
+    assert unstated.route == "draft_for_manager"
+    assert "unstated_subject_guarded" in unstated.safety_flags
+
+    payment_confirmation = apply_payment_confirmation_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Оплата получена, доступ откроем.",
+            message_type="question",
+            topic_id="theme:003_payment_status",
+        ),
+        client_message="Оплата прошла?",
+        context={"active_brand": "unpk"},
+    )
+    assert payment_confirmation.route == "manager_only"
+    assert "payment_confirmation_guarded" in payment_confirmation.safety_flags
+
+    unknown_brand = decide_route(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Курс стоит 49 000 ₽.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+        ),
+        client_message="Сколько стоит?",
+        context={"autonomy_policy": {"allow_autonomous": True}},
+    )
+    assert unknown_brand.route == "draft_for_manager"
+    assert unknown_brand.veto_category == "unknown_brand"
+
+    forced_manager_only = decide_route(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Курс стоит 49 000 ₽.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+        ),
+        client_message="Сколько стоит?",
+        context={
+            "active_brand": "unpk",
+            "rop_policy": {"bot_permission": "manager_only"},
+            "autonomy_policy": {"allow_autonomous": True},
+        },
+    )
+    assert forced_manager_only.route == "manager_only"
+    assert forced_manager_only.veto_category == "force_manager_only"
+
+    semantic_unavailable = _route_shield_pipeline_result(
+        draft_text="Передам информацию по курсу.",
+        contract=_route_shield_contract(keys=()),
+        facts={},
+        faithfulness_fn=lambda _prompt: "not json",
+    )
+    assert semantic_unavailable.route == "draft_for_manager"
+    assert semantic_unavailable.fallback_reason == "semantic_check_unavailable"
+
+    no_draft_fn = _route_shield_pipeline_result(
+        draft_text=None,
+        contract=_route_shield_contract(keys=()),
+        facts={},
+    )
+    assert no_draft_fn.route == "draft_for_manager"
+    assert no_draft_fn.fallback_reason == "no_draft_fn"
+
+
+def test_pravka4_decide_route_does_not_flip_default_before_veto_shield_is_green() -> None:
+    decision = decide_route(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Курс стоит 49 000 ₽.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+        ),
+        client_message="Сколько стоит?",
+        context={
+            "active_brand": "unpk",
+            "autonomy_policy": {"allow_autonomous": True},
+            "client_safe_fact_verified": True,
+        },
+    )
+
+    assert decision.route == "draft_for_manager"
+    assert decision.autonomous_candidate is True
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:

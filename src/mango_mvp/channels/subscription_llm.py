@@ -1427,42 +1427,29 @@ class SubscriptionLlmDraftProvider:
         flags = list(result.safety_flags)
         checklist = list(result.manager_checklist)
         metadata = dict(result.metadata)
-        if should_force_manager_only(context):
-            flags.append("forced_manager_only_by_rop_policy")
-            return replace(result, route="manager_only", safety_flags=tuple(dict.fromkeys(flags)), metadata=metadata)
-        markers = set(detect_high_risk_input_markers(client_message, context=context))
-        if markers or is_high_risk_result(result):
-            flags.extend(("autonomy_blocked_high_risk", "high_risk_manager_only"))
-            checklist.append("Автономный ответ запрещен: в сообщении есть P0/high-risk тема.")
-            metadata["autonomy_blocked_high_risk"] = True
+
+        decision = decide_route(result, client_message=client_message, context=context)
+        if decision.veto_category:
+            flags.extend(decision.safety_flags)
+            checklist.extend(decision.manager_checklist)
+            metadata.update(decision.metadata)
+            if decision.veto_category == "high_risk" and _is_combined_high_risk_case(
+                result,
+                markers=set(detect_high_risk_input_markers(client_message, context=context)),
+                client_message=client_message,
+                context=context,
+            ):
+                flags.append("combined_high_risk_manager_only")
+                metadata["combined_high_risk_manager_only"] = True
             return replace(
                 result,
-                route="manager_only",
+                route=decision.route,
                 safety_flags=tuple(dict.fromkeys(flags)),
                 manager_checklist=tuple(dict.fromkeys(checklist)),
                 metadata=metadata,
             )
-        if _active_brand(context) == "unknown":
-            flags.append("autonomy_default_cautious_unknown_brand")
-            checklist.append("Автономный ответ запрещен: активный бренд не определен.")
-            return replace(
-                result,
-                route="draft_for_manager",
-                safety_flags=tuple(dict.fromkeys(flags)),
-                manager_checklist=tuple(dict.fromkeys(checklist)),
-                metadata=metadata,
-            )
-        if result.route in AUTONOMOUS_ROUTES and not _autonomy_enabled(context):
-            flags.append("autonomy_default_cautious_no_policy")
-            checklist.append("Автономный ответ запрещен: нет явного разрешения матрицы автономности.")
-            return replace(
-                result,
-                route="draft_for_manager",
-                safety_flags=tuple(dict.fromkeys(flags)),
-                manager_checklist=tuple(dict.fromkeys(checklist)),
-                metadata=metadata,
-            )
-        if result.route == "draft_for_manager" and _autonomy_enabled(context) and _autonomy_topic_allowed(result.topic_id, context):
+
+        if decision.autonomous_candidate:
             flags.append("dialogue_contract_route_permission_autonomous_candidate")
         return replace(result, safety_flags=tuple(dict.fromkeys(flags)), manager_checklist=tuple(dict.fromkeys(checklist)), metadata=metadata)
 
@@ -6545,6 +6532,72 @@ def _autonomy_topic_allowed(topic_id: str, context: Optional[Mapping[str, Any]])
         return True
     configured_ids = {str(item or "").strip() for item in configured} if isinstance(configured, Sequence) and not isinstance(configured, (str, bytes, bytearray)) else {str(configured or "").strip()}
     return topic in configured_ids
+
+
+@dataclass(frozen=True)
+class RouteDecision:
+    route: str
+    veto_category: str = ""
+    safety_flags: tuple[str, ...] = ()
+    manager_checklist: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    autonomous_candidate: bool = False
+
+
+def decide_route(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+    allow_default_autonomy: bool = False,
+) -> RouteDecision:
+    """Central route-permission decision point.
+
+    Правка 4a keeps current behavior 1:1: no default inversion until the veto
+    shield is green. The later 4b flip is gated by allow_default_autonomy.
+    """
+
+    if result.route not in (*AUTONOMOUS_ROUTES, "draft_for_manager"):
+        return RouteDecision(route=result.route)
+    if should_force_manager_only(context):
+        return RouteDecision(
+            route="manager_only",
+            veto_category="force_manager_only",
+            safety_flags=("forced_manager_only_by_rop_policy",),
+        )
+    if set(detect_high_risk_input_markers(client_message, context=context)) or is_high_risk_result(result):
+        return RouteDecision(
+            route="manager_only",
+            veto_category="high_risk",
+            safety_flags=("autonomy_blocked_high_risk", "high_risk_manager_only"),
+            manager_checklist=("Автономный ответ запрещен: в сообщении есть P0/high-risk тема.",),
+            metadata={"autonomy_blocked_high_risk": True},
+        )
+    if _active_brand(context) == "unknown":
+        return RouteDecision(
+            route="draft_for_manager",
+            veto_category="unknown_brand",
+            safety_flags=("autonomy_default_cautious_unknown_brand",),
+            manager_checklist=("Автономный ответ запрещен: активный бренд не определен.",),
+        )
+    if result.route in AUTONOMOUS_ROUTES and not _autonomy_enabled(context):
+        return RouteDecision(
+            route="draft_for_manager",
+            veto_category="autonomy_policy_missing",
+            safety_flags=("autonomy_default_cautious_no_policy",),
+            manager_checklist=("Автономный ответ запрещен: нет явного разрешения матрицы автономности.",),
+        )
+
+    autonomy_ready = _autonomy_enabled(context) and _autonomy_topic_allowed(result.topic_id, context)
+    has_covering_fact = _has_client_safe_current_fact(context) or _is_verified_client_safe_template(result.draft_text)
+    if (
+        allow_default_autonomy
+        and result.route == "draft_for_manager"
+        and autonomy_ready
+        and has_covering_fact
+    ):
+        return RouteDecision(route="bot_answer_self_for_pilot", autonomous_candidate=True)
+    return RouteDecision(route=result.route, autonomous_candidate=result.route == "draft_for_manager" and autonomy_ready)
 
 
 def _has_client_safe_current_fact(context: Optional[Mapping[str, Any]]) -> bool:

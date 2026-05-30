@@ -307,9 +307,11 @@ def build_understanding_prompt(
     hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
     catalog = ", ".join(str(item) for item in fact_key_catalog[:MAX_CATALOG_KEYS])
     known_slots: Mapping[str, Any] = {}
+    topic_focus: Mapping[str, Any] = {}
     if isinstance(context, MappingABC):
         memory = context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), MappingABC) else {}
         known_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), MappingABC) else {}
+        topic_focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), MappingABC) else {}
     return (
         "Ты разбираешь диалог с родителем о курсах учебного центра.\n"
         f"Активный бренд: {_normalize_brand(active_brand)}. Клиентский ответ потом будет только по этому бренду.\n"
@@ -327,12 +329,19 @@ def build_understanding_prompt(
         "не подменяй его соседним способом оплаты; в current_question и subquestion.text сохрани именно спрошенный способ.\n"
         "- Гипотетический вопрос до оплаты «если передумаю / если не понравится, вернут ли деньги?» — это refund_policy, не P0; "
         "попроси ключ refund_policy.current и отвечай из факта. Реальная просьба «верните деньги», спор оплаты или жалоба — P0 manager_only.\n"
+        "- Если реплика — уточнение/эллипсис (короткий вопрос про класс/формат/цену/срок без названия предмета или продукта), "
+        "ВОССТАНОВИ тему из истории, known_slots и topic_focus: в current_question и needed_fact_keys укажи полную тему "
+        "(предмет+формат+класс+продукт), а не только новую деталь.\n"
+        "- product_family из topic_focus важен: если тема была 'camp' (лагерь/смена), уточнение остаётся про смену, "
+        "НЕ подменяй обычным курсом или олимпиадой.\n"
+        "- Если клиент ЯВНО назвал другой предмет/продукт, заполни switched_topics и НЕ склеивай новую тему со старой.\n"
         "- known_slots указывай ТОЛЬКО с источником: 'client_turn_N' или 'fact:<key>'. Без источника слот не указывай.\n"
         "- client_state — ситуация/тон клиента для выбора регистра; не нужно потом произносить эмоцию вслух.\n"
         "- needed_fact_keys: только ключи или смысловые ключи из каталога; значения, суммы, даты и проценты не пиши.\n"
         "- Если нужен спорный возврат, жалоба, юридическая угроза или спорная оплата: is_p0=true, answerability=manager_only.\n"
         "- Если факта нет или уверенность низкая: answerability=manager_only, но current_question всё равно заполни.\n"
         f"Уже известные данные: {json.dumps(dict(known_slots), ensure_ascii=False)}\n"
+        f"Фокус темы из памяти: {json.dumps(dict(topic_focus), ensure_ascii=False)}\n"
         f"Каталог ключей фактов: {catalog}\n"
         f"Диалог:\n{hist}\n"
         "Только JSON."
@@ -438,6 +447,233 @@ def understand(
         fact_key_catalog=fact_key_catalog,
         p0_reason_pregate=pregate,
     )
+
+
+_MEMORY_TOPIC_MARKERS_RE = re.compile(
+    r"информат|физик|математ|хими|биолог|русск|англ|обществ|истори|литерат|географ|"
+    r"лвш|лагер|смен|олимпиад|физтех|выездн|camp|lvsh|olympiad|phystech",
+    re.I,
+)
+
+
+def _augment_contract_with_memory_topic(
+    contract: AnswerContract,
+    *,
+    context: Mapping[str, Any] | None,
+    fact_key_catalog: Sequence[str],
+) -> AnswerContract:
+    if contract.is_p0 or contract.switched_topics or not isinstance(context, MappingABC):
+        return contract
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, MappingABC):
+        return contract
+    focus = memory.get("topic_focus")
+    if not isinstance(focus, MappingABC):
+        return contract
+    subject = str(focus.get("subject") or "").strip()
+    if not subject or _contract_has_topic(contract):
+        return contract
+    topic_keys = _keys_for_topic(focus, fact_key_catalog=fact_key_catalog, contract=contract)
+    if not topic_keys:
+        return contract
+    current_question = _compose_topic_question(contract.current_question, focus)
+    return replace_contract_topic(contract, current_question=current_question, needed_fact_keys=topic_keys)
+
+
+def _contract_has_topic(contract: AnswerContract) -> bool:
+    return bool(_MEMORY_TOPIC_MARKERS_RE.search(_contract_intent_text(contract)))
+
+
+def _compose_topic_question(question: str, focus: Mapping[str, Any]) -> str:
+    base = str(question or "").strip() or "уточнение по текущей теме"
+    current_format = _format_from_text(base)
+    parts: list[str] = []
+    subject = str(focus.get("subject") or "").strip()
+    grade = _grade_from_text(base) or str(focus.get("grade") or "").strip()
+    format_value = current_format or str(focus.get("format") or "").strip()
+    product = str(focus.get("product") or "").strip()
+    product_family = str(focus.get("product_family") or "").strip()
+    if subject:
+        parts.append(f"предмет {subject}")
+    if grade:
+        parts.append(f"{grade} класс")
+    if format_value:
+        parts.append(f"формат {format_value}")
+    if product:
+        parts.append(f"продукт {product}")
+    if product_family:
+        family_text = "лагерь/смена" if product_family == "camp" else "регулярный курс" if product_family == "regular_course" else product_family
+        parts.append(f"тип продукта {family_text}")
+    if not parts:
+        return base
+    return f"{base}. Тема: {', '.join(parts)}."
+
+
+def replace_contract_topic(
+    contract: AnswerContract,
+    *,
+    current_question: str,
+    needed_fact_keys: Sequence[str],
+) -> AnswerContract:
+    keys = tuple(dict.fromkeys(str(item or "").strip() for item in needed_fact_keys if str(item or "").strip()))
+    if not keys:
+        return contract
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=(),
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    updated: list[Subquestion] = []
+    for item in subquestions:
+        if item.answerable == "self" or contract.answerability == "answer_self":
+            updated.append(
+                replace(
+                    item,
+                    text=current_question,
+                    answerable="self" if contract.answerability == "answer_self" else item.answerable,
+                    needed_fact_keys=tuple(dict.fromkeys((*item.needed_fact_keys, *keys))),
+                )
+            )
+        else:
+            updated.append(item)
+    return replace(contract, current_question=current_question, subquestions=tuple(updated))
+
+
+def _keys_for_topic(
+    focus: Mapping[str, Any],
+    *,
+    fact_key_catalog: Sequence[str],
+    contract: AnswerContract,
+) -> tuple[str, ...]:
+    subject_aliases = _focus_aliases("subject", focus.get("subject"))
+    if not subject_aliases:
+        return ()
+    grade_aliases = _focus_aliases("grade", focus.get("grade"))
+    format_aliases = _focus_aliases("format", _format_from_text(_contract_intent_text(contract)) or focus.get("format"))
+    product_aliases = _focus_aliases("product", focus.get("product"))
+    family = str(focus.get("product_family") or "").strip().casefold()
+    family_aliases = _focus_aliases("product_family", family)
+    intent_aliases = _contract_query_aliases(contract)
+
+    scored: list[tuple[int, str]] = []
+    for key in tuple(dict.fromkeys(str(item or "").strip() for item in fact_key_catalog if str(item or "").strip())):
+        has_subject = _key_has_any_topic_alias(key, subject_aliases)
+        has_family = _key_has_any_topic_alias(key, family_aliases)
+        if not has_subject and not (family == "camp" and has_family):
+            continue
+        if family == "camp" and family_aliases and not has_family:
+            continue
+        if family == "regular_course" and _key_has_any_topic_alias(key, _focus_aliases("product_family", "camp")):
+            continue
+        score = 40 if has_subject else 28
+        if grade_aliases and _key_has_any_topic_alias(key, grade_aliases):
+            score += 18
+        if format_aliases and _key_has_any_topic_alias(key, format_aliases):
+            score += 16
+        if product_aliases and _key_has_any_topic_alias(key, product_aliases):
+            score += 14
+        if family_aliases and has_family:
+            score += 12
+        if intent_aliases and _key_has_any_topic_alias(key, intent_aliases):
+            score += 10
+        scored.append((score, key))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return tuple(key for _, key in scored[:8])
+
+
+def _focus_aliases(field: str, value: object) -> tuple[str, ...]:
+    raw = str(value or "").strip().casefold().replace("ё", "е")
+    if not raw:
+        return ()
+    if field == "subject":
+        if "информ" in raw:
+            return ("информат", "informatics", "computer_science", "computer")
+        if "физ" in raw:
+            return ("физик", "physics")
+        if "мат" in raw:
+            return ("математ", "math")
+        if "хим" in raw:
+            return ("хим", "chem")
+        if "био" in raw:
+            return ("биолог", "bio")
+        if "рус" in raw:
+            return ("русск", "russian")
+        if "анг" in raw:
+            return ("англ", "english")
+        return tuple(part for part in re.split(r"[\s,;/]+", raw) if part)
+    if field == "grade":
+        match = re.search(r"\b([1-9]|1[01])\b", raw)
+        if not match:
+            return ()
+        grade = match.group(1)
+        return (f"grade{grade}", f"class{grade}", f"{grade}klass", f"klass{grade}", f"{grade}класс")
+    if field == "format":
+        if "онлайн" in raw or "online" in raw:
+            return ("online", "онлайн")
+        if "очно" in raw or "офлайн" in raw or "offline" in raw or "ochno" in raw:
+            return ("offline", "ochno", "очно", "офлайн")
+        return ()
+    if field == "product_family":
+        if raw == "camp" or "лагер" in raw or "смен" in raw or "лвш" in raw:
+            return ("camp", "lvsh", "лвш", "лагер", "смен", "mendeleevo", "менделеев")
+        if raw == "regular_course":
+            return ("regular", "regular_course", "course", "курс")
+        return ()
+    if field == "product":
+        aliases = [part for part in re.split(r"[\s,;/]+", raw) if len(part) >= 3]
+        if "лвш" in raw:
+            aliases.extend(["lvsh", "camp", "лагер", "смен"])
+        return tuple(dict.fromkeys(aliases))
+    return ()
+
+
+def _contract_query_aliases(contract: AnswerContract) -> tuple[str, ...]:
+    text = _contract_intent_text(contract)
+    aliases: list[str] = []
+    if re.search(r"цен|стоим|сколько|оплат", text, re.I):
+        aliases.extend(("price", "prices", "cost", "tuition", "стоим", "цен"))
+    if re.search(r"онлайн|online", text, re.I):
+        aliases.extend(("online", "онлайн"))
+    if re.search(r"очно|офлайн|offline|ochno", text, re.I):
+        aliases.extend(("offline", "ochno", "очно", "офлайн"))
+    if re.search(r"распис|дни|когда|выходн|будн", text, re.I):
+        aliases.extend(("schedule", "days", "weekly", "распис", "дни", "weekend"))
+    if re.search(r"запис|материал|кабинет", text, re.I):
+        aliases.extend(("recording", "materials", "cabinet", "запис"))
+    return tuple(dict.fromkeys(aliases))
+
+
+def _format_from_text(text: str) -> str:
+    low = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"онлайн|online", low, re.I):
+        return "онлайн"
+    if re.search(r"очно|офлайн|offline|ochno", low, re.I):
+        return "очно"
+    return ""
+
+
+def _grade_from_text(text: str) -> str:
+    match = re.search(r"\b([1-9]|1[01])\s*(?:класс|кл\.?|grade)?\b", str(text or "").casefold().replace("ё", "е"))
+    return match.group(1) if match else ""
+
+
+def _key_has_any_topic_alias(key: str, aliases: Sequence[str]) -> bool:
+    if not aliases:
+        return False
+    raw = str(key or "").casefold().replace("ё", "е")
+    norm = _normalize_lookup(raw)
+    for alias in aliases:
+        alias_raw = str(alias or "").casefold().replace("ё", "е")
+        alias_norm = _normalize_lookup(alias_raw)
+        if alias_raw and alias_raw in raw:
+            return True
+        if alias_norm and alias_norm in norm:
+            return True
+    return False
 
 
 def p0_pre_gate(text: str, *, context: Mapping[str, Any] | None = None) -> str | None:
@@ -965,6 +1201,11 @@ def run_pipeline(
             fact_key_catalog=fact_store.catalog,
             understand_fn=understand_fn,
             context=context,
+        )
+        contract = _augment_contract_with_memory_topic(
+            contract,
+            context=context,
+            fact_key_catalog=fact_store.catalog,
         )
         trace.update(
             {

@@ -9,6 +9,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     Toggles,
     build_conversation,
     build_draft_prompt,
+    build_understanding_prompt,
     check_claim_faithfulness,
     parse_contract,
     pipeline_enabled,
@@ -2593,6 +2594,188 @@ def test_build_draft_prompt_without_dialogue_memory_keeps_memory_block_empty() -
 
     assert prompt_without_memory == prompt_with_none == prompt_with_empty
     assert "Рабочая память переписки" not in prompt_without_memory
+
+
+def test_build_understanding_prompt_includes_topic_focus_for_ellipsis() -> None:
+    prompt = build_understanding_prompt(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса"},
+            {"role": "client", "text": "а онлайн?"},
+        ),
+        active_brand="foton",
+        fact_key_catalog=("regular_course.informatics.grade10.online.price",),
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "topic_focus": {
+                    "subject": "информатика",
+                    "grade": "10",
+                    "format": "онлайн",
+                    "product_family": "regular_course",
+                },
+            }
+        },
+    )
+
+    assert "Фокус темы из памяти" in prompt
+    assert '"subject": "информатика"' in prompt
+    assert "ВОССТАНОВИ тему" in prompt
+    assert "product_family" in prompt
+    assert "switched_topics" in prompt
+
+
+def test_memory_topic_augment_recovers_elliptic_online_question_fact() -> None:
+    fact_key = "regular_course.informatics.grade10.online.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс онлайн — семестр 29 750 ₽."}},
+    )
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса"},
+            {"role": "client", "text": "а онлайн?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а онлайн?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Информатика 10 класс онлайн — семестр 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "topic_focus": {
+                    "subject": "информатика",
+                    "grade": "10",
+                    "format": "онлайн",
+                    "product_family": "regular_course",
+                }
+            }
+        },
+    )
+
+    assert result.route == "bot_answer_self"
+    assert fact_key in result.facts
+    assert "29 750" in result.draft_text
+
+
+def test_memory_topic_augment_does_not_glue_explicit_subject_switch() -> None:
+    informatics_key = "regular_course.informatics.grade10.online.price"
+    physics_key = "regular_course.physics.grade10.online.price"
+    store = FactStore(
+        catalog=(informatics_key, physics_key),
+        store={
+            "foton": {
+                informatics_key: "Фотон: информатика 10 класс онлайн — семестр 29 750 ₽.",
+                physics_key: "Фотон: физика 10 класс онлайн — семестр 31 000 ₽.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса"},
+            {"role": "client", "text": "а по физике онлайн?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а по физике онлайн?",
+                "needed_fact_keys": [physics_key],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Физика 10 класс онлайн — семестр 31 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "topic_focus": {
+                    "subject": "информатика",
+                    "grade": "10",
+                    "format": "онлайн",
+                    "product_family": "regular_course",
+                }
+            }
+        },
+    )
+
+    assert physics_key in result.facts
+    assert informatics_key not in result.facts
+    assert "31 000" in result.draft_text
+
+
+def test_memory_topic_augment_keeps_camp_family_from_regular_course() -> None:
+    regular_key = "regular_course.informatics.grade10.online.price"
+    camp_key = "lvsh_mendeleevo_2026.online_format"
+    store = FactStore(
+        catalog=(regular_key, camp_key),
+        store={
+            "foton": {
+                regular_key: "Фотон: регулярный курс информатики 10 класс онлайн — семестр 29 750 ₽.",
+                camp_key: "ЛВШ Менделеево: по онлайн-формату смены менеджер сориентирует отдельно.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует ЛВШ по информатике"},
+            {"role": "client", "text": "а онлайн?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а онлайн?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "По ЛВШ Менделеево онлайн-формат смены менеджер сориентирует отдельно.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "topic_focus": {
+                    "subject": "информатика",
+                    "product": "ЛВШ Менделеево",
+                    "product_family": "camp",
+                }
+            }
+        },
+    )
+
+    assert camp_key in result.facts
+    assert regular_key not in result.facts
+    assert "ЛВШ" in result.draft_text
+
+
+def test_memory_topic_augment_without_memory_keeps_single_turn_unchanged() -> None:
+    fact_key = "regular_course.informatics.grade10.online.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс онлайн — семестр 29 750 ₽."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("а онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а онлайн?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Подскажите, пожалуйста, какой предмет и класс интересуют?",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.facts == {}
+    assert "предмет" in result.draft_text.casefold()
 
 
 def test_semantic_faithfulness_exception_fail_closed() -> None:

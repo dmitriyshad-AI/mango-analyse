@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 from mango_mvp.channels.dialogue_contract_pipeline import FactStore, run_pipeline
@@ -2942,7 +2943,13 @@ def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
             metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
         ),
         "Это один центр?",
-        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+        {
+            "active_brand": "foton",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "allow_default_autonomy": True,
+            "autonomy_policy": {"allow_autonomous": True},
+            "client_safe_fact_verified": True,
+        },
     )
     assert cross_brand.route in {"draft_for_manager", "manager_only"}
     assert set(cross_brand.safety_flags) & {
@@ -3063,6 +3070,7 @@ def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
         ),
         client_message="Сколько стоит?",
         context={"autonomy_policy": {"allow_autonomous": True}},
+        allow_default_autonomy=True,
     )
     assert unknown_brand.route == "draft_for_manager"
     assert unknown_brand.veto_category == "unknown_brand"
@@ -3080,6 +3088,7 @@ def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
             "rop_policy": {"bot_permission": "manager_only"},
             "autonomy_policy": {"allow_autonomous": True},
         },
+        allow_default_autonomy=True,
     )
     assert forced_manager_only.route == "manager_only"
     assert forced_manager_only.veto_category == "force_manager_only"
@@ -3096,6 +3105,8 @@ def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
             "active_brand": "unpk",
             "rop_policy": {"bot_permission": "manager_only"},
             "autonomy_policy": {"allow_autonomous": True},
+            "allow_default_autonomy": True,
+            "client_safe_fact_verified": True,
         },
     )
     assert forced_manager_result.route == "manager_only"
@@ -3154,6 +3165,73 @@ def test_pravka4_decide_route_does_not_flip_default_before_veto_shield_is_green(
 
     assert decision.route == "draft_for_manager"
     assert decision.autonomous_candidate is True
+
+
+def test_pravka4b_default_autonomy_flip_is_flagged_and_bounded() -> None:
+    base = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="По подтверждённым данным: курс стоит 49 000 ₽.",
+        message_type="question",
+        topic_id="theme:001_pricing",
+    )
+    safe_context = {
+        "active_brand": "unpk",
+        "allow_default_autonomy": True,
+        "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+        "client_safe_fact_verified": True,
+    }
+
+    flipped = _apply_v2_guard_chain(base, "Сколько стоит курс?", safe_context)
+    assert flipped.route == "bot_answer_self_for_pilot"
+    assert "dialogue_contract_route_permission_autonomous_candidate" in flipped.safety_flags
+
+    flag_off = _apply_v2_guard_chain(base, "Сколько стоит курс?", {**safe_context, "allow_default_autonomy": False})
+    assert flag_off.route == "draft_for_manager"
+
+    policy_flag = _apply_v2_guard_chain(
+        base,
+        "Сколько стоит курс?",
+        {
+            "active_brand": "unpk",
+            "autonomy_policy": {
+                "allow_autonomous": True,
+                "allow_default_autonomy": True,
+                "allowed_topic_ids": ["theme:001_pricing"],
+            },
+            "client_safe_fact_verified": True,
+        },
+    )
+    assert policy_flag.route == "bot_answer_self_for_pilot"
+
+    no_fact = _apply_v2_guard_chain(
+        base,
+        "Сколько стоит курс?",
+        {key: value for key, value in safe_context.items() if key != "client_safe_fact_verified"},
+    )
+    assert no_fact.route == "draft_for_manager"
+
+    unsafe_topic = _apply_v2_guard_chain(
+        replace(base, topic_id="theme:999_unknown"),
+        "Сколько стоит курс?",
+        safe_context,
+    )
+    assert unsafe_topic.route == "draft_for_manager"
+
+    forced_manager = _apply_v2_guard_chain(
+        base,
+        "Сколько стоит курс?",
+        {**safe_context, "rop_policy": {"bot_permission": "manager_only"}},
+    )
+    assert forced_manager.route == "manager_only"
+    assert forced_manager.veto_category == "force_manager_only"
+
+    high_risk = _apply_v2_guard_chain(
+        replace(base, draft_text="Сориентирую по курсу."),
+        "Оплатил, занятий нет, верните деньги.",
+        safe_context,
+    )
+    assert high_risk.route == "manager_only"
+    assert high_risk.veto_category == "high_risk"
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:

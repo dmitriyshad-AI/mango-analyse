@@ -1431,7 +1431,12 @@ class SubscriptionLlmDraftProvider:
         checklist = list(result.manager_checklist)
         metadata = dict(result.metadata)
 
-        decision = decide_route(result, client_message=client_message, context=context)
+        decision = decide_route(
+            result,
+            client_message=client_message,
+            context=context,
+            allow_default_autonomy=_default_autonomy_flip_enabled(context),
+        )
         if decision.veto_category:
             flags.extend(decision.safety_flags)
             checklist.extend(decision.manager_checklist)
@@ -1455,7 +1460,14 @@ class SubscriptionLlmDraftProvider:
 
         if decision.autonomous_candidate:
             flags.append("dialogue_contract_route_permission_autonomous_candidate")
-        return replace(result, safety_flags=tuple(dict.fromkeys(flags)), manager_checklist=tuple(dict.fromkeys(checklist)), metadata=metadata)
+        return replace(
+            result,
+            route=decision.route,
+            veto_category=decision.veto_category,
+            safety_flags=tuple(dict.fromkeys(flags)),
+            manager_checklist=tuple(dict.fromkeys(checklist)),
+            metadata=metadata,
+        )
 
     def _run_prompt_text(
         self,
@@ -6524,6 +6536,21 @@ def _autonomy_enabled(context: Optional[Mapping[str, Any]]) -> bool:
         or _truthy_value(policy.get("bot_answer_self_enabled"))
         or _truthy_value(context.get("autonomy_enabled") if isinstance(context, Mapping) else None)
     )
+
+
+def _default_autonomy_flip_enabled(context: Optional[Mapping[str, Any]]) -> bool:
+    if not isinstance(context, Mapping) or not _autonomy_enabled(context):
+        return False
+    policy = _autonomy_policy(context)
+    for value in (
+        context.get("allow_default_autonomy"),
+        context.get("default_autonomy_flip_enabled"),
+        policy.get("allow_default_autonomy"),
+        policy.get("default_autonomy_flip_enabled"),
+    ):
+        if value is not None:
+            return _truthy_value(value)
+    return False
 
 
 def _autonomy_topic_allowed(topic_id: str, context: Optional[Mapping[str, Any]]) -> bool:

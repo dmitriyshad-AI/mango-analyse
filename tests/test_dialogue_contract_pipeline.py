@@ -28,6 +28,15 @@ def _understanding(payload: Mapping[str, Any]):
     return lambda _prompt: payload
 
 
+def _contract_payload(question: str, *, keys: tuple[str, ...] = ()) -> Mapping[str, Any]:
+    return {
+        "current_question": question,
+        "subquestions": [{"text": question, "answerable": "self", "needed_fact_keys": list(keys)}],
+        "answerability": "answer_self",
+        "needed_fact_keys": list(keys),
+    }
+
+
 def _refund_fact() -> str:
     return (
         "Если клиент заранее спрашивает про возврат до оплаты, можно спокойно ответить, "
@@ -428,6 +437,98 @@ def test_verify_output_allows_named_entity_from_current_facts_and_neutral_words(
     )
 
     assert not [finding for finding in findings if finding.code == "unsupported_entity"]
+
+
+def test_verify_output_blocks_preemptive_format_choice() -> None:
+    contract = parse_contract(
+        _contract_payload("онлайн или очно для 6 класса"),
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+
+    findings = verify_output(
+        "Это онлайн, можно подключаться из дома.",
+        facts={"format.online": "Есть онлайн-формат."},
+        active_brand="foton",
+        contract=contract,
+        client_message="онлайн или очно для 6 класса?",
+    )
+
+    assert any(finding.code == "preemptive_format" for finding in findings)
+
+
+def test_verify_output_preemptive_format_negative_controls() -> None:
+    choice_contract = parse_contract(
+        _contract_payload("онлайн или очно для 6 класса"),
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+    explicit_online_contract = parse_contract(
+        _contract_payload("хочу онлайн для 6 класса"),
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+    camp_contract = parse_contract(
+        _contract_payload("ЛВШ онлайн или очно летом?"),
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+
+    assert not [
+        finding
+        for finding in verify_output(
+            "Есть и онлайн, и очно.",
+            facts={"formats": "Есть онлайн и очные курсы."},
+            active_brand="foton",
+            contract=choice_contract,
+            client_message="онлайн или очно для 6 класса?",
+        )
+        if finding.code == "preemptive_format"
+    ]
+    assert not [
+        finding
+        for finding in verify_output(
+            "Это онлайн.",
+            facts={"format.online": "Есть онлайн-формат."},
+            active_brand="foton",
+            contract=explicit_online_contract,
+            client_message="хочу онлайн для 6 класса",
+        )
+        if finding.code == "preemptive_format"
+    ]
+    assert not [
+        finding
+        for finding in verify_output(
+            "Это очный лагерь.",
+            facts={"camp.lvsh": "ЛВШ проходит очно в Менделеево."},
+            active_brand="foton",
+            contract=camp_contract,
+            client_message="ЛВШ онлайн или очно летом?",
+        )
+        if finding.code == "preemptive_format"
+    ]
+
+
+def test_pipeline_preemptive_format_finding_enters_repair_loop() -> None:
+    store = FactStore(
+        catalog=("format.online", "format.offline"),
+        store={"foton": {"format.online": "Есть онлайн-формат.", "format.offline": "Есть очные курсы."}},
+    )
+    repairs: list[str] = []
+    result = run_pipeline(
+        conversation=_conv("онлайн или очно для 6 класса?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("онлайн или очно для 6 класса", keys=("format.online", "format.offline"))),
+        draft_fn=lambda _prompt: "Это онлайн.",
+        repair_fn=lambda prompt: repairs.append(prompt) or "Есть и онлайн, и очно.",
+    )
+
+    assert repairs
+    assert result.route == "bot_answer_self"
+    assert result.repaired is True
+    assert "онлайн" in result.draft_text.casefold()
+    assert "очн" in result.draft_text.casefold()
 
 
 def test_pipeline_unsupported_entity_falls_back_to_manager_draft() -> None:

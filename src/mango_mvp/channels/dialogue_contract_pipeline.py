@@ -1810,6 +1810,13 @@ def verify_output(
         findings.append(VerificationFinding("unsupported_entity", f"сущность вне фактов хода: {unsupported_entities}"))
     if contract is not None:
         findings.extend(_wrong_intent_fact_findings(text, contract=contract, facts=facts))
+        if _preemptive_format_choice_finding(low, contract=contract):
+            findings.append(
+                VerificationFinding(
+                    "preemptive_format",
+                    "клиент спросил выбор формата, а ответ навязывает один формат без альтернативы",
+                )
+            )
     for topic in tuple(denied_topics) + tuple(forbidden_substitutions):
         normalized = str(topic or "").strip().casefold()
         if normalized and normalized in low:
@@ -1825,6 +1832,17 @@ def verify_output(
     if safety.p0_required and not p0_pre_gate(client_message, context=context):
         findings.append(VerificationFinding("p0_semantic_risk", "семантический P0 требует менеджера"))
     return findings
+
+
+def _preemptive_format_choice_finding(answer_low: str, *, contract: AnswerContract) -> bool:
+    if not _asks_training_format_choice(contract) or _contract_mentions_camp_or_lvsh(contract):
+        return False
+    normalized = str(answer_low or "").casefold().replace("ё", "е")
+    asserts_single = bool(
+        re.search(r"\bэто\s+онлайн\b|\bтолько\s+онлайн\b|\bэто\s+очно\b|\bтолько\s+очно\b", normalized, re.I)
+    )
+    mentions_both = "онлайн" in normalized and "очно" in normalized
+    return asserts_single and not mentions_both
 
 
 def _hard_check(

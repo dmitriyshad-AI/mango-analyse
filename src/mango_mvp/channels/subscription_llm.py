@@ -22,6 +22,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     Toggles as DialogueContractToggles,
     build_conversation as build_dialogue_contract_conversation,
     build_fact_store as build_dialogue_contract_fact_store,
+    concrete_anchors as dialogue_contract_concrete_anchors,
     pipeline_enabled as dialogue_contract_pipeline_enabled,
     run_pipeline as run_dialogue_contract_pipeline,
     verify_output as verify_dialogue_contract_output,
@@ -2104,7 +2105,8 @@ def apply_unconfirmed_operational_specificity_guard(
     *,
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
-    followup_claims = find_unsupported_followup_deadline_claims(result.draft_text, context=context)
+    specificity_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    followup_claims = find_unsupported_followup_deadline_claims(result.draft_text, context=specificity_context)
     if followup_claims:
         return _operational_specificity_guarded_result(
             result,
@@ -2114,7 +2116,7 @@ def apply_unconfirmed_operational_specificity_guard(
             checklist_item="Не называть конкретную дату или срок связи менеджера без подтверждённого факта.",
         )
 
-    schedule_claims = find_unsupported_schedule_assumption_claims(result.draft_text, context=context)
+    schedule_claims = find_unsupported_schedule_assumption_claims(result.draft_text, context=specificity_context)
     if schedule_claims:
         return _operational_specificity_guarded_result(
             result,
@@ -2124,7 +2126,7 @@ def apply_unconfirmed_operational_specificity_guard(
             checklist_item="Не делать догадки по расписанию без подтверждённого факта.",
         )
 
-    visit_claims = find_unsupported_offline_visit_invitation_claims(result.draft_text, context=context)
+    visit_claims = find_unsupported_offline_visit_invitation_claims(result.draft_text, context=specificity_context)
     if visit_claims:
         return _operational_specificity_guarded_result(
             result,
@@ -2134,7 +2136,7 @@ def apply_unconfirmed_operational_specificity_guard(
             checklist_item="Запись и оформление по умолчанию дистанционные; очную встречу не предлагать без согласования.",
         )
 
-    delivery_claims = find_unsupported_content_delivery_action_claims(result.draft_text, context=context)
+    delivery_claims = find_unsupported_content_delivery_action_claims(result.draft_text, context=specificity_context)
     if delivery_claims:
         return _operational_specificity_guarded_result(
             result,
@@ -7681,25 +7683,42 @@ def _fresh_fact_texts(context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
     context_quality = context.get("context_quality")
     quality_mapping = context_quality if isinstance(context_quality, Mapping) else {}
 
-    if _truthy_value(context.get("facts_stale")) or _truthy_value(facts_mapping.get("stale")) or _truthy_value(facts_mapping.get("facts_stale")):
-        return ()
-    if _truthy_value(quality_mapping.get("facts_stale")):
-        return ()
-
+    stale = (
+        _truthy_value(context.get("facts_stale"))
+        or _truthy_value(facts_mapping.get("stale"))
+        or _truthy_value(facts_mapping.get("facts_stale"))
+        or _truthy_value(quality_mapping.get("facts_stale"))
+    )
     fresh = (
         context.get("facts_fresh") is True
         or facts_mapping.get("fresh") is True
         or facts_mapping.get("facts_fresh") is True
         or facts_mapping.get("fresh_facts") is True
     )
-    if not fresh:
+    verified = (
+        context.get("client_safe_fact_verified") is True
+        or facts_mapping.get("client_safe_fact_verified") is True
+        or _has_dialogue_contract_retrieved_facts(context)
+    )
+    if stale and not (fresh or verified):
+        return ()
+    if not (fresh or verified):
         return ()
 
     texts: list[str] = []
     for key in ("confirmed_facts", "facts_context"):
         _append_fact_texts(texts, context.get(key))
+    pipeline = context.get("dialogue_contract_pipeline") if isinstance(context.get("dialogue_contract_pipeline"), Mapping) else {}
+    if isinstance(pipeline.get("retrieved_facts"), Mapping):
+        _append_fact_texts(texts, pipeline.get("retrieved_facts"))
     _append_fact_texts(texts, context.get("knowledge_snippets"))
     return tuple(text for text in texts if text)
+
+
+def _has_dialogue_contract_retrieved_facts(context: Mapping[str, Any]) -> bool:
+    pipeline = context.get("dialogue_contract_pipeline") if isinstance(context.get("dialogue_contract_pipeline"), Mapping) else {}
+    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    return any(str(key).strip() and str(value).strip() for key, value in retrieved.items())
 
 
 def _append_fact_texts(result: list[str], value: Any) -> None:
@@ -7712,7 +7731,16 @@ def _append_fact_texts(result: list[str], value: Any) -> None:
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if str(key).strip().casefold() in {"missing", "facts_missing", "stale", "facts_stale"}:
+            if str(key).strip().casefold() in {
+                "missing",
+                "facts_missing",
+                "stale",
+                "facts_stale",
+                "fresh",
+                "facts_fresh",
+                "fresh_facts",
+                "client_safe_fact_verified",
+            }:
                 continue
             _append_fact_texts(result, item)
         return
@@ -7737,7 +7765,44 @@ def _claim_supported_by_facts(claim: str, fact_texts: Sequence[str]) -> bool:
         "before_2026_06_01" in text or "до 1 июня" in text or "ранн" in text for text in normalized_facts
     ):
         return True
-    return any(normalized_claim in text for text in normalized_facts)
+    if any(normalized_claim in text for text in normalized_facts):
+        return True
+    claim_anchors = _fact_match_anchors(claim)
+    if not claim_anchors:
+        return False
+    return any(claim_anchors <= _fact_match_anchors(text) for text in fact_texts)
+
+
+def _fact_match_anchors(text: Any) -> set[str]:
+    source = str(text or "")
+    low = source.casefold().replace("ё", "е").replace("\u00a0", " ")
+    anchors = set(dialogue_contract_concrete_anchors(source))
+    anchors.update(_fact_match_unit_anchors(source))
+    if re.search(r"\bфотон\b|цдпо|црдо|cdpofoton", low, re.I):
+        anchors.add("brand:foton")
+    if re.search(r"\bунпк\b|унпк\s+мфти|kmipt", low, re.I):
+        anchors.add("brand:unpk")
+    if re.search(r"\bсегодня\b", low, re.I):
+        anchors.add("deadline:today")
+    if re.search(r"\bзавтра\b|до\s+завтра", low, re.I):
+        anchors.add("deadline:tomorrow")
+    if re.search(r"до\s+вечера|к\s+вечеру", low, re.I):
+        anchors.add("deadline:evening")
+    if re.search(r"в\s+течение\s+\d+\s*(?:минут|час|часов|дн|дней|суток|сутки)", low, re.I):
+        anchors.add("deadline:relative_period")
+    return anchors
+
+
+def _fact_match_unit_anchors(text: Any) -> set[str]:
+    source = str(text or "").replace("\u00a0", " ")
+    anchors: set[str] = set()
+    if re.search(r"\b\d{1,3}(?:[,.]\d{1,2})?\s*(?:%|процент\w*)", source, re.I):
+        anchors.add("unit:percent")
+    if re.search(r"\b\d[\d\s]{1,9}\s*(?:руб(?:\.|лей|ля|ль)?|₽|р\.)", source, re.I):
+        anchors.add("unit:money")
+    if re.search(r"\b\d{1,3}\+?\s*балл\w*", source, re.I):
+        anchors.add("unit:points")
+    return anchors
 
 
 def _normalize_fact_match_text(text: Any) -> str:

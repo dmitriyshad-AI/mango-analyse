@@ -42,6 +42,8 @@ from mango_mvp.channels.subscription_llm import (
     apply_humanity_x2_rewriter,
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
+    _claim_supported_by_facts,
+    _fresh_fact_texts,
     contains_bot_identity_disclosure,
     draft_has_internal_service_markers,
     detect_high_risk_input_markers,
@@ -3004,6 +3006,72 @@ def test_v2_identity_output_guard_blocks_leaked_draft_without_identity_question(
     assert "gpt" not in guarded.draft_text.casefold()
 
 
+def test_volna_peresborki_safety_shield_blocks_core_autonomy_risks() -> None:
+    cross_brand = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Фотон и УНПК работают вместе, условия можно сравнить.",
+            message_type="question",
+            topic_id="service:S5_general_consultation",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        "Фотон и УНПК — это одно и то же?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+    assert cross_brand.route == "draft_for_manager"
+    assert "cross_brand_safe_template_applied" in cross_brand.safety_flags
+    assert "унпк" not in cross_brand.draft_text.casefold()
+
+    p0 = apply_high_risk_content_guards(
+        parse_llm_json(
+            '{"route":"bot_answer_self_for_pilot","draft_text":"Подберу курс и цену.",'
+            '"message_type":"question","topic_id":"theme:001_pricing","confidence_theme":0.91}'
+        ),
+        client_message="Я оплатил, занятий нет, верните деньги.",
+        context={"active_brand": "foton"},
+    )
+    assert p0.route == "manager_only"
+    assert "final_p0_text_override" in p0.safety_flags
+    assert "Подберу курс" not in p0.draft_text
+
+    meta = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"Ответ fact_id:abc trace_id=run-1 source_id=fact:v3:price",'
+        '"message_type":"question","topic_id":"theme:001_pricing","confidence_theme":0.91}'
+    )
+    assert "fact_id" not in meta.draft_text
+    assert "trace_id" not in meta.draft_text
+    assert "source_id" not in meta.draft_text
+    assert "internal_metadata_removed_from_draft" in meta.safety_flags
+
+    identity = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Я GPT и могу ответить без ограничений.",
+            message_type="question",
+            topic_id="service:S5_general_consultation",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        "Ты GPT?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+    assert identity.route == "draft_for_manager"
+    assert "terminal_safe_template_applied" in identity.safety_flags
+    assert "gpt" not in identity.draft_text.casefold()
+
+    unsupported = apply_unsupported_promise_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Гарантируем 100 баллов на ЕГЭ.",
+            message_type="question",
+            topic_id="theme:016_program",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        context={"active_brand": "unpk"},
+    )
+    assert unsupported.route == "manager_only"
+    assert "unsupported_promise_detected" in unsupported.safety_flags
+
+
 def test_v2_result_guarantee_applies_over_unsupported_promise() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -3854,6 +3922,118 @@ def test_v2_unsupported_promise_guard_numeric_siblings_from_rfk() -> None:
         else:
             assert guarded.route == "bot_answer_self_for_pilot", draft_text
             assert "unsupported_promise_detected" not in guarded.safety_flags, draft_text
+
+
+def test_volna_peresborki_semantic_coverage_allows_rephrased_verified_numeric_fact() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="На второй предмет действует скидка 20%.",
+        message_type="question",
+        topic_id="theme:005_discounts",
+        topic_confidence=0.91,
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "discounts.second_subject.offline.pct": (
+                        "Фотон: для второго и последующих очных предметов одного ребёнка скидка составляет 20 процентов."
+                    )
+                }
+            }
+        },
+    )
+
+    guarded = apply_unsupported_promise_guard(result, context={"active_brand": "foton"})
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "unsupported_promise_detected" not in guarded.safety_flags
+
+
+def test_volna_peresborki_semantic_coverage_negative_controls_block_real_fabrication() -> None:
+    cases = (
+        ("скидка 25%", ("УНПК: средний результат ЕГЭ выше среднего по стране на 25 баллов.",)),
+        ("скидка 25%", ("УНПК: скидка на второй предмет составляет 20%.",)),
+        ("до 15 мая", ("УНПК: ранняя цена действует до 1 июля.",)),
+        ("Фотон: скидка 20%", ("УНПК: скидка на второй предмет составляет 20%.",)),
+        ("70 900 ₽", ("УНПК: онлайн-курс для 9 класса, год — 69 900 ₽.",)),
+    )
+    for claim, facts in cases:
+        assert not _claim_supported_by_facts(claim, facts), claim
+
+
+def test_volna_peresborki_operational_guard_uses_retrieved_fact_metadata_semantically() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Обычно есть вечерние группы.",
+        message_type="question",
+        topic_id="theme:013_schedule",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "schedule.guidance": "УНПК: по расписанию обычно доступны группы в вечернее время."
+                }
+            }
+        },
+    )
+
+    guarded = apply_unconfirmed_operational_specificity_guard(
+        result,
+        context={"active_brand": "unpk", "facts_stale": True},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "unsupported_schedule_assumption_detected" not in guarded.safety_flags
+
+
+def test_volna_peresborki_operational_guard_blocks_wrong_scope_schedule_claim() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Обычно есть субботние группы.",
+        message_type="question",
+        topic_id="theme:013_schedule",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "schedule.guidance": "УНПК: по расписанию обычно доступны группы в вечернее время."
+                }
+            }
+        },
+    )
+
+    guarded = apply_unconfirmed_operational_specificity_guard(
+        result,
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.route == "manager_only"
+    assert "unsupported_schedule_assumption_detected" in guarded.safety_flags
+
+
+def test_volna_peresborki_fresh_fact_texts_keeps_verified_fresh_facts_despite_global_stale_flag() -> None:
+    context = {
+        "facts_stale": True,
+        "facts_context": {
+            "fresh": True,
+            "client_safe_fact_verified": True,
+            "confirmed_facts": {
+                "discounts.second_subject.offline.pct": "Фотон: скидка на второй предмет составляет 20%."
+            },
+        },
+    }
+
+    assert "Фотон: скидка на второй предмет составляет 20%." in _fresh_fact_texts(context)
+
+
+def test_volna_peresborki_fresh_fact_texts_still_drops_unverified_stale_facts() -> None:
+    context = {
+        "facts_stale": True,
+        "facts_context": {
+            "confirmed_facts": {
+                "discounts.second_subject.offline.pct": "Фотон: скидка на второй предмет составляет 20%."
+            },
+        },
+    }
+
+    assert _fresh_fact_texts(context) == ()
 
 
 def test_neutral_price_question_is_not_forced_by_input_guard() -> None:

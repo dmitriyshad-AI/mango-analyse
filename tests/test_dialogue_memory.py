@@ -125,6 +125,41 @@ def test_dialogue_memory_llm_enriches_paraphrased_slots_without_changing_brand()
     assert view["conversation_summary_short"].startswith("Клиент интересуется онлайн-информатикой")
 
 
+def test_dialogue_memory_llm_does_not_override_prior_client_slot_without_current_support() -> None:
+    initial = build_dialogue_memory(
+        current_message="9 класс, физика, онлайн",
+        active_brand="foton",
+        session_id="s-memory-llm-prior-slot",
+    )
+    followup = build_dialogue_memory(
+        current_message="А сколько стоит?",
+        active_brand="foton",
+        previous_memory=initial,
+        session_id="s-memory-llm-prior-slot",
+    )
+
+    def memory_llm_fn(_prompt: str):
+        return {
+            "slots": {"grade": "10", "subject": "информатика"},
+            "topic": {"grade": "10", "subject": "информатика"},
+            "open_question": {"text": "А сколько стоит?", "kind": "price", "answered": False},
+            "commitments": [],
+            "summary": "Клиент уточняет цену.",
+        }
+
+    updated = update_dialogue_memory_after_answer(
+        followup,
+        answer_text="Стоимость уточнит менеджер.",
+        route="bot_answer_self",
+        memory_llm_fn=memory_llm_fn,
+    )
+    view = updated.to_prompt_view()
+
+    assert view["known_slots"]["grade"] == "9"
+    assert view["known_slots"]["subject"] == "физика"
+    assert updated.known_slots["grade"].source == "dialogue_memory"
+
+
 def test_dialogue_memory_llm_is_optional_and_regex_fallback_stays_unchanged() -> None:
     memory = build_dialogue_memory(
         current_message="Айти-ЕГЭ дистанционно, сколько стоит?",

@@ -110,6 +110,7 @@ _MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE = re.compile(
     r"(?:\s+\d{4})?\b)",
     re.I,
 )
+_MEMORY_LLM_OVERRIDABLE_SLOT_SOURCES = {"dialogue_memory", "memory_llm", "bot_inferred", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -475,7 +476,7 @@ def _apply_memory_llm_update(memory: DialogueMemory, payload: Mapping[str, Any])
 
     slots = dict(memory.known_slots)
     llm_slots = _memory_llm_slots(payload.get("slots"))
-    _merge_slots(slots, llm_slots, source_name="memory_llm", confidence=0.74, override=False)
+    _merge_memory_llm_slots(slots, llm_slots, memory=memory)
 
     open_question = _memory_llm_open_question(payload.get("open_question"), fallback=memory.open_question)
     topic_focus = _memory_llm_topic(payload.get("topic"), slots=slots, open_question=open_question, memory=memory)
@@ -517,6 +518,97 @@ def _memory_llm_slots(value: Any) -> Mapping[str, Any]:
         if text:
             result[key] = text
     return result
+
+
+def _merge_memory_llm_slots(
+    target: dict[str, DialogueSlot],
+    source_map: Mapping[str, Any],
+    *,
+    memory: DialogueMemory,
+) -> None:
+    latest_client_text = _latest_client_text(memory.turns)
+    for key, raw in source_map.items():
+        if key not in _MEMORY_LLM_SLOT_KEYS:
+            continue
+        value = _clean(raw)
+        if key == "format":
+            value = _normalize_format(value)
+        if not value:
+            continue
+        existing = target.get(key)
+        if existing and not _memory_llm_can_override_slot(key, value, existing, latest_client_text=latest_client_text):
+            continue
+        target[key] = DialogueSlot(value=value[:160], source="memory_llm", confidence=0.74)
+
+
+def _memory_llm_can_override_slot(
+    key: str,
+    value: str,
+    existing: DialogueSlot,
+    *,
+    latest_client_text: str,
+) -> bool:
+    if not existing.value:
+        return True
+    if existing.source not in _MEMORY_LLM_OVERRIDABLE_SLOT_SOURCES:
+        return False
+    if existing.source == "dialogue_memory":
+        return _memory_llm_slot_supported_by_latest_client(key, value, latest_client_text=latest_client_text)
+    return True
+
+
+def _memory_llm_slot_supported_by_latest_client(key: str, value: str, *, latest_client_text: str) -> bool:
+    normalized = normalize_text(latest_client_text)
+    candidate = normalize_text(value)
+    if not normalized or not candidate:
+        return False
+    if key == "grade":
+        digits = re.findall(r"\d{1,2}", candidate)
+        if digits:
+            grade = digits[0]
+            ordinal_stems = {
+                "1": ("перв",),
+                "2": ("втор",),
+                "3": ("трет",),
+                "4": ("четвер",),
+                "5": ("пят",),
+                "6": ("шест",),
+                "7": ("седьм", "седм"),
+                "8": ("восьм",),
+                "9": ("девят",),
+                "10": ("десят",),
+                "11": ("одиннадцат",),
+            }.get(grade, ())
+            return bool(
+                re.search(rf"\b{re.escape(grade)}\s*(?:класс|кл\.?)?\b", normalized, re.I)
+                or any(stem in normalized for stem in ordinal_stems)
+            )
+    if key == "subject":
+        aliases = {
+            "информатика": ("информат", "айти", "it", "программ"),
+            "математика": ("математ", "матем"),
+            "физика": ("физик",),
+            "химия": ("хими",),
+            "биология": ("биолог",),
+            "русский": ("русск",),
+            "английский": ("англ",),
+        }
+        return any(alias in normalized for alias in aliases.get(candidate, (candidate,)))
+    if key == "format":
+        if candidate == "онлайн":
+            return has_any_marker(normalized, ("онлайн", "online", "дистанц", "удален", "удалён"))
+        if candidate == "очно":
+            return has_any_marker(normalized, ("очно", "офлайн", "offline", "площадк", "адрес"))
+    if candidate in normalized:
+        return True
+    return False
+
+
+def _latest_client_text(turns: Sequence[DialogueTurn]) -> str:
+    for turn in reversed(turns):
+        if turn.role == "client" and turn.text:
+            return turn.text
+    return ""
 
 
 def _memory_llm_topic(

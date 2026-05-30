@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -268,6 +269,8 @@ def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch
             "fake",
             "--bot-mode",
             "fake",
+            "--memory-mode",
+            "fake",
             "--limit",
             "1",
         ]
@@ -380,6 +383,49 @@ def test_run_one_dialog_injects_debug_trace_context_when_enabled(monkeypatch, tm
     assert trace_cfg["run_dir"] == str(tmp_path)
     assert trace_cfg["dialog_id"] == "trace_dynamic"
     assert trace_cfg["turn"] == 1
+
+
+def test_build_memory_model_modes_use_low_reasoning() -> None:
+    fake_args = argparse.Namespace(memory_mode="fake", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
+    off_args = argparse.Namespace(memory_mode="off", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
+    codex_args = argparse.Namespace(memory_mode="codex", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
+
+    assert isinstance(sim.build_memory_model(fake_args), sim.FakeMemoryModel)
+    assert sim.build_memory_model(off_args) is None
+    codex_model = sim.build_memory_model(codex_args)
+    assert isinstance(codex_model, sim.CodexJsonModel)
+    assert codex_model.model == "gpt-5.5"
+    assert codex_model.reasoning_effort == "low"
+
+
+def test_run_one_dialog_uses_fake_memory_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    dialog = sim.run_one_dialog(
+        {
+            "dialog_id": "memory_fake_dynamic",
+            "brand": "unpk",
+            "persona": "родитель",
+            "goal": "проверить память",
+            "max_turns": 1,
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.FakeClientModel(),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=sim.FakeBotProvider(),
+        memory_model=sim.FakeMemoryModel(),
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+        debug_trace_run_dir=tmp_path,
+    )
+
+    memory_after = dialog["turns"][0]["bot_dialogue_memory_after_answer"]
+    assert memory_after["known_slots"]["grade"] == "6"
+    assert memory_after["known_slots"]["subject"] == "математика"
+    assert memory_after["known_slots"]["format"] == "онлайн"
+    assert memory_after["topic_focus"]["brand"] == "unpk"
+    assert memory_after["conversation_summary_short"].startswith("Fake memory:")
 
 
 def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_findings(tmp_path):
@@ -1002,6 +1048,8 @@ def test_fake_parallel_run_writes_all_dialogs(tmp_path, monkeypatch):
             "fake",
             "--bot-mode",
             "fake",
+            "--memory-mode",
+            "fake",
             "--parallel",
             "2",
         ]
@@ -1053,6 +1101,8 @@ def test_resume_only_failed_reruns_failed_dialogs_and_keeps_completed(tmp_path, 
             "--judge-mode",
             "fake",
             "--bot-mode",
+            "fake",
+            "--memory-mode",
             "fake",
             "--resume",
             "--only-failed",

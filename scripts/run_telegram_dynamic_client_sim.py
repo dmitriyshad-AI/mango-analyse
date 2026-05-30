@@ -84,6 +84,17 @@ class FakeJudgeModel:
         }
 
 
+class FakeMemoryModel:
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        return {
+            "slots": {"grade": "6", "subject": "математика", "format": "онлайн"},
+            "topic": {"grade": "6", "subject": "математика", "format": "онлайн", "product_family": "regular_course"},
+            "open_question": {"text": "Что дальше?", "kind": "other", "answered": False},
+            "commitments": ["manager_handoff"],
+            "summary": "Fake memory: клиент интересуется онлайн-математикой для 6 класса; бот передал вопрос менеджеру.",
+        }
+
+
 class FakeBotProvider:
     def build_draft(self, client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> SubscriptionDraftResult:
         return normalize_subscription_draft_payload(
@@ -186,6 +197,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--bot-reasoning", default="medium")
     parser.add_argument("--client-reasoning", default="medium")
     parser.add_argument("--judge-reasoning", default="high")
+    parser.add_argument("--memory-mode", choices=("codex", "fake", "off"), default="codex")
+    parser.add_argument("--memory-model", default="gpt-5.5")
+    parser.add_argument("--memory-reasoning", default="low")
     parser.add_argument("--timeout-sec", type=int, default=180)
     parser.add_argument(
         "--disable-bot-cache",
@@ -202,6 +216,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("--parallel must be >= 1")
     if args.enable_llm_rewriter:
         os.environ["TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"] = "1"
+    if args.memory_mode == "codex" and str(args.memory_reasoning or "").strip().lower() != "low":
+        raise ValueError("--memory-reasoning must be low for codex memory mode")
 
     if "stable_runtime" in args.out_dir.resolve(strict=False).parts:
         raise ValueError("Refusing to write dynamic sim outputs under stable_runtime")
@@ -229,8 +245,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.transcripts_in is not None:
         judge_model = build_judge_model(args)
+        memory_model = build_memory_model(args)
         transcripts = [
-            attach_context_facts_to_dialog(dialog, snapshot_path=args.snapshot)
+            attach_context_facts_to_dialog(dialog, snapshot_path=args.snapshot, memory_model=memory_model)
             for dialog in load_transcripts(args.transcripts_in)
             if args.brand == "all" or dialog.get("brand") == args.brand
         ]
@@ -280,6 +297,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             client_model = build_client_model(args)
             judge_model = build_judge_model(args)
             bot_provider = build_bot_provider(args)
+            memory_model = build_memory_model(args)
             for persona in pending_personas:
                 dialog_id = str(persona.get("dialog_id") or "")
                 print(f"run_dialog={dialog_id}", flush=True)
@@ -292,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         client_model=client_model,
                         judge_model=judge_model,
                         bot_provider=bot_provider,
+                        memory_model=memory_model,
                         snapshot_path=args.snapshot,
                         max_turns_override=args.max_turns,
                         debug_trace_run_dir=args.out_dir,
@@ -485,6 +504,19 @@ def build_judge_model(args: argparse.Namespace) -> Any:
     )
 
 
+def build_memory_model(args: argparse.Namespace) -> Any:
+    if args.memory_mode == "off":
+        return None
+    if args.memory_mode == "fake":
+        return FakeMemoryModel()
+    return CodexJsonModel(
+        model=args.memory_model,
+        reasoning_effort=args.memory_reasoning,
+        timeout_sec=args.timeout_sec,
+        codex_bin=getattr(args, "codex_bin", "codex"),
+    )
+
+
 def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
     if args.bot_mode == "fake":
         return FakeBotProvider()
@@ -521,6 +553,7 @@ def run_one_dialog_isolated(
         client_model=build_client_model(args),
         judge_model=build_judge_model(args),
         bot_provider=build_bot_provider(args, dialog_id=dialog_id),
+        memory_model=build_memory_model(args),
         snapshot_path=snapshot_path,
         max_turns_override=max_turns_override,
         debug_trace_run_dir=args.out_dir,
@@ -647,7 +680,12 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
     return rows
 
 
-def attach_context_facts_to_dialog(dialog: Mapping[str, Any], *, snapshot_path: Path) -> Mapping[str, Any]:
+def attach_context_facts_to_dialog(
+    dialog: Mapping[str, Any],
+    *,
+    snapshot_path: Path,
+    memory_model: Any = None,
+) -> Mapping[str, Any]:
     persona = dialog.get("persona") if isinstance(dialog.get("persona"), Mapping) else {}
     recent_messages: list[str] = []
     turns: list[Mapping[str, Any]] = []
@@ -693,6 +731,7 @@ def attach_context_facts_to_dialog(dialog: Mapping[str, Any], *, snapshot_path: 
             route=str(turn.get("bot_route") or ""),
             fact_refs=(),
             safety_flags=tuple(turn.get("bot_safety_flags") or ()),
+            memory_llm_fn=(memory_model.generate if memory_model is not None else None),
         )
         dialogue_memory = updated_memory.to_json_dict()
         turns.append(turn)
@@ -710,6 +749,7 @@ def run_one_dialog(
     judge_model: Any,
     bot_provider: Any,
     snapshot_path: Path,
+    memory_model: Any = None,
     max_turns_override: int = 0,
     debug_trace_run_dir: Path | None = None,
 ) -> Mapping[str, Any]:
@@ -754,6 +794,7 @@ def run_one_dialog(
             route=result.route,
             fact_refs=result.context_used,
             safety_flags=result.safety_flags,
+            memory_llm_fn=(memory_model.generate if memory_model is not None else None),
         )
         dialogue_memory = updated_memory.to_json_dict()
         confirmed_facts_for_judge = facts_for_judge(context, dialogue_contract_metadata=dialogue_contract_metadata)

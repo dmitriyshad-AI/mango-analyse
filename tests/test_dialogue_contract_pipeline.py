@@ -9,6 +9,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     Toggles,
     build_conversation,
     build_draft_prompt,
+    build_faithfulness_prompt,
     build_understanding_prompt,
     check_claim_faithfulness,
     parse_contract,

@@ -1817,6 +1817,9 @@ def verify_output(
                     "клиент спросил выбор формата, а ответ навязывает один формат без альтернативы",
                 )
             )
+    unconfirmed_schedule = _unconfirmed_schedule_finding(low, facts=facts, client_message=client_message)
+    if unconfirmed_schedule is not None:
+        findings.append(unconfirmed_schedule)
     for topic in tuple(denied_topics) + tuple(forbidden_substitutions):
         normalized = str(topic or "").strip().casefold()
         if normalized and normalized in low:
@@ -1843,6 +1846,69 @@ def _preemptive_format_choice_finding(answer_low: str, *, contract: AnswerContra
     )
     mentions_both = "онлайн" in normalized and "очно" in normalized
     return asserts_single and not mentions_both
+
+
+_SCHEDULE_SPECIFICITY_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "weekday": ("по будням", "в будни", "будни", "будний", "будням"),
+    "weekend": ("по выходным", "выходные", "выходным", "суббот", "воскрес"),
+    "monday": ("по понедельникам", "понедельник", "понедельникам"),
+    "tuesday": ("по вторникам", "вторник", "вторникам"),
+    "wednesday": ("по средам", "среда", "средам"),
+    "thursday": ("по четвергам", "четверг", "четвергам"),
+    "friday": ("по пятницам", "пятница", "пятницам"),
+    "evening": ("вечерам", "вечером", "вечерн"),
+    "morning": ("утрам", "по утрам", "утром", "утренн"),
+}
+
+
+def _unconfirmed_schedule_finding(
+    answer_low: str,
+    *,
+    facts: Mapping[str, str],
+    client_message: str,
+) -> VerificationFinding | None:
+    answer_anchors = _schedule_specificity_anchors(answer_low)
+    if not answer_anchors:
+        return None
+    if _schedule_specificity_is_declined(answer_low):
+        return None
+    fact_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
+    client_text = str(client_message or "").casefold().replace("ё", "е")
+    backed = _schedule_specificity_anchors(fact_text) | _schedule_specificity_anchors(client_text)
+    unconfirmed = tuple(sorted(answer_anchors - backed))
+    if not unconfirmed:
+        return None
+    return VerificationFinding(
+        "unconfirmed_schedule",
+        f"ответ называет дни/время без факта-расписания: {list(unconfirmed)}",
+    )
+
+
+def _schedule_specificity_anchors(text: str) -> set[str]:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    return {
+        anchor
+        for anchor, aliases in _SCHEDULE_SPECIFICITY_ALIASES.items()
+        if any(_schedule_alias_present(normalized, alias) for alias in aliases)
+    }
+
+
+def _schedule_alias_present(normalized_text: str, alias: str) -> bool:
+    normalized_alias = str(alias or "").casefold().replace("ё", "е")
+    if not normalized_alias:
+        return False
+    return bool(re.search(rf"(?<![а-яa-z]){re.escape(normalized_alias)}", normalized_text, re.I))
+
+
+def _schedule_specificity_is_declined(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(
+            r"не\s+буду\s+называть|не\s+называю|не\s+подтверждаю|без\s+подтверждени[яй]|точн\w*\s+дн\w*\s+.*\bнет\b",
+            normalized,
+            re.I,
+        )
+    )
 
 
 def _hard_check(

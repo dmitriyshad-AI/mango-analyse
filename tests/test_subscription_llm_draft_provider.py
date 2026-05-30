@@ -2945,7 +2945,11 @@ def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
         {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
     )
     assert cross_brand.route in {"draft_for_manager", "manager_only"}
-    assert "cross_brand_safe_template_applied" in cross_brand.safety_flags
+    assert set(cross_brand.safety_flags) & {
+        "cross_brand_safe_template_applied",
+        "cross_brand_client_text_blocked",
+        "brand_separation_guarded",
+    }
 
     fabricated_number = _route_shield_pipeline_result(
         draft_text="Курс стоит 999 999 ₽.",

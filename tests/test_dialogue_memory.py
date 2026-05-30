@@ -160,6 +160,68 @@ def test_dialogue_memory_llm_does_not_override_prior_client_slot_without_current
     assert updated.known_slots["grade"].source == "dialogue_memory"
 
 
+def test_dialogue_memory_llm_summary_keeps_multiturn_meaning_and_commitment() -> None:
+    memory = build_dialogue_memory(
+        current_message="8 класс, физика, онлайн, хотим понять места.",
+        active_brand="foton",
+        recent_messages=[
+            "Клиент: Добрый вечер, выбираем курс.",
+            "Ответ: Подскажу по проверенным данным.",
+            "Клиент: Ребёнок сейчас в 8 классе.",
+            "Ответ: Зафиксировал класс.",
+            "Клиент: Интересует физика онлайн.",
+            "Ответ: Сориентирую по формату.",
+        ],
+        session_id="s-memory-llm-summary",
+    )
+
+    def memory_llm_fn(prompt: str):
+        assert "1-2 смысловые фразы" in prompt
+        assert "на чём остановились" in prompt
+        return {
+            "slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+            "topic": {"grade": "8", "subject": "физика", "format": "онлайн"},
+            "open_question": {"text": "Хотим понять места.", "kind": "live_availability", "answered": False},
+            "commitments": ["check_availability"],
+            "summary": "Семья выбирает онлайн-физику для 8 класса; бот обещал передать менеджеру проверку мест.",
+        }
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="По местам без проверки не обещаю: менеджер проверит наличие.",
+        route="bot_answer_self",
+        safety_flags=(),
+        memory_llm_fn=memory_llm_fn,
+    )
+
+    assert updated.conversation_summary_short == (
+        "Семья выбирает онлайн-физику для 8 класса; бот обещал передать менеджеру проверку мест."
+    )
+    assert "check_availability" in updated.last_bot_commitments
+    assert updated.to_prompt_view()["conversation_summary_short"] == updated.conversation_summary_short
+
+
+def test_dialogue_memory_summary_falls_back_to_slot_glue_without_model() -> None:
+    memory = build_dialogue_memory(
+        current_message="8 класс, физика, онлайн, сколько стоит?",
+        active_brand="foton",
+        recent_messages=[],
+        session_id="s-memory-summary-fallback",
+    )
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Стоимость уточнит менеджер.",
+        route="bot_answer_self",
+        memory_llm_fn=None,
+    )
+
+    assert updated.conversation_summary_short == memory.conversation_summary_short
+    assert "класс: 8" in updated.conversation_summary_short
+    assert "предмет: физика" in updated.conversation_summary_short
+    assert "формат: онлайн" in updated.conversation_summary_short
+
+
 def test_dialogue_memory_llm_is_optional_and_regex_fallback_stays_unchanged() -> None:
     memory = build_dialogue_memory(
         current_message="Айти-ЕГЭ дистанционно, сколько стоит?",

@@ -3170,7 +3170,7 @@ def test_pravka4_decide_route_does_not_flip_default_before_veto_shield_is_green(
 def test_pravka4b_default_autonomy_flip_is_flagged_and_bounded() -> None:
     base = SubscriptionDraftResult(
         route="draft_for_manager",
-        draft_text="По подтверждённым данным: курс стоит 49 000 ₽.",
+        draft_text="По подтверждённым данным сориентирую по программе.",
         message_type="question",
         topic_id="theme:001_pricing",
     )

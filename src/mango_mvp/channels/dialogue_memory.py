@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.new_lead_funnel import (
     extract_format,
@@ -88,6 +89,27 @@ CURRENT_TERMS_FORBIDDEN_PROMISES_RU = (
 AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS = 5
 AUTONOMOUS_P0_LATCH_RELEASE_EVENT = "autonomous_neutral_p0_latch_release_5_turns"
 HARD_P0_LATCH_CODES = {"legal", "legal_threat", "payment_dispute"}
+MEMORY_LLM_RECOMMENDED_REASONING = "low"
+MEMORY_LLM_RECOMMENDED_MODEL_CLASS = "small_fast_memory_model"
+_MEMORY_LLM_SLOT_KEYS = ("grade", "subject", "format", "goal", "product", "city", "location")
+_MEMORY_LLM_TOPIC_KEYS = (
+    "grade",
+    "subject",
+    "format",
+    "goal",
+    "product",
+    "city",
+    "location",
+    "product_family",
+    "question_kind",
+)
+_MEMORY_LLM_QUESTION_KINDS = {kind for kind, _ in QUESTION_KIND_MARKERS} | {"other", "price_fix"}
+_MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE = re.compile(
+    r"(?:₽|руб(?:\.|лей|ля|ль)?|%|\b\d{1,2}\s+"
+    r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)"
+    r"(?:\s+\d{4})?\b)",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -327,6 +349,7 @@ def update_dialogue_memory_after_answer(
     route: str = "",
     fact_refs: Sequence[str] = (),
     safety_flags: Sequence[str] = (),
+    memory_llm_fn: Callable[[str], object] | None = None,
 ) -> DialogueMemory:
     current = memory if isinstance(memory, DialogueMemory) else dialogue_memory_from_mapping(memory)
     answer = _clean(answer_text)
@@ -357,7 +380,7 @@ def update_dialogue_memory_after_answer(
     handoff = "required" if p0_latch.active or risks or route == "manager_only" else current.handoff_state
     safe_parts = tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
     pending_actions = _pending_manager_actions(commitments)
-    return DialogueMemory(
+    updated = DialogueMemory(
         session_id=current.session_id,
         active_brand=current.active_brand,
         turns=turns,
@@ -384,6 +407,196 @@ def update_dialogue_memory_after_answer(
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
+    if memory_llm_fn is None:
+        return updated
+    try:
+        payload = update_memory_llm(updated.turns[-8:], updated, memory_llm_fn=memory_llm_fn)
+    except Exception:
+        return updated
+    return _apply_memory_llm_update(updated, payload)
+
+
+def update_memory_llm(
+    recent_turns: Sequence[DialogueTurn | Mapping[str, Any]],
+    prev_memory: DialogueMemory | Mapping[str, Any],
+    *,
+    memory_llm_fn: Callable[[str], object] | None,
+) -> Mapping[str, Any]:
+    """Optional post-answer memory enrichment. Callers should use a low-effort small model."""
+
+    if memory_llm_fn is None:
+        return {}
+    memory = prev_memory if isinstance(prev_memory, DialogueMemory) else dialogue_memory_from_mapping(prev_memory)
+    coerced_turns: list[DialogueTurn] = []
+    for item in recent_turns:
+        turn = _coerce_turn(item)
+        if turn.text:
+            coerced_turns.append(turn)
+    turns = tuple(coerced_turns[-8:])
+    prompt = build_memory_llm_prompt(turns, memory)
+    raw = memory_llm_fn(prompt)
+    if isinstance(raw, Mapping):
+        return raw
+    return _extract_json_object(raw)
+
+
+def build_memory_llm_prompt(recent_turns: Sequence[DialogueTurn], prev_memory: DialogueMemory) -> str:
+    turns_payload = [turn.to_json_dict() for turn in recent_turns[-8:]]
+    memory_payload = prev_memory.to_prompt_view()
+    return (
+        "Ты обновляешь краткую рабочую память Telegram-диалога ПОСЛЕ ответа бота.\n"
+        f"Режим вызова: {MEMORY_LLM_RECOMMENDED_REASONING} reasoning; использовать отдельную мелкую/быструю модель "
+        f"класса {MEMORY_LLM_RECOMMENDED_MODEL_CLASS}, не основную модель ответа.\n"
+        "Задача: извлеки только явно сказанное в последних репликах и в прошлой памяти. Не выдумывай.\n"
+        "Бренд задаёт канал: active_brand менять нельзя, даже если клиент назвал другой бренд.\n"
+        "Верни строгий JSON без markdown:\n"
+        "{\n"
+        '  "slots": {"grade": "", "subject": "", "format": "", "goal": "", "product": "", "city": "", "location": ""},\n'
+        '  "topic": {"grade": "", "subject": "", "format": "", "goal": "", "product": "", "product_family": "", "question_kind": ""},\n'
+        '  "open_question": {"text": "", "kind": "", "answered": false},\n'
+        '  "commitments": [],\n'
+        '  "summary": ""\n'
+        "}\n"
+        "Правила:\n"
+        "- slots/topic заполняй предметом, классом, форматом, продуктом, городом/площадкой только если это явно следует из диалога.\n"
+        "- open_question — последний незакрытый вопрос клиента, если он есть.\n"
+        "- commitments — только обещания бота: передать менеджеру, проверить наличие, прислать материал.\n"
+        "- summary — одно короткое предложение для следующего хода, без цен/дат/обещаний, если они не звучали явно.\n\n"
+        "ПРЕДЫДУЩАЯ ПАМЯТЬ JSON:\n"
+        f"{json.dumps(memory_payload, ensure_ascii=False, sort_keys=True)}\n\n"
+        "ПОСЛЕДНИЕ РЕПЛИКИ JSON:\n"
+        f"{json.dumps(turns_payload, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+def _apply_memory_llm_update(memory: DialogueMemory, payload: Mapping[str, Any]) -> DialogueMemory:
+    if not isinstance(payload, Mapping) or not payload:
+        return memory
+
+    slots = dict(memory.known_slots)
+    llm_slots = _memory_llm_slots(payload.get("slots"))
+    _merge_slots(slots, llm_slots, source_name="memory_llm", confidence=0.74, override=False)
+
+    open_question = _memory_llm_open_question(payload.get("open_question"), fallback=memory.open_question)
+    topic_focus = _memory_llm_topic(payload.get("topic"), slots=slots, open_question=open_question, memory=memory)
+    commitments = _memory_llm_commitments(payload.get("commitments"), previous=memory.last_bot_commitments)
+    summary = _memory_llm_summary(payload.get("summary")) or memory.conversation_summary_short
+
+    client_confirmed = _slots_by_source(slots, {"dialogue_memory"})
+    bot_inferred = {
+        **dict(memory.bot_inferred_slots),
+        **_slots_by_source(slots, {"memory_llm"}),
+    }
+    return replace(
+        memory,
+        known_slots=slots,
+        open_question=open_question,
+        last_bot_commitments=commitments,
+        sales_stage=_sales_stage(slots, open_question=open_question, risk_flags=memory.risk_flags, handoff_state=memory.handoff_state),
+        topic_focus=topic_focus,
+        client_confirmed_slots=client_confirmed,
+        bot_inferred_slots=bot_inferred,
+        do_not_reask_slots=_do_not_reask_slots(slots),
+        pending_manager_actions=_pending_manager_actions(commitments),
+        conversation_summary_short=summary[:500],
+        open_loop_summary=_open_loop_summary(
+            open_question=open_question,
+            risk_flags=memory.risk_flags,
+            pending_actions=_pending_manager_actions(commitments),
+        ),
+    )
+
+
+def _memory_llm_slots(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for key in _MEMORY_LLM_SLOT_KEYS:
+        raw = value.get(key)
+        text = _clean(raw)
+        if text:
+            result[key] = text
+    return result
+
+
+def _memory_llm_topic(
+    value: Any,
+    *,
+    slots: Mapping[str, DialogueSlot],
+    open_question: DialogueQuestion,
+    memory: DialogueMemory,
+) -> Mapping[str, str]:
+    topic = dict(_topic_focus(slots, open_question=open_question, active_brand=memory.active_brand))
+    if isinstance(value, Mapping):
+        for key in _MEMORY_LLM_TOPIC_KEYS:
+            raw = _clean(value.get(key))
+            if raw and not topic.get(key):
+                topic[key] = raw[:160]
+    topic["brand"] = memory.active_brand
+    return topic
+
+
+def _memory_llm_open_question(value: Any, *, fallback: DialogueQuestion) -> DialogueQuestion:
+    if not isinstance(value, Mapping):
+        return fallback
+    text = _clean(value.get("text"))[:260]
+    if not text:
+        return fallback
+    kind = _clean(value.get("kind"))
+    if kind not in _MEMORY_LLM_QUESTION_KINDS:
+        kind = fallback.kind or "other"
+    answered = bool(value.get("answered"))
+    if fallback.text and fallback.answered and text == fallback.text:
+        return fallback
+    return DialogueQuestion(text=text, kind=kind, answered=answered)
+
+
+def _memory_llm_commitments(value: Any, *, previous: Sequence[str]) -> tuple[str, ...]:
+    items = list(previous)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for raw in value:
+            text = _clean(raw)
+            if text:
+                items.append(text[:120])
+    return tuple(dict.fromkeys(items))[-8:]
+
+
+def _memory_llm_summary(value: Any) -> str:
+    text = _clean(value)
+    if not text:
+        return ""
+    if _MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE.search(text):
+        return ""
+    return text[:500]
+
+
+def _coerce_turn(raw: DialogueTurn | Mapping[str, Any]) -> DialogueTurn:
+    if isinstance(raw, DialogueTurn):
+        return raw
+    if isinstance(raw, Mapping):
+        return DialogueTurn(str(raw.get("role") or raw.get("speaker") or ""), _clean(raw.get("text")))
+    return DialogueTurn("", _clean(raw))
+
+
+def _extract_json_object(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    raw = str(value or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            payload = json.loads(raw[start : end + 1])
+        except Exception:
+            return {}
+    return payload if isinstance(payload, Mapping) else {}
 
 
 def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueMemory:

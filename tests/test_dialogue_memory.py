@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from mango_mvp.channels.dialogue_memory import (
+    build_memory_llm_prompt,
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
 )
@@ -70,6 +71,104 @@ def test_dialogue_memory_never_changes_active_brand_from_client_text() -> None:
     )
 
     assert memory.active_brand == "unpk"
+
+
+def test_dialogue_memory_llm_enriches_paraphrased_slots_without_changing_brand() -> None:
+    memory = build_dialogue_memory(
+        current_message="Сыну нужно по айти-ЕГЭ, десятый, хотим дистанционно. Сколько стоит?",
+        active_brand="foton",
+        recent_messages=[],
+        session_id="s-memory-llm",
+    )
+    prompts: list[str] = []
+
+    def memory_llm_fn(prompt: str):
+        prompts.append(prompt)
+        return {
+            "slots": {
+                "subject": "информатика",
+                "grade": "10",
+                "format": "онлайн",
+                "active_brand": "unpk",
+            },
+            "topic": {
+                "brand": "unpk",
+                "subject": "информатика",
+                "grade": "10",
+                "format": "онлайн",
+                "product_family": "regular_course",
+            },
+            "open_question": {"text": "Сколько стоит?", "kind": "price", "answered": False},
+            "commitments": ["manager_handoff"],
+            "summary": "Клиент интересуется онлайн-информатикой для 10 класса и ценой.",
+        }
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Передам менеджеру, он уточнит стоимость.",
+        route="bot_answer_self",
+        memory_llm_fn=memory_llm_fn,
+    )
+    view = updated.to_prompt_view()
+
+    assert prompts
+    assert "low reasoning" in prompts[0]
+    assert "active_brand менять нельзя" in prompts[0]
+    assert updated.active_brand == "foton"
+    assert view["topic_focus"]["brand"] == "foton"
+    assert view["known_slots"]["subject"] == "информатика"
+    assert view["known_slots"]["grade"] == "10"
+    assert view["known_slots"]["format"] == "онлайн"
+    assert updated.known_slots["subject"].source == "memory_llm"
+    assert view["topic_focus"]["product_family"] == "regular_course"
+    assert "manager_handoff" in updated.last_bot_commitments
+    assert view["conversation_summary_short"].startswith("Клиент интересуется онлайн-информатикой")
+
+
+def test_dialogue_memory_llm_is_optional_and_regex_fallback_stays_unchanged() -> None:
+    memory = build_dialogue_memory(
+        current_message="Айти-ЕГЭ дистанционно, сколько стоит?",
+        active_brand="foton",
+        recent_messages=[],
+        session_id="s-memory-llm-none",
+    )
+
+    without_model = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Сейчас точно ответить не могу, передаю менеджеру.",
+        route="bot_answer_self",
+        memory_llm_fn=None,
+    )
+
+    def failing_memory_llm(_prompt: str):
+        raise RuntimeError("memory model unavailable")
+
+    failed_model = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Сейчас точно ответить не могу, передаю менеджеру.",
+        route="bot_answer_self",
+        memory_llm_fn=failing_memory_llm,
+    )
+
+    assert failed_model.known_slots == without_model.known_slots
+    assert failed_model.topic_focus == without_model.topic_focus
+    assert failed_model.open_question == without_model.open_question
+    assert failed_model.conversation_summary_short == without_model.conversation_summary_short
+
+
+def test_build_memory_llm_prompt_requests_strict_json_and_keeps_brand_rule() -> None:
+    memory = build_dialogue_memory(
+        current_message="9 класс, физика онлайн",
+        active_brand="unpk",
+        session_id="s-memory-llm-prompt",
+    )
+
+    prompt = build_memory_llm_prompt(memory.turns, memory)
+
+    assert "строгий JSON" in prompt
+    assert "low reasoning" in prompt
+    assert "мелкую/быструю модель" in prompt
+    assert "active_brand менять нельзя" in prompt
 
 
 def test_dialogue_memory_tracks_commitment_and_closes_open_question() -> None:

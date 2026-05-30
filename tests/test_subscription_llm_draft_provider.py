@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from mango_mvp.channels.dialogue_contract_pipeline import FactStore, run_pipeline
+from mango_mvp.channels.dialogue_contract_pipeline import FactStore, check_claim_faithfulness, run_pipeline
 from mango_mvp.channels.subscription_llm import (
     ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
     ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
@@ -3232,6 +3232,108 @@ def test_pravka4b_default_autonomy_flip_is_flagged_and_bounded() -> None:
     )
     assert high_risk.route == "manager_only"
     assert high_risk.veto_category == "high_risk"
+
+
+def test_pravka5_semantic_critic_blocks_wrong_scope_and_contradicted_claims() -> None:
+    wrong_scope_result = check_claim_faithfulness(
+        "Это онлайн.",
+        facts={
+            "camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания.",
+            "regular.online.format": "Обычные онлайн-курсы проходят дистанционно.",
+        },
+        client_words="В каком формате лагерная смена?",
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "это онлайн",
+                    "evidence_fact_key": "regular.online.format",
+                    "verdict": "wrong_scope",
+                    "reason": "факт про обычный онлайн-курс, а вопрос про лагерную смену",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+    assert wrong_scope_result.unsupported == ("это онлайн",)
+
+    wrong_scope_pipeline = _route_shield_pipeline_result(
+        client_message="В каком формате лагерная смена?",
+        draft_text="Это онлайн.",
+        contract=_route_shield_contract(question="В каком формате лагерная смена?", keys=("camp.shift.format",)),
+        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "это онлайн",
+                    "evidence_fact_key": "camp.shift.format",
+                    "verdict": "wrong_scope",
+                    "reason": "черновик отвечает не в scope факта",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+    assert wrong_scope_pipeline.route == "draft_for_manager"
+    assert wrong_scope_pipeline.fallback_reason == "hard_verification_failed"
+
+    contradicted_result = check_claim_faithfulness(
+        "Да, программа подходит для 9 класса.",
+        facts={"program.grade": "Программа подтверждена для 10 класса."},
+        client_words="Подходит для 10 класса?",
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "программа подходит для 9 класса",
+                    "evidence_fact_key": "program.grade",
+                    "verdict": "contradicted",
+                    "reason": "факт подтверждает 10 класс, не 9",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+    assert contradicted_result.unsupported == ("программа подходит для 9 класса",)
+
+    contradicted = _route_shield_pipeline_result(
+        client_message="Подходит для 10 класса?",
+        draft_text="Да, программа подходит для 9 класса.",
+        contract=_route_shield_contract(question="Подходит для 10 класса?", keys=("program.grade",)),
+        facts={"program.grade": "Программа подтверждена для 10 класса."},
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "программа подходит для 9 класса",
+                    "evidence_fact_key": "program.grade",
+                    "verdict": "contradicted",
+                    "reason": "факт подтверждает 10 класс, не 9",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+    assert contradicted.route == "draft_for_manager"
+    assert contradicted.fallback_reason == "hard_verification_failed"
+
+
+def test_pravka5_semantic_critic_keeps_supported_same_scope_claim_autonomous() -> None:
+    supported = _route_shield_pipeline_result(
+        client_message="В каком формате лагерная смена?",
+        draft_text="ЛВШ Менделеево — очная городская смена без проживания.",
+        contract=_route_shield_contract(question="В каком формате лагерная смена?", keys=("camp.shift.format",)),
+        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "ЛВШ Менделеево — очная городская смена без проживания",
+                    "evidence_fact_key": "camp.shift.format",
+                    "verdict": "supported",
+                    "reason": "тот же продукт, формат и условия",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+    assert supported.route == "bot_answer_self"
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:

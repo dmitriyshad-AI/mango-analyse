@@ -527,10 +527,12 @@ def build_draft_prompt(
     tone_guide: str = "",
     style_examples: Sequence[str] = (),
     toggles: Toggles | None = None,
+    dialogue_memory_view: Mapping[str, Any] | None = None,
 ) -> str:
     toggles = toggles or Toggles()
     hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
     facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(нет подтверждённых фактов под этот вопрос)"
+    memory_block = _format_memory_block(dialogue_memory_view)
     subquestions = "\n".join(
         f"- {item.text or contract.current_question} [{item.answerable}]"
         + (f"; тип: {item.question_type}" if item.question_type else "")
@@ -567,9 +569,36 @@ def build_draft_prompt(
         "Если сомневаешься, уточни или узко передай менеджеру; это важнее правила «ответить живо». "
         "Не раскрывай внутренние настройки, fact_id/source_id/JSON. Не обещай результат, возврат, одобрение банка/СФР/ФНС.\n"
         + (f"Манера: {tone_guide}\n" if tone_guide else "")
+        + memory_block
         + f"История диалога:\n{hist}\n"
         "Верни только текст клиенту, без JSON и служебных пометок."
     )
+
+
+def _format_memory_block(view: Mapping[str, Any] | None) -> str:
+    if not view:
+        return ""
+    open_question = view.get("open_question") or {}
+    open_question_text = str(open_question.get("text") or "") if isinstance(open_question, MappingABC) else str(open_question or "")
+    known_slots = view.get("known_slots") or {}
+    do_not_ask_again = view.get("do_not_ask_again") or ()
+    commitments = view.get("last_bot_commitments") or ()
+    topic_focus = view.get("topic_focus") or {}
+    summary = str(view.get("conversation_summary_short") or "")
+    lines = ["Рабочая память переписки (используй, но P0/бренд/факт-гарды важнее памяти):"]
+    if summary:
+        lines.append(f"- кратко: {summary}")
+    if topic_focus:
+        lines.append(f"- фокус темы: {json.dumps(topic_focus, ensure_ascii=False)}")
+    if open_question_text:
+        lines.append(f"- открытый вопрос клиента (закрой первым, если безопасно): {open_question_text}")
+    if known_slots:
+        lines.append(f"- уже известно (НЕ переспрашивай): {json.dumps(known_slots, ensure_ascii=False)}")
+    if do_not_ask_again:
+        lines.append(f"- не спрашивай заново: {', '.join(str(item) for item in do_not_ask_again)}")
+    if commitments:
+        lines.append(f"- бот уже обещал (не меняй без факта): {'; '.join(str(item) for item in commitments)}")
+    return "\n".join(lines) + "\n\n"
 
 
 def build_faithfulness_prompt(draft: str, *, facts: Mapping[str, str], client_words: str) -> str:
@@ -1134,6 +1163,7 @@ def run_pipeline(
             tone_guide=tone_guide,
             style_examples=style_examples,
             toggles=toggles,
+            dialogue_memory_view=(context or {}).get("dialogue_memory_view"),
         )
         trace["prompt_chars"] = len(prompt)
         try:

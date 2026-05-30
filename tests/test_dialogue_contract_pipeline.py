@@ -2534,6 +2534,67 @@ def test_contract_subquestions_slots_and_client_state() -> None:
     assert "'subject':" not in prompt
 
 
+def test_build_draft_prompt_includes_dialogue_memory_view_before_history() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "а онлайн для 10?",
+            "needed_fact_keys": ["price.online.grade10"],
+            "answerability": "answer_self",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online.grade10",),
+    )
+    prompt = build_draft_prompt(
+        conversation=_conv("а онлайн для 10?"),
+        contract=contract,
+        facts={"price.online.grade10": "Фотон онлайн для 10 класса: семестр — 29 750 ₽."},
+        missing=(),
+        dialogue_memory_view={
+            "conversation_summary_short": "обсуждали курс по информатике",
+            "topic_focus": {"subject": "информатика", "grade": "10", "format": "онлайн"},
+            "open_question": {"text": "сколько стоит онлайн для 10 класса"},
+            "known_slots": {"subject": "информатика", "grade": "10"},
+            "do_not_ask_again": ["subject", "grade"],
+            "last_bot_commitments": ["сориентировать по цене"],
+        },
+    )
+
+    assert "Рабочая память переписки" in prompt
+    assert "P0/бренд/факт-гарды важнее памяти" in prompt
+    assert "обсуждали курс по информатике" in prompt
+    assert '"subject": "информатика"' in prompt
+    assert "сколько стоит онлайн для 10 класса" in prompt
+    assert '"grade": "10"' in prompt
+    assert "subject, grade" in prompt
+    assert "сориентировать по цене" in prompt
+    assert prompt.index("Рабочая память переписки") < prompt.index("История диалога:")
+
+
+def test_build_draft_prompt_without_dialogue_memory_keeps_memory_block_empty() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "цена?",
+            "needed_fact_keys": ["price.online"],
+            "answerability": "answer_self",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+    base_kwargs = {
+        "conversation": _conv("цена?"),
+        "contract": contract,
+        "facts": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."},
+        "missing": (),
+    }
+
+    prompt_without_memory = build_draft_prompt(**base_kwargs)
+    prompt_with_none = build_draft_prompt(**base_kwargs, dialogue_memory_view=None)
+    prompt_with_empty = build_draft_prompt(**base_kwargs, dialogue_memory_view={})
+
+    assert prompt_without_memory == prompt_with_none == prompt_with_empty
+    assert "Рабочая память переписки" not in prompt_without_memory
+
+
 def test_semantic_faithfulness_exception_fail_closed() -> None:
     store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
 

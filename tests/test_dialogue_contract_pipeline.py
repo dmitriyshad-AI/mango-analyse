@@ -631,6 +631,105 @@ def test_pipeline_unconfirmed_schedule_finding_enters_repair_loop() -> None:
     assert "будни" not in result.draft_text.casefold()
 
 
+def test_verify_output_blocks_self_contradicting_discount_percent() -> None:
+    contract = parse_contract(
+        _contract_payload("скидка на третий предмет", keys=("discount.third_subject",)),
+        active_brand="unpk",
+        fact_key_catalog=("discount.third_subject",),
+    )
+
+    findings = verify_output(
+        "На третий предмет скидка 10%.",
+        facts={"discount.third_subject": "На третий предмет действует скидка 10%."},
+        active_brand="unpk",
+        contract=contract,
+        client_message="а на третий предмет скидка какая?",
+        previous_bot_texts=("На третий предмет скидка 14%.",),
+    )
+
+    assert any(finding.code == "self_contradiction" for finding in findings)
+
+
+def test_verify_output_self_contradiction_negative_controls() -> None:
+    contract = parse_contract(
+        _contract_payload("скидка на третий предмет", keys=("discount.third_subject",)),
+        active_brand="unpk",
+        fact_key_catalog=("discount.third_subject",),
+    )
+
+    assert not [
+        finding
+        for finding in verify_output(
+            "На третий предмет скидка 14%.",
+            facts={"discount.third_subject": "На третий предмет действует скидка 14%."},
+            active_brand="unpk",
+            contract=contract,
+            client_message="а на третий предмет скидка какая?",
+            previous_bot_texts=("На третий предмет скидка 14%.",),
+        )
+        if finding.code == "self_contradiction"
+    ]
+    assert not [
+        finding
+        for finding in verify_output(
+            "Для многодетных семей скидка 10%.",
+            facts={"discount.multichild": "Для многодетных семей действует скидка 10%."},
+            active_brand="unpk",
+            contract=contract,
+            client_message="а многодетным какая скидка?",
+            previous_bot_texts=("На второй предмет скидка 14%.",),
+        )
+        if finding.code == "self_contradiction"
+    ]
+    assert not [
+        finding
+        for finding in verify_output(
+            "На третий предмет скидка 10%.",
+            facts={"discount.third_subject": "На третий предмет действует скидка 10%."},
+            active_brand="unpk",
+            contract=contract,
+            client_message="а на третий предмет скидка какая?",
+            previous_bot_texts=(),
+        )
+        if finding.code == "self_contradiction"
+    ]
+    assert not [
+        finding
+        for finding in verify_output(
+            "Предоплата 10% нужна для бронирования места.",
+            facts={"payment.prepay": "Для бронирования нужна предоплата 10%."},
+            active_brand="unpk",
+            contract=contract,
+            client_message="какая предоплата?",
+            previous_bot_texts=("На третий предмет скидка 14%.",),
+        )
+        if finding.code == "self_contradiction"
+    ]
+
+
+def test_pipeline_self_contradiction_finding_goes_fail_safe_without_repair() -> None:
+    store = FactStore(
+        catalog=("discount.third_subject",),
+        store={"unpk": {"discount.third_subject": "На третий предмет действует скидка 10%."}},
+    )
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "какая скидка на третий предмет?"},
+            {"role": "bot", "text": "На третий предмет скидка 14%."},
+            {"role": "client", "text": "а точно сколько скидка на третий предмет?"},
+        ),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("скидка на третий предмет", keys=("discount.third_subject",))),
+        draft_fn=lambda _prompt: "На третий предмет скидка 10%.",
+        repair_fn=None,
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert any(finding.code == "self_contradiction" for finding in result.findings)
+
+
 def test_pipeline_unsupported_entity_falls_back_to_manager_draft() -> None:
     store = FactStore(catalog=("recordings",), store={"foton": {"recordings": "Записи доступны в личном кабинете."}})
     result = run_pipeline(

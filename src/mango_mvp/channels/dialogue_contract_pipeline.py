@@ -1240,6 +1240,7 @@ def run_pipeline(
 ) -> DialogueContractPipelineResult:
     toggles = toggles or Toggles()
     client_words = str(conversation[-1].get("text") or "") if conversation else ""
+    previous_bot_texts = [str(item.get("text") or "") for item in conversation if str(item.get("role") or "") == "bot"]
     with trace_span(context, "understand", {"client_message": client_words, "active_brand": active_brand}) as trace:
         contract = understand(
             conversation=conversation,
@@ -1416,6 +1417,7 @@ def run_pipeline(
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
         if replacement:
             return DialogueContractPipelineResult(
@@ -1468,6 +1470,7 @@ def run_pipeline(
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
         if replacement:
             return DialogueContractPipelineResult(
@@ -1500,6 +1503,7 @@ def run_pipeline(
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
         context=context,
+        previous_bot_texts=previous_bot_texts,
     )
     if not semantic_available:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -1536,6 +1540,7 @@ def run_pipeline(
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
         if not semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -1561,6 +1566,7 @@ def run_pipeline(
                 faithfulness_fn=faithfulness_fn,
                 toggles=toggles,
                 context=context,
+                previous_bot_texts=previous_bot_texts,
             )
             if fallback_semantic_available and not fallback_findings and not fallback_unsupported:
                 return DialogueContractPipelineResult(
@@ -1605,6 +1611,7 @@ def run_pipeline(
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
         if comp_semantic_available and not comp_findings and not comp_unsupported:
             draft = composition
@@ -1638,6 +1645,7 @@ def run_pipeline(
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
         if not candidate_semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -1676,6 +1684,7 @@ def run_pipeline(
                 faithfulness_fn=faithfulness_fn,
                 toggles=toggles,
                 context=context,
+                previous_bot_texts=previous_bot_texts,
             )
             cite_coverage = _coverage_findings(
                 cite_only,
@@ -1696,6 +1705,7 @@ def run_pipeline(
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
         context=context,
+        previous_bot_texts=previous_bot_texts,
     )
     if replacement:
         draft = replacement
@@ -1737,6 +1747,7 @@ def run_pipeline(
                     faithfulness_fn=faithfulness_fn,
                     toggles=toggles,
                     context=context,
+                    previous_bot_texts=previous_bot_texts,
                 )
                 added_warm_anchors = new_concrete_anchors(warm_candidate, original=draft, facts=retrieval.facts)
                 if warm_semantic_available and not warm_findings and (not warm_unsupported or not added_warm_anchors):
@@ -1785,6 +1796,7 @@ def verify_output(
     forbidden_substitutions: Sequence[str] = (),
     client_message: str = "",
     context: Mapping[str, Any] | None = None,
+    previous_bot_texts: Sequence[str] = (),
 ) -> list[VerificationFinding]:
     text = str(draft_text or "")
     low = text.casefold()
@@ -1820,6 +1832,9 @@ def verify_output(
     unconfirmed_schedule = _unconfirmed_schedule_finding(low, facts=facts, client_message=client_message)
     if unconfirmed_schedule is not None:
         findings.append(unconfirmed_schedule)
+    self_contradiction = _self_contradiction_finding(text, low, previous_bot_texts=previous_bot_texts)
+    if self_contradiction is not None:
+        findings.append(self_contradiction)
     for topic in tuple(denied_topics) + tuple(forbidden_substitutions):
         normalized = str(topic or "").strip().casefold()
         if normalized and normalized in low:
@@ -1911,6 +1926,51 @@ def _schedule_specificity_is_declined(text: str) -> bool:
     )
 
 
+def _self_contradiction_finding(
+    text: str,
+    answer_low: str,
+    *,
+    previous_bot_texts: Sequence[str],
+) -> VerificationFinding | None:
+    cur_pcts = set(re.findall(r"(\d{1,2})\s*%", text))
+    if not cur_pcts or "скидк" not in answer_low:
+        return None
+    cur_scopes = _discount_scope_anchors(answer_low)
+    for previous in previous_bot_texts:
+        prev_text = str(previous or "")
+        prev_low = prev_text.casefold().replace("ё", "е")
+        if "скидк" not in prev_low:
+            continue
+        prev_pcts = set(re.findall(r"(\d{1,2})\s*%", prev_text))
+        if not prev_pcts or not prev_pcts.isdisjoint(cur_pcts):
+            continue
+        prev_scopes = _discount_scope_anchors(prev_low)
+        if cur_scopes and prev_scopes and cur_scopes.isdisjoint(prev_scopes):
+            continue
+        return VerificationFinding(
+            "self_contradiction",
+            f"процент скидки противоречит ранее названному ботом: было {sorted(prev_pcts)}, стало {sorted(cur_pcts)}",
+        )
+    return None
+
+
+_DISCOUNT_SCOPE_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "second_subject": ("второй предмет", "2-й предмет", "вторым предмет", "второго предмет"),
+    "third_subject": ("третий предмет", "3-й предмет", "третьим предмет", "третьего предмет", "последующ"),
+    "multichild": ("многодет", "двое детей", "2 детей", "несколько детей"),
+    "sibling": ("брат", "сестр", "ребенок", "ребёнок", "детей"),
+}
+
+
+def _discount_scope_anchors(text: str) -> set[str]:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    return {
+        anchor
+        for anchor, aliases in _DISCOUNT_SCOPE_ALIASES.items()
+        if any(alias in normalized for alias in aliases)
+    }
+
+
 def _hard_check(
     draft: str,
     *,
@@ -1920,6 +1980,7 @@ def _hard_check(
     faithfulness_fn: Callable[[str], object] | None,
     toggles: Toggles,
     context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
 ) -> tuple[tuple[VerificationFinding, ...], tuple[str, ...], bool]:
     verification_text = _handoff_factual_claim_text(draft)
     pure_handoff = _is_pure_handoff_text(draft) and verification_text is None
@@ -1934,6 +1995,7 @@ def _hard_check(
             forbidden_substitutions=contract.forbidden_substitutions,
             client_message=client_words,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
     )
     findings.extend(_existence_yes_no_findings(text_to_check, contract=contract, facts=facts))
@@ -2160,6 +2222,7 @@ def _verified_empty_handoff_replacement(
     faithfulness_fn: Callable[[str], object] | None,
     toggles: Toggles,
     context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
 ) -> str:
     if not _should_replace_empty_handoff(draft, contract=contract, retrieval=retrieval):
         return ""
@@ -2179,6 +2242,7 @@ def _verified_empty_handoff_replacement(
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
         context=context,
+        previous_bot_texts=previous_bot_texts,
     )
     if semantic_available and not findings and not unsupported:
         return replacement

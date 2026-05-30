@@ -6,7 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from mango_mvp.channels.dialogue_contract_pipeline import (
+    AnswerContract,
     FactStore,
+    _safe_fallback_text,
     build_faithfulness_prompt,
     check_claim_faithfulness,
     run_pipeline,
@@ -3437,6 +3439,80 @@ def test_pravka5_1_semantic_critic_keeps_supported_right_topic() -> None:
     )
 
     assert result.unsupported == ()
+
+
+def test_pravka5_2_complaint_zero_collect_uses_clean_handoff() -> None:
+    text = _safe_fallback_text(
+        AnswerContract(
+            active_brand="foton",
+            current_question="Жалоба: преподаватель ужасный, ребёнок ничего не понял.",
+            answerability="manager_only",
+            is_p0=True,
+            p0_reason="complaint",
+        ),
+        facts={
+            "discounts.current": "Скидка на второй предмет — 20%.",
+        },
+        context={"active_brand": "foton"},
+    )
+    lowered = text.casefold().replace("ё", "е")
+
+    assert "передам менеджеру" in lowered
+    assert "скидк" not in lowered
+    assert "укажите" not in lowered
+    assert "ребен" not in lowered
+    assert "как зовут" not in lowered
+    assert not any(char.isdigit() for char in text)
+
+
+def test_pravka5_2_refund_zero_collect_keeps_refund_handoff() -> None:
+    text = _safe_fallback_text(
+        AnswerContract(
+            active_brand="unpk",
+            current_question="Верните деньги, я недовольна занятиями.",
+            answerability="manager_only",
+            is_p0=True,
+            p0_reason="refund",
+        ),
+        facts={
+            "payment.installment": "Есть рассрочка через Т-Банк.",
+        },
+        context={"active_brand": "unpk"},
+    )
+    lowered = text.casefold().replace("ё", "е")
+
+    assert "возврат" in lowered
+    assert "передам" in lowered
+    assert "как отдельная справка" not in lowered
+    assert "т-банк" not in lowered
+
+
+def test_pravka5_2_non_p0_fallback_still_uses_secondary_and_detail() -> None:
+    secondary = _safe_fallback_text(
+        AnswerContract(
+            active_brand="unpk",
+            current_question="Можно помесячно прямым переводом на счёт?",
+            answerability="manager_only",
+        ),
+        facts={
+            "payment.installment": "Есть рассрочка через Т-Банк.",
+        },
+        context={"active_brand": "unpk"},
+    )
+    assert "как отдельная справка" in secondary.casefold()
+    assert "т-банк" in secondary.casefold()
+
+    detail = _safe_fallback_text(
+        AnswerContract(
+            active_brand="unpk",
+            current_question="Какая цена для 6 класса?",
+            answerability="manager_only",
+        ),
+        facts={},
+        context={"active_brand": "unpk"},
+    )
+    assert "уточнить точную деталь" in detail.casefold()
+    assert "Какая цена для 6 класса" in detail
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:

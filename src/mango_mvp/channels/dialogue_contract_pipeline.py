@@ -2176,6 +2176,23 @@ def _refund_policy_handoff_text(*, conversation: Sequence[Mapping[str, str]] | N
     return _REFUND_POLICY_TEXTS[bot_turns % len(_REFUND_POLICY_TEXTS)]
 
 
+_COMPLAINT_HANDOFF_TEXTS: tuple[str, ...] = (
+    "Понимаю, что ситуация неприятная, и хочу, чтобы её разобрали внимательно. "
+    "Передам менеджеру — он свяжется с вами и поможет.",
+    "Спасибо, что написали. Такую ситуацию правильнее разобрать с менеджером — "
+    "передам ему, он свяжется и во всём разберётся.",
+    "Понимаю вас. Чтобы решить вопрос по существу, передам менеджеру — "
+    "он свяжется с вами напрямую.",
+)
+
+
+def _complaint_handoff_text(*, conversation: Sequence[Mapping[str, str]] | None = None) -> str:
+    bot_turns = 0
+    if conversation:
+        bot_turns = sum(1 for item in conversation if str(item.get("role") or "") == "bot")
+    return _COMPLAINT_HANDOFF_TEXTS[bot_turns % len(_COMPLAINT_HANDOFF_TEXTS)]
+
+
 def _safe_fallback_text(
     contract: AnswerContract,
     *,
@@ -2195,6 +2212,21 @@ def _safe_fallback_text(
             },
         )
         return text
+
+    safety = classify_answer_safety(
+        client_message=contract.current_question or "",
+        context=context,
+        route="manager_only",
+    )
+    if safety.zero_collect_required:
+        if safety.primary_risk == "complaint":
+            return traced(_complaint_handoff_text(), "complaint_zero_collect")
+        if safety.primary_risk == "refund":
+            return traced(_refund_policy_handoff_text(), "refund_zero_collect")
+        return traced(
+            "Сейчас точно ответить не могу. Передам вопрос менеджеру — он свяжется с вами.",
+            "p0_zero_collect",
+        )
 
     known_absence = _known_absence_text(contract, facts or {})
     if known_absence:

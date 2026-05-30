@@ -3084,6 +3084,23 @@ def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
     assert forced_manager_only.route == "manager_only"
     assert forced_manager_only.veto_category == "force_manager_only"
 
+    forced_manager_result = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Сориентирую по курсу.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+        ),
+        "Сколько стоит?",
+        {
+            "active_brand": "unpk",
+            "rop_policy": {"bot_permission": "manager_only"},
+            "autonomy_policy": {"allow_autonomous": True},
+        },
+    )
+    assert forced_manager_result.route == "manager_only"
+    assert forced_manager_result.veto_category == "force_manager_only"
+
     semantic_unavailable = _route_shield_pipeline_result(
         draft_text="Передам информацию по курсу.",
         contract=_route_shield_contract(keys=()),

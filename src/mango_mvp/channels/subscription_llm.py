@@ -705,6 +705,7 @@ class SubscriptionDraftResult:
     alternative_themes: tuple[str, ...] = field(default_factory=tuple)
     risk_level: str = "unknown"
     route: str = "manager_only"
+    veto_category: str = ""
     draft_text: str = SAFE_FALLBACK_DRAFT_TEXT
     manager_checklist: tuple[str, ...] = field(default_factory=tuple)
     missing_facts: tuple[str, ...] = field(default_factory=tuple)
@@ -743,6 +744,7 @@ class SubscriptionDraftResult:
         object.__setattr__(self, "message_type", message_type)
         object.__setattr__(self, "broad_group", str(self.broad_group or "").strip()[:80])
         object.__setattr__(self, "route", route)
+        object.__setattr__(self, "veto_category", str(self.veto_category or "").strip()[:80])
         object.__setattr__(self, "draft_text", text)
         object.__setattr__(self, "topic_id", str(self.topic_id or "service:S2_unclear").strip() or "service:S2_unclear")
         object.__setattr__(self, "topic_confidence", _clamp_float(self.topic_confidence))
@@ -775,6 +777,7 @@ class SubscriptionDraftResult:
             "alternative_themes": list(self.alternative_themes),
             "risk_level": self.risk_level,
             "route": self.route,
+            "veto_category": self.veto_category,
             "draft_text": self.draft_text,
             "manager_checklist": list(self.manager_checklist),
             "missing_facts": list(self.missing_facts),
@@ -1444,6 +1447,7 @@ class SubscriptionLlmDraftProvider:
             return replace(
                 result,
                 route=decision.route,
+                veto_category=decision.veto_category,
                 safety_flags=tuple(dict.fromkeys(flags)),
                 manager_checklist=tuple(dict.fromkeys(checklist)),
                 metadata=metadata,

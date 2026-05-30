@@ -1061,14 +1061,14 @@ def run_pipeline(
             context,
             "build_draft",
             {
-                "route": "draft_for_manager",
+                "route": "bot_answer_self",
                 "fallback_reason": "empty_facts_no_fabrication",
                 "draft": fallback,
             },
         )
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
-            route="draft_for_manager",
+            route="bot_answer_self",
             manager_only=False,
             contract=contract,
             facts=retrieval.facts,

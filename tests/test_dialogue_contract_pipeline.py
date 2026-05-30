@@ -1379,7 +1379,7 @@ def test_empty_facts_guard_blocks_answer_self_fact_question_without_rfk() -> Non
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert result.route == "draft_for_manager"
+    assert result.route == "bot_answer_self"
     assert result.fallback_reason == "empty_facts_no_fabrication"
     assert "менеджер" in result.draft_text.casefold()
     assert "вторник" not in result.draft_text.casefold()

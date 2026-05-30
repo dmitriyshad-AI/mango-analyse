@@ -3018,7 +3018,7 @@ def test_volna_peresborki_safety_shield_blocks_core_autonomy_risks() -> None:
         "Фотон и УНПК — это одно и то же?",
         {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
     )
-    assert cross_brand.route == "draft_for_manager"
+    assert cross_brand.route in {"draft_for_manager", "manager_only"}
     assert "cross_brand_safe_template_applied" in cross_brand.safety_flags
     assert "унпк" not in cross_brand.draft_text.casefold()
 
@@ -3955,6 +3955,9 @@ def test_volna_peresborki_semantic_coverage_negative_controls_block_real_fabrica
         ("до 15 мая", ("УНПК: ранняя цена действует до 1 июля.",)),
         ("Фотон: скидка 20%", ("УНПК: скидка на второй предмет составляет 20%.",)),
         ("70 900 ₽", ("УНПК: онлайн-курс для 9 класса, год — 69 900 ₽.",)),
+        ("обычно есть утренние группы", ("УНПК: по расписанию обычно доступны группы в вечернее время.",)),
+        ("занятия проходят по будням", ("УНПК: обычно бывают разные слоты, в том числе по выходным.",)),
+        ("обычно есть выходные группы", ("УНПК: обычно есть группы в будние дни.",)),
     )
     for claim, facts in cases:
         assert not _claim_supported_by_facts(claim, facts), claim

@@ -7778,6 +7778,7 @@ def _fact_match_anchors(text: Any) -> set[str]:
     low = source.casefold().replace("ё", "е").replace("\u00a0", " ")
     anchors = set(dialogue_contract_concrete_anchors(source))
     anchors.update(_fact_match_unit_anchors(source))
+    anchors.update(_fact_match_schedule_condition_anchors(low))
     if re.search(r"\bфотон\b|цдпо|црдо|cdpofoton", low, re.I):
         anchors.add("brand:foton")
     if re.search(r"\bунпк\b|унпк\s+мфти|kmipt", low, re.I):
@@ -7802,6 +7803,21 @@ def _fact_match_unit_anchors(text: Any) -> set[str]:
         anchors.add("unit:money")
     if re.search(r"\b\d{1,3}\+?\s*балл\w*", source, re.I):
         anchors.add("unit:points")
+    return anchors
+
+
+def _fact_match_schedule_condition_anchors(low_text: str) -> set[str]:
+    anchors: set[str] = set()
+    if re.search(r"\bвечерн\w*", low_text, re.I):
+        anchors.add("condition:evening")
+    if re.search(r"\bутренн\w*", low_text, re.I):
+        anchors.add("condition:morning")
+    if re.search(r"\bдневн\w*", low_text, re.I):
+        anchors.add("condition:day")
+    if re.search(r"\b(?:выходн|суббот|воскресен)\w*", low_text, re.I):
+        anchors.add("condition:weekend")
+    if re.search(r"\b(?:будн|буден)\w*", low_text, re.I):
+        anchors.add("condition:weekday")
     return anchors
 
 

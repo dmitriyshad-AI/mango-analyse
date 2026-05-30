@@ -5,7 +5,12 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from mango_mvp.channels.dialogue_contract_pipeline import FactStore, check_claim_faithfulness, run_pipeline
+from mango_mvp.channels.dialogue_contract_pipeline import (
+    FactStore,
+    build_faithfulness_prompt,
+    check_claim_faithfulness,
+    run_pipeline,
+)
 from mango_mvp.channels.subscription_llm import (
     ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
     ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
@@ -3335,6 +3340,103 @@ def test_pravka5_semantic_critic_keeps_supported_same_scope_claim_autonomous() -
         },
     )
     assert supported.route == "bot_answer_self"
+
+
+def test_pravka5_1_semantic_critic_prompt_names_remaining_fabrication_types() -> None:
+    prompt = build_faithfulness_prompt(
+        "Это онлайн, занятия по вторникам, других форматов нет, фокус на ОГЭ.",
+        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
+        client_words="Лагерь онлайн или очно?",
+    )
+
+    assert "ВЫБОР ФОРМАТА" in prompt
+    assert "онлайн или очно" in prompt
+    assert "РАСПИСАНИЕ/ДНИ/ВРЕМЯ" in prompt
+    assert "по вторникам" in prompt
+    assert "Лагерь/смена ≠ обычный курс ≠ олимпиадная подготовка" in prompt
+    assert "ОТРИЦАНИЕ И СПЕЦИФИКА" in prompt
+    assert "других форматов нет" in prompt
+    assert "фокус на ОГЭ" in prompt
+
+
+def test_pravka5_1_semantic_critic_blocks_specific_remaining_fabrication_verdicts() -> None:
+    cases = [
+        (
+            "онлайн или очно, цена 6 класс",
+            "Это онлайн.",
+            {"format.general": "Есть очные и онлайн-направления; точный формат зависит от выбранной программы."},
+            "это онлайн",
+            "unsupported",
+        ),
+        (
+            "Когда проходят занятия?",
+            "Занятия проходят в будни.",
+            {"program.general": "Программа доступна для 9 класса."},
+            "занятия проходят в будни",
+            "unsupported",
+        ),
+        (
+            "Что за летняя смена?",
+            "Это обычный онлайн-курс по олимпиадной подготовке.",
+            {"camp.shift": "ЛВШ Менделеево — летняя смена."},
+            "это обычный онлайн-курс по олимпиадной подготовке",
+            "wrong_scope",
+        ),
+        (
+            "Есть другие выездные форматы?",
+            "Других выездных форматов нет.",
+            {"camp.shift": "ЛВШ Менделеево — выездная смена."},
+            "других выездных форматов нет",
+            "unsupported",
+        ),
+        (
+            "Это курс под экзамен?",
+            "У курса фокус на ОГЭ.",
+            {"program.general": "Курс помогает подтянуть математику."},
+            "у курса фокус на ОГЭ",
+            "unsupported",
+        ),
+    ]
+
+    for client_words, draft, facts, claim, verdict in cases:
+        result = check_claim_faithfulness(
+            draft,
+            facts=facts,
+            client_words=client_words,
+            faithfulness_fn=lambda _prompt, claim=claim, verdict=verdict: {
+                "claims": [
+                    {
+                        "claim": claim,
+                        "evidence_fact_key": next(iter(facts)),
+                        "verdict": verdict,
+                        "reason": "калибровочный пример правки 5.1",
+                    }
+                ],
+                "unsupported": [],
+            },
+        )
+        assert result.unsupported == (claim,)
+
+
+def test_pravka5_1_semantic_critic_keeps_supported_right_topic() -> None:
+    result = check_claim_faithfulness(
+        "ЛВШ Менделеево — очная городская смена без проживания.",
+        facts={"camp.shift.format": "ЛВШ Менделеево — очная городская смена без проживания."},
+        client_words="Лагерь онлайн или очно?",
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "ЛВШ Менделеево — очная городская смена без проживания",
+                    "evidence_fact_key": "camp.shift.format",
+                    "verdict": "supported",
+                    "reason": "факт про тот же лагерь и формат",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+
+    assert result.unsupported == ()
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:

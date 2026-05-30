@@ -6622,6 +6622,18 @@ def decide_route(
     autonomy_ready = _autonomy_enabled(context) and _autonomy_topic_allowed(result.topic_id, context)
     has_covering_fact = _has_client_safe_current_fact(context) or _is_verified_client_safe_template(result.draft_text)
     if (
+        result.route == "draft_for_manager"
+        and autonomy_ready
+        and has_covering_fact
+        and _memory_followup_answered_topic(context, client_message)
+    ):
+        return RouteDecision(
+            route="bot_answer_self_for_pilot",
+            safety_flags=("dialogue_memory_followup_autonomy",),
+            metadata={"dialogue_memory_followup_autonomy": True},
+            autonomous_candidate=True,
+        )
+    if (
         allow_default_autonomy
         and result.route == "draft_for_manager"
         and autonomy_ready
@@ -6629,6 +6641,119 @@ def decide_route(
     ):
         return RouteDecision(route="bot_answer_self_for_pilot", autonomous_candidate=True)
     return RouteDecision(route=result.route, autonomous_candidate=result.route == "draft_for_manager" and autonomy_ready)
+
+
+def _memory_followup_answered_topic(context: Optional[Mapping[str, Any]], client_message: str) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, Mapping):
+        return False
+    routes = _memory_text_items(memory.get("route_history"))
+    if not any(route in AUTONOMOUS_ROUTES for route in routes):
+        return False
+    answered = (*_memory_text_items(memory.get("answered_questions")), *_memory_text_items(memory.get("safe_answered_parts")))
+    if not answered:
+        return False
+    focus = memory.get("topic_focus")
+    if not isinstance(focus, Mapping):
+        return False
+    text = _memory_norm(client_message)
+    if not text or _memory_mentions_different_topic(text, focus):
+        return False
+    return _memory_mentions_focus(text, focus) or _memory_short_followup(text)
+
+
+def _memory_text_items(value: Any) -> tuple[str, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(str(item or "").strip() for item in value if str(item or "").strip())
+    text = str(value or "").strip()
+    return (text,) if text else ()
+
+
+def _memory_norm(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").casefold().replace("ё", "е")).strip()
+
+
+def _memory_mentions_focus(text: str, focus: Mapping[str, Any]) -> bool:
+    aliases: list[str] = []
+    for field in ("subject", "format", "product", "product_family"):
+        aliases.extend(_memory_topic_aliases(field, focus.get(field)))
+    grade = str(focus.get("grade") or "").strip()
+    if grade:
+        aliases.extend([grade, f"{grade} класс"])
+    return any(alias and _memory_norm(alias) in text for alias in aliases)
+
+
+def _memory_short_followup(text: str) -> bool:
+    if len(text) > 90:
+        return False
+    return bool(
+        re.search(
+            r"^(?:а\s+)?(?:сколько|цена|стоимость|онлайн|очно|для\s+\d{1,2}|"
+            r"\d{1,2}\s*класс|есть|можно|подойдет|подходит|а\s+если|тогда|и\s+ещ[её])\b",
+            text,
+            re.I,
+        )
+    )
+
+
+def _memory_mentions_different_topic(text: str, focus: Mapping[str, Any]) -> bool:
+    subject = _memory_norm(focus.get("subject"))
+    subject_groups = {
+        "информатика": ("информат", "informatics", "computer science"),
+        "физика": ("физик", "physics"),
+        "математика": ("математ", "math"),
+        "химия": ("хими", "chem"),
+        "биология": ("биолог", "bio"),
+    }
+    focus_group = ""
+    for name, aliases in subject_groups.items():
+        if any(alias in subject for alias in aliases):
+            focus_group = name
+            break
+    mentioned = {
+        name
+        for name, aliases in subject_groups.items()
+        if any(re.search(rf"(?<![a-zа-я0-9]){re.escape(alias)}", text, re.I) for alias in aliases)
+    }
+    if mentioned and (not focus_group or mentioned != {focus_group}):
+        return True
+    family = _memory_norm(focus.get("product_family"))
+    mentions_camp = bool(re.search(r"лвш|лагер|смен|выездн|camp|lvsh", text, re.I))
+    if family == "regular_course" and mentions_camp:
+        return True
+    return False
+
+
+def _memory_topic_aliases(field: str, value: object) -> tuple[str, ...]:
+    raw = _memory_norm(value)
+    if not raw:
+        return ()
+    if field == "subject":
+        if "информ" in raw:
+            return ("информат", "informatics", "computer science")
+        if "физ" in raw:
+            return ("физик", "physics")
+        if "мат" in raw:
+            return ("математ", "math")
+        if "хим" in raw:
+            return ("хими", "chem")
+        if "био" in raw:
+            return ("биолог", "bio")
+    if field == "format":
+        if "онлайн" in raw or "online" in raw:
+            return ("онлайн", "online")
+        if "очно" in raw or "офлайн" in raw or "offline" in raw:
+            return ("очно", "офлайн", "offline")
+    if field == "product_family":
+        if raw == "camp" or "лагер" in raw or "смен" in raw or "лвш" in raw:
+            return ("лвш", "лагер", "смен", "camp", "lvsh")
+        if raw == "regular_course":
+            return ("курс", "regular")
+    if field == "product":
+        return tuple(part for part in re.split(r"[\s,;/]+", raw) if len(part) >= 3)
+    return (raw,)
 
 
 def _has_client_safe_current_fact(context: Optional[Mapping[str, Any]]) -> bool:

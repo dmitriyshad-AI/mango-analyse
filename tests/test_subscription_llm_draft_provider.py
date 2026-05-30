@@ -3242,6 +3242,57 @@ def test_pravka4b_default_autonomy_flip_is_flagged_and_bounded() -> None:
     assert high_risk.veto_category in {"", "high_risk"}
 
 
+def test_memory_followup_route_promotes_answered_topic_with_covering_fact() -> None:
+    decision = decide_route(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="По подтверждённому факту отвечу по онлайн-формату.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+        ),
+        client_message="а онлайн для 10 класса?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "client_safe_fact_verified": True,
+            "dialogue_memory_view": {
+                "route_history": ["bot_answer_self_for_pilot"],
+                "answered_questions": ["сколько стоит информатика для 10 класса"],
+                "topic_focus": {"subject": "информатика", "grade": "10", "format": "очно", "product_family": "regular_course"},
+            },
+        },
+    )
+
+    assert decision.route == "bot_answer_self_for_pilot"
+    assert "dialogue_memory_followup_autonomy" in decision.safety_flags
+
+
+def test_memory_followup_route_does_not_override_p0() -> None:
+    decision = decide_route(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="По подтверждённому факту отвечу по онлайн-формату.",
+            message_type="question",
+            topic_id="theme:001_pricing",
+        ),
+        client_message="я оплатил, занятий нет, верните деньги",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "client_safe_fact_verified": True,
+            "dialogue_memory_view": {
+                "route_history": ["bot_answer_self_for_pilot"],
+                "answered_questions": ["сколько стоит информатика для 10 класса"],
+                "topic_focus": {"subject": "информатика", "grade": "10", "format": "очно", "product_family": "regular_course"},
+            },
+        },
+    )
+
+    assert decision.route == "manager_only"
+    assert decision.veto_category == "high_risk"
+    assert "high_risk_manager_only" in decision.safety_flags
+
+
 def test_pravka5_semantic_critic_blocks_wrong_scope_and_contradicted_claims() -> None:
     wrong_scope_result = check_claim_faithfulness(
         "Это онлайн.",

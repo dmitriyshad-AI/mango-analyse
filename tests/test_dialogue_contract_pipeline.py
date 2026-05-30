@@ -2874,6 +2874,95 @@ def test_structured_faithfulness_fixture_covers_gluing_regressions() -> None:
         assert bool(result.unsupported) is bool(row["expected_unsupported"]), row["case_id"]
 
 
+def test_faithfulness_prompt_includes_established_topic_for_same_topic_followup() -> None:
+    prompt = build_faithfulness_prompt(
+        "Информатика для 10 класса онлайн — семестр 29 750 ₽.",
+        facts={"price.informatics.grade10.online": "Информатика для 10 класса онлайн — семестр 29 750 ₽."},
+        client_words="а онлайн для 10?",
+        established_topic={"subject": "информатика", "product_family": "regular_course"},
+    )
+
+    assert "Установленная тема диалога" in prompt
+    assert '"subject": "информатика"' in prompt
+    assert "не ставь wrong_scope только из-за смены класса/формата" in prompt
+    assert "лагерь/смена, обычный курс и олимпиада" in prompt
+
+
+def test_faithfulness_established_topic_keeps_supported_same_topic_claim() -> None:
+    result = check_claim_faithfulness(
+        "Информатика для 10 класса онлайн — семестр 29 750 ₽.",
+        facts={"price.informatics.grade10.online": "Информатика для 10 класса онлайн — семестр 29 750 ₽."},
+        client_words="а онлайн для 10?",
+        established_topic={"subject": "информатика", "product_family": "regular_course"},
+        faithfulness_fn=lambda prompt: {
+            "claims": [
+                {
+                    "claim": "Информатика для 10 класса онлайн — семестр 29 750 ₽",
+                    "evidence_fact_key": "price.informatics.grade10.online",
+                    "verdict": "supported",
+                    "reason": "тот же предмет и формат",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+
+    assert result.unsupported == ()
+
+
+def test_faithfulness_established_topic_does_not_weaken_wrong_scope_or_contradicted() -> None:
+    cases = [
+        (
+            "Это обычный онлайн-курс.",
+            {"camp.shift": "ЛВШ Менделеево — летняя смена по информатике."},
+            "что за летняя смена?",
+            "это обычный онлайн-курс",
+            "wrong_scope",
+        ),
+        (
+            "Подойдёт физика для 10 класса.",
+            {"price.informatics.grade10": "Информатика для 10 класса — семестр 29 750 ₽."},
+            "а для 10 класса?",
+            "подойдёт физика для 10 класса",
+            "wrong_scope",
+        ),
+        (
+            "Занятия проходят онлайн.",
+            {"format.informatics.grade10": "Информатика для 10 класса проходит очно."},
+            "а онлайн?",
+            "занятия проходят онлайн",
+            "contradicted",
+        ),
+        (
+            "Занятия проходят по вторникам.",
+            {"price.informatics.grade10": "Информатика для 10 класса — семестр 29 750 ₽."},
+            "когда занятия?",
+            "занятия проходят по вторникам",
+            "unsupported",
+        ),
+    ]
+
+    for draft, facts, client_words, claim, verdict in cases:
+        result = check_claim_faithfulness(
+            draft,
+            facts=facts,
+            client_words=client_words,
+            established_topic={"subject": "информатика", "product_family": "regular_course"},
+            faithfulness_fn=lambda _prompt, claim=claim, verdict=verdict, facts=facts: {
+                "claims": [
+                    {
+                        "claim": claim,
+                        "evidence_fact_key": next(iter(facts)),
+                        "verdict": verdict,
+                        "reason": "негативный контроль памяти",
+                    }
+                ],
+                "unsupported": [],
+            },
+        )
+        assert result.unsupported == (claim,)
+
+
 def test_composite_missing_fact_is_narrow_not_neighbor_substitution() -> None:
     store = FactStore(
         catalog=("price.online", "schedule.exact_day"),

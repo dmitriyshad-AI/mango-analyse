@@ -837,8 +837,52 @@ def _format_memory_block(view: Mapping[str, Any] | None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def build_faithfulness_prompt(draft: str, *, facts: Mapping[str, str], client_words: str) -> str:
+def _format_established_topic_block(topic: Mapping[str, Any] | None) -> str:
+    if not topic:
+        return ""
+    compact = {str(key): str(value) for key, value in topic.items() if str(value or "").strip()}
+    if not compact:
+        return ""
+    return (
+        f"Установленная тема диалога: {json.dumps(compact, ensure_ascii=False)}.\n"
+        "Если клиент уточняет класс или формат уже установленной темы (тот же предмет/продукт), "
+        "не ставь wrong_scope только из-за смены класса/формата; проверяй утверждение по факту той же темы. "
+        "Это НЕ разрешает подменять продукт, предмет или семью продукта: лагерь/смена, обычный курс и олимпиада "
+        "остаются разными scope, а противоречие факту остаётся contradicted.\n"
+    )
+
+
+def _established_topic_from_context(context: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(context, MappingABC):
+        return None
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, MappingABC):
+        return None
+    topic: dict[str, Any] = {}
+    focus = memory.get("topic_focus")
+    if isinstance(focus, MappingABC):
+        for key in ("subject", "grade", "format", "product", "product_family"):
+            value = focus.get(key)
+            if str(value or "").strip():
+                topic[key] = value
+    known_slots = memory.get("known_slots")
+    if isinstance(known_slots, MappingABC):
+        for key in ("subject", "grade", "format", "product"):
+            value = known_slots.get(key)
+            if key not in topic and str(value or "").strip():
+                topic[key] = value
+    return topic or None
+
+
+def build_faithfulness_prompt(
+    draft: str,
+    *,
+    facts: Mapping[str, str],
+    client_words: str,
+    established_topic: Mapping[str, Any] | None = None,
+) -> str:
     facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(фактов нет)"
+    established_topic_block = _format_established_topic_block(established_topic)
     return (
         "Проверь черновик ответа на верность. Верни строго JSON: "
         "{\"claims\": [{\"claim\": \"...\", \"evidence_fact_key\": \"...\", "
@@ -865,7 +909,8 @@ def build_faithfulness_prompt(draft: str, *, facts: Mapping[str, str], client_wo
         "9 класс, а факт: 10) — verdict = contradicted.\n"
         "Если утверждение собрано из двух разных фактов — glued.\n"
         "Для supported обязательно укажи evidence_fact_key ровно из списка ниже.\n"
-        "Не считай нарушением общую вежливость и предложение помочь.\n"
+        + established_topic_block
+        + "Не считай нарушением общую вежливость и предложение помочь.\n"
         f"Факты:\n{facts_block}\n"
         f"Слова клиента:\n{client_words}\n"
         f"Черновик:\n{draft}\n"
@@ -879,10 +924,11 @@ def check_claim_faithfulness(
     facts: Mapping[str, str],
     client_words: str,
     faithfulness_fn: Callable[[str], object] | None,
+    established_topic: Mapping[str, Any] | None = None,
 ) -> FaithfulnessResult:
     if faithfulness_fn is None:
         return FaithfulnessResult(unsupported=(), available=True)
-    prompt = build_faithfulness_prompt(draft, facts=facts, client_words=client_words)
+    prompt = build_faithfulness_prompt(draft, facts=facts, client_words=client_words, established_topic=established_topic)
     try:
         raw = faithfulness_fn(prompt)
     except Exception:
@@ -1816,6 +1862,7 @@ def _hard_check(
             facts=facts,
             client_words=client_words,
             faithfulness_fn=faithfulness_fn,
+            established_topic=_established_topic_from_context(context),
         )
         semantic_available = result.available
         if not pure_handoff:

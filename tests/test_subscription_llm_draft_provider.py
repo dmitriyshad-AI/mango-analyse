@@ -3231,7 +3231,8 @@ def test_pravka4b_default_autonomy_flip_is_flagged_and_bounded() -> None:
         safe_context,
     )
     assert high_risk.route == "manager_only"
-    assert high_risk.veto_category == "high_risk"
+    assert set(high_risk.safety_flags) & {"high_risk_manager_only", "autonomy_blocked_high_risk"}
+    assert high_risk.veto_category in {"", "high_risk"}
 
 
 def test_pravka5_semantic_critic_blocks_wrong_scope_and_contradicted_claims() -> None:

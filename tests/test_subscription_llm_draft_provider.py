@@ -3101,6 +3101,23 @@ def test_pravka4_router_veto_shield_keeps_all_manager_routes() -> None:
     assert forced_manager_result.route == "manager_only"
     assert forced_manager_result.veto_category == "force_manager_only"
 
+    semantic_available = _route_shield_pipeline_result(
+        draft_text="По подтверждённым данным: курс стоит 49 000 ₽.",
+        contract=_route_shield_contract(keys=("price.current",)),
+        facts={"price.current": "УНПК: курс стоит 49 000 ₽."},
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "курс стоит 49 000 ₽",
+                    "evidence_fact_key": "price.current",
+                    "verdict": "supported",
+                }
+            ],
+            "unsupported": [],
+        },
+    )
+    assert semantic_available.route == "bot_answer_self"
+
     semantic_unavailable = _route_shield_pipeline_result(
         draft_text="Передам информацию по курсу.",
         contract=_route_shield_contract(keys=()),

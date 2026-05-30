@@ -1494,19 +1494,20 @@ def _hard_check(
     findings.extend(_payment_method_findings(text_to_check, contract=contract, facts=facts))
     unsupported: tuple[str, ...] = ()
     semantic_available = True
-    if toggles.semantic_faithfulness and not pure_handoff:
+    if toggles.semantic_faithfulness:
         result = check_claim_faithfulness(
             text_to_check,
             facts=facts,
             client_words=client_words,
             faithfulness_fn=faithfulness_fn,
         )
-        unsupported = _unsupported_claims_without_current_fact_support(
-            result.unsupported,
-            facts=facts,
-            contract=contract,
-        )
         semantic_available = result.available
+        if not pure_handoff:
+            unsupported = _unsupported_claims_without_current_fact_support(
+                result.unsupported,
+                facts=facts,
+                contract=contract,
+            )
     trace_event(
         context,
         "_hard_check",

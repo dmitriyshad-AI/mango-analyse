@@ -40,6 +40,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_conversation_intent_plan_guard,
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
+    apply_unstated_subject_guard,
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
     _claim_supported_by_facts,
@@ -3070,6 +3071,87 @@ def test_volna_peresborki_safety_shield_blocks_core_autonomy_risks() -> None:
     )
     assert unsupported.route == "manager_only"
     assert "unsupported_promise_detected" in unsupported.safety_flags
+
+
+def test_unstated_subject_guard_allows_subject_from_active_brand_retrieved_fact() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Для 9 класса по информатике онлайн-курс подходит.",
+        message_type="question",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "unpk.prices.online.informatics.grade9": (
+                        "УНПК: онлайн-курс по информатике для 9 класса доступен в этом наборе."
+                    )
+                }
+            }
+        },
+    )
+
+    guarded = apply_unstated_subject_guard(
+        result,
+        client_message="Сколько стоит для 9 класса?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "unstated_subject_guarded" not in guarded.safety_flags
+
+
+def test_unstated_subject_guard_blocks_subject_not_in_message_slots_or_retrieved_fact() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Для 9 класса по физике онлайн-курс подходит.",
+        message_type="question",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "unpk.prices.online.informatics.grade9": (
+                        "УНПК: онлайн-курс по информатике для 9 класса доступен в этом наборе."
+                    )
+                }
+            }
+        },
+    )
+
+    guarded = apply_unstated_subject_guard(
+        result,
+        client_message="Сколько стоит для 9 класса?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "unstated_subject_guarded" in guarded.safety_flags
+
+
+def test_unstated_subject_guard_blocks_subject_from_other_brand_retrieved_fact() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Для 9 класса по информатике онлайн-курс подходит.",
+        message_type="question",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "unpk.prices.online.informatics.grade9": (
+                        "УНПК: онлайн-курс по информатике для 9 класса доступен в этом наборе."
+                    )
+                }
+            }
+        },
+    )
+
+    guarded = apply_unstated_subject_guard(
+        result,
+        client_message="Сколько стоит для 9 класса?",
+        context={"active_brand": "foton"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "unstated_subject_guarded" in guarded.safety_flags
 
 
 def test_v2_result_guarantee_applies_over_unsupported_promise() -> None:

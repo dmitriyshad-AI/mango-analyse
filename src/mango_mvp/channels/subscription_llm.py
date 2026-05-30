@@ -2019,6 +2019,19 @@ def _context_with_dialogue_contract_retrieved_facts(
     confirmed = dict(merged.get("confirmed_facts")) if isinstance(merged.get("confirmed_facts"), Mapping) else {}
     confirmed.update(facts)
 
+    merged_pipeline = (
+        dict(merged.get("dialogue_contract_pipeline"))
+        if isinstance(merged.get("dialogue_contract_pipeline"), Mapping)
+        else {}
+    )
+    merged_retrieved = (
+        dict(merged_pipeline.get("retrieved_facts"))
+        if isinstance(merged_pipeline.get("retrieved_facts"), Mapping)
+        else {}
+    )
+    merged_retrieved.update(facts)
+    merged_pipeline["retrieved_facts"] = merged_retrieved
+
     facts_context = dict(merged.get("facts_context")) if isinstance(merged.get("facts_context"), Mapping) else {}
     facts_context_confirmed = (
         dict(facts_context.get("confirmed_facts"))
@@ -2044,6 +2057,7 @@ def _context_with_dialogue_contract_retrieved_facts(
     merged.update(
         {
             "confirmed_facts": confirmed,
+            "dialogue_contract_pipeline": merged_pipeline,
             "facts_context": facts_context,
             "context_quality": quality,
             "facts_fresh": True,
@@ -3996,11 +4010,12 @@ def apply_unstated_subject_guard(
     client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
-    allowed = _allowed_subjects_from_context(context, client_message=client_message)
+    subject_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    allowed = _allowed_subjects_from_context(subject_context, client_message=client_message)
     unexpected = sorted(_mentioned_subjects(result.draft_text) - allowed)
     if not unexpected:
         return result
-    safe_text = _unstated_subject_safe_text(context, unexpected=unexpected)
+    safe_text = _unstated_subject_safe_text(subject_context, unexpected=unexpected)
     return replace(
         result,
         draft_text=safe_text,
@@ -4058,7 +4073,34 @@ def _allowed_subjects_from_context(context: Optional[Mapping[str, Any]], *, clie
                 slots = memory.get(key)
                 if isinstance(slots, Mapping):
                     allowed.update(_mentioned_subjects(slots.get("subject")))
+        allowed.update(_subjects_from_retrieved_facts(context))
     return allowed
+
+
+def _subjects_from_retrieved_facts(context: Mapping[str, Any]) -> set[str]:
+    active_brand = _active_brand(context)
+    if active_brand == "unknown":
+        return set()
+    pipeline = context.get("dialogue_contract_pipeline") if isinstance(context.get("dialogue_contract_pipeline"), Mapping) else {}
+    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    subjects: set[str] = set()
+    for key, fact_text in retrieved.items():
+        combined = f"{key} {fact_text}"
+        if not _retrieved_fact_matches_active_brand(combined, active_brand):
+            continue
+        subjects.update(_mentioned_subjects(fact_text))
+    return subjects
+
+
+def _retrieved_fact_matches_active_brand(text: object, active_brand: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    has_foton = bool(re.search(r"\b(?:foton|фотон)\b|cdpofoton|цдпо|црдо", low, re.I))
+    has_unpk = bool(re.search(r"\b(?:unpk|унпк)\b|kmipt", low, re.I))
+    if active_brand == "foton" and has_unpk:
+        return False
+    if active_brand == "unpk" and has_foton:
+        return False
+    return True
 
 
 def _mentioned_subjects(text: object) -> set[str]:

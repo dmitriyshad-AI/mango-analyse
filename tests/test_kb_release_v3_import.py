@@ -12,7 +12,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260520_v6_3_team_answers"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260530_v6_4_team_answers"
 
 REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "priority",
@@ -452,6 +452,44 @@ def test_v3_refund_post_payment_is_client_safe_but_limited(kb_v3: KbReleaseV3) -
         assert "все деньги" not in text.casefold()
         assert "полный возврат" not in text.casefold()
         assert fact.get("usable_for_precise_answer") is True
+
+
+def test_v6_1_manifest_owns_v64_business_overrides() -> None:
+    import yaml
+
+    from scripts import build_kb_release_v3_from_claude_handoff as direct_builder
+
+    manifest_path = (
+        PROJECT_ROOT
+        / "product_data"
+        / "knowledge_base"
+        / "kb_release_20260520_v6_3_team_answers_sources"
+        / "release_manifest.yaml"
+    )
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    assert "refund_post_payment" in manifest["client_safe_path_markers"]
+    assert "refund_post_payment" not in direct_builder.CLIENT_SAFE_PATH_MARKERS
+
+    manual_overrides = {
+        item["fact_key"]: item for item in manifest["manual_decision_fact_overrides"]
+    }
+    q15 = manual_overrides["team_answers.q15.unpk_online_other_classes.manager_handoff"]
+    assert q15["fact_type"] == "program"
+    assert q15["route_policy"] == "bot_answer_self_for_pilot"
+    assert "2 раза в неделю" in q15["fact_text"]
+
+    structured_rules = manifest["structured_metadata_rules"]
+    assert any(
+        rule.get("fact_key_prefix") == "prices_regular_2026_27.online_5_11_class_regular."
+        and (rule.get("applies_to") or {}).get("frequency") == "2 раза в неделю"
+        for rule in structured_rules
+    )
+    assert any(
+        rule.get("fact_key_prefix") == "prices_regular_2026_27.online_olympiad_phystech_classes."
+        and (rule.get("applies_to") or {}).get("grades") == [9, 11]
+        for rule in structured_rules
+    )
 
 
 def test_v3_confirmed_manager_only_candidates_move_to_client_safe(kb_v3: KbReleaseV3) -> None:

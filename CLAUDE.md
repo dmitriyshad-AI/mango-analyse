@@ -98,37 +98,38 @@ Mango Analyse — внутренний проект для отдела прод
 9. Если факт не найден или устарел, бот не выдумывает и передаёт менеджеру.
 10. Любые новые смысловые ошибки переводятся в тест, semantic gate, чек-лист или ручной контроль.
 
-## Текущая база знаний v6.3 (каноничная)
+## Текущая база знаний v6.4 (каноничная)
 
 Каноничный машинный релиз (его использует код бота и симулятор):
 
 ```text
-product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/
+product_data/knowledge_base/kb_release_20260530_v6_4_team_answers/
 ```
 
-Снимок для бота/симулятора: `kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json`
+Снимок для бота/симулятора: `kb_release_20260530_v6_4_team_answers/kb_release_v3_snapshot.json`
 (захардкожен в `src/mango_mvp/channels/dialogue_contract_pipeline.py` как `DEFAULT_KB_SNAPSHOT_PATH`).
 
 Важно про имена версий (три РАЗНЫХ оси, не путать):
 
-- релиз = **v6.3** (`kb_release_20260520_v6_3_team_answers`);
+- релиз = **v6.4** (`kb_release_20260530_v6_4_team_answers`);
 - версия СХЕМЫ снимка = **v3** (поэтому файл называется `kb_release_v3_snapshot.json`);
 - версия СБОРЩИКА = **v6.1** (`kb_release_v6_1_builder`, скрипт `scripts/build_kb_release_v6_1_team_answers.py`).
 
-Пакеты v6.3: `kb_release_20260520_v6_3_team_answers_bot_pack/`, `kb_release_20260520_v6_3_team_answers_employee_pack/`.
+Пакеты v6.4: `kb_release_20260530_v6_4_team_answers_bot_pack/`, `kb_release_20260530_v6_4_team_answers_employee_pack/`.
 
-Сборка: ТОЛЬКО через `scripts/build_kb_release_v6_1_team_answers.py` (применяет `release_manifest.yaml` из `_sources/`). НЕ использовать старый `build_kb_release_v3_from_claude_handoff.py`. См. `docs/KB_BUILD_RUNBOOK_2026-05-26.md`.
+Сборка: ТОЛЬКО через `scripts/build_kb_release_v6_1_team_answers.py` (применяет `release_manifest.yaml` из `kb_release_20260520_v6_3_team_answers_sources/`). НЕ использовать старый `build_kb_release_v3_from_claude_handoff.py`. См. `docs/KB_BUILD_RUNBOOK_2026-05-26.md`.
 
-Статус v6.3 (по актуальному `quality_report.json` / `semantic_review.json`):
+Статус v6.4 (по актуальному `quality_report.json` / `semantic_review.json`):
 
 - `quality_passed=true`, `semantic_pass=true`, blocking findings: 0;
 - гейты целостности зелёные: `text_number_grounded`, `field_ranges_ok`, `weekly_frequency_is_plausible`, `control_numbers_present`;
-- ~838 фактов, client-safe ~473 (точное число брать из `quality_report.json`, не хардкодить);
+- 837 фактов, client-safe 478 (точное число брать из `quality_report.json`, не хардкодить);
 - режим: внутренний пилот на сотрудниках и лояльной подготовленной группе клиентов только как черновики с обязательным одобрением менеджера; публичный трафик и автоотправка не разрешены.
 
 ### Устаревшее (НЕ источник правды)
 
 - **v3.3** (`kb_release_20260518_v3_3*`) — устарела, оставлена для истории. Не использовать как текущую.
+- **v6.3** (`kb_release_20260520_v6_3_team_answers*`) — предыдущий каноничный релиз. Не использовать как текущий после легализации v6.4.
 
 ## Открытые замечания после Claude CLI review 2026-05-19
 
@@ -147,7 +148,7 @@ Claude CLI через `/kb-review product_data/knowledge_base/kb_release_2026051
 Для смыслового аудита базы знаний сначала проверять:
 
 ```text
-product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack/
+product_data/knowledge_base/kb_release_20260530_v6_4_team_answers_bot_pack/
 ```
 
 Почему: это пакет, который будет использовать будущий бот. Он содержит раздельные факты по брендам, фильтры, полный реестр и контракт использования.
@@ -155,7 +156,7 @@ product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_bot_pack/
 Для проверки удобства сотрудников отдельно смотреть:
 
 ```text
-product_data/knowledge_base/kb_release_20260520_v6_3_team_answers_employee_pack/
+product_data/knowledge_base/kb_release_20260530_v6_4_team_answers_employee_pack/
 ```
 
 Не выбирать «последнюю папку» автоматически: рядом лежат smoke, fake и input-папки, которые не являются релизом для аудита.

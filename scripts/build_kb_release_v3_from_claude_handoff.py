@@ -28,6 +28,10 @@ FACT_SCHEMA_VERSION = "kb_release_v3_fact_v1"
 SOURCE_SCHEMA_VERSION = "kb_release_v3_source_v1"
 BUILDER_VERSION = "kb_release_v3_builder_2026_05_20_v4"
 FRESHNESS_CHECK_DATE = "2026-05-20"
+DEPRECATED_DIRECT_BUILDER_WARNING = (
+    "DEPRECATED: direct use of build_kb_release_v3_from_claude_handoff.py is forbidden for current KB releases; "
+    "use scripts/build_kb_release_v6_1_team_answers.py with release_manifest.yaml."
+)
 
 DEFAULT_RUN_ID = "kb_release_20260520_v4"
 DEFAULT_HANDOFF_DIR = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/kb_release_v3_2026-05-19")
@@ -146,7 +150,9 @@ FORBIDDEN_KEYS = {
     "forbidden_phrasings",
     "forbidden_in_this_response",
 }
-REFUND_CLIENT_SAFE_POLICY_MARKERS = ("refund_presale_policy", "refund_post_payment")
+CLIENT_SAFE_PATH_MARKERS = ("refund_presale_policy",)
+MANIFEST_MANUAL_DECISION_FACT_OVERRIDES: tuple[Mapping[str, Any], ...] = ()
+MANIFEST_STRUCTURED_METADATA_RULES: tuple[Mapping[str, Any], ...] = ()
 INTERNAL_PATH_MARKERS = {
     "legal_entities",
     "legal_entities_full_map",
@@ -280,7 +286,8 @@ MONEY_LEAF_KEYS = {
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build kb_release_20260518_v3 from Claude handoff v3.")
+    print(DEPRECATED_DIRECT_BUILDER_WARNING, file=sys.stderr)
+    parser = argparse.ArgumentParser(description="Deprecated direct builder. Use build_kb_release_v6_1_team_answers.py.")
     parser.add_argument("--run-id", default=DEFAULT_RUN_ID)
     parser.add_argument("--handoff-dir", type=Path, default=DEFAULT_HANDOFF_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
@@ -563,7 +570,7 @@ def is_internal_child(path: tuple[str, ...], key: str, item: Any, context: Mappi
         return True
     if "teacher" in normalized_path or "prepodavat" in normalized_path or "teachers" in normalized_path:
         return True
-    if any(marker in normalized_path for marker in REFUND_CLIENT_SAFE_POLICY_MARKERS):
+    if any(marker in normalized_path for marker in CLIENT_SAFE_PATH_MARKERS):
         return False
     if "refund" in normalized_path or "vozvrat" in normalized_path:
         return True
@@ -800,13 +807,13 @@ def build_manual_decision_facts(source_lookup: Mapping[str, Mapping[str, Any]]) 
         },
         {
             "fact_key": "team_answers.q15.unpk_online_other_classes.manager_handoff",
-            "fact_type": "program",
+            "fact_type": "price",
             "brand": "unpk",
             "product": "online_olympiad_phystech_9_and_11",
-            "fact_text": "По онлайн-направлениям УНПК вне подтверждённого формата 2 раза в неделю для 5-11 классов точные условия должен проверить менеджер.",
+            "fact_text": "По онлайн-направлениям УНПК вне олимпиадной подготовки Физтех для 9 и 11 классов точные условия должен проверить менеджер.",
             "source": changelog_source,
             "status": "verified",
-            "route_policy": "bot_answer_self_for_pilot",
+            "route_policy": "manager_handoff_only",
             "linked_open_question": "q15_closed",
             "structured_value": {"scope_exception": "other_unpk_online_classes_require_manager"},
         },
@@ -847,7 +854,19 @@ def build_manual_decision_facts(source_lookup: Mapping[str, Mapping[str, Any]]) 
             "internal_only": True,
         },
     ]
-    return [make_manual_fact(**spec) for spec in manual_specs]
+    specs_by_key = {str(spec.get("fact_key") or ""): dict(spec) for spec in manual_specs}
+    for override in MANIFEST_MANUAL_DECISION_FACT_OVERRIDES:
+        if not isinstance(override, Mapping):
+            continue
+        fact_key = str(override.get("fact_key") or "").strip()
+        source_key = str(override.get("source_key") or "").strip()
+        if not fact_key or not source_key or source_key not in source_lookup:
+            continue
+        spec = dict(override)
+        spec.pop("source_key", None)
+        spec["source"] = source_lookup[source_key]
+        specs_by_key[fact_key] = spec
+    return [make_manual_fact(**spec) for spec in specs_by_key.values()]
 
 
 def make_manual_fact(
@@ -1821,24 +1840,34 @@ def enrich_phase2_structured_metadata(facts: Sequence[Mapping[str, Any]]) -> lis
         structured = dict(item.get("structured_value") or {})
         applies_to = dict(structured.get("applies_to") or {})
 
-        if brand == "unpk" and fact_key.startswith("prices_regular_2026_27.online_olympiad_phystech_classes."):
-            applies_to.setdefault("grades", [9, 11])
-            applies_to.setdefault("formats", ["online"])
-            applies_to.setdefault("products", ["online_olympiad_phystech"])
-            structured["is_positive_statement"] = True
-
-        if brand == "unpk" and fact_key.startswith("prices_regular_2026_27.online_5_11_class_regular."):
-            applies_to.setdefault("grades", [5, 6, 7, 8, 9, 10, 11])
-            applies_to.setdefault("formats", ["online"])
-            applies_to.setdefault("frequency", "2 раза в неделю")
-            applies_to.setdefault("lesson_minutes", 90)
-            structured["is_positive_statement"] = True
+        for rule in MANIFEST_STRUCTURED_METADATA_RULES:
+            if not _structured_metadata_rule_matches(rule, fact_key=fact_key, brand=brand):
+                continue
+            rule_applies_to = rule.get("applies_to") if isinstance(rule, Mapping) else {}
+            if isinstance(rule_applies_to, Mapping):
+                for key, value in rule_applies_to.items():
+                    applies_to.setdefault(str(key), value)
+            for key, value in rule.items():
+                if key in {"brand", "fact_key", "fact_key_prefix", "applies_to"}:
+                    continue
+                structured.setdefault(str(key), value)
 
         if applies_to:
             structured["applies_to"] = applies_to
             item["structured_value"] = structured
         result.append(item)
     return result
+
+
+def _structured_metadata_rule_matches(rule: Mapping[str, Any], *, fact_key: str, brand: str) -> bool:
+    rule_brand = str(rule.get("brand") or "").strip()
+    if rule_brand and rule_brand != brand:
+        return False
+    exact_key = str(rule.get("fact_key") or "").strip()
+    if exact_key:
+        return fact_key == exact_key
+    prefix = str(rule.get("fact_key_prefix") or "").strip()
+    return bool(prefix and fact_key.startswith(prefix))
 
 
 def dedupe_facts(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -2484,7 +2513,7 @@ def infer_fact_type(path: tuple[str, ...], value: Any) -> str:
         return "deadline"
     if "tax" in text or "deduction" in text or "вычет" in clean_text(value).casefold():
         return "tax"
-    if any(marker in text for marker in REFUND_CLIENT_SAFE_POLICY_MARKERS):
+    if any(marker in text for marker in CLIENT_SAFE_PATH_MARKERS):
         return "policy"
     if "refund" in text or "return" in text or "withholding" in text:
         return "refund"

@@ -173,6 +173,24 @@ def apply_release_manifest(manifest: Mapping[str, Any]) -> None:
         if isinstance(value, Mapping):
             kb_builder.SOURCE_FILES.setdefault(str(key), dict(value))
 
+    client_safe_path_markers = as_sequence(manifest.get("client_safe_path_markers"))
+    if client_safe_path_markers:
+        kb_builder.CLIENT_SAFE_PATH_MARKERS = tuple(str(item) for item in client_safe_path_markers if str(item or "").strip())
+
+    manual_overrides = [
+        dict(item)
+        for item in as_sequence(manifest.get("manual_decision_fact_overrides"))
+        if isinstance(item, Mapping)
+    ]
+    kb_builder.MANIFEST_MANUAL_DECISION_FACT_OVERRIDES = tuple(manual_overrides)
+
+    structured_rules = [
+        dict(item)
+        for item in as_sequence(manifest.get("structured_metadata_rules"))
+        if isinstance(item, Mapping)
+    ]
+    kb_builder.MANIFEST_STRUCTURED_METADATA_RULES = tuple(structured_rules)
+
 
 def load_gold_answers_v3(source_root: Path | None = None) -> dict[str, Any]:
     root = source_root or DEFAULT_SOURCE_OUT

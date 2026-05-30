@@ -1047,6 +1047,34 @@ def run_pipeline(
         and not _has_retrieved_self_answer_part(contract, retrieval)
         and not (_asks_refund_policy(contract) and _presale_refund_policy_text(retrieval.facts))
     )
+    needs_facts = bool(contract.all_needed_fact_keys())
+    empty_factual_answer_self = (
+        contract.answerability == "answer_self"
+        and needs_facts
+        and not retrieval.facts
+        and not exact_answer_available
+        and not _has_retrieved_self_answer_part(contract, retrieval)
+    )
+    if empty_factual_answer_self:
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        trace_event(
+            context,
+            "build_draft",
+            {
+                "route": "draft_for_manager",
+                "fallback_reason": "empty_facts_no_fabrication",
+                "draft": fallback,
+            },
+        )
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
+            route="draft_for_manager",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="empty_facts_no_fabrication",
+        )
     if force_draft_for_manager and (
         _asks_refund_policy(contract)
         or not retrieval.facts

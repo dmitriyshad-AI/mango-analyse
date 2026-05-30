@@ -1356,8 +1356,12 @@ def test_phase1_empty_handoff_does_not_override_p0() -> None:
     assert "29 750" not in result.draft_text
 
 
-def test_phase1_empty_handoff_keeps_handoff_when_answer_self_has_no_rfk() -> None:
+def test_empty_facts_guard_blocks_answer_self_fact_question_without_rfk() -> None:
     store = FactStore(catalog=("schedule.exact_day",), store={"unpk": {}})
+
+    def unexpected_draft(_prompt: str) -> str:
+        raise AssertionError("empty-facts guard must stop before draft generation")
+
     result = run_pipeline(
         conversation=_conv("в какой день группа?"),
         active_brand="unpk",
@@ -1371,13 +1375,62 @@ def test_phase1_empty_handoff_keeps_handoff_when_answer_self_has_no_rfk() -> Non
                 "answerability": "answer_self",
             }
         ),
-        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно этот вопрос.",
+        draft_fn=unexpected_draft,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "empty_facts_no_fabrication"
+    assert "менеджер" in result.draft_text.casefold()
+    assert "вторник" not in result.draft_text.casefold()
+    assert result.missing == ("schedule.exact_day",)
+
+
+def test_empty_facts_guard_does_not_intercept_answer_self_with_retrieved_fact() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Фотон онлайн: семестр — 29 750 ₽.",
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
     assert result.route == "bot_answer_self"
-    assert "менеджер" in result.draft_text.casefold()
-    assert result.missing == ("schedule.exact_day",)
+    assert result.fallback_reason == ""
+    assert "29 750 ₽" in result.draft_text
+
+
+def test_empty_facts_guard_does_not_intercept_answer_self_without_needed_facts() -> None:
+    store = FactStore(catalog=(), store={"foton": {}})
+    result = run_pipeline(
+        conversation=_conv("здравствуйте"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "приветствие",
+                "subquestions": [],
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Здравствуйте! Подскажите, пожалуйста, какой курс интересует?",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == ""
+    assert "менеджер" not in result.draft_text.casefold()
 
 
 def test_narrow_discount_subquestion_ignores_unrelated_rfk_facts() -> None:

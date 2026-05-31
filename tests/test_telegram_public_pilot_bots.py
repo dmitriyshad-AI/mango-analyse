@@ -23,6 +23,7 @@ from scripts.run_telegram_public_pilot_bots import (
     public_reply_text,
     PublicPilotBotRuntime,
 )
+from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.night_funnel_shadow import (
     AUTO_SEND,
@@ -208,6 +209,7 @@ def test_configs_from_env_builds_two_brand_isolated_configs(tmp_path: Path) -> N
     assert all(config.store_path == tmp_path / "pilot.sqlite" for config in configs)
     assert all(config.store_enabled is True for config in configs)
     assert all(config.autonomy_enabled is False for config in configs)
+    assert all(config.dialogue_contract_pipeline_enabled is True for config in configs)
     assert all(config.night_funnel_shadow_enabled is True for config in configs)
     assert all(config.night_funnel_shadow_only is True for config in configs)
     assert all(config.night_funnel_control_path == tmp_path / "bot_control.json" for config in configs)
@@ -215,6 +217,57 @@ def test_configs_from_env_builds_two_brand_isolated_configs(tmp_path: Path) -> N
     assert all(config.night_funnel_tee_path == tmp_path / "inbound_tee.jsonl" for config in configs)
     assert all(config.night_funnel_tee_source == "test_owner" for config in configs)
     assert all(config.night_funnel_tee_retention_days == 3 for config in configs)
+
+
+def test_configs_from_env_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:
+    configs = configs_from_env(
+        {
+            "MANGO_TELEGRAM_FOTON_BOT_TOKEN": "foton-token",
+            "MANGO_TELEGRAM_KB_SNAPSHOT": str(tmp_path / "snapshot.json"),
+            DIALOGUE_CONTRACT_PIPELINE_ENV: "0",
+        },
+        brand="foton",
+    )
+
+    assert len(configs) == 1
+    assert configs[0].dialogue_contract_pipeline_enabled is False
+
+
+def test_public_pilot_context_enables_dialogue_contract_pipeline_by_default(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=snapshot,
+        store_enabled=False,
+    )
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+
+    context = runtime.build_context(chat_id=123, session=ChatSession(), current_text="Есть курс?")
+    runtime.close()
+
+    assert context[DIALOGUE_CONTRACT_PIPELINE_ENV] is True
+    assert pipeline_enabled(context) is True
+
+
+def test_public_pilot_context_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=snapshot,
+        store_enabled=False,
+        dialogue_contract_pipeline_enabled=False,
+    )
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+
+    context = runtime.build_context(chat_id=123, session=ChatSession(), current_text="Есть курс?")
+    runtime.close()
+
+    assert context[DIALOGUE_CONTRACT_PIPELINE_ENV] is False
+    assert pipeline_enabled(context) is False
 
 
 def test_public_reply_text_strips_internal_markers() -> None:

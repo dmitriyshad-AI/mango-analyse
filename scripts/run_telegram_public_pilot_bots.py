@@ -26,6 +26,7 @@ from mango_mvp.channels.subscription_llm import (
     strip_internal_service_markers,
 )
 from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answer
+from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV
 from mango_mvp.channels.manager_handoff_summary import build_manager_handoff_summary
 from mango_mvp.channels.new_lead_funnel import LeadFunnelState, build_lead_funnel_state, lead_funnel_context_payload
 from mango_mvp.channels.telegram_pilot_store import (
@@ -125,6 +126,7 @@ class BrandBotConfig:
     store_enabled: bool = True
     p0_register_path: Path = DEFAULT_P0_REGISTER_PATH
     autonomy_enabled: bool = True
+    dialogue_contract_pipeline_enabled: bool = True
     night_funnel_shadow_enabled: bool = False
     night_funnel_shadow_only: bool = True
     night_funnel_control_path: Path = NIGHT_FUNNEL_DEFAULT_CONTROL_PATH
@@ -270,6 +272,7 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
     store_enabled = env_flag(env, PILOT_STORE_ENABLED_ENV, default=True)
     p0_register_path = Path(env.get(PILOT_P0_REGISTER_PATH_ENV) or DEFAULT_P0_REGISTER_PATH)
     autonomy_enabled = env_flag(env, PILOT_AUTONOMY_ENABLED_ENV, default=True)
+    dialogue_contract_pipeline_enabled = env_flag(env, DIALOGUE_CONTRACT_PIPELINE_ENV, default=True)
     night_shadow_enabled = env_flag(env, NIGHT_FUNNEL_SHADOW_ENABLED_ENV, default=False)
     night_shadow_only = env_flag(env, NIGHT_FUNNEL_SHADOW_ONLY_ENV, default=True)
     night_control_path = Path(env.get(NIGHT_FUNNEL_CONTROL_PATH_ENV) or NIGHT_FUNNEL_DEFAULT_CONTROL_PATH)
@@ -304,6 +307,7 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 store_enabled=store_enabled,
                 p0_register_path=p0_register_path,
                 autonomy_enabled=autonomy_enabled,
+                dialogue_contract_pipeline_enabled=dialogue_contract_pipeline_enabled,
                 night_funnel_shadow_enabled=night_shadow_enabled,
                 night_funnel_shadow_only=night_shadow_only,
                 night_funnel_control_path=night_control_path,
@@ -338,6 +342,7 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 store_enabled=store_enabled,
                 p0_register_path=p0_register_path,
                 autonomy_enabled=autonomy_enabled,
+                dialogue_contract_pipeline_enabled=dialogue_contract_pipeline_enabled,
                 night_funnel_shadow_enabled=night_shadow_enabled,
                 night_funnel_shadow_only=night_shadow_only,
                 night_funnel_control_path=night_control_path,
@@ -710,6 +715,7 @@ class PublicPilotBotRuntime:
         )
         payload = dict(pilot_context.to_prompt_context())
         payload["active_brand"] = self.config.brand
+        payload[DIALOGUE_CONTRACT_PIPELINE_ENV] = self.config.dialogue_contract_pipeline_enabled
         if known_client_fields:
             payload["known_client_fields"] = known_client_fields
         if known_dialog_fields:

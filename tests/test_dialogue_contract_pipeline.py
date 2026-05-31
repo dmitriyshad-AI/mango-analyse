@@ -10,6 +10,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     build_conversation,
     build_draft_prompt,
     build_faithfulness_prompt,
+    build_semantic_match_prompt,
     build_understanding_prompt,
     check_claim_faithfulness,
     parse_contract,
@@ -1674,6 +1675,200 @@ def test_key_coverage_gate_keeps_handoff_when_composer_has_no_fact_text() -> Non
 
     assert "Передам менеджеру уточнить именно это" in result.draft_text
     assert result.repaired is False
+
+
+def test_semantic_match_gate_replaces_broad_handoff_for_phystech_olympiad() -> None:
+    store = FactStore(
+        catalog=("olympiad.phystech.physics",),
+        store={
+            "unpk": {
+                "olympiad.phystech.physics": "Олимпиадная подготовка Физтех по физике доступна для 9 и 11 классов."
+            }
+        },
+    )
+    seen_prompt: list[str] = []
+
+    result = run_pipeline(
+        conversation=_conv("олимпиадная подготовка по физике у вас есть?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "олимпиада по физике",
+                "subquestions": [
+                    {
+                        "text": "олимпиада по физике",
+                        "answerable": "self",
+                        "needed_fact_keys": ["olympiad.phystech.physics"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не могу точно ответить сейчас.",
+        semantic_match_fn=lambda prompt: seen_prompt.append(prompt) or {"covers": True, "same_product": True},
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.semantic_match_attempted is True
+    assert result.semantic_match_replaced is True
+    assert result.repaired is True
+    assert "физтех" in result.draft_text.casefold()
+    assert "физик" in result.draft_text.casefold()
+    assert seen_prompt and "олимпиадная подготовка Физтех" in seen_prompt[0]
+
+
+def test_semantic_match_gate_replaces_broad_handoff_for_august_dates() -> None:
+    store = FactStore(
+        catalog=("camp.moscow.dates",),
+        store={"foton": {"camp.moscow.dates": "Городской лагерь в Москве проходит 3-14 августа."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("а в августе в москве есть вариант?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "лагерь в августе в Москве",
+                "subquestions": [
+                    {"text": "лагерь в августе в Москве", "answerable": "self", "needed_fact_keys": ["camp.moscow.dates"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не могу точно ответить сейчас.",
+        semantic_match_fn=lambda _prompt: {"covers": True, "same_product": True},
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.semantic_match_replaced is True
+    assert "3-14 августа" in result.draft_text
+
+
+def test_semantic_match_gate_keeps_handoff_for_camp_vs_regular_course_scope() -> None:
+    store = FactStore(
+        catalog=("regular.course.start",),
+        store={"foton": {"regular.course.start": "Регулярные курсы Фотона для 5-11 классов стартуют в середине сентября."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("летняя смена в августе есть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "летняя смена в августе",
+                "subquestions": [
+                    {"text": "летняя смена в августе", "answerable": "self", "needed_fact_keys": ["regular.course.start"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не могу точно ответить сейчас.",
+        semantic_match_fn=lambda _prompt: {"covers": True, "same_product": False},
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.semantic_match_attempted is True
+    assert result.semantic_match_replaced is False
+    assert "середине сентября" not in result.draft_text.casefold()
+    assert result.draft_text == "Не могу точно ответить сейчас."
+
+
+def test_semantic_match_gate_keeps_handoff_for_neighbor_payment_method() -> None:
+    store = FactStore(
+        catalog=("installment.tbank",),
+        store={"foton": {"installment.tbank": "В Фотоне доступна рассрочка через Т-Банк на 6, 10 или 12 месяцев."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("можно оплатить Долями?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "оплата Долями",
+                "subquestions": [
+                    {"text": "оплата Долями", "answerable": "self", "needed_fact_keys": ["installment.tbank"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не могу точно ответить сейчас.",
+        semantic_match_fn=lambda _prompt: {"covers": False, "same_product": False},
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.semantic_match_replaced is False
+    assert "т-банк" not in result.draft_text.casefold()
+    assert result.draft_text == "Не могу точно ответить сейчас."
+
+
+def test_semantic_match_gate_does_not_override_p0_or_none_runner() -> None:
+    p0_calls = 0
+    store = FactStore(
+        catalog=("price.online",),
+        store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}},
+    )
+
+    def p0_semantic(_prompt: str) -> Mapping[str, Any]:
+        nonlocal p0_calls
+        p0_calls += 1
+        return {"covers": True, "same_product": True}
+
+    p0_result = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не могу точно ответить сейчас.",
+        semantic_match_fn=p0_semantic,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    no_runner_result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не могу точно ответить сейчас.",
+        semantic_match_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert p0_result.route == "manager_only"
+    assert p0_calls == 0
+    assert no_runner_result.semantic_match_attempted is False
+
+
+def test_build_semantic_match_prompt_names_scope_rules() -> None:
+    prompt = build_semantic_match_prompt(
+        question="а в августе в Москве есть смена?",
+        facts={"camp.moscow.dates": "Городской лагерь в Москве проходит 3-14 августа."},
+        draft="Спасибо за сообщение. Передам вопрос менеджеру.",
+    )
+
+    assert "ПО СМЫСЛУ" in prompt
+    assert "ТОТ ЖЕ продукт" in prompt
+    assert "3-14 августа" in prompt
+    assert "СМЕНА/ЛАГЕРЬ ≠ обычный регулярный курс" in prompt
+    assert '"covers"' in prompt
+    assert '"same_product"' in prompt
 
 
 def test_phase1_empty_handoff_replaced_after_no_draft_fn() -> None:

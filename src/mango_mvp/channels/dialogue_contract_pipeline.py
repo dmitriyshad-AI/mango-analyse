@@ -240,6 +240,9 @@ class DialogueContractPipelineResult:
     unsupported_claims: tuple[str, ...] = ()
     form_findings: tuple[FormFinding, ...] = ()
     fallback_reason: str = ""
+    semantic_match_attempted: bool = False
+    semantic_match_replaced: bool = False
+    semantic_match_reason: str = ""
     warmed: bool = False
     warmth_attempted: bool = False
     warmth_mode: str = ""
@@ -1002,6 +1005,67 @@ def check_claim_faithfulness(
     )
 
 
+def build_semantic_match_prompt(*, question: str, facts: Mapping[str, str], draft: str) -> str:
+    facts_block = "\n".join(f"- {value}" for value in facts.values()) or "(фактов нет)"
+    return (
+        f"Клиент спросил: {question}\n"
+        f"У нас есть подтверждённые факты:\n{facts_block}\n"
+        f"Черновик ответа бота: {draft}\n"
+        "Вопрос: отвечают ли эти факты на вопрос клиента ПО СМЫСЛУ, и про ТОТ ЖЕ продукт/тему?\n"
+        "Правила: «олимпиадная подготовка Физтех» = ответ на «олимпиада по физике» (covers=true). "
+        "«в августе» покрывается фактом «3-14 августа» (covers=true). "
+        "Но летняя СМЕНА/ЛАГЕРЬ ≠ обычный регулярный курс: если спросили про смену, а факт про "
+        "регулярный курс — same_product=false. Другой предмет/способ оплаты/формат — same_product=false.\n"
+        "Верни строго JSON: {\"covers\": true|false, \"same_product\": true|false}."
+    )
+
+
+def _semantic_match(
+    semantic_match_fn: Callable[[str], object],
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    draft: str,
+) -> Mapping[str, Any]:
+    prompt = build_semantic_match_prompt(
+        question=_semantic_match_question_text(contract, client_words=client_words),
+        facts=retrieval.facts,
+        draft=draft,
+    )
+    try:
+        raw = semantic_match_fn(prompt)
+    except Exception:
+        return {}
+    data: object = raw
+    if isinstance(raw, str):
+        try:
+            data = _extract_json_object(raw)
+        except Exception:
+            return {}
+    if not isinstance(data, MappingABC):
+        return {}
+    return {
+        "covers": data.get("covers"),
+        "same_product": data.get("same_product"),
+        "reason": str(data.get("reason") or ""),
+    }
+
+
+def _semantic_match_question_text(contract: AnswerContract, *, client_words: str) -> str:
+    return " ".join(
+        part
+        for part in (
+            client_words,
+            contract.current_question,
+            contract.existence_target,
+            " ".join(item.text for item in contract.subquestions),
+            " ".join(item.existence_target for item in contract.subquestions),
+        )
+        if part
+    )
+
+
 _RISKY_ENTITY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "platform:mts_link": ("мтс линк", "мтс-линк", "mts link", "mts-link"),
     "platform:webinar": ("webinar", "webinar.ru"),
@@ -1242,6 +1306,7 @@ def run_pipeline(
     style_examples: Sequence[str] = (),
     repair_fn: Callable[[str], str] | None = None,
     faithfulness_fn: Callable[[str], object] | None = None,
+    semantic_match_fn: Callable[[str], object] | None = None,
     warmth_fn: Callable[[str], str] | None = None,
     toggles: Toggles | None = None,
 ) -> DialogueContractPipelineResult:
@@ -1501,6 +1566,10 @@ def run_pipeline(
         )
 
     repaired = False
+    semantic_match_attempted = False
+    semantic_match_replaced = False
+    semantic_match_reason = ""
+    semantic_match_blocked_replacement = False
     if (
         _is_pure_handoff_text(draft)
         and contract.answerability == "answer_self"
@@ -1522,6 +1591,48 @@ def run_pipeline(
             trace_event(context, "key_coverage_gate", {"replaced": True})
             draft = replacement
             repaired = True
+
+    if (
+        semantic_match_fn is not None
+        and _looks_like_handoff(draft)
+        and contract.answerability == "answer_self"
+        and not contract.is_p0
+        and retrieval.facts
+    ):
+        semantic_match_attempted = True
+        semantic_verdict = _semantic_match(
+            semantic_match_fn,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            draft=draft,
+        )
+        covers = _truthy(semantic_verdict.get("covers"))
+        same_product = _truthy(semantic_verdict.get("same_product"))
+        semantic_match_reason = str(semantic_verdict.get("reason") or "").strip()
+        if covers and same_product:
+            replacement = _verified_empty_handoff_replacement(
+                draft,
+                contract=contract,
+                retrieval=retrieval,
+                client_words=client_words,
+                faithfulness_fn=faithfulness_fn,
+                toggles=toggles,
+                context=context,
+                previous_bot_texts=previous_bot_texts,
+                allow_key_coverage=True,
+            )
+            if replacement:
+                trace_event(
+                    context,
+                    "semantic_match_gate",
+                    {"replaced": True, "covers": covers, "same_product": same_product},
+                )
+                draft = replacement
+                repaired = True
+                semantic_match_replaced = True
+        else:
+            semantic_match_blocked_replacement = True
 
     draft = _specialize_grade_range_answer(draft, contract=contract, facts=retrieval.facts)
     findings, unsupported, semantic_available = _hard_check(
@@ -1629,7 +1740,7 @@ def run_pipeline(
             fallback_reason="hard_verification_failed",
         )
 
-    composition = _composition_answer(contract, retrieval, current_draft=draft)
+    composition = "" if semantic_match_blocked_replacement else _composition_answer(contract, retrieval, current_draft=draft)
     if composition and composition != draft:
         composition_facts = _facts_with_derived_answer(retrieval.facts, composition)
         comp_findings, comp_unsupported, comp_semantic_available = _hard_check(
@@ -1646,12 +1757,16 @@ def run_pipeline(
             draft = composition
             repaired = True
 
-    coverage_findings = _coverage_findings(
-        draft,
-        contract=contract,
-        retrieval=retrieval,
-        force_draft_for_manager=force_draft_for_manager,
-        context=context,
+    coverage_findings = (
+        ()
+        if semantic_match_blocked_replacement
+        else _coverage_findings(
+            draft,
+            contract=contract,
+            retrieval=retrieval,
+            force_draft_for_manager=force_draft_for_manager,
+            context=context,
+        )
     )
     coverage_attempts = 0
     while coverage_findings and repair_fn is not None and coverage_attempts < MAX_REPAIR_ATTEMPTS:
@@ -1726,7 +1841,7 @@ def run_pipeline(
                 draft = cite_only
                 repaired = True
 
-    replacement = _verified_empty_handoff_replacement(
+    replacement = "" if semantic_match_blocked_replacement else _verified_empty_handoff_replacement(
         draft,
         contract=contract,
         retrieval=retrieval,
@@ -1811,6 +1926,9 @@ def run_pipeline(
         warmth_rejected_findings=warmth_rejected_findings,
         warmth_rejected_unsupported=warmth_rejected_unsupported,
         warmth_semantic_available=warmth_semantic_available,
+        semantic_match_attempted=semantic_match_attempted,
+        semantic_match_replaced=semantic_match_replaced,
+        semantic_match_reason=semantic_match_reason,
         repaired=repaired,
     )
 
@@ -2356,7 +2474,8 @@ def _should_replace_empty_handoff(
         return False
     if _draft_cites_any_retrieved_self_fact(draft, contract=contract, retrieval=retrieval):
         return False
-    return _is_handoff_text(draft) and _handoff_factual_claim_text(draft) is None
+    handoff_like = _is_handoff_text(draft) or (allow_key_coverage and _looks_like_handoff(draft))
+    return handoff_like and _handoff_factual_claim_text(draft) is None
 
 
 def _draft_cites_any_retrieved_self_fact(
@@ -2921,6 +3040,20 @@ def _avoid_repeating_text(
 def _is_handoff_text(text: str) -> bool:
     low = str(text or "").casefold()
     return bool(re.search(r"менеджер|передам|уточнит|подтвердит|сверит", low, re.I))
+
+
+def _looks_like_handoff(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    if _is_handoff_text(low):
+        return True
+    return bool(
+        re.search(
+            r"спасибо\s+за\s+сообщение|не\s+могу\s+точно\s+ответить|нет\s+точн(?:ой|ых)\s+(?:информации|данных)|"
+            r"верн[её]тся\s+с\s+проверенн|свяжется\s+с\s+проверенн|уточн[ию]\s+и\s+верн",
+            low,
+            re.I,
+        )
+    )
 
 
 def _near_repeat(left: str, right: str) -> bool:

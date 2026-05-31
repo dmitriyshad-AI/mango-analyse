@@ -65,6 +65,8 @@ HUMANITY_X2_REWRITE_ENV = "TELEGRAM_DRAFT_X2_REWRITE"
 HUMANITY_X2_REWRITE_MODE_ENV = "TELEGRAM_DRAFT_X2_REWRITE_MODE"
 HUMANITY_X2_REWRITE_MODEL_ENV = "TELEGRAM_DRAFT_X2_REWRITE_MODEL"
 HUMANITY_X2_REWRITE_REASONING_ENV = "TELEGRAM_DRAFT_X2_REWRITE_REASONING"
+DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL"
+DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING"
 SCOPE_FACT_GUARD_ENV = "TELEGRAM_SCOPE_FACT_GUARD"
 ANTIREPEAT_STRICT_ENV = "TELEGRAM_ANTIREPEAT_STRICT"
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -1086,6 +1088,8 @@ class SubscriptionLlmDraftProvider:
         timeout_sec: int = 90,
         max_attempts: int = 2,
         cache_dir: Optional[Path | str] = None,
+        dialogue_contract_semantic_match_fn: Optional[Callable[[str], object]] = None,
+        dialogue_contract_semantic_match_enabled: bool = True,
         runner: Optional[_Runner] = None,
         sleep: Callable[[float], None] = time.sleep,
         base_env: Optional[Mapping[str, str]] = None,
@@ -1099,6 +1103,8 @@ class SubscriptionLlmDraftProvider:
         self.sleep = sleep
         self.base_env = dict(base_env) if base_env is not None else None
         self.cache_dir = _guard_cache_dir(cache_dir) if cache_dir is not None else None
+        self._dialogue_contract_semantic_match_override = dialogue_contract_semantic_match_fn
+        self._dialogue_contract_semantic_match_enabled = bool(dialogue_contract_semantic_match_enabled)
 
     def build_draft(
         self,
@@ -1160,6 +1166,13 @@ class SubscriptionLlmDraftProvider:
         active_brand = _active_brand(context)
         conversation = build_dialogue_contract_conversation(client_message, context=context)
         fact_store = build_dialogue_contract_fact_store(active_brand=active_brand, context=context)
+        semantic_match_fn = (
+            self._dialogue_contract_semantic_match_override
+            if self._dialogue_contract_semantic_match_override is not None
+            else self._dialogue_contract_semantic_match_runner
+            if self._dialogue_contract_semantic_match_enabled
+            else None
+        )
         pipeline_result = run_dialogue_contract_pipeline(
             conversation=conversation,
             active_brand=active_brand,
@@ -1168,6 +1181,7 @@ class SubscriptionLlmDraftProvider:
             draft_fn=self._dialogue_contract_draft_runner,
             repair_fn=self._dialogue_contract_repair_runner,
             faithfulness_fn=self._dialogue_contract_faithfulness_runner,
+            semantic_match_fn=semantic_match_fn,
             warmth_fn=self._dialogue_contract_warmth_runner if _humanity_x2_rewrite_enabled(context) else None,
             context=context,
             tone_guide=_dialogue_contract_tone_guide(context),
@@ -1217,6 +1231,9 @@ class SubscriptionLlmDraftProvider:
                     ],
                     "warmth_rejected_unsupported": list(pipeline_result.warmth_rejected_unsupported),
                     "warmth_semantic_available": pipeline_result.warmth_semantic_available,
+                    "semantic_match_attempted": pipeline_result.semantic_match_attempted,
+                    "semantic_match_replaced": pipeline_result.semantic_match_replaced,
+                    "semantic_match_reason": pipeline_result.semantic_match_reason,
                     "fallback_reason": pipeline_result.fallback_reason,
                     "warmed": pipeline_result.warmed,
                     "repaired": pipeline_result.repaired,
@@ -1254,6 +1271,19 @@ class SubscriptionLlmDraftProvider:
             prefix="mango_dialogue_contract_faithfulness_",
             suffix=".json",
             reasoning_effort=os.getenv("TELEGRAM_DIALOGUE_CONTRACT_FAITHFULNESS_REASONING") or "medium",
+        )
+        try:
+            return extract_json_object(raw)
+        except Exception:
+            return raw
+
+    def _dialogue_contract_semantic_match_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        raw = self._run_prompt_text(
+            prompt,
+            prefix="mango_dialogue_contract_semantic_match_",
+            suffix=".json",
+            model=os.getenv(DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV) or self.model,
+            reasoning_effort=os.getenv(DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV) or "medium",
         )
         try:
             return extract_json_object(raw)

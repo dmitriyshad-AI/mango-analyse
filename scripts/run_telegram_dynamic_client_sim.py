@@ -95,6 +95,11 @@ class FakeMemoryModel:
         }
 
 
+class FakeSemanticMatchModel:
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        return {"covers": True, "same_product": True, "reason": "fake semantic match"}
+
+
 class FakeBotProvider:
     def build_draft(self, client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> SubscriptionDraftResult:
         return normalize_subscription_draft_payload(
@@ -200,6 +205,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--memory-mode", choices=("codex", "fake", "off"), default="codex")
     parser.add_argument("--memory-model", default="gpt-5.5")
     parser.add_argument("--memory-reasoning", default="low")
+    parser.add_argument("--semantic-mode", choices=("codex", "fake", "off"), default="codex")
+    parser.add_argument("--semantic-model", default="gpt-5.5")
+    parser.add_argument("--semantic-reasoning", default="medium")
     parser.add_argument("--timeout-sec", type=int, default=180)
     parser.add_argument(
         "--disable-bot-cache",
@@ -517,6 +525,19 @@ def build_memory_model(args: argparse.Namespace) -> Any:
     )
 
 
+def build_semantic_match_model(args: argparse.Namespace) -> Any:
+    if args.semantic_mode == "off":
+        return None
+    if args.semantic_mode == "fake":
+        return FakeSemanticMatchModel()
+    return CodexJsonModel(
+        model=args.semantic_model,
+        reasoning_effort=args.semantic_reasoning,
+        timeout_sec=args.timeout_sec,
+        codex_bin=getattr(args, "codex_bin", "codex"),
+    )
+
+
 def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
     if args.bot_mode == "fake":
         return FakeBotProvider()
@@ -526,11 +547,14 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         cache_dir = Path(".codex_local/telegram_dynamic_client_sim/llm_cache")
         if dialog_id:
             cache_dir = cache_dir / safe_filename(dialog_id)
+    semantic_match_model = build_semantic_match_model(args)
     return SubscriptionLlmDraftProvider(
         model=args.model,
         reasoning_effort=args.bot_reasoning,
         timeout_sec=args.timeout_sec,
         cache_dir=cache_dir,
+        dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,
+        dialogue_contract_semantic_match_enabled=semantic_match_model is not None,
     )
 
 

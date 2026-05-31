@@ -1066,6 +1066,81 @@ def _semantic_match_question_text(contract: AnswerContract, *, client_words: str
     )
 
 
+def _semantic_recover_or_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    draft: str,
+    semantic_match_fn: Callable[[str], object] | None,
+    faithfulness_fn: Callable[[str], object] | None,
+    client_words: str,
+    conversation: Sequence[Mapping[str, str]],
+    context: Mapping[str, Any] | None,
+    toggles: Toggles,
+    previous_bot_texts: Sequence[str] = (),
+) -> DialogueContractPipelineResult | None:
+    if (
+        semantic_match_fn is None
+        or not retrieval.facts
+        or contract.answerability != "answer_self"
+        or contract.is_p0
+    ):
+        return None
+    verdict = _semantic_match(
+        semantic_match_fn,
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        draft=draft,
+    )
+    covers = _truthy(verdict.get("covers"))
+    same_product = _truthy(verdict.get("same_product"))
+    if not (covers and same_product):
+        trace_event(
+            context,
+            "semantic_recover",
+            {"replaced": False, "covers": covers, "same_product": same_product},
+        )
+        return None
+    replacement = _verified_empty_handoff_replacement(
+        draft,
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        allow_key_coverage=True,
+    )
+    if not replacement:
+        trace_event(
+            context,
+            "semantic_recover",
+            {"replaced": False, "covers": covers, "same_product": same_product, "composer_empty": True},
+        )
+        return None
+    trace_event(context, "semantic_recover", {"replaced": True, "covers": covers, "same_product": same_product})
+    return DialogueContractPipelineResult(
+        draft_text=_avoid_repeating_text(
+            replacement,
+            conversation=conversation,
+            contract=contract,
+            facts=retrieval.facts,
+        ),
+        route="bot_answer_self",
+        manager_only=False,
+        contract=contract,
+        facts=retrieval.facts,
+        missing=retrieval.missing,
+        fallback_reason="semantic_recover",
+        semantic_match_attempted=True,
+        semantic_match_replaced=True,
+        semantic_match_reason=str(verdict.get("reason") or "").strip(),
+        repaired=True,
+    )
+
+
 _RISKY_ENTITY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "platform:mts_link": ("мтс линк", "мтс-линк", "mts link", "mts-link"),
     "platform:webinar": ("webinar", "webinar.ru"),
@@ -1647,6 +1722,20 @@ def run_pipeline(
     )
     if not semantic_available:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _semantic_recover_or_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            semantic_match_fn=semantic_match_fn,
+            faithfulness_fn=None,
+            client_words=client_words,
+            conversation=conversation,
+            context=context,
+            toggles=toggles,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1684,6 +1773,20 @@ def run_pipeline(
         )
         if not semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+            recovered = _semantic_recover_or_handoff(
+                contract=contract,
+                retrieval=retrieval,
+                draft=fallback,
+                semantic_match_fn=semantic_match_fn,
+                faithfulness_fn=None,
+                client_words=client_words,
+                conversation=conversation,
+                context=context,
+                toggles=toggles,
+                previous_bot_texts=previous_bot_texts,
+            )
+            if recovered:
+                return recovered
             return DialogueContractPipelineResult(
                 draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
                 route="draft_for_manager",
@@ -1727,6 +1830,20 @@ def run_pipeline(
                     fallback_reason="verified_fact_fallback_after_hard_check",
                 )
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _semantic_recover_or_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            semantic_match_fn=semantic_match_fn,
+            faithfulness_fn=faithfulness_fn,
+            client_words=client_words,
+            conversation=conversation,
+            context=context,
+            toggles=toggles,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1793,6 +1910,20 @@ def run_pipeline(
         )
         if not candidate_semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+            recovered = _semantic_recover_or_handoff(
+                contract=contract,
+                retrieval=retrieval,
+                draft=fallback,
+                semantic_match_fn=semantic_match_fn,
+                faithfulness_fn=None,
+                client_words=client_words,
+                conversation=conversation,
+                context=context,
+                toggles=toggles,
+                previous_bot_texts=previous_bot_texts,
+            )
+            if recovered:
+                return recovered
             return DialogueContractPipelineResult(
                 draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
                 route="draft_for_manager",

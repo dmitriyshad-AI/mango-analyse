@@ -1871,6 +1871,134 @@ def test_build_semantic_match_prompt_names_scope_rules() -> None:
     assert '"same_product"' in prompt
 
 
+def test_semantic_recover_at_repair_fail_uses_august_camp_fact() -> None:
+    store = FactStore(
+        catalog=("camp.moscow.dates",),
+        store={"foton": {"camp.moscow.dates": "Городской лагерь в Москве проходит 3-14 августа."}},
+    )
+
+    def faithfulness(prompt: str) -> Mapping[str, Any]:
+        if "По подтверждённым данным" in prompt and "3-14 августа" in prompt:
+            return {"unsupported": []}
+        return {"unsupported": ["нет ответа из факта"]}
+
+    result = run_pipeline(
+        conversation=_conv("а в августе в москве есть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("лагерь в августе в Москве", keys=("camp.moscow.dates",))),
+        draft_fn=lambda _prompt: "В августе такого варианта нет.",
+        faithfulness_fn=faithfulness,
+        semantic_match_fn=lambda _prompt: {"covers": True, "same_product": True, "reason": "camp date covers August"},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "semantic_recover"
+    assert result.semantic_match_replaced is True
+    assert "3-14 августа" in result.draft_text
+
+
+def test_semantic_recover_at_unavailable_critic_uses_fact_without_faithfulness() -> None:
+    store = FactStore(
+        catalog=("camp.moscow.dates",),
+        store={"foton": {"camp.moscow.dates": "Городской лагерь в Москве проходит 3-14 августа."}},
+    )
+
+    def unavailable(_prompt: str) -> Mapping[str, Any]:
+        raise RuntimeError("faithfulness timeout")
+
+    result = run_pipeline(
+        conversation=_conv("а в августе в москве есть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("лагерь в августе в Москве", keys=("camp.moscow.dates",))),
+        draft_fn=lambda _prompt: "Городской лагерь в Москве проходит 3-14 августа.",
+        faithfulness_fn=unavailable,
+        semantic_match_fn=lambda _prompt: {"covers": True, "same_product": True, "reason": "cite-only fact"},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "semantic_recover"
+    assert result.semantic_match_replaced is True
+    assert "3-14 августа" in result.draft_text
+
+
+def test_semantic_recover_keeps_handoff_for_camp_vs_regular_course() -> None:
+    store = FactStore(
+        catalog=("regular.course.start",),
+        store={"foton": {"regular.course.start": "Регулярные курсы Фотона для 5-11 классов стартуют в середине сентября."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("летняя смена в августе есть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("летняя смена в августе", keys=("regular.course.start",))),
+        draft_fn=lambda _prompt: "Регулярные курсы стартуют в середине сентября.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["подмена смены регулярным курсом"]},
+        semantic_match_fn=lambda _prompt: {"covers": True, "same_product": False, "reason": "camp is not regular course"},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert result.semantic_match_replaced is False
+    assert "сентябр" not in result.draft_text.casefold()
+
+
+def test_semantic_recover_does_not_override_p0_or_missing_runner() -> None:
+    store = FactStore(
+        catalog=("refund.policy",),
+        store={"foton": {"refund.policy": "Возврат по спорной оплате разбирает менеджер."}},
+    )
+    calls = 0
+
+    def semantic(_prompt: str) -> Mapping[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"covers": True, "same_product": True}
+
+    p0 = run_pipeline(
+        conversation=_conv("оплатил, занятий нет, верните деньги"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("возврат оплаты", keys=("refund.policy",))),
+        draft_fn=lambda _prompt: "Возврат по спорной оплате разбирает менеджер.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["возврат"]},
+        semantic_match_fn=semantic,
+    )
+    no_runner = run_pipeline(
+        conversation=_conv("летняя смена в августе есть?"),
+        active_brand="foton",
+        fact_store=FactStore(catalog=("camp.moscow.dates",), store={"foton": {"camp.moscow.dates": "Городской лагерь в Москве проходит 3-14 августа."}}),
+        understand_fn=_understanding(_contract_payload("лагерь в августе в Москве", keys=("camp.moscow.dates",))),
+        draft_fn=lambda _prompt: "В августе такого варианта нет.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["нет ответа из факта"]},
+        semantic_match_fn=None,
+    )
+
+    assert p0.route == "manager_only"
+    assert calls == 0
+    assert no_runner.route == "draft_for_manager"
+    assert no_runner.semantic_match_attempted is False
+
+
+def test_semantic_recover_keeps_handoff_when_cite_only_is_empty() -> None:
+    store = FactStore(catalog=("empty.fact",), store={"foton": {"empty.fact": ""}})
+    result = run_pipeline(
+        conversation=_conv("а в августе в москве есть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("лагерь в августе в Москве", keys=("empty.fact",))),
+        draft_fn=lambda _prompt: "В августе такого варианта нет.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["нет ответа из факта"]},
+        semantic_match_fn=lambda _prompt: {"covers": True, "same_product": True},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "hard_verification_failed"
+    assert result.semantic_match_replaced is False
+
+
 def test_phase1_empty_handoff_replaced_after_no_draft_fn() -> None:
     store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
     result = run_pipeline(

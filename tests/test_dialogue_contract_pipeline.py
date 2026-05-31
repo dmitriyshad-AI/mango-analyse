@@ -2897,6 +2897,45 @@ def test_build_draft_prompt_without_dialogue_memory_keeps_memory_block_empty() -
     assert "Рабочая память переписки" not in prompt_without_memory
 
 
+def test_build_draft_prompt_calibrates_semantic_match_vs_neighbor_fact() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "олимпиада по физике есть? в августе в Москве лагерь? для 10 класса цена?",
+            "subquestions": [
+                {"text": "олимпиада по физике есть?", "answerable": "self", "needed_fact_keys": ["olymp.phystech"]},
+                {"text": "в августе в Москве лагерь?", "answerable": "self", "needed_fact_keys": ["camp.moscow.dates"]},
+                {"text": "для 10 класса цена?", "answerable": "self", "needed_fact_keys": ["price.grade_range"]},
+            ],
+            "answerability": "answer_self",
+        },
+        active_brand="unpk",
+        fact_key_catalog=("olymp.phystech", "camp.moscow.dates", "price.grade_range"),
+    )
+    prompt = build_draft_prompt(
+        conversation=_conv("олимпиада по физике есть?"),
+        contract=contract,
+        facts={
+            "olymp.phystech": "Олимпиадная подготовка Физтех доступна для 9 и 11 классов.",
+            "camp.moscow.dates": "Лагерь в Москве проходит 3-14 августа.",
+            "price.grade_range": "Онлайн-цена для 5-11 классов — 49 000 ₽.",
+        },
+        missing=(),
+    )
+
+    assert "Если в фактах есть ответ на вопрос ПО СМЫСЛУ" in prompt
+    assert "олимпиада по физике" in prompt
+    assert "олимпиадная подготовка Физтех" in prompt
+    assert "3-14 августа" in prompt
+    assert "5-11 класс" in prompt
+    assert "Не уходи к менеджеру только из-за разной формулировки" in prompt
+    assert "физика vs математика" in prompt
+    assert "рассрочка vs Долями" in prompt
+    assert "очно vs онлайн" in prompt
+    assert "по теме вопроса факта нет вовсе" in prompt
+    assert "это P0" in prompt
+    assert "Если сомневаешься, уточни или узко передай менеджеру" not in prompt
+
+
 def test_build_understanding_prompt_includes_topic_focus_for_ellipsis() -> None:
     prompt = build_understanding_prompt(
         conversation=(

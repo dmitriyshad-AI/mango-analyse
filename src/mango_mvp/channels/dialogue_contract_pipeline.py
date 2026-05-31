@@ -1500,8 +1500,30 @@ def run_pipeline(
             fallback_reason="draft_error",
         )
 
-    draft = _specialize_grade_range_answer(draft, contract=contract, facts=retrieval.facts)
     repaired = False
+    if (
+        _is_pure_handoff_text(draft)
+        and contract.answerability == "answer_self"
+        and not contract.is_p0
+        and _key_coverage_ok(contract, retrieval)
+    ):
+        replacement = _verified_empty_handoff_replacement(
+            draft,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+            allow_key_coverage=True,
+        )
+        if replacement:
+            trace_event(context, "key_coverage_gate", {"replaced": True})
+            draft = replacement
+            repaired = True
+
+    draft = _specialize_grade_range_answer(draft, contract=contract, facts=retrieval.facts)
     findings, unsupported, semantic_available = _hard_check(
         draft,
         facts=retrieval.facts,
@@ -2184,12 +2206,21 @@ def _coverage_repair_prompt(
 
 
 def _coverage_cite_only_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
-    findings = _coverage_findings(
-        "",
-        contract=contract,
-        retrieval=retrieval,
-        force_draft_for_manager=False,
+    return _coverage_cite_only_answer_from_findings(
+        _coverage_findings(
+            "",
+            contract=contract,
+            retrieval=retrieval,
+            force_draft_for_manager=False,
+        )
     )
+
+
+def _key_coverage_cite_only_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    return _coverage_cite_only_answer_from_findings(_key_coverage_findings(contract, retrieval))
+
+
+def _coverage_cite_only_answer_from_findings(findings: Sequence[_CoverageFinding]) -> str:
     if not findings:
         return ""
     snippets: list[str] = []
@@ -2205,6 +2236,47 @@ def _coverage_cite_only_answer(contract: AnswerContract, retrieval: RetrievalRes
     if len(snippets) == 1:
         return f"По подтверждённым данным: {snippets[0]}"
     return "По подтверждённым данным: " + " ".join(snippets[:3])
+
+
+def _key_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult) -> tuple[_CoverageFinding, ...]:
+    if contract.is_p0 or contract.answerability != "answer_self":
+        return ()
+    findings: list[_CoverageFinding] = []
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        if subquestion.answerable != "self":
+            continue
+        for required_key in tuple(key for key in subquestion.needed_fact_keys if key):
+            for fact_key in retrieval.matched_keys.get(required_key, ()):
+                if fact_key not in retrieval.facts:
+                    continue
+                findings.append(
+                    _CoverageFinding(
+                        subquestion=subquestion.text or contract.current_question,
+                        required_key=required_key,
+                        fact_key=fact_key,
+                        fact_text=str(retrieval.facts[fact_key]),
+                    )
+                )
+    return tuple(findings)
+
+
+def _key_coverage_ok(contract: AnswerContract, retrieval: RetrievalResult) -> bool:
+    needed = contract.all_needed_fact_keys()
+    if not needed:
+        return False
+    return any(
+        any(matched_key in retrieval.facts for matched_key in retrieval.matched_keys.get(required_key, ()))
+        for required_key in needed
+    )
 
 
 def _composition_answer(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
@@ -2230,13 +2302,23 @@ def _verified_empty_handoff_replacement(
     toggles: Toggles,
     context: Mapping[str, Any] | None,
     previous_bot_texts: Sequence[str] = (),
+    allow_key_coverage: bool = False,
 ) -> str:
-    if not _should_replace_empty_handoff(draft, contract=contract, retrieval=retrieval):
+    if not _should_replace_empty_handoff(
+        draft,
+        contract=contract,
+        retrieval=retrieval,
+        allow_key_coverage=allow_key_coverage,
+    ):
         return ""
     replacement = (
         _composition_answer(contract, retrieval, current_draft=draft)
         or _hard_failure_exact_fact_fallback(contract, retrieval)
-        or _coverage_cite_only_answer(contract, retrieval)
+        or (
+            _key_coverage_cite_only_answer(contract, retrieval)
+            if allow_key_coverage
+            else _coverage_cite_only_answer(contract, retrieval)
+        )
     )
     if not replacement:
         return ""
@@ -2261,10 +2343,16 @@ def _should_replace_empty_handoff(
     *,
     contract: AnswerContract,
     retrieval: RetrievalResult,
+    allow_key_coverage: bool = False,
 ) -> bool:
     if contract.is_p0 or contract.answerability != "answer_self":
         return False
-    if not _has_exact_retrieved_answer_part(contract, retrieval):
+    has_coverage = (
+        _key_coverage_ok(contract, retrieval)
+        if allow_key_coverage
+        else _has_exact_retrieved_answer_part(contract, retrieval)
+    )
+    if not has_coverage:
         return False
     if _draft_cites_any_retrieved_self_fact(draft, contract=contract, retrieval=retrieval):
         return False

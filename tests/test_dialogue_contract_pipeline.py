@@ -1563,6 +1563,119 @@ def test_phase1_empty_handoff_replaced_when_answer_self_has_rfk() -> None:
     assert "Передам менеджеру уточнить именно это" not in result.draft_text
 
 
+def test_key_coverage_gate_replaces_pure_handoff_with_matched_fact() -> None:
+    store = FactStore(
+        catalog=("olympiad.phystech.physics",),
+        store={
+            "unpk": {
+                "olympiad.phystech.physics": "Олимпиадная подготовка Физтех по физике доступна для 9 и 11 классов."
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("олимпиада по физике есть?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "олимпиада по физике есть?",
+                "subquestions": [
+                    {
+                        "text": "олимпиада по физике есть?",
+                        "answerable": "self",
+                        "needed_fact_keys": ["olympiad.phystech.physics"],
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно это.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.repaired is True
+    assert "физтех" in result.draft_text.casefold()
+    assert "физик" in result.draft_text.casefold()
+    assert "Передам менеджеру уточнить именно это" not in result.draft_text
+
+
+def test_key_coverage_gate_does_not_use_unmatched_neighbor_fact() -> None:
+    store = FactStore(
+        catalog=("schedule.publication", "contacts.hours"),
+        store={"foton": {"contacts.hours": "Фотон на связи ежедневно с 10:00 до 18:00."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("по каким дням занятия?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "по каким дням занятия?",
+                "subquestions": [
+                    {"text": "по каким дням занятия?", "answerable": "self", "needed_fact_keys": ["schedule.publication"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно это.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "10:00" not in result.draft_text
+    assert "менеджер" in result.draft_text.casefold()
+
+
+def test_key_coverage_gate_does_not_override_p0() -> None:
+    store = FactStore(
+        catalog=("price.online",),
+        store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно это.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert "29 750" not in result.draft_text
+
+
+def test_key_coverage_gate_keeps_handoff_when_composer_has_no_fact_text() -> None:
+    store = FactStore(catalog=("schedule.publication",), store={"foton": {"schedule.publication": ""}})
+    result = run_pipeline(
+        conversation=_conv("по каким дням занятия?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "по каким дням занятия?",
+                "subquestions": [
+                    {"text": "по каким дням занятия?", "answerable": "self", "needed_fact_keys": ["schedule.publication"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру уточнить именно это.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "Передам менеджеру уточнить именно это" in result.draft_text
+    assert result.repaired is False
+
+
 def test_phase1_empty_handoff_replaced_after_no_draft_fn() -> None:
     store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
     result = run_pipeline(

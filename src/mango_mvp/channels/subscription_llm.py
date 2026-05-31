@@ -22,7 +22,10 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     Toggles as DialogueContractToggles,
     build_conversation as build_dialogue_contract_conversation,
     build_fact_store as build_dialogue_contract_fact_store,
+    check_claim_faithfulness as check_dialogue_contract_faithfulness,
     concrete_anchors as dialogue_contract_concrete_anchors,
+    _established_topic_from_context as dialogue_contract_established_topic_from_context,
+    parse_contract as parse_dialogue_contract,
     pipeline_enabled as dialogue_contract_pipeline_enabled,
     run_pipeline as run_dialogue_contract_pipeline,
     verify_output as verify_dialogue_contract_output,
@@ -1373,6 +1376,12 @@ class SubscriptionLlmDraftProvider:
         pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
         facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
         fact_texts = {str(k): str(v) for k, v in facts.items()}
+        contract = parse_dialogue_contract(
+            pipeline.get("contract"),
+            active_brand=_active_brand(context),
+            fact_key_catalog=tuple(fact_texts.keys()),
+        )
+        previous_bot_texts = _humanity_previous_bot_texts(context)
         verified_safe_template = _is_verified_safe_numeric_template(after.draft_text)
         if verified_safe_template:
             fact_texts["_verified_safe_numeric_template"] = after.draft_text
@@ -1380,12 +1389,26 @@ class SubscriptionLlmDraftProvider:
             after.draft_text,
             facts=fact_texts,
             active_brand=_active_brand(context),
+            contract=contract,
             client_message=client_message,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
+        semantic_available = True
+        unsupported_claims: tuple[str, ...] = ()
+        if facts:
+            semantic_result = check_dialogue_contract_faithfulness(
+                after.draft_text,
+                facts={str(k): str(v) for k, v in facts.items()},
+                client_words=client_message,
+                faithfulness_fn=self._dialogue_contract_faithfulness_runner,
+                established_topic=dialogue_contract_established_topic_from_context(context),
+            )
+            semantic_available = semantic_result.available
+            unsupported_claims = semantic_result.unsupported
         if verified_safe_template:
             findings = [finding for finding in findings if finding.code not in {"fact_grounding", "p0_promise"}]
-        if not findings:
+        if not findings and not unsupported_claims and semantic_available:
             flags = tuple(dict.fromkeys([*after.safety_flags, "dialogue_contract_text_change_reverified"]))
             return replace(after, safety_flags=flags)
         flags = tuple(
@@ -1409,6 +1432,9 @@ class SubscriptionLlmDraftProvider:
         metadata["dialogue_contract_reverification_findings"] = [
             {"code": finding.code, "detail": finding.detail} for finding in findings
         ]
+        if unsupported_claims:
+            metadata["dialogue_contract_reverification_unsupported"] = list(unsupported_claims)
+        metadata["dialogue_contract_reverification_semantic_available"] = semantic_available
         return replace(
             after,
             route="draft_for_manager" if after.route != "manager_only" else after.route,

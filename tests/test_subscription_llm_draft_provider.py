@@ -32,6 +32,7 @@ from mango_mvp.channels.subscription_llm import (
     OFF_TOPIC_UNPK_SAFE_TEXT,
     PAYMENT_DISPUTE_SAFE_TEXT,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
+    SAFE_FALLBACK_DRAFT_TEXT,
     ADMISSION_GUARANTEE_SAFE_TEXT,
     RESULT_GUARANTEE_SAFE_TEXT,
     SubscriptionDraftResult,
@@ -2862,6 +2863,7 @@ def _apply_v2_guard_chain(
     context: dict,
 ) -> SubscriptionDraftResult:
     provider = CodexExecDraftProvider(max_attempts=1)
+    provider._dialogue_contract_faithfulness_runner = lambda _prompt: {"claims": [], "unsupported": []}  # type: ignore[method-assign]
     return provider._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
 
 
@@ -3689,6 +3691,156 @@ def test_v2_terminal_contact_dispatcher_uses_active_brand_contact_template() -> 
     assert guarded.route == "draft_for_manager"
     assert guarded.draft_text == CONTACT_FOTON_SAFE_TEXT
     assert "terminal_safe_template_applied" in guarded.safety_flags
+
+
+def test_v2_text_change_reverify_uses_contract_for_preemptive_format() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    provider._dialogue_contract_faithfulness_runner = lambda _prompt: {"claims": [], "unsupported": []}  # type: ignore[method-assign]
+    metadata = {
+        "dialogue_contract_pipeline": {
+            "contract": _route_shield_contract(
+                question="Онлайн или очно?",
+                keys=("format.online",),
+            ),
+            "retrieved_facts": {"format.online": "Для этого курса есть онлайн-формат."},
+        }
+    }
+    before = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Есть разные форматы, менеджер уточнит подходящий.",
+        metadata=metadata,
+    )
+    after = replace(before, draft_text="Это онлайн.")
+
+    guarded = provider._reverify_dialogue_contract_text_change(
+        before,
+        after,
+        client_message="Онлайн или очно?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert "dialogue_contract_text_change_blocked" in guarded.safety_flags
+    assert guarded.metadata["dialogue_contract_reverification_findings"][0]["code"] == "preemptive_format"
+
+
+def test_v2_text_change_reverify_uses_previous_bot_texts_for_self_contradiction() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    provider._dialogue_contract_faithfulness_runner = lambda _prompt: {"claims": [], "unsupported": []}  # type: ignore[method-assign]
+    metadata = {
+        "dialogue_contract_pipeline": {
+            "contract": _route_shield_contract(
+                question="Какая скидка?",
+                keys=("discount.third_subject",),
+            ),
+            "retrieved_facts": {"discount.third_subject": "Скидка на третий предмет — 10%."},
+        }
+    }
+    before = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Передам точное условие менеджеру.",
+        metadata=metadata,
+    )
+    after = replace(before, draft_text="На третий предмет действует скидка 10%.")
+
+    guarded = provider._reverify_dialogue_contract_text_change(
+        before,
+        after,
+        client_message="А на третий предмет?",
+        context={
+            "active_brand": "unpk",
+            "recent_messages": ["Ответ: На третий предмет действует скидка 14%."],
+        },
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "dialogue_contract_text_change_blocked" in guarded.safety_flags
+    assert guarded.metadata["dialogue_contract_reverification_findings"][0]["code"] == "self_contradiction"
+
+
+def test_v2_text_change_reverify_blocks_semantic_wrong_scope() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    provider._dialogue_contract_faithfulness_runner = lambda _prompt: {  # type: ignore[method-assign]
+        "claims": [
+            {
+                "claim": "Курс проходит онлайн.",
+                "evidence_fact_key": "course.format",
+                "verdict": "wrong_scope",
+                "reason": "факт не отвечает на текущую тему",
+            }
+        ],
+        "unsupported": [],
+    }
+    metadata = {
+        "dialogue_contract_pipeline": {
+            "contract": _route_shield_contract(
+                question="Какой формат у лагеря?",
+                keys=("course.format",),
+            ),
+            "retrieved_facts": {"course.format": "Обычный курс проходит онлайн."},
+        }
+    }
+    before = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Передам уточнение по формату менеджеру.",
+        metadata=metadata,
+    )
+    after = replace(before, draft_text="Курс проходит онлайн.")
+
+    guarded = provider._reverify_dialogue_contract_text_change(
+        before,
+        after,
+        client_message="Лагерь онлайн или очно?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "dialogue_contract_text_change_blocked" in guarded.safety_flags
+    assert guarded.metadata["dialogue_contract_reverification_unsupported"] == ["Курс проходит онлайн."]
+    assert guarded.metadata["dialogue_contract_reverification_semantic_available"] is True
+
+
+def test_v2_text_change_reverify_accepts_supported_semantic_claim() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    provider._dialogue_contract_faithfulness_runner = lambda _prompt: {  # type: ignore[method-assign]
+        "claims": [
+            {
+                "claim": "Курс проходит очно.",
+                "evidence_fact_key": "course.format",
+                "verdict": "supported",
+                "reason": "факт подтверждает формат",
+            }
+        ],
+        "unsupported": [],
+    }
+    metadata = {
+        "dialogue_contract_pipeline": {
+            "contract": _route_shield_contract(
+                question="Какой формат?",
+                keys=("course.format",),
+            ),
+            "retrieved_facts": {"course.format": "Курс проходит очно."},
+        }
+    }
+    before = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Передам уточнение по формату менеджеру.",
+        metadata=metadata,
+    )
+    after = replace(before, draft_text="Курс проходит очно.")
+
+    guarded = provider._reverify_dialogue_contract_text_change(
+        before,
+        after,
+        client_message="Какой формат?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == "Курс проходит очно."
+    assert "dialogue_contract_text_change_reverified" in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
 
 
 def test_identity_disclosure_detector_uses_word_boundaries() -> None:

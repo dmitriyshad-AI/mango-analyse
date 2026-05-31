@@ -3077,6 +3077,37 @@ def test_build_understanding_prompt_includes_topic_focus_for_ellipsis() -> None:
     assert "switched_topics" in prompt
 
 
+def test_build_understanding_prompt_does_not_route_low_confidence_to_manager_by_default() -> None:
+    prompt = build_understanding_prompt(
+        conversation=(
+            {"role": "client", "text": "есть олимпиада по физике?"},
+        ),
+        active_brand="unpk",
+        fact_key_catalog=("olympiad.phystech.physics",),
+    )
+
+    assert "НИЗКАЯ уверенность в ФОРМУЛИРОВКЕ — НЕ повод для manager_only" in prompt
+    assert "ставь answer_self" in prompt
+    assert "пусть розыск проверит наличие факта" in prompt
+    assert "Неуверенность отражай в поле confidence" in prompt
+    assert "Если факта нет или уверенность низкая: answerability=manager_only" not in prompt
+
+
+def test_build_understanding_prompt_keeps_p0_and_offtopic_manager_only_boundaries() -> None:
+    prompt = build_understanding_prompt(
+        conversation=(
+            {"role": "client", "text": "верните деньги, и ещё почините айфон"},
+        ),
+        active_brand="foton",
+        fact_key_catalog=("refund_policy.current",),
+    )
+
+    assert "answerability=manager_only ТОЛЬКО если" in prompt
+    assert "это P0" in prompt
+    assert "возврат/жалоба/спор оплаты/юр-угроза" in prompt
+    assert "вопрос вне сферы учебного центра" in prompt
+
+
 def test_memory_topic_augment_recovers_elliptic_online_question_fact() -> None:
     fact_key = "regular_course.informatics.grade10.online.price"
     store = FactStore(

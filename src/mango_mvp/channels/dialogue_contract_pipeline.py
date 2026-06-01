@@ -82,6 +82,22 @@ _DRY_P0_TEXTS: tuple[str, ...] = (
     "Приняли. Передам обращение ответственному сотруднику, он вернётся с ответом.",
     "Зафиксировали обращение. Передам его ответственному сотруднику, он вернётся с ответом.",
 )
+_GENERIC_HANDOFF_TEXTS: tuple[str, ...] = (
+    "Чтобы не ошибиться, передам вопрос менеджеру — он сверит детали и вернётся с ответом.",
+    "Не хочу гадать по неподтверждённому пункту: менеджер проверит его и вернётся с ответом.",
+    "Здесь лучше сверить условия: передам вопрос менеджеру, он ответит по точным данным.",
+    "Передам этот пункт менеджеру, чтобы он проверил его по актуальным данным и ответил вам.",
+)
+_DETAIL_HANDOFF_TEXTS: tuple[str, ...] = (
+    "Чтобы не ошибиться, менеджер уточнит именно про {detail} и вернётся с ответом.",
+    "Не хочу гадать по неподтверждённому пункту: менеджер проверит именно {detail} и ответит вам.",
+    "По пункту «{detail}» нужна точная сверка — передам его менеджеру.",
+    "Передам менеджеру именно вопрос про {detail}, чтобы он проверил актуальные условия.",
+)
+_HANDOFF_EXHAUSTED_TEXTS: tuple[str, ...] = (
+    "Вижу, это важно — отдельно отмечу менеджеру, чтобы он ответил именно по этому пункту.",
+    "Зафиксирую этот пункт отдельно для менеджера, чтобы он вернулся не общим ответом, а по сути вопроса.",
+)
 
 
 @dataclass(frozen=True)
@@ -1467,6 +1483,7 @@ def run_pipeline(
             contract = replace(contract, is_p0=False, p0_reason="", answerability="answer_self")
         else:
             text = _dry_p0_text(conversation=conversation)
+            text = _avoid_repeating_text(text, conversation=conversation, contract=contract, facts={})
             trace_event(context, "build_draft", {"route": "manager_only", "fallback_reason": "p0", "draft": text})
             return DialogueContractPipelineResult(
                 draft_text=text,
@@ -1499,8 +1516,9 @@ def run_pipeline(
             }
         )
     if _asks_refund_policy(contract) and not _presale_refund_policy_text(retrieval.facts):
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract, facts=retrieval.facts, context=context),
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
@@ -3261,21 +3279,17 @@ def _safe_fallback_text(
     if _asks_refund_policy(contract):
         return traced(_refund_policy_handoff_text(), "refund_policy_handoff")
     detail = _client_safe_question_detail(contract.current_question)
-    secondary = _secondary_fact_text(contract, facts or {})
+    secondary = _partial_orientation_text(contract, facts or {})
     if secondary:
         detail_part = f": {detail}" if detail else ""
         return traced(
-            f"По спрошенному пункту точного подтверждения нет — менеджер уточнит точную деталь{detail_part}. "
-            f"Из подтверждённого, как отдельная справка: {secondary} "
-            "Если хотите, передам менеджеру именно ваш способ или условие.",
+            f"Из подтверждённого: {secondary} "
+            f"По спрошенной детали менеджер сверит точный ответ{detail_part} и вернётся к вам.",
             "secondary_fact",
         )
     if detail:
-        return traced(
-            f"Сейчас точно ответить не могу. Передам менеджеру уточнить точную деталь: {detail}. Он свяжется с вами.",
-            "question_detail",
-        )
-    return traced("Сейчас точно ответить не могу. Передам вопрос менеджеру — он уточнит и свяжется с вами.", "generic")
+        return traced(_detail_handoff_text(detail), "question_detail")
+    return traced(_generic_handoff_text(), "generic")
 
 
 def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:
@@ -3309,6 +3323,73 @@ def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> 
     return ""
 
 
+def _partial_orientation_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    secondary = _secondary_fact_text(contract, facts)
+    if secondary:
+        return secondary
+    if not facts:
+        return ""
+    if _payment_method_target_anchors(contract):
+        return ""
+    if contract.is_p0 or _asks_refund_policy(contract):
+        return ""
+    active_brand = str(contract.active_brand or "").casefold()
+    for key, text in facts.items():
+        value = str(text or "").strip()
+        if not value:
+            continue
+        if not _fact_is_safe_partial_orientation(contract, str(key), value, active_brand=active_brand):
+            continue
+        return _short_fact_sentence(value)
+    return ""
+
+
+def _fact_is_safe_partial_orientation(
+    contract: AnswerContract,
+    key: str,
+    text: str,
+    *,
+    active_brand: str,
+) -> bool:
+    combined = f"{key} {text}".casefold().replace("ё", "е")
+    if active_brand:
+        for token in _BRAND_TOKENS.get(active_brand, ()):
+            if token and token in combined:
+                return False
+    asks_camp = _contract_mentions_camp_or_lvsh(contract)
+    is_camp_fact = _is_camp_or_lvsh_fact(key, text)
+    if asks_camp and not is_camp_fact:
+        return False
+    if is_camp_fact and not asks_camp:
+        return False
+    if _asks_class_schedule_days(contract) and _is_contact_hours_fact(key, text):
+        return False
+    if _is_address_fact(key, text) and not _asks_address(contract):
+        return False
+    return True
+
+
+def _is_contact_hours_fact(key: str, text: str) -> bool:
+    combined = f"{key} {text}".casefold().replace("ё", "е")
+    return bool(
+        re.search(r"contact|contacts|режим|график|на\s+связи|10[:.]?00|18[:.]?00|пн\s*[–-]\s*вс|ежедневн", combined, re.I)
+    )
+
+
+def _is_address_fact(key: str, text: str) -> bool:
+    combined = f"{key} {text}".casefold().replace("ё", "е")
+    return bool(re.search(r"address|addresses|metro|location|адрес|метро|сретенк|скорняжн|москва|чистые\s+пруды", combined, re.I))
+
+
+def _generic_handoff_text() -> str:
+    return _GENERIC_HANDOFF_TEXTS[0]
+
+
+def _detail_handoff_text(detail: str) -> str:
+    clean = _client_safe_question_detail(detail) or "эту деталь"
+    return _DETAIL_HANDOFF_TEXTS[0].format(detail=clean)
+
+
 def _short_fact_sentence(text: str, *, max_chars: int = 170) -> str:
     cleaned = " ".join(str(text or "").split())
     first = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0].strip()
@@ -3331,16 +3412,49 @@ def _avoid_repeating_text(
     prior_bot_texts = [str(item.get("text") or "") for item in (conversation or ()) if str(item.get("role") or "") == "bot"]
     if not any(_near_repeat(source, prior) for prior in prior_bot_texts[-4:]):
         return source
+    if contract.is_p0:
+        return _select_unused_handoff_variant(_DRY_P0_TEXTS, prior_bot_texts, fallback=source)
+    if _is_complaint_handoff_text(source):
+        return _select_unused_handoff_variant(_COMPLAINT_HANDOFF_TEXTS, prior_bot_texts, fallback=source)
     if _asks_refund_policy(contract) and _presale_refund_policy_text(facts or {}):
         fact = _presale_refund_policy_text(facts or {})
         return (
             f"По возврату ориентир тот же: {_short_fact_sentence(fact)} "
             "Точные пункты договора менеджер подтвердит по выбранному курсу."
         )
-    return (
-        "Не буду повторять общий ответ: точную деталь по этому вопросу подтвердит менеджер. "
-        "Передам ему именно этот пункт."
+    if _is_refund_handoff_text(source) or _asks_refund_policy(contract):
+        return _select_unused_handoff_variant(_REFUND_POLICY_TEXTS, prior_bot_texts, fallback=source)
+    detail = _client_safe_question_detail(contract.current_question) or "эту деталь"
+    rendered = tuple(item.format(detail=detail) for item in (*_DETAIL_HANDOFF_TEXTS, *_GENERIC_HANDOFF_TEXTS))
+    exhausted = _select_unused_handoff_variant(
+        _HANDOFF_EXHAUSTED_TEXTS,
+        prior_bot_texts,
+        fallback=_HANDOFF_EXHAUSTED_TEXTS[-1],
     )
+    return _select_unused_handoff_variant(rendered, prior_bot_texts, fallback=exhausted)
+
+
+def _select_unused_handoff_variant(
+    variants: Sequence[str],
+    prior_bot_texts: Sequence[str],
+    *,
+    fallback: str,
+) -> str:
+    for candidate in variants:
+        text = str(candidate or "").strip()
+        if text and not any(_near_repeat(text, prior) for prior in prior_bot_texts):
+            return text
+    return fallback
+
+
+def _is_refund_handoff_text(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    return "возврат" in low or "отмен" in low
+
+
+def _is_complaint_handoff_text(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    return "ситуац" in low and ("неприят" in low or "разбер" in low)
 
 
 def _is_handoff_text(text: str) -> bool:

@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from mango_mvp.channels.dialogue_contract_pipeline import (
+    AnswerContract,
     FactStore,
     Toggles,
+    _safe_fallback_text,
     build_conversation,
     build_draft_prompt,
     build_faithfulness_prompt,
@@ -2678,6 +2680,121 @@ def test_safe_fallback_does_not_leak_third_person_question() -> None:
         assert "менеджер" in result.draft_text.casefold()
 
 
+def test_humane_fallback_uses_warm_text_and_rotates_repeats() -> None:
+    store = FactStore(catalog=("address.exact",), store={"unpk": {}})
+    payload = {
+        "current_question": "где вы?",
+        "needed_fact_keys": ["address.exact"],
+        "answerability": "answer_self",
+    }
+    first = run_pipeline(
+        conversation=_conv("где вы?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(payload),
+        draft_fn=lambda _prompt: "Адрес уточнит менеджер.",
+    )
+    second = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "где вы?"},
+            {"role": "bot", "text": first.draft_text},
+            {"role": "client", "text": "так где вы?"},
+        ),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(payload),
+        draft_fn=lambda _prompt: "Адрес уточнит менеджер.",
+    )
+
+    assert first.route == second.route == "bot_answer_self"
+    assert first.fallback_reason == second.fallback_reason == "empty_facts_no_fabrication"
+    assert "спасибо за сообщение" not in first.draft_text.casefold()
+    assert "точно ответить не могу" not in first.draft_text.casefold()
+    assert first.draft_text != second.draft_text
+
+
+def test_humane_fallback_adds_partial_client_safe_value_for_non_p0() -> None:
+    text = _safe_fallback_text(
+        AnswerContract(
+            active_brand="unpk",
+            current_question="Можно оплатить позже, если договор ещё не пришёл?",
+            answerability="manager_only",
+        ),
+        facts={"contract.timing": "Договор отправляет менеджер в ближайшие дни на email."},
+        context={"active_brand": "unpk"},
+    )
+
+    lowered = text.casefold()
+    assert "из подтверждённого" in lowered
+    assert "договор отправляет менеджер" in lowered
+    assert "менеджер сверит" in lowered
+
+
+def test_humane_fallback_three_repeats_use_three_different_handoffs() -> None:
+    store = FactStore(catalog=("schedule.exact",), store={"foton": {}})
+    payload = {
+        "current_question": "точный день занятий",
+        "needed_fact_keys": ["schedule.exact"],
+        "answerability": "answer_self",
+    }
+    conversation: list[Mapping[str, str]] = [{"role": "client", "text": "какой точный день занятий?"}]
+    answers: list[str] = []
+    for _ in range(3):
+        result = run_pipeline(
+            conversation=tuple(conversation),
+            active_brand="foton",
+            fact_store=store,
+            understand_fn=_understanding(payload),
+            draft_fn=lambda _prompt: "День уточнит менеджер.",
+        )
+        answers.append(result.draft_text)
+        conversation.extend(
+            [
+                {"role": "bot", "text": result.draft_text},
+                {"role": "client", "text": "а точный день занятий?"},
+            ]
+        )
+
+    assert len(set(answers)) == 3
+    assert all("менеджер" in item.casefold() for item in answers)
+
+
+def test_humane_fallback_keeps_complaint_refund_and_meta_safety() -> None:
+    complaint = _safe_fallback_text(
+        AnswerContract(
+            active_brand="foton",
+            current_question="Жалоба: преподаватель плохо ведёт урок.",
+            answerability="manager_only",
+            is_p0=True,
+            p0_reason="complaint",
+        ),
+        facts={"discount.current": "Скидка на второй предмет — 20%."},
+        context={"active_brand": "foton"},
+    )
+    refund = _safe_fallback_text(
+        AnswerContract(
+            active_brand="unpk",
+            current_question="Верните деньги, занятия не идут.",
+            answerability="manager_only",
+            is_p0=True,
+            p0_reason="refund",
+        ),
+        facts={"payment.tbank": "Есть рассрочка через Т-Банк."},
+        context={"active_brand": "unpk"},
+    )
+    generic = _safe_fallback_text(
+        AnswerContract(active_brand="unpk", current_question="подскажите точную дату", answerability="manager_only"),
+        facts={},
+        context={"active_brand": "unpk"},
+    )
+
+    assert "из подтверждённого" not in complaint.casefold()
+    assert "скидк" not in complaint.casefold()
+    assert "из подтверждённого" not in refund.casefold()
+    assert "т-банк" not in refund.casefold()
+    assert verify_output(generic, facts={}, active_brand="unpk") == []
+
+
 def test_t5_single_missing_slot_asks_one_question_without_manager_handoff() -> None:
     store = FactStore(catalog=("student.grade",), store={"foton": {}})
     result = run_pipeline(
@@ -3176,7 +3293,7 @@ def test_t3_repeat_handoff_changes_tactic_without_new_fact() -> None:
     assert result.draft_text != prior
     assert "уже отметил" not in result.draft_text.casefold()
     assert "клиент" not in result.draft_text.casefold()
-    assert "точную деталь" in result.draft_text.casefold()
+    assert "менеджер" in result.draft_text.casefold()
     assert "6, 10 или 12" not in result.draft_text
 
 

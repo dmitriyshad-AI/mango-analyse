@@ -282,7 +282,9 @@ def test_public_reply_text_strips_internal_markers() -> None:
 def test_public_reply_text_falls_back_when_empty() -> None:
     result = SubscriptionDraftResult(route="manager_only", draft_text="")
 
-    assert "Передам вопрос менеджеру" in public_reply_text(result)
+    text = public_reply_text(result)
+    assert "передам вопрос менеджеру" in text.casefold()
+    assert "спасибо за сообщение" not in text.casefold()
 
 
 def test_autonomy_kill_switch_downgrades_autonomous_route() -> None:

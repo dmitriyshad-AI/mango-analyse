@@ -122,7 +122,7 @@ def test_provider_blocks_internal_manager_note_without_safe_variant() -> None:
     )
 
     assert "Автономный ответ не требуется" not in result.draft_text
-    assert result.draft_text == "Спасибо за сообщение. Передам вопрос менеджеру, он вернется с проверенным ответом."
+    assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
     assert "internal_metadata_removed_from_draft" in result.safety_flags
 
 
@@ -3552,7 +3552,7 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
         },
         context={"active_brand": "unpk"},
     )
-    assert "уточнить точную деталь" in secondary.casefold()
+    assert "менеджер" in secondary.casefold()
     assert "прямым переводом" in secondary.casefold()
     assert "как отдельная справка" not in secondary.casefold()
     assert "т-банк" not in secondary.casefold()
@@ -3566,7 +3566,7 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
         facts={},
         context={"active_brand": "unpk"},
     )
-    assert "уточнить точную деталь" in detail.casefold()
+    assert "менеджер" in detail.casefold()
     assert "Какая цена для 6 класса" in detail
 
 
@@ -7988,6 +7988,44 @@ def test_antirepeat_strict_replaces_repeat_against_any_prior_bot_turn() -> None:
     assert result.draft_text != repeated
     assert "дни и время занятий" in result.draft_text
     assert "humanity_strict_antirepeat_fallback_applied" in result.safety_flags
+
+
+def test_safe_fallback_draft_text_antirepeat_covers_battle_fallback() -> None:
+    base = parse_llm_json(
+        '{"route":"draft_for_manager","draft_text":"'
+        + SAFE_FALLBACK_DRAFT_TEXT
+        + '","message_type":"question","topic_id":"service:S2_unclear","confidence_theme":0.8}'
+    )
+
+    result = apply_humanity_guards(
+        base,
+        client_message="уточните дату старта",
+        context={"recent_messages": [f"Ответ: {SAFE_FALLBACK_DRAFT_TEXT}"]},
+    )
+
+    assert result.draft_text != SAFE_FALLBACK_DRAFT_TEXT
+    assert "спасибо за сообщение" not in result.draft_text.casefold()
+    assert "humanity_strict_antirepeat_fallback_applied" in result.safety_flags
+
+
+def test_p0_final_override_rotates_repeat_without_partial_value() -> None:
+    base = parse_llm_json(
+        '{"route":"bot_answer_self_for_pilot","draft_text":"Верните деньги, напишите номер договора.",'
+        '"message_type":"question","topic_id":"theme:009_refund","confidence_theme":0.96}'
+    )
+
+    result = apply_high_risk_content_guards(
+        base,
+        client_message="Верните деньги, я недовольна.",
+        context={"recent_messages": [f"Ответ: {REFUND_ZERO_COLLECT_SAFE_TEXT}"]},
+    )
+
+    assert result.route == "manager_only"
+    assert result.draft_text != REFUND_ZERO_COLLECT_SAFE_TEXT
+    assert "возврат" in result.draft_text.casefold()
+    assert "ничего дополнительно" in result.draft_text.casefold()
+    assert "скидк" not in result.draft_text.casefold()
+    assert "договор" not in result.draft_text.casefold()
 
 
 def test_antirepeat_strict_keeps_dry_p0_repeat() -> None:

@@ -3540,7 +3540,7 @@ def test_pravka5_2_refund_zero_collect_keeps_refund_handoff() -> None:
     assert "т-банк" not in lowered
 
 
-def test_pravka5_2_non_p0_fallback_still_uses_secondary_and_detail() -> None:
+def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> None:
     secondary = _safe_fallback_text(
         AnswerContract(
             active_brand="unpk",
@@ -3552,8 +3552,10 @@ def test_pravka5_2_non_p0_fallback_still_uses_secondary_and_detail() -> None:
         },
         context={"active_brand": "unpk"},
     )
-    assert "как отдельная справка" in secondary.casefold()
-    assert "т-банк" in secondary.casefold()
+    assert "уточнить точную деталь" in secondary.casefold()
+    assert "прямым переводом" in secondary.casefold()
+    assert "как отдельная справка" not in secondary.casefold()
+    assert "т-банк" not in secondary.casefold()
 
     detail = _safe_fallback_text(
         AnswerContract(

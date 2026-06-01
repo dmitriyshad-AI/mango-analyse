@@ -206,7 +206,8 @@ def test_dialogue_contract_debug_trace_synthetic_paths_cover_fallback_and_p0(tmp
     )
 
     assert p0_result.route == "manager_only"
-    assert fallback_result.route == "draft_for_manager"
+    assert fallback_result.route == "bot_answer_self"
+    assert "29 750" in fallback_result.draft_text
     rows = _trace_rows(trace_file)
     nodes = {row["node"] for row in rows}
     assert {"understand", "retrieve_facts", "build_draft", "_safe_fallback_text", "p0_pre_gate"} <= nodes
@@ -1893,8 +1894,7 @@ def test_semantic_recover_at_repair_fail_uses_august_camp_fact() -> None:
     )
 
     assert result.route == "bot_answer_self"
-    assert result.fallback_reason == "semantic_recover"
-    assert result.semantic_match_replaced is True
+    assert result.fallback_reason in {"cite_only_recover", "verified_fact_fallback_after_hard_check"}
     assert "3-14 августа" in result.draft_text
 
 
@@ -1918,9 +1918,121 @@ def test_semantic_recover_at_unavailable_critic_uses_fact_without_faithfulness()
     )
 
     assert result.route == "bot_answer_self"
-    assert result.fallback_reason == "semantic_recover"
-    assert result.semantic_match_replaced is True
+    assert result.fallback_reason in {"cite_only_recover", "verified_fact_fallback_after_hard_check"}
     assert "3-14 августа" in result.draft_text
+
+
+def test_cite_only_recover_answers_address_even_when_understanding_is_manager() -> None:
+    store = FactStore(
+        catalog=("location.address", "location.city", "location.metro"),
+        store={
+            "foton": {
+                "location.address": "Фотон: адрес и место занятий — Верхняя Красносельская ул., 30.",
+                "location.city": "Фотон: адрес и место занятий — Москва.",
+                "location.metro": "Фотон: адрес и место занятий — Красносельская.",
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("где вы находитесь?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "где находится Фотон",
+                "subquestions": [
+                    {
+                        "text": "где находится Фотон",
+                        "answerable": "manager",
+                        "needed_fact_keys": ["location.address", "location.city", "location.metro"],
+                    }
+                ],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason in {"cite_only_recover", "verified_fact_fallback_after_hard_check"}
+    assert "Верхняя Красносельская" in result.draft_text
+    assert "менеджер вернется" not in result.draft_text.casefold()
+
+
+def test_cite_only_recover_answers_matkap_even_when_understanding_is_manager() -> None:
+    store = FactStore(
+        catalog=("matkap.client_safe_text"),
+        store={
+            "unpk": {
+                "matkap.client_safe_text": "Да, оплата материнским капиталом возможна. Работаем с федеральным маткапиталом."
+            }
+        },
+    )
+    result = run_pipeline(
+        conversation=_conv("маткапиталом можно оплатить?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "можно ли оплатить материнским капиталом",
+                "subquestions": [
+                    {"text": "можно ли оплатить материнским капиталом", "answerable": "manager", "needed_fact_keys": ["matkap.client_safe_text"]}
+                ],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "cite_only_recover"
+    assert "материнским капиталом возможна" in result.draft_text.casefold()
+
+
+def test_cite_only_recover_answers_electronic_documents_before_handoff() -> None:
+    store = FactStore(
+        catalog=("documents.electronic_flow"),
+        store={"unpk": {"documents.electronic_flow": "Электронный документооборот пока в разработке; сейчас договор подписывается скан-копией или на смене."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("чтобы записаться, нужно подъехать в корпус?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "нужно ли подъехать в корпус для записи",
+                "subquestions": [
+                    {"text": "нужно ли подъехать в корпус для записи", "answerable": "manager", "needed_fact_keys": ["documents.electronic_flow"]}
+                ],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "cite_only_recover"
+    assert "скан-копией" in result.draft_text
+
+
+def test_cite_only_recover_after_hard_verification_failed_uses_exact_price_fact() -> None:
+    store = FactStore(catalog=("price.online"), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("цена онлайн", keys=("price.online",))),
+        draft_fn=lambda _prompt: "Онлайн стоит 99 999 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason in {"cite_only_recover", "verified_fact_fallback_after_hard_check"}
+    assert "29 750 ₽" in result.draft_text
+    assert "99 999" not in result.draft_text
 
 
 def test_semantic_recover_keeps_handoff_for_camp_vs_regular_course() -> None:
@@ -1943,6 +2055,104 @@ def test_semantic_recover_keeps_handoff_for_camp_vs_regular_course() -> None:
     assert result.fallback_reason == "hard_verification_failed"
     assert result.semantic_match_replaced is False
     assert "сентябр" not in result.draft_text.casefold()
+
+
+def test_cite_only_recover_blocks_refund_even_with_exact_fact() -> None:
+    store = FactStore(
+        catalog=("refund.policy",),
+        store={"foton": {"refund.policy": "При досрочном отказе возвращается остаток неистраченных средств."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("если передумаем, деньги вернут?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("возврат денег", keys=("refund.policy",))),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "no_draft_fn"
+
+
+def test_cite_only_recover_blocks_complaint_even_with_fact() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Фотон онлайн: семестр — 29 750 ₽."}})
+    result = run_pipeline(
+        conversation=_conv("преподаватель плохо ведёт занятия, хочу пожаловаться"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("жалоба на преподавателя", keys=("price.online",))),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert "29 750" not in result.draft_text
+
+
+def test_cite_only_recover_blocks_regular_course_fact_for_camp_question() -> None:
+    store = FactStore(
+        catalog=("regular.course.start",),
+        store={"foton": {"regular.course.start": "Регулярные курсы Фотона для 5-11 классов стартуют в середине сентября."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("летняя смена в августе есть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("летняя смена в августе", keys=("regular.course.start",))),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "сентябр" not in result.draft_text.casefold()
+
+
+def test_cite_only_recover_blocks_bank_installment_fact_for_direct_invoice_question() -> None:
+    store = FactStore(
+        catalog=("installment.tbank",),
+        store={"foton": {"installment.tbank": "Фотон: есть рассрочка через Т-Банк на 6, 10 или 12 месяцев."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("можно прямым переводом на счёт?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("прямой перевод на счёт", keys=("installment.tbank",))),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "т-банк" not in result.draft_text.casefold()
+
+
+def test_cite_only_recover_blocks_cross_brand_fact_text() -> None:
+    store = FactStore(catalog=("location.address",), store={"foton": {"location.address": "УНПК: адрес — Сретенка, 20."}})
+    result = run_pipeline(
+        conversation=_conv("где вы находитесь?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("где находится Фотон", keys=("location.address",))),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "Сретенка" not in result.draft_text
+
+
+def test_cite_only_recover_removes_unsupported_number_from_bad_draft() -> None:
+    store = FactStore(catalog=("price.online"), store={"foton": {"price.online": "Фотон онлайн: цена уточняется менеджером."}})
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(_contract_payload("цена онлайн", keys=("price.online",))),
+        draft_fn=lambda _prompt: "Онлайн стоит 99 999 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "99 999" not in result.draft_text
 
 
 def test_semantic_recover_does_not_override_p0_or_missing_runner() -> None:
@@ -2019,7 +2229,7 @@ def test_phase1_empty_handoff_replaced_after_no_draft_fn() -> None:
     )
 
     assert result.route == "bot_answer_self"
-    assert result.fallback_reason == "fact_composer_after_no_draft_fn"
+    assert result.fallback_reason == "cite_only_recover"
     assert "29 750 ₽" in result.draft_text
 
 
@@ -2043,7 +2253,7 @@ def test_phase1_empty_handoff_replaced_after_draft_error() -> None:
     )
 
     assert result.route == "bot_answer_self"
-    assert result.fallback_reason == "fact_composer_after_draft_error"
+    assert result.fallback_reason == "cite_only_recover"
     assert "29 750 ₽" in result.draft_text
 
 
@@ -2527,9 +2737,8 @@ def test_r1_neighbor_payment_fact_does_not_promote_manager_only_to_autonomous_an
     )
     assert result.route == "draft_for_manager"
     assert result.fallback_reason == "no_draft_fn"
-    assert "точного подтверждения нет" in result.draft_text.casefold()
-    assert result.draft_text.casefold().index("точного подтверждения нет") < result.draft_text.casefold().index("из подтверждённого")
-    assert "т-банк" in result.draft_text.casefold()
+    assert "прямым переводом" in result.draft_text.casefold()
+    assert "т-банк" not in result.draft_text.casefold()
 
 
 def test_secondary_payment_fact_skips_lvsh_when_client_did_not_ask_camp() -> None:
@@ -2914,8 +3123,8 @@ def test_c8_direct_invoice_question_is_not_answered_with_bank_installment_neighb
     assert result.fallback_reason == "hard_verification_failed"
     assert any(finding.code == "neighbor_payment_method_as_answer" for finding in result.findings)
     assert any(finding.code == "unsupported_payment_method_affirmation" for finding in result.findings)
-    assert result.draft_text.casefold().index("точного подтверждения нет") < result.draft_text.casefold().index("т-банк")
     assert "прямым переводом" in result.draft_text.casefold()
+    assert "т-банк" not in result.draft_text.casefold()
 
 
 def test_t6_specific_grade_replaces_supported_range_in_answer() -> None:
@@ -3570,8 +3779,9 @@ def test_semantic_faithfulness_exception_fail_closed() -> None:
         draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
         faithfulness_fn=boom,
     )
-    assert result.route == "draft_for_manager"
-    assert result.fallback_reason == "semantic_check_unavailable"
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "cite_only_recover"
+    assert "29 750" in result.draft_text
 
 
 def test_semantic_faithfulness_bad_json_fail_closed() -> None:
@@ -3586,8 +3796,9 @@ def test_semantic_faithfulness_bad_json_fail_closed() -> None:
         draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
         faithfulness_fn=lambda _prompt: "not json",
     )
-    assert result.route == "draft_for_manager"
-    assert result.fallback_reason == "semantic_check_unavailable"
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "cite_only_recover"
+    assert "29 750" in result.draft_text
 
 
 def test_structured_faithfulness_requires_fact_key_from_current_turn() -> None:

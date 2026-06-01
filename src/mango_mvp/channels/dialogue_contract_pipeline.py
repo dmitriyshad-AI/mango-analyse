@@ -1141,6 +1141,55 @@ def _semantic_recover_or_handoff(
     )
 
 
+def _cite_only_recover_result_before_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    draft: str,
+    client_words: str,
+    conversation: Sequence[Mapping[str, str]],
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
+    fallback_reason: str = "cite_only_recover",
+    allow_key_coverage: bool = False,
+    original_findings: Sequence[VerificationFinding] = (),
+    original_unsupported: Sequence[str] = (),
+) -> DialogueContractPipelineResult | None:
+    recovered = _cite_only_recover_before_handoff(
+        contract=contract,
+        retrieval=retrieval,
+        draft=draft,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        allow_key_coverage=allow_key_coverage,
+        original_findings=original_findings,
+        original_unsupported=original_unsupported,
+    )
+    if not recovered:
+        return None
+    trace_event(context, "cite_only_recover", {"replaced": True, "fallback_reason": fallback_reason})
+    return DialogueContractPipelineResult(
+        draft_text=_avoid_repeating_text(
+            recovered,
+            conversation=conversation,
+            contract=contract,
+            facts=retrieval.facts,
+        ),
+        route="bot_answer_self",
+        manager_only=False,
+        contract=contract,
+        facts=retrieval.facts,
+        missing=retrieval.missing,
+        fallback_reason=fallback_reason,
+        repaired=True,
+    )
+
+
 _RISKY_ENTITY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "platform:mts_link": ("мтс линк", "мтс-линк", "mts link", "mts-link"),
     "platform:webinar": ("webinar", "webinar.ru"),
@@ -1545,6 +1594,19 @@ def run_pipeline(
         or (_soft_weekend_guidance_text(retrieval.facts) and not _has_self_answerable_subquestion(contract))
     ):
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _cite_only_recover_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            client_words=client_words,
+            conversation=conversation,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1556,27 +1618,19 @@ def run_pipeline(
         )
     if draft_fn is None:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
-        replacement = _verified_empty_handoff_replacement(
-            fallback,
+        recovered = _cite_only_recover_result_before_handoff(
             contract=contract,
             retrieval=retrieval,
+            draft=fallback,
             client_words=client_words,
+            conversation=conversation,
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
         )
-        if replacement:
-            return DialogueContractPipelineResult(
-                draft_text=_avoid_repeating_text(replacement, conversation=conversation, contract=contract, facts=retrieval.facts),
-                route="bot_answer_self",
-                manager_only=False,
-                contract=contract,
-                facts=retrieval.facts,
-                missing=retrieval.missing,
-                repaired=True,
-                fallback_reason="fact_composer_after_no_draft_fn",
-            )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1609,27 +1663,19 @@ def run_pipeline(
         trace["draft"] = draft
     if not draft:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
-        replacement = _verified_empty_handoff_replacement(
-            fallback,
+        recovered = _cite_only_recover_result_before_handoff(
             contract=contract,
             retrieval=retrieval,
+            draft=fallback,
             client_words=client_words,
+            conversation=conversation,
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
         )
-        if replacement:
-            return DialogueContractPipelineResult(
-                draft_text=_avoid_repeating_text(replacement, conversation=conversation, contract=contract, facts=retrieval.facts),
-                route="bot_answer_self",
-                manager_only=False,
-                contract=contract,
-                facts=retrieval.facts,
-                missing=retrieval.missing,
-                repaired=True,
-                fallback_reason="fact_composer_after_draft_error",
-            )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1722,17 +1768,18 @@ def run_pipeline(
     )
     if not semantic_available:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
-        recovered = _semantic_recover_or_handoff(
+        recovered = _cite_only_recover_result_before_handoff(
             contract=contract,
             retrieval=retrieval,
             draft=fallback,
-            semantic_match_fn=semantic_match_fn,
             faithfulness_fn=None,
             client_words=client_words,
             conversation=conversation,
             context=context,
             toggles=toggles,
             previous_bot_texts=previous_bot_texts,
+            original_findings=findings,
+            original_unsupported=unsupported,
         )
         if recovered:
             return recovered
@@ -1773,17 +1820,18 @@ def run_pipeline(
         )
         if not semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
-            recovered = _semantic_recover_or_handoff(
+            recovered = _cite_only_recover_result_before_handoff(
                 contract=contract,
                 retrieval=retrieval,
                 draft=fallback,
-                semantic_match_fn=semantic_match_fn,
                 faithfulness_fn=None,
                 client_words=client_words,
                 conversation=conversation,
                 context=context,
                 toggles=toggles,
                 previous_bot_texts=previous_bot_texts,
+                original_findings=findings,
+                original_unsupported=unsupported,
             )
             if recovered:
                 return recovered
@@ -1830,17 +1878,18 @@ def run_pipeline(
                     fallback_reason="verified_fact_fallback_after_hard_check",
                 )
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
-        recovered = _semantic_recover_or_handoff(
+        recovered = _cite_only_recover_result_before_handoff(
             contract=contract,
             retrieval=retrieval,
             draft=fallback,
-            semantic_match_fn=semantic_match_fn,
             faithfulness_fn=faithfulness_fn,
             client_words=client_words,
             conversation=conversation,
             context=context,
             toggles=toggles,
             previous_bot_texts=previous_bot_texts,
+            original_findings=findings,
+            original_unsupported=unsupported,
         )
         if recovered:
             return recovered
@@ -1910,17 +1959,18 @@ def run_pipeline(
         )
         if not candidate_semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
-            recovered = _semantic_recover_or_handoff(
+            recovered = _cite_only_recover_result_before_handoff(
                 contract=contract,
                 retrieval=retrieval,
                 draft=fallback,
-                semantic_match_fn=semantic_match_fn,
                 faithfulness_fn=None,
                 client_words=client_words,
                 conversation=conversation,
                 context=context,
                 toggles=toggles,
                 previous_bot_texts=previous_bot_texts,
+                original_findings=candidate_findings,
+                original_unsupported=candidate_unsupported,
             )
             if recovered:
                 return recovered
@@ -2560,16 +2610,54 @@ def _verified_empty_handoff_replacement(
         allow_key_coverage=allow_key_coverage,
     ):
         return ""
+    return _cite_only_recover_before_handoff(
+        contract=contract,
+        retrieval=retrieval,
+        draft=draft,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        allow_key_coverage=allow_key_coverage,
+    )
+
+
+def _cite_only_recover_before_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    draft: str,
+    client_words: str,
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
+    allow_key_coverage: bool = False,
+    original_findings: Sequence[VerificationFinding] = (),
+    original_unsupported: Sequence[str] = (),
+) -> str:
+    if _cite_only_recover_blocked(contract, client_words=client_words, context=context):
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "blocked_risk"})
+        return ""
+    if not _original_failure_allows_cite_only_recover(original_findings, original_unsupported):
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "unsafe_original_failure"})
+        return ""
+    has_scope = _key_coverage_ok(contract, retrieval) if allow_key_coverage else _has_exact_retrieved_answer_part(contract, retrieval)
+    if not has_scope:
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "no_exact_scope"})
+        return ""
     replacement = (
         _composition_answer(contract, retrieval, current_draft=draft)
         or _hard_failure_exact_fact_fallback(contract, retrieval)
         or (
             _key_coverage_cite_only_answer(contract, retrieval)
             if allow_key_coverage
-            else _coverage_cite_only_answer(contract, retrieval)
+            else _exact_scope_cite_only_answer(contract, retrieval)
         )
     )
     if not replacement:
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "empty_candidate"})
         return ""
     replacement_facts = _facts_with_derived_answer(retrieval.facts, replacement)
     findings, unsupported, semantic_available = _hard_check(
@@ -2582,9 +2670,96 @@ def _verified_empty_handoff_replacement(
         context=context,
         previous_bot_texts=previous_bot_texts,
     )
-    if semantic_available and not findings and not unsupported:
+    if findings or unsupported:
+        trace_event(
+            context,
+            "cite_only_recover",
+            {
+                "replaced": False,
+                "reason": "hard_check_failed",
+                "findings": [finding.code for finding in findings],
+                "unsupported": list(unsupported),
+            },
+        )
+        return ""
+    if semantic_available or not new_concrete_anchors(replacement, original="", facts=retrieval.facts):
         return replacement
+    trace_event(context, "cite_only_recover", {"replaced": False, "reason": "semantic_unavailable_new_anchor"})
     return ""
+
+
+_CITE_ONLY_RECOVERABLE_FINDING_CODES = {
+    "fact_grounding",
+    "unsupported_named_entity",
+    "wrong_intent_fact",
+}
+
+
+def _original_failure_allows_cite_only_recover(
+    findings: Sequence[VerificationFinding],
+    unsupported: Sequence[str],
+) -> bool:
+    if any(finding.code not in _CITE_ONLY_RECOVERABLE_FINDING_CODES for finding in findings):
+        return False
+    return all(_unsupported_item_is_missing_answer(item) for item in unsupported)
+
+
+def _unsupported_item_is_missing_answer(item: str) -> bool:
+    text = str(item or "").casefold().replace("ё", "е")
+    return bool(re.search(r"нет\s+ответ|не\s+ответ|не\s+использ|handoff|передам|менеджер|уточн", text, re.I))
+
+
+def _cite_only_recover_blocked(
+    contract: AnswerContract,
+    *,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+) -> bool:
+    if contract.is_p0 or _asks_refund_policy(contract):
+        return True
+    safety = classify_answer_safety(
+        client_message=" ".join(part for part in (client_words, contract.current_question, contract.client_state) if part),
+        context=context,
+        route="manager_only",
+    )
+    return bool(safety.zero_collect_required or safety.primary_risk in {"complaint", "refund", "payment_dispute", "legal"})
+
+
+def _exact_scope_cite_only_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    return _coverage_cite_only_answer_from_findings(_exact_scope_coverage_findings(contract, retrieval))
+
+
+def _exact_scope_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult) -> tuple[_CoverageFinding, ...]:
+    findings: list[_CoverageFinding] = []
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable=contract.answerability,
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys or any(key in retrieval.missing or not retrieval.matched_keys.get(key) for key in keys):
+            continue
+        if not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            continue
+        for required_key in keys:
+            for fact_key in retrieval.matched_keys.get(required_key, ()):
+                if fact_key not in retrieval.facts:
+                    continue
+                findings.append(
+                    _CoverageFinding(
+                        subquestion=subquestion.text or contract.current_question,
+                        required_key=required_key,
+                        fact_key=fact_key,
+                        fact_text=str(retrieval.facts[fact_key]),
+                    )
+                )
+                break
+    return tuple(findings)
 
 
 def _should_replace_empty_handoff(
@@ -3129,7 +3304,7 @@ def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> 
             if _is_camp_or_lvsh_fact(key, str(text or "")) and not _contract_mentions_camp_or_lvsh(contract):
                 continue
             fact_anchors = _payment_method_anchors_from_text(str(text or ""))
-            if fact_anchors and not payment_targets.issubset(fact_anchors):
+            if fact_anchors and payment_targets.issubset(fact_anchors):
                 return _short_fact_sentence(str(text or ""))
     return ""
 
@@ -3837,6 +4012,11 @@ def _retrieved_keys_match_question_scope(
         payment_targets = set(payment_targets) - {"monthly_no_bank"}
     if payment_targets:
         return any(_fact_supports_payment_target(text, target_anchors=payment_targets) for text in matched_text.values())
+    has_camp_fact = any(_is_camp_or_lvsh_fact(key, value) for key, value in matched_text.items())
+    if _contract_mentions_camp_or_lvsh(contract):
+        return has_camp_fact
+    if has_camp_fact:
+        return False
     question_text = _subquestion_scope_text(contract, subquestion)
     question_low = question_text.casefold().replace("ё", "е")
     if re.search(r"помесячн\w*.*сумм|сумм\w*\s+в\s+месяц|сколько\s+.*(?:в|за)\s+месяц|месячн\w*\s+сумм", question_low, re.I):

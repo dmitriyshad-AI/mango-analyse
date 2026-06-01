@@ -4033,6 +4033,172 @@ def test_a2_recovery_candidate_must_pass_output_verifier() -> None:
     assert "cite_only_recover_at_guardchain" not in guarded.safety_flags
 
 
+def test_a21_informational_matkap_template_yields_to_verified_fact_answer() -> None:
+    facts = {
+        "matkap.client_safe_text": (
+            "Да, оплата материнским капиталом возможна. Работаем с федеральным маткапиталом."
+        )
+    }
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=facts["matkap.client_safe_text"],
+        message_type="question",
+        topic_id="theme:007_matkap_payment",
+        metadata=_a2_pipeline_metadata(
+            question="Можно оплатить материнским капиталом?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Можно оплатить материнским капиталом?",
+        {
+            "active_brand": "foton",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:007_matkap_payment"]},
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == facts["matkap.client_safe_text"]
+    assert "safe_template_yielded_to_verified_answer" in guarded.safety_flags
+    assert "matkap_safe_template_applied" not in guarded.safety_flags
+
+
+def test_a21_informational_tax_template_yields_to_verified_fact_answer() -> None:
+    facts = {
+        "tax.certificate": (
+            TAX_ONLINE_FORM_SAFE_TEXT
+        )
+    }
+    candidate = TAX_ONLINE_FORM_SAFE_TEXT
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=candidate,
+        message_type="question",
+        topic_id="theme:008_tax_deduction",
+        metadata=_a2_pipeline_metadata(
+            question="Как оформить вычет по онлайн-курсу?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Как оформить вычет по онлайн-курсу?",
+        {
+            "active_brand": "unpk",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:008_tax_deduction"]},
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == candidate
+    assert "safe_template_yielded_to_verified_answer" in guarded.safety_flags
+    assert "tax_safe_template_applied" not in guarded.safety_flags
+
+
+def test_a21_informational_olympiad_template_yields_only_for_supported_class() -> None:
+    facts = {
+        "prices_regular_2026_27.online_olympiad_phystech_classes": UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT
+    }
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT,
+        message_type="question",
+        topic_id="theme:016_program",
+        metadata=_a2_pipeline_metadata(
+            question="Есть олимпиадная подготовка Физтех онлайн для 11 класса?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        "Есть олимпиадная подготовка Физтех онлайн для 11 класса?",
+        {
+            "active_brand": "unpk",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:016_program"]},
+            "conversation_intent_plan": {
+                "primary_intent": "olympiad_online",
+                "fact_scope": "olympiad_online",
+                "blocked_neighbor_scopes": ["regular_online"],
+            },
+        },
+    )
+
+    assert guarded.draft_text == UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT
+    assert "safe_template_yielded_to_verified_answer" in guarded.safety_flags
+    assert "olympiad_online_safe_template_applied" not in guarded.safety_flags
+
+
+def test_a21_information_template_does_not_yield_invalid_or_protected_answers() -> None:
+    matkap_facts = {
+        "matkap.client_safe_text": (
+            "Оплата материнским капиталом возможна. Работаем с федеральным маткапиталом."
+        )
+    }
+    invalid_matkap = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="СФР точно одобрит маткапитал.",
+            message_type="question",
+            topic_id="theme:007_matkap_payment",
+            metadata=_a2_pipeline_metadata(
+                question="Одобрит СФР маткапитал?",
+                facts=matkap_facts,
+                recovery_candidate="",
+            ),
+        ),
+        "Одобрит СФР маткапитал?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+    assert invalid_matkap.draft_text == MATKAP_SFR_REVIEW_SAFE_TEXT
+    assert "safe_template_yielded_to_verified_answer" not in invalid_matkap.safety_flags
+
+    cross_brand = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="УНПК и Фотон — один бренд.",
+            message_type="question",
+            topic_id="service:S5_general_consultation",
+            metadata=_a2_pipeline_metadata(
+                question="УНПК и Фотон одно и то же?",
+                facts={"brand.relation": "Фотон и УНПК — отдельные организации."},
+                recovery_candidate="",
+            ),
+        ),
+        "УНПК и Фотон одно и то же?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+    assert "cross_brand_safe_template_applied" in cross_brand.safety_flags
+    assert "safe_template_yielded_to_verified_answer" not in cross_brand.safety_flags
+
+    result_guarantee = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Гарантируем 100 баллов.",
+            message_type="question",
+            topic_id="theme:016_program",
+            metadata=_a2_pipeline_metadata(
+                question="Гарантируете 100 баллов?",
+                facts={"results.stats": "Средний результат выше среднего по стране на 25 баллов."},
+                recovery_candidate="",
+            ),
+        ),
+        "Гарантируете 100 баллов?",
+        {"active_brand": "unpk", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+    assert result_guarantee.draft_text == RESULT_GUARANTEE_SAFE_TEXT
+    assert "safe_template_yielded_to_verified_answer" not in result_guarantee.safety_flags
+
+
 def test_identity_disclosure_detector_uses_word_boundaries() -> None:
     assert not contains_bot_identity_disclosure("Это как и интенсивы прошлого года.")
     assert not contains_bot_identity_disclosure("Олимпиады проходят по правилам России.")

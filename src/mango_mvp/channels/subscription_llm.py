@@ -990,6 +990,19 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
 )
 
 
+_INFORMATIONAL_SAFE_TEMPLATE_NAMES = {"terminal", "matkap", "tax", "olympiad_online"}
+
+
+def _is_informational_terminal_template(text: str) -> bool:
+    return str(text or "").strip() in {
+        ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
+        ADDRESS_UNPK_SAFE_TEXT,
+        ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
+        CONTACT_FOTON_SAFE_TEXT,
+        CONTACT_UNPK_SAFE_TEXT,
+    }
+
+
 def _safe_template_already_applied(result: SubscriptionDraftResult) -> bool:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     if isinstance(metadata.get("dialogue_contract_v2_template_dispatcher"), Mapping):
@@ -1062,6 +1075,32 @@ def _apply_safe_template_spec(
     )
 
 
+def _safe_template_yield_result(
+    result: SubscriptionDraftResult,
+    *,
+    spec: SafeTemplateSpec,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult | None:
+    if spec.name not in _INFORMATIONAL_SAFE_TEMPLATE_NAMES:
+        return None
+    if spec.name == "terminal" and not _is_informational_terminal_template(result.draft_text):
+        return None
+    if not _verified_informational_answer(result, client_message=client_message, context=context):
+        return None
+    metadata = {
+        **dict(result.metadata),
+        "safe_template_yielded_to_verified_answer": True,
+        "safe_template_yielded_spec": spec.name,
+        "dialogue_contract_v2_template_dispatcher": {
+            "yielded": spec.name,
+            "priority": spec.priority,
+        },
+    }
+    flags = tuple(dict.fromkeys([*result.safety_flags, "safe_template_yielded_to_verified_answer"]))
+    return replace(result, safety_flags=flags, metadata=metadata)
+
+
 def apply_dialogue_contract_v2_template_dispatcher(
     result: SubscriptionDraftResult,
     *,
@@ -1082,6 +1121,20 @@ def apply_dialogue_contract_v2_template_dispatcher(
     for spec in sorted(DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY, key=lambda item: item.priority):
         text = spec.produce(result, client_message, context)
         if text:
+            yielded = _safe_template_yield_result(result, spec=spec, client_message=client_message, context=context)
+            if yielded is not None:
+                trace_event(
+                    context,
+                    "safe_template_dispatcher",
+                    {
+                        "applied": "",
+                        "yielded": spec.name,
+                        "priority": spec.priority,
+                        "route": yielded.route,
+                        "topic_id": yielded.topic_id,
+                    },
+                )
+                return yielded
             guarded = _apply_safe_template_spec(result, spec, text)
             trace_event(
                 context,
@@ -1520,6 +1573,14 @@ class SubscriptionLlmDraftProvider:
                 safety_flags=recovered_flags,
                 metadata=recovered_metadata,
             )
+        yielded_before = _safe_template_yield_before_fallback(
+            before,
+            after,
+            client_message=client_message,
+            context=context,
+        )
+        if yielded_before is not None:
+            return yielded_before
         return replace(
             after,
             route="draft_for_manager" if after.route != "manager_only" else after.route,
@@ -2214,6 +2275,102 @@ _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS = {
 }
 
 
+def _pipeline_fact_texts(result: SubscriptionDraftResult) -> dict[str, str]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    return {
+        str(key): str(value)
+        for key, value in facts.items()
+        if str(key).strip() and str(value).strip()
+    }
+
+
+def _pipeline_contract(
+    result: SubscriptionDraftResult,
+    *,
+    active_brand: str,
+    fact_keys: Sequence[str],
+):
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    return parse_dialogue_contract(
+        pipeline.get("contract"),
+        active_brand=active_brand,
+        fact_key_catalog=tuple(fact_keys),
+    )
+
+
+def _verified_informational_answer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    if result.route == "manager_only" or is_high_risk_result(result):
+        return False
+    if set(detect_high_risk_input_markers(client_message, context=context)):
+        return False
+    flags = set(result.safety_flags)
+    if flags.intersection(_GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
+        return False
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    if any(bool(metadata.get(flag)) for flag in _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
+        return False
+    fact_texts = _pipeline_fact_texts(result)
+    if not fact_texts:
+        return False
+    if not _claim_supported_by_facts(result.draft_text, tuple(fact_texts.values())):
+        return False
+    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(fact_texts.keys()))
+    if contract.is_p0:
+        return False
+    findings = verify_dialogue_contract_output(
+        result.draft_text,
+        facts=fact_texts,
+        active_brand=_active_brand(context),
+        contract=contract,
+        client_message=client_message,
+        context=context,
+        previous_bot_texts=_humanity_previous_bot_texts(context),
+    )
+    return not findings
+
+
+def _safe_template_applied_name(result: SubscriptionDraftResult) -> str:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    dispatcher = metadata.get("dialogue_contract_v2_template_dispatcher")
+    if isinstance(dispatcher, Mapping):
+        return str(dispatcher.get("applied") or dispatcher.get("yielded") or "").strip()
+    for spec in DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY:
+        if spec.flag in result.safety_flags or metadata.get(spec.flag):
+            return spec.name
+    return ""
+
+
+def _safe_template_yield_before_fallback(
+    before: SubscriptionDraftResult,
+    after: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult | None:
+    applied = _safe_template_applied_name(after)
+    if applied not in _INFORMATIONAL_SAFE_TEMPLATE_NAMES:
+        return None
+    if applied == "terminal" and not _is_informational_terminal_template(after.draft_text):
+        return None
+    if not _verified_informational_answer(before, client_message=client_message, context=context):
+        return None
+    metadata = {
+        **dict(before.metadata),
+        "safe_template_yielded_to_verified_answer": True,
+        "safe_template_yielded_spec": applied,
+    }
+    flags = tuple(dict.fromkeys([*before.safety_flags, "safe_template_yielded_to_verified_answer"]))
+    return replace(before, safety_flags=flags, metadata=metadata)
+
+
 def _validated_guardchain_recovery_candidate(
     result: SubscriptionDraftResult,
     *,
@@ -2233,19 +2390,10 @@ def _validated_guardchain_recovery_candidate(
     if any(bool(metadata.get(flag)) for flag in _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
         return ""
 
-    facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
-    fact_texts = {
-        str(key): str(value)
-        for key, value in facts.items()
-        if str(key).strip() and str(value).strip()
-    }
+    fact_texts = _pipeline_fact_texts(result)
     if not fact_texts:
         return ""
-    contract = parse_dialogue_contract(
-        pipeline.get("contract"),
-        active_brand=_active_brand(context),
-        fact_key_catalog=tuple(fact_texts.keys()),
-    )
+    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(fact_texts.keys()))
     if contract.is_p0:
         return ""
     findings = verify_dialogue_contract_output(

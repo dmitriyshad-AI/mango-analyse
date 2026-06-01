@@ -891,6 +891,8 @@ def _produce_tax_template(
     client_message: str,
     context: Optional[Mapping[str, Any]],
 ) -> str:
+    if _asks_non_tax_document_or_contract(client_message, context=context):
+        return ""
     haystack = _semantic_haystack(result, client_message=client_message, context=context)
     if not has_any_marker(haystack, ("налог", "вычет", "фнс")):
         return ""
@@ -1086,7 +1088,7 @@ def _safe_template_yield_result(
         return None
     if spec.name == "terminal" and not _is_informational_terminal_template(result.draft_text):
         return None
-    if not _verified_informational_answer(result, client_message=client_message, context=context):
+    if not _verified_informational_answer(result, client_message=client_message, context=context, template_name=spec.name):
         return None
     metadata = {
         **dict(result.metadata),
@@ -2306,6 +2308,7 @@ def _verified_informational_answer(
     *,
     client_message: str,
     context: Optional[Mapping[str, Any]],
+    template_name: str = "",
 ) -> bool:
     if result.route == "manager_only" or is_high_risk_result(result):
         return False
@@ -2334,7 +2337,91 @@ def _verified_informational_answer(
         context=context,
         previous_bot_texts=_humanity_previous_bot_texts(context),
     )
-    return not findings
+    if findings:
+        return False
+    if template_name in {"matkap", "tax"} and not _strict_informational_yield_ok(
+        result,
+        template_name=template_name,
+        client_message=client_message,
+        context=context,
+        fact_texts=fact_texts,
+    ):
+        return False
+    return True
+
+
+def _strict_informational_yield_ok(
+    result: SubscriptionDraftResult,
+    *,
+    template_name: str,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    fact_texts: Mapping[str, str],
+) -> bool:
+    draft_text = str(result.draft_text or "")
+    facts_blob = " ".join(str(value or "") for value in fact_texts.values())
+    if _informational_yield_has_unbacked_concrete_anchors(draft_text, facts_blob=facts_blob):
+        return False
+    if _mentions_unbacked_children_rule(draft_text, facts_blob=facts_blob):
+        return False
+    if template_name == "tax" and _asks_non_tax_document_or_contract(client_message, context=context) and _answers_tax_deduction_scope(draft_text):
+        return False
+    if template_name == "matkap" and _asks_non_matkap_document_or_contract(client_message, context=context) and _answers_matkap_scope(draft_text):
+        return False
+    return True
+
+
+def _informational_yield_has_unbacked_concrete_anchors(draft_text: str, *, facts_blob: str) -> bool:
+    draft_anchors = _fact_match_anchors(draft_text)
+    if not draft_anchors:
+        return False
+    fact_anchors = _fact_match_anchors(facts_blob)
+    allowed_prefixes = ("number:", "date:", "condition:", "unit:")
+    unbacked = {
+        anchor
+        for anchor in draft_anchors - fact_anchors
+        if anchor.startswith(allowed_prefixes)
+    }
+    return bool(unbacked)
+
+
+def _mentions_unbacked_children_rule(draft_text: str, *, facts_blob: str) -> bool:
+    draft = str(draft_text or "").casefold().replace("ё", "е")
+    if not re.search(r"\b(?:двое|двух|два|2)\s+(?:дет|реб)", draft, re.I):
+        return False
+    if re.search(r"\b(?:двое|двух|два|2)\s+(?:дет|реб)", str(facts_blob or "").casefold().replace("ё", "е"), re.I):
+        return False
+    return bool(re.search(r"скид|вычет|возврат|сумм|правил|действ", draft, re.I))
+
+
+def _asks_non_tax_document_or_contract(client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> bool:
+    plan = _conversation_intent_plan(context)
+    if str(plan.get("primary_intent") or "") == "tax":
+        return False
+    text = str(client_message or "").casefold().replace("ё", "е")
+    if re.search(r"налог|вычет|фнс|ндфл|кнд|лиценз|справк", text, re.I):
+        return False
+    return bool(re.search(r"договор|оферт|оригинал|документ|акт|заявлен|подпис", text, re.I))
+
+
+def _asks_non_matkap_document_or_contract(client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> bool:
+    plan = _conversation_intent_plan(context)
+    if str(plan.get("primary_intent") or "") == "matkap":
+        return False
+    text = str(client_message or "").casefold().replace("ё", "е")
+    if re.search(r"маткап|материнск|сфр|сертификат", text, re.I):
+        return False
+    return bool(re.search(r"договор|оферт|оригинал|документ|акт|заявлен|подпис", text, re.I))
+
+
+def _answers_tax_deduction_scope(draft_text: str) -> bool:
+    text = str(draft_text or "").casefold().replace("ё", "е")
+    return bool(re.search(r"налог|вычет|фнс|ндфл|кнд|13\s*%|14\s*300|110\s*000", text, re.I))
+
+
+def _answers_matkap_scope(draft_text: str) -> bool:
+    text = str(draft_text or "").casefold().replace("ё", "е")
+    return bool(re.search(r"маткап|материнск|сфр|сертификат", text, re.I))
 
 
 def _safe_template_applied_name(result: SubscriptionDraftResult) -> str:
@@ -2360,7 +2447,12 @@ def _safe_template_yield_before_fallback(
         return None
     if applied == "terminal" and not _is_informational_terminal_template(after.draft_text):
         return None
-    if not _verified_informational_answer(before, client_message=client_message, context=context):
+    if applied == "terminal" and (
+        (_asks_non_tax_document_or_contract(client_message, context=context) and _answers_tax_deduction_scope(before.draft_text))
+        or (_asks_non_matkap_document_or_contract(client_message, context=context) and _answers_matkap_scope(before.draft_text))
+    ):
+        return None
+    if not _verified_informational_answer(before, client_message=client_message, context=context, template_name=applied):
         return None
     metadata = {
         **dict(before.metadata),
@@ -2588,13 +2680,25 @@ def apply_humanity_guards(
     answer fact is already present.
     """
 
-    p0_required = _humanity_p0_required(result)
+    raw_p0_required = _humanity_p0_required(result)
     previous_bot_texts = _humanity_previous_bot_texts(context)
     block_a_enabled = _humanity_block_a_route_fix_enabled(context)
     block_generic_fact_answer = _humanity_generic_fact_answer_blocked(result, client_message=client_message)
     has_answer_fact = (not block_generic_fact_answer) and _has_humanity_answer_fact(context)
     preserve_existing_answer = _humanity_preserve_existing_answer(result)
     metadata = dict(result.metadata)
+    benign_p0_context = (
+        is_benign_hypothetical_refund(client_message)
+        or _conversation_plan_semantic_non_p0(context, client_message=client_message)
+    )
+    hard_p0_text_locked = bool(
+        metadata.get("final_p0_text_override")
+        or metadata.get("zero_collect_legal_guarded")
+        or metadata.get("zero_collect_refund_guarded")
+        or metadata.get("complaint_apology_guarded")
+        or metadata.get("payment_dispute_manager_only")
+    )
+    p0_required = raw_p0_required and not (benign_p0_context and not hard_p0_text_locked)
     flags = list(result.safety_flags)
     checklist = list(result.manager_checklist)
     route = result.route
@@ -2713,6 +2817,12 @@ def apply_humanity_guards(
             "Клиент спросил про платёж в месяц: ответить из цены и условий оплаты, не подменяя годовую цену семестром."
         )
         metadata["humanity_installment_amount_repaired"] = True
+        changed = True
+
+    if p0_required and route != "manager_only":
+        route = "manager_only"
+        flags.append("humanity_p0_route_locked")
+        metadata["humanity_p0_route_locked"] = True
         changed = True
 
     strict_antirepeat = _antirepeat_strict_enabled(context)
@@ -5227,6 +5337,8 @@ def _matkap_safe_template(
     client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> str:
+    if _asks_non_matkap_document_or_contract(client_message, context=context):
+        return ""
     haystack = _semantic_haystack(result, client_message=client_message, context=context)
     if "маткап" not in haystack and "matkap" not in haystack and "материн" not in haystack and "сертификат" not in haystack and "сфр" not in haystack:
         return ""
@@ -6258,6 +6370,8 @@ def _tax_safe_template(
     client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> str:
+    if _asks_non_tax_document_or_contract(client_message, context=context):
+        return ""
     haystack = _semantic_haystack(result, client_message=client_message, context=context)
     if "налог" not in haystack and "вычет" not in haystack and "фнс" not in haystack:
         return ""

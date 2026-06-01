@@ -375,6 +375,47 @@ def test_presale_refund_thread_escalates_on_real_refund_claim_turn() -> None:
     assert "остаток неистраченных средств" not in result.draft_text.casefold()
 
 
+def test_presale_refund_suppressed_after_released_hard_refund_claim_latch() -> None:
+    store = _refund_store()
+    released_memory = {
+        "p0_latch": {
+            "active": False,
+            "codes": [],
+            "release_event_id": "autonomous_neutral_p0_latch_release_5_turns",
+            "had_hard_p0_claim": True,
+        },
+        "risk_flags": [],
+    }
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "оплатил, занятий нет, верните деньги"},
+            {"role": "bot", "text": "Приняли обращение. Передам ответственному сотруднику."},
+            {"role": "client", "text": "жду менеджера, это по возврату"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        context={"dialogue_memory_view": released_memory},
+        understand_fn=_understanding(
+            {
+                "current_question": "жду менеджера, это по возврату",
+                "continued_topics": ["refund_policy"],
+                "needed_fact_keys": ["refund_policy.current"],
+                "answerability": "answer_self",
+                "is_p0": False,
+            }
+        ),
+        draft_fn=lambda _prompt: "Возвращается остаток неистраченных средств.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        toggles=Toggles(warmth_mode="all_eligible"),
+    )
+
+    assert result.route == "manager_only"
+    assert result.manager_only
+    assert result.fallback_reason in {"p0", "prior_hard_p0_refund_claim"}
+    assert "остаток неистраченных средств" not in result.draft_text.casefold()
+    assert "передам" in result.draft_text.casefold()
+
+
 def test_refund_waiting_month_followup_stays_p0_manager_only() -> None:
     conversation = (
         {"role": "client", "text": "я оплатил месяц назад, а занятий нет. верните деньги"},

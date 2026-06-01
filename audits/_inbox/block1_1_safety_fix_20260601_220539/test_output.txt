@@ -1,0 +1,41 @@
+Targeted Block 1.1 regressions:
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_memory.py::test_dialogue_memory_autonomously_releases_refund_latch_after_five_neutral_turns tests/test_dialogue_memory.py::test_dialogue_memory_released_refund_latch_does_not_mute_next_benign_turn tests/test_dialogue_contract_pipeline.py::test_presale_refund_multiturn_followups_keep_answering_from_fact tests/test_dialogue_contract_pipeline.py::test_presale_refund_suppressed_after_released_hard_refund_claim_latch tests/test_subscription_llm_draft_provider.py::test_a21_informational_tax_template_yields_to_verified_fact_answer tests/test_subscription_llm_draft_provider.py::test_block1_1_tax_yield_rejects_unbacked_rule_and_contract_scope tests/test_subscription_llm_draft_provider.py::test_block1_1_complaint_antirepeat_keeps_manager_only_route
+
+Result:
+7 passed in 4.06s
+
+Broader touched-module pytest:
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_memory.py tests/test_dialogue_contract_pipeline.py tests/test_subscription_llm_draft_provider.py
+
+Result:
+488 passed in 28.04s
+
+Local smoke, fake mode, no Telegram send:
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_pilot_concurrency_smoke.py --mode fake --requests 4 --concurrency 2 --out-dir .codex_local/telegram_pilot/concurrency_smoke/block1_1 --brand all
+
+Result:
+ok=true, completed=4, errors=0
+
+Full tests/ attempt:
+
+Command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/
+
+Result:
+2408 passed, 1 skipped, 9 failed.
+
+Failure class:
+infrastructure/artifact gaps in this worktree, not Block 1.1 behavior:
+- build_rop_deal_pack tests could not find `sales_master_export_*review_accepted` under `stable_runtime`.
+- question_catalog tests could not find `product_data/question_catalog/*`.
+- pilot_context gold tests are unrelated to touched modules.
+- stable_runtime rebuild smoke exited 1 in this worktree.
+
+Diff check:
+git diff --check => clean.

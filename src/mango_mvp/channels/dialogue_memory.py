@@ -89,6 +89,7 @@ CURRENT_TERMS_FORBIDDEN_PROMISES_RU = (
 AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS = 5
 AUTONOMOUS_P0_LATCH_RELEASE_EVENT = "autonomous_neutral_p0_latch_release_5_turns"
 HARD_P0_LATCH_CODES = {"legal", "legal_threat", "payment_dispute"}
+HARD_P0_HISTORY_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
 MEMORY_LLM_RECOMMENDED_REASONING = "low"
 MEMORY_LLM_RECOMMENDED_MODEL_CLASS = "small_fast_memory_model"
 _MEMORY_LLM_SLOT_KEYS = ("grade", "subject", "format", "goal", "product", "city", "location")
@@ -150,6 +151,7 @@ class DialogueP0Latch:
     started_at: str = ""
     trigger_turn_id: str = ""
     release_event_id: str = ""
+    had_hard_p0_claim: bool = False
 
     def to_json_dict(self) -> Mapping[str, Any]:
         return {
@@ -159,6 +161,7 @@ class DialogueP0Latch:
             "started_at": self.started_at,
             "trigger_turn_id": self.trigger_turn_id,
             "release_event_id": self.release_event_id,
+            "had_hard_p0_claim": self.had_hard_p0_claim,
         }
 
 
@@ -1036,6 +1039,7 @@ def _p0_latch_from_mapping(value: Any) -> DialogueP0Latch:
         started_at=str(value.get("started_at") or ""),
         trigger_turn_id=str(value.get("trigger_turn_id") or ""),
         release_event_id=str(value.get("release_event_id") or ""),
+        had_hard_p0_claim=bool(value.get("had_hard_p0_claim")),
     )
 
 
@@ -1048,9 +1052,14 @@ def _next_p0_latch(
     session_id: str,
     turns: Sequence[DialogueTurn] = (),
 ) -> DialogueP0Latch:
+    previous_had_hard_p0_claim = bool(previous.had_hard_p0_claim)
+    current_had_hard_p0_claim = _has_hard_p0_history_code(current_risk_flags)
     release_event = _p0_latch_release_event(context)
     if release_event:
-        result = DialogueP0Latch(release_event_id=release_event)
+        result = DialogueP0Latch(
+            release_event_id=release_event,
+            had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim,
+        )
         trace_event(
             context,
             "_next_p0_latch",
@@ -1062,6 +1071,8 @@ def _next_p0_latch(
                 "autonomous_release": False,
                 "next_active": result.active,
                 "next_codes": list(result.codes),
+                "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                "next_had_hard_p0_claim": result.had_hard_p0_claim,
             },
         )
         return result
@@ -1072,7 +1083,10 @@ def _next_p0_latch(
             current_risk_flags=current_risk_flags,
         )
         if autonomous_release:
-            result = DialogueP0Latch(release_event_id=autonomous_release)
+            result = DialogueP0Latch(
+                release_event_id=autonomous_release,
+                had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim,
+            )
             trace_event(
                 context,
                 "_next_p0_latch",
@@ -1084,6 +1098,8 @@ def _next_p0_latch(
                     "autonomous_release": True,
                     "next_active": result.active,
                     "next_codes": list(result.codes),
+                    "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                    "next_had_hard_p0_claim": result.had_hard_p0_claim,
                 },
             )
             return result
@@ -1098,12 +1114,14 @@ def _next_p0_latch(
                 "autonomous_release": False,
                 "next_active": previous.active,
                 "next_codes": list(previous.codes),
+                "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                "next_had_hard_p0_claim": previous.had_hard_p0_claim,
             },
         )
         return previous
     codes = tuple(dict.fromkeys(_latchable_p0_codes(current_risk_flags)))
     if not codes:
-        result = DialogueP0Latch()
+        result = DialogueP0Latch(had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim)
         trace_event(
             context,
             "_next_p0_latch",
@@ -1115,6 +1133,8 @@ def _next_p0_latch(
                 "autonomous_release": False,
                 "next_active": result.active,
                 "next_codes": list(result.codes),
+                "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                "next_had_hard_p0_claim": result.had_hard_p0_claim,
             },
         )
         return result
@@ -1127,6 +1147,7 @@ def _next_p0_latch(
         primary_risk=_primary_p0_risk(codes),
         started_at=now,
         trigger_turn_id=trigger_id,
+        had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim or _has_hard_p0_history_code(codes),
     )
     trace_event(
         context,
@@ -1139,6 +1160,8 @@ def _next_p0_latch(
             "autonomous_release": False,
             "next_active": result.active,
             "next_codes": list(result.codes),
+            "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+            "next_had_hard_p0_claim": result.had_hard_p0_claim,
         },
     )
     return result
@@ -1194,6 +1217,10 @@ def _autonomous_p0_latch_release_event(
 
 def _has_hard_p0_latch_code(codes: Sequence[str]) -> bool:
     return any(str(code or "").strip() in HARD_P0_LATCH_CODES for code in codes)
+
+
+def _has_hard_p0_history_code(codes: Sequence[str]) -> bool:
+    return any(str(code or "").strip() in HARD_P0_HISTORY_CODES for code in codes)
 
 
 def _p0_latch_released(previous: DialogueP0Latch, current: DialogueP0Latch) -> bool:

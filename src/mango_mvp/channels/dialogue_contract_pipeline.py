@@ -1466,6 +1466,7 @@ def run_pipeline(
     toggles = toggles or Toggles()
     client_words = str(conversation[-1].get("text") or "") if conversation else ""
     previous_bot_texts = [str(item.get("text") or "") for item in conversation if str(item.get("role") or "") == "bot"]
+    had_hard_p0_claim = _dialogue_had_hard_p0_claim(context)
     with trace_span(context, "understand", {"client_message": client_words, "active_brand": active_brand}) as trace:
         contract = understand(
             conversation=conversation,
@@ -1492,7 +1493,7 @@ def run_pipeline(
         if _asks_refund_policy(contract) and not _current_refund_dispute_signal(
             client_words=client_words,
             contract=contract,
-        ):
+        ) and not had_hard_p0_claim:
             contract = replace(contract, is_p0=False, p0_reason="", answerability="answer_self")
         else:
             text = _p0_handoff_text(contract, conversation=conversation)
@@ -1520,6 +1521,7 @@ def run_pipeline(
             contract=contract,
             active_brand=active_brand,
             fact_store=fact_store,
+            context=context,
         )
         trace.update(
             {
@@ -1527,6 +1529,18 @@ def run_pipeline(
                 "missing": list(retrieval.missing),
                 "matched_keys": {key: list(value) for key, value in retrieval.matched_keys.items()},
             }
+        )
+    if _asks_refund_policy(contract) and had_hard_p0_claim:
+        guarded_contract = replace(contract, is_p0=True, p0_reason=contract.p0_reason or "prior_hard_p0_refund_claim")
+        fallback = _safe_fallback_text(guarded_contract, facts=retrieval.facts, context=context)
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=guarded_contract, facts=retrieval.facts),
+            route="manager_only",
+            manager_only=True,
+            contract=guarded_contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="prior_hard_p0_refund_claim",
         )
     if _asks_refund_policy(contract) and not _presale_refund_policy_text(retrieval.facts):
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -1597,7 +1611,7 @@ def run_pipeline(
         contract.answerability != "answer_self"
         and not exact_answer_available
         and not _has_retrieved_self_answer_part(contract, retrieval)
-        and not (_asks_refund_policy(contract) and _presale_refund_policy_text(retrieval.facts))
+        and not (_asks_refund_policy(contract) and _presale_refund_policy_text(retrieval.facts) and not had_hard_p0_claim)
     )
     needs_facts = bool(contract.all_needed_fact_keys())
     empty_factual_answer_self = (
@@ -3339,7 +3353,7 @@ def _safe_fallback_text(
     if known_absence:
         return traced(known_absence, "known_absence")
     presale_refund = _presale_refund_policy_text(facts or {})
-    if presale_refund and _asks_refund_policy(contract):
+    if presale_refund and _asks_refund_policy(contract) and not _dialogue_had_hard_p0_claim(context):
         return traced(presale_refund, "presale_refund")
     soft_weekend = _soft_weekend_guidance_text(facts or {})
     if soft_weekend and _asks_weekend_or_slot(contract):
@@ -3718,8 +3732,11 @@ def _augment_with_presale_refund_policy(
     contract: AnswerContract,
     active_brand: str,
     fact_store: FactStore,
+    context: Mapping[str, Any] | None = None,
 ) -> RetrievalResult:
     if not _asks_refund_policy(contract):
+        return retrieval
+    if _dialogue_had_hard_p0_claim(context):
         return retrieval
     if _presale_refund_policy_text(retrieval.facts):
         return retrieval
@@ -4300,6 +4317,32 @@ def _client_presale_refund_text(text: str) -> str:
             "Конкретный порядок оформления менеджер подтвердит по выбранному курсу и договору."
         )
     return _short_fact_sentence(text, max_chars=220)
+
+
+def _dialogue_had_hard_p0_claim(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    sources: list[Any] = []
+    for key in ("dialogue_memory_view", "dialogue_memory"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            sources.append(value)
+    p0_latch = context.get("p0_latch")
+    if isinstance(p0_latch, Mapping):
+        sources.append({"p0_latch": p0_latch})
+    hard_codes = {"refund", "payment_dispute", "legal", "legal_threat", "complaint"}
+    for source in sources:
+        latch = source.get("p0_latch") if isinstance(source, Mapping) else None
+        if isinstance(latch, Mapping):
+            if bool(latch.get("had_hard_p0_claim")):
+                return True
+            codes = {str(item or "").strip() for item in (latch.get("codes") or ())}
+            if codes.intersection(hard_codes):
+                return True
+        risk_flags = {str(item or "").strip() for item in (source.get("risk_flags") or ())} if isinstance(source, Mapping) else set()
+        if risk_flags.intersection(hard_codes):
+            return True
+    return False
 
 
 def _current_refund_dispute_signal(*, client_words: str, contract: AnswerContract) -> bool:

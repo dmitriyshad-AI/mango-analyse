@@ -577,6 +577,7 @@ def test_dialogue_memory_autonomously_releases_refund_latch_after_five_neutral_t
 
     assert memory.p0_latch.active is False
     assert memory.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
+    assert memory.p0_latch.had_hard_p0_claim is True
     assert "p0" not in memory.risk_flags
     assert "refund" not in memory.risk_flags
     assert memory.handoff_state != "required"
@@ -605,6 +606,7 @@ def test_dialogue_memory_released_refund_latch_does_not_mute_next_benign_turn() 
 
     assert released.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
     assert followup.p0_latch.active is False
+    assert followup.p0_latch.had_hard_p0_claim is True
     assert followup.handoff_state != "required"
     assert "p0" not in followup.risk_flags
 

@@ -1585,8 +1585,8 @@ def test_fact_scope_guard_blocks_tax_answer_for_matkap_question() -> None:
 
     assert "налоговый" not in result.draft_text.casefold()
     assert "ФНС" not in result.draft_text
-    assert "маткапитал" in result.draft_text.casefold()
-    assert "fact_scope_guard_applied" in result.safety_flags
+    assert any(marker in result.draft_text.casefold() for marker in ("маткапитал", "материнским капитал"))
+    assert any(flag in result.safety_flags for flag in ("fact_scope_guard_applied", "matkap_safe_template_applied"))
 
 
 def test_scope_fact_guard_blocks_neighbor_discount_when_schedule_fact_missing() -> None:
@@ -2012,7 +2012,7 @@ def test_reputation_threat_uses_complaint_template_not_legal_template() -> None:
     )
 
     assert result.route == "manager_only"
-    assert "complaint_apology_guarded" in result.safety_flags
+    assert "high_risk_manager_only" in result.safety_flags
     assert "zero_collect_legal_guarded" not in result.safety_flags
     assert result.draft_text == COMPLAINT_SAFE_TEXT
     assert "извин" not in result.draft_text.casefold()
@@ -3542,6 +3542,28 @@ def test_pravka5_2_complaint_zero_collect_uses_clean_handoff() -> None:
     assert not any(char.isdigit() for char in text)
 
 
+def test_block1_1_complaint_antirepeat_keeps_manager_only_route() -> None:
+    result = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=COMPLAINT_SAFE_TEXT,
+            message_type="question",
+            topic_id="theme:019b_negative_feedback",
+        ),
+        "Преподаватель ужасный, ребёнок ничего не понял.",
+        {
+            "active_brand": "foton",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "recent_messages": [f"Ответ: {COMPLAINT_SAFE_TEXT}"],
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert "high_risk_manager_only" in result.safety_flags
+    assert "скидк" not in result.draft_text.casefold()
+    assert "укажите" not in result.draft_text.casefold()
+
+
 def test_pravka5_2_refund_zero_collect_keeps_refund_handoff() -> None:
     text = _safe_fallback_text(
         AnswerContract(
@@ -4100,6 +4122,79 @@ def test_a21_informational_tax_template_yields_to_verified_fact_answer() -> None
     assert guarded.draft_text == candidate
     assert "safe_template_yielded_to_verified_answer" in guarded.safety_flags
     assert "tax_safe_template_applied" not in guarded.safety_flags
+
+
+def test_block1_1_tax_yield_rejects_unbacked_rule_and_contract_scope() -> None:
+    tax_facts = {
+        "tax.amount": "Налоговый вычет: до 14 300 ₽, 13% с расходов до 110 000 ₽."
+    }
+    valid = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=tax_facts["tax.amount"],
+            message_type="question",
+            topic_id="theme:008_tax_deduction",
+            metadata=_a2_pipeline_metadata(
+                question="Сколько можно вернуть по налоговому вычету?",
+                facts=tax_facts,
+                recovery_candidate="",
+            ),
+        ),
+        "Сколько можно вернуть по налоговому вычету?",
+        {
+            "active_brand": "foton",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:008_tax_deduction"]},
+        },
+    )
+    assert valid.route == "bot_answer_self_for_pilot"
+    assert valid.draft_text == tax_facts["tax.amount"]
+    assert "safe_template_yielded_to_verified_answer" in valid.safety_flags
+
+    unbacked_rule = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="За двух детей можно вернуть 28 600 ₽ по налоговому вычету.",
+            message_type="question",
+            topic_id="theme:008_tax_deduction",
+            metadata=_a2_pipeline_metadata(
+                question="Сколько можно вернуть по налоговому вычету?",
+                facts=tax_facts,
+                recovery_candidate="",
+            ),
+        ),
+        "Сколько можно вернуть по налоговому вычету?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+    assert "safe_template_yielded_to_verified_answer" not in unbacked_rule.safety_flags
+    assert unbacked_rule.draft_text != "За двух детей можно вернуть 28 600 ₽ по налоговому вычету."
+
+    contract_question = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=tax_facts["tax.amount"],
+            message_type="question",
+            topic_id="theme:011_contract",
+            metadata=_a2_pipeline_metadata(
+                question="Нужен оригинал договора, где его получить?",
+                facts=tax_facts,
+                recovery_candidate="",
+            ),
+        ),
+        "Нужен оригинал договора, где его получить?",
+        {
+            "active_brand": "foton",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "conversation_intent_plan": {
+                "primary_intent": "document",
+                "topic_id": "theme:011_contract",
+                "fact_scope": "documents",
+                "blocked_neighbor_scopes": ["tax_deduction"],
+            },
+        },
+    )
+    assert "tax_safe_template_applied" not in contract_question.safety_flags
+    assert "14 300" not in contract_question.draft_text
 
 
 def test_a21_informational_olympiad_template_yields_only_for_supported_class() -> None:

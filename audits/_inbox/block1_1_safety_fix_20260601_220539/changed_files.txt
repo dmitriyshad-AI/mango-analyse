@@ -1,0 +1,6 @@
+src/mango_mvp/channels/dialogue_contract_pipeline.py
+src/mango_mvp/channels/dialogue_memory.py
+src/mango_mvp/channels/subscription_llm.py
+tests/test_dialogue_contract_pipeline.py
+tests/test_dialogue_memory.py
+tests/test_subscription_llm_draft_provider.py

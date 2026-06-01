@@ -6,6 +6,7 @@ from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import (
     COMPLAINT_RE,
+    HARD_P0_CODES,
     LEGAL_RE,
     PAYMENT_DISPUTE_RE,
     REFUND_RE,
@@ -147,8 +148,9 @@ def classify_answer_safety(
         semantic_non_p0 = False
 
     codes = tuple(dict.fromkeys(code for code in codes if code))
+    hard_codes = tuple(code for code in codes if code in HARD_P0_CODES)
     primary = _primary_risk(codes, current_codes=current_codes)
-    p0 = bool(codes) or plan_route_bias == "manager_only" and plan_primary in {"refund", "legal_threat", "complaint", "payment_dispute"}
+    p0 = bool(hard_codes) or plan_route_bias == "manager_only" and plan_primary in {"refund", "legal_threat", "complaint", "payment_dispute"}
     if semantic_non_p0 and not codes_from_current_message(current):
         p0 = False
         primary = ""

@@ -39,7 +39,7 @@ from mango_mvp.channels.humanity_guards import (
 )
 from mango_mvp.channels.humanity_linter import lint_turn
 from mango_mvp.channels.humanity_rewriter import apply_rewrite as apply_humanity_form_rewrite
-from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
+from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, is_benign_hypothetical_refund
 from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 from mango_mvp.channels.draft_prompt_builder import (
@@ -2941,7 +2941,11 @@ def apply_high_risk_content_guards(
         route=result.route,
         safety_flags=result.safety_flags,
     )
-    markers = set(safety_decision.risk_codes)
+    markers = (
+        set(safety_decision.risk_codes)
+        if safety_decision.p0_required
+        else {code for code in safety_decision.risk_codes if code in HARD_P0_CODES}
+    )
     topic = str(result.topic_id or "").strip()
     flags = list(result.safety_flags)
     checklist = list(result.manager_checklist)
@@ -4655,7 +4659,7 @@ def detect_high_risk_input_markers(client_message: str, *, context: Optional[Map
         route="",
         safety_flags=(),
     )
-    return decision.risk_codes
+    return tuple(code for code in decision.risk_codes if code in HARD_P0_CODES)
 
 
 def _conversation_plan_semantic_non_p0(

@@ -7,6 +7,8 @@ from mango_mvp.channels.semantic_roles import is_negated_refund_topic, tag_messa
 
 
 P0_RECALL_SPEC_SCHEMA_VERSION = "p0_recall_spec_v1_2026_05_24"
+HARD_P0_CODES = frozenset({"refund", "legal", "complaint", "payment_dispute"})
+SOFT_P0_CODES = frozenset({"reputation_threat"})
 
 # This module is the shared P0 recall source for runtime guards, tests and KB
 # trigger checks. Keep hard signals conservative: false negatives are more
@@ -123,6 +125,12 @@ P0_BENIGN_CASES: tuple[str, ...] = (
 
 
 def has_complaint_signal(text: str) -> bool:
+    if re.search(r"\b(?:вас|их|родител\w*|клиент\w*)[^.!?\n]{0,30}\bне\s+обманыва\w*", str(text or ""), re.I) and not re.search(
+        r"мошенн|незаконн|возмущ|недовол|ужасн|плохо\s+уч|некомпетент|суд|прокурат|роспотреб|верн\w*\s+деньг",
+        str(text or ""),
+        re.I,
+    ):
+        return False
     if re.search(r"\b(?:это\s+)?не\s+(?:как\s+)?(?:жалоб\w*|претензи\w*)\b", str(text or ""), re.I) and not re.search(
         r"мошенн|незаконн|возмущ|недовол|обман|ужасн|плохо\s+уч|некомпетент|суд|прокурат|роспотреб",
         str(text or ""),
@@ -159,6 +167,14 @@ def codes_from_text(text: str) -> tuple[str, ...]:
     if "payment_dispute" in result and REFUND_RE.search(value) and not benign_refund_context and not negated_refund_topic:
         result.insert(0, "refund")
     return tuple(dict.fromkeys(result))
+
+
+def hard_codes_from_text(text: str) -> tuple[str, ...]:
+    return tuple(code for code in codes_from_text(text) if code in HARD_P0_CODES)
+
+
+def soft_codes_from_text(text: str) -> tuple[str, ...]:
+    return tuple(code for code in codes_from_text(text) if code in SOFT_P0_CODES)
 
 
 def memory_risk_flags_from_text(text: str) -> tuple[str, ...]:

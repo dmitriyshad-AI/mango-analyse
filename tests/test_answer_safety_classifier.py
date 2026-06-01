@@ -96,6 +96,22 @@ def test_answer_safety_active_refund_request_stays_p0() -> None:
     assert decision.manager_only is True
 
 
+def test_answer_safety_soft_reputation_marker_does_not_force_p0() -> None:
+    decision = classify_answer_safety(client_message="Я видел отзывы в интернете, вас точно не обманывают?")
+
+    assert decision.p0_required is False
+    assert decision.manager_only is False
+    assert decision.blocks_autonomy is False
+
+
+def test_answer_safety_reputation_threat_is_soft_marker_not_hard_p0() -> None:
+    decision = classify_answer_safety(client_message="Напишу отзыв в интернете, если не подскажете условия.")
+
+    assert "reputation_threat" in decision.risk_codes
+    assert decision.p0_required is False
+    assert decision.manager_only is False
+
+
 def test_p0_text_regexes_live_only_in_p0_recall_spec() -> None:
     channels_dir = Path(__file__).resolve().parents[1] / "src" / "mango_mvp" / "channels"
     forbidden_defs = re.compile(

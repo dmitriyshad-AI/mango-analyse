@@ -16,6 +16,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     build_understanding_prompt,
     check_claim_faithfulness,
     parse_contract,
+    p0_pre_gate,
     pipeline_enabled,
     run_pipeline,
     verify_output,
@@ -3726,6 +3727,14 @@ def test_build_understanding_prompt_includes_topic_focus_for_ellipsis() -> None:
     assert "ВОССТАНОВИ тему" in prompt
     assert "product_family" in prompt
     assert "switched_topics" in prompt
+    assert "ПО СМЫСЛУ покрывающий вопрос" in prompt
+    assert "низкая: answerability=manager_only" not in prompt
+
+
+def test_p0_pre_gate_forces_only_hard_codes_and_leaves_soft_reputation_to_model() -> None:
+    assert p0_pre_gate("Верните деньги, занятия не идут.", context={}) == "refund"
+    assert p0_pre_gate("Оплатил, доступа нет.", context={}) == "payment_dispute"
+    assert p0_pre_gate("Буду писать отзыв в интернете, но сначала хочу понять условия.", context={}) is None
 
 
 def test_memory_topic_augment_recovers_elliptic_online_question_fact() -> None:

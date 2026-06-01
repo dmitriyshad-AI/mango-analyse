@@ -28,7 +28,7 @@ from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
-from mango_mvp.channels.p0_recall_spec import codes_from_text
+from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, soft_codes_from_text
 from mango_mvp.insights.sanitizers import sanitize_answer
 
 
@@ -359,7 +359,10 @@ def build_understanding_prompt(
         "- client_state — ситуация/тон клиента для выбора регистра; не нужно потом произносить эмоцию вслух.\n"
         "- needed_fact_keys: только ключи или смысловые ключи из каталога; значения, суммы, даты и проценты не пиши.\n"
         "- Если нужен спорный возврат, жалоба, юридическая угроза или спорная оплата: is_p0=true, answerability=manager_only.\n"
-        "- Если факта нет или уверенность низкая: answerability=manager_only, но current_question всё равно заполни.\n"
+        "- Если прямого факта нет, но в каталоге есть ключ, ПО СМЫСЛУ покрывающий вопрос — поставь его в "
+        "needed_fact_keys и answerable='self'. Если вопрос неоднозначен — задай ОДИН уточняющий подвопрос, не "
+        "уходи к менеджеру. answerability=manager_only ТОЛЬКО при P0 или когда в каталоге реально нет покрывающего "
+        "ключа. current_question заполняй всегда.\n"
         f"Уже известные данные: {json.dumps(dict(known_slots), ensure_ascii=False)}\n"
         f"Фокус темы из памяти: {json.dumps(dict(topic_focus), ensure_ascii=False)}\n"
         f"Каталог ключей фактов: {catalog}\n"
@@ -697,11 +700,14 @@ def _key_has_any_topic_alias(key: str, aliases: Sequence[str]) -> bool:
 
 
 def p0_pre_gate(text: str, *, context: Mapping[str, Any] | None = None) -> str | None:
-    codes = codes_from_text(text)
+    codes = hard_codes_from_text(text)
     if codes:
         result = ",".join(codes)
         trace_event(context, "p0_pre_gate", {"source": "regex", "codes": list(codes), "result": result})
         return result
+    soft_codes = soft_codes_from_text(text)
+    if soft_codes:
+        trace_event(context, "p0_pre_gate", {"source": "regex_soft", "codes": list(soft_codes), "result": ""})
     decision = classify_answer_safety(client_message=text, context=context)
     if decision.p0_required:
         result = ",".join(decision.risk_codes or (decision.primary_risk or "p0",))

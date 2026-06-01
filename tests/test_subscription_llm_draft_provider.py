@@ -4199,6 +4199,23 @@ def test_a21_information_template_does_not_yield_invalid_or_protected_answers() 
     assert "safe_template_yielded_to_verified_answer" not in result_guarantee.safety_flags
 
 
+def test_a21_soft_reputation_marker_does_not_trigger_high_risk_input_guard() -> None:
+    guarded = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Расскажу по подтверждённым условиям курса.",
+            message_type="question",
+            topic_id="service:S5_general_consultation",
+            metadata={"dialogue_contract_pipeline": {"retrieved_facts": {}}},
+        ),
+        "Отзывы разные видел, вас не обманывают?",
+        {"active_brand": "foton", "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"},
+    )
+
+    assert "high_risk_input_manager_only" not in guarded.safety_flags
+    assert detect_high_risk_input_markers("Напишу отзыв в интернете, если не подскажете условия.") == ()
+
+
 def test_identity_disclosure_detector_uses_word_boundaries() -> None:
     assert not contains_bot_identity_disclosure("Это как и интенсивы прошлого года.")
     assert not contains_bot_identity_disclosure("Олимпиады проходят по правилам России.")

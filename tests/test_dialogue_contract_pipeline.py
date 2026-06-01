@@ -1991,6 +1991,7 @@ def test_cite_only_recover_answers_matkap_even_when_understanding_is_manager() -
     assert result.route == "bot_answer_self"
     assert result.fallback_reason == "cite_only_recover"
     assert "материнским капиталом возможна" in result.draft_text.casefold()
+    assert "материнским капиталом возможна" in result.recovery_candidate.casefold()
 
 
 def test_cite_only_recover_answers_electronic_documents_before_handoff() -> None:
@@ -2035,6 +2036,7 @@ def test_cite_only_recover_after_hard_verification_failed_uses_exact_price_fact(
     assert result.fallback_reason in {"cite_only_recover", "verified_fact_fallback_after_hard_check"}
     assert "29 750 ₽" in result.draft_text
     assert "99 999" not in result.draft_text
+    assert "29 750 ₽" in result.recovery_candidate
 
 
 def test_semantic_recover_keeps_handoff_for_camp_vs_regular_course() -> None:

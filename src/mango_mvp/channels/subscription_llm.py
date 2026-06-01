@@ -1267,6 +1267,8 @@ class SubscriptionLlmDraftProvider:
                     "semantic_match_replaced": pipeline_result.semantic_match_replaced,
                     "semantic_match_reason": pipeline_result.semantic_match_reason,
                     "fallback_reason": pipeline_result.fallback_reason,
+                    "recovery_candidate": pipeline_result.recovery_candidate,
+                    "recovery_candidate_validated": bool(pipeline_result.recovery_candidate),
                     "warmed": pipeline_result.warmed,
                     "repaired": pipeline_result.repaired,
                 }
@@ -1497,6 +1499,27 @@ class SubscriptionLlmDraftProvider:
         if unsupported_claims:
             metadata["dialogue_contract_reverification_unsupported"] = list(unsupported_claims)
         metadata["dialogue_contract_reverification_semantic_available"] = semantic_available
+        recovery_candidate = _validated_guardchain_recovery_candidate(
+            replace(after, metadata=metadata),
+            client_message=client_message,
+            context=context,
+        )
+        if recovery_candidate:
+            recovered_flags = tuple(
+                dict.fromkeys([*after.safety_flags, "cite_only_recover_at_guardchain"])
+            )
+            recovered_metadata = {
+                **metadata,
+                "cite_only_recover_at_guardchain": True,
+                "cite_only_recover_at_guardchain_source": "text_change_reverify",
+            }
+            return replace(
+                after,
+                route="bot_answer_self_for_pilot",
+                draft_text=recovery_candidate,
+                safety_flags=recovered_flags,
+                metadata=recovered_metadata,
+            )
         return replace(
             after,
             route="draft_for_manager" if after.route != "manager_only" else after.route,
@@ -1548,6 +1571,24 @@ class SubscriptionLlmDraftProvider:
 
         if decision.autonomous_candidate:
             flags.append("dialogue_contract_route_permission_autonomous_candidate")
+            recovery_candidate = _validated_guardchain_recovery_candidate(
+                replace(result, metadata=metadata, safety_flags=tuple(dict.fromkeys(flags))),
+                client_message=client_message,
+                context=context,
+            )
+            if recovery_candidate:
+                flags.append("cite_only_recover_at_guardchain")
+                metadata["cite_only_recover_at_guardchain"] = True
+                metadata["cite_only_recover_at_guardchain_source"] = "route_permission"
+                return replace(
+                    result,
+                    route="bot_answer_self_for_pilot",
+                    draft_text=recovery_candidate,
+                    veto_category=decision.veto_category,
+                    safety_flags=tuple(dict.fromkeys(flags)),
+                    manager_checklist=tuple(dict.fromkeys(checklist)),
+                    metadata=metadata,
+                )
         return replace(
             result,
             route=decision.route,
@@ -2158,6 +2199,69 @@ def _context_with_dialogue_contract_retrieved_facts(
     return merged
 
 
+_GUARDCHAIN_RECOVERY_BLOCKING_FLAGS = {
+    "cross_brand_safe_template_applied",
+    "cross_brand_client_text_blocked",
+    "brand_separation_guarded",
+    "result_guarantee_safe_template_applied",
+    "admission_guarantee_safe_template_applied",
+    "unsupported_promise_detected",
+    "zero_collect_legal_guarded",
+    "zero_collect_refund_guarded",
+    "complaint_apology_guarded",
+    "payment_dispute_manager_only",
+    "high_risk_manager_only",
+}
+
+
+def _validated_guardchain_recovery_candidate(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    candidate = str(pipeline.get("recovery_candidate") or "").strip()
+    if not candidate or pipeline.get("recovery_candidate_validated") is not True:
+        return ""
+    if result.route == "manager_only" or is_high_risk_result(result) or set(detect_high_risk_input_markers(client_message, context=context)):
+        return ""
+    flags = set(result.safety_flags)
+    if flags.intersection(_GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
+        return ""
+    if any(bool(metadata.get(flag)) for flag in _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
+        return ""
+
+    facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    fact_texts = {
+        str(key): str(value)
+        for key, value in facts.items()
+        if str(key).strip() and str(value).strip()
+    }
+    if not fact_texts:
+        return ""
+    contract = parse_dialogue_contract(
+        pipeline.get("contract"),
+        active_brand=_active_brand(context),
+        fact_key_catalog=tuple(fact_texts.keys()),
+    )
+    if contract.is_p0:
+        return ""
+    findings = verify_dialogue_contract_output(
+        candidate,
+        facts=fact_texts,
+        active_brand=_active_brand(context),
+        contract=contract,
+        client_message=client_message,
+        context=context,
+        previous_bot_texts=_humanity_previous_bot_texts(context),
+    )
+    if findings:
+        return ""
+    return candidate
+
+
 def find_unsupported_numeric_promises(
     draft_text: str,
     *,
@@ -2499,6 +2603,12 @@ def apply_humanity_guards(
             checklist.append("Ответ похож на предыдущую реплику: перед отправкой переписать под текущий вопрос.")
             metadata["humanity_repeat_detected"] = True
             changed = True
+
+    if p0_required and route != "manager_only" and not is_benign_hypothetical_refund(client_message):
+        route = "manager_only"
+        flags.append("humanity_p0_route_preserved")
+        metadata["humanity_p0_route_preserved"] = True
+        changed = True
 
     if not _humanity_guarded_handoff_reason(result) and not preserve_existing_answer:
         route_action = humanity_route_action(

@@ -2896,6 +2896,30 @@ def _route_shield_contract(
     }
 
 
+def _a2_pipeline_metadata(
+    *,
+    question: str,
+    facts: dict[str, str],
+    recovery_candidate: str,
+    answerability: str = "answer_self",
+    is_p0: bool = False,
+) -> dict:
+    return {
+        "dialogue_contract_pipeline": {
+            "contract": _route_shield_contract(
+                question=question,
+                answerability=answerability,
+                keys=tuple(facts.keys()),
+                is_p0=is_p0,
+            ),
+            "retrieved_facts": facts,
+            "retrieved_fact_keys": list(facts.keys()),
+            "recovery_candidate": recovery_candidate,
+            "recovery_candidate_validated": True,
+        }
+    }
+
+
 def _route_shield_pipeline_result(
     *,
     client_message: str = "Сколько стоит курс?",
@@ -3843,6 +3867,170 @@ def test_v2_text_change_reverify_accepts_supported_semantic_claim() -> None:
     assert guarded.draft_text == "Курс проходит очно."
     assert "dialogue_contract_text_change_reverified" in guarded.safety_flags
     assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+
+
+def test_a2_reverify_returns_recovery_candidate_instead_of_generic_handoff() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    provider._dialogue_contract_faithfulness_runner = lambda _prompt: {"claims": [], "unsupported": []}  # type: ignore[method-assign]
+    facts = {
+        "matkap.client_safe_text": (
+            "Оплата материнским капиталом возможна. Работаем с федеральным маткапиталом."
+        )
+    }
+    candidate = "Оплата материнским капиталом возможна. Работаем с федеральным маткапиталом."
+    before = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=candidate,
+        topic_id="theme:007_matkap_payment",
+        metadata=_a2_pipeline_metadata(
+            question="Можно оплатить материнским капиталом?",
+            facts=facts,
+            recovery_candidate=candidate,
+        ),
+    )
+    after = replace(before, route="draft_for_manager", draft_text="СФР точно одобрит 100% маткапитал.")
+
+    guarded = provider._reverify_dialogue_contract_text_change(
+        before,
+        after,
+        client_message="Можно оплатить материнским капиталом?",
+        context={"active_brand": "foton"},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == candidate
+    assert "cite_only_recover_at_guardchain" in guarded.safety_flags
+
+
+def test_a2_route_permission_promotes_valid_address_recovery_candidate() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    facts = {"location.address": "УНПК: адрес и место занятий — Сретенка, 20."}
+    candidate = "УНПК: адрес и место занятий — Сретенка, 20."
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        topic_id="theme:015_address",
+        metadata=_a2_pipeline_metadata(
+            question="Какой адрес занятий?",
+            facts=facts,
+            recovery_candidate=candidate,
+        ),
+    )
+
+    guarded = provider._dialogue_contract_v2_route_permission_guard(
+        result,
+        client_message="Какой адрес занятий?",
+        context={
+            "active_brand": "unpk",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:015_address"]},
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == candidate
+    assert "dialogue_contract_route_permission_autonomous_candidate" in guarded.safety_flags
+    assert "cite_only_recover_at_guardchain" in guarded.safety_flags
+
+
+def test_a2_route_permission_promotes_valid_schedule_recovery_candidate() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    facts = {"schedule.publication": "Точное расписание групп будет опубликовано в июне."}
+    candidate = "Точное расписание групп будет опубликовано в июне."
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру.",
+        topic_id="theme:013_schedule",
+        metadata=_a2_pipeline_metadata(
+            question="Когда будет расписание?",
+            facts=facts,
+            recovery_candidate=candidate,
+        ),
+    )
+
+    guarded = provider._dialogue_contract_v2_route_permission_guard(
+        result,
+        client_message="Когда будет расписание?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:013_schedule"]},
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == candidate
+    assert "cite_only_recover_at_guardchain" in guarded.safety_flags
+
+
+def test_a2_recovery_candidate_does_not_override_p0_or_cross_brand_or_promise() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    facts = {"price.current": "Фотон: курс стоит 49 000 ₽."}
+    candidate = "Фотон: курс стоит 49 000 ₽."
+    metadata = _a2_pipeline_metadata(
+        question="Сколько стоит курс?",
+        facts=facts,
+        recovery_candidate=candidate,
+    )
+
+    p0 = provider._dialogue_contract_v2_route_permission_guard(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=SAFE_FALLBACK_DRAFT_TEXT, topic_id="theme:001_pricing", metadata=metadata),
+        client_message="Оплатил, занятий нет, верните деньги.",
+        context={"active_brand": "foton", "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]}},
+    )
+    assert p0.route == "manager_only"
+    assert "cite_only_recover_at_guardchain" not in p0.safety_flags
+
+    cross_brand = provider._dialogue_contract_v2_route_permission_guard(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+            topic_id="theme:001_pricing",
+            safety_flags=("brand_separation_guarded",),
+            metadata=metadata,
+        ),
+        client_message="А у УНПК дешевле?",
+        context={"active_brand": "foton", "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]}},
+    )
+    assert cross_brand.route == "draft_for_manager"
+    assert "cite_only_recover_at_guardchain" not in cross_brand.safety_flags
+
+    promise = provider._dialogue_contract_v2_route_permission_guard(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text=RESULT_GUARANTEE_SAFE_TEXT,
+            topic_id="theme:016_program",
+            safety_flags=("result_guarantee_safe_template_applied",),
+            metadata=metadata,
+        ),
+        client_message="Гарантируете 100 баллов?",
+        context={"active_brand": "foton", "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:016_program"]}},
+    )
+    assert promise.route == "draft_for_manager"
+    assert "cite_only_recover_at_guardchain" not in promise.safety_flags
+
+
+def test_a2_recovery_candidate_must_pass_output_verifier() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    facts = {"price.current": "Фотон: курс стоит 49 000 ₽."}
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        topic_id="theme:001_pricing",
+        metadata=_a2_pipeline_metadata(
+            question="Сколько стоит курс?",
+            facts=facts,
+            recovery_candidate="Фотон: курс стоит 99 999 ₽.",
+        ),
+    )
+
+    guarded = provider._dialogue_contract_v2_route_permission_guard(
+        result,
+        client_message="Сколько стоит курс?",
+        context={"active_brand": "foton", "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]}},
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert guarded.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert "cite_only_recover_at_guardchain" not in guarded.safety_flags
 
 
 def test_identity_disclosure_detector_uses_word_boundaries() -> None:

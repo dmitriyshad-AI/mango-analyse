@@ -267,6 +267,7 @@ class DialogueContractPipelineResult:
     warmth_rejected_unsupported: tuple[str, ...] = ()
     warmth_semantic_available: bool = True
     repaired: bool = False
+    recovery_candidate: str = ""
 
 
 @dataclass(frozen=True)
@@ -1154,6 +1155,7 @@ def _semantic_recover_or_handoff(
         semantic_match_replaced=True,
         semantic_match_reason=str(verdict.get("reason") or "").strip(),
         repaired=True,
+        recovery_candidate=replacement,
     )
 
 
@@ -1203,6 +1205,7 @@ def _cite_only_recover_result_before_handoff(
         missing=retrieval.missing,
         fallback_reason=fallback_reason,
         repaired=True,
+        recovery_candidate=recovered,
     )
 
 
@@ -1563,14 +1566,22 @@ def run_pipeline(
         )
     direct_answer = _direct_exact_fact_answer(contract, retrieval)
     if direct_answer:
+        direct_draft = _avoid_repeating_text(direct_answer, conversation=conversation, contract=contract, facts=retrieval.facts)
         return DialogueContractPipelineResult(
-            draft_text=_avoid_repeating_text(direct_answer, conversation=conversation, contract=contract, facts=retrieval.facts),
+            draft_text=direct_draft,
             route="bot_answer_self",
             manager_only=False,
             contract=contract,
             facts=retrieval.facts,
             missing=retrieval.missing,
             fallback_reason="direct_exact_fact_answer",
+            recovery_candidate=_stashed_recovery_candidate(
+                direct_draft,
+                contract=contract,
+                retrieval=retrieval,
+                client_words=client_words,
+                context=context,
+            ),
         )
     force_draft_for_manager = (
         contract.answerability != "answer_self"
@@ -1798,6 +1809,7 @@ def run_pipeline(
             previous_bot_texts=previous_bot_texts,
             original_findings=findings,
             original_unsupported=unsupported,
+            allow_key_coverage=True,
         )
         if recovered:
             return recovered
@@ -1878,13 +1890,14 @@ def run_pipeline(
                 previous_bot_texts=previous_bot_texts,
             )
             if fallback_semantic_available and not fallback_findings and not fallback_unsupported:
+                verified_draft = _avoid_repeating_text(
+                    verified_fallback,
+                    conversation=conversation,
+                    contract=contract,
+                    facts=retrieval.facts,
+                )
                 return DialogueContractPipelineResult(
-                    draft_text=_avoid_repeating_text(
-                        verified_fallback,
-                        conversation=conversation,
-                        contract=contract,
-                        facts=retrieval.facts,
-                    ),
+                    draft_text=verified_draft,
                     route="bot_answer_self",
                     manager_only=False,
                     contract=contract,
@@ -1894,6 +1907,13 @@ def run_pipeline(
                     unsupported_claims=tuple(unsupported),
                     repaired=repaired,
                     fallback_reason="verified_fact_fallback_after_hard_check",
+                    recovery_candidate=_stashed_recovery_candidate(
+                        verified_draft,
+                        contract=contract,
+                        retrieval=retrieval,
+                        client_words=client_words,
+                        context=context,
+                    ),
                 )
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         recovered = _cite_only_recover_result_before_handoff(
@@ -1908,6 +1928,7 @@ def run_pipeline(
             previous_bot_texts=previous_bot_texts,
             original_findings=findings,
             original_unsupported=unsupported,
+            allow_key_coverage=True,
         )
         if recovered:
             return recovered
@@ -2110,8 +2131,9 @@ def run_pipeline(
                     else:
                         warmth_rejected_reason = "unknown_rejection"
 
+    final_draft = _avoid_repeating_text(draft, conversation=conversation, contract=contract, facts=retrieval.facts)
     return DialogueContractPipelineResult(
-        draft_text=_avoid_repeating_text(draft, conversation=conversation, contract=contract, facts=retrieval.facts),
+        draft_text=final_draft,
         route="draft_for_manager" if force_draft_for_manager else "bot_answer_self",
         manager_only=False,
         contract=contract,
@@ -2129,6 +2151,13 @@ def run_pipeline(
         semantic_match_replaced=semantic_match_replaced,
         semantic_match_reason=semantic_match_reason,
         repaired=repaired,
+        recovery_candidate=_stashed_recovery_candidate(
+            final_draft,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            context=context,
+        ),
     )
 
 
@@ -2665,6 +2694,11 @@ def _cite_only_recover_before_handoff(
     if not has_scope:
         trace_event(context, "cite_only_recover", {"replaced": False, "reason": "no_exact_scope"})
         return ""
+    if allow_key_coverage and _asks_class_schedule_days(contract):
+        matched = _matched_fact_text_for_required_keys(retrieval, contract.all_needed_fact_keys())
+        if matched and all(_is_contact_hours_fact(key, value) for key, value in matched.items()):
+            trace_event(context, "cite_only_recover", {"replaced": False, "reason": "contact_hours_not_class_schedule"})
+            return ""
     replacement = (
         _composition_answer(contract, retrieval, current_draft=draft)
         or _hard_failure_exact_fact_fallback(contract, retrieval)
@@ -2704,6 +2738,26 @@ def _cite_only_recover_before_handoff(
         return replacement
     trace_event(context, "cite_only_recover", {"replaced": False, "reason": "semantic_unavailable_new_anchor"})
     return ""
+
+
+def _stashed_recovery_candidate(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+) -> str:
+    text = str(draft or "").strip()
+    if (
+        not text
+        or not retrieval.facts
+        or contract.answerability != "answer_self"
+        or _looks_like_handoff(text)
+        or _cite_only_recover_blocked(contract, client_words=client_words, context=context)
+    ):
+        return ""
+    return text
 
 
 _CITE_ONLY_RECOVERABLE_FINDING_CODES = {

@@ -291,18 +291,23 @@ def build_dialogue_memory(
     current_risk_flags = _detect_risk_flags(current_text)
     held_p0_required = bool(previous_held.p0_latched or current_risk_flags or current_roles.refund_frame == "dispute")
     held_state = update_held(previous_held, current_text, current_roles, p0_required=held_p0_required)
+    previous_latch = previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch()
     p0_latch = _next_p0_latch(
-        previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(),
+        previous_latch,
         current_message=current_text,
         current_risk_flags=current_risk_flags,
         context=context,
         session_id=session_id,
         turns=turns,
     )
-    latch_released = _p0_latch_released(previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(), p0_latch)
+    latch_released = _p0_latch_released(previous_latch, p0_latch)
     if latch_released:
         held_state = replace(held_state, p0_latched=False, p0_codes=())
-    risks = current_risk_flags if latch_released else _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
+    risks = (
+        current_risk_flags
+        if latch_released or _previous_autonomous_p0_latch_released(previous_latch)
+        else _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
+    )
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = _detect_commitments(turns)
@@ -1193,6 +1198,10 @@ def _has_hard_p0_latch_code(codes: Sequence[str]) -> bool:
 
 def _p0_latch_released(previous: DialogueP0Latch, current: DialogueP0Latch) -> bool:
     return bool(previous.active and not current.active and current.release_event_id)
+
+
+def _previous_autonomous_p0_latch_released(previous: DialogueP0Latch) -> bool:
+    return bool(not previous.active and previous.release_event_id == AUTONOMOUS_P0_LATCH_RELEASE_EVENT)
 
 
 def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) -> Mapping[str, str]:

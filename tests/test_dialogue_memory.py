@@ -583,6 +583,50 @@ def test_dialogue_memory_autonomously_releases_refund_latch_after_five_neutral_t
     assert memory.held_state.p0_latched is False
 
 
+def test_dialogue_memory_released_refund_latch_does_not_mute_next_benign_turn() -> None:
+    released = _build_memory_sequence(
+        [
+            "Верните деньги за курс.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+            "Какой адрес очной площадки?",
+        ],
+        session_id="s-refund-release-next",
+    )
+
+    followup = build_dialogue_memory(
+        current_message="И какая цена за семестр?",
+        active_brand="foton",
+        previous_memory=released,
+        session_id="s-refund-release-next",
+    )
+
+    assert released.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
+    assert followup.p0_latch.active is False
+    assert followup.handoff_state != "required"
+    assert "p0" not in followup.risk_flags
+
+
+def test_dialogue_memory_complaint_latch_autonomously_releases_after_five_neutral_turns() -> None:
+    memory = _build_memory_sequence(
+        [
+            "Преподаватель ужасно ведёт занятия, я недовольна.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+            "Какой адрес очной площадки?",
+        ],
+        session_id="s-complaint-release",
+    )
+
+    assert memory.p0_latch.active is False
+    assert memory.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
+    assert memory.handoff_state != "required"
+
+
 def test_dialogue_memory_soft_negative_does_not_start_p0_latch() -> None:
     memory = _build_memory_sequence(
         [
@@ -598,6 +642,24 @@ def test_dialogue_memory_soft_negative_does_not_start_p0_latch() -> None:
     assert memory.p0_latch.active is False
     assert "p0" not in memory.risk_flags
     assert memory.handoff_state != "required"
+
+
+def test_dialogue_memory_does_not_release_latch_when_new_p0_appears_inside_window() -> None:
+    memory = _build_memory_sequence(
+        [
+            "Верните деньги за курс.",
+            "А по каким дням занятия?",
+            "Сколько длится урок?",
+            "Можно онлайн?",
+            "Где смотреть записи?",
+            "Преподаватель ужасно ведёт занятия, я недовольна.",
+        ],
+        session_id="s-refund-new-p0-window",
+    )
+
+    assert memory.p0_latch.active is True
+    assert "refund" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
 
 
 def test_dialogue_memory_does_not_autonomously_release_legal_latch() -> None:

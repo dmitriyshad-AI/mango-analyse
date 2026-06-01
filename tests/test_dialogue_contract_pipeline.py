@@ -3731,6 +3731,22 @@ def test_build_understanding_prompt_includes_topic_focus_for_ellipsis() -> None:
     assert "низкая: answerability=manager_only" not in prompt
 
 
+def test_build_understanding_prompt_routes_semantic_complaints_to_manager_without_regex_forcing() -> None:
+    prompt = build_understanding_prompt(
+        conversation=(
+            {"role": "client", "text": "ребёнок ничего не понял на занятии, что с этим делать?"},
+        ),
+        active_brand="foton",
+        fact_key_catalog=("regular_course.physics.grade8.online.price",),
+        context={},
+    )
+
+    assert "Жалобу/недовольство распознавай по смыслу" in prompt
+    assert "ребёнок ничего не понял" in prompt
+    assert "p0_reason='complaint'" in prompt
+    assert p0_pre_gate("ребёнок ничего не понял на занятии, что с этим делать?", context={}) is None
+
+
 def test_p0_pre_gate_forces_only_hard_codes_and_leaves_soft_reputation_to_model() -> None:
     assert p0_pre_gate("Верните деньги, занятия не идут.", context={}) == "refund"
     assert p0_pre_gate("Оплатил, доступа нет.", context={}) == "payment_dispute"
@@ -4298,6 +4314,38 @@ def test_non_refund_complaint_p0_does_not_use_refund_template() -> None:
     assert result.fallback_reason == "p0"
     assert "возврат" not in result.draft_text.casefold()
     assert "отмен" not in result.draft_text.casefold()
+
+
+def test_model_marked_soft_complaint_uses_clean_complaint_handoff_without_collecting_data() -> None:
+    store = FactStore(catalog=("schedule.general",), store={"foton": {"schedule.general": "Расписание групп публикуется после набора."}})
+
+    def _draft(_prompt: str) -> str:
+        raise AssertionError("P0 complaint should not call draft model")
+
+    result = run_pipeline(
+        conversation=_conv("ребёнок ничего не понял на занятии, можно узнать расписание?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "ребёнок ничего не понял на занятии, можно узнать расписание?",
+                "client_state": "недовольство качеством занятия",
+                "answerability": "manager_only",
+                "is_p0": True,
+                "p0_reason": "complaint",
+            }
+        ),
+        draft_fn=_draft,
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert "ситуац" in text or "разбер" in text
+    assert "возврат" not in text
+    assert "скидк" not in text
+    assert "укажите" not in text
+    assert "ребён" not in text
 
 
 def test_p0_pregate_does_not_call_warmth() -> None:

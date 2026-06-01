@@ -359,6 +359,10 @@ def build_understanding_prompt(
         "- client_state — ситуация/тон клиента для выбора регистра; не нужно потом произносить эмоцию вслух.\n"
         "- needed_fact_keys: только ключи или смысловые ключи из каталога; значения, суммы, даты и проценты не пиши.\n"
         "- Если нужен спорный возврат, жалоба, юридическая угроза или спорная оплата: is_p0=true, answerability=manager_only.\n"
+        "- Жалобу/недовольство распознавай по смыслу, даже без слова «жалоба»: "
+        "«ребёнок ничего не понял», «зря заплатили», «толку нет», «не нравится как ведут» — "
+        "это is_p0=true, p0_reason='complaint', answerability=manager_only. "
+        "Если в той же реплике есть вопрос о курсе, приоритет у жалобы, не собирай данные ребёнка.\n"
         "- Если прямого факта нет, но в каталоге есть ключ, ПО СМЫСЛУ покрывающий вопрос — поставь его в "
         "needed_fact_keys и answerable='self'. Если вопрос неоднозначен — задай ОДИН уточняющий подвопрос, не "
         "уходи к менеджеру. answerability=manager_only ТОЛЬКО при P0 или когда в каталоге реально нет покрывающего "
@@ -1491,7 +1495,7 @@ def run_pipeline(
         ):
             contract = replace(contract, is_p0=False, p0_reason="", answerability="answer_self")
         else:
-            text = _dry_p0_text(conversation=conversation)
+            text = _p0_handoff_text(contract, conversation=conversation)
             text = _avoid_repeating_text(text, conversation=conversation, contract=contract, facts={})
             trace_event(context, "build_draft", {"route": "manager_only", "fallback_reason": "p0", "draft": text})
             return DialogueContractPipelineResult(
@@ -3252,6 +3256,17 @@ def _dry_p0_text(*, conversation: Sequence[Mapping[str, str]] | None = None) -> 
     if conversation:
         bot_turns = sum(1 for item in conversation if str(item.get("role") or "") == "bot")
     return _DRY_P0_TEXTS[bot_turns % len(_DRY_P0_TEXTS)]
+
+
+def _p0_handoff_text(
+    contract: AnswerContract,
+    *,
+    conversation: Sequence[Mapping[str, str]] | None = None,
+) -> str:
+    reason = f"{contract.p0_reason} {contract.client_state}".casefold().replace("ё", "е")
+    if "complaint" in reason or "жалоб" in reason:
+        return _complaint_handoff_text(conversation=conversation)
+    return _dry_p0_text(conversation=conversation)
 
 
 _REFUND_POLICY_TEXTS: tuple[str, ...] = (

@@ -56,6 +56,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_unconfirmed_operational_specificity_guard,
     _claim_supported_by_facts,
     _fresh_fact_texts,
+    _validated_guardchain_recovery_candidate,
     contains_bot_identity_disclosure,
     decide_route,
     draft_has_internal_service_markers,
@@ -4053,6 +4054,151 @@ def test_a2_recovery_candidate_must_pass_output_verifier() -> None:
     assert guarded.route == "draft_for_manager"
     assert guarded.draft_text == SAFE_FALLBACK_DRAFT_TEXT
     assert "cite_only_recover_at_guardchain" not in guarded.safety_flags
+
+
+def test_block2_part_a_terminal_platform_template_yields_valid_fact_candidate_even_manager_only() -> None:
+    facts = {
+        "platform.cabinet": (
+            "Фотон: доступ к личному кабинету проходит через учебную платформу; "
+            "менеджер подскажет логин по вашей группе."
+        )
+    }
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        topic_id="service:S5_general_consultation",
+        metadata=_a2_pipeline_metadata(
+            question="Как зайти в личный кабинет?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        client_message="Как зайти в личный кабинет?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["service:S5_general_consultation"]},
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "учебную платформу" in guarded.draft_text
+    assert "cite_only_recover_at_guardchain" in guarded.safety_flags
+    assert guarded.metadata["cite_only_recover_at_guardchain_source"] == "safe_template_dispatcher"
+
+
+def test_block2_part_a_tax_template_builds_candidate_from_fact_without_derived_amounts() -> None:
+    facts = {
+        "tax.knd_certificate": (
+            "Фотон: для налогового вычета можно запросить справку об оплате обучения по форме КНД."
+        )
+    }
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        topic_id="theme:020_tax_deduction",
+        metadata=_a2_pipeline_metadata(
+            question="Можно получить налоговый вычет?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        client_message="Можно получить налоговый вычет?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:020_tax_deduction"]},
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "справку об оплате обучения по форме КНД" in guarded.draft_text
+    assert "14 300" not in guarded.draft_text
+    assert "13%" not in guarded.draft_text
+    assert "cite_only_recover_at_guardchain" in guarded.safety_flags
+
+
+def test_block2_part_a_trial_template_answers_only_when_retrieved_trial_fact_exists() -> None:
+    facts = {
+        "trial.online_fragment": (
+            "Фотон: по онлайн-формату можно прислать фрагмент занятия; "
+            "условия просмотра подтвердит менеджер."
+        )
+    }
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        topic_id="theme:023_trial_class",
+        metadata=_a2_pipeline_metadata(
+            question="Можно посмотреть пробное занятие?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        client_message="Можно посмотреть пробное занятие?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:023_trial_class"]},
+        },
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "фрагмент занятия" in guarded.draft_text
+    assert "cite_only_recover_at_guardchain" in guarded.safety_flags
+
+    no_fact = _apply_v2_guard_chain(
+        replace(result, metadata=_a2_pipeline_metadata(question="Можно посмотреть пробное занятие?", facts={}, recovery_candidate="")),
+        client_message="Можно посмотреть пробное занятие?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:023_trial_class"]},
+        },
+    )
+
+    assert no_fact.route == "manager_only"
+    assert "фрагмент занятия" not in no_fact.draft_text
+    assert "cite_only_recover_at_guardchain" not in no_fact.safety_flags
+
+
+def test_block2_part_a_recovery_candidate_does_not_yield_on_high_risk_or_protective_flags() -> None:
+    facts = {"tax.knd_certificate": "Фотон: для налогового вычета можно запросить справку КНД."}
+    candidate = "Фотон: для налогового вычета можно запросить справку КНД."
+    metadata = _a2_pipeline_metadata(
+        question="Можно получить налоговый вычет?",
+        facts=facts,
+        recovery_candidate=candidate,
+    )
+
+    high_risk = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        safety_flags=("tax_safe_template_applied", "high_risk_manager_only"),
+        metadata=metadata,
+    )
+    assert _validated_guardchain_recovery_candidate(
+        high_risk,
+        client_message="Оплатил, занятий нет, верните деньги. Можно налоговый вычет?",
+        context={"active_brand": "foton"},
+    ) == ""
+
+    protective = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=RESULT_GUARANTEE_SAFE_TEXT,
+        safety_flags=("tax_safe_template_applied", "result_guarantee_safe_template_applied"),
+        metadata=metadata,
+    )
+    assert _validated_guardchain_recovery_candidate(
+        protective,
+        client_message="Гарантируете результат и налоговый вычет?",
+        context={"active_brand": "foton"},
+    ) == ""
 
 
 def test_a21_informational_matkap_template_yields_to_verified_fact_answer() -> None:

@@ -2081,6 +2081,61 @@ def test_cite_only_recover_after_hard_verification_failed_uses_exact_price_fact(
     assert "29 750 ₽" in result.recovery_candidate
 
 
+def test_block2_part_a_hard_verification_uses_key_coverage_schedule_publication_fact() -> None:
+    store = FactStore(
+        catalog=("schedule.publication",),
+        store={"foton": {"schedule.publication": "Точное расписание групп будет опубликовано в июне."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("по каким дням занятия?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "по каким дням занятия?",
+                "subquestions": [
+                    {"text": "по каким дням занятия?", "answerable": "self", "needed_fact_keys": ["schedule.publication"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Занятия проходят по будням.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason in {"cite_only_recover", "schedule_publication_answer"}
+    assert "расписание групп будет опубликовано в июне" in result.draft_text.casefold()
+    assert "по будням" not in result.draft_text.casefold()
+
+
+def test_block2_part_a_hard_verification_does_not_use_contact_hours_as_schedule() -> None:
+    store = FactStore(
+        catalog=("schedule.publication",),
+        store={"foton": {"schedule.publication": "Фотон на связи ежедневно с 10:00 до 18:00."}},
+    )
+    result = run_pipeline(
+        conversation=_conv("по каким дням занятия?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "по каким дням занятия?",
+                "subquestions": [
+                    {"text": "по каким дням занятия?", "answerable": "self", "needed_fact_keys": ["schedule.publication"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Занятия проходят по будням.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "10:00" not in result.draft_text
+    assert "18:00" not in result.draft_text
+
+
 def test_semantic_recover_keeps_handoff_for_camp_vs_regular_course() -> None:
     store = FactStore(
         catalog=("regular.course.start",),

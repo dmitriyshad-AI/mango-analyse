@@ -1886,6 +1886,7 @@ def run_pipeline(
                 previous_bot_texts=previous_bot_texts,
                 original_findings=findings,
                 original_unsupported=unsupported,
+                allow_key_coverage=True,
             )
             if recovered:
                 return recovered
@@ -2034,6 +2035,7 @@ def run_pipeline(
                 previous_bot_texts=previous_bot_texts,
                 original_findings=candidate_findings,
                 original_unsupported=candidate_unsupported,
+                allow_key_coverage=True,
             )
             if recovered:
                 return recovered

@@ -928,6 +928,16 @@ def _produce_olympiad_online_template(
     return _olympiad_online_safe_template(result, client_message=client_message, context=context)
 
 
+def _produce_trial_template(
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    if not _has_trial_retrieved_fact(result):
+        return ""
+    return _trial_safe_template(result, client_message=client_message, context=context)
+
+
 DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
     SafeTemplateSpec(
         name="cross_brand",
@@ -989,10 +999,20 @@ DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY: tuple[SafeTemplateSpec, ...] = (
         topic_on_apply="theme:016_program",
         topic_flag="program_topic_normalized",
     ),
+    SafeTemplateSpec(
+        name="trial",
+        priority=60,
+        produce=_produce_trial_template,
+        route_on_apply="keep_or_draft",
+        flag="trial_safe_template_applied",
+        checklist="Пробное занятие: отвечать только при наличии client-safe факта; не обещать бесплатность сверх утверждённых правил.",
+        topic_on_apply="theme:023_trial_class",
+        topic_flag="trial_topic_normalized",
+    ),
 )
 
 
-_INFORMATIONAL_SAFE_TEMPLATE_NAMES = {"terminal", "matkap", "tax", "olympiad_online"}
+_INFORMATIONAL_SAFE_TEMPLATE_NAMES = {"terminal", "matkap", "tax", "olympiad_online", "trial"}
 
 
 def _is_informational_terminal_template(text: str) -> bool:
@@ -1138,6 +1158,42 @@ def apply_dialogue_contract_v2_template_dispatcher(
                 )
                 return yielded
             guarded = _apply_safe_template_spec(result, spec, text)
+            recovery_candidate = _validated_guardchain_recovery_candidate(
+                guarded,
+                client_message=client_message,
+                context=context,
+            )
+            if recovery_candidate:
+                recovered_flags = tuple(
+                    dict.fromkeys([*guarded.safety_flags, "cite_only_recover_at_guardchain"])
+                )
+                recovered_metadata = {
+                    **dict(guarded.metadata),
+                    "cite_only_recover_at_guardchain": True,
+                    "cite_only_recover_at_guardchain_source": "safe_template_dispatcher",
+                }
+                recovered = replace(
+                    guarded,
+                    route="bot_answer_self_for_pilot",
+                    draft_text=recovery_candidate,
+                    safety_flags=recovered_flags,
+                    metadata=recovered_metadata,
+                )
+                trace_event(
+                    context,
+                    "safe_template_dispatcher",
+                    {
+                        "applied": spec.name,
+                        "yielded_recovery_candidate": True,
+                        "priority": spec.priority,
+                        "flag": spec.flag,
+                        "route_before": result.route,
+                        "route_after": recovered.route,
+                        "topic_before": result.topic_id,
+                        "topic_after": recovered.topic_id,
+                    },
+                )
+                return recovered
             trace_event(
                 context,
                 "safe_template_dispatcher",
@@ -2288,6 +2344,14 @@ def _pipeline_fact_texts(result: SubscriptionDraftResult) -> dict[str, str]:
     }
 
 
+def _has_trial_retrieved_fact(result: SubscriptionDraftResult) -> bool:
+    for key, text in _pipeline_fact_texts(result).items():
+        normalized = " ".join((str(key or ""), str(text or ""))).casefold().replace("ё", "е")
+        if has_any_marker(normalized, ("trial", "пробн", "фрагмент занятия", "фрагмент урок")):
+            return True
+    return False
+
+
 def _pipeline_contract(
     result: SubscriptionDraftResult,
     *,
@@ -2435,6 +2499,25 @@ def _safe_template_applied_name(result: SubscriptionDraftResult) -> str:
     return ""
 
 
+def _has_informational_safe_template(result: SubscriptionDraftResult) -> bool:
+    if _safe_template_applied_name(result) in _INFORMATIONAL_SAFE_TEMPLATE_NAMES:
+        return True
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    return any(
+        spec.name in _INFORMATIONAL_SAFE_TEMPLATE_NAMES
+        and (spec.flag in result.safety_flags or metadata.get(spec.flag))
+        for spec in DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY
+    )
+
+
+def _manager_only_recovery_yield_allowed(result: SubscriptionDraftResult, *, client_message: str) -> bool:
+    applied = _safe_template_applied_name(result)
+    if applied == "terminal":
+        text = str(client_message or "").casefold().replace("ё", "е")
+        return has_any_marker(text, ("личный кабинет", "кабинет", "платформ", "зайти", "войти", "доступ"))
+    return applied in _INFORMATIONAL_SAFE_TEMPLATE_NAMES or _has_informational_safe_template(result)
+
+
 def _safe_template_yield_before_fallback(
     before: SubscriptionDraftResult,
     after: SubscriptionDraftResult,
@@ -2472,9 +2555,22 @@ def _validated_guardchain_recovery_candidate(
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
     candidate = str(pipeline.get("recovery_candidate") or "").strip()
-    if not candidate or pipeline.get("recovery_candidate_validated") is not True:
+    fact_texts = _pipeline_fact_texts(result)
+    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(fact_texts.keys()))
+    if not candidate:
+        candidate = _recovery_candidate_from_informational_facts(
+            result,
+            contract=contract,
+            fact_texts=fact_texts,
+            client_message=client_message,
+        )
+    elif pipeline.get("recovery_candidate_validated") is not True:
         return ""
-    if result.route == "manager_only" or is_high_risk_result(result) or set(detect_high_risk_input_markers(client_message, context=context)):
+    if not candidate:
+        return ""
+    if result.route == "manager_only" and not _manager_only_recovery_yield_allowed(result, client_message=client_message):
+        return ""
+    if is_high_risk_result(result) or set(detect_high_risk_input_markers(client_message, context=context)):
         return ""
     flags = set(result.safety_flags)
     if flags.intersection(_GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
@@ -2482,10 +2578,8 @@ def _validated_guardchain_recovery_candidate(
     if any(bool(metadata.get(flag)) for flag in _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS):
         return ""
 
-    fact_texts = _pipeline_fact_texts(result)
     if not fact_texts:
         return ""
-    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(fact_texts.keys()))
     if contract.is_p0:
         return ""
     findings = verify_dialogue_contract_output(
@@ -2500,6 +2594,78 @@ def _validated_guardchain_recovery_candidate(
     if findings:
         return ""
     return candidate
+
+
+def _recovery_candidate_from_informational_facts(
+    result: SubscriptionDraftResult,
+    *,
+    contract: Any,
+    fact_texts: Mapping[str, str],
+    client_message: str,
+) -> str:
+    if not fact_texts or getattr(contract, "is_p0", False) or getattr(contract, "answerability", "") != "answer_self":
+        return ""
+    selected: list[str] = []
+    for key, text in fact_texts.items():
+        if _informational_fact_matches_question(
+            key,
+            text,
+            result=result,
+            contract=contract,
+            client_message=client_message,
+        ):
+            cleaned = _client_clean_fact_text(text)
+            if cleaned:
+                selected.append(cleaned)
+    if not selected:
+        return ""
+    unique = list(dict.fromkeys(selected))
+    if len(unique) == 1:
+        return f"По подтверждённым данным: {unique[0]}"
+    return "По подтверждённым данным: " + " ".join(unique[:3])
+
+
+def _informational_fact_matches_question(
+    key: str,
+    text: str,
+    *,
+    result: SubscriptionDraftResult,
+    contract: Any,
+    client_message: str,
+) -> bool:
+    haystack = " ".join(
+        [
+            str(key or ""),
+            str(text or ""),
+            str(result.topic_id or ""),
+            str(getattr(contract, "current_question", "") or ""),
+            str(client_message or ""),
+        ]
+    ).casefold().replace("ё", "е")
+    key_text = str(key or "").casefold().replace("ё", "е")
+    question = " ".join(
+        [
+            str(getattr(contract, "current_question", "") or ""),
+            str(client_message or ""),
+            str(result.topic_id or ""),
+        ]
+    ).casefold().replace("ё", "е")
+    tax_scope = "tax" in key_text or has_any_marker(haystack, ("налог", "вычет", "фнс", "кнд"))
+    if tax_scope and has_any_marker(question, ("налог", "вычет", "фнс", "кнд")):
+        if has_any_marker(question, ("сумм", "сколько", "13%", "110 000", "14 300", "верн", "возврат", "точно", "гарант", "одобр")):
+            return False
+        return True
+    matkap_scope = "matkap" in key_text or has_any_marker(haystack, ("маткап", "материнск", "сфр", "сертификат"))
+    if matkap_scope and has_any_marker(question, ("маткап", "материнск", "сфр", "сертификат")):
+        if has_any_marker(question, ("одобр", "точно", "гарант", "региональ")):
+            return False
+        return True
+    checks = (
+        (("trial" in key_text or has_any_marker(haystack, ("пробн", "фрагмент занятия", "фрагмент урок"))), ("пробн", "фрагмент", "посмотреть занят", "посмотреть урок")),
+        (("olympiad" in key_text or "phystech" in key_text or has_any_marker(haystack, ("олимпиад", "физтех"))), ("олимпиад", "физтех")),
+        (("platform" in key_text or "cabinet" in key_text or has_any_marker(haystack, ("личный кабинет", "учебн", "платформ"))), ("личный кабинет", "кабинет", "платформ", "зайти", "войти")),
+    )
+    return any(scope_ok and has_any_marker(question, question_markers) for scope_ok, question_markers in checks)
 
 
 def find_unsupported_numeric_promises(
@@ -5634,6 +5800,11 @@ def _terminal_safe_template(
         return FALSE_INFO_SAFE_TEXT
     if "ссылк" in client_haystack and "оплат" in client_haystack:
         return PAYMENT_LINK_SAFE_TEXT
+    if has_any_marker(client_haystack, ("личный кабинет", "кабинет", "платформ")) and has_any_marker(
+        client_haystack,
+        ("как", "зайти", "войти", "доступ", "логин", "парол"),
+    ):
+        return "Передам менеджеру вопрос по доступу к личному кабинету; он подскажет порядок входа по вашей группе."
     if "коллег" in client_haystack and ("учится" in client_haystack or "обуч" in client_haystack):
         return THIRD_PARTY_PRIVACY_SAFE_TEXT
     if "фио" in client_haystack and ("отвечает" in client_haystack or "сотрудник" in client_haystack or "назовите" in client_haystack):

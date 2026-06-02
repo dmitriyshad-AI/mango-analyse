@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import re
+
 from mango_mvp.channels.rules_engine import MIGRATED, apply_rule, load_rules_registry, select_rule
+
+
+def _number_tokens(text: str) -> set[str]:
+    return set(re.findall(r"\d[\d\s]*(?:[.,]\d+)?(?:\s*(?:₽|%))?", text))
 
 
 def test_rules_registry_loads_approved_migrated_rules() -> None:
@@ -144,6 +150,53 @@ def test_rules_engine_schedule_exact_group_days_only_from_group_fact() -> None:
     assert "rules_engine_schedule_group_fact" in outcome.flags
     assert "суббота 10:00-12:00" in outcome.text
     assert "Верхняя Красносельская" in outcome.text
+
+
+def test_step4_phase1_warmed_rule_strings_preserve_verbatim_facts_and_numbers() -> None:
+    registry = load_rules_registry()
+    teacher_fact = "Преподаватели — из МФТИ, МГУ, ВШЭ. Эксперты ЕГЭ и члены жюри олимпиад."
+    teacher = apply_rule(
+        registry["teacher"],
+        plan={"primary_intent": "teacher", "direct_question": "кто преподаёт?", "active_brand": "foton"},
+        facts={"teacher.fact": teacher_fact},
+        context={"active_brand": "foton"},
+    )
+    assert teacher is not None
+    assert "Про преподавателей могу дать такой ориентир" in teacher.text
+    assert "По преподавателям:" not in teacher.text
+    assert "МГУ, ВШЭ" in teacher.text
+
+    price_facts = {
+        "prices_regular_2026_27.online_grade10.semester": "Фотон: цены на 2026/27 учебный год, 10 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_grade10.year": "Фотон: цены на 2026/27 учебный год, 10 класс, онлайн, год — 47 250 ₽.",
+    }
+    price = apply_rule(
+        registry["price"],
+        plan={"primary_intent": "pricing", "direct_question": "Сколько стоит онлайн для 10 класса?", "active_brand": "foton"},
+        facts=price_facts,
+        context={"active_brand": "foton"},
+    )
+    assert price is not None
+    assert "подтверждена такая стоимость" in price.text
+    assert "По подтверждённым ценам" not in price.text
+    assert "29 750 ₽" in price.text
+    assert "47 250 ₽" in price.text
+    assert _number_tokens(price.text) <= _number_tokens(" ".join(price_facts.values()))
+
+    schedule_fact = "Математика, 11 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется."
+    schedule = apply_rule(
+        registry["schedule"],
+        plan={"primary_intent": "schedule", "direct_question": "когда математика 11 класс очно?", "active_brand": "foton"},
+        facts={"schedule_2026_27.groups.group_start_date_c13_krasnoselskaya_sat_1000_1200_math_11_advanced.client_safe_text": schedule_fact},
+        context={"active_brand": "foton"},
+    )
+    assert schedule is not None
+    assert "Нашёл такую группу" in schedule.text
+    assert "По найденной группе" not in schedule.text
+    assert "суббота 10:00-12:00" in schedule.text
+    assert "12.09.2026" in schedule.text
+    assert "Верхняя Красносельская, 30" in schedule.text
+    assert _number_tokens(schedule.text) <= _number_tokens(schedule_fact)
 
 
 def test_rules_engine_schedule_unpublished_group_goes_to_manager_check() -> None:

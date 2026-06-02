@@ -1068,6 +1068,50 @@ def _safe_template_already_applied(result: SubscriptionDraftResult) -> bool:
     return any(spec.flag in result.safety_flags or metadata.get(spec.flag) for spec in DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY)
 
 
+_SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS = {
+    "cross_brand_safe_template_applied",
+    "cross_brand_client_text_blocked",
+    "brand_separation_guarded",
+    "result_guarantee_safe_template_applied",
+    "admission_guarantee_safe_template_applied",
+    "unsupported_promise_detected",
+    "zero_collect_legal_guarded",
+    "zero_collect_refund_guarded",
+    "complaint_apology_guarded",
+    "payment_dispute_manager_only",
+    "high_risk_manager_only",
+    "rules_engine_olympiad_grade_outside_9_11",
+    "placeholder_in_draft",
+    "identity_disclosure_guarded",
+}
+
+
+def _safe_template_can_yield_to_dispatcher(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+    shadow: Mapping[str, Any],
+    registry: Mapping[str, Any],
+) -> bool:
+    flags = set(result.safety_flags)
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    if isinstance(metadata.get("dialogue_contract_v2_template_dispatcher"), Mapping):
+        return False
+    if result.route == "manager_only" or is_high_risk_result(result):
+        return False
+    terminal_applied = "terminal_safe_template_applied" in flags or bool(metadata.get("terminal_safe_template_applied"))
+    if terminal_applied and not _is_informational_terminal_template(result.draft_text):
+        return False
+    if flags.intersection(_SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS):
+        return False
+    if any(bool(metadata.get(flag)) for flag in _SAFE_TEMPLATE_DISPATCHER_RECONSIDER_BLOCKING_FLAGS):
+        return False
+    if _is_policy_c_identity_question(result, context=context):
+        return True
+    intent = str(shadow.get("selected_intent") or "").strip()
+    return select_migrated_domain_rule(intent, registry) is not None
+
+
 def _safe_template_route(result: SubscriptionDraftResult, spec: SafeTemplateSpec, text: str) -> str:
     if spec.route_on_apply == "manager_only":
         return "manager_only"
@@ -1080,6 +1124,30 @@ def _safe_template_route(result: SubscriptionDraftResult, spec: SafeTemplateSpec
             return "bot_answer_self_for_pilot"
         return "draft_for_manager" if _is_terminal_direct_info_template(text) else "manager_only"
     return result.route
+
+
+def _is_approved_policy_c_identity_text(text: str, *, active_brand: str) -> bool:
+    clean_text = str(text or "").strip()
+    if active_brand == "foton":
+        return clean_text == IDENTITY_FOTON_SAFE_TEXT
+    if active_brand == "unpk":
+        return clean_text == IDENTITY_UNPK_SAFE_TEXT
+    return False
+
+
+def _policy_c_identity_allowed(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    if not _is_policy_c_identity_question(result, context=context):
+        return False
+    if result.route == "manager_only" or is_high_risk_result(result):
+        return False
+    if bool(_dialogue_contract_mapping(result).get("is_p0")):
+        return False
+    return not detect_high_risk_input_markers(client_message, context=context)
 
 
 def _is_terminal_direct_info_template(text: str) -> bool:
@@ -1550,17 +1618,33 @@ def apply_dialogue_contract_v2_template_dispatcher(
         result,
         shadow=_rules_engine_intent_shadow(result, context=context, registry=registry),
     )
+    shadow = result.metadata.get("rules_engine_intent_shadow") if isinstance(result.metadata, Mapping) else {}
+    if not isinstance(shadow, Mapping):
+        shadow = {}
     if _safe_template_already_applied(result):
-        trace_event(
-            context,
-            "safe_template_dispatcher",
-            {
-                "skipped": "already_applied",
-                "route": result.route,
-                "safety_flags": result.safety_flags,
-            },
-        )
-        return result
+        if _safe_template_can_yield_to_dispatcher(result, context=context, shadow=shadow, registry=registry):
+            trace_event(
+                context,
+                "safe_template_dispatcher",
+                {
+                    "reconsidered": "already_applied",
+                    "selected_source": shadow.get("selected_source"),
+                    "selected_intent": shadow.get("selected_intent"),
+                    "route": result.route,
+                    "safety_flags": result.safety_flags,
+                },
+            )
+        else:
+            trace_event(
+                context,
+                "safe_template_dispatcher",
+                {
+                    "skipped": "already_applied",
+                    "route": result.route,
+                    "safety_flags": result.safety_flags,
+                },
+            )
+            return result
     migrated = _apply_migrated_rules_engine(result, client_message=client_message, context=context)
     if migrated is not None:
         trace_event(
@@ -1578,6 +1662,26 @@ def apply_dialogue_contract_v2_template_dispatcher(
     for spec in sorted(DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY, key=lambda item: item.priority):
         text = spec.produce(result, client_message, context)
         if text:
+            identity_policy_text = spec.name == "terminal" and _is_approved_policy_c_identity_text(
+                text,
+                active_brand=_active_brand(context),
+            )
+            if identity_policy_text and not _policy_c_identity_allowed(
+                result,
+                client_message=client_message,
+                context=context,
+            ):
+                trace_event(
+                    context,
+                    "safe_template_dispatcher",
+                    {
+                        "skipped": "identity_policy_blocked_by_p0_or_high_risk",
+                        "priority": spec.priority,
+                        "route": result.route,
+                        "safety_flags": result.safety_flags,
+                    },
+                )
+                continue
             yielded = _safe_template_yield_result(result, spec=spec, client_message=client_message, context=context)
             if yielded is not None:
                 trace_event(
@@ -1593,7 +1697,7 @@ def apply_dialogue_contract_v2_template_dispatcher(
                 )
                 return yielded
             guarded = _apply_safe_template_spec(result, spec, text)
-            if spec.name == "terminal" and _is_policy_c_identity_question(result, context=context):
+            if identity_policy_text:
                 trace_event(
                     context,
                     "safe_template_dispatcher",
@@ -2031,6 +2135,22 @@ class SubscriptionLlmDraftProvider:
             context=context,
             previous_bot_texts=previous_bot_texts,
         )
+        if (
+            _is_policy_c_identity_question(after, context=context)
+            and _is_approved_policy_c_identity_text(after.draft_text, active_brand=_active_brand(context))
+            and not contract.is_p0
+            and not detect_high_risk_input_markers(client_message, context=context)
+        ):
+            flags = tuple(
+                dict.fromkeys(
+                    [
+                        *after.safety_flags,
+                        "dialogue_contract_text_change_reverified",
+                        "identity_policy_c_reverified",
+                    ]
+                )
+            )
+            return replace(after, safety_flags=flags)
         if _rules_engine_result_applied(metadata) and fact_texts and not findings:
             flags = tuple(
                 dict.fromkeys(

@@ -300,7 +300,7 @@ def _apply_teacher_rule(
         )
     elif _mentions_mendeleevo(question):
         subvariant = "mendeleevo"
-        text = f"По ЛВШ Менделеево ориентир по преподавателям такой: {_short_sentence(fact_text)} Менеджер уточнит состав по группе."
+        text = f"Для ЛВШ Менделеево ориентир по преподавателям такой: {_short_sentence(fact_text)} Менеджер уточнит состав по группе."
     elif _asks_specific_teacher_name(question):
         subvariant = "specific_name"
         route = "draft_for_manager"
@@ -309,7 +309,7 @@ def _apply_teacher_rule(
             f"Ориентир по составу: {_short_sentence(fact_text)} Менеджер уточнит преподавателя по вашей группе."
         )
     else:
-        text = f"По преподавателям: {_short_sentence(fact_text)} Конкретный состав по группе менеджер уточнит отдельно."
+        text = f"Про преподавателей могу дать такой ориентир: {_short_sentence(fact_text)} Конкретный состав по группе менеджер уточнит отдельно."
 
     return RuleOutcome(
         rule_id=rule.rule_id,
@@ -347,15 +347,15 @@ def _apply_recordings_rule(
 
     if wants_offline and offline_fact:
         subvariant = "offline"
-        text = f"По очным занятиям: {_short_sentence(offline_fact)}"
+        text = f"Для очных занятий действует такое правило: {_short_sentence(offline_fact)}"
         source = {offline_key or "rules_engine.recordings.offline": offline_fact}
     elif wants_online and online_fact:
         subvariant = "online"
-        text = f"По онлайн-занятиям: {_short_sentence(online_fact)}"
+        text = f"Для онлайн-занятий действует такой порядок: {_short_sentence(online_fact)}"
         source = {online_key or "rules_engine.recordings.online": online_fact}
     elif online_fact and offline_fact:
         subvariant = "online_and_offline"
-        text = f"По онлайн-занятиям: {_short_sentence(online_fact)} По очным занятиям: {_short_sentence(offline_fact)}"
+        text = f"Для онлайн-занятий действует такой порядок: {_short_sentence(online_fact)} Для очных занятий — {_short_sentence(offline_fact)}"
         source = {
             online_key or "rules_engine.recordings.online": online_fact,
             offline_key or "rules_engine.recordings.offline": offline_fact,
@@ -390,15 +390,15 @@ def _apply_contact_address_rule(
         configured = rule.data.get("foton") if isinstance(rule.data.get("foton"), Mapping) else {}
         kb_fact_key, kb_address = _foton_address_from_facts(facts)
         address = kb_address or str(configured.get("address") or "Москва, Верхняя Красносельская ул., 30").strip()
-        text = f"Фотон в Москве: {address}. Если нужна площадка под конкретную группу, менеджер уточнит детали."
+        text = f"В Москве Фотон находится по адресу: {address}. Если нужна площадка под конкретную группу, менеджер уточнит детали."
         fact_key = kb_fact_key or "rules_registry.contact_address.foton.address"
-        fact_text = f"Фотон: адрес очных занятий — {address}."
+        fact_text = f"Адрес очных занятий Фотона: {address}."
     elif brand == "unpk":
         configured = rule.data.get("unpk") if isinstance(rule.data.get("unpk"), Mapping) else {}
         addresses = tuple(str(item).strip() for item in (configured.get("addresses") or ()) if str(item).strip())
         if not addresses:
             return None
-        text = "Площадки УНПК: " + "; ".join(addresses) + ". Если выбираете очные занятия, уточните, какая площадка удобнее."
+        text = "УНПК проводит очные занятия на площадках: " + "; ".join(addresses) + ". Если выбираете очные занятия, уточните, какая площадка удобнее."
         fact_key = "rules_registry.contact_address.unpk.addresses"
         fact_text = "УНПК: площадки — " + "; ".join(addresses) + "."
     else:
@@ -637,7 +637,7 @@ def _apply_olympiad_rule(
         text = (
             fact_text
             if "для другого класса менеджер" in fact_text.casefold().replace("ё", "е")
-            else "По проверенным данным олимпиадная подготовка Физтех онлайн сейчас указана для 9 и 11 классов. Для другого класса менеджер отдельно проверит, есть ли подходящая олимпиадная онлайн-группа."
+            else "Проверенные данные сейчас такие: олимпиадная подготовка Физтех онлайн указана для 9 и 11 классов. Для другого класса менеджер отдельно проверит, есть ли подходящая олимпиадная онлайн-группа."
         )
         return _rule_outcome(
             rule,
@@ -1131,7 +1131,7 @@ def _apply_format_choice_rule(
             source[offline_key or "rules_engine.format.offline"] = offline_fact
         if not parts:
             return None
-        text = f"Формат за вас не выбираю: по подтверждённым фактам {', '.join(parts)}."
+        text = f"Формат за вас не выбираю: подтверждены {', '.join(parts)}."
     elif _requested_training_format(question, plan, context) == "online":
         if not online_fact:
             return None
@@ -1146,18 +1146,18 @@ def _apply_format_choice_rule(
         if has_online and has_offline:
             source[online_key or "rules_engine.format.online"] = online_fact
             source[offline_key or "rules_engine.format.offline"] = offline_fact
-            text = "По подтверждённым фактам есть онлайн-формат и очный формат; формат за вас не выбираю."
+            text = "Подтверждены онлайн-формат и очный формат; формат за вас не выбираю."
         elif has_online:
             source[online_key or "rules_engine.format.online"] = online_fact
-            text = f"Из подтверждённого есть онлайн-формат: {_short_sentence(online_fact)}"
+            text = f"Онлайн-формат подтверждён: {_short_sentence(online_fact)}"
         elif has_offline:
             source[offline_key or "rules_engine.format.offline"] = offline_fact
-            text = f"Из подтверждённого есть очный формат: {_short_sentence(offline_fact)}"
+            text = f"Очный формат подтверждён: {_short_sentence(offline_fact)}"
         else:
             return None
     if asks_days and has_weekend:
         source[weekend_key or "rules_engine.format.weekend"] = weekend_fact
-        text += " По дням есть разные слоты, в том числе по выходным; точный день менеджер сверит по группе."
+        text += " Дни бывают разными, в том числе по выходным; точный день менеджер сверит по группе."
     elif asks_days:
         text += " Точные дни конкретной группы менеджер сверит отдельно."
     return _rule_outcome(
@@ -1200,7 +1200,7 @@ def _apply_trial_rule(
             subvariant="offline_free_trial_guard",
             route="draft_for_manager",
             text=(
-                "По очному формату бесплатное пробное по умолчанию не обещаю. "
+                "Бесплатное пробное по умолчанию не обещаю для очного формата. "
                 "Очный пробный шаг согласует менеджер при записи: он проверит подходящую группу, филиал и условия. "
                 "Запрос передам именно как очный, без подмены на онлайн-фрагмент."
             ),
@@ -1235,7 +1235,7 @@ def _apply_trial_rule(
     elif brand == "unpk":
         if online_requested and (data_question or ack):
             text = (
-                "По онлайн-фрагменту УНПК нужны только класс, предмет и формат. "
+                "Для онлайн-фрагмента УНПК нужны только класс, предмет и формат. "
                 "Если они уже есть в диалоге, повторять не нужно; менеджер подберёт фрагмент и подтвердит способ просмотра."
             )
             subvariant = "online_fragment_process"
@@ -1440,7 +1440,7 @@ def _apply_schedule_rule(
             rule,
             subvariant="weekly_lessons",
             route="bot_answer_self_for_pilot",
-            text=f"По подтверждённому графику: {_short_sentence(fact)} Точные дни конкретной группы менеджер сверит по классу, предмету и площадке.",
+            text=f"Подтверждённый график сейчас такой: {_short_sentence(fact)} Точные дни конкретной группы менеджер сверит по классу, предмету и площадке.",
             facts={key or "rules_engine.schedule.weekly_lessons": fact},
             flags=("rules_engine_schedule_weekly_lessons", "schedule_frequency_safe_template_applied"),
             checklist="Rule engine: schedule — кадэнс только из факта; дни группы не выдумывать.",
@@ -1454,7 +1454,7 @@ def _apply_schedule_rule(
             rule,
             subvariant="start_date",
             route="bot_answer_self_for_pilot",
-            text=f"По старту занятий: {_short_sentence(fact)}",
+            text=f"Старт занятий указан так: {_short_sentence(fact)}",
             facts={key or "rules_engine.schedule.start": fact},
             flags=("rules_engine_schedule_start_date",),
             checklist="Rule engine: schedule — старт занятий из v6.4-факта по бренду/площадке.",
@@ -1464,7 +1464,7 @@ def _apply_schedule_rule(
         key, fact = _schedule_group_fact(scoped_facts, question, require_weekend=True)
         if fact:
             text = (
-                f"По подтверждённым группам есть варианты на выходных: {_short_sentence(fact, max_chars=260)} "
+                f"В подтверждённых группах есть варианты на выходных: {_short_sentence(fact, max_chars=260)} "
                 "Точный вариант под вашу группу менеджер сверит."
             )
             source = {key or "rules_engine.schedule.weekend_group": fact}
@@ -1472,7 +1472,7 @@ def _apply_schedule_rule(
             key, fact = _first_schedule_fact(scoped_facts, ("выходн", "суббот", "воскрес", "слот"))
             if not fact:
                 return _schedule_manager_check_outcome(rule, subvariant="weekend_slots", question=question, facts=scoped_facts)
-            text = f"По подтверждённым данным есть ориентир на слоты по выходным: {_short_sentence(fact)} Точный день и группу менеджер сверит."
+            text = f"В подтверждённых данных есть ориентир на слоты по выходным: {_short_sentence(fact)} Точный день и группу менеджер сверит."
             source = {key or "rules_engine.schedule.weekend_guidance": fact}
         return _rule_outcome(
             rule,
@@ -1491,7 +1491,7 @@ def _apply_schedule_rule(
                 rule,
                 subvariant="class_days_time",
                 route="bot_answer_self_for_pilot",
-                text=f"По найденной группе: {_short_sentence(fact, max_chars=300)} Если нужна финальная сверка по конкретной группе, менеджер подтвердит актуальность.",
+                text=f"Нашёл такую группу: {_short_sentence(fact, max_chars=300)} Если нужна финальная сверка по конкретной группе, менеджер подтвердит актуальность.",
                 facts={key or "rules_engine.schedule.group": fact},
                 flags=("rules_engine_schedule_group_fact",),
                 checklist="Rule engine: schedule — дни/время только из v6.4-факта, контакт-часы не использовать.",
@@ -1829,8 +1829,8 @@ def _camp_live_status_text(question: str, context: Mapping[str, Any] | None) -> 
         details.append(subject)
     suffix = f" по вашему запросу ({', '.join(details)})" if details else ""
     if _mentions_camp_or_lvsh(question):
-        return f"По местам не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие по конкретной смене."
-    return f"По местам не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие."
+        return f"Места не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие по конкретной смене."
+    return f"Места не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие."
 
 
 def _real_refund_claim(text: str) -> bool:
@@ -2304,7 +2304,7 @@ def _price_text_from_scoped_facts(
         return ""
     format_label = "онлайн" if requested_format == "online" else "очно"
     price_part = ", ".join(f"{label} — {_format_rub(amount)}" for label, amount in unique.items())
-    return f"По подтверждённым ценам для {requested_grade} класса ({format_label}): {price_part}."
+    return f"Для {requested_grade} класса ({format_label}) подтверждена такая стоимость: {price_part}."
 
 
 def _requested_price_period(text: str) -> str:

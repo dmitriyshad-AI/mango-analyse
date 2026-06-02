@@ -489,6 +489,47 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
     assert "needs_second_run" in summary
 
 
+def test_dynamic_summary_includes_llm_call_counts(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "llm_count_case",
+            "brand": "foton",
+            "turns": [{"turn": 1, "context_parity_checked": True}, {"turn": 2, "context_parity_checked": True}],
+        }
+    ]
+    judge_results = [
+        {
+            "dialog_id": "llm_count_case",
+            "brand": "foton",
+            "hard_gates_passed": True,
+            "soft_flags_present": [],
+            "verdict": "PASS",
+            "human_tone_score_0_100": 80,
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+        llm_calls={"client": 2, "bot_draft": 3, "bot_critic": 1, "memory": 2},
+    )
+
+    assert summary["llm_calls"] == {
+        "total": 8,
+        "client": 2,
+        "bot_draft": 3,
+        "bot_critic": 1,
+        "memory": 2,
+        "judge": 0,
+        "dialogs": 1,
+        "turns": 2,
+        "avg_calls_per_dialog": 8.0,
+    }
+
+
 def test_dynamic_summary_counts_over_handoff_turns_and_false_handoff_only_retrieved(tmp_path):
     transcripts = [
         {

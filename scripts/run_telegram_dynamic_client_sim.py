@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -117,6 +118,93 @@ class FakeBotProvider:
         )
 
 
+class LlmCallCounter:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: Counter[str] = Counter()
+
+    def increment(self, role: str) -> None:
+        value = str(role or "").strip()
+        if not value:
+            return
+        with self._lock:
+            self._counts[value] += 1
+
+    def snapshot(self) -> Mapping[str, int]:
+        with self._lock:
+            return dict(self._counts)
+
+
+class CountingGenerateModel:
+    def __init__(self, model: Any, *, role: str, counter: LlmCallCounter | None) -> None:
+        self._model = model
+        self._role = role
+        self._counter = counter
+
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        if self._counter is not None:
+            self._counter.increment(self._role)
+        return self._model.generate(prompt)
+
+
+class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
+    def __init__(self, *args: Any, llm_call_counter: LlmCallCounter | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._llm_call_counter = llm_call_counter
+
+    def _count_llm_call(self, role: str) -> None:
+        if self._llm_call_counter is not None:
+            self._llm_call_counter.increment(role)
+
+    def _dialogue_contract_understanding_runner(self, prompt: str) -> Mapping[str, Any]:
+        self._count_llm_call("bot_draft")
+        return super()._dialogue_contract_understanding_runner(prompt)
+
+    def _dialogue_contract_draft_runner(self, prompt: str) -> str:
+        self._count_llm_call("bot_draft")
+        return super()._dialogue_contract_draft_runner(prompt)
+
+    def _dialogue_contract_repair_runner(self, prompt: str) -> str:
+        self._count_llm_call("bot_draft")
+        return super()._dialogue_contract_repair_runner(prompt)
+
+    def _dialogue_contract_warmth_runner(self, prompt: str) -> str:
+        self._count_llm_call("bot_draft")
+        return super()._dialogue_contract_warmth_runner(prompt)
+
+    def _dialogue_contract_faithfulness_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        self._count_llm_call("bot_critic")
+        return super()._dialogue_contract_faithfulness_runner(prompt)
+
+    def _dialogue_contract_semantic_match_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        self._count_llm_call("bot_critic")
+        return super()._dialogue_contract_semantic_match_runner(prompt)
+
+    def _answer_quality_llm_rewrite_runner(
+        self,
+        *,
+        result: SubscriptionDraftResult,
+        client_message: str,
+        context: Mapping[str, Any] | None,
+        assessment: Any,
+    ) -> Mapping[str, Any]:
+        self._count_llm_call("bot_draft")
+        return super()._answer_quality_llm_rewrite_runner(
+            result=result,
+            client_message=client_message,
+            context=context,
+            assessment=assessment,
+        )
+
+    def _humanity_x2_rewrite_runner(self, prompt: str) -> str:
+        self._count_llm_call("bot_draft")
+        return super()._humanity_x2_rewrite_runner(prompt)
+
+    def _run_once(self, prompt: str, *, force_manager_only: bool) -> SubscriptionDraftResult:
+        self._count_llm_call("bot_draft")
+        return super()._run_once(prompt, force_manager_only=force_manager_only)
+
+
 class CodexJsonModel:
     def __init__(self, *, model: str, reasoning_effort: str, timeout_sec: int, codex_bin: str = "codex") -> None:
         self.model = model
@@ -220,6 +308,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Enable optional answer-quality LLM rewrite layer for bot answers in this run only.",
     )
     args = parser.parse_args(argv)
+    llm_call_counter = LlmCallCounter()
+    setattr(args, "llm_call_counter", llm_call_counter)
     if args.parallel < 1:
         raise ValueError("--parallel must be >= 1")
     if args.enable_llm_rewriter:
@@ -349,6 +439,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     snapshot_path=args.snapshot,
                     judge_spec=sim_input.judge_spec,
                     parallel=args.parallel,
+                    llm_calls=llm_call_counter.snapshot(),
                 )
                 print(
                     f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
@@ -395,6 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         snapshot_path=args.snapshot,
                         judge_spec=sim_input.judge_spec,
                         parallel=args.parallel,
+                        llm_calls=llm_call_counter.snapshot(),
                     )
                     print(
                         f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
@@ -417,6 +509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         snapshot_path=args.snapshot,
         judge_spec=sim_input.judge_spec,
         parallel=args.parallel,
+        llm_calls=llm_call_counter.snapshot(),
     )
     print(json.dumps({"ok": True, "out_dir": str(args.out_dir), **summary["totals"]}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -438,6 +531,7 @@ def write_dynamic_outputs(
     snapshot_path: Path,
     judge_spec: Mapping[str, Any] | None = None,
     parallel: int = 1,
+    llm_calls: Mapping[str, int] | None = None,
 ) -> Mapping[str, Any]:
     write_jsonl(transcripts_path, transcripts)
     write_jsonl(judge_path, judge_results)
@@ -455,6 +549,7 @@ def write_dynamic_outputs(
         snapshot_path=snapshot_path,
         judge_spec=judge_spec,
         parallel=parallel,
+        llm_calls=llm_calls,
     )
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
@@ -495,20 +590,28 @@ def load_transcripts(path: Path) -> list[Mapping[str, Any]]:
 def build_client_model(args: argparse.Namespace) -> Any:
     if args.client_mode == "fake":
         return FakeClientModel()
-    return CodexJsonModel(
-        model=args.model,
-        reasoning_effort=args.client_reasoning,
-        timeout_sec=args.timeout_sec,
+    return CountingGenerateModel(
+        CodexJsonModel(
+            model=args.model,
+            reasoning_effort=args.client_reasoning,
+            timeout_sec=args.timeout_sec,
+        ),
+        role="client",
+        counter=getattr(args, "llm_call_counter", None),
     )
 
 
 def build_judge_model(args: argparse.Namespace) -> Any:
     if args.judge_mode == "fake":
         return FakeJudgeModel()
-    return CodexJsonModel(
-        model=args.model,
-        reasoning_effort=args.judge_reasoning,
-        timeout_sec=args.timeout_sec,
+    return CountingGenerateModel(
+        CodexJsonModel(
+            model=args.model,
+            reasoning_effort=args.judge_reasoning,
+            timeout_sec=args.timeout_sec,
+        ),
+        role="judge",
+        counter=getattr(args, "llm_call_counter", None),
     )
 
 
@@ -517,11 +620,15 @@ def build_memory_model(args: argparse.Namespace) -> Any:
         return None
     if args.memory_mode == "fake":
         return FakeMemoryModel()
-    return CodexJsonModel(
-        model=args.memory_model,
-        reasoning_effort=args.memory_reasoning,
-        timeout_sec=args.timeout_sec,
-        codex_bin=getattr(args, "codex_bin", "codex"),
+    return CountingGenerateModel(
+        CodexJsonModel(
+            model=args.memory_model,
+            reasoning_effort=args.memory_reasoning,
+            timeout_sec=args.timeout_sec,
+            codex_bin=getattr(args, "codex_bin", "codex"),
+        ),
+        role="memory",
+        counter=getattr(args, "llm_call_counter", None),
     )
 
 
@@ -530,11 +637,15 @@ def build_semantic_match_model(args: argparse.Namespace) -> Any:
         return None
     if args.semantic_mode == "fake":
         return FakeSemanticMatchModel()
-    return CodexJsonModel(
-        model=args.semantic_model,
-        reasoning_effort=args.semantic_reasoning,
-        timeout_sec=args.timeout_sec,
-        codex_bin=getattr(args, "codex_bin", "codex"),
+    return CountingGenerateModel(
+        CodexJsonModel(
+            model=args.semantic_model,
+            reasoning_effort=args.semantic_reasoning,
+            timeout_sec=args.timeout_sec,
+            codex_bin=getattr(args, "codex_bin", "codex"),
+        ),
+        role="bot_critic",
+        counter=getattr(args, "llm_call_counter", None),
     )
 
 
@@ -548,13 +659,14 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         if dialog_id:
             cache_dir = cache_dir / safe_filename(dialog_id)
     semantic_match_model = build_semantic_match_model(args)
-    return SubscriptionLlmDraftProvider(
+    return CountingSubscriptionLlmDraftProvider(
         model=args.model,
         reasoning_effort=args.bot_reasoning,
         timeout_sec=args.timeout_sec,
         cache_dir=cache_dir,
         dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,
         dialogue_contract_semantic_match_enabled=semantic_match_model is not None,
+        llm_call_counter=getattr(args, "llm_call_counter", None),
     )
 
 
@@ -1258,6 +1370,7 @@ def build_summary(
     snapshot_path: Path,
     judge_spec: Mapping[str, Any] | None = None,
     parallel: int = 1,
+    llm_calls: Mapping[str, int] | None = None,
 ) -> Mapping[str, Any]:
     verdicts = Counter(str(item.get("verdict") or "") for item in judge_results)
     brands = Counter(str(item.get("brand") or "") for item in judge_results)
@@ -1278,6 +1391,11 @@ def build_summary(
     run_statuses = Counter(str(dialog.get("run_status") or "completed") for dialog in transcripts)
     send_unedited = _send_unedited_proxy(transcripts, judge_results)
     over_handoff = _over_handoff_metrics(transcripts)
+    llm_call_summary = _llm_call_summary(
+        llm_calls or {},
+        dialogs=len(judge_results),
+        turns=sum(len(item.get("turns") or []) for item in transcripts),
+    )
     metrics = build_metric_intervals(
         dialogs=len(judge_results),
         pass_count=verdicts.get("PASS", 0) + verdicts.get("PASS_WITH_NOTES", 0),
@@ -1370,6 +1488,7 @@ def build_summary(
             ),
         },
         "branch_metrics": _branch_count_metrics(transcripts),
+        "llm_calls": llm_call_summary,
         "over_handoff": over_handoff,
         "judge_fact_audit": judge_fact_audit_summary(transcripts),
         "send_unedited_proxy": send_unedited,
@@ -1385,6 +1504,22 @@ def _scenario_metadata(judge_spec: Mapping[str, Any] | None) -> Mapping[str, Any
         "is_holdout": "holdout" in text,
         "eval_only": "eval_only" in text or "eval-only" in text or "только для оценки" in text,
         "do_not_tune_against": "do_not_tune_against" in text or "не тюн" in text or "не подгон" in text,
+    }
+
+
+def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) -> Mapping[str, Any]:
+    role_counts = {str(role): int(value or 0) for role, value in (counts or {}).items()}
+    total = sum(role_counts.values())
+    return {
+        "total": total,
+        "client": role_counts.get("client", 0),
+        "bot_draft": role_counts.get("bot_draft", 0),
+        "bot_critic": role_counts.get("bot_critic", 0),
+        "memory": role_counts.get("memory", 0),
+        "judge": role_counts.get("judge", 0),
+        "dialogs": int(dialogs),
+        "turns": int(turns),
+        "avg_calls_per_dialog": round(total / dialogs, 2) if dialogs else None,
     }
 
 
@@ -2064,6 +2199,7 @@ def compact_knowledge_snippets(context: Mapping[str, Any], *, limit: int = 8, ma
 
 def render_summary_md(summary: Mapping[str, Any]) -> str:
     totals = summary.get("totals") if isinstance(summary.get("totals"), Mapping) else {}
+    llm_calls = summary.get("llm_calls") if isinstance(summary.get("llm_calls"), Mapping) else {}
     over_handoff = summary.get("over_handoff") if isinstance(summary.get("over_handoff"), Mapping) else {}
     judge_fact_audit = summary.get("judge_fact_audit") if isinstance(summary.get("judge_fact_audit"), Mapping) else {}
     return "\n".join(
@@ -2082,6 +2218,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Answer quality: `{summary.get('answer_quality')}`",
             f"- Scenario metadata: `{summary.get('scenario_metadata')}`",
             f"- Branch metrics: `{summary.get('branch_metrics')}`",
+            f"- LLM calls: `{llm_calls}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             f"- Over-handoff: `{over_handoff}`",
             f"- Judge fact audit: `{judge_fact_audit}`",

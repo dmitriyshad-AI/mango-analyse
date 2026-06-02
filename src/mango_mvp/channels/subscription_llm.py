@@ -1655,7 +1655,15 @@ class SubscriptionLlmDraftProvider:
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
-            return apply_authoritative_output_gate(guarded, client_message=client_message, context=context)
+            rewritten = apply_humanity_x2_rewriter(
+                guarded,
+                client_message=client_message,
+                context=context,
+                rewrite_runner=self._humanity_x2_rewrite_runner
+                if _humanity_x2_rewrite_enabled(context)
+                else None,
+            )
+            return apply_authoritative_output_gate(rewritten, client_message=client_message, context=context)
         else:
             prompt = build_draft_prompt(client_message, context=context)
             result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
@@ -1724,11 +1732,11 @@ class SubscriptionLlmDraftProvider:
             repair_fn=self._dialogue_contract_repair_runner,
             faithfulness_fn=self._dialogue_contract_faithfulness_runner,
             semantic_match_fn=semantic_match_fn,
-            warmth_fn=self._dialogue_contract_warmth_runner if _humanity_x2_rewrite_enabled(context) else None,
+            warmth_fn=None,
             context=context,
             tone_guide=_dialogue_contract_tone_guide(context),
             style_examples=_dialogue_contract_style_examples(context),
-            toggles=DialogueContractToggles(form_warmth=True, warmth_mode=_humanity_x2_rewrite_mode(context)),
+            toggles=DialogueContractToggles(form_warmth=False, warmth_mode=_humanity_x2_rewrite_mode(context)),
         )
         route = "bot_answer_self_for_pilot" if pipeline_result.route == "bot_answer_self" else pipeline_result.route
         payload = {

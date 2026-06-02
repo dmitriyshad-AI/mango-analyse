@@ -5196,6 +5196,29 @@ def test_humanity_x2_rewriter_applies_safe_form_only_candidate() -> None:
     assert result.metadata["humanity_x2"]["rewritten"] is True
 
 
+def test_humanity_x2_rewriter_rejects_new_number_before_gate() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Семестр — 29 750 ₽.",
+        safety_flags=("autonomy_matrix_passed",),
+    )
+
+    result = apply_humanity_x2_rewriter(
+        base,
+        client_message="Сколько стоит семестр?",
+        context={
+            "active_brand": "foton",
+            "humanity_x2_rewrite_enabled": True,
+            "confirmed_facts": {"price": "семестр — 29 750 ₽"},
+        },
+        rewrite_runner=lambda prompt: "Семестр — 29 750 ₽, год — 100 000 ₽.",
+    )
+
+    assert result.draft_text == base.draft_text
+    assert result.metadata["humanity_x2"]["rewritten"] is False
+    assert result.metadata["humanity_x2"]["fallback_reason"] == "fact_drift:100000"
+
+
 def test_humanity_x2_rewriter_never_touches_manager_only() -> None:
     base = SubscriptionDraftResult(
         route="manager_only",
@@ -5212,6 +5235,29 @@ def test_humanity_x2_rewriter_never_touches_manager_only() -> None:
 
     assert result.draft_text == base.draft_text
     assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_p0_or_manager_only"
+
+
+def test_humanity_x2_rewriter_rejects_cross_brand_candidate() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Семестр — 29 750 ₽.",
+        safety_flags=("autonomy_matrix_passed",),
+    )
+
+    result = apply_humanity_x2_rewriter(
+        base,
+        client_message="Сколько стоит семестр?",
+        context={
+            "active_brand": "foton",
+            "humanity_x2_rewrite_enabled": True,
+            "confirmed_facts": {"price": "семестр — 29 750 ₽"},
+        },
+        rewrite_runner=lambda prompt: "Семестр — 29 750 ₽. В УНПК условия похожие.",
+    )
+
+    assert result.draft_text == base.draft_text
+    assert result.metadata["humanity_x2"]["rewritten"] is False
+    assert result.metadata["humanity_x2"]["fallback_reason"] == "brand_leak"
 
 
 def test_humanity_x2_rewriter_falls_back_on_repo_gate_meta_leak() -> None:
@@ -5235,6 +5281,103 @@ def test_humanity_x2_rewriter_falls_back_on_repo_gate_meta_leak() -> None:
     assert result.draft_text == base.draft_text
     assert result.metadata["humanity_x2"]["rewritten"] is False
     assert result.metadata["humanity_x2"]["fallback_reason"] == "meta_leak"
+
+
+def test_step3b_v2_x2_runs_before_authoritative_gate_and_downgrades_new_schedule(monkeypatch) -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Точные дни занятий зависят от группы, менеджер сверит расписание.",
+        topic_id="theme:013_schedule",
+        safety_flags=("autonomy_matrix_passed",),
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": {
+                    "current_question": "По каким дням занятия?",
+                    "answerability": "answer_self",
+                    "subquestions": [
+                        {
+                            "text": "По каким дням занятия?",
+                            "answerable": "self",
+                            "needed_fact_keys": ["schedule.general"],
+                        }
+                    ],
+                },
+                "retrieved_facts": {
+                    "schedule.general": "Фотон: точное расписание зависит от группы и публикуется отдельно.",
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(provider, "_build_dialogue_contract_pipeline_draft", lambda client_message, *, context=None: base)
+    monkeypatch.setattr(
+        provider,
+        "_apply_dialogue_contract_v2_guard_chain",
+        lambda result, *, client_message, context: result,
+    )
+    monkeypatch.setattr(provider, "_humanity_x2_rewrite_runner", lambda prompt: "Да, занятия проходят по вторникам.")
+
+    result = provider.build_draft(
+        "По каким дням занятия?",
+        context={
+            "active_brand": "foton",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "humanity_x2_rewrite_enabled": True,
+        },
+    )
+
+    assert "humanity_x2_rewritten" in result.safety_flags
+    assert "authoritative_output_gate_blocked" in result.safety_flags
+    assert "authoritative_gate:unconfirmed_schedule" in result.safety_flags
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert result.metadata["humanity_x2"]["rewritten"] is True
+    gate = result.metadata["authoritative_output_gate"]
+    assert gate["action"] == "downgrade"
+    assert gate["route_before"] == "bot_answer_self_for_pilot"
+    assert "unconfirmed_schedule" in {item["code"] for item in gate["findings"]}
+
+
+def test_step3b_v2_x2_does_not_touch_p0_manager_only(monkeypatch) -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение. Передам ответственному сотруднику.",
+        topic_id="theme:009_refund",
+        safety_flags=("high_risk_manager_only", "zero_collect_refund_guarded"),
+        metadata={
+            "final_p0_text_override": True,
+            "dialogue_contract_pipeline": {"contract": {"is_p0": True}, "retrieved_facts": {}},
+        },
+    )
+    called = {"rewrite": False}
+
+    def rewrite_runner(_prompt: str) -> str:
+        called["rewrite"] = True
+        return "Давайте ответим теплее."
+
+    monkeypatch.setattr(provider, "_build_dialogue_contract_pipeline_draft", lambda client_message, *, context=None: base)
+    monkeypatch.setattr(
+        provider,
+        "_apply_dialogue_contract_v2_guard_chain",
+        lambda result, *, client_message, context: result,
+    )
+    monkeypatch.setattr(provider, "_humanity_x2_rewrite_runner", rewrite_runner)
+
+    result = provider.build_draft(
+        "Верните деньги, занятий нет.",
+        context={
+            "active_brand": "foton",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "humanity_x2_rewrite_enabled": True,
+        },
+    )
+
+    assert called["rewrite"] is False
+    assert result.route == "manager_only"
+    assert result.draft_text == base.draft_text
+    assert "humanity_x2_rewritten" not in result.safety_flags
+    assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_p0_or_manager_only"
 
 
 def test_humanity_x2_runner_uses_dedicated_small_model_env(monkeypatch) -> None:

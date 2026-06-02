@@ -7669,6 +7669,7 @@ def test_step_b1_price_without_fact_downgrades_self_defer_but_keeps_boundaries()
                 "route_bias": "bot_answer_self_for_pilot",
                 "answer_policy": "answer_directly_if_fact_verified",
                 "known_slots": {"grade": "12", "subject": "астрономия", "format": "онлайн"},
+                "selling": {"objection": "price", "exit_signal": False},
             },
         },
     )
@@ -7842,10 +7843,12 @@ def test_step2b5_enrollment_real_refund_and_dolyami_are_not_process_overrides() 
         },
         safety_flags=("high_risk_manager_only",),
     )
+    p0_context = _step2b1_context(brand="foton", intent="enrollment_process", question=p0_question, facts=facts)
+    p0_context["conversation_intent_plan"]["selling"] = {"objection": "price", "exit_signal": True}
     p0 = _apply_v2_guard_chain(
         p0_result,
         p0_question,
-        _step2b1_context(brand="foton", intent="enrollment_process", question=p0_question, facts=facts),
+        p0_context,
     )
     dolyami_question = "Оформление через Долями возможно?"
     dolyami = _apply_v2_guard_chain(
@@ -7856,6 +7859,8 @@ def test_step2b5_enrollment_real_refund_and_dolyami_are_not_process_overrides() 
 
     assert p0.route == "manager_only"
     assert not any(flag.startswith("rules_engine_enrollment") for flag in p0.safety_flags)
+    assert "rules_engine_selling_price_objection" not in p0.safety_flags
+    assert "rules_engine_selling_exit_signal" not in p0.safety_flags
     assert "остаток неистраченных средств" not in p0.draft_text
     assert "rules_engine_enrollment_process_applied" not in dolyami.safety_flags
 

@@ -452,6 +452,61 @@ def test_rules_engine_installment_foton_uses_own_fact_without_unpk() -> None:
     assert "УНПК" not in outcome.text
 
 
+def test_rules_engine_selling_price_objection_foton_installment_uses_fact_numbers() -> None:
+    rule = load_rules_registry()["installment"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "installment",
+            "direct_question": "Дороговато, можно частями?",
+            "active_brand": "foton",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts={"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."},
+        context={"active_brand": "foton"},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_price_objection" in outcome.flags
+    assert "6, 10 или 12 месяцев" in outcome.text
+    assert "Долями" in outcome.text
+    assert "Подобрать удобный вариант" in outcome.text
+    assert "24" not in outcome.text
+    assert "УНПК" not in outcome.text
+
+
+def test_rules_engine_selling_price_objection_unpk_uses_only_unpk_terms() -> None:
+    rule = load_rules_registry()["installment"]
+    facts = {
+        "payment_options.bank_installment.absent.client_safe_text": "В УНПК отдельной банковской рассрочки нет.",
+        "payment_options.client_safe_text.when_asked_about_installment": "УНПК: оплата возможна помесячно, за семестр или за год.",
+        "discounts.semester_payment.pct": "УНПК: при оплате за семестр действует скидка 10%.",
+        "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 14%.",
+    }
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "installment",
+            "direct_question": "Дорого, есть рассрочка?",
+            "active_brand": "unpk",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_price_objection" in outcome.flags
+    assert "помесячно" in outcome.text
+    assert "за семестр" in outcome.text
+    assert "за год" in outcome.text
+    assert "10%" in outcome.text
+    assert "14%" in outcome.text
+    assert "Фотон" not in outcome.text
+    assert "Т-Банк" not in outcome.text
+    assert "Долями" not in outcome.text
+
+
 def test_rules_engine_discount_second_subject_multichild_stacking_and_promocode_are_safe() -> None:
     rule = load_rules_registry()["discount"]
     facts = {
@@ -630,6 +685,51 @@ def test_rules_engine_price_uses_period_from_fact_key_when_text_is_generic() -> 
     assert "цена —" not in outcome.text
 
 
+def test_rules_engine_selling_price_objection_price_adds_payment_step_only_on_signal() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
+
+    objection = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Дорого, сколько стоит онлайн для 10 класса?",
+            "active_brand": "foton",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    plain = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Сколько стоит онлайн для 10 класса?",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": False, "anxiety": True, "unmet_need": "мягче", "readiness": "ready"},
+        },
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert objection is not None
+    assert "29 750 ₽" in objection.text
+    assert "47 250 ₽" in objection.text
+    assert "6, 10 или 12 месяцев" in objection.text
+    assert "Подсказать удобный вариант" in objection.text
+    assert "rules_engine_selling_price_objection" in objection.flags
+
+    assert plain is not None
+    assert "29 750 ₽" in plain.text
+    assert "47 250 ₽" in plain.text
+    assert "Подсказать удобный вариант" not in plain.text
+    assert "rules_engine_selling_price_objection" not in plain.flags
+
+
 def test_rules_engine_format_choice_presents_only_verified_formats() -> None:
     rule = load_rules_registry()["format_choice"]
     both_facts = {
@@ -720,6 +820,61 @@ def test_rules_engine_trial_uses_active_brand_fragment_fact() -> None:
     assert outcome.route == "bot_answer_self_for_pilot"
     assert "фрагмент" in outcome.text.casefold()
     assert "Фотон" not in outcome.text
+    assert cross_brand is None
+
+
+def test_rules_engine_selling_exit_signal_is_grounded_or_neutral() -> None:
+    rule = load_rules_registry()["format_choice"]
+    format_fact = {"formats.foton.online": "Фотон: онлайн-курсы проходят дистанционно."}
+    with_trial = {
+        **format_fact,
+        "trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия для знакомства с подачей.",
+    }
+
+    neutral = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Спасибо, подумаю. Онлайн есть?",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": True},
+        },
+        facts=format_fact,
+        context={"active_brand": "foton"},
+    )
+    grounded = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Спасибо, подумаю. Онлайн есть?",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": True},
+        },
+        facts=with_trial,
+        context={"active_brand": "foton"},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "А у УНПК онлайн есть?",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": True},
+        },
+        facts=with_trial,
+        context={"active_brand": "foton"},
+    )
+
+    assert neutral is not None
+    assert "rules_engine_selling_exit_signal" in neutral.flags
+    assert "Спокойно подумайте" in neutral.text
+    assert "пробн" not in neutral.text.casefold()
+
+    assert grounded is not None
+    assert "rules_engine_selling_exit_signal" in grounded.flags
+    assert "фрагмент занятия" in grounded.text
+    assert "Подсказать, как записаться" in grounded.text
+
     assert cross_brand is None
 
 
@@ -920,3 +1075,24 @@ def test_rules_engine_enrollment_presale_refund_vs_real_p0_and_dolyami() -> None
     assert dolyami is None
     assert process is not None
     assert "менеджер уточнит класс" in process.text.casefold()
+
+
+def test_rules_engine_selling_does_not_override_real_refund_p0() -> None:
+    rule = load_rules_registry()["enrollment_process"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "enrollment_process",
+            "direct_question": "Дорого, я оплатил, занятий нет, верните деньги",
+            "active_brand": "foton",
+            "selling": {"objection": "price", "exit_signal": True},
+        },
+        facts={"process.enrollment.steps": "Фотон: менеджер помогает оформить заявку."},
+        context={"active_brand": "foton"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "manager_only"
+    assert "high_risk_manager_only" in outcome.flags
+    assert "rules_engine_selling_price_objection" not in outcome.flags
+    assert "rules_engine_selling_exit_signal" not in outcome.flags

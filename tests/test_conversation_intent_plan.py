@@ -608,6 +608,30 @@ def test_intent_plan_presale_refund_policy_is_not_full_p0() -> None:
     assert plan.route_bias == "bot_answer_self_for_pilot"
 
 
+def test_intent_plan_emits_selling_price_objection_and_exit_without_extra_call() -> None:
+    objection = build_conversation_intent_plan(
+        current_message="Дороговато, надо подумать. Можно как-то подешевле или частями?",
+        active_brand="foton",
+        known_slots={"grade": "9", "subject": "физика", "format": "онлайн"},
+    )
+    plain_price = build_conversation_intent_plan(
+        current_message="Сколько стоит онлайн для 9 класса?",
+        active_brand="foton",
+        known_slots={"grade": "9", "subject": "физика", "format": "онлайн"},
+    )
+
+    assert objection.selling["objection"] == "price"
+    assert objection.selling["exit_signal"] is True
+    assert objection.selling["anxiety"] is False
+    assert objection.selling["unmet_need"] == ""
+    assert objection.selling["readiness"] == "exploring"
+    assert objection.to_prompt_view()["selling"]["objection"] == "price"
+
+    assert plain_price.primary_intent == "pricing"
+    assert plain_price.selling["objection"] == "none"
+    assert plain_price.selling["exit_signal"] is False
+
+
 def test_intent_plan_token_traps_do_not_trigger_neighbor_intents() -> None:
     tochnoy = build_conversation_intent_plan(
         current_message="Цена на сейчас, но без точной даты повышения?",

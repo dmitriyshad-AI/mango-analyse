@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -163,39 +163,42 @@ def apply_rule(
     facts: Mapping[str, str],
     context: Mapping[str, Any] | None = None,
 ) -> RuleOutcome | None:
+    outcome: RuleOutcome | None
     if rule.rule_id == "teacher":
-        return _apply_teacher_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "recordings":
-        return _apply_recordings_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "contact_address":
-        return _apply_contact_address_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "docs":
-        return _apply_docs_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "matkap":
-        return _apply_matkap_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "tax":
-        return _apply_tax_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "olympiad":
-        return _apply_olympiad_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "platform_access":
-        return _apply_platform_access_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "installment":
-        return _apply_installment_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "discount":
-        return _apply_discount_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "price":
-        return _apply_price_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "format_choice":
-        return _apply_format_choice_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "trial":
-        return _apply_trial_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "camp_lvsh":
-        return _apply_camp_lvsh_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "enrollment_process":
-        return _apply_enrollment_process_rule(rule, plan=plan, facts=facts, context=context)
-    if rule.rule_id == "schedule":
-        return _apply_schedule_rule(rule, plan=plan, facts=facts, context=context)
-    return None
+        outcome = _apply_teacher_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "recordings":
+        outcome = _apply_recordings_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "contact_address":
+        outcome = _apply_contact_address_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "docs":
+        outcome = _apply_docs_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "matkap":
+        outcome = _apply_matkap_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "tax":
+        outcome = _apply_tax_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "olympiad":
+        outcome = _apply_olympiad_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "platform_access":
+        outcome = _apply_platform_access_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "installment":
+        outcome = _apply_installment_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "discount":
+        outcome = _apply_discount_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "price":
+        outcome = _apply_price_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "format_choice":
+        outcome = _apply_format_choice_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "trial":
+        outcome = _apply_trial_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "camp_lvsh":
+        outcome = _apply_camp_lvsh_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "enrollment_process":
+        outcome = _apply_enrollment_process_rule(rule, plan=plan, facts=facts, context=context)
+    elif rule.rule_id == "schedule":
+        outcome = _apply_schedule_rule(rule, plan=plan, facts=facts, context=context)
+    else:
+        return None
+    return _apply_selling_variants(outcome, rule=rule, plan=plan, facts=facts, context=context)
 
 
 def _rule_id_for_intent(intent: str) -> str:
@@ -1561,6 +1564,182 @@ def _rule_outcome(
         flags=normalized_flags,
         checklist=checklist_items,
         metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": subvariant},
+    )
+
+
+def _apply_selling_variants(
+    outcome: RuleOutcome | None,
+    *,
+    rule: Rule,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    if outcome is None or outcome.route != "bot_answer_self_for_pilot":
+        return outcome
+    selling = _selling_view(plan, context)
+    if not selling:
+        return outcome
+    brand = _active_brand(plan, context)
+    all_facts = {**dict(facts), **dict(outcome.facts)}
+    text = outcome.text
+    source = dict(outcome.facts)
+    flags = list(outcome.flags)
+    applied: list[str] = []
+
+    if str(selling.get("objection") or "none") == "price" and rule.rule_id in {"installment", "discount", "price"}:
+        objection_text = _selling_price_objection_text(
+            rule_id=rule.rule_id,
+            brand=brand,
+            base_text=text,
+            facts=all_facts,
+        )
+        if objection_text:
+            text = objection_text
+            flags.append("rules_engine_selling_price_objection")
+            applied.append("price_objection")
+
+    if bool(selling.get("exit_signal")):
+        suffix, suffix_facts = _selling_exit_step(all_facts, active_brand=brand)
+        if suffix and suffix.casefold() not in text.casefold():
+            text = f"{text.rstrip()} {suffix}"
+            source.update(suffix_facts)
+            flags.append("rules_engine_selling_exit_signal")
+            applied.append("exit_signal")
+
+    if not applied:
+        return outcome
+    metadata = {
+        **dict(outcome.metadata),
+        "selling": {
+            "applied": applied,
+            "objection": str(selling.get("objection") or "none"),
+            "exit_signal": bool(selling.get("exit_signal")),
+        },
+    }
+    return replace(outcome, text=text, facts=source, flags=tuple(dict.fromkeys(flags)), metadata=metadata)
+
+
+def _selling_view(plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    raw = plan.get("selling")
+    if isinstance(raw, Mapping):
+        return raw
+    if isinstance(context, Mapping):
+        intent_plan = context.get("conversation_intent_plan")
+        if isinstance(intent_plan, Mapping) and isinstance(intent_plan.get("selling"), Mapping):
+            return intent_plan["selling"]  # type: ignore[return-value]
+    return {}
+
+
+def _selling_price_objection_text(
+    *,
+    rule_id: str,
+    brand: str,
+    base_text: str,
+    facts: Mapping[str, str],
+) -> str:
+    if rule_id == "installment" and brand == "foton":
+        pointer = _foton_payment_pointer(facts)
+        if not pointer:
+            return ""
+        pointer_sentence = pointer[:1].upper() + pointer[1:]
+        return f"Понимаю, важно, чтобы вложение было посильным. {pointer_sentence}, чтобы не вносить всю сумму сразу. Подобрать удобный вариант?"
+    if rule_id in {"installment", "discount"} and brand == "unpk":
+        return _unpk_period_payment_objection_text(facts)
+    if rule_id == "price":
+        pointer = _foton_payment_pointer(facts) if brand == "foton" else _unpk_payment_pointer(facts) if brand == "unpk" else ""
+        if pointer:
+            return f"{base_text.rstrip()} Если по бюджету важно — {pointer}. Подсказать удобный вариант?"
+        return f"{base_text.rstrip()} Если по бюджету важно, менеджер подскажет подходящий способ оплаты под вашу ситуацию."
+    return ""
+
+
+def _foton_payment_pointer(facts: Mapping[str, str]) -> str:
+    _, fact = _brand_scoped_first_matching_fact(
+        facts,
+        "foton",
+        ("installment", "рассроч", "оплатить обучение частями", "частями", "месяц", "долями", "dolyami"),
+    )
+    if not fact:
+        return ""
+    months = _month_options_from_fact(fact)
+    has_dolyami = _has_any(fact, ("долями", "dolyami"))
+    parts: list[str] = []
+    if months:
+        parts.append(f"оплату можно разбить на {months}")
+    if has_dolyami:
+        parts.append("доступен сервис Долями")
+    return " или ".join(parts)
+
+
+def _unpk_payment_pointer(facts: Mapping[str, str]) -> str:
+    text = _unpk_period_payment_objection_text(facts)
+    if not text:
+        return ""
+    return text.removeprefix("Понимаю. ").split(" Подсказать,", 1)[0].rstrip(".")
+
+
+def _unpk_period_payment_objection_text(facts: Mapping[str, str]) -> str:
+    _, period_fact = _first_matching_fact(
+        facts,
+        ("payment_options.client_safe_text.when_asked_about_installment", "помесячно", "за семестр", "за год", "растянуть оплату"),
+    )
+    _, semester_fact = _first_matching_fact_with_required(
+        facts,
+        ("semester", "семестр", "discounts.monthly_payment.pct", "discounts.semester_payment"),
+        required=("10%",),
+    )
+    _, year_fact = _first_matching_fact_with_required(
+        facts,
+        ("year", "год", "discounts.year", "year_discount", "year_payment"),
+        required=("14%",),
+    )
+    if not (period_fact and semester_fact and year_fact):
+        return ""
+    semester_pct = _first_percent(semester_fact)
+    year_pct = _first_percent(year_fact)
+    if not (semester_pct and year_pct):
+        return ""
+    return (
+        "Понимаю. В УНПК можно платить помесячно, за семестр или за год; "
+        f"при оплате за семестр действует скидка {semester_pct}, за год — {year_pct}. "
+        "Подсказать, что выгоднее в вашем случае?"
+    )
+
+
+def _month_options_from_fact(fact: str) -> str:
+    text = str(fact or "")
+    match = re.search(r"((?:\d{1,2}\D{0,16}){1,6})месяц", text, re.I)
+    if not match:
+        return ""
+    numbers = re.findall(r"\d{1,2}", match.group(1))
+    if not numbers:
+        return ""
+    unique = list(dict.fromkeys(numbers))
+    if len(unique) >= 2:
+        return ", ".join(unique[:-1]) + " или " + unique[-1] + " месяцев"
+    return unique[0] + " месяцев"
+
+
+def _first_percent(text: str) -> str:
+    match = re.search(r"\b(\d{1,2})\s*%", str(text or ""))
+    return f"{match.group(1)}%" if match else ""
+
+
+def _selling_exit_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    key, fact = _brand_scoped_first_matching_fact(
+        facts,
+        active_brand,
+        ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
+    )
+    if fact:
+        return (
+            f"Если поможет решить, можно начать с подтверждённого пробного шага: {_short_sentence(fact)} Подсказать, как записаться?",
+            {key or "rules_engine.selling.exit_trial": fact},
+        )
+    return (
+        "Спокойно подумайте; если нужно, подскажу, что важно для решения по этому варианту.",
+        {},
     )
 
 

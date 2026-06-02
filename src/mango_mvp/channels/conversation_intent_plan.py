@@ -56,6 +56,7 @@ class ConversationIntentPlan:
     route_bias: str = "draft_for_manager"
     next_step_hint: str = ""
     fact_query_text: str = ""
+    selling: Mapping[str, Any] = field(default_factory=dict)
     decision_notes: tuple[str, ...] = ()
 
     def to_prompt_view(self) -> Mapping[str, Any]:
@@ -93,6 +94,7 @@ class ConversationIntentPlan:
             "route_bias": self.route_bias,
             "next_step_hint": self.next_step_hint,
             "fact_query_text": self.fact_query_text,
+            "selling": dict(self.selling),
             "decision_notes": list(self.decision_notes),
         }
 
@@ -207,6 +209,12 @@ def build_conversation_intent_plan(
         slots=slots,
         required_fact_keys=required_fact_keys,
     )
+    selling = _selling_signals(
+        normalized,
+        primary_intent=primary_intent,
+        keyword_signals=keyword_signals,
+        risk_signals=risk_signals,
+    )
     return ConversationIntentPlan(
         active_brand=brand,
         primary_intent=primary_intent,
@@ -240,7 +248,53 @@ def build_conversation_intent_plan(
         route_bias=route_bias,
         next_step_hint=_next_step_hint(primary_intent, slots=slots, risk_signals=risk_signals),
         fact_query_text=fact_query,
+        selling=selling,
         decision_notes=notes,
+    )
+
+
+def _selling_signals(
+    text: str,
+    *,
+    primary_intent: str,
+    keyword_signals: Sequence[str],
+    risk_signals: Sequence[str],
+) -> Mapping[str, Any]:
+    objection = "none"
+    exit_signal = False
+    if not risk_signals:
+        if _has_price_objection_signal(text):
+            objection = "price"
+        exit_signal = _has_exit_signal(text)
+    return {
+        "objection": objection,
+        "exit_signal": exit_signal,
+        "anxiety": False,
+        "unmet_need": "",
+        "readiness": "exploring",
+    }
+
+
+def _has_price_objection_signal(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"\b(?:не|совсем\s+не)\s+дорог", value):
+        return False
+    return bool(
+        re.search(r"\bдорог(?:о|овато|ая|ие|ой)?\b", value)
+        or re.search(r"\bслишком\s+(?:много|дорог)", value)
+        or re.search(r"\b(?:цена|стоимость)\s+(?:высок|кусает)", value)
+        or re.search(r"\b(?:не\s+потян|не\s+тянем|не\s+по\s+бюджет|по\s+бюджету\s+не)", value)
+        or _has_any_marker(value, ("подешевле", "дешевле", "накладно", "дороже, чем", "много платить"))
+    )
+
+
+def _has_exit_signal(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(r"\b(?:подумаю|подумаем|подумать\s+надо|надо\s+подумать)\b", value)
+        or re.search(r"\b(?:поищу|посмотрю|посмотрим|сравню|сравним)\b[^.!?\n]{0,60}\b(?:друг|вариант)", value)
+        or re.search(r"\b(?:у\s+других|другие\s+варианты|не\s+сейчас|пока\s+не\s+готов)", value)
+        or re.search(r"\b(?:обсуд(?:ю|им|ить)|посоветуюсь)\b[^.!?\n]{0,60}\b(?:дома|муж|жен|семь)", value)
     )
 
 

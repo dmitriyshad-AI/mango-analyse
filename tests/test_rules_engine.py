@@ -795,6 +795,90 @@ def test_rules_engine_camp_brand_split_zvsh_and_scarcity_fact_are_safe() -> None
     assert non_camp is None
 
 
+def test_rules_engine_camp_included_transfer_and_price_are_scoped_to_question() -> None:
+    rule = load_rules_registry()["camp_lvsh"]
+    facts = {
+        "lvsh_mendeleevo_2026.program.total_academic_hours": "Фотон: ЛВШ Менделеево — 72+.",
+        "lvsh_mendeleevo_2026.pricing.client_safe_text_when_price_asked": (
+            "Фотон: ЛВШ Менделеево — ЛВШ Менделеево у Фотона сейчас стоит 93 100 ₽. Полная стоимость — 98 000 ₽."
+        ),
+        "lvsh_mendeleevo_2026.accommodation.room_capacity": "Фотон: ЛВШ Менделеево — 2-3 человека.",
+        "lvsh_mendeleevo_2026.accommodation.meals_per_day": "Фотон: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день.",
+        "lvsh_mendeleevo_2026.transfer_from_moscow.client_safe_text": (
+            "Трансфер до ЛВШ Фотона включён в стоимость; ориентир места сбора — метро Ховрино, точные детали отправляем перед сменой."
+        ),
+    }
+
+    included = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Что входит в ЛВШ Менделеево?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    transfer = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Трансфер из Москвы есть?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    price = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Сколько стоит ЛВШ Менделеево?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert included is not None
+    assert included.subvariant == "included_composition"
+    assert "проживание" in included.text.casefold()
+    assert "питание" in included.text.casefold()
+    assert "трансфер" in included.text.casefold()
+    assert "72+" not in included.text
+
+    assert transfer is not None
+    assert transfer.subvariant == "transfer"
+    assert "Трансфер до ЛВШ Фотона включён в стоимость" in transfer.text
+    assert "Ховрино" in transfer.text
+    assert "93 100" not in transfer.text
+    assert "98 000" not in transfer.text
+
+    assert price is not None
+    assert price.subvariant == "price"
+    assert "ЛВШ Менделеево — ЛВШ Менделеево" not in price.text
+    assert "Фотон:" not in price.text
+    assert "ЛВШ Менделеево у Фотона сейчас стоит 93 100 ₽. Полная стоимость — 98 000 ₽." in price.text
+
+
+def test_rules_engine_camp_scoped_fix_keeps_brand_and_p0_boundaries() -> None:
+    rule = load_rules_registry()["camp_lvsh"]
+    facts = {
+        "lvsh_mendeleevo_2026.pricing.client_safe_text_when_price_asked": (
+            "Фотон: ЛВШ Менделеево — ЛВШ Менделеево у Фотона сейчас стоит 93 100 ₽. Полная стоимость — 98 000 ₽."
+        ),
+        "tg_unpk.lvsh.transfer.client_safe_text": (
+            "Трансфер на выездную школу включён в стоимость: сбор у метро Ховрино, отъезд в 11:00; обратно отъезд с базы в 15:30."
+        ),
+    }
+
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "У Фотона что входит в ЛВШ?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+    p0 = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Оплатили ЛВШ, недовольны, верните деньги", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert cross_brand is None
+    assert p0 is not None
+    assert p0.route == "manager_only"
+    assert "high_risk_manager_only" in p0.flags
+
+
 def test_rules_engine_enrollment_presale_refund_vs_real_p0_and_dolyami() -> None:
     rule = load_rules_registry()["enrollment_process"]
     facts = {

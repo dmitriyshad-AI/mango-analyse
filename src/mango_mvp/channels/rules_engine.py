@@ -1319,6 +1319,47 @@ def _apply_camp_lvsh_rule(
     price = _has_any(question, ("цен", "стоим", "сколько", "₽", "руб"))
     grade = _requested_grade(plan, context) or _grade_from_text(question)
 
+    if _asks_camp_transfer(question):
+        key, fact = _camp_transfer_fact(facts, brand)
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="transfer",
+            route="bot_answer_self_for_pilot",
+            text=_camp_prefixed_answer("По трансферу", fact),
+            facts={key or "rules_engine.camp.transfer": fact},
+            flags=("rules_engine_camp_transfer_fact",),
+            checklist="Rule engine: camp_lvsh — трансфер отвечать только transfer-фактом, не ценой ЛВШ.",
+        )
+
+    if _asks_camp_included(question):
+        composition = _camp_included_composition(facts, brand)
+        if composition is not None:
+            return _rule_outcome(
+                rule,
+                subvariant="included_composition",
+                route="bot_answer_self_for_pilot",
+                text=composition.text,
+                facts=composition.facts,
+                flags=("rules_engine_camp_included_composition",),
+                checklist="Rule engine: camp_lvsh — «что входит» собирается из проживания/питания/трансфера, не из общего program-hours факта.",
+            )
+
+    if price:
+        key, fact = _camp_price_fact(facts, brand)
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="price",
+            route="bot_answer_self_for_pilot",
+            text=_camp_prefixed_answer("По стоимости ЛВШ", fact),
+            facts={key or "rules_engine.camp.price": fact},
+            flags=("rules_engine_camp_price_fact",),
+            checklist="Rule engine: camp_lvsh — цена ЛВШ только из price-факта active brand.",
+        )
+
     markers: tuple[str, ...]
     if residential or living_transfer:
         markers = ("lvsh", "лвш", "менделеево", "прожив", "трансфер", "питание", "выездн")
@@ -1331,9 +1372,7 @@ def _apply_camp_lvsh_rule(
         key, fact = _brand_scoped_first_matching_fact(facts, brand, ("grade_11", "11 класс", "11", "лвш"))
     if not fact:
         return None
-    text = _short_sentence(fact, max_chars=360)
-    if price and "₽" not in text and "руб" not in text.casefold():
-        return None
+    text = _camp_clean_fact_text(fact, max_chars=360)
     if "почти распродан" in text.casefold():
         suffix = " Наличие и запись по конкретной смене всё равно проверяет живой менеджер."
         if suffix.casefold() not in text.casefold():
@@ -1810,6 +1849,145 @@ def _camp_residential_requested(text: str, plan: Mapping[str, Any]) -> bool:
 def _camp_city_day_requested(text: str, plan: Mapping[str, Any]) -> bool:
     value = " ".join([str(text or ""), str(plan.get("product_scope") or ""), str(plan.get("fact_scope") or "")]).casefold().replace("ё", "е")
     return _has_any(value, ("городск", "дневн", "без проживания", "без прожив", "без ночев", "лш", "август"))
+
+
+@dataclass(frozen=True)
+class _CampIncludedComposition:
+    text: str
+    facts: Mapping[str, str]
+
+
+def _asks_camp_transfer(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    return _has_any(value, ("трансфер", "из москвы", "ховрино", "добраться", "добир", "заезд", "отъезд"))
+
+
+def _asks_camp_included(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    return _has_any(
+        value,
+        (
+            "что входит",
+            "что включено",
+            "включено",
+            "входит",
+            "проживание",
+            "прожив",
+            "питание",
+            "питан",
+            "отдельно",
+        ),
+    )
+
+
+def _camp_price_fact(facts: Mapping[str, str], brand: str) -> tuple[str, str]:
+    return _camp_best_fact(
+        facts,
+        brand,
+        required_markers=("price", "pricing", "стоим", "стоимость", "цен", "₽", "руб"),
+        preferred_markers=("client_safe_text", "when_price_asked", "current_price", "текущая", "полная стоимость"),
+        blocked_markers=("source conflicts", "internal", "конфликт", "спорн"),
+        require_money=True,
+    )
+
+
+def _camp_transfer_fact(facts: Mapping[str, str], brand: str) -> tuple[str, str]:
+    return _camp_best_fact(
+        facts,
+        brand,
+        required_markers=("transfer", "трансфер", "ховрино", "заезд", "отъезд", "добир"),
+        preferred_markers=("client_safe_text", "included", "включен", "сбор", "ховрино"),
+        blocked_markers=("цен", "₽", "руб", "pricing"),
+    )
+
+
+def _camp_included_composition(facts: Mapping[str, str], brand: str) -> _CampIncludedComposition | None:
+    accommodation_key, accommodation = _camp_best_fact(
+        facts,
+        brand,
+        required_markers=("room_capacity", "прожив", "живут", "номер", "номерах", "room", "2-3 человека"),
+        preferred_markers=("client_safe_text", "room_capacity", "accommodation", "living"),
+        blocked_markers=("program", "72+", "стоим", "цен", "₽", "руб"),
+    )
+    meals_key, meals = _camp_best_fact(
+        facts,
+        brand,
+        required_markers=("meals", "meal", "питание", "питан", "шведский", "приемов пищи", "разовое"),
+        preferred_markers=("client_safe_text", "meals_description", "meals_per_day"),
+        blocked_markers=("program", "72+", "стоим", "цен", "₽", "руб"),
+    )
+    transfer_key, transfer = _camp_transfer_fact(facts, brand)
+    parts: list[str] = []
+    source: dict[str, str] = {}
+    if accommodation:
+        parts.append("проживание: " + _camp_clean_fact_text(accommodation, max_chars=180))
+        source[accommodation_key or "rules_engine.camp.accommodation"] = accommodation
+    if meals and meals != accommodation:
+        parts.append("питание: " + _camp_clean_fact_text(meals, max_chars=180))
+        source[meals_key or "rules_engine.camp.meals"] = meals
+    if transfer:
+        parts.append("трансфер: " + _camp_clean_fact_text(transfer, max_chars=220))
+        source[transfer_key or "rules_engine.camp.transfer"] = transfer
+    if len(parts) < 2:
+        return None
+    return _CampIncludedComposition(
+        text="В ЛВШ Менделеево могу подтвердить по фактам: " + "; ".join(parts) + ".",
+        facts=source,
+    )
+
+
+def _camp_best_fact(
+    facts: Mapping[str, str],
+    brand: str,
+    *,
+    required_markers: Sequence[str],
+    preferred_markers: Sequence[str] = (),
+    blocked_markers: Sequence[str] = (),
+    require_money: bool = False,
+) -> tuple[str, str]:
+    other_brand_markers = ("унпк", "kmipt") if brand == "foton" else ("фотон", "cdpofoton", "цдпо") if brand == "unpk" else ()
+    candidates: list[tuple[int, str, str]] = []
+    for key, value in facts.items():
+        text = " ".join(str(value or "").split())
+        if not str(key).strip() or not text:
+            continue
+        combined = f"{key} {text}".casefold().replace("ё", "е")
+        if other_brand_markers and any(marker in combined for marker in other_brand_markers):
+            continue
+        if blocked_markers and any(str(marker).casefold().replace("ё", "е") in combined for marker in blocked_markers):
+            continue
+        if not any(str(marker).casefold().replace("ё", "е") in combined for marker in required_markers):
+            continue
+        if require_money and not _has_any(combined, ("₽", "руб")):
+            continue
+        score = 0
+        if "client_safe_text" in combined:
+            score += 10
+        if "client safe" in combined:
+            score += 8
+        for index, marker in enumerate(preferred_markers):
+            if str(marker).casefold().replace("ё", "е") in combined:
+                score += max(1, 6 - index)
+        if _has_any(combined, ("да.", "— да", "— бесплатно", "2026-05-20")):
+            score -= 4
+        candidates.append((score, str(key), text))
+    if not candidates:
+        return "", ""
+    _, key, text = sorted(candidates, key=lambda item: (-item[0], item[1]))[0]
+    return key, text
+
+
+def _camp_prefixed_answer(prefix: str, fact: str) -> str:
+    return f"{prefix}: {_camp_clean_fact_text(fact, max_chars=360)}"
+
+
+def _camp_clean_fact_text(fact: str, *, max_chars: int = 360) -> str:
+    text = " ".join(str(fact or "").split())
+    if len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    text = re.sub(r"^(?:Фотон|УНПК):\s*", "", text).strip()
+    text = re.sub(r"^(ЛВШ\s+Менделеево)\s+[—-]\s+\1\s+", r"\1 ", text, flags=re.I)
+    return text
 
 
 def _asks_live_status_or_booking(text: str) -> bool:

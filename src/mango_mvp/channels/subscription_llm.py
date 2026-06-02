@@ -1076,6 +1076,8 @@ def _safe_template_route(result: SubscriptionDraftResult, spec: SafeTemplateSpec
     if spec.route_on_apply == "keep_or_draft":
         return "manager_only" if result.route == "manager_only" else "draft_for_manager"
     if spec.route_on_apply == "terminal":
+        if str(text or "") in {IDENTITY_FOTON_SAFE_TEXT, IDENTITY_UNPK_SAFE_TEXT}:
+            return "bot_answer_self_for_pilot"
         return "draft_for_manager" if _is_terminal_direct_info_template(text) else "manager_only"
     return result.route
 
@@ -1230,6 +1232,33 @@ def _planner_intent_candidate(contract: Mapping[str, Any], registry: Mapping[str
     return intent, getattr(rule, "rule_id", "") if rule is not None else "", confidence, rule is not None
 
 
+def _is_policy_c_identity_question(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    contract = _dialogue_contract_mapping(result)
+    plan = _conversation_intent_plan(context)
+    haystack = " ".join(
+        str(item or "")
+        for item in (
+            contract.get("current_question"),
+            contract.get("client_state"),
+            contract.get("question_type"),
+            " ".join(str(item or "") for item in (contract.get("composite_subquestions") or ())),
+            plan.get("direct_question"),
+        )
+    ).casefold()
+    if not haystack:
+        return False
+    return bool(
+        re.search(r"\b(?:бот|робот|ии|нейросет\w*|человек)\b", haystack, flags=re.I)
+        or "с кем я общаюсь" in haystack
+        or "живой оператор" in haystack
+        or "живой человек" in haystack
+    )
+
+
 def _rules_engine_intent_shadow(
     result: SubscriptionDraftResult,
     *,
@@ -1246,7 +1275,11 @@ def _rules_engine_intent_shadow(
     selected_source = "keyword" if keyword_rule is not None else "regex" if regex_rule is not None else ""
     selected_intent = keyword_intent if selected_source == "keyword" else regex_intent if selected_source == "regex" else ""
     planner_enabled = _rules_engine_planner_intent_enabled(context)
-    if planner_enabled and planner_available:
+    identity_policy_c = _is_policy_c_identity_question(result, context=context)
+    if identity_policy_c:
+        selected_source = "identity_policy"
+        selected_intent = "identity"
+    elif planner_enabled and planner_available:
         selected_source = "planner"
         selected_intent = planner_intent
     return {
@@ -1266,6 +1299,7 @@ def _rules_engine_intent_shadow(
         "selected_source": selected_source,
         "selected_intent": selected_intent,
         "planner_intent_enabled": planner_enabled,
+        "planner_blocked_by_identity_policy": identity_policy_c,
     }
 
 
@@ -1350,6 +1384,8 @@ def _apply_migrated_rules_engine(
     if not shadow:
         shadow = _rules_engine_intent_shadow(result, context=context, registry=registry)
     selected_source = str(shadow.get("selected_source") or "")
+    if selected_source == "identity_policy":
+        return None
     intent = str(shadow.get("selected_intent") or plan.get("primary_intent") or "").strip()
     rule = select_migrated_domain_rule(intent, registry)
     intent_from_contract = selected_source in {"regex", "planner"}
@@ -1486,6 +1522,8 @@ def _safe_template_yield_result(
         return None
     if spec.name == "terminal" and not _is_informational_terminal_template(result.draft_text):
         return None
+    if spec.name == "terminal" and _is_policy_c_identity_question(result, context=context):
+        return None
     if not _verified_informational_answer(result, client_message=client_message, context=context, template_name=spec.name):
         return None
     metadata = {
@@ -1555,6 +1593,23 @@ def apply_dialogue_contract_v2_template_dispatcher(
                 )
                 return yielded
             guarded = _apply_safe_template_spec(result, spec, text)
+            if spec.name == "terminal" and _is_policy_c_identity_question(result, context=context):
+                trace_event(
+                    context,
+                    "safe_template_dispatcher",
+                    {
+                        "applied": spec.name,
+                        "identity_policy_locked": True,
+                        "priority": spec.priority,
+                        "flag": spec.flag,
+                        "route_before": result.route,
+                        "route_after": guarded.route,
+                        "topic_before": result.topic_id,
+                        "topic_after": guarded.topic_id,
+                        "draft_text": guarded.draft_text,
+                    },
+                )
+                return guarded
             recovery_candidate = _validated_guardchain_recovery_candidate(
                 guarded,
                 client_message=client_message,

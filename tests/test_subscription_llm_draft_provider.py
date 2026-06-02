@@ -9120,10 +9120,47 @@ def test_step3a_low_confidence_identity_question_keeps_policy_c_terminal_answer(
 
     shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
     assert shadow["planner_available"] is False
-    assert shadow["selected_source"] == "keyword"
+    assert shadow["selected_source"] == "identity_policy"
+    assert shadow["selected_intent"] == "identity"
+    assert shadow["planner_blocked_by_identity_policy"] is True
+    assert result.route == "bot_answer_self_for_pilot"
     assert "terminal_safe_template_applied" in result.safety_flags
     assert "rules_engine_platform_access_applied" not in result.safety_flags
     assert "цифровой помощник" in result.draft_text.casefold()
+
+
+def test_step3a_identity_policy_c_is_not_overridden_by_high_confidence_planner() -> None:
+    facts = {
+        "presentation_format_facts_2026_05_21.client_facts.student_account_access.client_safe_text": (
+            "У ученика есть личный кабинет на учебной платформе. Если пароль забыт, его восстанавливают через кнопку «Забыли пароль»."
+        )
+    }
+
+    for question in ("это бот? как зайти в личный кабинет?", "то есть сейчас бот?"):
+        result = _apply_v2_guard_chain(
+            _step3a_result_with_planner(
+                question=question,
+                facts=facts,
+                planner_intent="platform_access",
+                planner_confidence=0.98,
+                planner_subvariant="how_to_login",
+            ),
+            question,
+            {
+                **_step2b1_context(brand="foton", intent="platform_access", question=question, facts=facts),
+                "TELEGRAM_RULES_ENGINE_PLANNER_INTENT": "1",
+            },
+        )
+
+        shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+        assert shadow["selected_source"] == "identity_policy"
+        assert shadow["selected_intent"] == "identity"
+        assert shadow["planner_blocked_by_identity_policy"] is True
+        assert result.route == "bot_answer_self_for_pilot"
+        assert "terminal_safe_template_applied" in result.safety_flags
+        assert "rules_engine_platform_access_applied" not in result.safety_flags
+        assert "цифровой помощник" in result.draft_text.casefold()
+        assert "gpt" not in result.draft_text.casefold()
 
 
 def test_step3a_planner_intent_can_be_enabled_and_still_uses_context_brand() -> None:

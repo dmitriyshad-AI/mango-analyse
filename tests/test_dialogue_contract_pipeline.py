@@ -3956,6 +3956,25 @@ def test_p0_pre_gate_forces_only_hard_codes_and_leaves_soft_reputation_to_model(
     assert p0_pre_gate("Буду писать отзыв в интернете, но сначала хочу понять условия.", context={}) is None
 
 
+def test_p0_pre_gate_keeps_explicit_presale_refund_followup_non_p0_with_refund_latch() -> None:
+    context = {
+        "recent_messages": [
+            "Клиент: если передумаем до начала, деньги вернут?",
+            "Бот: возвращается остаток неистраченных средств.",
+        ],
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+            }
+        },
+    }
+
+    assert p0_pre_gate("В целом, без договора, просто спрашиваю: если передумаем, вернут остаток?", context=context) is None
+    assert p0_pre_gate("Я оплатил информатику, занятий нет, верните деньги.", context=context) is not None
+
+
 def test_memory_topic_augment_recovers_elliptic_online_question_fact() -> None:
     fact_key = "regular_course.informatics.grade10.online.price"
     store = FactStore(

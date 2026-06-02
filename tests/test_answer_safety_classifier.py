@@ -61,6 +61,8 @@ def test_answer_safety_presale_refund_policy_question_is_not_full_p0() -> None:
         "Перед оплатой хочу понять условия возврата.",
         "Если ребёнок надолго заболеет, за пропущенное вернёте?",
         "До оплаты хочу понимать правила возврата, это не жалоба.",
+        "В целом, без договора, просто спрашиваю: если передумаем, вернут остаток?",
+        "Гипотетически, до оплаты, если уже начнём и поймём, что формат не подходит, возврат возможен?",
         "Поняла, но именно про возврат можете уточнить? Это не жалоба, просто хочу заранее понимать правила до оплаты.",
     ):
         decision = classify_answer_safety(client_message=message)
@@ -68,6 +70,30 @@ def test_answer_safety_presale_refund_policy_question_is_not_full_p0() -> None:
         assert codes_from_current_message(message) == ()
         assert decision.p0_required is False
         assert decision.manager_only is False
+
+
+def test_answer_safety_presale_refund_followup_overrides_stale_refund_context_and_latch() -> None:
+    decision = classify_answer_safety(
+        client_message="В целом, без договора, просто спрашиваю: если передумаем, вернут остаток?",
+        context={
+            "recent_messages": [
+                "Клиент: если передумаем до начала, деньги вернут?",
+                "Бот: возвращается остаток неистраченных средств.",
+            ],
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["refund"],
+                    "primary_risk": "refund",
+                }
+            },
+        },
+    )
+
+    assert decision.p0_required is False
+    assert decision.manager_only is False
+    assert "refund" not in decision.risk_codes
+    assert decision.semantic_non_p0 is True
 
 
 def test_answer_safety_presale_refund_repairs_wrong_refund_topic() -> None:
@@ -92,6 +118,22 @@ def test_answer_safety_active_refund_request_stays_p0() -> None:
     decision = classify_answer_safety(client_message="Мы уже оплатили курс, ребёнку не понравилось, верните деньги.")
 
     assert "refund" in decision.risk_codes
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Я оплатил информатику, занятий нет, верните деньги.",
+        "Верните деньги.",
+        "Списали дважды, верните лишний платёж.",
+        "Буду писать претензию и пойду в суд.",
+    ),
+)
+def test_answer_safety_real_refund_or_legal_claims_stay_p0(message: str) -> None:
+    decision = classify_answer_safety(client_message=message)
+
     assert decision.p0_required is True
     assert decision.manager_only is True
 

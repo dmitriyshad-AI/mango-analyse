@@ -1215,7 +1215,10 @@ def _float_value(value: object) -> float:
 def _rules_engine_planner_intent_enabled(context: Optional[Mapping[str, Any]]) -> bool:
     if isinstance(context, Mapping) and context.get(RULES_ENGINE_PLANNER_INTENT_ENV) is not None:
         return _truthy_value(context.get(RULES_ENGINE_PLANNER_INTENT_ENV))
-    return _truthy_value(os.getenv(RULES_ENGINE_PLANNER_INTENT_ENV))
+    env_value = os.getenv(RULES_ENGINE_PLANNER_INTENT_ENV)
+    if env_value is None:
+        return True
+    return _truthy_value(env_value)
 
 
 def _planner_intent_candidate(contract: Mapping[str, Any], registry: Mapping[str, Any]) -> tuple[str, str, float, bool]:

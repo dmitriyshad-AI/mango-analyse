@@ -2095,16 +2095,24 @@ def _brand_scoped_first_matching_fact(facts: Mapping[str, str], active_brand: st
 
 
 def _requested_training_format(text: str, plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> str:
-    value = " ".join(
+    explicit_value = " ".join(
         str(part or "")
         for part in (
             text,
             plan.get("training_format"),
             plan.get("format"),
             plan.get("fact_scope"),
-            _known_slot_value(context, "format"),
+            _planner_slot_value(plan, "format"),
         )
     ).casefold().replace("ё", "е")
+    explicit_format = _single_training_format(explicit_value)
+    if explicit_format:
+        return explicit_format
+    value = " ".join([explicit_value, _known_slot_value(context, "format")]).casefold().replace("ё", "е")
+    return _single_training_format(value)
+
+
+def _single_training_format(value: str) -> str:
     has_online = _has_any(value, ("онлайн", "online", "дистанц"))
     has_offline = _has_any(value, ("очно", "очный", "офлайн", "offline", "сретен"))
     if has_online and not has_offline:
@@ -2118,6 +2126,7 @@ def _requested_grade(plan: Mapping[str, Any], context: Mapping[str, Any] | None)
     for text in (
         _raw_question_text(plan, context),
         str(plan.get("grade") or ""),
+        _planner_slot_value(plan, "grade"),
         _known_slot_value(context, "grade"),
         _known_slot_value(context, "class"),
     ):
@@ -2151,6 +2160,18 @@ def _known_slot_value(context: Mapping[str, Any] | None, key: str) -> str:
         if value:
             return value
     return ""
+
+
+def _planner_slot_value(plan: Mapping[str, Any], key: str) -> str:
+    if str(plan.get("rules_engine_intent_source") or "") != "planner":
+        return ""
+    slots = plan.get("planner_slots")
+    if not isinstance(slots, Mapping):
+        return ""
+    value = slots.get(key)
+    if isinstance(value, Mapping):
+        value = value.get("value")
+    return str(value or "").strip()
 
 
 def _price_facts_for_request(

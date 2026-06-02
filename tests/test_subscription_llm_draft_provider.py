@@ -8905,14 +8905,14 @@ def _step3a_result_with_planner(
     return replace(result, metadata=metadata)
 
 
-def test_step3a_planner_intent_is_shadow_only_by_default() -> None:
+def test_step3a_planner_intent_is_primary_by_default_and_can_be_disabled() -> None:
     facts = {
         "teacher.fact": "Преподаватели — из МГУ и МИФИ, эксперты ЕГЭ.",
         "locations_foton.address": "Фотон очно занимается по адресу Москва, Верхняя Красносельская ул., 30.",
     }
     question = "Подскажите, пожалуйста"
 
-    result = _apply_v2_guard_chain(
+    default_on = _apply_v2_guard_chain(
         _step3a_result_with_planner(
             question=question,
             facts=facts,
@@ -8924,13 +8924,63 @@ def test_step3a_planner_intent_is_shadow_only_by_default() -> None:
         _step2b1_context(brand="foton", intent="teacher", question=question, facts=facts),
     )
 
-    shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+    shadow = default_on.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
     assert shadow["planner_intent"] == "address"
     assert shadow["planner_available"] is True
     assert shadow["keyword_intent"] == "teacher"
+    assert shadow["selected_source"] == "planner"
+    assert "rules_engine_contact_address_foton" in default_on.safety_flags
+    assert "rules_engine_teacher_applied" not in default_on.safety_flags
+
+    disabled = _apply_v2_guard_chain(
+        _step3a_result_with_planner(
+            question=question,
+            facts=facts,
+            planner_intent="address",
+            planner_confidence=0.92,
+            planner_subvariant="where_located",
+        ),
+        question,
+        {
+            **_step2b1_context(brand="foton", intent="teacher", question=question, facts=facts),
+            "TELEGRAM_RULES_ENGINE_PLANNER_INTENT": "0",
+        },
+    )
+
+    disabled_shadow = disabled.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+    assert disabled_shadow["planner_available"] is True
+    assert disabled_shadow["selected_source"] == "keyword"
+    assert disabled_shadow["planner_intent_enabled"] is False
+    assert "rules_engine_teacher_applied" in disabled.safety_flags
+    assert "rules_engine_contact_address_foton" not in disabled.safety_flags
+
+
+def test_step3a_low_confidence_identity_question_keeps_policy_c_terminal_answer() -> None:
+    facts = {
+        "presentation_format_facts_2026_05_21.client_facts.student_account_access.client_safe_text": (
+            "У ученика есть личный кабинет на учебной платформе. Если пароль забыт, его восстанавливают через кнопку «Забыли пароль»."
+        )
+    }
+    question = "ты бот? как зайти в личный кабинет?"
+
+    result = _apply_v2_guard_chain(
+        _step3a_result_with_planner(
+            question=question,
+            facts=facts,
+            planner_intent="platform_access",
+            planner_confidence=0.35,
+            planner_subvariant="how_to_login",
+        ),
+        question,
+        _step2b1_context(brand="foton", intent="platform_access", question=question, facts=facts),
+    )
+
+    shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+    assert shadow["planner_available"] is False
     assert shadow["selected_source"] == "keyword"
-    assert "rules_engine_teacher_applied" in result.safety_flags
-    assert "rules_engine_contact_address_foton" not in result.safety_flags
+    assert "terminal_safe_template_applied" in result.safety_flags
+    assert "rules_engine_platform_access_applied" not in result.safety_flags
+    assert "цифровой помощник" in result.draft_text.casefold()
 
 
 def test_step3a_planner_intent_can_be_enabled_and_still_uses_context_brand() -> None:
@@ -9015,6 +9065,54 @@ def test_step3a_planner_error_does_not_override_p0_or_output_gate() -> None:
 
     assert result.route == "manager_only"
     assert not any(flag.startswith("rules_engine_contact_address") for flag in result.safety_flags)
+
+
+def test_step3a_planner_keeps_price_topic_on_ellipsis_with_memory() -> None:
+    facts = {
+        "prices_regular_2026_27.grade10.informatics.offline.semester": (
+            "Фотон: информатика для 10 класса очно, семестр — 49 000 ₽."
+        ),
+        "prices_regular_2026_27.grade10.informatics.offline.year": (
+            "Фотон: информатика для 10 класса очно, год — 82 000 ₽."
+        ),
+    }
+    question = "а очно?"
+
+    result = _apply_v2_guard_chain(
+        _step3a_result_with_planner(
+            question=question,
+            facts=facts,
+            planner_intent="pricing",
+            planner_confidence=0.91,
+            planner_subvariant="offline",
+            planner_slots={"subject": "информатика", "grade": "10", "format": "очно"},
+        ),
+        question,
+        {
+            **_step2b1_context(brand="foton", intent="teacher", question=question, facts=facts),
+            "dialogue_memory_view": {
+                "known_slots": {
+                    "subject": {"value": "информатика", "source": "client_turn_1"},
+                    "grade": {"value": "10", "source": "client_turn_1"},
+                    "format": {"value": "онлайн", "source": "bot_inferred"},
+                },
+                "topic_focus": {
+                    "subject": "информатика",
+                    "grade": "10",
+                    "format": "онлайн",
+                    "product_family": "regular_course",
+                },
+            },
+        },
+    )
+
+    shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+    assert shadow["selected_source"] == "planner"
+    assert shadow["selected_intent"] == "pricing"
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_price_format_matched" in result.safety_flags
+    assert "49 000 ₽" in result.draft_text
+    assert "очно" in result.draft_text.casefold()
 
 
 def test_step2b1_teacher_general_answers_from_retrieved_fact() -> None:

@@ -95,6 +95,113 @@ def test_parse_contract_rejects_fact_values_in_needed_keys() -> None:
     assert contract.needed_fact_keys == ("prices.current",)
 
 
+def test_parse_contract_keeps_planner_fields_without_trusting_brand_slot() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "а очно?",
+            "planner_intent": "format",
+            "planner_subvariant": "offline",
+            "planner_slots": {
+                "subject": "информатика",
+                "grade": "10",
+                "format": "очно",
+                "active_brand": "unpk",
+                "unknown": "x",
+            },
+            "planner_confidence": 0.88,
+            "answerability": "answer_self",
+        },
+        active_brand="foton",
+        fact_key_catalog=("prices.regular.informatics.grade10.offline",),
+    )
+
+    assert contract.active_brand == "foton"
+    assert contract.planner_intent == "format"
+    assert contract.planner_subvariant == "offline"
+    assert contract.planner_confidence == 0.88
+    assert contract.planner_slots == {"subject": "информатика", "grade": "10", "format": "очно"}
+
+
+def test_understanding_prompt_exposes_planner_schema_and_memory_for_ellipsis() -> None:
+    prompt = build_understanding_prompt(
+        conversation=(
+            {"role": "client", "text": "Сколько стоит информатика для 10 класса?"},
+            {"role": "bot", "text": "Онлайн стоит 82 000 ₽ за год."},
+            {"role": "client", "text": "а очно?"},
+        ),
+        active_brand="foton",
+        fact_key_catalog=("prices_regular_2026_27.grade10.informatics.offline",),
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "topic_focus": {"subject": "информатика", "grade": "10", "product_family": "regular_course"},
+            }
+        },
+    )
+
+    assert "planner_intent" in prompt
+    assert "planner_subvariant" in prompt
+    assert "planner_slots" in prompt
+    assert "а очно?" in prompt
+    assert "Фокус темы из памяти" in prompt
+    assert "бренд задаётся каналом" in prompt
+
+
+def test_step3a_ellipsis_planner_keeps_topic_from_memory_without_extra_call() -> None:
+    calls = 0
+    store = FactStore(
+        catalog=("prices_regular_2026_27.grade10.informatics.offline",),
+        store={
+            "foton": {
+                "prices_regular_2026_27.grade10.informatics.offline": (
+                    "Информатика для 10 класса очно: семестр — 49 000 ₽."
+                )
+            }
+        },
+    )
+
+    def understand_once(_prompt: str) -> Mapping[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {
+            "current_question": "а очно?",
+            "answerability": "answer_self",
+            "planner_intent": "pricing",
+            "planner_subvariant": "offline",
+            "planner_slots": {"subject": "информатика", "grade": "10", "format": "очно"},
+            "planner_confidence": 0.9,
+            "subquestions": [{"text": "а очно?", "answerable": "self", "needed_fact_keys": []}],
+        }
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "Сколько стоит информатика для 10 класса онлайн?"},
+            {"role": "bot", "text": "Онлайн стоит 82 000 ₽ за год."},
+            {"role": "client", "text": "а очно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=understand_once,
+        draft_fn=lambda _prompt: "Очно для 10 класса по информатике: семестр — 49 000 ₽.",
+        context={
+            "dialogue_memory_view": {
+                "topic_focus": {
+                    "subject": "информатика",
+                    "grade": "10",
+                    "format": "онлайн",
+                    "product_family": "regular_course",
+                }
+            }
+        },
+    )
+
+    assert calls == 1
+    assert result.contract.planner_intent == "pricing"
+    assert result.contract.planner_slots["subject"] == "информатика"
+    assert result.facts
+    assert "prices_regular_2026_27.grade10.informatics.offline" in result.facts
+
+
 def test_pipeline_happy_path_with_key_retrieval() -> None:
     store = FactStore(
         catalog=("price.online",),

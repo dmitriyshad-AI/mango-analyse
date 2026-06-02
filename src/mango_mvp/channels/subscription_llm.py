@@ -73,9 +73,11 @@ HUMANITY_X2_REWRITE_MODEL_ENV = "TELEGRAM_DRAFT_X2_REWRITE_MODEL"
 HUMANITY_X2_REWRITE_REASONING_ENV = "TELEGRAM_DRAFT_X2_REWRITE_REASONING"
 DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL"
 DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING"
+RULES_ENGINE_PLANNER_INTENT_ENV = "TELEGRAM_RULES_ENGINE_PLANNER_INTENT"
 SCOPE_FACT_GUARD_ENV = "TELEGRAM_SCOPE_FACT_GUARD"
 ANTIREPEAT_STRICT_ENV = "TELEGRAM_ANTIREPEAT_STRICT"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
+PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 CONCRETE_FACT_RE = re.compile(
     r"("
@@ -1203,6 +1205,81 @@ def _migrated_rule_intent_from_dialogue_contract(result: SubscriptionDraftResult
     return ""
 
 
+def _float_value(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _rules_engine_planner_intent_enabled(context: Optional[Mapping[str, Any]]) -> bool:
+    if isinstance(context, Mapping) and context.get(RULES_ENGINE_PLANNER_INTENT_ENV) is not None:
+        return _truthy_value(context.get(RULES_ENGINE_PLANNER_INTENT_ENV))
+    return _truthy_value(os.getenv(RULES_ENGINE_PLANNER_INTENT_ENV))
+
+
+def _planner_intent_candidate(contract: Mapping[str, Any], registry: Mapping[str, Any]) -> tuple[str, str, float, bool]:
+    intent = str(contract.get("planner_intent") or "").strip()
+    confidence = _float_value(contract.get("planner_confidence"))
+    if not intent or confidence < PLANNER_INTENT_CONFIDENCE_THRESHOLD:
+        return intent, "", confidence, False
+    rule = select_migrated_domain_rule(intent, registry)
+    return intent, getattr(rule, "rule_id", "") if rule is not None else "", confidence, rule is not None
+
+
+def _rules_engine_intent_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+    registry: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    contract = _dialogue_contract_mapping(result)
+    plan = _conversation_intent_plan(context)
+    planner_intent, planner_rule, planner_confidence, planner_available = _planner_intent_candidate(contract, registry)
+    keyword_intent = str(plan.get("primary_intent") or "").strip()
+    keyword_rule = select_migrated_domain_rule(keyword_intent, registry)
+    regex_intent = _migrated_rule_intent_from_dialogue_contract(result)
+    regex_rule = select_migrated_domain_rule(regex_intent, registry)
+    selected_source = "keyword" if keyword_rule is not None else "regex" if regex_rule is not None else ""
+    selected_intent = keyword_intent if selected_source == "keyword" else regex_intent if selected_source == "regex" else ""
+    planner_enabled = _rules_engine_planner_intent_enabled(context)
+    if planner_enabled and planner_available:
+        selected_source = "planner"
+        selected_intent = planner_intent
+    return {
+        "schema_version": "rules_engine_intent_shadow_v1_2026_06_02",
+        "planner_intent": planner_intent,
+        "planner_subvariant": str(contract.get("planner_subvariant") or ""),
+        "planner_slots": dict(contract.get("planner_slots") or {}) if isinstance(contract.get("planner_slots"), Mapping) else {},
+        "planner_confidence": round(planner_confidence, 3),
+        "planner_available": planner_available,
+        "planner_rule": planner_rule,
+        "keyword_intent": keyword_intent,
+        "keyword_rule": getattr(keyword_rule, "rule_id", "") if keyword_rule is not None else "",
+        "regex_intent": regex_intent,
+        "regex_rule": getattr(regex_rule, "rule_id", "") if regex_rule is not None else "",
+        "agreement_planner_keyword": bool(planner_intent and planner_intent == keyword_intent),
+        "agreement_planner_regex": bool(planner_intent and planner_intent == regex_intent),
+        "selected_source": selected_source,
+        "selected_intent": selected_intent,
+        "planner_intent_enabled": planner_enabled,
+    }
+
+
+def _with_rules_engine_intent_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    shadow: Mapping[str, Any],
+) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    pipeline = dict(pipeline)
+    pipeline["rules_engine_intent_shadow"] = dict(shadow)
+    metadata["dialogue_contract_pipeline"] = pipeline
+    metadata["rules_engine_intent_shadow"] = dict(shadow)
+    return replace(result, metadata=metadata)
+
+
 def _rules_engine_facts(result: SubscriptionDraftResult, context: Optional[Mapping[str, Any]]) -> dict[str, str]:
     facts = _dialogue_contract_retrieved_facts(result)
     if isinstance(context, Mapping):
@@ -1263,10 +1340,16 @@ def _apply_migrated_rules_engine(
     ):
         return None
     plan = _conversation_intent_plan(context)
-    intent = str(plan.get("primary_intent") or "").strip()
     registry = load_rules_registry()
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    shadow = pipeline.get("rules_engine_intent_shadow") if isinstance(pipeline.get("rules_engine_intent_shadow"), Mapping) else {}
+    if not shadow:
+        shadow = _rules_engine_intent_shadow(result, context=context, registry=registry)
+    selected_source = str(shadow.get("selected_source") or "")
+    intent = str(shadow.get("selected_intent") or plan.get("primary_intent") or "").strip()
     rule = select_migrated_domain_rule(intent, registry)
-    intent_from_contract = False
+    intent_from_contract = selected_source in {"regex", "planner"}
     if rule is None:
         intent = _migrated_rule_intent_from_dialogue_contract(result)
         intent_from_contract = bool(intent)
@@ -1274,7 +1357,12 @@ def _apply_migrated_rules_engine(
     if rule is None:
         return None
     if result.route == "manager_only" and not _manager_route_migrated_rules_override_allowed(result, intent=intent):
-        fallback_intent = "" if intent_from_contract else _migrated_rule_intent_from_dialogue_contract(result)
+        if selected_source == "planner":
+            fallback_intent = str(shadow.get("keyword_intent") or shadow.get("regex_intent") or "")
+        elif intent_from_contract:
+            fallback_intent = ""
+        else:
+            fallback_intent = _migrated_rule_intent_from_dialogue_contract(result)
         if not fallback_intent or fallback_intent == intent or not _manager_route_migrated_rules_override_allowed(result, intent=fallback_intent):
             return None
         fallback_rule = select_migrated_domain_rule(fallback_intent, registry)
@@ -1295,11 +1383,20 @@ def _apply_migrated_rules_engine(
     enriched_plan = {
         **dict(plan),
         "primary_intent": intent or str(plan.get("primary_intent") or ""),
+        "planner_intent": str(contract.get("planner_intent") or ""),
+        "planner_subvariant": str(contract.get("planner_subvariant") or ""),
+        "planner_slots": dict(contract.get("planner_slots") or {}) if isinstance(contract.get("planner_slots"), Mapping) else {},
+        "planner_confidence": _float_value(contract.get("planner_confidence")),
+        "rules_engine_intent_source": str(shadow.get("selected_source") or ""),
         "direct_question": direct_question,
     }
     outcome = apply_migrated_domain_rule(rule, plan=enriched_plan, facts=facts, context=context)
-    if outcome is None and not intent_from_contract:
-        fallback_intent = _migrated_rule_intent_from_dialogue_contract(result)
+    if outcome is None and (not intent_from_contract or selected_source == "planner"):
+        fallback_intent = (
+            str(shadow.get("keyword_intent") or shadow.get("regex_intent") or "")
+            if selected_source == "planner"
+            else _migrated_rule_intent_from_dialogue_contract(result)
+        )
         if fallback_intent and fallback_intent != intent:
             fallback_rule = select_migrated_domain_rule(fallback_intent, registry)
             if fallback_rule is not None and (
@@ -1407,6 +1504,11 @@ def apply_dialogue_contract_v2_template_dispatcher(
     client_message: str,
     context: Optional[Mapping[str, Any]],
 ) -> SubscriptionDraftResult:
+    registry = load_rules_registry()
+    result = _with_rules_engine_intent_shadow(
+        result,
+        shadow=_rules_engine_intent_shadow(result, context=context, registry=registry),
+    )
     if _safe_template_already_applied(result):
         trace_event(
             context,

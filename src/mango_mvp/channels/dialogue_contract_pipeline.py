@@ -39,6 +39,27 @@ DEFAULT_KB_SNAPSHOT_PATH = Path(
 )
 MAX_CATALOG_KEYS = 240
 MAX_REPAIR_ATTEMPTS = 2
+PLANNER_INTENT_VALUES: tuple[str, ...] = (
+    "teacher",
+    "recording",
+    "address",
+    "document",
+    "matkap",
+    "tax",
+    "olympiad",
+    "platform_access",
+    "installment",
+    "payment_method",
+    "discount",
+    "pricing",
+    "format",
+    "trial",
+    "camp_lvsh",
+    "enrollment_process",
+    "schedule",
+    "refund_policy",
+    "general_consultation",
+)
 
 _MONEY_OR_VALUE_RE = re.compile(
     r"(?:₽|руб(?:\.|лей|ля|ль)?|%)|\b\d[\d\s\u00a0]{2,}\s*(?:р\.|руб|₽)\b",
@@ -138,6 +159,10 @@ class AnswerContract:
     denied_topics: tuple[str, ...] = ()
     switched_topics: tuple[str, ...] = ()
     known_slots: Mapping[str, Slot] = field(default_factory=dict)
+    planner_intent: str = ""
+    planner_subvariant: str = ""
+    planner_slots: Mapping[str, str] = field(default_factory=dict)
+    planner_confidence: float = 0.0
     forbidden_substitutions: tuple[str, ...] = ()
     client_state: str = ""
     answerability: str = "manager_only"
@@ -181,6 +206,10 @@ class AnswerContract:
             "denied_topics": list(self.denied_topics),
             "switched_topics": list(self.switched_topics),
             "known_slots": {name: slot.to_json_dict() for name, slot in self.known_slots.items()},
+            "planner_intent": self.planner_intent,
+            "planner_subvariant": self.planner_subvariant,
+            "planner_slots": dict(self.planner_slots),
+            "planner_confidence": self.planner_confidence,
             "assertable_slots": self.assertable_slots(),
             "unsourced_slots": list(self.unsourced_slots()),
             "needed_fact_keys": list(self.needed_fact_keys),
@@ -326,6 +355,7 @@ def build_understanding_prompt(
 ) -> str:
     hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
     catalog = ", ".join(str(item) for item in fact_key_catalog[:MAX_CATALOG_KEYS])
+    planner_values = ", ".join(PLANNER_INTENT_VALUES)
     known_slots: Mapping[str, Any] = {}
     topic_focus: Mapping[str, Any] = {}
     if isinstance(context, MappingABC):
@@ -338,6 +368,7 @@ def build_understanding_prompt(
         "Верни строго JSON без пояснений:\n"
         "{ current_question, client_state, continued_topics[], denied_topics[], switched_topics[], forbidden_substitutions[],\n"
         "  known_slots: { имя: {value, source} },\n"
+        "  planner_intent, planner_subvariant, planner_slots: {slot:value}, planner_confidence:0..1,\n"
         "  subquestions: [ {text, answerable:'self'|'manager', question_type:'existence_yes_no'|'', existence_target, needed_fact_keys[], next_step} ],\n"
         "  answerability:'answer_self'|'manager_only', question_type:'existence_yes_no'|'', existence_target, is_p0:bool, p0_reason, confidence:0..1 }\n"
         "Правила:\n"
@@ -367,6 +398,14 @@ def build_understanding_prompt(
         "needed_fact_keys и answerable='self'. Если вопрос неоднозначен — задай ОДИН уточняющий подвопрос, не "
         "уходи к менеджеру. answerability=manager_only ТОЛЬКО при P0 или когда в каталоге реально нет покрывающего "
         "ключа. current_question заполняй всегда.\n"
+        f"- planner_intent — главное намерение для выбора правила; выбери одно из: {planner_values}. "
+        "Если не уверен, ставь general_consultation и planner_confidence ниже 0.70.\n"
+        "- planner_subvariant — короткая разновидность внутри намерения, например online/offline/weekend/start_date/"
+        "license/how_to_login/second_subject/live_seats; если не нужно — пустая строка.\n"
+        "- planner_slots — только явно понятые или восстановленные из памяти слоты: grade, subject, format, product, "
+        "product_family, payment_method. Не добавляй active_brand: бренд задаётся каналом, а не текстом клиента.\n"
+        "- На эллипсисе используй topic_focus и known_slots для planner_intent/planner_slots так же, как для current_question: "
+        "«а очно?» после цены информатики остаётся pricing/format по той же теме, не general_consultation.\n"
         f"Уже известные данные: {json.dumps(dict(known_slots), ensure_ascii=False)}\n"
         f"Фокус темы из памяти: {json.dumps(dict(topic_focus), ensure_ascii=False)}\n"
         f"Каталог ключей фактов: {catalog}\n"
@@ -430,6 +469,10 @@ def parse_contract(
         denied_topics=tuple(_seq(data.get("denied_topics"))),
         switched_topics=tuple(_seq(data.get("switched_topics"))),
         known_slots=_clean_slots(data.get("known_slots")),
+        planner_intent=_clean_planner_intent(data.get("planner_intent")),
+        planner_subvariant=str(data.get("planner_subvariant") or "").strip()[:80],
+        planner_slots=_clean_planner_slots(data.get("planner_slots")),
+        planner_confidence=_clamp_float(data.get("planner_confidence")),
         forbidden_substitutions=tuple(_seq(data.get("forbidden_substitutions"))),
         client_state=str(data.get("client_state") or "").strip()[:180],
         answerability=answerability,
@@ -439,6 +482,26 @@ def parse_contract(
         p0_reason=str(data.get("p0_reason") or p0_reason_pregate or "").strip()[:200],
         confidence=_clamp_float(data.get("confidence")),
     )
+
+
+def _clean_planner_intent(value: object) -> str:
+    intent = str(value or "").strip().casefold()
+    return intent if intent in PLANNER_INTENT_VALUES else ""
+
+
+def _clean_planner_slots(raw: object) -> Mapping[str, str]:
+    if not isinstance(raw, MappingABC):
+        return {}
+    allowed = {"grade", "subject", "format", "product", "product_family", "payment_method"}
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key or "").strip().casefold()
+        if name not in allowed:
+            continue
+        text = str(value or "").strip()
+        if text:
+            result[name] = text[:120]
+    return result
 
 
 def understand(
@@ -1487,6 +1550,9 @@ def run_pipeline(
                 "p0_reason": contract.p0_reason,
                 "needed_fact_keys": list(contract.all_needed_fact_keys()),
                 "subquestions": [item.to_json_dict() for item in contract.subquestions],
+                "planner_intent": contract.planner_intent,
+                "planner_subvariant": contract.planner_subvariant,
+                "planner_confidence": contract.planner_confidence,
             }
         )
     if contract.is_p0:

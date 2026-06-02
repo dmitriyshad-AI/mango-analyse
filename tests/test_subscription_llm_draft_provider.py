@@ -8877,6 +8877,146 @@ def _step2b1_result(*, question: str, facts: dict[str, str], topic_id: str = "se
     )
 
 
+def _step3a_result_with_planner(
+    *,
+    question: str,
+    facts: dict[str, str],
+    planner_intent: str,
+    planner_confidence: float,
+    planner_subvariant: str = "",
+    planner_slots: dict[str, str] | None = None,
+    is_p0: bool = False,
+) -> SubscriptionDraftResult:
+    result = _step2b1_result(question=question, facts=facts)
+    metadata = dict(result.metadata)
+    pipeline = dict(metadata["dialogue_contract_pipeline"])
+    contract = dict(pipeline["contract"])
+    contract.update(
+        {
+            "planner_intent": planner_intent,
+            "planner_subvariant": planner_subvariant,
+            "planner_slots": dict(planner_slots or {}),
+            "planner_confidence": planner_confidence,
+            "is_p0": is_p0,
+        }
+    )
+    pipeline["contract"] = contract
+    metadata["dialogue_contract_pipeline"] = pipeline
+    return replace(result, metadata=metadata)
+
+
+def test_step3a_planner_intent_is_shadow_only_by_default() -> None:
+    facts = {
+        "teacher.fact": "Преподаватели — из МГУ и МИФИ, эксперты ЕГЭ.",
+        "locations_foton.address": "Фотон очно занимается по адресу Москва, Верхняя Красносельская ул., 30.",
+    }
+    question = "Подскажите, пожалуйста"
+
+    result = _apply_v2_guard_chain(
+        _step3a_result_with_planner(
+            question=question,
+            facts=facts,
+            planner_intent="address",
+            planner_confidence=0.92,
+            planner_subvariant="where_located",
+        ),
+        question,
+        _step2b1_context(brand="foton", intent="teacher", question=question, facts=facts),
+    )
+
+    shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+    assert shadow["planner_intent"] == "address"
+    assert shadow["planner_available"] is True
+    assert shadow["keyword_intent"] == "teacher"
+    assert shadow["selected_source"] == "keyword"
+    assert "rules_engine_teacher_applied" in result.safety_flags
+    assert "rules_engine_contact_address_foton" not in result.safety_flags
+
+
+def test_step3a_planner_intent_can_be_enabled_and_still_uses_context_brand() -> None:
+    facts = {
+        "locations_unpk.moscow_regular": "УНПК МФТИ: очная площадка в Москве — Сретенка, 20.",
+    }
+    question = "Где вы находитесь?"
+
+    result = _apply_v2_guard_chain(
+        _step3a_result_with_planner(
+            question=question,
+            facts=facts,
+            planner_intent="address",
+            planner_confidence=0.95,
+            planner_subvariant="where_located",
+            planner_slots={"active_brand": "foton"},
+        ),
+        question,
+        {
+            **_step2b1_context(brand="unpk", intent="teacher", question=question, facts=facts),
+            "TELEGRAM_RULES_ENGINE_PLANNER_INTENT": "1",
+        },
+    )
+
+    shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+    assert shadow["selected_source"] == "planner"
+    assert shadow["selected_intent"] == "address"
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_contact_address_unpk" in result.safety_flags
+    assert "Сретенка" in result.draft_text
+    assert "Красносельская" not in result.draft_text
+
+
+def test_step3a_low_confidence_planner_falls_back_to_keyword_even_when_enabled() -> None:
+    facts = {
+        "teacher.fact": "Преподаватели — из МГУ и МИФИ, эксперты ЕГЭ.",
+        "locations_foton.address": "Фотон очно занимается по адресу Москва, Верхняя Красносельская ул., 30.",
+    }
+    question = "Подскажите"
+
+    result = _apply_v2_guard_chain(
+        _step3a_result_with_planner(
+            question=question,
+            facts=facts,
+            planner_intent="address",
+            planner_confidence=0.41,
+        ),
+        question,
+        {
+            **_step2b1_context(brand="foton", intent="teacher", question=question, facts=facts),
+            "TELEGRAM_RULES_ENGINE_PLANNER_INTENT": "1",
+        },
+    )
+
+    shadow = result.metadata["dialogue_contract_pipeline"]["rules_engine_intent_shadow"]
+    assert shadow["planner_available"] is False
+    assert shadow["selected_source"] == "keyword"
+    assert "rules_engine_teacher_applied" in result.safety_flags
+    assert "rules_engine_contact_address_foton" not in result.safety_flags
+
+
+def test_step3a_planner_error_does_not_override_p0_or_output_gate() -> None:
+    facts = {
+        "locations_foton.address": "Фотон очно занимается по адресу Москва, Верхняя Красносельская ул., 30.",
+    }
+    question = "Верните деньги, я недоволен"
+
+    result = _apply_v2_guard_chain(
+        _step3a_result_with_planner(
+            question=question,
+            facts=facts,
+            planner_intent="address",
+            planner_confidence=0.99,
+            is_p0=True,
+        ),
+        question,
+        {
+            **_step2b1_context(brand="foton", intent="address", question=question, facts=facts),
+            "TELEGRAM_RULES_ENGINE_PLANNER_INTENT": "1",
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_contact_address") for flag in result.safety_flags)
+
+
 def test_step2b1_teacher_general_answers_from_retrieved_fact() -> None:
     facts = {
         "bot_policy.approved_phrases.theme_17_teachers.foton": (

@@ -147,6 +147,12 @@ class CountingGenerateModel:
         return self._model.generate(prompt)
 
 
+def maybe_counting_model(model: Any, *, role: str, counter: LlmCallCounter | None) -> Any:
+    if counter is None:
+        return model
+    return CountingGenerateModel(model, role=role, counter=counter)
+
+
 class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
     def __init__(self, *args: Any, llm_call_counter: LlmCallCounter | None = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -590,7 +596,7 @@ def load_transcripts(path: Path) -> list[Mapping[str, Any]]:
 def build_client_model(args: argparse.Namespace) -> Any:
     if args.client_mode == "fake":
         return FakeClientModel()
-    return CountingGenerateModel(
+    return maybe_counting_model(
         CodexJsonModel(
             model=args.model,
             reasoning_effort=args.client_reasoning,
@@ -604,7 +610,7 @@ def build_client_model(args: argparse.Namespace) -> Any:
 def build_judge_model(args: argparse.Namespace) -> Any:
     if args.judge_mode == "fake":
         return FakeJudgeModel()
-    return CountingGenerateModel(
+    return maybe_counting_model(
         CodexJsonModel(
             model=args.model,
             reasoning_effort=args.judge_reasoning,
@@ -620,7 +626,7 @@ def build_memory_model(args: argparse.Namespace) -> Any:
         return None
     if args.memory_mode == "fake":
         return FakeMemoryModel()
-    return CountingGenerateModel(
+    return maybe_counting_model(
         CodexJsonModel(
             model=args.memory_model,
             reasoning_effort=args.memory_reasoning,
@@ -637,7 +643,7 @@ def build_semantic_match_model(args: argparse.Namespace) -> Any:
         return None
     if args.semantic_mode == "fake":
         return FakeSemanticMatchModel()
-    return CountingGenerateModel(
+    return maybe_counting_model(
         CodexJsonModel(
             model=args.semantic_model,
             reasoning_effort=args.semantic_reasoning,

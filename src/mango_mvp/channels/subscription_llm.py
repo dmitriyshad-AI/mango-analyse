@@ -3964,11 +3964,21 @@ def apply_humanity_x2_rewriter(
     if result.route == "manager_only" or _humanity_p0_required(result):
         metadata["humanity_x2"]["fallback_reason"] = "locked_p0_or_manager_only"
         return replace(result, metadata=metadata)
+    if _humanity_x2_identity_policy_locked(result):
+        metadata["humanity_x2"]["fallback_reason"] = "locked_identity_policy"
+        return replace(result, metadata=metadata)
 
     confirmed_facts = _humanity_x2_confirmed_facts(context)
+    rules_engine_applied = _rules_engine_result_applied(metadata)
 
     def validate_candidate(candidate: str) -> str | None:
         return _humanity_x2_repo_gate(candidate, result=result, client_message=client_message, context=context)
+
+    def sanitize_candidate(candidate: str) -> str:
+        if not rules_engine_applied:
+            return candidate
+        stripped = strip_internal_service_markers(candidate)
+        return stripped or candidate
 
     rewrite = apply_humanity_form_rewrite(
         turn,
@@ -3977,6 +3987,7 @@ def apply_humanity_x2_rewriter(
         active_brand=_active_brand(context),
         client_message=client_message,
         linter_flags=linter_flags,
+        sanitize_fn=sanitize_candidate,
         validate_fn=validate_candidate,
         mode=_humanity_x2_rewrite_mode(context),
     )
@@ -3997,6 +4008,15 @@ def apply_humanity_x2_rewriter(
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, "humanity_x2_rewritten"])),
         metadata=metadata,
     )
+
+
+def _humanity_x2_identity_policy_locked(result: SubscriptionDraftResult) -> bool:
+    if str(result.draft_text or "").strip() in {IDENTITY_PROMPT_SAFE_TEXT, IDENTITY_FOTON_SAFE_TEXT, IDENTITY_UNPK_SAFE_TEXT}:
+        return True
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    shadow = pipeline.get("rules_engine_intent_shadow") if isinstance(pipeline.get("rules_engine_intent_shadow"), Mapping) else {}
+    return str(shadow.get("selected_source") or "") == "identity_policy"
 
 
 def apply_subscription_policy_guards(result: SubscriptionDraftResult) -> SubscriptionDraftResult:

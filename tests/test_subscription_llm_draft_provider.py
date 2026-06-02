@@ -24,6 +24,7 @@ from mango_mvp.channels.subscription_llm import (
     CONTACT_FOTON_SAFE_TEXT,
     DraftGenerationResult,
     FakeDraftProvider,
+    IDENTITY_FOTON_SAFE_TEXT,
     LEGAL_THREAT_SAFE_TEXT,
     KNOWN_CONTEXT_REPAIR_TEXT,
     MATKAP_FEDERAL_TIMING_SAFE_TEXT,
@@ -5235,6 +5236,78 @@ def test_humanity_x2_rewriter_never_touches_manager_only() -> None:
 
     assert result.draft_text == base.draft_text
     assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_p0_or_manager_only"
+
+
+def test_humanity_x2_rewriter_never_touches_identity_policy_c() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=IDENTITY_FOTON_SAFE_TEXT,
+        safety_flags=("terminal_safe_template_applied",),
+        metadata={
+            "dialogue_contract_pipeline": {
+                "rules_engine_intent_shadow": {
+                    "selected_source": "identity_policy",
+                    "selected_intent": "identity",
+                }
+            }
+        },
+    )
+
+    result = apply_humanity_x2_rewriter(
+        base,
+        client_message="это бот?",
+        context={"active_brand": "foton", "humanity_x2_rewrite_enabled": True},
+        rewrite_runner=lambda prompt: "Я помощник, отвечу теплее.",
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == IDENTITY_FOTON_SAFE_TEXT
+    assert "humanity_x2_rewritten" not in result.safety_flags
+    assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_identity_policy"
+
+
+def test_humanity_x2_rewriter_allows_migrated_rule_answers_with_stripped_internal_marker() -> None:
+    cases = (
+        (
+            "rules_engine_teacher_applied",
+            "Преподаватели — эксперты ЕГЭ.",
+            "[source_id=fact:v3:teacher] Преподаватели — эксперты ЕГЭ. Помогу подобрать группу.",
+            {"teacher": "Преподаватели — эксперты ЕГЭ."},
+        ),
+        (
+            "rules_engine_price_format_matched",
+            "Семестр — 49 000 ₽.",
+            "[source_id=fact:v3:price] Семестр — 49 000 ₽. Если удобно, подскажу годовой формат.",
+            {"price": "Семестр — 49 000 ₽."},
+        ),
+        (
+            "rules_engine_installment_foton",
+            "Доступна рассрочка на 6, 10 или 12 месяцев.",
+            "[source_id=fact:v3:installment] Доступна рассрочка на 6, 10 или 12 месяцев. Менеджер поможет оформить вариант.",
+            {"installment": "Доступна рассрочка на 6, 10 или 12 месяцев."},
+        ),
+    )
+
+    for flag, original, candidate, facts in cases:
+        base = SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=original,
+            safety_flags=(flag,),
+            metadata={"rules_engine": {"applied": flag.removeprefix("rules_engine_")}},
+        )
+
+        result = apply_humanity_x2_rewriter(
+            base,
+            client_message="Подскажите, пожалуйста",
+            context={"active_brand": "foton", "humanity_x2_rewrite_enabled": True, "confirmed_facts": facts},
+            rewrite_runner=lambda prompt, candidate=candidate: candidate,
+        )
+
+        assert result.metadata["humanity_x2"]["rewritten"] is True
+        assert result.metadata["humanity_x2"]["fallback_reason"] is None
+        assert "humanity_x2_rewritten" in result.safety_flags
+        assert "source_id" not in result.draft_text
+        assert result.draft_text != original
 
 
 def test_humanity_x2_rewriter_rejects_cross_brand_candidate() -> None:

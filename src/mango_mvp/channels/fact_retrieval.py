@@ -26,6 +26,7 @@ KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "online_recordings": ("online_recording", "online_recordings", "online_platform.recording", "recording", "запис", "сохран"),
     "offline_recordings": ("offline_recording", "offline_recordings", "recording", "materials"),
     "recordings": ("recording", "online_platform.recording", "materials", "запис", "сохран"),
+    "teachers": ("teacher", "teachers", "theme_17_teachers", "преподав", "педагог", "учитель"),
     "olympiad_online": (
         "olympiad_online",
         "online_olympiad",

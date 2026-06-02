@@ -4143,7 +4143,7 @@ def _asks_address(contract: AnswerContract) -> bool:
             " ".join(item.text for item in contract.subquestions),
         ]
     ).casefold().replace("ё", "е")
-    return bool(re.search(r"адрес|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I))
+    return bool(re.search(r"адрес|площадк|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I))
 
 
 def _asks_price(contract: AnswerContract) -> bool:

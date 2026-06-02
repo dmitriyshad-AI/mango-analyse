@@ -40,6 +40,12 @@ from mango_mvp.channels.humanity_guards import (
 from mango_mvp.channels.humanity_linter import lint_turn
 from mango_mvp.channels.humanity_rewriter import apply_rewrite as apply_humanity_form_rewrite
 from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, codes_from_text, is_benign_hypothetical_refund
+from mango_mvp.channels.rules_engine import (
+    RuleOutcome,
+    apply_rule as apply_migrated_domain_rule,
+    load_rules_registry,
+    select_rule as select_migrated_domain_rule,
+)
 from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 from mango_mvp.channels.draft_prompt_builder import (
@@ -1125,6 +1131,137 @@ def _apply_safe_template_spec(
     )
 
 
+def _dialogue_contract_retrieved_facts(result: SubscriptionDraftResult) -> dict[str, str]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    return {str(key): str(value) for key, value in retrieved.items() if str(key).strip() and str(value).strip()}
+
+
+def _dialogue_contract_mapping(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
+    return contract
+
+
+def _migrated_rule_intent_from_dialogue_contract(result: SubscriptionDraftResult) -> str:
+    contract = _dialogue_contract_mapping(result)
+    topic_id = str(contract.get("topic_id") or result.topic_id or "").casefold()
+    haystack = " ".join(
+        str(item or "")
+        for item in (
+            contract.get("current_question"),
+            contract.get("client_state"),
+            contract.get("question_type"),
+            " ".join(str(key or "") for key in (contract.get("needed_fact_keys") or ())),
+            " ".join(str(item or "") for item in (contract.get("composite_subquestions") or ())),
+            topic_id,
+        )
+    ).casefold()
+    if "theme:015_address" in topic_id or re.search(
+        r"\b(address|location|metro|locations?)\b|адрес|площадк|где\s+.*находит|где\s+.*занят",
+        haystack,
+        re.I,
+    ):
+        return "contact_address"
+    if "theme:017_teachers" in topic_id or re.search(r"преподав|педагог|учитель|кто\s+вед", haystack, re.I):
+        return "teacher"
+    if "theme:018_materials_homework" in topic_id or re.search(r"record|recording|запис[ьи]|пересмотр", haystack, re.I):
+        return "recordings"
+    return ""
+
+
+def _rules_engine_facts(result: SubscriptionDraftResult, context: Optional[Mapping[str, Any]]) -> dict[str, str]:
+    facts = _dialogue_contract_retrieved_facts(result)
+    if isinstance(context, Mapping):
+        confirmed = context.get("confirmed_facts")
+        if isinstance(confirmed, Mapping):
+            for key, value in confirmed.items():
+                text = _client_clean_fact_text(value)
+                if str(key).strip() and text:
+                    facts.setdefault(str(key), text)
+    return facts
+
+
+def _apply_rules_engine_outcome(result: SubscriptionDraftResult, outcome: RuleOutcome) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    pipeline = dict(pipeline)
+    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    retrieved_facts = {str(key): str(value) for key, value in retrieved.items() if str(key).strip() and str(value).strip()}
+    retrieved_facts.update({str(key): str(value) for key, value in outcome.facts.items() if str(key).strip() and str(value).strip()})
+    pipeline["retrieved_facts"] = retrieved_facts
+    pipeline["retrieved_fact_keys"] = list(dict.fromkeys([*(pipeline.get("retrieved_fact_keys") or ()), *retrieved_facts.keys()]))
+    pipeline["rules_engine"] = {
+        "applied": outcome.rule_id,
+        "subvariant": outcome.subvariant,
+        "route": outcome.route,
+    }
+    metadata["dialogue_contract_pipeline"] = pipeline
+    metadata["rules_engine"] = {
+        "applied": outcome.rule_id,
+        "subvariant": outcome.subvariant,
+        **dict(outcome.metadata),
+    }
+    flags = tuple(dict.fromkeys([*result.safety_flags, *outcome.flags]))
+    checklist = tuple(dict.fromkeys([*result.manager_checklist, *outcome.checklist]))
+    context_used = tuple(dict.fromkeys([*result.context_used, "rules_engine"]))
+    return replace(
+        result,
+        route=outcome.route or result.route,
+        draft_text=outcome.text,
+        safety_flags=flags,
+        manager_checklist=checklist,
+        context_used=context_used,
+        metadata=metadata,
+    )
+
+
+def _apply_migrated_rules_engine(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult | None:
+    plan = _conversation_intent_plan(context)
+    intent = str(plan.get("primary_intent") or "").strip()
+    registry = load_rules_registry()
+    rule = select_migrated_domain_rule(intent, registry)
+    if rule is None:
+        intent = _migrated_rule_intent_from_dialogue_contract(result)
+        rule = select_migrated_domain_rule(intent, registry)
+    if rule is None:
+        return None
+    facts = _rules_engine_facts(result, context)
+    contract = _dialogue_contract_mapping(result)
+    direct_question = str(
+        plan.get("direct_question")
+        or contract.get("current_question")
+        or client_message
+        or ""
+    )
+    enriched_plan = {
+        **dict(plan),
+        "primary_intent": intent or str(plan.get("primary_intent") or ""),
+        "direct_question": direct_question,
+    }
+    outcome = apply_migrated_domain_rule(rule, plan=enriched_plan, facts=facts, context=context)
+    if outcome is None:
+        return None
+    return _apply_rules_engine_outcome(result, outcome)
+
+
+def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
+    rules = metadata.get("rules_engine") if isinstance(metadata.get("rules_engine"), Mapping) else {}
+    applied = str(rules.get("applied") or "").strip()
+    if applied:
+        return True
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    pipeline_rules = pipeline.get("rules_engine") if isinstance(pipeline.get("rules_engine"), Mapping) else {}
+    return bool(str(pipeline_rules.get("applied") or "").strip())
+
+
 def _safe_template_yield_result(
     result: SubscriptionDraftResult,
     *,
@@ -1168,6 +1305,20 @@ def apply_dialogue_contract_v2_template_dispatcher(
             },
         )
         return result
+    migrated = _apply_migrated_rules_engine(result, client_message=client_message, context=context)
+    if migrated is not None:
+        trace_event(
+            context,
+            "safe_template_dispatcher",
+            {
+                "applied": "rules_engine",
+                "rule": migrated.metadata.get("rules_engine", {}).get("applied") if isinstance(migrated.metadata.get("rules_engine"), Mapping) else "",
+                "route_before": result.route,
+                "route_after": migrated.route,
+                "draft_text": migrated.draft_text,
+            },
+        )
+        return migrated
     for spec in sorted(DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY, key=lambda item: item.priority):
         text = spec.produce(result, client_message, context)
         if text:
@@ -1599,6 +1750,17 @@ class SubscriptionLlmDraftProvider:
             context=context,
             previous_bot_texts=previous_bot_texts,
         )
+        if _rules_engine_result_applied(metadata) and fact_texts and not findings:
+            flags = tuple(
+                dict.fromkeys(
+                    [
+                        *after.safety_flags,
+                        "dialogue_contract_text_change_reverified",
+                        "rules_engine_text_change_reverified",
+                    ]
+                )
+            )
+            return replace(after, safety_flags=flags)
         semantic_available = True
         unsupported_claims: tuple[str, ...] = ()
         if facts:

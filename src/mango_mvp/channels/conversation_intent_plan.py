@@ -308,6 +308,7 @@ def _primary_intent(
         ("format", "format"),
         ("camp", "camp"),
         ("address", "address"),
+        ("teacher", "teacher"),
         ("identity", "identity"),
         ("off_topic", "off_topic"),
     )
@@ -365,6 +366,7 @@ def _keyword_signals(text: str) -> tuple[str, ...]:
         ("schedule", ("распис", "когда", "во сколько", "дни", "дням", "время", "заняти", "суббот", "воскрес", "выходн")),
         ("format", ("онлайн", "очно", "офлайн", "дистанц", "формат")),
         ("address", ("адрес", "где", "площадк", "метро", "пацаева", "сретен", "красносель")),
+        ("teacher", ("преподав", "педагог", "учитель", "кто вед", "кто работает")),
         ("document", ("справк", "документ", "договор", "сертификат", "чек", "квитанц")),
         ("matkap", ("маткап", "материн")),
         ("tax", ("налог", "вычет", "фнс")),
@@ -492,6 +494,7 @@ def _topic_for_intent(intent: str) -> str:
         "olympiad_online": "theme:016_program",
         "format": "theme:014_format",
         "address": "theme:015_address",
+        "teacher": "theme:017_teachers",
         "document": "theme:012_certificates",
         "matkap": "theme:007_matkap_payment",
         "tax": "theme:008_tax_deduction",
@@ -567,6 +570,8 @@ def _required_fact_keys(
         keys.append("olympiad_online.current")
     if intent == "address":
         keys.append("locations.current")
+    if intent == "teacher":
+        keys.append("teachers.current")
     if intent == "document":
         keys.append("documents.current")
     if intent == "matkap":
@@ -677,7 +682,7 @@ def _answer_policy(intent: str, *, risk_signals: Sequence[str]) -> tuple[str, st
         return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     if intent == "live_availability":
         return "answer_safe_parts_then_manager_live_check", "draft_for_manager"
-    if intent in {"pricing", "price_fix", "installment", "payment_method", "payment_by_invoice_monthly", "discount", "trial", "camp", "schedule", "format", "address", "document", "matkap", "tax"}:
+    if intent in {"pricing", "price_fix", "installment", "payment_method", "payment_by_invoice_monthly", "discount", "trial", "camp", "schedule", "format", "address", "teacher", "document", "matkap", "tax"}:
         return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     return "help_then_one_question", "draft_for_manager"
 

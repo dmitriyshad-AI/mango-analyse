@@ -591,6 +591,8 @@ def required_fact_keys_for_message(
             keys.append("offline_recordings.current")
         else:
             keys.append("recordings.current")
+    if re.search(r"преподав|педагог|учитель|кто\s+вед|кто\s+работает", text):
+        keys.append("teachers.current")
     if re.search(r"скид|льгот|промокод|акци", text):
         keys.append("discounts.current")
         if re.search(r"за\s+год|годов|год\s", text):
@@ -615,6 +617,8 @@ def required_fact_keys_for_message(
         keys.append("documents.current")
     if re.search(r"формат|онлайн|очно|офлайн|дистанц", text):
         keys.append("formats.current")
+    if re.search(r"адрес|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить|площадк|метро", text):
+        keys.append("locations.current")
     if re.search(r"пробн|фрагмент|попроб", text):
         keys.insert(0, "trial_online_fragment.current")
     if re.search(r"программ|предмет|летн|пробн|чему учат|содержание", text):

@@ -12,6 +12,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     build_faithfulness_prompt,
     check_claim_faithfulness,
     run_pipeline,
+    verify_output as verify_dialogue_contract_output,
 )
 from mango_mvp.channels.subscription_llm import (
     ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
@@ -8812,3 +8813,232 @@ def test_block_a_unpk_address_confirmation_not_overwritten_by_schedule_template(
     assert "сретенке, 20" in text
     assert "класс, предмет" in text
     assert "если напишете класс" not in text
+
+
+def _step2b1_pipeline_metadata(question: str, facts: dict[str, str]) -> dict:
+    return {
+        "dialogue_contract_pipeline": {
+            "contract": _route_shield_contract(question=question, answerability="answer_self", keys=tuple(facts.keys())),
+            "retrieved_facts": facts,
+            "retrieved_fact_keys": list(facts.keys()),
+        }
+    }
+
+
+def _step2b1_context(*, brand: str, intent: str, question: str, facts: dict[str, str]) -> dict:
+    topic_id = {
+        "teacher": "theme:017_teachers",
+        "recording": "theme:018_materials_homework",
+        "address": "theme:015_address",
+    }.get(intent, "service:S5_general_consultation")
+    return {
+        "active_brand": brand,
+        "client_message": question,
+        "conversation_intent_plan": {
+            "active_brand": brand,
+            "primary_intent": intent,
+            "topic_id": topic_id,
+            "direct_question": question,
+            "answer_policy": "answer_directly_if_fact_verified",
+            "route_bias": "bot_answer_self_for_pilot",
+            "required_fact_keys": list(facts.keys()),
+        },
+        "autonomy_policy": {
+            "allow_autonomous": True,
+            "allow_default_autonomy": True,
+            "allowed_topic_ids": [topic_id],
+        },
+        "confirmed_facts": facts,
+    }
+
+
+def _step2b1_result(*, question: str, facts: dict[str, str], topic_id: str = "service:S5_general_consultation") -> SubscriptionDraftResult:
+    return SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам менеджеру, он уточнит и вернется с ответом.",
+        topic_id=topic_id,
+        metadata=_step2b1_pipeline_metadata(question, facts),
+    )
+
+
+def test_step2b1_teacher_general_answers_from_retrieved_fact() -> None:
+    facts = {
+        "bot_policy.approved_phrases.theme_17_teachers.foton": (
+            "Преподаватели — из МФТИ, МГУ, ВШЭ, МГТУ им. Баумана, МИФИ. Эксперты ЕГЭ и члены жюри олимпиад."
+        )
+    }
+    question = "Кто у вас преподаёт?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:017_teachers"),
+        question,
+        _step2b1_context(brand="foton", intent="teacher", question=question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_teacher_applied" in result.safety_flags
+    assert "МГУ" in result.draft_text
+    assert "МФТИ" not in result.draft_text
+
+
+def test_step2b1_teacher_specific_name_does_not_invent_person() -> None:
+    facts = {
+        "bot_policy.approved_phrases.theme_17_teachers.foton": (
+            "Преподаватели — из МФТИ, МГУ, ВШЭ, МИФИ. Эксперты ЕГЭ и члены жюри олимпиад."
+        )
+    }
+    question = "Как зовут преподавателя физики в Лобне?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:017_teachers"),
+        question,
+        _step2b1_context(brand="foton", intent="teacher", question=question, facts=facts),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "rules_engine_teacher_specific_name" in result.safety_flags
+    assert "менеджер уточнит" in result.draft_text.casefold()
+    assert "Иван" not in result.draft_text
+    assert "Петров" not in result.draft_text
+
+
+def test_step2b1_recordings_online_answers_from_fact() -> None:
+    facts = {
+        "presentation_format_facts_2026_05_21.client_facts.online_lesson_format": (
+            "Записи уроков доступны в личном кабинете, поэтому онлайн-урок можно пересмотреть."
+        )
+    }
+    question = "Если пропустим онлайн-урок, запись будет?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:018_materials_homework"),
+        question,
+        _step2b1_context(brand="foton", intent="recording", question=question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_recordings_online" in result.safety_flags
+    assert "Записи уроков доступны" in result.draft_text
+    assert "адрес" not in result.draft_text.casefold()
+
+
+def test_step2b1_recordings_offline_does_not_promise_recording() -> None:
+    facts = {
+        "tg_unpk_verified_2026_05_21.client_facts.offline_recordings": (
+            "Запись очных занятий не ведётся."
+        )
+    }
+    question = "Очные занятия записываете?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:018_materials_homework"),
+        question,
+        _step2b1_context(brand="unpk", intent="recording", question=question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_recordings_offline" in result.safety_flags
+    assert "не ведётся" in result.draft_text
+    assert "можно пересмотреть" not in result.draft_text.casefold()
+
+
+def test_step2b1_contact_address_foton_answers_skorznyazhny_from_registry() -> None:
+    question = "Фотон, где очные занятия? Адрес подскажете?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts={}, topic_id="theme:015_address"),
+        question,
+        _step2b1_context(brand="foton", intent="address", question=question, facts={}),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_contact_address_foton" in result.safety_flags
+    assert "Скорняжный" in result.draft_text
+    assert "УНПК" not in result.draft_text
+
+
+def test_step2b1_contact_address_foton_uses_contract_intent_when_plan_is_missing() -> None:
+    question = "Где у вас очные занятия? адрес напишите"
+    context = {
+        "active_brand": "foton",
+        "client_message": question,
+        "autonomy_policy": {
+            "allow_autonomous": True,
+            "allow_default_autonomy": True,
+            "allowed_topic_ids": ["theme:015_address"],
+        },
+        "confirmed_facts": {},
+    }
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts={}, topic_id="theme:015_address"),
+        question,
+        context,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_contact_address_foton" in result.safety_flags
+    assert "rules_engine_text_change_reverified" in result.safety_flags
+    assert "Скорняжный" in result.draft_text
+    assert "передам вопрос менеджеру" not in result.draft_text.casefold()
+
+
+def test_step2b1_contact_address_foton_followup_does_not_fall_back_to_old_kb_address() -> None:
+    question = "Площадка Фотон на Скорняжном находится в Москве?"
+    facts = {
+        "locations_foton.addresses.1.address": "Фотон: адрес и место занятий — Верхняя Красносельская ул., 30.",
+        "locations_foton.addresses.1.city": "Фотон: адрес и место занятий — Москва.",
+    }
+    context = {
+        "active_brand": "foton",
+        "client_message": "поняла, это в москве?",
+        "autonomy_policy": {
+            "allow_autonomous": True,
+            "allow_default_autonomy": True,
+            "allowed_topic_ids": ["theme:015_address"],
+        },
+        "confirmed_facts": facts,
+    }
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:015_address"),
+        "поняла, это в москве?",
+        context,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_contact_address_foton" in result.safety_flags
+    assert "Скорняжный" in result.draft_text
+    assert "Верхняя Красносельская" not in result.draft_text
+
+
+def test_step2b1_contact_address_unpk_lists_branches_without_foton() -> None:
+    question = "УНПК где вы находитесь?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts={}, topic_id="theme:015_address"),
+        question,
+        _step2b1_context(brand="unpk", intent="address", question=question, facts={}),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_contact_address_unpk" in result.safety_flags
+    assert "Сретенка, 20" in result.draft_text
+    assert "Институтский" in result.draft_text
+    assert "Пацаева" in result.draft_text
+    assert "Фотон" not in result.draft_text
+
+
+def test_step2b1_address_fact_still_blocked_for_non_address_question() -> None:
+    facts = {"rules_registry.contact_address.foton.address": "Фотон: адрес очных занятий — Москва, Скорняжный."}
+    question = "Сколько стоит онлайн-курс по математике?"
+
+    findings = verify_dialogue_contract_output(
+        "Фотон: Москва, Скорняжный.",
+        facts=facts,
+        active_brand="foton",
+        contract=AnswerContract(active_brand="foton", current_question=question, answerability="answer_self"),
+        client_message=question,
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in findings)

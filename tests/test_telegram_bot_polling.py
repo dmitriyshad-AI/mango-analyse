@@ -165,8 +165,8 @@ def test_debounce_flush_can_use_contextual_llm_preview_service() -> None:
 
     assert len(drafts) == 1
     preview = drafts[0].preview
-    assert "стоимость зависит от класса" in preview.reply.text
-    assert "класс ребёнка" in preview.reply.text
+    assert "Уточните" in preview.reply.text
+    assert "класс" in preview.reply.text
     assert preview.reply.metadata["preview_mode"] == "subscription_llm_draft"
     assert preview.reply.metadata["subscription_llm_result"]["message_type"] == "question"
     assert preview.metadata["context_quality"]["customer_identity_found"] is True

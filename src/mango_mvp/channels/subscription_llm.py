@@ -39,7 +39,7 @@ from mango_mvp.channels.humanity_guards import (
 )
 from mango_mvp.channels.humanity_linter import lint_turn
 from mango_mvp.channels.humanity_rewriter import apply_rewrite as apply_humanity_form_rewrite
-from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, is_benign_hypothetical_refund
+from mango_mvp.channels.p0_recall_spec import HARD_P0_CODES, codes_from_text, is_benign_hypothetical_refund
 from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 from mango_mvp.channels.draft_prompt_builder import (
@@ -69,6 +69,7 @@ DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTI
 DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING"
 SCOPE_FACT_GUARD_ENV = "TELEGRAM_SCOPE_FACT_GUARD"
 ANTIREPEAT_STRICT_ENV = "TELEGRAM_ANTIREPEAT_STRICT"
+AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 CONCRETE_FACT_RE = re.compile(
     r"("
@@ -503,6 +504,33 @@ COSMETIC_OPENING_RE = re.compile(
 
 ALLOWED_ROUTES = {"draft_for_manager", "manager_only", "blocked", "bot_answer_self", "bot_answer_self_for_pilot"}
 AUTONOMOUS_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
+
+GATE_BLOCKING_CODES: Mapping[str, str] = {
+    "hard_p0": "block",
+    "zero_collect_required": "block",
+    "brand_leak": "block",
+    "cross_brand": "block",
+    "meta_leak": "block",
+    "ai_disclosure": "block",
+    "identity_disclosure": "block",
+    "draft_placeholder": "block",
+    "promocode_leak": "block",
+    "p0_promise": "block",
+    "p0_semantic_risk": "block",
+    "unsupported_promise": "block",
+    "fact_grounding": "downgrade",
+    "unsupported_entity": "downgrade",
+    "forbidden_scope": "downgrade",
+    "preemptive_format": "downgrade",
+    "unconfirmed_schedule": "downgrade",
+    "self_contradiction": "downgrade",
+    "wrong_scope": "downgrade",
+    "unsupported_followup_deadline": "downgrade",
+    "unsupported_schedule_assumption": "downgrade",
+    "unsupported_offline_visit_invitation": "downgrade",
+    "unsupported_content_delivery_action": "downgrade",
+    "unconfirmed_operational_specificity": "downgrade",
+}
 ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for_more", "manager_only"}
 BASE_SAFETY_FLAGS = ("manager_approval_required", "no_auto_send")
 AUTONOMY_MATRIX_SAFE_TOPIC_IDS = {
@@ -1257,7 +1285,8 @@ class SubscriptionLlmDraftProvider:
     ) -> SubscriptionDraftResult:
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
-            return self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
+            guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
+            return apply_authoritative_output_gate(guarded, client_message=client_message, context=context)
         else:
             prompt = build_draft_prompt(client_message, context=context)
             result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
@@ -1291,7 +1320,7 @@ class SubscriptionLlmDraftProvider:
         result = apply_funnel_policy_guard(result, context=context)
         result = apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
         result = apply_humanity_guards(result, client_message=client_message, context=context)
-        return apply_humanity_x2_rewriter(
+        result = apply_humanity_x2_rewriter(
             result,
             client_message=client_message,
             context=context,
@@ -1299,6 +1328,7 @@ class SubscriptionLlmDraftProvider:
             if _humanity_x2_rewrite_enabled(context)
             else None,
         )
+        return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
     def _build_dialogue_contract_pipeline_draft(
         self,
@@ -1826,7 +1856,7 @@ class SubscriptionLlmDraftProvider:
     def generate_from_prompt(self, prompt: str, *, force_manager_only: bool = False) -> SubscriptionDraftResult:
         prompt_text = str(prompt or "").strip()
         if not prompt_text:
-            return safe_fallback_draft(reason="empty_prompt")
+            return apply_authoritative_output_gate(safe_fallback_draft(reason="empty_prompt"))
 
         cache_key = _cache_key(
             {
@@ -1840,27 +1870,27 @@ class SubscriptionLlmDraftProvider:
         )
         cached = self._cache_get(cache_key)
         if cached is not None:
-            return _with_metadata(cached, {"cache_hit": True})
+            return apply_authoritative_output_gate(_with_metadata(cached, {"cache_hit": True}))
 
         last_error = "codex_exec_failed"
         for attempt in range(1, self.max_attempts + 1):
             try:
                 result = self._run_once(prompt_text, force_manager_only=force_manager_only)
             except subprocess.TimeoutExpired:
-                return safe_fallback_draft(reason="timeout", metadata={"attempt": attempt, "timeout_sec": self.timeout_sec})
+                return apply_authoritative_output_gate(safe_fallback_draft(reason="timeout", metadata={"attempt": attempt, "timeout_sec": self.timeout_sec}))
             except FileNotFoundError:
-                return safe_fallback_draft(reason="codex_binary_not_found", metadata={"codex_bin": self.codex_bin})
+                return apply_authoritative_output_gate(safe_fallback_draft(reason="codex_binary_not_found", metadata={"codex_bin": self.codex_bin}))
             except _CodexRetryableError as exc:
                 last_error = str(exc) or "retryable_codex_error"
                 if attempt < self.max_attempts:
                     self.sleep(min(3.0, float(attempt)))
                     continue
-                return safe_fallback_draft(reason="codex_retryable_error", metadata={"last_error": last_error})
+                return apply_authoritative_output_gate(safe_fallback_draft(reason="codex_retryable_error", metadata={"last_error": last_error}))
             except Exception as exc:  # noqa: BLE001
-                return safe_fallback_draft(reason="invalid_json_or_codex_error", metadata={"last_error": str(exc)[:400]})
+                return apply_authoritative_output_gate(safe_fallback_draft(reason="invalid_json_or_codex_error", metadata={"last_error": str(exc)[:400]}))
             self._cache_put(cache_key, result)
-            return result
-        return safe_fallback_draft(reason=last_error)
+            return apply_authoritative_output_gate(result)
+        return apply_authoritative_output_gate(safe_fallback_draft(reason=last_error))
 
     def _run_once(self, prompt: str, *, force_manager_only: bool) -> SubscriptionDraftResult:
         with tempfile.NamedTemporaryFile(prefix="mango_draft_codex_", suffix=".json") as out_file:
@@ -1898,7 +1928,7 @@ class SubscriptionLlmDraftProvider:
                 safety_flags=tuple(dict.fromkeys([*result.safety_flags, "forced_manager_only_by_rop_policy"])),
                 metadata={**dict(result.metadata), "forced_route": "manager_only"},
             )
-        return guard_identity_disclosure(result)
+        return apply_authoritative_output_gate(guard_identity_disclosure(result))
 
     def _cache_get(self, cache_key: str) -> Optional[SubscriptionDraftResult]:
         if self.cache_dir is None:
@@ -1957,7 +1987,8 @@ class FakeSubscriptionLlmDraftProvider:
         result = apply_funnel_policy_guard(result, context=context)
         result = apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
         result = apply_humanity_guards(result, client_message=client_message, context=context)
-        return apply_humanity_x2_rewriter(result, client_message=client_message, context=context)
+        result = apply_humanity_x2_rewriter(result, client_message=client_message, context=context)
+        return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
         return self.generate_from_prompt(prompt)
@@ -2073,6 +2104,367 @@ def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = 
         error=reason,
         metadata=dict(metadata or {}),
     )
+
+
+def apply_authoritative_output_gate(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    """Final safety gate over every provider output.
+
+    The gate composes existing verifiers/guards and only downgrades unsafe output.
+    It is intentionally not a quality improver: it never promotes a route and never
+    invents replacement facts.
+    """
+
+    findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
+    actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
+    actionable = [finding for finding, action in zip(findings, actions) if action in {"block", "downgrade"}]
+    metadata = dict(result.metadata)
+    metadata["authoritative_output_gate"] = {
+        "schema_version": AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION,
+        "checked": True,
+        "action": "block" if "block" in actions else ("downgrade" if "downgrade" in actions else "pass"),
+        "findings": findings,
+        "route_before": result.route,
+        "route_after": result.route,
+    }
+    if not actionable:
+        return replace(result, metadata=metadata)
+
+    route = _authoritative_gate_downgraded_route(result.route, actions)
+    metadata["authoritative_output_gate"]["route_after"] = route
+    codes = tuple(dict.fromkeys(str(item["code"]) for item in actionable))
+    flags = tuple(
+        dict.fromkeys(
+            [
+                *result.safety_flags,
+                "authoritative_output_gate_blocked",
+                *[f"authoritative_gate:{code}" for code in codes],
+                "manager_approval_required",
+                "no_auto_send",
+            ]
+        )
+    )
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "Финальный safety gate заблокировал клиентский текст: не отправлять без ручной проверки.",
+            ]
+        )
+    )
+    forbidden = tuple(dict.fromkeys([*result.forbidden_promises_detected, *codes]))
+    return replace(
+        result,
+        route=route,
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        safety_flags=flags,
+        manager_checklist=checklist,
+        forbidden_promises_detected=forbidden,
+        metadata=metadata,
+        error=result.error or "authoritative_output_gate_blocked",
+    )
+
+
+def _authoritative_gate_action(code: str) -> str:
+    return str(GATE_BLOCKING_CODES.get(str(code or ""), "warn") or "warn")
+
+
+def _authoritative_gate_downgraded_route(route: str, actions: Sequence[str]) -> str:
+    current = str(route or "manager_only")
+    if "block" in set(actions):
+        return "manager_only"
+    if current in AUTONOMOUS_ROUTES:
+        return "draft_for_manager"
+    return current
+
+
+def _authoritative_gate_finding(code: str, *, detail: str = "", source: str = "") -> dict[str, str]:
+    return {
+        "code": str(code or "").strip(),
+        "detail": " ".join(str(detail or "").split())[:240],
+        "source": str(source or "authoritative_output_gate").strip(),
+        "policy": _authoritative_gate_action(code),
+    }
+
+
+def _authoritative_gate_findings(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    text_only = not client_message and context is None and not _pipeline_fact_texts(result)
+
+    findings.extend(_authoritative_gate_text_guard_findings(result))
+    if text_only:
+        return _dedupe_gate_findings(findings)
+
+    gate_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    facts = _authoritative_gate_fact_texts(result, gate_context)
+    contract = _pipeline_contract(result, active_brand=_active_brand(gate_context), fact_keys=tuple(facts.keys()))
+    previous_bot_texts = _humanity_previous_bot_texts(gate_context)
+    p0_already_guarded = _authoritative_gate_p0_already_guarded(result)
+    has_pipeline = _authoritative_gate_has_pipeline(result)
+    for finding in verify_dialogue_contract_output(
+        result.draft_text,
+        facts=facts,
+        active_brand=_active_brand(gate_context),
+        contract=contract,
+        client_message=client_message,
+        context=gate_context,
+        previous_bot_texts=previous_bot_texts,
+    ):
+        if not has_pipeline and finding.code not in {"brand_leak", "meta_leak", "ai_disclosure", "p0_promise", "p0_semantic_risk"}:
+            continue
+        if finding.code == "p0_promise" and _authoritative_gate_verified_content_flag(result):
+            continue
+        if p0_already_guarded and finding.code in {"p0_semantic_risk", "p0_promise"}:
+            continue
+        if _authoritative_gate_skip_backed_finding(
+            finding.code,
+            detail=finding.detail,
+            result=result,
+            client_message=client_message,
+            facts=facts,
+        ):
+            continue
+        findings.append(_authoritative_gate_finding(finding.code, detail=finding.detail, source="verify_output"))
+
+    safety = classify_answer_safety(
+        client_message=client_message,
+        context=gate_context,
+        topic_id=result.topic_id,
+        route=result.route,
+        safety_flags=result.safety_flags,
+    )
+    raw_hard_codes = tuple(code for code in codes_from_text(client_message) if code in HARD_P0_CODES)
+    hard_codes = raw_hard_codes if safety.p0_required else tuple(code for code in safety.risk_codes if code in HARD_P0_CODES)
+    if not p0_already_guarded and (hard_codes or (safety.p0_required and not safety.semantic_non_p0)):
+        detail = ",".join(dict.fromkeys([*hard_codes, *[code for code in safety.risk_codes if code in HARD_P0_CODES]]))
+        findings.append(_authoritative_gate_finding("hard_p0", detail=detail or safety.primary_risk, source="answer_safety"))
+    if safety.zero_collect_required and not p0_already_guarded and (safety.p0_required or hard_codes):
+        findings.append(_authoritative_gate_finding("zero_collect_required", detail=safety.primary_risk, source="answer_safety"))
+
+    findings.extend(
+        _authoritative_gate_existing_guard_findings(
+            result,
+            client_message=client_message,
+            context=gate_context,
+            facts=facts,
+        )
+    )
+    return _dedupe_gate_findings(findings)
+
+
+def _authoritative_gate_text_guard_findings(result: SubscriptionDraftResult) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    guarded = guard_identity_disclosure(result)
+    if guarded is not result and guarded.draft_text != result.draft_text:
+        findings.append(_authoritative_gate_finding("identity_disclosure", source="guard_identity_disclosure"))
+    guarded = guard_draft_placeholder(result)
+    if guarded is not result and guarded.draft_text != result.draft_text:
+        findings.append(_authoritative_gate_finding("draft_placeholder", source="guard_draft_placeholder"))
+    guarded = guard_promocode_leak(result)
+    if guarded is not result and guarded.draft_text != result.draft_text:
+        findings.append(_authoritative_gate_finding("promocode_leak", source="guard_promocode_leak"))
+    return findings
+
+
+def _authoritative_gate_existing_guard_findings(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    guard_checks: tuple[tuple[str, str, Callable[[SubscriptionDraftResult], SubscriptionDraftResult]], ...] = (
+        ("unsupported_promise", "apply_unsupported_promise_guard", lambda item: apply_unsupported_promise_guard(item, context=context)),
+        (
+            "unconfirmed_operational_specificity",
+            "apply_unconfirmed_operational_specificity_guard",
+            lambda item: apply_unconfirmed_operational_specificity_guard(item, context=context),
+        ),
+    )
+    for code, source, guard_fn in guard_checks:
+        if code == "unsupported_promise" and _authoritative_gate_verified_content_flag(result):
+            continue
+        guarded = guard_fn(result)
+        if _authoritative_guard_changed(result, guarded):
+            added_flags = sorted(set(guarded.safety_flags) - set(result.safety_flags))
+            detail = ",".join(added_flags) or guarded.error or guarded.route
+            if _authoritative_gate_skip_backed_finding(
+                code,
+                detail=detail,
+                result=result,
+                client_message=client_message,
+                facts=facts,
+            ):
+                continue
+            findings.append(_authoritative_gate_finding(code, detail=detail, source=source))
+    specificity_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    for code, fn in (
+        ("unsupported_followup_deadline", find_unsupported_followup_deadline_claims),
+        ("unsupported_schedule_assumption", find_unsupported_schedule_assumption_claims),
+        ("unsupported_offline_visit_invitation", find_unsupported_offline_visit_invitation_claims),
+        ("unsupported_content_delivery_action", find_unsupported_content_delivery_action_claims),
+    ):
+        claims = fn(result.draft_text, context=specificity_context)
+        if claims:
+            if _authoritative_gate_skip_backed_finding(
+                code,
+                detail="; ".join(claims),
+                result=result,
+                client_message=client_message,
+                facts=facts,
+            ):
+                continue
+            findings.append(_authoritative_gate_finding(code, detail="; ".join(claims), source=fn.__name__))
+    return findings
+
+
+def _authoritative_guard_changed(before: SubscriptionDraftResult, after: SubscriptionDraftResult) -> bool:
+    return (
+        before.route != after.route
+        or before.draft_text != after.draft_text
+        or set(after.safety_flags) != set(before.safety_flags)
+        or set(after.forbidden_promises_detected) != set(before.forbidden_promises_detected)
+    )
+
+
+def _authoritative_gate_fact_texts(
+    result: SubscriptionDraftResult,
+    context: Optional[Mapping[str, Any]],
+) -> dict[str, str]:
+    facts = dict(_pipeline_fact_texts(result))
+    if facts:
+        return facts
+    if isinstance(context, Mapping):
+        confirmed = context.get("confirmed_facts")
+        if isinstance(confirmed, Mapping):
+            facts.update({str(key): str(value) for key, value in confirmed.items() if str(key).strip() and str(value).strip()})
+        facts_context = context.get("facts_context")
+        if isinstance(facts_context, Mapping):
+            confirmed_context = facts_context.get("confirmed_facts")
+            if isinstance(confirmed_context, Mapping):
+                facts.update(
+                    {str(key): str(value) for key, value in confirmed_context.items() if str(key).strip() and str(value).strip()}
+                )
+        known_slots = context.get("known_slots")
+        if isinstance(known_slots, Mapping):
+            for key, value in known_slots.items():
+                text = _authoritative_gate_slot_text(str(key), value)
+                if text:
+                    facts[f"_known_slot:{key}"] = text
+    return facts
+
+
+def _authoritative_gate_skip_backed_finding(
+    code: str,
+    *,
+    detail: str = "",
+    result: SubscriptionDraftResult,
+    client_message: str,
+    facts: Mapping[str, str],
+) -> bool:
+    code_text = str(code or "")
+    combined = " ".join([str(detail or ""), str(result.draft_text or ""), str(client_message or "")]).casefold().replace("ё", "е")
+    fact_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
+    if code_text in {
+        "unconfirmed_operational_specificity",
+        "unsupported_schedule_assumption",
+    }:
+        schedule_markers = ("выходн", "суббот", "воскрес", "будн", "вечер", "утрен", "дневн")
+        return any(marker in combined and marker in fact_text for marker in schedule_markers)
+    if code_text in {"fact_grounding", "unsupported_entity"} and _authoritative_gate_verified_content_flag(result):
+        return True
+    if code_text == "unsupported_entity" and "address:generic" in str(detail or ""):
+        asks_address = has_any_marker(combined, ("адрес", "сретенк", "скорняжн", "москва", "метро", "где находит"))
+        has_address_fact = has_any_marker(fact_text, ("адрес", "сретенк", "скорняжн", "москва", "метро", "чистые пруды"))
+        return asks_address and has_address_fact
+    return False
+
+
+def _authoritative_gate_verified_content_flag(result: SubscriptionDraftResult) -> bool:
+    flags = tuple(str(flag or "") for flag in result.safety_flags)
+    if any(flag.endswith("_safe_template_applied") or flag.endswith("_fallback_applied") for flag in flags):
+        return True
+    return any(
+        flag
+        in {
+            "safe_template_yielded_to_verified_answer",
+            "humanity_block_a_direct_answer_applied",
+            "cite_only_recover_at_guardchain",
+        }
+        for flag in flags
+    )
+
+
+def _authoritative_gate_has_pipeline(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    return isinstance(metadata.get("dialogue_contract_pipeline"), Mapping)
+
+
+def _authoritative_gate_slot_text(key: str, value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized_key = str(key or "").strip()
+    if normalized_key == "grade" and text.isdigit():
+        return f"{text} класс"
+    return f"{normalized_key}: {text}" if normalized_key else text
+
+
+def _authoritative_gate_p0_already_guarded(result: SubscriptionDraftResult) -> bool:
+    if result.route != "manager_only":
+        return False
+    flags = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    return bool(
+        metadata.get("final_p0_text_override")
+        or metadata.get("zero_collect_legal_guarded")
+        or metadata.get("zero_collect_refund_guarded")
+        or metadata.get("complaint_apology_guarded")
+        or metadata.get("payment_dispute_manager_only")
+        or any(
+            marker in flags
+            for marker in (
+                "zero_collect_legal_guarded",
+                "zero_collect_refund_guarded",
+                "complaint_apology_guarded",
+                "payment_dispute_manager_only",
+            )
+        )
+    )
+
+
+def _dedupe_gate_findings(findings: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str, str]] = set()
+    result: list[dict[str, str]] = []
+    for item in findings:
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        source = str(item.get("source") or "")
+        detail = str(item.get("detail") or "")
+        key = (code, source, detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(
+            {
+                "code": code,
+                "detail": detail,
+                "source": source,
+                "policy": _authoritative_gate_action(code),
+            }
+        )
+    return result
 
 
 def extract_json_object(text: str) -> dict[str, Any]:

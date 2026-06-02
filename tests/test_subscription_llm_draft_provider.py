@@ -47,6 +47,7 @@ from mango_mvp.channels.subscription_llm import (
     UNPK_OLYMPIAD_PHYSTECH_HANDOFF_TEXT,
     UNPK_OLYMPIAD_PHYSTECH_PRICE_TEXT,
     apply_payment_confirmation_guard,
+    apply_authoritative_output_gate,
     apply_brand_separation_guard,
     apply_conversation_intent_plan_guard,
     apply_humanity_guards,
@@ -5418,6 +5419,120 @@ def test_v2_unsupported_promise_guard_blocks_points_promise_context_without_fact
         assert guarded.route == "manager_only", draft_text
         assert "unsupported_promise_detected" in guarded.safety_flags, draft_text
         assert guarded.metadata["unsupported_promises"] == [expected_claim]
+
+
+def test_authoritative_output_gate_blocks_core_safety_risks() -> None:
+    cases = (
+        (
+            "hard_p0",
+            "Оплатил, занятий нет — верните деньги.",
+            SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, сейчас подскажу по курсу."),
+            {"active_brand": "foton"},
+        ),
+        (
+            "brand_leak",
+            "Что у вас по оплате?",
+            SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="У УНПК МФТИ условия такие же."),
+            {"active_brand": "foton"},
+        ),
+        (
+            "identity_disclosure",
+            "Ты кто?",
+            SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Я ChatGPT, помогу с курсом."),
+            {"active_brand": "foton"},
+        ),
+        (
+            "promocode_leak",
+            "Есть акция?",
+            SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Используйте промокод LVSH-VEB20."),
+            {"active_brand": "unpk"},
+        ),
+        (
+            "draft_placeholder",
+            "Сколько стоит?",
+            SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Стоимость: [указать сумму]."),
+            {"active_brand": "foton"},
+        ),
+        (
+            "unsupported_promise",
+            "Какие результаты?",
+            SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Гарантируем 100 баллов на ЕГЭ."),
+            {"active_brand": "unpk"},
+        ),
+    )
+
+    for expected_code, client_message, result, context in cases:
+        gated = apply_authoritative_output_gate(result, client_message=client_message, context=context)
+
+        assert gated.route == "manager_only", expected_code
+        assert "authoritative_output_gate_blocked" in gated.safety_flags, expected_code
+        gate = gated.metadata["authoritative_output_gate"]
+        assert gate["action"] == "block", expected_code
+        assert expected_code in {item["code"] for item in gate["findings"]}, expected_code
+        assert gated.draft_text in {SAFE_FALLBACK_DRAFT_TEXT, result.draft_text} or "передам" in gated.draft_text.casefold()
+
+
+def test_authoritative_output_gate_blocks_operational_specificity_without_fact() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Приезжайте в офис, оформим запись на площадке.",
+        topic_id="theme:018_enrollment",
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Как записаться?", context={"active_brand": "foton"})
+
+    assert gated.route == "draft_for_manager"
+    assert "authoritative_output_gate_blocked" in gated.safety_flags
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gate["action"] == "downgrade"
+    assert "unsupported_offline_visit_invitation" in {item["code"] for item in gate["findings"]}
+
+
+def test_authoritative_output_gate_allows_clean_backed_range_answer() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, 10 класс подходит: очные курсы Фотона рассчитаны на 5-11 классы.",
+        topic_id="theme:016_program",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "foton.regular.offline.grades": "Фотон: очные курсы рассчитаны на 5-11 классы.",
+                }
+            }
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Для 10 класса есть очно?",
+        context={"active_brand": "foton"},
+    )
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gate["action"] == "pass"
+    assert gate["findings"] == []
+
+
+def test_authoritative_output_gate_is_downgrade_only_and_does_not_promote_routes() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам менеджеру, он уточнит детали по нужной программе.",
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Есть программа?",
+        context={
+            "active_brand": "foton",
+            "confirmed_facts": {"program": "Фотон: есть программы по математике и информатике."},
+        },
+    )
+
+    assert gated.route == "draft_for_manager"
+    assert "authoritative_output_gate_blocked" not in gated.safety_flags
+    assert gated.draft_text == result.draft_text
 
 
 def test_v2_unsupported_promise_guard_numeric_siblings_from_rfk() -> None:

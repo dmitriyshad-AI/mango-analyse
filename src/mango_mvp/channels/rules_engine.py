@@ -6,6 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
+
 
 DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
 MIGRATED = frozenset(
@@ -22,6 +24,9 @@ MIGRATED = frozenset(
         "discount",
         "price",
         "format_choice",
+        "trial",
+        "camp_lvsh",
+        "enrollment_process",
     }
 )
 
@@ -181,6 +186,12 @@ def apply_rule(
         return _apply_price_rule(rule, plan=plan, facts=facts, context=context)
     if rule.rule_id == "format_choice":
         return _apply_format_choice_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "trial":
+        return _apply_trial_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "camp_lvsh":
+        return _apply_camp_lvsh_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "enrollment_process":
+        return _apply_enrollment_process_rule(rule, plan=plan, facts=facts, context=context)
     return None
 
 
@@ -229,6 +240,24 @@ def _rule_id_for_intent(intent: str) -> str:
         "format": "format_choice",
         "format_choice": "format_choice",
         "format_choice_inquiry": "format_choice",
+        "trial": "trial",
+        "trial_inquiry": "trial",
+        "trial_class": "trial",
+        "trial_online_fragment": "trial",
+        "trial_offline": "trial",
+        "fragment_access": "trial",
+        "camp": "camp_lvsh",
+        "camp_inquiry": "camp_lvsh",
+        "camp_lvsh": "camp_lvsh",
+        "lvsh": "camp_lvsh",
+        "live_availability": "camp_lvsh",
+        "process": "enrollment_process",
+        "process_inquiry": "enrollment_process",
+        "enrollment": "enrollment_process",
+        "enrollment_process": "enrollment_process",
+        "how_to_enroll": "enrollment_process",
+        "signup": "enrollment_process",
+        "refund_policy": "enrollment_process",
     }
     return aliases.get(normalized, normalized)
 
@@ -1116,6 +1145,250 @@ def _apply_format_choice_rule(
     )
 
 
+def _apply_trial_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_trial_question(question, plan):
+        return None
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
+        return None
+    if _direct_manager_request_without_process(question):
+        return _rule_outcome(
+            rule,
+            subvariant="direct_manager_request",
+            route="draft_for_manager",
+            text="Передам запрос менеджеру: он свяжется и ответит по пробному формату.",
+            facts={"rules_engine.trial.manager_request": "Прямой запрос менеджера по пробному не заменяется шаблоном про фрагмент."},
+            flags=("rules_engine_trial_direct_manager_request",),
+            checklist="Rule engine: trial — прямой запрос менеджера не переписывать в ответ про пробное.",
+        )
+    if brand == "foton" and _asks_offline_free_trial(question, plan, context):
+        return _rule_outcome(
+            rule,
+            subvariant="offline_free_trial_guard",
+            route="draft_for_manager",
+            text=(
+                "По очному формату бесплатное пробное по умолчанию не обещаю. "
+                "Очный пробный шаг согласует менеджер при записи: он проверит подходящую группу, филиал и условия. "
+                "Запрос передам именно как очный, без подмены на онлайн-фрагмент."
+            ),
+            facts={"rules_engine.trial.foton_offline_free_trial_guard": "Фотон: бесплатное очное пробное занятие не обещается шаблонно."},
+            flags=("rules_engine_trial_offline_free_guard", "offline_free_trial_promise_guarded"),
+            checklist="Rule engine: trial — Фотон: бесплатное очное пробное не обещать.",
+        )
+    if _client_negates_online(question):
+        return None
+
+    key, fact = _first_matching_fact(
+        facts,
+        ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
+    )
+    if not fact:
+        return None
+    online_requested = _requested_training_format(question, plan, context) == "online" or _has_any(question, ("онлайн", "дистанц", "фрагмент"))
+    data_question = _has_any(question, ("какие данные", "что нужно", "как получить", "ссылка", "способ", "регистрац", "запис"))
+    ack = _has_any(question, ("жду", "давайте", "оставлю", "ок", "хорошо")) and _has_any(question, ("пробн", "фрагмент"))
+    if brand == "foton" and online_requested:
+        if data_question or ack:
+            text = (
+                "Для подбора онлайн-фрагмента в Фотоне достаточно класса, предмета и формата. "
+                "Если эти данные уже есть в диалоге, повторять их не нужно; менеджер подтвердит условия просмотра."
+            )
+            subvariant = "online_fragment_process"
+        else:
+            text = _short_sentence(fact)
+            if "дистанц" not in text.casefold() and "приезж" not in text.casefold():
+                text += " Оформление проходит дистанционно — приезжать не нужно."
+            subvariant = "online_fragment"
+    elif brand == "unpk":
+        if online_requested and (data_question or ack):
+            text = (
+                "По онлайн-фрагменту УНПК нужны только класс, предмет и формат. "
+                "Если они уже есть в диалоге, повторять не нужно; менеджер подберёт фрагмент и подтвердит способ просмотра."
+            )
+            subvariant = "online_fragment_process"
+        else:
+            text = _short_sentence(fact)
+            subvariant = "general"
+    else:
+        text = _short_sentence(fact)
+        subvariant = "general"
+    return _rule_outcome(
+        rule,
+        subvariant=subvariant,
+        route="bot_answer_self_for_pilot",
+        text=text,
+        facts={key or "rules_engine.trial.fact": fact},
+        flags=("rules_engine_trial_safe_template_applied", "trial_safe_template_applied"),
+        checklist="Rule engine: trial — пробный формат только по active brand и по client-safe факту.",
+    )
+
+
+def _apply_camp_lvsh_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_camp_question(question, plan):
+        return None
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
+        return None
+    if _negates_camp(question, plan):
+        return None
+    if _real_refund_claim(question):
+        return _rule_outcome(
+            rule,
+            subvariant="camp_refund_p0",
+            route="manager_only",
+            text="Приняли обращение по возврату. Передам ответственному сотруднику, он проверит ситуацию и вернется с ответом.",
+            facts={"rules_engine.camp.refund_p0": "Лагерь + реальная претензия на возврат — P0, автономный ответ запрещён."},
+            flags=("rules_engine_camp_refund_p0", "high_risk_manager_only"),
+            checklist="Rule engine: camp_lvsh — реальная претензия по возврату в лагере только менеджеру.",
+        )
+    if _asks_live_status_or_booking(question):
+        return _rule_outcome(
+            rule,
+            subvariant="seats_or_booking_live",
+            route="draft_for_manager",
+            text=_camp_live_status_text(question, context),
+            facts={"rules_engine.camp.seats_live": "Места и запись в лагере — live-данные; наличие проверяет менеджер."},
+            flags=("rules_engine_camp_live_availability_handoff",),
+            checklist="Rule engine: camp_lvsh — места/запись не обещать без live-проверки.",
+        )
+    if _has_any(question, ("звш", "зимн")):
+        key, fact = _brand_scoped_first_matching_fact(facts, brand, ("zvsh", "зимн", "лист ожидания", "даты зимней"))
+        if not fact:
+            return _rule_outcome(
+                rule,
+                subvariant="zvsh_waitlist",
+                route="draft_for_manager",
+                text="Даты зимней выездной школы пока уточняются; менеджер запишет в лист ожидания и сообщит условия, когда расписание появится.",
+                facts={"rules_engine.camp.zvsh_waitlist": "ЗВШ 2026/27: даты не опубликованы, доступен лист ожидания."},
+                flags=("rules_engine_camp_zvsh_waitlist",),
+                checklist="Rule engine: camp_lvsh — даты ЗВШ не выдумывать.",
+            )
+        return _rule_outcome(
+            rule,
+            subvariant="zvsh_waitlist",
+            route="draft_for_manager",
+            text=_short_sentence(fact),
+            facts={key or "rules_engine.camp.zvsh": fact},
+            flags=("rules_engine_camp_zvsh_waitlist",),
+            checklist="Rule engine: camp_lvsh — ЗВШ только из факта/лист ожидания.",
+        )
+
+    residential = _camp_residential_requested(question, plan)
+    city_day = _camp_city_day_requested(question, plan)
+    living_transfer = _has_any(question, ("прожив", "питан", "трансфер", "добир", "включено", "что входит"))
+    price = _has_any(question, ("цен", "стоим", "сколько", "₽", "руб"))
+    grade = _requested_grade(plan, context) or _grade_from_text(question)
+
+    markers: tuple[str, ...]
+    if residential or living_transfer:
+        markers = ("lvsh", "лвш", "менделеево", "прожив", "трансфер", "питание", "выездн")
+    elif city_day:
+        markers = ("city_camp", "city_day", "городск", "дневн", "летняя школа", "август")
+    else:
+        markers = ("camp", "лагер", "летняя школа", "лвш", "менделеево")
+    key, fact = _brand_scoped_first_matching_fact(facts, brand, markers)
+    if not fact and brand == "unpk" and residential and grade and grade >= 11:
+        key, fact = _brand_scoped_first_matching_fact(facts, brand, ("grade_11", "11 класс", "11", "лвш"))
+    if not fact:
+        return None
+    text = _short_sentence(fact, max_chars=360)
+    if price and "₽" not in text and "руб" not in text.casefold():
+        return None
+    if "почти распродан" in text.casefold():
+        suffix = " Наличие и запись по конкретной смене всё равно проверяет живой менеджер."
+        if suffix.casefold() not in text.casefold():
+            text += suffix
+    return _rule_outcome(
+        rule,
+        subvariant="residential_lvsh" if residential else "city_day" if city_day else "overview",
+        route="bot_answer_self_for_pilot",
+        text=text,
+        facts={key or "rules_engine.camp.fact": fact},
+        flags=("rules_engine_camp_lvsh_applied",),
+        checklist="Rule engine: camp_lvsh — бренд и тип лагеря разделены; места live не обещать.",
+    )
+
+
+def _apply_enrollment_process_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if _looks_like_installment_question(question, plan):
+        return None
+    if _has_any(question, ("закреп", "зафикс", "по текущ", "оплатить до")):
+        return None
+    if _real_refund_claim(question):
+        return _rule_outcome(
+            rule,
+            subvariant="real_refund_p0",
+            route="manager_only",
+            text="Приняли обращение по возврату. Передам ответственному сотруднику, он проверит ситуацию и вернется с ответом.",
+            facts={"rules_engine.enrollment.real_refund_p0": "Реальная претензия на возврат — P0, автономный процессный ответ запрещён."},
+            flags=("rules_engine_enrollment_real_refund_p0", "high_risk_manager_only"),
+            checklist="Rule engine: enrollment_process — реальный возврат только менеджеру.",
+        )
+    if is_benign_hypothetical_refund(question):
+        key, fact = _first_matching_fact(
+            facts,
+            ("refund_post_payment", "неистраченных средств", "условия возврата", "возврат"),
+        )
+        text = (
+            "Если заранее до оплаты или до старта уточняете правила возврата: возвращается остаток неистраченных средств. "
+            "Точный порядок менеджер подтвердит по выбранному курсу и договору; это не оформляю как жалобу или заявление на возврат."
+        )
+        source = {key or "rules_engine.enrollment.presale_refund": fact or "Предпродажный вопрос о возврате: справка без обещания полной суммы."}
+        return _rule_outcome(
+            rule,
+            subvariant="presale_refund_policy",
+            route="bot_answer_self_for_pilot",
+            text=text,
+            facts=source,
+            flags=("rules_engine_enrollment_presale_refund",),
+            checklist="Rule engine: enrollment_process — предпродажный возврат не P0, но без обещания полной суммы.",
+        )
+    if not _looks_like_enrollment_process_question(question, plan):
+        return None
+    key, fact = _first_matching_fact(
+        facts,
+        ("process.enrollment", "как записаться", "оформ", "запис", "менеджер поможет", "заявк"),
+    )
+    if fact:
+        text = _short_sentence(fact, max_chars=300)
+    else:
+        key = "rules_engine.enrollment.process"
+        text = (
+            "Чтобы записаться, менеджер уточнит класс, предмет, формат и подходящую группу, затем подскажет оформление заявки и оплату. "
+            "Если класс, предмет и формат уже есть в диалоге, повторять их не нужно."
+        )
+    return _rule_outcome(
+        rule,
+        subvariant="how_to_enroll",
+        route="bot_answer_self_for_pilot",
+        text=text,
+        facts={key: fact or "Запись оформляет менеджер после сверки класса, предмета, формата и группы."},
+        flags=("rules_engine_enrollment_process_applied",),
+        checklist="Rule engine: enrollment_process — процесс записи без подмены способов оплаты и без P0.",
+    )
+
+
 def _rule_outcome(
     rule: Rule,
     *,
@@ -1362,6 +1635,121 @@ def _format_choice_is_disjunctive_question(text: str) -> bool:
 
 def _mentions_camp_or_lvsh(text: str) -> bool:
     return _has_any(text, ("лагер", "лвш", "менделеев", "выездн", "смен", "camp"))
+
+
+def _looks_like_trial_question(text: str, plan: Mapping[str, Any]) -> bool:
+    intent = str(plan.get("primary_intent") or "")
+    scope = str(plan.get("fact_scope") or "")
+    return intent == "trial" or scope in {"trial_offline", "trial_online_fragment"} or _has_any(
+        text,
+        ("пробн", "фрагмент занятия", "фрагмент урок", "trial", "посмотреть подачу", "посмотреть урок"),
+    )
+
+
+def _direct_manager_request_without_process(text: str) -> bool:
+    return _has_any(
+        text,
+        (
+            "передайте менеджеру",
+            "передай менеджеру",
+            "дайте менеджера",
+            "хочу менеджера",
+            "пусть менеджер",
+            "менеджер напиш",
+            "менеджер скаж",
+            "менеджер подтверд",
+        ),
+    ) and not _has_any(text, ("как", "способ", "получ", "ссыл", "регистрац", "запис", "оформ"))
+
+
+def _client_negates_online(text: str) -> bool:
+    return bool(re.search(r"\b(?:не|только\s+не)\s+онлайн\w*\b", str(text or "").casefold().replace("ё", "е")))
+
+
+def _asks_offline_free_trial(text: str, plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    scope = str(plan.get("fact_scope") or "").casefold()
+    offline = scope == "trial_offline" or _requested_training_format(value, plan, context) == "offline" or _has_any(
+        value,
+        ("очно", "очный", "офлайн", "прийти", "приехать", "приезж"),
+    )
+    return bool(offline and _has_any(value, ("бесплат", "без оплаты", "free", "пробн")))
+
+
+def _looks_like_camp_question(text: str, plan: Mapping[str, Any]) -> bool:
+    intent = str(plan.get("primary_intent") or "")
+    product = str(plan.get("product_family") or "")
+    scope = str(plan.get("product_scope") or "") + " " + str(plan.get("fact_scope") or "")
+    return intent in {"camp", "live_availability"} or product == "camp" or _mentions_camp_or_lvsh(" ".join([text, scope]))
+
+
+def _negates_camp(text: str, plan: Mapping[str, Any]) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    intent = str(plan.get("primary_intent") or "")
+    return bool(re.search(r"\bне\s+(?:лагер|лвш|лш|менделеев)\w*", value)) and intent not in {"camp", "live_availability"}
+
+
+def _camp_residential_requested(text: str, plan: Mapping[str, Any]) -> bool:
+    value = " ".join([str(text or ""), str(plan.get("product_scope") or ""), str(plan.get("fact_scope") or "")]).casefold().replace("ё", "е")
+    no_lodging = _has_any(value, ("без прожив", "без ночев", "не выезд"))
+    return _has_any(value, ("лвш", "менделеево", "выездн", "прожив", "трансфер", "питан")) and not no_lodging
+
+
+def _camp_city_day_requested(text: str, plan: Mapping[str, Any]) -> bool:
+    value = " ".join([str(text or ""), str(plan.get("product_scope") or ""), str(plan.get("fact_scope") or "")]).casefold().replace("ё", "е")
+    return _has_any(value, ("городск", "дневн", "без проживания", "без прожив", "без ночев", "лш", "август"))
+
+
+def _asks_live_status_or_booking(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    if _has_any(value, ("не про мест", "не о мест")):
+        return False
+    return _has_any(value, ("есть места", "налич", "брон", "заброни", "запишите", "записать на смен", "оформить место", "проверить места"))
+
+
+def _camp_live_status_text(question: str, context: Mapping[str, Any] | None) -> str:
+    details: list[str] = []
+    grade = _known_slot_value(context, "grade") or str(_grade_from_text(question) or "")
+    subject = _known_slot_value(context, "subject")
+    if grade:
+        details.append(f"{grade} класс")
+    if subject:
+        details.append(subject)
+    suffix = f" по вашему запросу ({', '.join(details)})" if details else ""
+    if _mentions_camp_or_lvsh(question):
+        return f"По местам не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие по конкретной смене."
+    return f"По местам не буду обещать без проверки{suffix}. Передам менеджеру, чтобы он проверил наличие."
+
+
+def _real_refund_claim(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    refund = _has_any(value, ("верните", "вернуть деньги", "возврат денег", "хочу вернуть", "оформить возврат", "деньги назад"))
+    dispute = _has_any(value, ("оплатил", "оплатила", "оплата прошла", "занятий нет", "не было занятий", "недовол", "жалоб", "не устраивает"))
+    return bool(refund and dispute and not is_benign_hypothetical_refund(value))
+
+
+def _looks_like_enrollment_process_question(text: str, plan: Mapping[str, Any]) -> bool:
+    intent = str(plan.get("primary_intent") or "")
+    if intent in {"enrollment_process", "process", "process_inquiry"}:
+        return True
+    value = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(r"\b(?:как|надо|нужно|можно\s+ли|оформ\w*|куда)\b[^.!?\n]{0,80}\b(?:запис|оформ|курс|обучен|занят)", value)
+        or re.search(r"\b(?:записаться|записат(?:ь|ся)|оформиться|оформить(?:ся)?)\b", value)
+    )
+
+
+def _brand_scoped_first_matching_fact(facts: Mapping[str, str], active_brand: str, markers: Sequence[str]) -> tuple[str, str]:
+    other_brand_markers = ("унпк", "kmipt") if active_brand == "foton" else ("фотон", "cdpofoton", "цдпо") if active_brand == "unpk" else ()
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if other_brand_markers and any(marker in combined for marker in other_brand_markers):
+            continue
+        if any(str(marker).casefold().replace("ё", "е") in combined for marker in markers):
+            text = " ".join(str(value or "").split())
+            if text:
+                return str(key), text
+    return "", ""
 
 
 def _requested_training_format(text: str, plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> str:

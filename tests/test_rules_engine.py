@@ -20,6 +20,9 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
         "discount",
         "price",
         "format_choice",
+        "trial",
+        "camp_lvsh",
+        "enrollment_process",
     }
     assert select_rule("teacher", registry).rule_id == "teacher"  # type: ignore[union-attr]
     assert select_rule("recording", registry).rule_id == "recordings"  # type: ignore[union-attr]
@@ -35,6 +38,11 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
     assert select_rule("pricing", registry).rule_id == "price"  # type: ignore[union-attr]
     assert select_rule("price_fix", registry).rule_id == "price"  # type: ignore[union-attr]
     assert select_rule("format", registry).rule_id == "format_choice"  # type: ignore[union-attr]
+    assert select_rule("trial", registry).rule_id == "trial"  # type: ignore[union-attr]
+    assert select_rule("camp", registry).rule_id == "camp_lvsh"  # type: ignore[union-attr]
+    assert select_rule("live_availability", registry).rule_id == "camp_lvsh"  # type: ignore[union-attr]
+    assert select_rule("enrollment_process", registry).rule_id == "enrollment_process"  # type: ignore[union-attr]
+    assert select_rule("schedule", registry) is None
 
 
 def test_rules_engine_teacher_uses_fact_and_does_not_invent_specific_name() -> None:
@@ -472,3 +480,173 @@ def test_rules_engine_format_choice_presents_only_verified_formats() -> None:
     assert "очный формат" in single.text
     assert "онлайн-формат" not in single.text
     assert cross_brand is None
+
+
+def test_rules_engine_trial_guards_free_offline_and_manager_request() -> None:
+    rule = load_rules_registry()["trial"]
+    facts = {"trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное."}
+
+    offline_free = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "fact_scope": "trial_offline", "direct_question": "Бесплатное очное пробное можно?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton", "known_slots": {"format": "очно"}},
+    )
+    manager = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "direct_question": "Передайте менеджеру", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    negated_online = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "direct_question": "Пробное хочу, но не онлайн", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert offline_free is not None
+    assert offline_free.route == "draft_for_manager"
+    assert "бесплатное пробное по умолчанию не обещаю" in offline_free.text.casefold()
+    assert "онлайн-фрагмент" in offline_free.text
+    assert manager is not None
+    assert manager.route == "draft_for_manager"
+    assert "фрагмент занятия" not in manager.text.casefold()
+    assert negated_online is None
+
+
+def test_rules_engine_trial_uses_active_brand_fragment_fact() -> None:
+    rule = load_rules_registry()["trial"]
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "fact_scope": "trial_online_fragment", "direct_question": "Как получить пробный онлайн-фрагмент?", "active_brand": "unpk"},
+        facts={"trial.unpk.online_fragment": "УНПК: по онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем."},
+        context={"active_brand": "unpk", "known_slots": {"format": "онлайн"}},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "direct_question": "А у Фотона такой фрагмент есть?", "active_brand": "unpk"},
+        facts={"trial.unpk.online_fragment": "УНПК: по онлайн-формату можно прислать фрагмент занятия."},
+        context={"active_brand": "unpk"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "bot_answer_self_for_pilot"
+    assert "фрагмент" in outcome.text.casefold()
+    assert "Фотон" not in outcome.text
+    assert cross_brand is None
+
+
+def test_rules_engine_camp_live_seats_and_refund_stay_manager_only() -> None:
+    rule = load_rules_registry()["camp_lvsh"]
+    facts = {"camp.unpk.lvsh.seats": "УНПК: по ЛВШ места уже почти распроданы, наличие и запись проверяет живой менеджер."}
+
+    seats = apply_rule(
+        rule,
+        plan={"primary_intent": "live_availability", "product_family": "camp", "direct_question": "Есть места на ЛВШ 20 июня?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk", "known_slots": {"grade": "10"}},
+    )
+    refund = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Оплатили лагерь, занятий нет, верните деньги", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+
+    assert seats is not None
+    assert seats.route == "draft_for_manager"
+    assert "не буду обещать" in seats.text.casefold()
+    assert "проверил наличие" in seats.text.casefold()
+    assert refund is not None
+    assert refund.route == "manager_only"
+    assert "high_risk_manager_only" in refund.flags
+
+
+def test_rules_engine_camp_brand_split_zvsh_and_scarcity_fact_are_safe() -> None:
+    rule = load_rules_registry()["camp_lvsh"]
+    unpk_facts = {
+        "camp.unpk.lvsh.seats": "УНПК: по ЛВШ места уже почти распроданы, наличие и запись проверяет живой менеджер.",
+        "camp.unpk.zvsh.status": "УНПК: даты ЗВШ пока уточняются, можно записаться в лист ожидания.",
+    }
+    foton_facts = {
+        "camp.foton.lvsh.dates": "Фотон: ЛВШ Менделеево проходит 20-28 июня и 18-26 июля.",
+    }
+
+    scarcity = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Правда места почти распроданы в ЛВШ?", "active_brand": "unpk"},
+        facts=unpk_facts,
+        context={"active_brand": "unpk"},
+    )
+    zvsh = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Какие даты ЗВШ 2026/27?", "active_brand": "unpk"},
+        facts=unpk_facts,
+        context={"active_brand": "unpk"},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "camp", "product_family": "camp", "direct_question": "Сравните ЛВШ Фотона и УНПК", "active_brand": "foton"},
+        facts=foton_facts,
+        context={"active_brand": "foton"},
+    )
+    non_camp = apply_rule(
+        rule,
+        plan={"primary_intent": "general_consultation", "direct_question": "Мне не лагерь, нужен обычный курс", "active_brand": "foton"},
+        facts=foton_facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert scarcity is not None
+    assert scarcity.route == "bot_answer_self_for_pilot"
+    assert "почти распроданы" in scarcity.text
+    assert "последний шанс" not in scarcity.text.casefold()
+    assert "успейте" not in scarcity.text.casefold()
+    assert zvsh is not None
+    assert "лист ожидания" in zvsh.text.casefold()
+    assert cross_brand is None
+    assert non_camp is None
+
+
+def test_rules_engine_enrollment_presale_refund_vs_real_p0_and_dolyami() -> None:
+    rule = load_rules_registry()["enrollment_process"]
+    facts = {
+        "refund_post_payment.client_safe_text": "Фотон: возвращается остаток неистраченных средств.",
+        "process.enrollment.steps": "Фотон: для записи менеджер уточнит класс, предмет, формат и подходящую группу, затем поможет оформить заявку.",
+    }
+
+    presale = apply_rule(
+        rule,
+        plan={"primary_intent": "refund_policy", "direct_question": "Если передумаю до оплаты, деньги вернёте?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    real_refund = apply_rule(
+        rule,
+        plan={"primary_intent": "enrollment_process", "direct_question": "Я оплатил, занятий нет, верните деньги", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    dolyami = apply_rule(
+        rule,
+        plan={"primary_intent": "enrollment_process", "direct_question": "Оформить можно через Долями?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    process = apply_rule(
+        rule,
+        plan={"primary_intent": "enrollment_process", "direct_question": "Как записаться на курс?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert presale is not None
+    assert presale.route == "bot_answer_self_for_pilot"
+    assert "остаток неистраченных средств" in presale.text
+    assert "полный возврат" not in presale.text.casefold()
+    assert real_refund is not None
+    assert real_refund.route == "manager_only"
+    assert dolyami is None
+    assert process is not None
+    assert "менеджер уточнит класс" in process.text.casefold()

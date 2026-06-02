@@ -8841,6 +8841,11 @@ def _step2b1_context(*, brand: str, intent: str, question: str, facts: dict[str,
         "discount": "theme:005_discounts",
         "pricing": "theme:001_pricing",
         "format": "theme:014_format",
+        "trial": "theme:023_trial_class",
+        "camp": "theme:026_camp_general",
+        "live_availability": "theme:026_camp_general",
+        "enrollment_process": "theme:020_enrollment",
+        "refund_policy": "theme:020_enrollment",
     }.get(intent, "service:S5_general_consultation")
     return {
         "active_brand": brand,
@@ -9547,3 +9552,90 @@ def test_step2b4_price_and_format_do_not_override_cross_brand_or_p0() -> None:
     assert p0.route == "manager_only"
     assert not any(flag.startswith("rules_engine_price") or flag.startswith("rules_engine_format_choice") for flag in p0.safety_flags)
     assert "29 750" not in p0.draft_text
+
+
+def test_step2b5_trial_rule_answers_fragment_but_does_not_override_manager_request() -> None:
+    facts = {"trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное."}
+    question = "Можно получить пробный онлайн-фрагмент?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:023_trial_class"),
+        question,
+        _step2b1_context(brand="foton", intent="trial", question=question, facts=facts),
+    )
+    manager_question = "Передайте менеджеру"
+    manager = _apply_v2_guard_chain(
+        _step2b1_result(question=manager_question, facts=facts, topic_id="theme:023_trial_class"),
+        manager_question,
+        _step2b1_context(brand="foton", intent="trial", question=manager_question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_trial_safe_template_applied" in result.safety_flags
+    assert "фрагмент занятия" in result.draft_text.casefold()
+    assert manager.route == "draft_for_manager"
+    assert "rules_engine_trial_direct_manager_request" in manager.safety_flags
+    assert "фрагмент занятия" not in manager.draft_text.casefold()
+
+
+def test_step2b5_camp_live_status_and_brand_split_stay_safe() -> None:
+    facts = {
+        "camp.unpk.lvsh.seats": "УНПК: по ЛВШ места уже почти распроданы, наличие и запись проверяет живой менеджер.",
+    }
+    question = "Есть места на ЛВШ Менделеево?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:026_camp_general"),
+        question,
+        _step2b1_context(brand="unpk", intent="live_availability", question=question, facts=facts),
+    )
+    cross_question = "А у Фотона ЛВШ дешевле?"
+    cross = _apply_v2_guard_chain(
+        _step2b1_result(question=cross_question, facts=facts, topic_id="theme:026_camp_general"),
+        cross_question,
+        _step2b1_context(brand="unpk", intent="camp", question=cross_question, facts=facts),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "rules_engine_camp_live_availability_handoff" in result.safety_flags
+    assert "не буду обещать" in result.draft_text.casefold()
+    assert "почти распроданы" not in result.draft_text.casefold()
+    assert "rules_engine_camp_lvsh_applied" not in cross.safety_flags
+    assert "Фотон" not in cross.draft_text or "УНПК" not in cross.draft_text
+
+
+def test_step2b5_enrollment_real_refund_and_dolyami_are_not_process_overrides() -> None:
+    facts = {
+        "refund_post_payment.client_safe_text": "Фотон: возвращается остаток неистраченных средств.",
+        "process.enrollment.steps": "Фотон: для записи менеджер уточнит класс, предмет, формат и подходящую группу, затем поможет оформить заявку.",
+    }
+    p0_question = "Я оплатил, занятий нет, верните деньги"
+    p0_result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:020_enrollment",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=p0_question, answerability="manager", keys=tuple(facts.keys()), is_p0=True),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+    p0 = _apply_v2_guard_chain(
+        p0_result,
+        p0_question,
+        _step2b1_context(brand="foton", intent="enrollment_process", question=p0_question, facts=facts),
+    )
+    dolyami_question = "Оформление через Долями возможно?"
+    dolyami = _apply_v2_guard_chain(
+        _step2b1_result(question=dolyami_question, facts=facts, topic_id="theme:020_enrollment"),
+        dolyami_question,
+        _step2b1_context(brand="foton", intent="enrollment_process", question=dolyami_question, facts=facts),
+    )
+
+    assert p0.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_enrollment") for flag in p0.safety_flags)
+    assert "остаток неистраченных средств" not in p0.draft_text
+    assert "rules_engine_enrollment_process_applied" not in dolyami.safety_flags

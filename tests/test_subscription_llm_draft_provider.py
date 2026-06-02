@@ -8958,7 +8958,7 @@ def test_step2b1_recordings_offline_does_not_promise_recording() -> None:
     assert "можно пересмотреть" not in result.draft_text.casefold()
 
 
-def test_step2b1_contact_address_foton_answers_skorznyazhny_from_registry() -> None:
+def test_step2b1_contact_address_foton_answers_krasnoselskaya_from_registry() -> None:
     question = "Фотон, где очные занятия? Адрес подскажете?"
 
     result = _apply_v2_guard_chain(
@@ -8969,7 +8969,8 @@ def test_step2b1_contact_address_foton_answers_skorznyazhny_from_registry() -> N
 
     assert result.route == "bot_answer_self_for_pilot"
     assert "rules_engine_contact_address_foton" in result.safety_flags
-    assert "Скорняжный" in result.draft_text
+    assert "Верхняя Красносельская" in result.draft_text
+    assert "Скорняжный" not in result.draft_text
     assert "УНПК" not in result.draft_text
 
 
@@ -8995,11 +8996,12 @@ def test_step2b1_contact_address_foton_uses_contract_intent_when_plan_is_missing
     assert result.route == "bot_answer_self_for_pilot"
     assert "rules_engine_contact_address_foton" in result.safety_flags
     assert "rules_engine_text_change_reverified" in result.safety_flags
-    assert "Скорняжный" in result.draft_text
+    assert "Верхняя Красносельская" in result.draft_text
+    assert "Скорняжный" not in result.draft_text
     assert "передам вопрос менеджеру" not in result.draft_text.casefold()
 
 
-def test_step2b1_contact_address_foton_followup_does_not_fall_back_to_old_kb_address() -> None:
+def test_step2b1_contact_address_foton_followup_does_not_fall_back_to_old_skorznyazhny_address() -> None:
     question = "Площадка Фотон на Скорняжном находится в Москве?"
     facts = {
         "locations_foton.addresses.1.address": "Фотон: адрес и место занятий — Верхняя Красносельская ул., 30.",
@@ -9024,8 +9026,8 @@ def test_step2b1_contact_address_foton_followup_does_not_fall_back_to_old_kb_add
 
     assert result.route == "bot_answer_self_for_pilot"
     assert "rules_engine_contact_address_foton" in result.safety_flags
-    assert "Скорняжный" in result.draft_text
-    assert "Верхняя Красносельская" not in result.draft_text
+    assert "Верхняя Красносельская" in result.draft_text
+    assert "Скорняжный" not in result.draft_text
 
 
 def test_step2b1_contact_address_unpk_lists_branches_without_foton() -> None:
@@ -9046,11 +9048,11 @@ def test_step2b1_contact_address_unpk_lists_branches_without_foton() -> None:
 
 
 def test_step2b1_address_fact_still_blocked_for_non_address_question() -> None:
-    facts = {"rules_registry.contact_address.foton.address": "Фотон: адрес очных занятий — Москва, Скорняжный."}
+    facts = {"rules_registry.contact_address.foton.address": "Фотон: адрес очных занятий — Москва, Верхняя Красносельская ул., 30."}
     question = "Сколько стоит онлайн-курс по математике?"
 
     findings = verify_dialogue_contract_output(
-        "Фотон: Москва, Скорняжный.",
+        "Фотон: Москва, Верхняя Красносельская ул., 30.",
         facts=facts,
         active_brand="foton",
         contract=AnswerContract(active_brand="foton", current_question=question, answerability="answer_self"),

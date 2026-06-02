@@ -7,6 +7,7 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
     registry = load_rules_registry()
 
     assert len(registry) == 16
+    assert set(registry) == set(MIGRATED)
     assert set(MIGRATED) == {
         "teacher",
         "recordings",
@@ -23,6 +24,7 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
         "trial",
         "camp_lvsh",
         "enrollment_process",
+        "schedule",
     }
     assert select_rule("teacher", registry).rule_id == "teacher"  # type: ignore[union-attr]
     assert select_rule("recording", registry).rule_id == "recordings"  # type: ignore[union-attr]
@@ -42,7 +44,7 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
     assert select_rule("camp", registry).rule_id == "camp_lvsh"  # type: ignore[union-attr]
     assert select_rule("live_availability", registry).rule_id == "camp_lvsh"  # type: ignore[union-attr]
     assert select_rule("enrollment_process", registry).rule_id == "enrollment_process"  # type: ignore[union-attr]
-    assert select_rule("schedule", registry) is None
+    assert select_rule("schedule", registry).rule_id == "schedule"  # type: ignore[union-attr]
 
 
 def test_rules_engine_teacher_uses_fact_and_does_not_invent_specific_name() -> None:
@@ -102,6 +104,118 @@ def test_rules_engine_contact_address_prefers_foton_kb_fact() -> None:
     assert "Москва, Верхняя Красносельская ул., 30" in outcome.text
     assert "Скорняжный" not in outcome.text
     assert "contact.foton.address" in outcome.facts
+
+
+def test_rules_engine_schedule_contact_hours_are_not_class_days() -> None:
+    rule = load_rules_registry()["schedule"]
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "schedule", "direct_question": "в какие дни 7 класс физика?", "active_brand": "foton"},
+        facts={
+            "contacts_foton.contact_hours.client_safe_text": (
+                "Связаться с Фотоном можно ежедневно с 10:00 до 18:00. Это часы связи, а не расписание занятий групп."
+            )
+        },
+        context={"active_brand": "foton"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "draft_for_manager"
+    assert "rules_engine_schedule_manager_check" in outcome.flags
+    assert "10:00-18:00 не считаю расписанием занятий" in outcome.text
+    assert "Пн-Вс" not in outcome.text
+
+
+def test_rules_engine_schedule_exact_group_days_only_from_group_fact() -> None:
+    rule = load_rules_registry()["schedule"]
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "schedule", "direct_question": "когда математика 11 класс очно?", "active_brand": "foton"},
+        facts={
+            "schedule_2026_27.groups.group_start_date_c13_krasnoselskaya_sat_1000_1200_math_11_advanced.client_safe_text": (
+                "Математика, 11 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется."
+            )
+        },
+        context={"active_brand": "foton"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_schedule_group_fact" in outcome.flags
+    assert "суббота 10:00-12:00" in outcome.text
+    assert "Верхняя Красносельская" in outcome.text
+
+
+def test_rules_engine_schedule_unpublished_group_goes_to_manager_check() -> None:
+    rule = load_rules_registry()["schedule"]
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "schedule", "direct_question": "по каким дням химия 7 класс очно?", "active_brand": "unpk"},
+        facts={
+            "tg_unpk_verified_2026_05_21.client_facts.regular_courses_schedule_publication.client_safe_text": (
+                "По курсам 2026/27 есть опубликованные группы с днями и временем; конкретный вариант зависит от класса, предмета, формата и площадки."
+            )
+        },
+        context={"active_brand": "unpk"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "draft_for_manager"
+    assert "менеджер проверит класс, предмет, формат и площадку" in outcome.text
+    assert "вторник" not in outcome.text.casefold()
+
+
+def test_rules_engine_schedule_weekend_is_soft_guidance() -> None:
+    rule = load_rules_registry()["schedule"]
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "schedule", "direct_question": "бывают по выходным?", "active_brand": "unpk"},
+        facts={"objection_responses.inconvenient_time.1": "УНПК: по расписанию есть разные слоты по выходным."},
+        context={"active_brand": "unpk"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "bot_answer_self_for_pilot"
+    assert "выходным" in outcome.text.casefold()
+    assert "Точный день" in outcome.text
+
+
+def test_rules_engine_schedule_start_and_weekly_lessons_from_facts() -> None:
+    rule = load_rules_registry()["schedule"]
+    start = apply_rule(
+        rule,
+        plan={"primary_intent": "schedule", "direct_question": "когда старт занятий в УНПК?", "active_brand": "unpk"},
+        facts={"academic_year_2026_27.start": "УНПК: учебный год 2026/27, старт занятий — 12-27 сентября 2026 в зависимости от площадки."},
+        context={"active_brand": "unpk"},
+    )
+    weekly = apply_rule(
+        rule,
+        plan={"primary_intent": "schedule", "direct_question": "сколько раз в неделю занятия?", "active_brand": "foton"},
+        facts={"academic_year_2026_27.weekly_lessons": "Фотон: в учебном году 2026/27 занятия проходят 1 раз в неделю."},
+        context={"active_brand": "foton"},
+    )
+
+    assert start is not None
+    assert "12-27 сентября 2026" in start.text
+    assert weekly is not None
+    assert "1 раз в неделю" in weekly.text
+    assert "2026 раз" not in weekly.text
+
+
+def test_rules_engine_schedule_brand_split_does_not_mix_foton_groups_into_unpk() -> None:
+    rule = load_rules_registry()["schedule"]
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "schedule", "direct_question": "когда математика 11 класс очно в УНПК?", "active_brand": "unpk"},
+        facts={
+            "schedule_2026_27.groups.foton_math_11.client_safe_text": (
+                "Фотон: Математика, 11 класс, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026."
+            )
+        },
+        context={"active_brand": "unpk"},
+    )
+
+    assert outcome is None
 
 
 def test_rules_engine_docs_license_never_exposes_number() -> None:

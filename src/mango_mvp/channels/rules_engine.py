@@ -27,6 +27,7 @@ MIGRATED = frozenset(
         "trial",
         "camp_lvsh",
         "enrollment_process",
+        "schedule",
     }
 )
 
@@ -192,6 +193,8 @@ def apply_rule(
         return _apply_camp_lvsh_rule(rule, plan=plan, facts=facts, context=context)
     if rule.rule_id == "enrollment_process":
         return _apply_enrollment_process_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "schedule":
+        return _apply_schedule_rule(rule, plan=plan, facts=facts, context=context)
     return None
 
 
@@ -258,6 +261,12 @@ def _rule_id_for_intent(intent: str) -> str:
         "how_to_enroll": "enrollment_process",
         "signup": "enrollment_process",
         "refund_policy": "enrollment_process",
+        "schedule": "schedule",
+        "schedule_inquiry": "schedule",
+        "class_schedule": "schedule",
+        "schedule_weekend": "schedule",
+        "schedule_start": "schedule",
+        "schedule_frequency": "schedule",
     }
     return aliases.get(normalized, normalized)
 
@@ -1406,6 +1415,92 @@ def _apply_enrollment_process_rule(
     )
 
 
+def _apply_schedule_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_schedule_question(question, plan):
+        return None
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
+        return None
+    scoped_facts = _brand_scoped_schedule_facts(facts, brand)
+    if not scoped_facts:
+        return None
+
+    if _asks_schedule_frequency(question, plan):
+        key, fact = _first_schedule_fact(scoped_facts, ("weekly_lessons", "1 раз в неделю", "раз в неделю"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="weekly_lessons",
+            route="bot_answer_self_for_pilot",
+            text=f"По подтверждённому графику: {_short_sentence(fact)} Точные дни конкретной группы менеджер сверит по классу, предмету и площадке.",
+            facts={key or "rules_engine.schedule.weekly_lessons": fact},
+            flags=("rules_engine_schedule_weekly_lessons", "schedule_frequency_safe_template_applied"),
+            checklist="Rule engine: schedule — кадэнс только из факта; дни группы не выдумывать.",
+        )
+
+    if _asks_schedule_start(question, plan):
+        key, fact = _schedule_start_fact(scoped_facts, question)
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="start_date",
+            route="bot_answer_self_for_pilot",
+            text=f"По старту занятий: {_short_sentence(fact)}",
+            facts={key or "rules_engine.schedule.start": fact},
+            flags=("rules_engine_schedule_start_date",),
+            checklist="Rule engine: schedule — старт занятий из v6.4-факта по бренду/площадке.",
+        )
+
+    if _asks_weekend_schedule(question, plan):
+        key, fact = _schedule_group_fact(scoped_facts, question, require_weekend=True)
+        if fact:
+            text = (
+                f"По подтверждённым группам есть варианты на выходных: {_short_sentence(fact, max_chars=260)} "
+                "Точный вариант под вашу группу менеджер сверит."
+            )
+            source = {key or "rules_engine.schedule.weekend_group": fact}
+        else:
+            key, fact = _first_schedule_fact(scoped_facts, ("выходн", "суббот", "воскрес", "слот"))
+            if not fact:
+                return _schedule_manager_check_outcome(rule, subvariant="weekend_slots", question=question, facts=scoped_facts)
+            text = f"По подтверждённым данным есть ориентир на слоты по выходным: {_short_sentence(fact)} Точный день и группу менеджер сверит."
+            source = {key or "rules_engine.schedule.weekend_guidance": fact}
+        return _rule_outcome(
+            rule,
+            subvariant="weekend_slots",
+            route="bot_answer_self_for_pilot",
+            text=text,
+            facts=source,
+            flags=("rules_engine_schedule_weekend_soft",),
+            checklist="Rule engine: schedule — выходные как мягкий ориентир, конкретный слот только из факта.",
+        )
+
+    if _asks_exact_class_schedule(question, plan):
+        key, fact = _schedule_group_fact(scoped_facts, question)
+        if fact:
+            return _rule_outcome(
+                rule,
+                subvariant="class_days_time",
+                route="bot_answer_self_for_pilot",
+                text=f"По найденной группе: {_short_sentence(fact, max_chars=300)} Если нужна финальная сверка по конкретной группе, менеджер подтвердит актуальность.",
+                facts={key or "rules_engine.schedule.group": fact},
+                flags=("rules_engine_schedule_group_fact",),
+                checklist="Rule engine: schedule — дни/время только из v6.4-факта, контакт-часы не использовать.",
+            )
+        return _schedule_manager_check_outcome(rule, subvariant="class_days_time_unpublished", question=question, facts=scoped_facts)
+
+    return None
+
+
 def _rule_outcome(
     rule: Rule,
     *,
@@ -1753,6 +1848,236 @@ def _looks_like_enrollment_process_question(text: str, plan: Mapping[str, Any]) 
     return bool(
         re.search(r"\b(?:как|надо|нужно|можно\s+ли|оформ\w*|куда)\b[^.!?\n]{0,80}\b(?:запис|оформ|курс|обучен|занят)", value)
         or re.search(r"\b(?:записаться|записат(?:ь|ся)|оформиться|оформить(?:ся)?)\b", value)
+    )
+
+
+def _looks_like_schedule_question(text: str, plan: Mapping[str, Any]) -> bool:
+    intent = str(plan.get("primary_intent") or "")
+    if intent in {"schedule", "schedule_inquiry", "class_schedule"}:
+        return True
+    scope = " ".join(str(plan.get(key) or "") for key in ("fact_scope", "schedule_scope", "topic_id"))
+    value = f"{text} {scope}".casefold().replace("ё", "е")
+    if _has_any(value, ("контакт", "на связи", "позвон", "телефон", "офис работает")) and not _has_any(value, ("занят", "групп", "распис")):
+        return False
+    return _has_any(
+        value,
+        (
+            "распис",
+            "по каким дням",
+            "в какие дни",
+            "когда занятия",
+            "во сколько",
+            "дни занятий",
+            "время занятий",
+            "раз в неделю",
+            "старт",
+            "начина",
+            "выходн",
+            "суббот",
+            "воскрес",
+            "schedule.current",
+        ),
+    )
+
+
+def _asks_schedule_frequency(text: str, plan: Mapping[str, Any]) -> bool:
+    value = f"{text} {plan.get('fact_scope') or ''}".casefold().replace("ё", "е")
+    return _has_any(value, ("сколько раз в неделю", "раз в неделю", "часто занятия", "еженед"))
+
+
+def _asks_schedule_start(text: str, plan: Mapping[str, Any]) -> bool:
+    value = f"{text} {plan.get('fact_scope') or ''}".casefold().replace("ё", "е")
+    return _has_any(value, ("когда старт", "старт", "начина", "с какого числа", "когда нач"))
+
+
+def _asks_weekend_schedule(text: str, plan: Mapping[str, Any]) -> bool:
+    value = f"{text} {plan.get('fact_scope') or ''}".casefold().replace("ё", "е")
+    return _has_any(value, ("выходн", "суббот", "воскрес"))
+
+
+def _asks_exact_class_schedule(text: str, plan: Mapping[str, Any]) -> bool:
+    value = f"{text} {plan.get('fact_scope') or ''}".casefold().replace("ё", "е")
+    return _has_any(
+        value,
+        (
+            "по каким дням",
+            "в какие дни",
+            "когда занятия",
+            "когда математ",
+            "когда физик",
+            "когда информат",
+            "во сколько",
+            "дни занятий",
+            "время занятий",
+            "распис",
+        ),
+    )
+
+
+def _brand_scoped_schedule_facts(facts: Mapping[str, str], active_brand: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not _is_schedule_fact(combined):
+            continue
+        if active_brand == "foton" and _has_any(combined, ("унпк", "kmipt", "сретен", "пацаева", "мфти")):
+            continue
+        if active_brand == "unpk" and _has_any(combined, ("фотон", "cdpofoton", "цдпо", "красносельская")):
+            continue
+        text = " ".join(str(value or "").split())
+        if text:
+            result[str(key)] = text
+    return result
+
+
+def _is_schedule_fact(combined: str) -> bool:
+    if _is_contact_hours_fact(combined):
+        return True
+    return _has_any(
+        combined,
+        (
+            "schedule_2026_27",
+            "schedule.groups",
+            "weekly_lessons",
+            "учебный год 2026/27",
+            "старт занятий",
+            "расписание",
+            "опубликованные группы",
+            "конкретный вариант зависит",
+            "разные слоты",
+            "выходн",
+            "суббот",
+            "воскрес",
+        ),
+    )
+
+
+def _is_contact_hours_fact(combined: str) -> bool:
+    return _has_any(combined, ("contact_hours", "часы связи", "связаться")) and bool(
+        re.search(r"10[:.]?00|18[:.]?00|пн\s*[–-]\s*вс|ежедневн", combined, re.I)
+    )
+
+
+def _first_schedule_fact(facts: Mapping[str, str], markers: Sequence[str]) -> tuple[str, str]:
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if _is_contact_hours_fact(combined):
+            continue
+        if any(str(marker).casefold().replace("ё", "е") in combined for marker in markers):
+            text = " ".join(str(value or "").split())
+            if text:
+                return str(key), text
+    return "", ""
+
+
+def _schedule_start_fact(facts: Mapping[str, str], question: str) -> tuple[str, str]:
+    location_markers: tuple[str, ...] = ()
+    if _has_any(question, ("москва", "красносельск", "сретен")):
+        location_markers = ("moscow", "москва", "красносельск", "сретен")
+    elif _has_any(question, ("онлайн", "дистанц")):
+        location_markers = ("online", "онлайн")
+    elif _has_any(question, ("пацаев", "долгопруд")):
+        location_markers = ("patsayeva", "пацаев", "долгопруд")
+    elif _has_any(question, ("институтск", "мфти")):
+        location_markers = ("mfti_institutsky", "институтск", "мфти")
+    if location_markers:
+        key, fact = _first_schedule_fact(facts, ("start_by_location", *location_markers))
+        if fact:
+            return key, fact
+    return _first_schedule_fact(facts, ("academic_year_2026_27.start", "старт занятий"))
+
+
+def _schedule_group_fact(facts: Mapping[str, str], question: str, *, require_weekend: bool = False) -> tuple[str, str]:
+    candidates: list[tuple[int, str, str]] = []
+    grade = _grade_from_text(question)
+    subject = _subject_from_text(question)
+    requested_format = "online" if _has_any(question, ("онлайн", "дистанц")) else "offline" if _has_any(question, ("очно", "офлайн", "красносельск", "сретен", "пацаев")) else ""
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if _is_contact_hours_fact(combined):
+            continue
+        if "schedule_2026_27" not in combined and "schedule.groups" not in combined:
+            continue
+        if require_weekend and not _fact_mentions_weekend(combined):
+            continue
+        if grade is not None and not _fact_matches_grade(combined, grade):
+            continue
+        if subject and not _fact_matches_subject(combined, subject):
+            continue
+        if requested_format == "online" and not _fact_mentions_online(combined):
+            continue
+        if requested_format == "offline" and not _fact_mentions_offline(combined):
+            continue
+        score = 0
+        if grade is not None:
+            score += 4
+        if subject:
+            score += 4
+        if requested_format:
+            score += 2
+        if _fact_mentions_weekend(combined):
+            score += 1
+        candidates.append((score, str(key), " ".join(str(value or "").split())))
+    if not candidates:
+        return "", ""
+    _, key, fact = sorted(candidates, key=lambda item: (-item[0], item[1]))[0]
+    return key, fact
+
+
+def _fact_mentions_weekend(text: str) -> bool:
+    return _has_any(text, ("суббот", "воскрес", "выходн", "sat", "sun"))
+
+
+def _subject_from_text(text: str) -> str:
+    value = str(text or "").casefold().replace("ё", "е")
+    subject_markers = {
+        "math": ("математ",),
+        "physics": ("физик",),
+        "informatics": ("информат", "информатик"),
+        "russian": ("русск", "русский"),
+    }
+    for subject, markers in subject_markers.items():
+        if _has_any(value, markers):
+            return subject
+    return ""
+
+
+def _fact_matches_subject(text: str, subject: str) -> bool:
+    markers = {
+        "math": ("math", "математ"),
+        "physics": ("physics", "физик"),
+        "informatics": ("informatics", "информат"),
+        "russian": ("russian", "русск"),
+    }.get(subject, ())
+    return bool(markers and _has_any(text, markers))
+
+
+def _schedule_manager_check_outcome(
+    rule: Rule,
+    *,
+    subvariant: str,
+    question: str,
+    facts: Mapping[str, str],
+) -> RuleOutcome:
+    source: dict[str, str] = {}
+    key, fact = _first_schedule_fact(facts, ("regular_courses_schedule_publication", "опубликованные группы", "расписание"))
+    if fact:
+        source[key or "rules_engine.schedule.publication"] = fact
+    elif facts:
+        key, fact = next(iter(facts.items()))
+        source[str(key)] = str(fact)
+    text = (
+        "Точные дни конкретной группы без сверки не подтверждаю: менеджер проверит класс, предмет, формат и площадку "
+        "по актуальному расписанию. Контактные часы 10:00-18:00 не считаю расписанием занятий."
+    )
+    return _rule_outcome(
+        rule,
+        subvariant=subvariant,
+        route="draft_for_manager",
+        text=text,
+        facts=source or {"rules_engine.schedule.manager_check": "Точные дни группы требует сверки менеджером."},
+        flags=("rules_engine_schedule_manager_check", "schedule_publication_safe_template_applied"),
+        checklist="Rule engine: schedule — при отсутствии точной группы менеджер сверит; контакт-часы не использовать.",
     )
 
 

@@ -1183,6 +1183,12 @@ def _migrated_rule_intent_from_dialogue_contract(result: SubscriptionDraftResult
         return "pricing"
     if "theme:014_format" in topic_id or re.search(r"\bformat\b|формат|онлайн\s+или\s+очно|очно\s+или\s+онлайн", haystack, re.I):
         return "format"
+    if "theme:013_schedule" in topic_id or re.search(
+        r"\b(schedule|schedule_weekend)\b|распис|по\s+каким\s+дням|когда\s+занят|раз\s+в\s+недел|выходн|суббот|воскрес",
+        haystack,
+        re.I,
+    ):
+        return "schedule"
     if "theme:023_trial_class" in topic_id or re.search(r"пробн|фрагмент\s+занят|фрагмент\s+урок", haystack, re.I):
         return "trial"
     if (

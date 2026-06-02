@@ -81,8 +81,27 @@ def test_rules_engine_contact_address_uses_registry_foton_spelling() -> None:
 
     assert outcome is not None
     assert outcome.route == "bot_answer_self_for_pilot"
-    assert "Скорняжный" in outcome.text
+    assert "Верхняя Красносельская" in outcome.text
+    assert "Скорняжный" not in outcome.text
     assert "УНПК" not in outcome.text
+
+
+def test_rules_engine_contact_address_prefers_foton_kb_fact() -> None:
+    registry = load_rules_registry()
+    rule = registry["contact_address"]
+
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "address", "direct_question": "какой адрес Фотона?", "active_brand": "foton"},
+        facts={"contact.foton.address": "Фотон: адрес и место занятий — Верхняя Красносельская ул., 30."},
+        context={"active_brand": "foton"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "bot_answer_self_for_pilot"
+    assert "Москва, Верхняя Красносельская ул., 30" in outcome.text
+    assert "Скорняжный" not in outcome.text
+    assert "contact.foton.address" in outcome.facts
 
 
 def test_rules_engine_docs_license_never_exposes_number() -> None:

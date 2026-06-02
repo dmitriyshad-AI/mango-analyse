@@ -135,7 +135,7 @@ def _parse_rules_registry_fallback(text: str) -> list[Mapping[str, Any]]:
             data["required_fact_keys"] = values
         if rule_id == "contact_address":
             data["data"] = {
-                "foton": {"address": "Москва, Скорняжный"},
+                "foton": {"address": "Москва, Верхняя Красносельская ул., 30"},
                 "unpk": {
                     "addresses": [
                         "Москва, Сретенка, 20",
@@ -379,9 +379,10 @@ def _apply_contact_address_rule(
     brand = _active_brand(plan, context)
     if brand == "foton":
         configured = rule.data.get("foton") if isinstance(rule.data.get("foton"), Mapping) else {}
-        address = str(configured.get("address") or "Москва, Скорняжный").strip()
+        kb_fact_key, kb_address = _foton_address_from_facts(facts)
+        address = kb_address or str(configured.get("address") or "Москва, Верхняя Красносельская ул., 30").strip()
         text = f"Фотон в Москве: {address}. Если нужна площадка под конкретную группу, менеджер уточнит детали."
-        fact_key = "rules_registry.contact_address.foton.address"
+        fact_key = kb_fact_key or "rules_registry.contact_address.foton.address"
         fact_text = f"Фотон: адрес очных занятий — {address}."
     elif brand == "unpk":
         configured = rule.data.get("unpk") if isinstance(rule.data.get("unpk"), Mapping) else {}
@@ -404,6 +405,22 @@ def _apply_contact_address_rule(
         checklist=("Rule engine: contact_address — адрес отвечает только на адресный вопрос, бренд не смешивать.",),
         metadata={"source": "rules_engine", "rule_id": "contact_address", "subvariant": "where_located", "brand": brand},
     )
+
+
+def _foton_address_from_facts(facts: Mapping[str, str]) -> tuple[str, str]:
+    for key, value in facts.items():
+        if str(key).strip().casefold() != "contact.foton.address":
+            continue
+        cleaned = " ".join(str(value or "").split()).strip()
+        if not cleaned:
+            continue
+        candidate = re.split(r"\s+[—-]\s+", cleaned, maxsplit=1)[-1].strip(" .")
+        candidate = re.sub(r"^Фотон:\s*", "", candidate, flags=re.I).strip(" .")
+        candidate = re.sub(r"^адрес(?:\s+и\s+место\s+занятий|\s+очных\s+занятий)?\s*[:—-]\s*", "", candidate, flags=re.I).strip(" .")
+        if candidate and "москва" not in candidate.casefold():
+            candidate = f"Москва, {candidate}"
+        return str(key), candidate
+    return "", ""
 
 
 def _apply_docs_rule(

@@ -18,6 +18,8 @@ MIGRATED = frozenset(
         "tax",
         "olympiad",
         "platform_access",
+        "installment",
+        "discount",
     }
 )
 
@@ -169,6 +171,10 @@ def apply_rule(
         return _apply_olympiad_rule(rule, plan=plan, facts=facts, context=context)
     if rule.rule_id == "platform_access":
         return _apply_platform_access_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "installment":
+        return _apply_installment_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "discount":
+        return _apply_discount_rule(rule, plan=plan, facts=facts, context=context)
     return None
 
 
@@ -197,6 +203,16 @@ def _rule_id_for_intent(intent: str) -> str:
         "platform": "platform_access",
         "platform_access": "platform_access",
         "platform_inquiry": "platform_access",
+        "installment": "installment",
+        "installment_inquiry": "installment",
+        "payment_method": "installment",
+        "payment_by_invoice_monthly": "installment",
+        "discount": "discount",
+        "discounts": "discount",
+        "discount_inquiry": "discount",
+        "second_subject_discount": "discount",
+        "multichild_discount": "discount",
+        "discount_stacking": "discount",
     }
     return aliases.get(normalized, normalized)
 
@@ -615,6 +631,338 @@ def _apply_platform_access_rule(
     )
 
 
+def _apply_installment_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_installment_question(question, plan):
+        return None
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
+        return None
+    if _asks_invoice_transfer_without_installment(question):
+        return None
+
+    if brand == "foton":
+        key, fact = _first_matching_fact(
+            facts,
+            ("installment", "рассроч", "оплатить обучение частями", "6, 10", "12 месяцев", "долями", "dolyami"),
+        )
+        if not fact:
+            return None
+        months = _installment_months(rule)
+        text = (
+            f"В Фотоне можно оплатить обучение частями: доступны варианты на {months} месяцев, "
+            "а также сервис Долями. Конкретные условия и оформление зависят от выбранного способа оплаты; "
+            "менеджер поможет подобрать удобный вариант."
+        )
+        return _rule_outcome(
+            rule,
+            subvariant="foton_available",
+            route="bot_answer_self_for_pilot",
+            text=text,
+            facts={key or "rules_engine.installment.foton": fact},
+            flags=("rules_engine_installment_foton",),
+            checklist="Rule engine: installment — Фотон только из своего факта, не сравнивать с УНПК.",
+        )
+
+    absence_key, absence_fact = _first_matching_fact(
+        facts,
+        (
+            "payment_options.bank_installment.absent",
+            "банковской рассрочки нет",
+            "рассрочки нет",
+            "не банковская рассрочка",
+            "отдельной банковской рассрочки нет",
+        ),
+    )
+    period_key, period_fact = _first_matching_fact(
+        facts,
+        (
+            "payment_options.client_safe_text.when_asked_about_installment",
+            "помесячно",
+            "за семестр",
+            "за год",
+            "растянуть оплату",
+        ),
+    )
+    semester_key, semester_fact = _first_matching_fact_with_required(
+        facts,
+        ("semester", "семестр", "10%", "discounts.monthly_payment.pct"),
+        required=("10%",),
+    )
+    year_key, year_fact = _first_matching_fact_with_required(
+        facts,
+        ("year", "год", "14%", "discounts.year", "year_discount"),
+        required=("14%",),
+    )
+    if not (absence_fact and period_fact and semester_fact and year_fact):
+        return None
+    text = (
+        "В УНПК рассрочки нет, это не банковская рассрочка, поэтому одобрение банка не требуется. "
+        "Можно платить помесячно, за семестр или за год. "
+        "При оплате за семестр действует скидка 10%, за год - 14%. "
+        "Если нужно растянуть оплату, менеджер подскажет варианты под вашу ситуацию."
+    )
+    source = {
+        absence_key or "rules_engine.installment.unpk.absence": absence_fact,
+        period_key or "rules_engine.installment.unpk.periods": period_fact,
+        semester_key or "rules_engine.installment.unpk.semester_discount": semester_fact,
+        year_key or "rules_engine.installment.unpk.year_discount": year_fact,
+    }
+    return _rule_outcome(
+        rule,
+        subvariant="unpk_no_bank_installment",
+        route="bot_answer_self_for_pilot",
+        text=text,
+        facts=source,
+        flags=("rules_engine_installment_unpk_no_bank", "unpk_installment_approved_fallback_applied"),
+        checklist="Rule engine: installment — УНПК: банковской рассрочки нет; периодические скидки только из фактов.",
+    )
+
+
+def _apply_discount_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_discount_question(question, plan):
+        return None
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
+        return None
+
+    if _asks_promocode(question):
+        return _rule_outcome(
+            rule,
+            subvariant="promocode_no_code",
+            route="bot_answer_self_for_pilot",
+            text="Промокод в чате не называю: менеджер проверит актуальные акции и условия под вашу заявку.",
+            facts={"rules_engine.discount.promocode_policy": "Промокоды убраны из клиентского слоя; код клиенту не выдавать шаблонно."},
+            flags=("rules_engine_discount_promocode_no_code",),
+            checklist="Rule engine: discount — промокод не выдавать в клиентском тексте.",
+        )
+
+    second_key, second_fact = _first_matching_fact(
+        facts,
+        (
+            "second_subject",
+            "второй предмет",
+            "последующий предмет",
+            "второй и последующий",
+            "30%",
+            "20%",
+        ),
+    )
+    online_second_key, online_second_fact = _first_matching_fact_with_required(
+        facts,
+        ("second_subject", "online", "онлайн", "30%"),
+        required=("30%",),
+    )
+    offline_second_key, offline_second_fact = _first_matching_fact_with_required(
+        facts,
+        ("second_subject", "offline", "очн", "20%"),
+        required=("20%",),
+    )
+    multichild_key, multichild_fact = _first_matching_fact(
+        facts,
+        ("multichild", "многодет", "удостоверение многодетной", "10%"),
+    )
+    stacking_key, stacking_fact = _first_matching_fact(
+        facts,
+        ("stacking", "не сумм", "наибольш", "применяется наибольшая"),
+    )
+
+    asks_second_subject = _asks_second_subject_discount(question, plan)
+    asks_multichild = _asks_multichild_discount(question, plan)
+    asks_stacking = _asks_discount_stacking(question, plan)
+
+    if asks_second_subject and asks_multichild and (asks_stacking or stacking_fact):
+        if not (second_fact and multichild_fact and stacking_fact):
+            return None
+        if brand == "foton":
+            if online_second_fact and offline_second_fact:
+                second_text = "На второй онлайн-предмет в Фотоне действует скидка 30%, на второй очный предмет — 20%."
+                second_source = {
+                    online_second_key or "rules_engine.discount.second_subject.online": online_second_fact,
+                    offline_second_key or "rules_engine.discount.second_subject.offline": offline_second_fact,
+                }
+            elif online_second_fact:
+                second_text = "На второй онлайн-предмет в Фотоне действует скидка 30%."
+                second_source = {online_second_key or "rules_engine.discount.second_subject.online": online_second_fact}
+            elif offline_second_fact:
+                second_text = "На второй очный предмет в Фотоне действует скидка 20%."
+                second_source = {offline_second_key or "rules_engine.discount.second_subject.offline": offline_second_fact}
+            else:
+                second_text = _short_sentence(second_fact)
+                second_source = {second_key or "rules_engine.discount.second_subject": second_fact}
+            text = (
+                f"{second_text} Многодетная скидка — 10% по удостоверению. "
+                "Скидки не суммируются: применяется наибольшая доступная."
+            )
+        else:
+            text = (
+                "На второй и последующий предмет одного ребёнка в УНПК действует скидка 20%. "
+                "Многодетная скидка — 10% по удостоверению. Скидки не суммируются: применяется наибольшая доступная."
+            )
+            second_source = {second_key or "rules_engine.discount.second_subject": second_fact}
+        return _rule_outcome(
+            rule,
+            subvariant="stacking_take_max",
+            route="bot_answer_self_for_pilot",
+            text=text,
+            facts={
+                **second_source,
+                multichild_key or "rules_engine.discount.multichild": multichild_fact,
+                stacking_key or "rules_engine.discount.stacking": stacking_fact,
+            },
+            flags=("rules_engine_discount_stacking_take_max",),
+            checklist="Rule engine: discount — скидки не суммировать, применять наибольшую.",
+        )
+
+    if asks_stacking:
+        if not stacking_fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="stacking_take_max",
+            route="bot_answer_self_for_pilot",
+            text="Скидки не суммируются: применяется наибольшая доступная скидка. Менеджер проверит условия под вашу ситуацию.",
+            facts={stacking_key or "rules_engine.discount.stacking": stacking_fact},
+            flags=("rules_engine_discount_stacking_take_max",),
+            checklist="Rule engine: discount — скидки не суммировать, применять наибольшую.",
+        )
+
+    if asks_multichild:
+        if not multichild_fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="multichild_status",
+            route="bot_answer_self_for_pilot",
+            text=(
+                "Для детей из многодетной семьи есть скидка 10%; нужен статус многодетной семьи и подтверждающий документ. "
+                "Скидка не суммируется с другими скидками: применяется наибольшая."
+            ),
+            facts={multichild_key or "rules_engine.discount.multichild": multichild_fact},
+            flags=("rules_engine_discount_multichild_status",),
+            checklist="Rule engine: discount — многодетная скидка по статусу семьи, не по числу детей в CRM.",
+        )
+
+    if _asks_mfti_employee_discount(question):
+        key, fact = _first_matching_fact(facts, ("mfti", "мфти", "сотрудник", "10%"))
+        if brand != "unpk" or not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="mfti_staff",
+            route="bot_answer_self_for_pilot",
+            text="Сотрудникам МФТИ действует скидка 10%; нужен подтверждающий документ с места работы. Менеджер проверит документы и условия.",
+            facts={key or "rules_engine.discount.mfti_staff": fact},
+            flags=("rules_engine_discount_mfti_staff",),
+            checklist="Rule engine: discount — скидка сотрудникам МФТИ только по подтверждающему документу.",
+        )
+
+    if _asks_period_discount(question):
+        semester_key, semester_fact = _first_matching_fact_with_required(
+            facts,
+            ("monthly_payment", "семестр", "10%"),
+            required=("10%",),
+        )
+        year_key, year_fact = _first_matching_fact_with_required(
+            facts,
+            ("year", "за год", "14%"),
+            required=("14%",),
+        )
+        if brand != "unpk" or not (semester_fact and year_fact):
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="period_payment",
+            route="bot_answer_self_for_pilot",
+            text="В УНПК можно платить помесячно, за семестр или за год. При оплате за семестр действует скидка 10%, за год - 14%.",
+            facts={
+                semester_key or "rules_engine.discount.period_payment.semester": semester_fact,
+                year_key or "rules_engine.discount.period_payment.year": year_fact,
+            },
+            flags=("rules_engine_discount_period_payment",),
+            checklist="Rule engine: discount — периодические скидки УНПК только из факта.",
+        )
+
+    if asks_second_subject:
+        if brand == "foton":
+            if _has_any(question, ("онлайн", "дистанц")):
+                if not online_second_fact:
+                    return None
+                text = (
+                    "На второй онлайн-предмет в Фотоне действует скидка 30% для того же ребёнка. "
+                    "Скидки не суммируются: если есть несколько оснований, применяется наибольшая доступная."
+                )
+                subvariant = "second_subject_foton_online"
+                source_key, source_fact = online_second_key, online_second_fact
+            elif _has_any(question, ("очно", "очный", "офлайн")):
+                if not offline_second_fact:
+                    return None
+                text = (
+                    "На второй очный предмет в Фотоне действует скидка 20% для того же ребёнка. "
+                    "Скидки не суммируются: если есть несколько оснований, применяется наибольшая доступная."
+                )
+                subvariant = "second_subject_foton_offline"
+                source_key, source_fact = offline_second_key, offline_second_fact
+            else:
+                if online_second_fact and offline_second_fact:
+                    text = (
+                        "На второй и последующий предмет одного и того же ребёнка в Фотоне действует скидка: "
+                        "20% при очном формате и 30% при онлайн-формате. Скидки не суммируются."
+                    )
+                    source_key, source_fact = second_key or online_second_key, second_fact or online_second_fact
+                elif online_second_fact:
+                    text = (
+                        "На второй онлайн-предмет в Фотоне действует скидка 30% для того же ребёнка. "
+                        "Скидки не суммируются: если есть несколько оснований, применяется наибольшая доступная."
+                    )
+                    source_key, source_fact = online_second_key, online_second_fact
+                elif offline_second_fact:
+                    text = (
+                        "На второй очный предмет в Фотоне действует скидка 20% для того же ребёнка. "
+                        "Скидки не суммируются: если есть несколько оснований, применяется наибольшая доступная."
+                    )
+                    source_key, source_fact = offline_second_key, offline_second_fact
+                elif second_fact:
+                    text = _short_sentence(second_fact)
+                    source_key, source_fact = second_key, second_fact
+                else:
+                    return None
+                subvariant = "second_subject_foton"
+        else:
+            if not second_fact:
+                return None
+            text = (
+                "На второй и последующий предмет одного и того же ребёнка в УНПК действует скидка 20%. "
+                "Скидки не суммируются: если есть несколько оснований, применяется наибольшая доступная."
+            )
+            subvariant = "second_subject_unpk"
+            source_key, source_fact = second_key, second_fact
+        return _rule_outcome(
+            rule,
+            subvariant=subvariant,
+            route="bot_answer_self_for_pilot",
+            text=text,
+            facts={source_key or f"rules_engine.discount.{subvariant}": source_fact},
+            flags=("rules_engine_discount_second_subject", f"rules_engine_discount_{subvariant}"),
+            checklist="Rule engine: discount — второй предмет по бренду и формату, без сравнения брендов.",
+        )
+
+    return None
+
+
 def _rule_outcome(
     rule: Rule,
     *,
@@ -716,6 +1064,129 @@ def _looks_like_platform_question(text: str, plan: Mapping[str, Any]) -> bool:
     )
 
 
+def _looks_like_installment_question(text: str, plan: Mapping[str, Any]) -> bool:
+    intent = str(plan.get("primary_intent") or "")
+    if intent in {"installment", "installment_inquiry"}:
+        return True
+    if intent in {"payment_method", "payment_by_invoice_monthly"}:
+        return _has_any(
+            text,
+            (
+                "рассроч",
+                "долями",
+                "частями",
+                "по частям",
+                "не все сразу",
+                "не всю сумму",
+                "растянуть оплат",
+                "платить постепенно",
+                "одобр",
+            ),
+        ) or (
+            _has_any(text, ("помесяч", "каждый месяц", "по месяцам"))
+            and not _asks_invoice_transfer_without_installment(text)
+        )
+    return _has_any(
+        text,
+        (
+            "рассроч",
+            "долями",
+            "частями",
+            "по частям",
+            "не все сразу",
+            "не всю сумму",
+            "растянуть оплат",
+            "платить постепенно",
+            "одобр",
+        ),
+    )
+
+
+def _looks_like_discount_question(text: str, plan: Mapping[str, Any]) -> bool:
+    return str(plan.get("primary_intent") or "") == "discount" or _has_any(
+        text,
+        (
+            "скид",
+            "льгот",
+            "акци",
+            "промокод",
+            "второй предмет",
+            "последующий предмет",
+            "многодет",
+            "суммир",
+            "слож",
+            "сотрудник мфти",
+        ),
+    )
+
+
+def _asks_invoice_transfer_without_installment(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    invoice_or_transfer = _has_any(value, ("по счету", "по счёту", "счет", "счёт", "реквизит", "банковск", "перевод"))
+    explicit_installment = _has_any(
+        value,
+        ("рассроч", "долями", "частями", "по частям", "не все сразу", "не всю сумму", "растянуть оплат", "одобр"),
+    )
+    negates_installment = _has_any(value, ("не рассроч", "не долями", "не частями", "не через банк", "не про рассроч"))
+    return bool(invoice_or_transfer and (negates_installment or not explicit_installment))
+
+
+def _mentions_other_brand(text: str, active_brand: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    if active_brand == "foton":
+        return _has_any(value, ("унпк", "kmipt", "70369"))
+    if active_brand == "unpk":
+        return _has_any(value, ("фотон", "цдпо", "црдо", "cdpofoton"))
+    return False
+
+
+def _installment_months(rule: Rule) -> str:
+    data = rule.data.get("foton") if isinstance(rule.data.get("foton"), Mapping) else {}
+    months = data.get("months") if isinstance(data, Mapping) else ()
+    normalized = [str(item).strip() for item in (months or ()) if str(item).strip()]
+    if len(normalized) >= 2:
+        return ", ".join(normalized[:-1]) + " или " + normalized[-1]
+    return normalized[0] if normalized else "6, 10 или 12"
+
+
+def _asks_promocode(text: str) -> bool:
+    return _has_any(text, ("промокод", "код на скид", "купон"))
+
+
+def _asks_second_subject_discount(text: str, plan: Mapping[str, Any]) -> bool:
+    scope = str(plan.get("fact_scope") or "")
+    return scope == "discount_second_subject" or _has_any(
+        text,
+        (
+            "второй предмет",
+            "второй онлайн",
+            "второй очн",
+            "последующий предмет",
+            "два предмет",
+            "еще предмет",
+            "ещё предмет",
+        ),
+    ) or bool(re.search(r"(физик\w*[^.!?\n]{0,80}математ\w*|математ\w*[^.!?\n]{0,80}физик\w*)", text))
+
+
+def _asks_multichild_discount(text: str, plan: Mapping[str, Any]) -> bool:
+    scope = str(plan.get("fact_scope") or "")
+    return scope == "discount_multichild" or _has_any(text, ("многодет", "трое дет", "три дет", "четверо дет", "пятеро дет"))
+
+
+def _asks_discount_stacking(text: str, plan: Mapping[str, Any]) -> bool:
+    scope = str(plan.get("fact_scope") or "")
+    return scope == "discount_stacking" or _has_any(text, ("суммир", "слож", "вместе", "одновременно", "плюсу"))
+
+
+def _asks_mfti_employee_discount(text: str) -> bool:
+    return _has_any(text, ("сотрудник мфти", "работаю в мфти", "работник мфти"))
+
+
+def _asks_period_discount(text: str) -> bool:
+    return _has_any(text, ("семестр", "за год", "годом", "помесяч", "на год"))
+
+
 def _asks_specific_teacher_name(text: str) -> bool:
     return bool(re.search(r"как\s+зовут|фио|имя|кто\s+в\s+лобн|кто\s+ведет|кто\s+ведёт|конкретн", text, re.I))
 
@@ -732,6 +1203,24 @@ def _first_matching_fact(facts: Mapping[str, str], markers: Sequence[str]) -> tu
     for key, value in facts.items():
         combined = f"{key} {value}".casefold().replace("ё", "е")
         if any(str(marker).casefold() in combined for marker in markers):
+            text = " ".join(str(value or "").split())
+            if text:
+                return str(key), text
+    return "", ""
+
+
+def _first_matching_fact_with_required(
+    facts: Mapping[str, str],
+    markers: Sequence[str],
+    *,
+    required: Sequence[str],
+) -> tuple[str, str]:
+    normalized_required = tuple(str(marker).casefold().replace("ё", "е") for marker in required if str(marker).strip())
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not all(marker in combined for marker in normalized_required):
+            continue
+        if any(str(marker).casefold().replace("ё", "е") in combined for marker in markers):
             text = " ".join(str(value or "").split())
             if text:
                 return str(key), text

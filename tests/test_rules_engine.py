@@ -16,6 +16,8 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
         "tax",
         "olympiad",
         "platform_access",
+        "installment",
+        "discount",
     }
     assert select_rule("teacher", registry).rule_id == "teacher"  # type: ignore[union-attr]
     assert select_rule("recording", registry).rule_id == "recordings"  # type: ignore[union-attr]
@@ -25,6 +27,9 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
     assert select_rule("tax", registry).rule_id == "tax"  # type: ignore[union-attr]
     assert select_rule("olympiad_online", registry).rule_id == "olympiad"  # type: ignore[union-attr]
     assert select_rule("platform_access", registry).rule_id == "platform_access"  # type: ignore[union-attr]
+    assert select_rule("installment", registry).rule_id == "installment"  # type: ignore[union-attr]
+    assert select_rule("payment_method", registry).rule_id == "installment"  # type: ignore[union-attr]
+    assert select_rule("discount", registry).rule_id == "discount"  # type: ignore[union-attr]
     assert select_rule("pricing", registry) is None
 
 
@@ -191,3 +196,144 @@ def test_rules_engine_platform_access_uses_fact_but_not_identity_branch() -> Non
     assert outcome is not None
     assert "личный кабинет" in outcome.text.casefold()
     assert identity is None
+
+
+def test_rules_engine_installment_is_brand_split_and_unpk_uses_verified_fallback_facts() -> None:
+    rule = load_rules_registry()["installment"]
+    unpk_facts = {
+        "payment_options.bank_installment.absent.client_safe_text": "В УНПК отдельной банковской рассрочки нет.",
+        "payment_options.client_safe_text.when_asked_about_installment": "У нас оплата возможна помесячно, за семестр или за год.",
+        "discounts.semester_payment.pct": "УНПК: при оплате за семестр действует скидка 10%.",
+        "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 14%.",
+    }
+
+    unpk = apply_rule(
+        rule,
+        plan={"primary_intent": "installment", "direct_question": "У вас есть рассрочка?", "active_brand": "unpk"},
+        facts=unpk_facts,
+        context={"active_brand": "unpk"},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "installment", "direct_question": "А у Фотона рассрочка есть?", "active_brand": "unpk"},
+        facts=unpk_facts,
+        context={"active_brand": "unpk"},
+    )
+    invoice_transfer = apply_rule(
+        rule,
+        plan={"primary_intent": "payment_method", "direct_question": "Можно банковским переводом на счёт?", "active_brand": "foton"},
+        facts={"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."},
+        context={"active_brand": "foton"},
+    )
+
+    assert unpk is not None
+    assert unpk.route == "bot_answer_self_for_pilot"
+    assert "рассрочки нет" in unpk.text.casefold()
+    assert "10%" in unpk.text
+    assert "14%" in unpk.text
+    assert "Фотон" not in unpk.text
+    assert "Т-Банк" not in unpk.text
+    assert "Долями" not in unpk.text
+    assert cross_brand is None
+    assert invoice_transfer is None
+
+
+def test_rules_engine_installment_foton_uses_own_fact_without_unpk() -> None:
+    rule = load_rules_registry()["installment"]
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "installment", "direct_question": "В Фотоне есть Долями или рассрочка?", "active_brand": "foton"},
+        facts={"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."},
+        context={"active_brand": "foton"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "bot_answer_self_for_pilot"
+    assert "6, 10 или 12" in outcome.text
+    assert "Долями" in outcome.text
+    assert "УНПК" not in outcome.text
+
+
+def test_rules_engine_discount_second_subject_multichild_stacking_and_promocode_are_safe() -> None:
+    rule = load_rules_registry()["discount"]
+    facts = {
+        "discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%.",
+        "discounts.second_subject.offline.pct": "Фотон: на второй очный предмет действует скидка 20%.",
+        "discounts.multichild.pct": "Фотон: многодетная скидка 10% по удостоверению многодетной семьи.",
+        "discounts.stacking.rule": "Фотон: скидки не суммируются; применяется наибольшая доступная скидка.",
+    }
+
+    second = apply_rule(
+        rule,
+        plan={"primary_intent": "discount", "direct_question": "Сколько скидка на второй онлайн-предмет?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    stacking = apply_rule(
+        rule,
+        plan={"primary_intent": "discount", "direct_question": "Многодетная семья и второй предмет, скидки сложите?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    multichild = apply_rule(
+        rule,
+        plan={"primary_intent": "discount", "direct_question": "У нас двое детей, многодетная скидка есть?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    promocode = apply_rule(
+        rule,
+        plan={"primary_intent": "discount", "direct_question": "Дайте промокод на скидку", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "discount", "direct_question": "В УНПК многодетным 20%, а у вас сколько?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert second is not None
+    assert "30%" in second.text
+    assert "УНПК" not in second.text
+    assert stacking is not None
+    assert "не суммируются" in stacking.text.casefold()
+    assert "наибольшая" in stacking.text.casefold()
+    assert "40%" not in stacking.text
+    assert multichild is not None
+    assert "статус многодетной семьи" in multichild.text.casefold()
+    assert promocode is not None
+    assert "LVSH" not in promocode.text
+    assert "ABRAMOV" not in promocode.text
+    assert cross_brand is None
+
+
+def test_rules_engine_discount_unpk_second_subject_and_period_are_brand_safe() -> None:
+    rule = load_rules_registry()["discount"]
+    facts = {
+        "discounts.second_subject.online.pct": "УНПК: скидка на второй предмет составляет 20%.",
+        "discounts.semester_payment.pct": "УНПК: при оплате за семестр действует скидка 10%.",
+        "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 14%.",
+    }
+
+    second = apply_rule(
+        rule,
+        plan={"primary_intent": "discount", "direct_question": "Есть скидка на второй предмет?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+    period = apply_rule(
+        rule,
+        plan={"primary_intent": "discount", "direct_question": "Какая скидка за семестр и за год?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+
+    assert second is not None
+    assert "20%" in second.text
+    assert "Фотон" not in second.text
+    assert period is not None
+    assert "10%" in period.text
+    assert "14%" in period.text
+    assert "Фотон" not in period.text

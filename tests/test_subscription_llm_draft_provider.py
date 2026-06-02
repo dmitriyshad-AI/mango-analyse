@@ -8835,6 +8835,10 @@ def _step2b1_context(*, brand: str, intent: str, question: str, facts: dict[str,
         "tax": "theme:008_tax_deduction",
         "olympiad_online": "theme:016_program",
         "platform_access": "theme:024_account_access",
+        "installment": "theme:006_installment",
+        "payment_method": "theme:002_payment_method",
+        "payment_by_invoice_monthly": "theme:002_payment_method",
+        "discount": "theme:005_discounts",
     }.get(intent, "service:S5_general_consultation")
     return {
         "active_brand": brand,
@@ -9269,3 +9273,161 @@ def test_step2b2_rules_engine_does_not_override_p0_manager_route() -> None:
     assert guarded.route == "manager_only"
     assert not any(flag.startswith("rules_engine_") for flag in guarded.safety_flags)
     assert "справку и пришлёт" not in guarded.draft_text
+
+
+def test_step2b3_installment_unpk_answers_no_without_foton_or_bank_terms() -> None:
+    facts = {
+        "payment_options.bank_installment.absent.client_safe_text": "В УНПК отдельной банковской рассрочки нет.",
+        "payment_options.client_safe_text.when_asked_about_installment": "У нас оплата возможна помесячно, за семестр или за год.",
+        "discounts.semester_payment.pct": "УНПК: при оплате за семестр действует скидка 10%.",
+        "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 14%.",
+    }
+    question = "Можно оформить рассрочку?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:006_installment"),
+        question,
+        _step2b1_context(brand="unpk", intent="installment", question=question, facts=facts),
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_installment_unpk_no_bank" in result.safety_flags
+    assert "рассрочки нет" in text
+    assert "10%" in result.draft_text
+    assert "14%" in result.draft_text
+    assert "фотон" not in text
+    assert "т-банк" not in text
+    assert "долями" not in text
+
+
+def test_step2b3_installment_cross_brand_is_not_answered_by_money_rule() -> None:
+    facts = {
+        "payment_options.bank_installment.absent.client_safe_text": "В УНПК отдельной банковской рассрочки нет.",
+        "payment_options.client_safe_text.when_asked_about_installment": "У нас оплата возможна помесячно, за семестр или за год.",
+        "discounts.semester_payment.pct": "УНПК: при оплате за семестр действует скидка 10%.",
+        "discounts.year_payment.pct": "УНПК: при оплате за год действует скидка 14%.",
+    }
+    question = "А в Фотоне есть рассрочка?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:006_installment"),
+        question,
+        _step2b1_context(brand="unpk", intent="installment", question=question, facts=facts),
+    )
+
+    assert "rules_engine_installment_unpk_no_bank" not in result.safety_flags
+    assert "rules_engine_installment_foton" not in result.safety_flags
+    assert "cross_brand_safe_template_applied" in result.safety_flags
+    assert "Т-Банк" not in result.draft_text
+    assert "Долями" not in result.draft_text
+
+
+def test_step2b3_discount_second_subject_uses_brand_and_format_percent() -> None:
+    facts = {
+        "discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%.",
+        "discounts.second_subject.offline.pct": "Фотон: на второй очный предмет действует скидка 20%.",
+        "discounts.stacking.rule": "Фотон: скидки не суммируются; применяется наибольшая доступная скидка.",
+    }
+    question = "Скидка на второй онлайн-предмет сколько процентов?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:005_discounts"),
+        question,
+        _step2b1_context(brand="foton", intent="discount", question=question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_discount_second_subject_foton_online" in result.safety_flags
+    assert "30%" in result.draft_text
+    assert "20%" not in result.draft_text.split("30%", 1)[0]
+    assert "УНПК" not in result.draft_text
+
+
+def test_step2b3_discount_stacking_and_multichild_do_not_sum() -> None:
+    facts = {
+        "discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%.",
+        "discounts.multichild.pct": "Фотон: многодетная скидка 10% по удостоверению многодетной семьи.",
+        "discounts.stacking.rule": "Фотон: скидки не суммируются; применяется наибольшая доступная скидка.",
+    }
+    question = "Мы многодетные и берём второй предмет, скидки сложатся?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:005_discounts"),
+        question,
+        _step2b1_context(brand="foton", intent="discount", question=question, facts=facts),
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_discount_stacking_take_max" in result.safety_flags
+    assert "не суммируются" in text
+    assert "наибольшая" in text
+    assert "40%" not in result.draft_text
+
+
+def test_step2b3_discount_multichild_is_by_family_status_not_child_count() -> None:
+    facts = {
+        "discounts.multichild.pct": "УНПК: многодетная скидка 10% по удостоверению многодетной семьи.",
+    }
+    question = "Если двое детей учатся, многодетная скидка есть?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:005_discounts"),
+        question,
+        _step2b1_context(brand="unpk", intent="discount", question=question, facts=facts),
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_discount_multichild_status" in result.safety_flags
+    assert "статус многодетной семьи" in text
+    assert "по числу детей" not in text
+
+
+def test_step2b3_discount_promocode_does_not_leak_code() -> None:
+    facts = {"discounts.stacking.rule": "Фотон: скидки не суммируются; применяется наибольшая доступная скидка."}
+    question = "Есть промокод на скидку?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:005_discounts"),
+        question,
+        _step2b1_context(brand="foton", intent="discount", question=question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_discount_promocode_no_code" in result.safety_flags
+    assert "LVSH" not in result.draft_text
+    assert "ABRAMOV" not in result.draft_text
+    assert "VAGIN" not in result.draft_text
+
+
+def test_step2b3_money_rules_do_not_override_p0_manager_route() -> None:
+    facts = {
+        "discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
+    question = "Верните деньги, я недоволен, и скидку тоже посмотрите"
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:005_discounts",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=question, answerability="manager", keys=tuple(facts.keys()), is_p0=True),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts.keys()),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        question,
+        _step2b1_context(brand="foton", intent="discount", question=question, facts=facts),
+    )
+
+    assert guarded.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_installment") or flag.startswith("rules_engine_discount") for flag in guarded.safety_flags)
+    assert "30%" not in guarded.draft_text

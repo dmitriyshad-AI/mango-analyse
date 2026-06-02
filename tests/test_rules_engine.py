@@ -661,7 +661,7 @@ def test_rules_engine_format_choice_presents_only_verified_formats() -> None:
     assert both is not None
     assert "онлайн-формат" in both.text
     assert "очный формат" in both.text
-    assert "не выбираю" in both.text
+    assert "формат удобнее выбрать вам" in both.text
     assert single is not None
     assert "очный формат" in single.text
     assert "онлайн-формат" not in single.text

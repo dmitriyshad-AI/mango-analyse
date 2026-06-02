@@ -347,15 +347,15 @@ def _apply_recordings_rule(
 
     if wants_offline and offline_fact:
         subvariant = "offline"
-        text = f"Для очных занятий действует такое правило: {_short_sentence(offline_fact)}"
+        text = f"По очным занятиям ориентир такой: {_short_sentence(offline_fact)}"
         source = {offline_key or "rules_engine.recordings.offline": offline_fact}
     elif wants_online and online_fact:
         subvariant = "online"
-        text = f"Для онлайн-занятий действует такой порядок: {_short_sentence(online_fact)}"
+        text = f"По онлайн-занятиям порядок такой: {_short_sentence(online_fact)}"
         source = {online_key or "rules_engine.recordings.online": online_fact}
     elif online_fact and offline_fact:
         subvariant = "online_and_offline"
-        text = f"Для онлайн-занятий действует такой порядок: {_short_sentence(online_fact)} Для очных занятий — {_short_sentence(offline_fact)}"
+        text = f"По онлайн-занятиям: {_short_sentence(online_fact)} По очным — {_short_sentence(offline_fact)}"
         source = {
             online_key or "rules_engine.recordings.online": online_fact,
             offline_key or "rules_engine.recordings.offline": offline_fact,
@@ -1131,7 +1131,7 @@ def _apply_format_choice_rule(
             source[offline_key or "rules_engine.format.offline"] = offline_fact
         if not parts:
             return None
-        text = f"Формат за вас не выбираю: подтверждены {', '.join(parts)}."
+        text = f"Подскажу, что подтверждено, а формат удобнее выбрать вам: {', '.join(parts)}."
     elif _requested_training_format(question, plan, context) == "online":
         if not online_fact:
             return None
@@ -1493,7 +1493,7 @@ def _apply_schedule_rule(
             rule,
             subvariant="start_date",
             route="bot_answer_self_for_pilot",
-            text=f"Старт занятий указан так: {_short_sentence(fact)}",
+            text=f"По старту занятий: {_short_sentence(fact)}",
             facts={key or "rules_engine.schedule.start": fact},
             flags=("rules_engine_schedule_start_date",),
             checklist="Rule engine: schedule — старт занятий из v6.4-факта по бренду/площадке.",
@@ -1503,7 +1503,7 @@ def _apply_schedule_rule(
         key, fact = _schedule_group_fact(scoped_facts, question, require_weekend=True)
         if fact:
             text = (
-                f"В подтверждённых группах есть варианты на выходных: {_short_sentence(fact, max_chars=260)} "
+                f"По выходным есть такие варианты: {_short_sentence(fact, max_chars=260)} "
                 "Точный вариант под вашу группу менеджер сверит."
             )
             source = {key or "rules_engine.schedule.weekend_group": fact}
@@ -1511,7 +1511,7 @@ def _apply_schedule_rule(
             key, fact = _first_schedule_fact(scoped_facts, ("выходн", "суббот", "воскрес", "слот"))
             if not fact:
                 return _schedule_manager_check_outcome(rule, subvariant="weekend_slots", question=question, facts=scoped_facts)
-            text = f"В подтверждённых данных есть ориентир на слоты по выходным: {_short_sentence(fact)} Точный день и группу менеджер сверит."
+            text = f"Есть варианты на выходных: {_short_sentence(fact)} Точный день и группу менеджер сверит."
             source = {key or "rules_engine.schedule.weekend_guidance": fact}
         return _rule_outcome(
             rule,

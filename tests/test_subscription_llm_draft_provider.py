@@ -7621,7 +7621,7 @@ def test_step2b4_format_choice_disjunctive_presents_both_without_fixing_format()
     assert "rules_engine_format_choice_present_both" in result.safety_flags
     assert "онлайн-формат" in text
     assert "очный формат" in text
-    assert "не выбираю" in text
+    assert "формат удобнее выбрать вам" in text
 
 
 def test_step2b4_format_choice_single_fact_does_not_invent_online() -> None:
@@ -7638,6 +7638,102 @@ def test_step2b4_format_choice_single_fact_does_not_invent_online() -> None:
     assert "rules_engine_format_choice_present_both" in result.safety_flags
     assert "очный формат" in result.draft_text.casefold()
     assert "онлайн-формат" not in result.draft_text.casefold()
+
+
+def test_step_b1_price_without_fact_downgrades_self_defer_but_keeps_boundaries() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Точную цену уточнит менеджер.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+            "missing_facts": ["prices.current"],
+        }
+    )
+    no_fact = provider.build_draft(
+        "Сколько стоит онлайн для 12 класса по астрономии?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {
+                "allow_autonomous": True,
+                "allow_default_autonomy": True,
+                "allowed_topic_ids": ["theme:001_pricing"],
+            },
+            "missing_facts": ["prices.current"],
+            "facts_context": {"facts_missing": True, "client_safe": False, "fresh": False},
+            "known_slots": {"grade": "12", "subject": "астрономия", "format": "онлайн"},
+            "conversation_intent_plan": {
+                "primary_intent": "pricing",
+                "topic_id": "theme:001_pricing",
+                "route_bias": "bot_answer_self_for_pilot",
+                "answer_policy": "answer_directly_if_fact_verified",
+                "known_slots": {"grade": "12", "subject": "астрономия", "format": "онлайн"},
+            },
+        },
+    )
+
+    assert no_fact.route == "draft_for_manager"
+    assert "missing_fact_helpful_template_applied" in no_fact.safety_flags
+    assert "₽" not in no_fact.draft_text
+
+    price_facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+    }
+    price_question = "Сколько стоит онлайн для 9 класса?"
+    price = _apply_v2_guard_chain(
+        _step2b1_result(question=price_question, facts=price_facts, topic_id="theme:001_pricing"),
+        price_question,
+        _step2b1_context(brand="foton", intent="pricing", question=price_question, facts=price_facts),
+    )
+    cross_question = "В УНПК онлайн сколько стоит для 9 класса?"
+    cross = _apply_v2_guard_chain(
+        _step2b1_result(question=cross_question, facts=price_facts, topic_id="theme:001_pricing"),
+        cross_question,
+        _step2b1_context(brand="foton", intent="pricing", question=cross_question, facts=price_facts),
+    )
+    camp_facts = {
+        "lvsh_mendeleevo.price": "Фотон: ЛВШ Менделеево, стоимость смены — 72 000 ₽.",
+        "lvsh_mendeleevo.transfer": "Фотон: трансфер из Москвы входит в стоимость ЛВШ Менделеево.",
+    }
+    camp_question = "Сколько стоит ЛВШ Менделеево?"
+    camp = _apply_v2_guard_chain(
+        _step2b1_result(question=camp_question, facts=camp_facts, topic_id="theme:026_camp_general"),
+        camp_question,
+        _step2b1_context(brand="foton", intent="camp", question=camp_question, facts=camp_facts),
+    )
+    p0_question = "Верните деньги, я недоволен, и цену тоже скажите"
+    p0_result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=p0_question, answerability="manager", keys=tuple(price_facts.keys()), is_p0=True),
+                "retrieved_facts": price_facts,
+                "retrieved_fact_keys": list(price_facts),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+    p0 = _apply_v2_guard_chain(
+        p0_result,
+        p0_question,
+        _step2b1_context(brand="foton", intent="pricing", question=p0_question, facts=price_facts),
+    )
+
+    assert price.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_price_format_matched" in price.safety_flags
+    assert "29 750 ₽" in price.draft_text
+    assert "47 250 ₽" in price.draft_text
+    assert "rules_engine_price_applied" not in cross.safety_flags
+    assert "cross_brand_safe_template_applied" in cross.safety_flags
+    assert "29 750" not in cross.draft_text
+    assert "rules_engine_camp_lvsh_applied" in camp.safety_flags
+    assert "72 000 ₽" in camp.draft_text
+    assert p0.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_price") for flag in p0.safety_flags)
 
 
 def test_step2b4_price_and_format_do_not_override_cross_brand_or_p0() -> None:

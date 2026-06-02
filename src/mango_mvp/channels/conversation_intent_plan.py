@@ -295,6 +295,8 @@ def _primary_intent(
         return "tax"
     if "matkap" in keyword_signals:
         return "matkap"
+    if "platform" in keyword_signals:
+        return "platform_access"
     if "document" in keyword_signals:
         return "document"
     if previous_question_kind == "trial" and _has_any_marker(text, ("как", "получ", "ссыл", "запис", "регист", "отправ")):
@@ -309,6 +311,7 @@ def _primary_intent(
         ("camp", "camp"),
         ("address", "address"),
         ("teacher", "teacher"),
+        ("platform", "platform_access"),
         ("identity", "identity"),
         ("off_topic", "off_topic"),
     )
@@ -367,6 +370,7 @@ def _keyword_signals(text: str) -> tuple[str, ...]:
         ("format", ("онлайн", "очно", "офлайн", "дистанц", "формат")),
         ("address", ("адрес", "где", "площадк", "метро", "пацаева", "сретен", "красносель")),
         ("teacher", ("преподав", "педагог", "учитель", "кто вед", "кто работает")),
+        ("platform", ("личный кабинет", "кабинет", "платформ", "логин", "парол", "электрон", "документооборот", "скан-коп")),
         ("document", ("справк", "документ", "договор", "сертификат", "чек", "квитанц")),
         ("matkap", ("маткап", "материн")),
         ("tax", ("налог", "вычет", "фнс")),
@@ -495,6 +499,7 @@ def _topic_for_intent(intent: str) -> str:
         "format": "theme:014_format",
         "address": "theme:015_address",
         "teacher": "theme:017_teachers",
+        "platform_access": "theme:024_account_access",
         "document": "theme:012_certificates",
         "matkap": "theme:007_matkap_payment",
         "tax": "theme:008_tax_deduction",
@@ -572,6 +577,11 @@ def _required_fact_keys(
         keys.append("locations.current")
     if intent == "teacher":
         keys.append("teachers.current")
+    if intent == "platform_access":
+        if _has_any_marker(text, ("электрон", "документооборот", "скан-коп")):
+            keys.append("platform_documents.current")
+        else:
+            keys.append("platform.current")
     if intent == "document":
         keys.append("documents.current")
     if intent == "matkap":
@@ -682,7 +692,7 @@ def _answer_policy(intent: str, *, risk_signals: Sequence[str]) -> tuple[str, st
         return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     if intent == "live_availability":
         return "answer_safe_parts_then_manager_live_check", "draft_for_manager"
-    if intent in {"pricing", "price_fix", "installment", "payment_method", "payment_by_invoice_monthly", "discount", "trial", "camp", "schedule", "format", "address", "teacher", "document", "matkap", "tax"}:
+    if intent in {"pricing", "price_fix", "installment", "payment_method", "payment_by_invoice_monthly", "discount", "trial", "camp", "schedule", "format", "address", "teacher", "platform_access", "document", "matkap", "tax"}:
         return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     return "help_then_one_question", "draft_for_manager"
 

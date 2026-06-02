@@ -8830,6 +8830,11 @@ def _step2b1_context(*, brand: str, intent: str, question: str, facts: dict[str,
         "teacher": "theme:017_teachers",
         "recording": "theme:018_materials_homework",
         "address": "theme:015_address",
+        "document": "theme:012_certificates",
+        "matkap": "theme:007_matkap_payment",
+        "tax": "theme:008_tax_deduction",
+        "olympiad_online": "theme:016_program",
+        "platform_access": "theme:024_account_access",
     }.get(intent, "service:S5_general_consultation")
     return {
         "active_brand": brand,
@@ -9042,3 +9047,225 @@ def test_step2b1_address_fact_still_blocked_for_non_address_question() -> None:
     )
 
     assert any(finding.code == "wrong_intent_fact" for finding in findings)
+
+
+def test_step2b2_docs_license_no_number_and_certificate_timing() -> None:
+    license_facts = {"licenses.client_safe_summary": "Фотон: у учебного центра есть лицензия на образовательную деятельность."}
+    license_question = "дайте номер лицензии"
+
+    license_result = _apply_v2_guard_chain(
+        _step2b1_result(question=license_question, facts=license_facts, topic_id="theme:012_certificates"),
+        license_question,
+        _step2b1_context(brand="foton", intent="document", question=license_question, facts=license_facts),
+    )
+
+    assert license_result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_docs_license_no_number" in license_result.safety_flags
+    assert "есть лицензия" in license_result.draft_text.casefold()
+    assert not any(char.isdigit() for char in license_result.draft_text)
+
+    certificate_facts = {"bot_policy.approved_phrases.theme_12_certificate.foton": "Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше."}
+    certificate_question = "когда будет справка для вычета?"
+    certificate_result = _apply_v2_guard_chain(
+        _step2b1_result(question=certificate_question, facts=certificate_facts, topic_id="theme:012_certificates"),
+        certificate_question,
+        _step2b1_context(brand="foton", intent="document", question=certificate_question, facts=certificate_facts),
+    )
+
+    assert certificate_result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_docs_certificate" in certificate_result.safety_flags
+    assert "10 дней" in certificate_result.draft_text
+
+
+def test_step2b2_docs_pii_certificate_request_does_not_echo_pii() -> None:
+    facts = {"bot_policy.approved_phrases.theme_12_certificate.foton": "Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше."}
+    question = "Нужна справка для Иванова Петра, телефон +7 999 111-22-33"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:012_certificates"),
+        question,
+        _step2b1_context(brand="foton", intent="document", question=question, facts=facts),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "rules_engine_docs_pii_guard" in result.safety_flags
+    assert "Иванов" not in result.draft_text
+    assert "999" not in result.draft_text
+
+
+def test_step2b2_docs_pii_followup_uses_contract_question_without_echoing_name() -> None:
+    facts = {
+        "bot_policy.approved_phrases.theme_12_certificate.foton": "Фотон: справки и документы — Свободная форма. Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше."
+    }
+
+    result = _apply_v2_guard_chain(
+        SubscriptionDraftResult(
+            route="manager_only",
+            draft_text="Да, справку в свободной форме для Иванова Петра можно передать в оформление сейчас.",
+            message_type="question",
+            topic_id="theme:012_certificates",
+            metadata={
+                "dialogue_contract_pipeline": {
+                    "contract": {
+                        "current_question": "Можно ли прямо сейчас оформить справку в свободной форме для Иванова Петра, 9 класс, в Фотоне",
+                        "answerability": "manager_only",
+                        "is_p0": False,
+                        "known_slots": {"имя": {"value": "Иванов Петр", "source": "client_turn_1"}},
+                        "assertable_slots": {"имя": "Иванов Петр"},
+                        "needed_fact_keys": list(facts),
+                    },
+                    "retrieved_facts": facts,
+                    "retrieved_fact_keys": list(facts),
+                }
+            },
+        ),
+        "можете прямо сейчас оформить?",
+        _step2b1_context(brand="foton", intent="price_fix", question="можете прямо сейчас оформить?", facts=facts),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "rules_engine_docs_pii_guard" in result.safety_flags
+    assert "Иванов" not in result.draft_text
+    assert "Петр" not in result.draft_text
+    assert "персональные данные" in result.draft_text.casefold()
+
+
+def test_step2b2_matkap_regional_and_sfr_approval_are_safe() -> None:
+    facts = {
+        "matkap.client_safe_text.when_asked": "Да, оплата материнским капиталом возможна. Работаем с федеральным маткапиталом. Менеджер поможет с оформлением через СФР.",
+        "matkap.timeline.sfr_review_days": "СФР рассматривает заявление на оплату материнским капиталом до 10 рабочих дней.",
+        "matkap.client_safe_text.when_regional": "К сожалению, региональный маткапитал не принимаем. Если у вас федеральный — менеджер подскажет порядок оформления.",
+    }
+    approval_question = "точно одобрят маткапитал?"
+
+    approval = _apply_v2_guard_chain(
+        _step2b1_result(question=approval_question, facts=facts, topic_id="theme:007_matkap_payment"),
+        approval_question,
+        _step2b1_context(brand="unpk", intent="matkap", question=approval_question, facts=facts),
+    )
+    regional_question = "региональный маткапитал примете?"
+    regional = _apply_v2_guard_chain(
+        _step2b1_result(question=regional_question, facts=facts, topic_id="theme:007_matkap_payment"),
+        regional_question,
+        _step2b1_context(brand="unpk", intent="matkap", question=regional_question, facts=facts),
+    )
+
+    assert approval.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_matkap_sfr_no_guarantee" in approval.safety_flags
+    assert "не можем обещать одобрение" in approval.draft_text
+    assert regional.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_matkap_regional_no" in regional.safety_flags
+    assert "региональный маткапитал не принимаем" in regional.draft_text
+
+
+def test_step2b2_tax_fns_and_license_are_safe() -> None:
+    facts = {
+        "licenses.client_safe_summary": "Фотон: у учебного центра есть лицензия на образовательную деятельность.",
+        "tax_deduction.client_safe_text.when_asked": "Налоговый вычет за обучение возможен — у нас есть лицензия. За обучение ребёнка можно вернуть до 14 300 ₽ в год. Решение и сроки выплаты остаются на стороне ФНС.",
+    }
+    guarantee_question = "точно вернут 13% по налоговому вычету?"
+
+    guarantee = _apply_v2_guard_chain(
+        _step2b1_result(question=guarantee_question, facts=facts, topic_id="theme:008_tax_deduction"),
+        guarantee_question,
+        _step2b1_context(brand="foton", intent="tax", question=guarantee_question, facts=facts),
+    )
+    license_question = "номер лицензии для вычета?"
+    license_result = _apply_v2_guard_chain(
+        _step2b1_result(question=license_question, facts=facts, topic_id="theme:008_tax_deduction"),
+        license_question,
+        _step2b1_context(brand="foton", intent="tax", question=license_question, facts=facts),
+    )
+
+    assert guarantee.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_tax_fns_no_guarantee" in guarantee.safety_flags
+    assert "возврат мы не гарантируем" in guarantee.draft_text
+    assert license_result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_tax_license_no_number" in license_result.safety_flags
+    assert "лицензия" in license_result.draft_text.casefold()
+    assert "1151158" not in license_result.draft_text
+
+
+def test_step2b2_olympiad_online_allows_only_verified_grades() -> None:
+    facts = {
+        "prices_regular_2026_27.online_olympiad_phystech_classes.client_safe_text": "Олимпиадная подготовка Физтех онлайн — для 9 и 11 классов; по другим классам возможность группы уточнит менеджер."
+    }
+    allowed_question = "олимпиадная Физтех онлайн для 9 класса есть?"
+
+    allowed = _apply_v2_guard_chain(
+        _step2b1_result(question=allowed_question, facts=facts, topic_id="theme:016_program"),
+        allowed_question,
+        _step2b1_context(brand="unpk", intent="olympiad_online", question=allowed_question, facts=facts),
+    )
+    outside_question = "олимпиадная Физтех онлайн для 7 класса есть?"
+    outside = _apply_v2_guard_chain(
+        _step2b1_result(question=outside_question, facts=facts, topic_id="theme:016_program"),
+        outside_question,
+        _step2b1_context(brand="unpk", intent="olympiad_online", question=outside_question, facts=facts),
+    )
+    regular_question = "обычный онлайн курс для 9 класса, не олимпиадный"
+    regular = _apply_v2_guard_chain(
+        _step2b1_result(question=regular_question, facts=facts, topic_id="theme:016_program"),
+        regular_question,
+        _step2b1_context(brand="unpk", intent="olympiad_online", question=regular_question, facts=facts),
+    )
+
+    assert allowed.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_olympiad_applied" in allowed.safety_flags
+    assert outside.route == "draft_for_manager"
+    assert "rules_engine_olympiad_grade_outside_9_11" in outside.safety_flags
+    assert "для другого класса менеджер" in outside.draft_text.casefold()
+    assert "rules_engine_olympiad_applied" not in regular.safety_flags
+
+
+def test_step2b2_platform_access_answers_from_fact_but_identity_stays_terminal() -> None:
+    facts = {
+        "presentation_format_facts_2026_05_21.client_facts.student_account_access.client_safe_text": "У ученика есть личный кабинет на учебной платформе. Если пароль забыт, его восстанавливают через кнопку «Забыли пароль».",
+    }
+    question = "как зайти в личный кабинет?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:024_account_access"),
+        question,
+        _step2b1_context(brand="foton", intent="platform_access", question=question, facts=facts),
+    )
+    identity_question = "ты бот? как зайти в личный кабинет?"
+    identity = _apply_v2_guard_chain(
+        _step2b1_result(question=identity_question, facts=facts, topic_id="theme:024_account_access"),
+        identity_question,
+        _step2b1_context(brand="foton", intent="platform_access", question=identity_question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_platform_access_applied" in result.safety_flags
+    assert "личный кабинет" in result.draft_text.casefold()
+    assert "rules_engine_platform_access_applied" not in identity.safety_flags
+    assert "цифровой помощник" in identity.draft_text.casefold()
+
+
+def test_step2b2_rules_engine_does_not_override_p0_manager_route() -> None:
+    facts = {"bot_policy.approved_phrases.theme_12_certificate.foton": "Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше."}
+    question = "верните деньги за справку, я недоволен"
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:012_certificates",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=question, answerability="manager", keys=tuple(facts.keys()), is_p0=True),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts.keys()),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        question,
+        _step2b1_context(brand="foton", intent="document", question=question, facts=facts),
+    )
+
+    assert guarded.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_") for flag in guarded.safety_flags)
+    assert "справку и пришлёт" not in guarded.draft_text

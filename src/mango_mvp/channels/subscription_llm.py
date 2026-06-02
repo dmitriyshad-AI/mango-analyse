@@ -1169,6 +1169,16 @@ def _migrated_rule_intent_from_dialogue_contract(result: SubscriptionDraftResult
         return "teacher"
     if "theme:018_materials_homework" in topic_id or re.search(r"record|recording|запис[ьи]|пересмотр", haystack, re.I):
         return "recordings"
+    if "theme:024_account_access" in topic_id or re.search(r"личный кабинет|кабинет|платформ|логин|парол|электрон|документооборот|скан-коп", haystack, re.I):
+        return "platform_access"
+    if "theme:007_matkap_payment" in topic_id or re.search(r"маткап|материн|сфр", haystack, re.I):
+        return "matkap"
+    if "theme:008_tax_deduction" in topic_id or re.search(r"налог|вычет|фнс|ндфл", haystack, re.I):
+        return "tax"
+    if "theme:016_program" in topic_id and re.search(r"олимпиад|физтех", haystack, re.I):
+        return "olympiad"
+    if "theme:012_certificates" in topic_id or "theme:011_contract" in topic_id or re.search(r"договор|справк|сертификат|документ|квитанц|чек|лиценз|юрлиц", haystack, re.I):
+        return "docs"
     return ""
 
 
@@ -1224,19 +1234,31 @@ def _apply_migrated_rules_engine(
     client_message: str,
     context: Optional[Mapping[str, Any]],
 ) -> SubscriptionDraftResult | None:
+    contract = _dialogue_contract_mapping(result)
+    if (
+        bool(contract.get("is_p0"))
+        or detect_high_risk_input_markers(client_message, context=context)
+        or is_high_risk_result(result)
+    ):
+        return None
     plan = _conversation_intent_plan(context)
     intent = str(plan.get("primary_intent") or "").strip()
     registry = load_rules_registry()
     rule = select_migrated_domain_rule(intent, registry)
+    intent_from_contract = False
     if rule is None:
         intent = _migrated_rule_intent_from_dialogue_contract(result)
+        intent_from_contract = bool(intent)
         rule = select_migrated_domain_rule(intent, registry)
     if rule is None:
         return None
+    if result.route == "manager_only" and not _manager_route_migrated_rules_override_allowed(result, intent=intent):
+        return None
     facts = _rules_engine_facts(result, context)
-    contract = _dialogue_contract_mapping(result)
+    if _migrated_rules_keep_existing_verified_answer(result, client_message=client_message, context=context, facts=facts):
+        return None
     direct_question = str(
-        plan.get("direct_question")
+        (contract.get("current_question") if intent_from_contract else plan.get("direct_question"))
         or contract.get("current_question")
         or client_message
         or ""
@@ -1250,6 +1272,54 @@ def _apply_migrated_rules_engine(
     if outcome is None:
         return None
     return _apply_rules_engine_outcome(result, outcome)
+
+
+def _manager_route_migrated_rules_override_allowed(result: SubscriptionDraftResult, *, intent: str) -> bool:
+    if intent != "docs":
+        return False
+    contract = _dialogue_contract_mapping(result)
+    haystack = " ".join(
+        str(item or "")
+        for item in (
+            contract.get("current_question"),
+            contract.get("client_state"),
+            " ".join(str(item or "") for item in (contract.get("composite_subquestions") or ())),
+            json.dumps(contract.get("known_slots") or {}, ensure_ascii=False, sort_keys=True),
+            json.dumps(contract.get("assertable_slots") or {}, ensure_ascii=False, sort_keys=True),
+        )
+    )
+    return bool(
+        re.search(r"\b[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b", haystack)
+        or re.search(r"\b(?:фио|паспорт|снилс|инн|email|e-mail)\b", haystack, re.I)
+    )
+
+
+def _migrated_rules_keep_existing_verified_answer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+) -> bool:
+    if result.route not in {"bot_answer_self", "bot_answer_self_for_pilot"}:
+        return False
+    if not str(result.draft_text or "").strip() or not facts:
+        return False
+    if not _claim_supported_by_facts(result.draft_text, tuple(facts.values())):
+        return False
+    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(facts.keys()))
+    if getattr(contract, "is_p0", False):
+        return False
+    findings = verify_dialogue_contract_output(
+        result.draft_text,
+        facts=facts,
+        active_brand=_active_brand(context),
+        contract=contract,
+        client_message=client_message,
+        context=context,
+        previous_bot_texts=_humanity_previous_bot_texts(context),
+    )
+    return not findings
 
 
 def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
@@ -2884,6 +2954,7 @@ _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS = {
     "complaint_apology_guarded",
     "payment_dispute_manager_only",
     "high_risk_manager_only",
+    "rules_engine_olympiad_grade_outside_9_11",
 }
 
 
@@ -3068,6 +3139,27 @@ def _manager_only_recovery_yield_allowed(result: SubscriptionDraftResult, *, cli
     applied = _safe_template_applied_name(result)
     if applied == "terminal":
         text = str(client_message or "").casefold().replace("ё", "е")
+        if has_any_marker(
+            text,
+            (
+                "ты бот",
+                "вы бот",
+                "нейросеть",
+                "живой человек",
+                "живой оператор",
+                "с кем я общаюсь",
+                "ignore all previous",
+                "system prompt",
+                "системный промпт",
+                "покажи промпт",
+                "chatgpt",
+                "gpt",
+                "openai",
+                "claude",
+                "codex",
+            ),
+        ):
+            return False
         return has_any_marker(text, ("личный кабинет", "кабинет", "платформ", "зайти", "войти", "доступ"))
     return applied in _INFORMATIONAL_SAFE_TEMPLATE_NAMES or _has_informational_safe_template(result)
 
@@ -3122,7 +3214,11 @@ def _validated_guardchain_recovery_candidate(
         return ""
     if not candidate:
         return ""
-    if result.route == "manager_only" and not _manager_only_recovery_yield_allowed(result, client_message=client_message):
+    if (
+        _safe_template_applied_name(result)
+        and result.route in {"manager_only", "draft_for_manager"}
+        and not _manager_only_recovery_yield_allowed(result, client_message=client_message)
+    ):
         return ""
     if is_high_risk_result(result) or set(detect_high_risk_input_markers(client_message, context=context)):
         return ""

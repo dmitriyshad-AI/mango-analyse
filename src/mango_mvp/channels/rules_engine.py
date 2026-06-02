@@ -8,7 +8,18 @@ from typing import Any, Mapping, Sequence
 
 
 DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
-MIGRATED = frozenset({"teacher", "recordings", "contact_address"})
+MIGRATED = frozenset(
+    {
+        "teacher",
+        "recordings",
+        "contact_address",
+        "docs",
+        "matkap",
+        "tax",
+        "olympiad",
+        "platform_access",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -148,6 +159,16 @@ def apply_rule(
         return _apply_recordings_rule(rule, plan=plan, facts=facts, context=context)
     if rule.rule_id == "contact_address":
         return _apply_contact_address_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "docs":
+        return _apply_docs_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "matkap":
+        return _apply_matkap_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "tax":
+        return _apply_tax_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "olympiad":
+        return _apply_olympiad_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "platform_access":
+        return _apply_platform_access_rule(rule, plan=plan, facts=facts, context=context)
     return None
 
 
@@ -162,6 +183,20 @@ def _rule_id_for_intent(intent: str) -> str:
         "address": "contact_address",
         "contact_address": "contact_address",
         "contact_address_inquiry": "contact_address",
+        "document": "docs",
+        "documents": "docs",
+        "documents_inquiry": "docs",
+        "docs": "docs",
+        "matkap": "matkap",
+        "matkap_inquiry": "matkap",
+        "tax": "tax",
+        "tax_inquiry": "tax",
+        "olympiad": "olympiad",
+        "olympiad_inquiry": "olympiad",
+        "olympiad_online": "olympiad",
+        "platform": "platform_access",
+        "platform_access": "platform_access",
+        "platform_inquiry": "platform_access",
     }
     return aliases.get(normalized, normalized)
 
@@ -310,7 +345,305 @@ def _apply_contact_address_rule(
     )
 
 
+def _apply_docs_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    raw_question = _raw_question_text(plan, context)
+    if not _looks_like_docs_question(question, plan):
+        return None
+    if _has_pii(raw_question) and _has_any(question, ("справк", "вычет", "документ")):
+        return _rule_outcome(
+            rule,
+            subvariant="pii_certificate",
+            route="draft_for_manager",
+            text="Менеджер проверит вопрос по документам безопасно. Повторно присылать персональные данные в чат не нужно.",
+            facts={"rules_engine.docs.pii_safety": "Документы: персональные данные из клиентского сообщения нельзя повторять в ответе."},
+            flags=("rules_engine_docs_pii_guard",),
+            checklist="Rule engine: docs — ПДн в запросе документов не эхоить.",
+        )
+    if _has_any(question, ("юрлиц", "юридическ", "реквизит")):
+        return _rule_outcome(
+            rule,
+            subvariant="legal_entity",
+            route="draft_for_manager",
+            text="Юридические реквизиты и сторону договора менеджер проверит по вашей заявке и пришлёт безопасно.",
+            facts={"rules_engine.docs.legal_entity": "Документы: юридические реквизиты и сторону договора клиенту подтверждает менеджер."},
+            flags=("rules_engine_docs_legal_entity",),
+            checklist="Rule engine: docs — юрлицо/реквизиты не раскрывать шаблонно.",
+        )
+    if _has_any(question, ("лиценз", "номер лиценз", "лицензии")):
+        key, fact = _first_matching_fact(facts, ("licenses.client_safe_summary", "лицензия на образовательную деятельность", "есть лицензия"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="license",
+            route="bot_answer_self_for_pilot",
+            text="У учебного центра есть лицензия на образовательную деятельность. Номер лицензии и служебные реквизиты в чат не отправляю; менеджер подготовит документы безопасно.",
+            facts={key or "rules_engine.docs.license": fact},
+            flags=("rules_engine_docs_license_no_number",),
+            checklist="Rule engine: docs — лицензия без номера/дат/юрлица.",
+        )
+    if _has_any(question, ("договор", "оформлен")):
+        key, fact = _first_matching_fact(facts, ("theme_11_contract", "договор пришл", "договор"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="contract",
+            route="bot_answer_self_for_pilot",
+            text=_short_sentence(fact),
+            facts={key or "rules_engine.docs.contract": fact},
+            flags=("rules_engine_docs_contract",),
+            checklist="Rule engine: docs — договор по сроку из факта.",
+        )
+    if _has_any(question, ("справк", "сертификат", "вычет")):
+        key, fact = _first_matching_fact(facts, ("theme_12_certificate", "справк", "10 дней", "постараемся раньше"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="certificate",
+            route="bot_answer_self_for_pilot",
+            text=_short_sentence(fact),
+            facts={key or "rules_engine.docs.certificate": fact},
+            flags=("rules_engine_docs_certificate",),
+            checklist="Rule engine: docs — справка по сроку из факта, тип не выдумывать.",
+        )
+    return None
+
+
+def _apply_matkap_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_matkap_question(question, plan):
+        return None
+    if "региональ" in question:
+        key, fact = _first_matching_fact(facts, ("when_regional", "региональный маткапитал не принимаем", "региональный не принимаем"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="regional",
+            route="bot_answer_self_for_pilot",
+            text=_short_sentence(fact),
+            facts={key or "rules_engine.matkap.regional": fact},
+            flags=("rules_engine_matkap_regional_no",),
+            checklist="Rule engine: matkap — региональный не принимать.",
+        )
+    if _has_any(question, ("точно", "гарант", "одобр", "примут", "сфр")):
+        timeline_key, timeline_fact = _first_matching_fact(facts, ("sfr_review", "сфр рассматривает", "до 10 рабочих дней"))
+        general_key, general_fact = _first_matching_fact(facts, ("when_asked", "федеральным маткапиталом", "через сфр"))
+        source = {k: v for k, v in ((timeline_key, timeline_fact), (general_key, general_fact)) if k and v}
+        if not source:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="sfr_approval",
+            route="bot_answer_self_for_pilot",
+            text="Рассмотрение проводит СФР, поэтому мы не можем обещать одобрение. Менеджер поможет проверить порядок оформления.",
+            facts=source,
+            flags=("rules_engine_matkap_sfr_no_guarantee",),
+            checklist="Rule engine: matkap — не обещать одобрение СФР.",
+        )
+    key, fact = _first_matching_fact(facts, ("when_asked", "федеральным маткапиталом", "федеральный материнский капитал", "маткапиталом возможна"))
+    if not fact:
+        return None
+    return _rule_outcome(
+        rule,
+        subvariant="federal",
+        route="bot_answer_self_for_pilot",
+        text="Да, оплатить федеральным материнским капиталом можно. Менеджер пришлёт перечень документов и поможет с оформлением через СФР.",
+        facts={key or "rules_engine.matkap.federal": fact},
+        flags=("rules_engine_matkap_federal",),
+        checklist="Rule engine: matkap — федеральный да, решение СФР не обещать.",
+    )
+
+
+def _apply_tax_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_tax_question(question, plan):
+        return None
+    if _has_any(question, ("лиценз", "номер лиценз")):
+        key, fact = _first_matching_fact(facts, ("licenses.client_safe_summary", "есть лицензия", "лицензия на образовательную деятельность"))
+        if not fact:
+            key, fact = _first_matching_fact(facts, ("tax_deduction.client_safe_text.when_asked", "у нас есть лицензия"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="license",
+            route="bot_answer_self_for_pilot",
+            text="Да, есть лицензия на образовательную деятельность. Номер лицензии и служебные реквизиты в чат не отправляю; менеджер подготовит документы для вычета безопасно.",
+            facts={key or "rules_engine.tax.license": fact},
+            flags=("rules_engine_tax_license_no_number",),
+            checklist="Rule engine: tax — лицензия без номера.",
+        )
+    asks_certainty = _has_any(question, ("точно", "гарант", "одобр", "фнс", "налогов"))
+    if (
+        asks_certainty
+        and _has_any(question, ("верн", "получ", "одобр", "примет", "13%"))
+    ):
+        key, fact = _first_matching_fact(facts, ("tax_deduction.client_safe_text.when_asked", "решение", "фнс", "налог"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="fns_decision",
+            route="bot_answer_self_for_pilot",
+            text="ФНС рассматривает заявление и принимает решение. Справка помогает подтвердить обучение, но возврат мы не гарантируем.",
+            facts={key or "rules_engine.tax.fns_decision": fact},
+            flags=("rules_engine_tax_fns_no_guarantee",),
+            checklist="Rule engine: tax — не гарантировать возврат ФНС.",
+        )
+    key, fact = _first_matching_fact(facts, ("tax_deduction.client_safe_text.when_asked", "налоговый вычет", "14 300", "справк"))
+    if not fact:
+        return None
+    subvariant = "how_to_form" if _has_any(question, ("как", "оформ", "подать", "документ")) else "amount"
+    return _rule_outcome(
+        rule,
+        subvariant=subvariant,
+        route="bot_answer_self_for_pilot",
+        text=_short_sentence(fact, max_chars=260),
+        facts={key or "rules_engine.tax.procedure": fact},
+        flags=("rules_engine_tax_applied", f"rules_engine_tax_{subvariant}"),
+        checklist="Rule engine: tax — справка/лимиты из факта, решение ФНС не обещать.",
+    )
+
+
+def _apply_olympiad_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_olympiad_question(question, plan):
+        return None
+    if _active_brand(plan, context) != "unpk":
+        return None
+    if _has_any(question, ("не олимпиад", "обычн", "регулярн")):
+        return None
+    key, fact = _first_matching_fact(facts, ("online_olympiad_phystech_classes", "олимпиадная подготовка физтех онлайн", "9 и 11"))
+    if not fact:
+        return None
+    grade = _grade_from_text(question)
+    if grade and grade not in {9, 11}:
+        fact_text = " ".join(str(fact or "").split())
+        text = (
+            fact_text
+            if "для другого класса менеджер" in fact_text.casefold().replace("ё", "е")
+            else "По проверенным данным олимпиадная подготовка Физтех онлайн сейчас указана для 9 и 11 классов. Для другого класса менеджер отдельно проверит, есть ли подходящая олимпиадная онлайн-группа."
+        )
+        return _rule_outcome(
+            rule,
+            subvariant="grade_outside_9_11",
+            route="draft_for_manager",
+            text=text,
+            facts={key or "rules_engine.olympiad.phystech_grades": fact},
+            flags=("rules_engine_olympiad_grade_outside_9_11", "olympiad_online_safe_template_applied"),
+            checklist="Rule engine: olympiad — другой класс не подтверждать без факта.",
+        )
+    fact_text = " ".join(str(fact or "").split())
+    return _rule_outcome(
+        rule,
+        subvariant="grade_eligibility",
+        route="bot_answer_self_for_pilot",
+        text=fact_text,
+        facts={key or "rules_engine.olympiad.phystech_grades": fact},
+        flags=("rules_engine_olympiad_applied", "olympiad_online_safe_template_applied"),
+        checklist="Rule engine: olympiad — Физтех онлайн только по олимпиадному scope.",
+    )
+
+
+def _apply_platform_access_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_platform_question(question, plan):
+        return None
+    if _has_any(question, ("ты бот", "вы бот", "нейросеть", "ignore all previous", "покажи промпт", "системный промпт", "chatgpt", "claude", "codex")):
+        return None
+    if _has_any(question, ("электрон", "скан", "документооборот", "офис")):
+        key, fact = _first_matching_fact(facts, ("electronic_document_flow", "электронный документооборот", "скан-коп"))
+        if not fact:
+            return None
+        return _rule_outcome(
+            rule,
+            subvariant="electronic_documents",
+            route="bot_answer_self_for_pilot",
+            text=_short_sentence(fact),
+            facts={key or "rules_engine.platform.electronic_documents": fact},
+            flags=("rules_engine_platform_electronic_documents",),
+            checklist="Rule engine: platform — электронные документы только из факта.",
+        )
+    key, fact = _first_matching_fact(
+        facts,
+        ("student_account_access", "личный кабинет", "online_platform.name", "онлайн-платформа", "мтс линк"),
+    )
+    if not fact:
+        return None
+    return _rule_outcome(
+        rule,
+        subvariant="how_to_login",
+        route="bot_answer_self_for_pilot",
+        text=_short_sentence(fact),
+        facts={key or "rules_engine.platform.login": fact},
+        flags=("rules_engine_platform_access_applied",),
+        checklist="Rule engine: platform — доступ к кабинету/платформе из факта; identity/injection не мигрировать.",
+    )
+
+
+def _rule_outcome(
+    rule: Rule,
+    *,
+    subvariant: str,
+    route: str,
+    text: str,
+    facts: Mapping[str, str],
+    flags: Sequence[str] = (),
+    checklist: str = "",
+) -> RuleOutcome:
+    normalized_flags = tuple(dict.fromkeys([f"rules_engine_{rule.rule_id}_applied", *flags]))
+    checklist_items = (checklist,) if checklist else ()
+    return RuleOutcome(
+        rule_id=rule.rule_id,
+        subvariant=subvariant,
+        route=route,
+        text=text,
+        facts=facts,
+        flags=normalized_flags,
+        checklist=checklist_items,
+        metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": subvariant},
+    )
+
+
 def _question_text(plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> str:
+    return _raw_question_text(plan, context).casefold().replace("ё", "е")
+
+
+def _raw_question_text(plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> str:
     parts: list[str] = []
     for key in ("direct_question", "fact_query_text", "primary_intent", "fact_scope"):
         value = str(plan.get(key) or "").strip()
@@ -321,7 +654,7 @@ def _question_text(plan: Mapping[str, Any], context: Mapping[str, Any] | None) -
             value = str(context.get(key) or "").strip()
             if value:
                 parts.append(value)
-    return " ".join(parts).casefold().replace("ё", "е")
+    return " ".join(parts)
 
 
 def _active_brand(plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> str:
@@ -357,6 +690,32 @@ def _looks_like_address_question(text: str, plan: Mapping[str, Any]) -> bool:
     )
 
 
+def _looks_like_docs_question(text: str, plan: Mapping[str, Any]) -> bool:
+    return str(plan.get("primary_intent") or "") in {"document", "documents"} or _has_any(
+        text,
+        ("договор", "справк", "сертификат", "документ", "квитанц", "чек", "лиценз", "юрлиц", "юридическ"),
+    )
+
+
+def _looks_like_matkap_question(text: str, plan: Mapping[str, Any]) -> bool:
+    return str(plan.get("primary_intent") or "") == "matkap" or _has_any(text, ("маткап", "материн", "сфр"))
+
+
+def _looks_like_tax_question(text: str, plan: Mapping[str, Any]) -> bool:
+    return str(plan.get("primary_intent") or "") == "tax" or _has_any(text, ("налог", "вычет", "фнс", "ндфл"))
+
+
+def _looks_like_olympiad_question(text: str, plan: Mapping[str, Any]) -> bool:
+    return str(plan.get("primary_intent") or "") in {"olympiad_online", "olympiad"} or _has_any(text, ("олимпиад", "физтех"))
+
+
+def _looks_like_platform_question(text: str, plan: Mapping[str, Any]) -> bool:
+    return str(plan.get("primary_intent") or "") == "platform_access" or _has_any(
+        text,
+        ("личный кабинет", "кабинет", "платформ", "логин", "парол", "электрон", "документооборот", "скан-коп"),
+    )
+
+
 def _asks_specific_teacher_name(text: str) -> bool:
     return bool(re.search(r"как\s+зовут|фио|имя|кто\s+в\s+лобн|кто\s+ведет|кто\s+ведёт|конкретн", text, re.I))
 
@@ -377,6 +736,27 @@ def _first_matching_fact(facts: Mapping[str, str], markers: Sequence[str]) -> tu
             if text:
                 return str(key), text
     return "", ""
+
+
+def _grade_from_text(text: str) -> int | None:
+    match = re.search(r"\b([1-9]|10|11)\s*(?:класс|классе|кл\.?)", str(text or ""), re.I)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _has_pii(text: str) -> bool:
+    value = str(text or "")
+    if re.search(r"\+?\d[\d\s().-]{8,}\d", value):
+        return True
+    if re.search(r"\b[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\b", value):
+        return True
+    if re.search(r"\b\d{2}\.\d{2}\.\d{4}\b", value):
+        return True
+    return False
 
 
 def _brand_safe_teacher_fact_text(text: str, *, active_brand: str) -> str:

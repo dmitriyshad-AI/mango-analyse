@@ -82,6 +82,8 @@ _TOPIC_REQUIRED_FACT_KEYS = {
     "matkap": ("matkap_documents.current",),
     "tax": ("tax_deduction_procedure.current",),
     "document": ("documents.current",),
+    "platform": ("platform.current",),
+    "account_access": ("platform.current",),
     "trial": ("trial_class.current",),
     "program": ("programs.current",),
     "transport": ("transport.current",),
@@ -615,6 +617,10 @@ def required_fact_keys_for_message(
             keys.insert(0, "matkap_timeline.current")
     if not is_refund_topic and re.search(r"договор|справ|налог|возврат|чек|квитанц", text):
         keys.append("documents.current")
+    if re.search(r"личный кабинет|кабинет|платформ|логин|парол", text):
+        keys.append("platform.current")
+    if re.search(r"электрон|документооборот|скан-коп", text):
+        keys.append("platform_documents.current")
     if re.search(r"формат|онлайн|очно|офлайн|дистанц", text):
         keys.append("formats.current")
     if re.search(r"адрес|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить|площадк|метро", text):

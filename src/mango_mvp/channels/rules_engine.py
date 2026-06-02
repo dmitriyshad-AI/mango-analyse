@@ -20,6 +20,8 @@ MIGRATED = frozenset(
         "platform_access",
         "installment",
         "discount",
+        "price",
+        "format_choice",
     }
 )
 
@@ -175,6 +177,10 @@ def apply_rule(
         return _apply_installment_rule(rule, plan=plan, facts=facts, context=context)
     if rule.rule_id == "discount":
         return _apply_discount_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "price":
+        return _apply_price_rule(rule, plan=plan, facts=facts, context=context)
+    if rule.rule_id == "format_choice":
+        return _apply_format_choice_rule(rule, plan=plan, facts=facts, context=context)
     return None
 
 
@@ -213,6 +219,16 @@ def _rule_id_for_intent(intent: str) -> str:
         "second_subject_discount": "discount",
         "multichild_discount": "discount",
         "discount_stacking": "discount",
+        "price": "price",
+        "pricing": "price",
+        "price_fix": "price",
+        "price_inquiry": "price",
+        "course_price": "price",
+        "format_price": "price",
+        "grade_price": "price",
+        "format": "format_choice",
+        "format_choice": "format_choice",
+        "format_choice_inquiry": "format_choice",
     }
     return aliases.get(normalized, normalized)
 
@@ -963,6 +979,143 @@ def _apply_discount_rule(
     return None
 
 
+def _apply_price_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_price_question(question, plan):
+        return None
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
+        return None
+    if _mentions_camp_or_lvsh(question):
+        return None
+    requested_format = _requested_training_format(question, plan, context)
+    if requested_format not in {"online", "offline"}:
+        return None
+    requested_grade = _requested_grade(plan, context)
+    if requested_grade is None:
+        return None
+    scoped_facts = _price_facts_for_request(facts, brand=brand, requested_format=requested_format, requested_grade=requested_grade)
+    if not scoped_facts:
+        return None
+    price_contract = _build_price_contract(
+        question,
+        active_brand=brand,
+        requested_format=requested_format,
+        requested_grade=requested_grade,
+        fact_keys=tuple(scoped_facts),
+    )
+    selected_amount = _select_price_amount(price_contract, scoped_facts)
+    if selected_amount is None:
+        return None
+    price_text = _price_text_from_scoped_facts(
+        scoped_facts,
+        selected_amount=selected_amount,
+        requested_format=requested_format,
+        requested_grade=requested_grade,
+        question=question,
+    )
+    if not price_text:
+        return None
+    format_label = "онлайн" if requested_format == "online" else "очно"
+    return _rule_outcome(
+        rule,
+        subvariant=f"{requested_format}_grade_scoped",
+        route="bot_answer_self_for_pilot",
+        text=price_text,
+        facts=scoped_facts,
+        flags=("rules_engine_price_format_matched", f"rules_engine_price_{requested_format}"),
+        checklist=f"Rule engine: price — цена только из факта, active brand={brand}, format={format_label}, grade={requested_grade}.",
+    )
+
+
+def _apply_format_choice_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    if not _looks_like_format_choice_question(question, plan):
+        return None
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
+        return None
+    if _mentions_camp_or_lvsh(question):
+        return None
+    online_key, online_fact = _first_matching_fact(
+        facts,
+        ("online_courses_format", "formats.online", "онлайн-курс", "онлайн формат", "онлайн-занят"),
+    )
+    offline_key, offline_fact = _first_matching_fact(
+        facts,
+        ("offline_courses_format", "formats.offline", "очные курсы", "очный формат", "очно"),
+    )
+    weekend_key, weekend_fact = _first_matching_fact(facts, ("weekend", "выходн", "суббот", "воскрес"))
+    has_online = bool(online_fact)
+    has_offline = bool(offline_fact)
+    has_weekend = bool(weekend_fact)
+    if not (has_online or has_offline or has_weekend):
+        return None
+    asks_disjunctive = _format_choice_is_disjunctive_question(question)
+    asks_days = _has_any(question, ("по каким дням", "выходн", "суббот", "воскрес", "по дням"))
+    parts: list[str] = []
+    source: dict[str, str] = {}
+    if asks_disjunctive:
+        if has_online:
+            parts.append("есть онлайн-формат")
+            source[online_key or "rules_engine.format.online"] = online_fact
+        if has_offline:
+            parts.append("есть очный формат")
+            source[offline_key or "rules_engine.format.offline"] = offline_fact
+        if not parts:
+            return None
+        text = f"Формат за вас не выбираю: по подтверждённым фактам {', '.join(parts)}."
+    elif _requested_training_format(question, plan, context) == "online":
+        if not online_fact:
+            return None
+        source[online_key or "rules_engine.format.online"] = online_fact
+        text = f"Онлайн-формат подтверждён: {_short_sentence(online_fact)}"
+    elif _requested_training_format(question, plan, context) == "offline":
+        if not offline_fact:
+            return None
+        source[offline_key or "rules_engine.format.offline"] = offline_fact
+        text = f"Очный формат подтверждён: {_short_sentence(offline_fact)}"
+    else:
+        if has_online and has_offline:
+            source[online_key or "rules_engine.format.online"] = online_fact
+            source[offline_key or "rules_engine.format.offline"] = offline_fact
+            text = "По подтверждённым фактам есть онлайн-формат и очный формат; формат за вас не выбираю."
+        elif has_online:
+            source[online_key or "rules_engine.format.online"] = online_fact
+            text = f"Из подтверждённого есть онлайн-формат: {_short_sentence(online_fact)}"
+        elif has_offline:
+            source[offline_key or "rules_engine.format.offline"] = offline_fact
+            text = f"Из подтверждённого есть очный формат: {_short_sentence(offline_fact)}"
+        else:
+            return None
+    if asks_days and has_weekend:
+        source[weekend_key or "rules_engine.format.weekend"] = weekend_fact
+        text += " По дням есть разные слоты, в том числе по выходным; точный день менеджер сверит по группе."
+    elif asks_days:
+        text += " Точные дни конкретной группы менеджер сверит отдельно."
+    return _rule_outcome(
+        rule,
+        subvariant="present_available_formats" if asks_disjunctive else "single_format_or_weekend",
+        route="bot_answer_self_for_pilot",
+        text=text,
+        facts=source,
+        flags=("rules_engine_format_choice_present_both" if asks_disjunctive else "rules_engine_format_choice_applied",),
+        checklist="Rule engine: format_choice — не выбирать формат за клиента и не выдумывать отсутствующий формат.",
+    )
+
+
 def _rule_outcome(
     rule: Rule,
     *,
@@ -1185,6 +1338,231 @@ def _asks_mfti_employee_discount(text: str) -> bool:
 
 def _asks_period_discount(text: str) -> bool:
     return _has_any(text, ("семестр", "за год", "годом", "помесяч", "на год"))
+
+
+def _looks_like_price_question(text: str, plan: Mapping[str, Any]) -> bool:
+    intent = str(plan.get("primary_intent") or "")
+    return intent in {"pricing", "price", "price_fix"} or _has_any(text, ("цен", "стоим", "сколько стоит", "прайс", "руб", "₽"))
+
+
+def _looks_like_format_choice_question(text: str, plan: Mapping[str, Any]) -> bool:
+    intent = str(plan.get("primary_intent") or "")
+    return intent in {"format", "format_choice"} or bool(
+        re.search(r"онлайн\s+или\s+очно|очно\s+или\s+онлайн|онлайн.+очно|очно.+онлайн|формат|как\s+проход", text, re.I)
+    )
+
+
+def _format_choice_is_disjunctive_question(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        ("онлайн" in value and _has_any(value, ("очно", "офлайн")) and "или" in value)
+        or ("очно" in value and "онлайн" in value and "?" in value)
+    )
+
+
+def _mentions_camp_or_lvsh(text: str) -> bool:
+    return _has_any(text, ("лагер", "лвш", "менделеев", "выездн", "смен", "camp"))
+
+
+def _requested_training_format(text: str, plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> str:
+    value = " ".join(
+        str(part or "")
+        for part in (
+            text,
+            plan.get("training_format"),
+            plan.get("format"),
+            plan.get("fact_scope"),
+            _known_slot_value(context, "format"),
+        )
+    ).casefold().replace("ё", "е")
+    has_online = _has_any(value, ("онлайн", "online", "дистанц"))
+    has_offline = _has_any(value, ("очно", "очный", "офлайн", "offline", "сретен"))
+    if has_online and not has_offline:
+        return "online"
+    if has_offline and not has_online:
+        return "offline"
+    return ""
+
+
+def _requested_grade(plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> int | None:
+    for text in (
+        _raw_question_text(plan, context),
+        str(plan.get("grade") or ""),
+        _known_slot_value(context, "grade"),
+        _known_slot_value(context, "class"),
+    ):
+        grade = _grade_from_text(str(text or ""))
+        if grade is not None:
+            return grade
+        if str(text or "").strip().isdigit():
+            numeric = int(str(text).strip())
+            if 1 <= numeric <= 11:
+                return numeric
+    return None
+
+
+def _known_slot_value(context: Mapping[str, Any] | None, key: str) -> str:
+    if not isinstance(context, Mapping):
+        return ""
+    candidates: list[Any] = []
+    known = context.get("known_slots")
+    if isinstance(known, Mapping):
+        candidates.append(known.get(key))
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        memory_known = memory.get("known_slots")
+        if isinstance(memory_known, Mapping):
+            candidates.append(memory_known.get(key))
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            value = str(candidate.get("value") or "").strip()
+        else:
+            value = str(candidate or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _price_facts_for_request(
+    facts: Mapping[str, str],
+    *,
+    brand: str,
+    requested_format: str,
+    requested_grade: int,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not _looks_like_regular_price_fact(combined):
+            continue
+        if brand == "foton" and _has_any(combined, ("унпк", "kmipt")):
+            continue
+        if brand == "unpk" and _has_any(combined, ("фотон", "cdpofoton", "цдпо")):
+            continue
+        if requested_format == "online" and not _fact_mentions_online(combined):
+            continue
+        if requested_format == "offline" and not _fact_mentions_offline(combined):
+            continue
+        if requested_format == "online" and _fact_mentions_offline(combined) and not _fact_mentions_online(combined):
+            continue
+        if requested_format == "offline" and _fact_mentions_online(combined) and not _fact_mentions_offline(combined):
+            continue
+        if not _fact_matches_grade(combined, requested_grade):
+            continue
+        text = " ".join(str(value or "").split())
+        if text:
+            result[str(key)] = text
+    return result
+
+
+def _looks_like_regular_price_fact(combined: str) -> bool:
+    if "₽" not in combined and "руб" not in combined:
+        return False
+    if _has_any(combined, ("discount", "скидк", "вычет", "кэшбек", "cashback", "лагер", "лвш", "camp", "individual", "индивидуальн")):
+        return False
+    return bool(_has_any(combined, ("цен", "стоим", "price", "семестр", "год", "онлайн", "очно")))
+
+
+def _fact_mentions_online(text: str) -> bool:
+    return _has_any(text, ("онлайн", "online", "дистанц", "мтс линк"))
+
+
+def _fact_mentions_offline(text: str) -> bool:
+    return _has_any(text, ("очно", "очный", "очная", "офлайн", "offline"))
+
+
+def _fact_matches_grade(text: str, requested_grade: int) -> bool:
+    ranges = re.findall(r"\b([1-9]|10|11)\s*[-–]\s*([1-9]|10|11)\s*(?:класс|классы|кл)", text, re.I)
+    if ranges:
+        return any(int(start) <= requested_grade <= int(end) for start, end in ranges)
+    exact = re.findall(r"\b([1-9]|10|11)\s*(?:класс|классе|кл\.?)", text, re.I)
+    if exact:
+        return requested_grade in {int(item) for item in exact}
+    return False
+
+
+def _build_price_contract(
+    question: str,
+    *,
+    active_brand: str,
+    requested_format: str,
+    requested_grade: int,
+    fact_keys: Sequence[str],
+) -> Any:
+    from mango_mvp.channels.dialogue_contract_pipeline import parse_contract
+
+    format_value = "онлайн" if requested_format == "online" else "очно"
+    raw = {
+        "active_brand": active_brand,
+        "current_question": question,
+        "answerability": "answer_self",
+        "known_slots": {
+            "grade": {"value": str(requested_grade), "source": "rules_engine"},
+            "format": {"value": format_value, "source": "rules_engine"},
+        },
+        "needed_fact_keys": list(fact_keys),
+        "subquestions": [
+            {
+                "text": question,
+                "answerable": "self",
+                "needed_fact_keys": list(fact_keys),
+            }
+        ],
+    }
+    return parse_contract(raw, active_brand=active_brand, fact_key_catalog=tuple(fact_keys))
+
+
+def _select_price_amount(contract: Any, facts: Mapping[str, str]) -> int | None:
+    from mango_mvp.channels.dialogue_contract_pipeline import _price_for_composition
+
+    return _price_for_composition(contract, facts)
+
+
+def _price_text_from_scoped_facts(
+    facts: Mapping[str, str],
+    *,
+    selected_amount: int,
+    requested_format: str,
+    requested_grade: int,
+    question: str,
+) -> str:
+    from mango_mvp.channels.dialogue_contract_pipeline import _first_money_amount, _format_rub
+
+    period = _requested_price_period(question)
+    items: list[tuple[int, str, int]] = []
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        amount = _first_money_amount(value)
+        if amount is None:
+            continue
+        label = "год" if re.search(r"(?:^|[._\s])year(?:$|[._\s])|\bгод\s*[—-]", combined, re.I) else ""
+        if not label and re.search(r"семестр|semester", combined, re.I):
+            label = "семестр"
+        if not label:
+            label = "цена"
+        if period and label != period:
+            continue
+        score = 0 if label == "семестр" else 1 if label == "год" else 2
+        items.append((score, label, amount))
+    if not items and selected_amount is not None:
+        items.append((0, "цена", selected_amount))
+    unique: dict[str, int] = {}
+    for _, label, amount in sorted(items, key=lambda item: item[0]):
+        unique.setdefault(label, amount)
+    if not unique:
+        return ""
+    format_label = "онлайн" if requested_format == "online" else "очно"
+    price_part = ", ".join(f"{label} — {_format_rub(amount)}" for label, amount in unique.items())
+    return f"По подтверждённым ценам для {requested_grade} класса ({format_label}): {price_part}."
+
+
+def _requested_price_period(text: str) -> str:
+    value = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"\bгод\b|за\s+год|годов", value, re.I):
+        return "год"
+    if re.search(r"семестр|полугод", value, re.I):
+        return "семестр"
+    return ""
 
 
 def _asks_specific_teacher_name(text: str) -> bool:

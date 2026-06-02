@@ -1179,6 +1179,10 @@ def _migrated_rule_intent_from_dialogue_contract(result: SubscriptionDraftResult
         return "olympiad"
     if "theme:012_certificates" in topic_id or "theme:011_contract" in topic_id or re.search(r"договор|справк|сертификат|документ|квитанц|чек|лиценз|юрлиц", haystack, re.I):
         return "docs"
+    if "theme:001_pricing" in topic_id or re.search(r"\b(price|pricing|prices?)\b|цен|стоим|сколько\s+стоит|прайс|₽|руб", haystack, re.I):
+        return "pricing"
+    if "theme:014_format" in topic_id or re.search(r"\bformat\b|формат|онлайн\s+или\s+очно|очно\s+или\s+онлайн", haystack, re.I):
+        return "format"
     return ""
 
 
@@ -1253,7 +1257,15 @@ def _apply_migrated_rules_engine(
     if rule is None:
         return None
     if result.route == "manager_only" and not _manager_route_migrated_rules_override_allowed(result, intent=intent):
-        return None
+        fallback_intent = "" if intent_from_contract else _migrated_rule_intent_from_dialogue_contract(result)
+        if not fallback_intent or fallback_intent == intent or not _manager_route_migrated_rules_override_allowed(result, intent=fallback_intent):
+            return None
+        fallback_rule = select_migrated_domain_rule(fallback_intent, registry)
+        if fallback_rule is None:
+            return None
+        intent = fallback_intent
+        rule = fallback_rule
+        intent_from_contract = True
     facts = _rules_engine_facts(result, context)
     if _migrated_rules_keep_existing_verified_answer(result, client_message=client_message, context=context, facts=facts):
         return None
@@ -1269,6 +1281,20 @@ def _apply_migrated_rules_engine(
         "direct_question": direct_question,
     }
     outcome = apply_migrated_domain_rule(rule, plan=enriched_plan, facts=facts, context=context)
+    if outcome is None and not intent_from_contract:
+        fallback_intent = _migrated_rule_intent_from_dialogue_contract(result)
+        if fallback_intent and fallback_intent != intent:
+            fallback_rule = select_migrated_domain_rule(fallback_intent, registry)
+            if fallback_rule is not None and (
+                result.route != "manager_only"
+                or _manager_route_migrated_rules_override_allowed(result, intent=fallback_intent)
+            ):
+                fallback_plan = {
+                    **dict(plan),
+                    "primary_intent": fallback_intent,
+                    "direct_question": str(contract.get("current_question") or client_message or ""),
+                }
+                outcome = apply_migrated_domain_rule(fallback_rule, plan=fallback_plan, facts=facts, context=context)
     if outcome is None:
         return None
     return _apply_rules_engine_outcome(result, outcome)

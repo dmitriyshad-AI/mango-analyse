@@ -18,6 +18,8 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
         "platform_access",
         "installment",
         "discount",
+        "price",
+        "format_choice",
     }
     assert select_rule("teacher", registry).rule_id == "teacher"  # type: ignore[union-attr]
     assert select_rule("recording", registry).rule_id == "recordings"  # type: ignore[union-attr]
@@ -30,7 +32,9 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
     assert select_rule("installment", registry).rule_id == "installment"  # type: ignore[union-attr]
     assert select_rule("payment_method", registry).rule_id == "installment"  # type: ignore[union-attr]
     assert select_rule("discount", registry).rule_id == "discount"  # type: ignore[union-attr]
-    assert select_rule("pricing", registry) is None
+    assert select_rule("pricing", registry).rule_id == "price"  # type: ignore[union-attr]
+    assert select_rule("price_fix", registry).rule_id == "price"  # type: ignore[union-attr]
+    assert select_rule("format", registry).rule_id == "format_choice"  # type: ignore[union-attr]
 
 
 def test_rules_engine_teacher_uses_fact_and_does_not_invent_specific_name() -> None:
@@ -337,3 +341,134 @@ def test_rules_engine_discount_unpk_second_subject_and_period_are_brand_safe() -
     assert "10%" in period.text
     assert "14%" in period.text
     assert "Фотон" not in period.text
+
+
+def test_rules_engine_price_uses_format_and_grade_scoped_facts_only() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices_regular_2026_27.offline_5_11.semester": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.",
+        "prices_regular_2026_27.offline_5_11.year": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽.",
+        "prices_regular_2026_27.online_5_11.semester": "УНПК: онлайн-курсы для 5-11 классов, формат 2 раза в неделю по 90 минут, семестр — 41 800 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "УНПК: онлайн-курсы для 5-11 классов, формат 2 раза в неделю по 90 минут, год — 69 900 ₽.",
+    }
+
+    online = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Сколько стоит онлайн для 9 класса?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+    offline = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Сколько стоит очно для 9 класса?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+    no_format = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Сколько стоит для 9 класса?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+    wrong_grade = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Сколько стоит онлайн для 4 класса?", "active_brand": "unpk"},
+        facts={"prices_regular_2026_27.online_5_11.semester": facts["prices_regular_2026_27.online_5_11.semester"]},
+        context={"active_brand": "unpk"},
+    )
+
+    assert online is not None
+    assert "41 800 ₽" in online.text
+    assert "69 900 ₽" in online.text
+    assert "49 000" not in online.text
+    assert offline is not None
+    assert "49 000 ₽" in offline.text
+    assert "82 000 ₽" in offline.text
+    assert "41 800" not in offline.text
+    assert no_format is None
+    assert wrong_grade is None
+
+
+def test_rules_engine_price_cross_brand_and_missing_fact_do_not_invent() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+    }
+
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "В УНПК онлайн сколько стоит для 9 класса?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+    missing_price = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Сколько стоит очно для 9 класса?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert cross_brand is None
+    assert missing_price is None
+
+
+def test_rules_engine_price_uses_period_from_fact_key_when_text_is_generic() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices_regular_2026_27.early_booking_2026_27.online_5_11_semester": (
+            "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн — 29 750 ₽."
+        ),
+        "prices_regular_2026_27.early_booking_2026_27.online_5_11_year": (
+            "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн — 47 250 ₽."
+        ),
+    }
+
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Сколько стоит онлайн для 10 класса?", "active_brand": "foton"},
+        facts=facts,
+        context={"active_brand": "foton"},
+    )
+
+    assert outcome is not None
+    assert "семестр — 29 750 ₽" in outcome.text
+    assert "год — 47 250 ₽" in outcome.text
+    assert "цена —" not in outcome.text
+
+
+def test_rules_engine_format_choice_presents_only_verified_formats() -> None:
+    rule = load_rules_registry()["format_choice"]
+    both_facts = {
+        "formats.unpk.online": "УНПК: онлайн-курсы проходят дистанционно.",
+        "formats.unpk.offline": "УНПК: есть очные курсы на площадке.",
+        "schedule.weekend_slots": "УНПК: бывают разные слоты по выходным.",
+    }
+    offline_only = {"formats.unpk.offline": "УНПК: есть очные курсы на площадке."}
+
+    both = apply_rule(
+        rule,
+        plan={"primary_intent": "format", "direct_question": "Онлайн или очно можно учиться?", "active_brand": "unpk"},
+        facts=both_facts,
+        context={"active_brand": "unpk"},
+    )
+    single = apply_rule(
+        rule,
+        plan={"primary_intent": "format", "direct_question": "Онлайн или очно можно учиться?", "active_brand": "unpk"},
+        facts=offline_only,
+        context={"active_brand": "unpk"},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "format", "direct_question": "А у Фотона онлайн или очно?", "active_brand": "unpk"},
+        facts=both_facts,
+        context={"active_brand": "unpk"},
+    )
+
+    assert both is not None
+    assert "онлайн-формат" in both.text
+    assert "очный формат" in both.text
+    assert "не выбираю" in both.text
+    assert single is not None
+    assert "очный формат" in single.text
+    assert "онлайн-формат" not in single.text
+    assert cross_brand is None

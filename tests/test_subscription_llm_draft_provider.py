@@ -8839,6 +8839,8 @@ def _step2b1_context(*, brand: str, intent: str, question: str, facts: dict[str,
         "payment_method": "theme:002_payment_method",
         "payment_by_invoice_monthly": "theme:002_payment_method",
         "discount": "theme:005_discounts",
+        "pricing": "theme:001_pricing",
+        "format": "theme:014_format",
     }.get(intent, "service:S5_general_consultation")
     return {
         "active_brand": brand,
@@ -9431,3 +9433,117 @@ def test_step2b3_money_rules_do_not_override_p0_manager_route() -> None:
     assert guarded.route == "manager_only"
     assert not any(flag.startswith("rules_engine_installment") or flag.startswith("rules_engine_discount") for flag in guarded.safety_flags)
     assert "30%" not in guarded.draft_text
+
+
+def test_step2b4_price_uses_online_price_not_offline() -> None:
+    facts = {
+        "prices_regular_2026_27.offline_5_11.semester": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.",
+        "prices_regular_2026_27.offline_5_11.year": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽.",
+        "prices_regular_2026_27.online_5_11.semester": "УНПК: онлайн-курсы для 5-11 классов, формат 2 раза в неделю по 90 минут, семестр — 41 800 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "УНПК: онлайн-курсы для 5-11 классов, формат 2 раза в неделю по 90 минут, год — 69 900 ₽.",
+    }
+    question = "Сколько стоит онлайн для 9 класса?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:001_pricing"),
+        question,
+        _step2b1_context(brand="unpk", intent="pricing", question=question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_price_format_matched" in result.safety_flags
+    assert "41 800 ₽" in result.draft_text
+    assert "69 900 ₽" in result.draft_text
+    assert "49 000" not in result.draft_text
+    assert "82 000" not in result.draft_text
+
+
+def test_step2b4_price_grounding_missing_format_does_not_invent() -> None:
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "УНПК: онлайн-курсы для 5-11 классов, формат 2 раза в неделю по 90 минут, семестр — 41 800 ₽.",
+    }
+    question = "Сколько стоит очно для 9 класса?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:001_pricing"),
+        question,
+        _step2b1_context(brand="unpk", intent="pricing", question=question, facts=facts),
+    )
+
+    assert "rules_engine_price_applied" not in result.safety_flags
+    assert "49 000" not in result.draft_text
+    assert "82 000" not in result.draft_text
+
+
+def test_step2b4_format_choice_disjunctive_presents_both_without_fixing_format() -> None:
+    facts = {
+        "formats.unpk.online": "УНПК: онлайн-курсы проходят дистанционно.",
+        "formats.unpk.offline": "УНПК: есть очные курсы на площадке.",
+    }
+    question = "Можно онлайн или очно?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:014_format"),
+        question,
+        _step2b1_context(brand="unpk", intent="format", question=question, facts=facts),
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_format_choice_present_both" in result.safety_flags
+    assert "онлайн-формат" in text
+    assert "очный формат" in text
+    assert "не выбираю" in text
+
+
+def test_step2b4_format_choice_single_fact_does_not_invent_online() -> None:
+    facts = {"formats.unpk.offline": "УНПК: есть очные курсы на площадке."}
+    question = "Онлайн или очно можно?"
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:014_format"),
+        question,
+        _step2b1_context(brand="unpk", intent="format", question=question, facts=facts),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_format_choice_present_both" in result.safety_flags
+    assert "очный формат" in result.draft_text.casefold()
+    assert "онлайн-формат" not in result.draft_text.casefold()
+
+
+def test_step2b4_price_and_format_do_not_override_cross_brand_or_p0() -> None:
+    price_facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+    }
+    cross_question = "В УНПК онлайн сколько стоит для 9 класса?"
+    cross = _apply_v2_guard_chain(
+        _step2b1_result(question=cross_question, facts=price_facts, topic_id="theme:001_pricing"),
+        cross_question,
+        _step2b1_context(brand="foton", intent="pricing", question=cross_question, facts=price_facts),
+    )
+    p0_question = "Верните деньги, я недоволен, и цену тоже скажите"
+    p0_result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=p0_question, answerability="manager", keys=tuple(price_facts.keys()), is_p0=True),
+                "retrieved_facts": price_facts,
+                "retrieved_fact_keys": list(price_facts),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+    p0 = _apply_v2_guard_chain(
+        p0_result,
+        p0_question,
+        _step2b1_context(brand="foton", intent="pricing", question=p0_question, facts=price_facts),
+    )
+
+    assert "rules_engine_price_applied" not in cross.safety_flags
+    assert "29 750" not in cross.draft_text
+    assert p0.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_price") or flag.startswith("rules_engine_format_choice") for flag in p0.safety_flags)
+    assert "29 750" not in p0.draft_text

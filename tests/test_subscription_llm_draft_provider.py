@@ -46,6 +46,7 @@ from mango_mvp.channels.subscription_llm import (
     TAX_ONLINE_FORM_SAFE_TEXT,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
     apply_payment_confirmation_guard,
+    apply_a2_proactive_layer,
     apply_authoritative_output_gate,
     apply_brand_separation_guard,
     apply_conversation_intent_plan_guard,
@@ -4367,6 +4368,121 @@ def test_authoritative_output_gate_is_downgrade_only_and_does_not_promote_routes
     assert gated.route == "draft_for_manager"
     assert "authoritative_output_gate_blocked" not in gated.safety_flags
     assert gated.draft_text == result.draft_text
+
+
+def test_a2_contact_capture_creates_warm_handoff_without_echoing_pii() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, курс есть. Если удобно, передам менеджеру — подскажите телефон и когда лучше связаться?",
+        topic_id="theme:020_enrollment",
+        safety_flags=("rules_engine_a2_offer_callback",),
+        metadata={"a2_proactive": {"step": "offer_callback"}},
+    )
+
+    captured = apply_a2_proactive_layer(
+        result,
+        client_message="Мой телефон +7 999 123-45-67, удобно завтра вечером",
+        context={"active_brand": "foton", "a_proactive_enabled": True},
+    )
+
+    assert captured.route == "draft_for_manager"
+    assert captured.manager_followup_required is True
+    assert "a2_proactive_contact_captured" in captured.safety_flags
+    assert "+7" not in captured.draft_text
+    assert "999" not in captured.draft_text
+    assert "завтра вечером" not in captured.draft_text.casefold()
+    assert captured.metadata["a2_proactive"]["phone_masked"] == "[phone:***67]"
+    assert captured.metadata["a2_proactive"]["preferred_time"] == "[provided]"
+    assert captured.metadata["a2_proactive"]["crm_write"] is False
+
+
+def test_a2_contact_capture_uses_known_phone_and_p0_blocks_capture() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Если удобно, передам менеджеру — подскажите, когда лучше связаться?",
+        topic_id="theme:020_enrollment",
+        safety_flags=("rules_engine_a2_offer_callback",),
+        metadata={"a2_proactive": {"step": "offer_callback"}},
+    )
+
+    known_phone = apply_a2_proactive_layer(
+        base,
+        client_message="Лучше после 18",
+        context={"active_brand": "foton", "a_proactive_enabled": True, "known_slots": {"phone_known": True}},
+    )
+    p0 = apply_a2_proactive_layer(
+        replace(base, route="manager_only", safety_flags=("high_risk_manager_only",)),
+        client_message="Верните деньги, мой телефон +7 999 123-45-67",
+        context={"active_brand": "foton", "a_proactive_enabled": True},
+    )
+
+    assert known_phone.route == "draft_for_manager"
+    assert known_phone.metadata["a2_proactive"]["phone_masked"] == "[known_phone]"
+    assert "после 18" not in known_phone.draft_text
+    assert p0.route == "manager_only"
+    assert "a2_proactive_contact_captured" not in p0.safety_flags
+
+
+def test_a2_gate_blocks_fake_enrollment_and_pii_echo_when_flagged() -> None:
+    fake_done = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Я вас записал на курс, приходите завтра.",
+        topic_id="theme:020_enrollment",
+        metadata={"a2_proactive": {"step": "offer_callback"}},
+    )
+    pii_echo = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Передам номер +7 999 123-45-67 менеджеру.",
+        topic_id="theme:020_enrollment",
+        metadata={"a2_proactive": {"step": "offer_callback"}},
+    )
+
+    fake_gated = apply_authoritative_output_gate(fake_done, client_message="Запишите меня", context={"active_brand": "foton"})
+    pii_gated = apply_authoritative_output_gate(
+        pii_echo,
+        client_message="Мой телефон +7 999 123-45-67",
+        context={"active_brand": "foton"},
+    )
+
+    assert fake_gated.route == "manager_only"
+    assert "fake_enrollment_claim" in {item["code"] for item in fake_gated.metadata["authoritative_output_gate"]["findings"]}
+    assert pii_gated.route == "manager_only"
+    assert "proactive_pii_echo" in {item["code"] for item in pii_gated.metadata["authoritative_output_gate"]["findings"]}
+    assert "+7 999" not in pii_gated.draft_text
+
+
+def test_a2_gate_flags_question_barrage_and_rich_format_limits_emoji() -> None:
+    barrage = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Подскажите класс? Предмет? Когда удобно?",
+        topic_id="theme:020_enrollment",
+        metadata={"a2_proactive": {"step": "offer_callback"}},
+    )
+    emoji = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, передам менеджеру 🙂👍✨",
+        topic_id="theme:020_enrollment",
+        metadata={"a2_proactive": {"step": "offer_callback"}},
+    )
+    serious = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение 😌",
+        topic_id="theme:020_enrollment",
+        safety_flags=("complaint_apology_guarded",),
+    )
+
+    barrage_gated = apply_authoritative_output_gate(barrage, client_message="Хочу обсудить курс", context={"active_brand": "foton"})
+    emoji_clean = apply_a2_proactive_layer(emoji, client_message="Хочу обсудить курс", context={"active_brand": "foton", "a_rich_format_enabled": True})
+    serious_clean = apply_a2_proactive_layer(
+        serious,
+        client_message="Ребёнок ничего не понял, хочу жалобу",
+        context={"active_brand": "foton", "a_rich_format_enabled": True},
+    )
+
+    assert barrage_gated.route == "draft_for_manager"
+    assert "proactive_too_many_questions" in {item["code"] for item in barrage_gated.metadata["authoritative_output_gate"]["findings"]}
+    assert len([char for char in emoji_clean.draft_text if ord(char) > 0x2600]) <= 1
+    assert "🙂" not in serious_clean.draft_text
 
 
 def test_v2_unsupported_promise_guard_numeric_siblings_from_rfk() -> None:

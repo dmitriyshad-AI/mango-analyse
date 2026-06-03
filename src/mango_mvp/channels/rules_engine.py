@@ -14,6 +14,8 @@ DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_ba
 SELLING_MODE_ENV = "TELEGRAM_A_SELLING_MODE"
 SELLING_SIGNALS_FULL_ENV = "TELEGRAM_A_SELLING_SIGNALS_FULL"
 COVERAGE_ENV = "TELEGRAM_A_COVERAGE"
+A_PROACTIVE_ENV = "TELEGRAM_A_PROACTIVE"
+A_RICH_FORMAT_ENV = "TELEGRAM_A_RICH_FORMAT"
 MIGRATED = frozenset(
     {
         "teacher",
@@ -1903,6 +1905,25 @@ def _apply_selling_det_variants(
                 flags.append("rules_engine_selling_readiness")
                 applied.append("readiness")
 
+    proactive_step = _resolve_a2_proactive_step(
+        selling=selling,
+        question=_raw_question_text(plan, context),
+        context=context,
+    )
+    if proactive_step == "offer_callback":
+        suffix = _a2_offer_callback_text(context)
+        appended = _append_selling_suffix(
+            text,
+            source,
+            suffix,
+            {},
+            rich_format=_rich_format_enabled(context),
+        )
+        if appended is not None:
+            text, source = appended
+            flags.append("rules_engine_a2_offer_callback")
+            applied.append("offer_callback")
+
     if not applied:
         return outcome
     text = _avoid_exact_rule_repeat(text, context)
@@ -1915,6 +1936,13 @@ def _apply_selling_det_variants(
             "anxiety": bool(selling.get("anxiety")),
             "unmet_need": str(selling.get("unmet_need") or "")[:120],
             "readiness": str(selling.get("readiness") or "exploring"),
+            "proactive": {
+                "enabled": _proactive_enabled(context),
+                "step": proactive_step,
+                "policy_source": "deterministic",
+                "recent_ignored": _proactive_recent_ignored(context),
+                "phone_known": _context_phone_known(context),
+            },
         },
     }
     return replace(outcome, text=text, facts=source, flags=tuple(dict.fromkeys(flags)), metadata=metadata)
@@ -1937,6 +1965,22 @@ def _selling_signals_full_enabled(context: Mapping[str, Any] | None) -> bool:
     return _truthy(os.getenv(SELLING_SIGNALS_FULL_ENV))
 
 
+def _proactive_enabled(context: Mapping[str, Any] | None) -> bool:
+    if isinstance(context, Mapping):
+        for key in ("a_proactive_enabled", "proactive_enabled", A_PROACTIVE_ENV):
+            if key in context:
+                return _truthy(context.get(key))
+    return _truthy(os.getenv(A_PROACTIVE_ENV))
+
+
+def _rich_format_enabled(context: Mapping[str, Any] | None) -> bool:
+    if isinstance(context, Mapping):
+        for key in ("a_rich_format_enabled", "rich_format_enabled", A_RICH_FORMAT_ENV):
+            if key in context:
+                return _truthy(context.get(key))
+    return _truthy(os.getenv(A_RICH_FORMAT_ENV))
+
+
 def _coverage_enabled(context: Mapping[str, Any] | None) -> bool:
     if isinstance(context, Mapping):
         for key in ("coverage_enabled", COVERAGE_ENV):
@@ -1949,6 +1993,107 @@ def _truthy(value: object) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "y"}
+
+
+_A2_PROCEED_RE = re.compile(
+    r"как\s+(?:записать|записаться|оплат|внести)|хочу\s+запис|готов[аы]?\s+(?:запис|оформ)|"
+    r"запишите|свяжите|позвоните|оставлю\s+(?:телефон|номер)|можно\s+оплатить|где\s+оплат",
+    re.I,
+)
+
+
+def _resolve_a2_proactive_step(
+    *,
+    selling: Mapping[str, Any],
+    question: str,
+    context: Mapping[str, Any] | None,
+) -> str:
+    if not _proactive_enabled(context):
+        return "none"
+    if _proactive_recent_ignored(context) >= 2 and not _A2_PROCEED_RE.search(str(question or "")):
+        return "none"
+    if _current_message_has_phone(question):
+        return "none"
+    readiness = str(selling.get("readiness") or "exploring").strip().casefold()
+    if readiness == "ready" or _A2_PROCEED_RE.search(str(question or "")):
+        return "offer_callback"
+    return "none"
+
+
+def _a2_offer_callback_text(context: Mapping[str, Any] | None) -> str:
+    if _context_phone_known(context):
+        return "Если удобно, передам менеджеру — подскажите, когда лучше связаться?"
+    return "Если удобно, передам менеджеру — подскажите телефон и когда лучше связаться?"
+
+
+def _current_message_has_phone(text: str) -> bool:
+    return bool(re.search(r"(?:\+7|8|7)?[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}", str(text or "")))
+
+
+def _context_phone_known(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    containers: list[Mapping[str, Any]] = []
+    for key in ("known_slots", "known_dialog_fields", "known_client_fields", "client_identity"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        for key in ("known_slots", "client_confirmed_slots", "crm_known_slots"):
+            value = memory.get(key)
+            if isinstance(value, Mapping):
+                containers.append(value)
+    for container in containers:
+        for key in ("phone_known", "phone", "normalized_phone", "client_phone"):
+            raw = container.get(key)
+            if isinstance(raw, Mapping):
+                raw = raw.get("value")
+            if str(raw or "").strip().casefold() not in {"", "false", "none", "0"}:
+                return True
+    return False
+
+
+def _proactive_recent_ignored(context: Mapping[str, Any] | None) -> int:
+    if not isinstance(context, Mapping):
+        return 0
+    for container in _proactive_state_containers(context):
+        raw = container.get("recent_ignored")
+        if raw is not None:
+            try:
+                return max(0, int(raw))
+            except (TypeError, ValueError):
+                pass
+    history: Sequence[Any] = ()
+    for container in _proactive_state_containers(context):
+        raw_history = container.get("history") or container.get("proactive_history")
+        if isinstance(raw_history, Sequence) and not isinstance(raw_history, (str, bytes)):
+            history = raw_history
+            break
+    ignored = 0
+    for item in reversed(tuple(history)):
+        if not isinstance(item, Mapping):
+            break
+        if str(item.get("outcome") or item.get("status") or "").strip().casefold() == "ignored" or bool(item.get("ignored")):
+            ignored += 1
+            continue
+        break
+    return ignored
+
+
+def _proactive_state_containers(context: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    result: list[Mapping[str, Any]] = []
+    for key in ("proactive_state", "a2_proactive_state"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            result.append(value)
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        for key in ("proactive_state", "a2_proactive_state"):
+            value = memory.get(key)
+            if isinstance(value, Mapping):
+                result.append(value)
+    return tuple(result)
 
 
 def _selling_compose_fn(context: Mapping[str, Any] | None) -> Callable[[str], object] | None:
@@ -2205,6 +2350,8 @@ def _append_selling_suffix(
     source: Mapping[str, str],
     suffix: str,
     suffix_facts: Mapping[str, str],
+    *,
+    rich_format: bool = False,
 ) -> tuple[str, dict[str, str]] | None:
     suffix_text = " ".join(str(suffix or "").split()).strip()
     if not suffix_text:
@@ -2217,7 +2364,8 @@ def _append_selling_suffix(
             return None
     updated = dict(source)
     updated.update(suffix_facts)
-    return f"{text.rstrip()} {suffix_text}", updated
+    separator = "\n\n" if rich_format else " "
+    return f"{text.rstrip()}{separator}{suffix_text}", updated
 
 
 def _selling_fact_already_used(fact: str, *, text: str, source: Mapping[str, str]) -> bool:

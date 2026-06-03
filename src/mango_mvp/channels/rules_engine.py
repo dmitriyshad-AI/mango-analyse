@@ -13,6 +13,7 @@ from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
 DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
 SELLING_MODE_ENV = "TELEGRAM_A_SELLING_MODE"
 SELLING_SIGNALS_FULL_ENV = "TELEGRAM_A_SELLING_SIGNALS_FULL"
+COVERAGE_ENV = "TELEGRAM_A_COVERAGE"
 MIGRATED = frozenset(
     {
         "teacher",
@@ -1055,6 +1056,10 @@ def _apply_price_rule(
         return None
     if _mentions_camp_or_lvsh(question):
         return None
+    if _coverage_enabled(context):
+        covered = _apply_price_coverage_rule(rule, plan=plan, facts=facts, context=context, question=question, brand=brand)
+        if covered is not None:
+            return covered
     requested_format = _requested_training_format(question, plan, context)
     if requested_format not in {"online", "offline"}:
         return None
@@ -1093,6 +1098,113 @@ def _apply_price_rule(
         flags=("rules_engine_price_format_matched", f"rules_engine_price_{requested_format}"),
         checklist=f"Rule engine: price — цена только из факта, active brand={brand}, format={format_label}, grade={requested_grade}.",
     )
+
+
+def _apply_price_coverage_rule(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+    question: str,
+    brand: str,
+) -> RuleOutcome | None:
+    requested_grade = _requested_grade(plan, context)
+    if _asks_two_format_price(question):
+        if requested_grade is None:
+            return None
+        source: dict[str, str] = {}
+        parts: list[str] = []
+        missing: list[str] = []
+        for requested_format in ("online", "offline"):
+            scoped_facts = _price_facts_for_request(facts, brand=brand, requested_format=requested_format, requested_grade=requested_grade)
+            if not scoped_facts:
+                missing.append("онлайн" if requested_format == "online" else "очно")
+                continue
+            price_contract = _build_price_contract(
+                question,
+                active_brand=brand,
+                requested_format=requested_format,
+                requested_grade=requested_grade,
+                fact_keys=tuple(scoped_facts),
+            )
+            selected_amount = _select_price_amount(price_contract, scoped_facts)
+            if selected_amount is None:
+                missing.append("онлайн" if requested_format == "online" else "очно")
+                continue
+            price_text = _price_text_from_scoped_facts(
+                scoped_facts,
+                selected_amount=selected_amount,
+                requested_format=requested_format,
+                requested_grade=requested_grade,
+                question=question,
+            )
+            if not price_text:
+                missing.append("онлайн" if requested_format == "online" else "очно")
+                continue
+            parts.append(price_text)
+            source.update(scoped_facts)
+        if not parts:
+            return None
+        if missing:
+            parts.append(f"По формату {'/'.join(missing)} точную стоимость менеджер сверит отдельно.")
+        return _rule_outcome(
+            rule,
+            subvariant="coverage_two_formats",
+            route="bot_answer_self_for_pilot",
+            text=" ".join(parts),
+            facts=source,
+            flags=(
+                "rules_engine_coverage_price_two_formats",
+                *("rules_engine_coverage_partial_missing" for _ in (1,) if missing),
+            ),
+            checklist="Rule engine coverage: составной вопрос по двум форматам — отвечать только найденными price-фактами.",
+        )
+
+    if _asks_multi_subject_price(question):
+        discount_key, discount_fact = _first_matching_fact(
+            facts,
+            ("second_subject", "второй предмет", "последующий предмет", "на второй", "скидк"),
+        )
+        if not discount_fact:
+            return None
+        source = {discount_key or "rules_engine.coverage.second_subject_discount": discount_fact}
+        parts = [f"По второму/последующим предметам подтверждено: {_short_sentence(discount_fact)}"]
+        requested_format = _requested_training_format(question, plan, context)
+        if requested_grade is not None and requested_format in {"online", "offline"}:
+            scoped_facts = _price_facts_for_request(facts, brand=brand, requested_format=requested_format, requested_grade=requested_grade)
+            if scoped_facts:
+                price_contract = _build_price_contract(
+                    question,
+                    active_brand=brand,
+                    requested_format=requested_format,
+                    requested_grade=requested_grade,
+                    fact_keys=tuple(scoped_facts),
+                )
+                selected_amount = _select_price_amount(price_contract, scoped_facts)
+                if selected_amount is not None:
+                    price_text = _price_text_from_scoped_facts(
+                        scoped_facts,
+                        selected_amount=selected_amount,
+                        requested_format=requested_format,
+                        requested_grade=requested_grade,
+                        question=question,
+                    )
+                    if price_text:
+                        parts.insert(0, price_text)
+                        source.update(scoped_facts)
+        parts.append("Итоговую сумму по выбранным предметам менеджер сверит отдельно, чтобы не выдумывать расчёт.")
+        return _rule_outcome(
+            rule,
+            subvariant="coverage_multi_subjects",
+            route="bot_answer_self_for_pilot",
+            text=" ".join(parts),
+            facts=source,
+            flags=("rules_engine_coverage_price_multi_subjects",),
+            checklist="Rule engine coverage: несколько предметов — не считать итог без факта, дать price/discount факты и честный хвост.",
+        )
+
+    return None
 
 
 def _apply_format_choice_rule(
@@ -1714,6 +1826,14 @@ def _selling_signals_full_enabled(context: Mapping[str, Any] | None) -> bool:
             if key in context:
                 return _truthy(context.get(key))
     return _truthy(os.getenv(SELLING_SIGNALS_FULL_ENV))
+
+
+def _coverage_enabled(context: Mapping[str, Any] | None) -> bool:
+    if isinstance(context, Mapping):
+        for key in ("coverage_enabled", COVERAGE_ENV):
+            if key in context:
+                return _truthy(context.get(key))
+    return _truthy(os.getenv(COVERAGE_ENV))
 
 
 def _truthy(value: object) -> bool:
@@ -2974,6 +3094,26 @@ def _requested_price_period(text: str) -> str:
     if re.search(r"семестр|полугод", value, re.I):
         return "семестр"
     return ""
+
+
+def _asks_two_format_price(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    has_price = _has_any(value, ("стоим", "цен", "сколько", "плат"))
+    has_online = _has_any(value, ("онлайн", "online", "дистанц"))
+    has_offline = _has_any(value, ("очно", "очный", "офлайн", "offline", "сретен"))
+    has_joiner = _has_any(value, (" и ", " или ", "вместе", "оба", "обоих", "сравн"))
+    return has_price and has_online and has_offline and has_joiner
+
+
+def _asks_multi_subject_price(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    has_price = _has_any(value, ("стоим", "цен", "сколько", "плат", "итогов"))
+    has_multi_subject_marker = bool(re.search(r"\b(?:два|три|несколько)\s+предмет", value, re.I)) or _has_any(
+        value,
+        ("второй предмет", "последующий предмет", "предмета вместе", "предметы вместе"),
+    )
+    subject_hits = sum(1 for marker in ("математ", "физик", "информат", "русск", "обществ", "хим", "биолог") if marker in value)
+    return has_price and (has_multi_subject_marker or subject_hits >= 2)
 
 
 def _asks_specific_teacher_name(text: str) -> bool:

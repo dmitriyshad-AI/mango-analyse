@@ -823,6 +823,94 @@ def test_rules_engine_selling_price_objection_price_adds_payment_step_only_on_si
     assert "rules_engine_selling_readiness" not in plain.flags
 
 
+def test_rules_engine_coverage_two_format_price_is_flagged_and_uses_only_available_facts() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices.unpk.online_9.semester": "УНПК: 9 класс, онлайн, семестр — 41 800 ₽.",
+        "prices.unpk.online_9.year": "УНПК: 9 класс, онлайн, год — 69 900 ₽.",
+        "prices.unpk.offline_9.semester": "УНПК: 9 класс, очно, семестр — 52 000 ₽.",
+    }
+
+    off = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Онлайн и очно для 9 класса сколько стоят?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk"},
+    )
+    both = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Онлайн и очно для 9 класса сколько стоят?", "active_brand": "unpk"},
+        facts=facts,
+        context={"active_brand": "unpk", "coverage_enabled": True},
+    )
+    partial = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Онлайн и очно для 9 класса сколько стоят?", "active_brand": "unpk"},
+        facts={key: value for key, value in facts.items() if "offline" not in key},
+        context={"active_brand": "unpk", "coverage_enabled": True},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "Онлайн и очно для 9 класса сколько стоят?", "active_brand": "unpk"},
+        facts={"prices.foton.online_9.semester": "Фотон: 9 класс, онлайн, семестр — 29 750 ₽."},
+        context={"active_brand": "unpk", "coverage_enabled": True},
+    )
+
+    assert off is None
+    assert both is not None
+    assert "rules_engine_coverage_price_two_formats" in both.flags
+    assert "41 800 ₽" in both.text
+    assert "69 900 ₽" in both.text
+    assert "52 000 ₽" in both.text
+    assert "Фотон" not in both.text
+    assert partial is not None
+    assert "41 800 ₽" in partial.text
+    assert "точную стоимость менеджер сверит отдельно" in partial.text
+    assert "52 000 ₽" not in partial.text
+    assert cross_brand is None
+
+
+def test_rules_engine_coverage_multi_subject_price_does_not_invent_total_sum() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices.foton.online_10.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%.",
+    }
+
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Сколько будет стоить физика и математика вместе за полгода онлайн для 10 класса?",
+            "active_brand": "foton",
+        },
+        facts=facts,
+        context={"active_brand": "foton", "coverage_enabled": True},
+    )
+    missing_price = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Сколько будет стоить физика и математика вместе за полгода для 10 класса?",
+            "active_brand": "foton",
+        },
+        facts={"discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%."},
+        context={"active_brand": "foton", "coverage_enabled": True},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_coverage_price_multi_subjects" in outcome.flags
+    assert "29 750 ₽" in outcome.text
+    assert "30%" in outcome.text
+    assert "Итоговую сумму" in outcome.text
+    assert "59 500" not in outcome.text
+    assert "50 575" not in outcome.text
+    assert missing_price is not None
+    assert "30%" in missing_price.text
+    assert "₽" not in missing_price.text
+    assert "Итоговую сумму" in missing_price.text
+
+
 def test_rules_engine_selling_full_signals_are_flagged_grounded_and_non_diagnostic() -> None:
     rule = load_rules_registry()["format_choice"]
     facts = {

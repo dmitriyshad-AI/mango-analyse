@@ -76,6 +76,7 @@ DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV = "TELEGRAM_DIALOGUE_CONTRACT_SEM
 RULES_ENGINE_PLANNER_INTENT_ENV = "TELEGRAM_RULES_ENGINE_PLANNER_INTENT"
 SCOPE_FACT_GUARD_ENV = "TELEGRAM_SCOPE_FACT_GUARD"
 ANTIREPEAT_STRICT_ENV = "TELEGRAM_ANTIREPEAT_STRICT"
+A_THREAD_ENV = "TELEGRAM_A_THREAD"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -1303,7 +1304,8 @@ def _apply_migrated_rules_engine(
         "rules_engine_intent_source": str(shadow.get("selected_source") or ""),
         "direct_question": direct_question,
     }
-    outcome = apply_migrated_domain_rule(rule, plan=enriched_plan, facts=facts, context=context)
+    rule_context = _context_with_selling_thread_slots(context, contract=contract, client_message=client_message)
+    outcome = apply_migrated_domain_rule(rule, plan=enriched_plan, facts=facts, context=rule_context)
     if outcome is None and (not intent_from_contract or selected_source == "planner"):
         fallback_intent = (
             str(shadow.get("keyword_intent") or shadow.get("regex_intent") or "")
@@ -1322,10 +1324,125 @@ def _apply_migrated_rules_engine(
                     "direct_question": str(contract.get("current_question") or client_message or ""),
                     "selling": _merged_selling_signals(contract.get("selling"), plan.get("selling")),
                 }
-                outcome = apply_migrated_domain_rule(fallback_rule, plan=fallback_plan, facts=facts, context=context)
+                outcome = apply_migrated_domain_rule(fallback_rule, plan=fallback_plan, facts=facts, context=rule_context)
     if outcome is None:
         return None
     return _apply_rules_engine_outcome(result, outcome)
+
+
+def _context_with_selling_thread_slots(
+    context: Optional[Mapping[str, Any]],
+    *,
+    contract: Mapping[str, Any],
+    client_message: str,
+) -> Optional[Mapping[str, Any]]:
+    if not _a_thread_enabled(context):
+        return context
+    current_slots = _selling_slots_from_contract_and_text(contract, client_message)
+    memory_slots = _selling_slots_from_memory(context)
+    slots: dict[str, str] = {}
+    for key in ("subject", "grade", "format", "product"):
+        if current_slots.get(key):
+            slots[key] = current_slots[key]
+        elif memory_slots.get(key) and not _text_explicitly_mentions_selling_slot(client_message, key):
+            slots[key] = memory_slots[key]
+    brand = _active_brand(context)
+    if brand in {"foton", "unpk"}:
+        slots["active_brand"] = brand
+    if not slots:
+        return context
+    merged = dict(context or {})
+    merged["selling_thread_slots"] = slots
+    return merged
+
+
+def _a_thread_enabled(context: Optional[Mapping[str, Any]]) -> bool:
+    if isinstance(context, Mapping) and context.get(A_THREAD_ENV) is not None:
+        return _truthy_value(context.get(A_THREAD_ENV))
+    if isinstance(context, Mapping) and context.get("thread_slots_enabled") is not None:
+        return _truthy_value(context.get("thread_slots_enabled"))
+    return _truthy_value(os.getenv(A_THREAD_ENV))
+
+
+def _selling_slots_from_contract_and_text(contract: Mapping[str, Any], client_message: str) -> Mapping[str, str]:
+    result: dict[str, str] = {}
+    for container_name in ("planner_slots", "known_slots"):
+        container = contract.get(container_name)
+        if not isinstance(container, Mapping):
+            continue
+        for key, value in container.items():
+            name = str(key or "").strip().casefold()
+            if name not in {"subject", "grade", "format", "product", "product_family"}:
+                continue
+            if isinstance(value, Mapping):
+                value = value.get("value")
+            text = str(value or "").strip()
+            if text:
+                result["product" if name == "product_family" else name] = text
+    text_slots = _selling_slots_from_text(client_message)
+    result.update(text_slots)
+    return result
+
+
+def _selling_slots_from_memory(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
+    if not isinstance(context, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    known = context.get("known_slots")
+    if isinstance(known, Mapping):
+        _merge_selling_slot_values(result, known)
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        for key in ("known_slots", "topic_focus"):
+            value = memory.get(key)
+            if isinstance(value, Mapping):
+                _merge_selling_slot_values(result, value)
+    return result
+
+
+def _merge_selling_slot_values(result: dict[str, str], raw: Mapping[str, Any]) -> None:
+    for key, value in raw.items():
+        name = str(key or "").strip().casefold()
+        if name not in {"subject", "grade", "class", "format", "product", "product_family"}:
+            continue
+        if isinstance(value, Mapping):
+            value = value.get("value")
+        text = str(value or "").strip()
+        if text:
+            result.setdefault("grade" if name == "class" else "product" if name == "product_family" else name, text)
+
+
+def _selling_slots_from_text(text: str) -> Mapping[str, str]:
+    value = str(text or "").casefold().replace("ё", "е")
+    result: dict[str, str] = {}
+    match = re.search(r"\b([1-9]|10|11)\s*(?:класс|классе|кл\.?)", value)
+    if match:
+        result["grade"] = match.group(1)
+    if re.search(r"\bонлайн\b|дистанц", value):
+        result["format"] = "онлайн"
+    elif re.search(r"\bочн|офлайн|сретен|красносельск", value):
+        result["format"] = "очно"
+    subject_markers = (
+        ("математика", ("математ",)),
+        ("физика", ("физик",)),
+        ("информатика", ("информат",)),
+        ("русский", ("русск",)),
+    )
+    for label, markers in subject_markers:
+        if any(marker in value for marker in markers):
+            result["subject"] = label
+            break
+    if any(marker in value for marker in ("лвш", "лагер", "смен")):
+        result["product"] = "camp"
+    elif any(marker in value for marker in ("олимпиад", "физтех")):
+        result["product"] = "olympiad"
+    elif any(marker in value for marker in ("курс", "занят")):
+        result["product"] = "regular_course"
+    return result
+
+
+def _text_explicitly_mentions_selling_slot(text: str, key: str) -> bool:
+    return key in _selling_slots_from_text(text)
 
 
 def _merged_selling_signals(model_value: object, keyword_value: object) -> Mapping[str, Any]:

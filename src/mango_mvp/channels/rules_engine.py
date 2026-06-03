@@ -2924,6 +2924,12 @@ def _known_slot_value(context: Mapping[str, Any] | None, key: str) -> str:
     if not isinstance(context, Mapping):
         return ""
     candidates: list[Any] = []
+    if _thread_slots_enabled(context):
+        thread_slots = context.get("selling_thread_slots")
+        if isinstance(thread_slots, Mapping):
+            candidates.append(thread_slots.get(key))
+            if key == "grade":
+                candidates.append(thread_slots.get("class"))
     known = context.get("known_slots")
     if isinstance(known, Mapping):
         candidates.append(known.get(key))
@@ -2940,6 +2946,14 @@ def _known_slot_value(context: Mapping[str, Any] | None, key: str) -> str:
         if value:
             return value
     return ""
+
+
+def _thread_slots_enabled(context: Mapping[str, Any] | None) -> bool:
+    if isinstance(context, Mapping):
+        for key in ("thread_slots_enabled", "TELEGRAM_A_THREAD"):
+            if key in context:
+                return _truthy(context.get(key))
+    return _truthy(os.getenv("TELEGRAM_A_THREAD"))
 
 
 def _planner_slot_value(plan: Mapping[str, Any], key: str) -> str:

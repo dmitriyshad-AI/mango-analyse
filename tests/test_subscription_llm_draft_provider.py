@@ -55,6 +55,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
     _claim_supported_by_facts,
+    _context_with_selling_thread_slots,
     _fresh_fact_texts,
     _validated_guardchain_recovery_candidate,
     contains_bot_identity_disclosure,
@@ -7759,6 +7760,32 @@ def test_model_selling_signal_from_dialogue_contract_feeds_rules_engine_with_key
     assert "rules_engine_selling_price_objection" in routed.safety_flags
     assert "6, 10 или 12 месяцев" in routed.draft_text
     assert "Подсказать удобный вариант" in routed.draft_text
+
+
+def test_a_thread_context_carries_only_current_selling_slots_without_brand_override() -> None:
+    contract = {
+        "current_question": "А очно тогда сколько?",
+        "planner_slots": {},
+        "known_slots": {},
+    }
+    context = {
+        "active_brand": "foton",
+        "TELEGRAM_A_THREAD": True,
+        "dialogue_memory_view": {
+            "known_slots": {"grade": {"value": "10"}, "format": {"value": "онлайн"}},
+            "topic_focus": {"subject": "информатика", "format": "онлайн", "active_brand": "unpk"},
+        },
+    }
+
+    threaded = _context_with_selling_thread_slots(context, contract=contract, client_message="А очно тогда сколько?")
+    off = _context_with_selling_thread_slots({**context, "TELEGRAM_A_THREAD": False}, contract=contract, client_message="А очно тогда сколько?")
+
+    assert threaded is not None
+    assert threaded["selling_thread_slots"]["grade"] == "10"
+    assert threaded["selling_thread_slots"]["subject"] == "информатика"
+    assert threaded["selling_thread_slots"]["format"] == "очно"
+    assert threaded["selling_thread_slots"]["active_brand"] == "foton"
+    assert off == {**context, "TELEGRAM_A_THREAD": False}
 
 
 def test_step2b4_price_and_format_do_not_override_cross_brand_or_p0() -> None:

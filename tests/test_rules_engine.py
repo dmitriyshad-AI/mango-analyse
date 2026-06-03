@@ -911,6 +911,35 @@ def test_rules_engine_coverage_multi_subject_price_does_not_invent_total_sum() -
     assert "Итоговую сумму" in missing_price.text
 
 
+def test_rules_engine_thread_slots_restore_price_ellipsis_only_when_flagged() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices.foton.online_10.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "prices.foton.online_10.year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+    }
+    plan = {"primary_intent": "pricing", "direct_question": "А сколько тогда выйдет?", "active_brand": "foton"}
+    context = {
+        "active_brand": "foton",
+        "selling_thread_slots": {"grade": "10", "subject": "информатика", "format": "онлайн", "active_brand": "foton"},
+    }
+
+    off = apply_rule(rule, plan=plan, facts=facts, context=context)
+    on = apply_rule(rule, plan=plan, facts=facts, context={**context, "thread_slots_enabled": True})
+    explicit_switch = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "А по физике очно сколько тогда выйдет?", "active_brand": "foton"},
+        facts=facts,
+        context={**context, "thread_slots_enabled": True},
+    )
+
+    assert off is None
+    assert on is not None
+    assert "29 750 ₽" in on.text
+    assert "47 250 ₽" in on.text
+    assert "rules_engine_price_online" in on.flags
+    assert explicit_switch is None
+
+
 def test_rules_engine_selling_full_signals_are_flagged_grounded_and_non_diagnostic() -> None:
     rule = load_rules_registry()["format_choice"]
     facts = {

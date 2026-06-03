@@ -205,6 +205,8 @@ def apply_rule(
         outcome = _apply_schedule_rule(rule, plan=plan, facts=facts, context=context)
     else:
         return None
+    if outcome is None:
+        outcome = _selling_signal_fallback_outcome(rule, plan=plan, facts=facts, context=context)
     return _apply_selling_variants(outcome, rule=rule, plan=plan, facts=facts, context=context)
 
 
@@ -232,6 +234,63 @@ def _cross_brand_current_center_outcome(
         checklist=("Rule engine: cross-brand — не консультировать по другому бренду и не сравнивать условия.",),
         metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": "cross_brand_current_center", "brand": brand},
     )
+
+
+def _selling_signal_fallback_outcome(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    selling = _selling_view(plan, context)
+    if not selling:
+        return None
+    question = _question_text(plan, context)
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand) or _real_refund_claim(question):
+        return None
+    if str(selling.get("readiness") or "exploring") == "ready":
+        key, fact = _clean_selling_support_fact(
+            facts,
+            brand,
+            ("process.enrollment", "enrollment", "запис", "заявк", "менеджер уточнит класс", "оформ"),
+        )
+        if fact:
+            return RuleOutcome(
+                rule_id=rule.rule_id,
+                subvariant="selling_readiness_enrollment_fallback",
+                route="bot_answer_self_for_pilot",
+                text=f"Если готовы к записи: {_short_sentence(fact, max_chars=300)}",
+                facts={key or "rules_engine.selling.readiness_enrollment": fact},
+                flags=("rules_engine_selling_readiness", "rules_engine_selling_readiness_fallback"),
+                checklist=("Rule engine: selling readiness — шаг записи только из client-safe enrollment-факта.",),
+                metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": "selling_readiness_enrollment_fallback"},
+            )
+        return RuleOutcome(
+            rule_id=rule.rule_id,
+            subvariant="selling_readiness_no_fact",
+            route="draft_for_manager",
+            text="Менеджер подтвердит порядок записи по выбранному курсу. Если класс, предмет и формат уже есть в диалоге, повторять их не нужно.",
+            facts={"rules_engine.selling.readiness_no_fact": "Нет client-safe факта с шагами записи; порядок подтверждает менеджер."},
+            flags=("rules_engine_selling_readiness", "rules_engine_selling_readiness_no_fact_handoff"),
+            checklist=("Rule engine: selling readiness — без enrollment-факта не расписывать шаги.",),
+            metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": "selling_readiness_no_fact"},
+        )
+    if bool(selling.get("exit_signal")):
+        suffix, suffix_facts = _selling_exit_step(facts, active_brand=brand)
+        text = suffix or "Спокойно подумайте; если нужно, подскажу, что важно для решения по этому варианту."
+        return RuleOutcome(
+            rule_id=rule.rule_id,
+            subvariant="selling_exit_fallback",
+            route="bot_answer_self_for_pilot",
+            text=text,
+            facts=suffix_facts or {"rules_engine.selling.exit_neutral": "Exit signal: мягкий нейтральный следующий шаг без давления."},
+            flags=("rules_engine_selling_exit_signal", "rules_engine_selling_exit_fallback"),
+            checklist=("Rule engine: selling exit — мягкий удерживающий шаг без давления и без неподтверждённых фактов.",),
+            metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": "selling_exit_fallback"},
+        )
+    return None
 
 
 def _rule_id_for_intent(intent: str) -> str:
@@ -1586,9 +1645,15 @@ def _apply_enrollment_process_rule(
         text = _short_sentence(fact, max_chars=300)
     else:
         key = "rules_engine.enrollment.process"
-        text = (
-            "Чтобы записаться, менеджер уточнит класс, предмет, формат и подходящую группу, затем подскажет оформление заявки и оплату. "
-            "Если класс, предмет и формат уже есть в диалоге, повторять их не нужно."
+        text = "Менеджер подтвердит порядок записи по выбранному курсу. Если класс, предмет и формат уже есть в диалоге, повторять их не нужно."
+        return _rule_outcome(
+            rule,
+            subvariant="how_to_enroll_no_fact",
+            route="draft_for_manager",
+            text=text,
+            facts={key: "Нет client-safe факта с шагами записи; порядок подтверждает менеджер."},
+            flags=("rules_engine_enrollment_process_no_fact_handoff",),
+            checklist="Rule engine: enrollment_process — без client-safe факта о записи не расписывать шаги автономно.",
         )
     return _rule_outcome(
         rule,

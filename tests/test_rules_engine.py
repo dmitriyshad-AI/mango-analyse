@@ -1034,6 +1034,90 @@ def test_rules_engine_selling_readiness_without_enrollment_fact_does_not_invent_
     assert "менеджер подтвердит порядок записи" in outcome.text
 
 
+def test_rules_engine_selling_readiness_fallback_answers_from_enrollment_fact() -> None:
+    rule = load_rules_registry()["price"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Мы готовы записаться, что нужно дальше?",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": False, "readiness": "ready"},
+        },
+        facts={
+            "process.enrollment.steps": (
+                "Фотон: для записи менеджер уточнит класс, предмет, формат и подходящую группу, затем поможет оформить заявку."
+            )
+        },
+        context={"active_brand": "foton", "selling_mode": "det"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_readiness_fallback" in outcome.flags
+    assert "менеджер уточнит класс, предмет, формат" in outcome.text
+    assert "generic" not in outcome.text.casefold()
+
+
+def test_rules_engine_selling_readiness_without_fact_is_short_handoff_not_steps() -> None:
+    rule = load_rules_registry()["price"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Мы готовы записаться, что нужно дальше?",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": False, "readiness": "ready"},
+        },
+        facts={},
+        context={"active_brand": "foton", "selling_mode": "det"},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "draft_for_manager"
+    assert "rules_engine_selling_readiness_no_fact_handoff" in outcome.flags
+    assert "Менеджер подтвердит порядок записи" in outcome.text
+    assert "оплат" not in outcome.text.casefold()
+
+
+def test_rules_engine_selling_exit_fallback_uses_trial_fact_or_neutral_step_without_pressure() -> None:
+    rule = load_rules_registry()["format_choice"]
+    with_trial = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Спасибо, гляну другие варианты.",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": True},
+        },
+        facts={"trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия для знакомства с подачей."},
+        context={"active_brand": "foton", "selling_mode": "det"},
+    )
+    neutral = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Спасибо, гляну другие варианты.",
+            "active_brand": "foton",
+            "selling": {"objection": "none", "exit_signal": True},
+        },
+        facts={},
+        context={"active_brand": "foton", "selling_mode": "det"},
+    )
+
+    assert with_trial is not None
+    assert with_trial.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_exit_fallback" in with_trial.flags
+    assert "фрагмент занятия" in with_trial.text
+    assert "Подсказать, как записаться" in with_trial.text
+    assert "успейте" not in with_trial.text.casefold()
+
+    assert neutral is not None
+    assert neutral.route == "bot_answer_self_for_pilot"
+    assert "Спокойно подумайте" in neutral.text
+    assert "менеджер" not in neutral.text.casefold()
+
+
 def test_rules_engine_selling_det_suffix_omits_dirty_address_online_fact_and_dedupes_fragment() -> None:
     rule = load_rules_registry()["format_choice"]
     facts = {

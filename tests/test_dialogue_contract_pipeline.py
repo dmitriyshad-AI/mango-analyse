@@ -48,7 +48,14 @@ def test_parse_contract_accepts_model_selling_signals_but_keeps_them_narrow() ->
             "answerability": "answer_self",
             "planner_intent": "pricing",
             "planner_confidence": 0.91,
-            "selling": {"objection": "price", "exit_signal": True, "extra": "ignored"},
+            "selling": {
+                "objection": "price",
+                "exit_signal": True,
+                "anxiety": True,
+                "unmet_need": "ребёнку нужна мягкая поддержка по физике",
+                "readiness": "ready",
+                "extra": "ignored",
+            },
         },
         active_brand="foton",
     )
@@ -62,9 +69,21 @@ def test_parse_contract_accepts_model_selling_signals_but_keeps_them_narrow() ->
         active_brand="foton",
     )
 
-    assert contract.selling == {"objection": "price", "exit_signal": True}
-    assert contract.to_json_dict()["selling"] == {"objection": "price", "exit_signal": True}
-    assert neutral.selling == {"objection": "none", "exit_signal": False}
+    assert contract.selling == {
+        "objection": "price",
+        "exit_signal": True,
+        "anxiety": True,
+        "unmet_need": "ребёнку нужна мягкая поддержка по физике",
+        "readiness": "ready",
+    }
+    assert contract.to_json_dict()["selling"] == dict(contract.selling)
+    assert neutral.selling == {
+        "objection": "none",
+        "exit_signal": False,
+        "anxiety": False,
+        "unmet_need": "",
+        "readiness": "exploring",
+    }
 
 
 def test_understanding_prompt_requests_selling_subtext_without_new_call() -> None:
@@ -75,8 +94,12 @@ def test_understanding_prompt_requests_selling_subtext_without_new_call() -> Non
     )
 
     assert "selling:" in prompt
+    assert "anxiety" in prompt
+    assert "unmet_need" in prompt
+    assert "readiness" in prompt
     assert "серьёзная сумма для семьи" in prompt
     assert "посоветуюсь с мужем" in prompt
+    assert "куда платить" in prompt
     assert "Реальный возврат, жалоба или спор оплаты остаются is_p0=true" in prompt
 
 

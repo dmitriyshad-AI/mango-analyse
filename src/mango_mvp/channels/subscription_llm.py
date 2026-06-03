@@ -1333,9 +1333,19 @@ def _merged_selling_signals(model_value: object, keyword_value: object) -> Mappi
     keyword = keyword_value if isinstance(keyword_value, Mapping) else {}
     model_objection = str(model.get("objection") or "none").strip().casefold()
     keyword_objection = str(keyword.get("objection") or "none").strip().casefold()
+    model_readiness = str(model.get("readiness") or "exploring").strip().casefold()
+    keyword_readiness = str(keyword.get("readiness") or "exploring").strip().casefold()
+    if model_readiness not in {"exploring", "comparing", "ready"}:
+        model_readiness = "exploring"
+    if keyword_readiness not in {"exploring", "comparing", "ready"}:
+        keyword_readiness = "exploring"
+    unmet_need = str(model.get("unmet_need") or "").strip() or str(keyword.get("unmet_need") or "").strip()
     return {
         "objection": "price" if model_objection == "price" or keyword_objection == "price" else "none",
         "exit_signal": bool(model.get("exit_signal")) or bool(keyword.get("exit_signal")),
+        "anxiety": bool(model.get("anxiety")) or bool(keyword.get("anxiety")),
+        "unmet_need": " ".join(unmet_need.split())[:120],
+        "readiness": model_readiness if model_readiness != "exploring" else keyword_readiness,
     }
 
 

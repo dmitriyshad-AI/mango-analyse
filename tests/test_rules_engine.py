@@ -523,6 +523,7 @@ def test_rules_engine_selling_gen_falls_back_on_unsupported_number_pressure_or_b
         "Понимаю, можно оформить на 24 месяца.",
         "Только сегодня успейте оформить оплату на 6, 10 или 12 месяцев.",
         "В УНПК можно оплатить частями на 6, 10 или 12 месяцев.",
+        "Исправим ребёнку оценку на пятёрку, если оформите оплату на 6 месяцев.",
     )
     for bad_text in bad_outputs:
         outcome = apply_rule(
@@ -817,6 +818,76 @@ def test_rules_engine_selling_price_objection_price_adds_payment_step_only_on_si
     assert "47 250 ₽" in plain.text
     assert "Подсказать удобный вариант" not in plain.text
     assert "rules_engine_selling_price_objection" not in plain.flags
+    assert "rules_engine_selling_anxiety" not in plain.flags
+    assert "rules_engine_selling_unmet_need" not in plain.flags
+    assert "rules_engine_selling_readiness" not in plain.flags
+
+
+def test_rules_engine_selling_full_signals_are_flagged_grounded_and_non_diagnostic() -> None:
+    rule = load_rules_registry()["format_choice"]
+    facts = {
+        "formats.foton.online": "Фотон: онлайн-курсы проходят дистанционно.",
+        "documents.license.foton": "Фотон: лицензия на образовательную деятельность № Л035-01234-77/00000000.",
+        "teachers.foton": "Фотон: преподаватели — эксперты ЕГЭ и члены жюри олимпиад.",
+        "process.enrollment.steps": "Фотон: менеджер уточнит класс, предмет и формат, затем поможет оформить заявку.",
+    }
+
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Боюсь, что зря потратим деньги: ребёнку физика тяжело даётся, но мы готовы записаться. Онлайн есть?",
+            "active_brand": "foton",
+            "selling": {
+                "objection": "none",
+                "exit_signal": False,
+                "anxiety": True,
+                "unmet_need": "ребёнку физика тяжело даётся",
+                "readiness": "ready",
+            },
+        },
+        facts=facts,
+        context={"active_brand": "foton", "selling_mode": "det", "selling_signals_full": True},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_anxiety" in outcome.flags
+    assert "rules_engine_selling_unmet_need" in outcome.flags
+    assert "rules_engine_selling_readiness" in outcome.flags
+    assert "лицензия на образовательную деятельность" in outcome.text
+    assert "Л035" not in outcome.text
+    assert "физика тяжело" not in outcome.text
+    assert "исправим" not in outcome.text.casefold()
+    assert "пят" not in outcome.text.casefold()
+    assert "менеджер уточнит класс" in outcome.text.casefold()
+    assert "УНПК" not in outcome.text
+
+
+def test_rules_engine_selling_readiness_without_enrollment_fact_does_not_invent_payment_process() -> None:
+    rule = load_rules_registry()["format_choice"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Онлайн есть? Уже готовы записаться, куда платить?",
+            "active_brand": "foton",
+            "selling": {
+                "objection": "none",
+                "exit_signal": False,
+                "anxiety": False,
+                "unmet_need": "",
+                "readiness": "ready",
+            },
+        },
+        facts={"formats.foton.online": "Фотон: онлайн-курсы проходят дистанционно."},
+        context={"active_brand": "foton", "selling_mode": "det", "selling_signals_full": True},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_readiness" in outcome.flags
+    assert "куда платить" not in outcome.text.casefold()
+    assert "оплат" not in outcome.text.casefold()
+    assert "менеджер подтвердит порядок записи" in outcome.text
 
 
 def test_rules_engine_format_choice_presents_only_verified_formats() -> None:
@@ -1174,10 +1245,16 @@ def test_rules_engine_selling_does_not_override_real_refund_p0() -> None:
             "primary_intent": "enrollment_process",
             "direct_question": "Дорого, я оплатил, занятий нет, верните деньги",
             "active_brand": "foton",
-            "selling": {"objection": "price", "exit_signal": True},
+            "selling": {
+                "objection": "price",
+                "exit_signal": True,
+                "anxiety": True,
+                "unmet_need": "ребёнку нужна поддержка",
+                "readiness": "ready",
+            },
         },
         facts={"process.enrollment.steps": "Фотон: менеджер помогает оформить заявку."},
-        context={"active_brand": "foton"},
+        context={"active_brand": "foton", "selling_signals_full": True},
     )
 
     assert outcome is not None
@@ -1185,3 +1262,6 @@ def test_rules_engine_selling_does_not_override_real_refund_p0() -> None:
     assert "high_risk_manager_only" in outcome.flags
     assert "rules_engine_selling_price_objection" not in outcome.flags
     assert "rules_engine_selling_exit_signal" not in outcome.flags
+    assert "rules_engine_selling_anxiety" not in outcome.flags
+    assert "rules_engine_selling_unmet_need" not in outcome.flags
+    assert "rules_engine_selling_readiness" not in outcome.flags

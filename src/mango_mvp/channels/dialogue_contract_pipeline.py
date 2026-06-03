@@ -163,7 +163,15 @@ class AnswerContract:
     planner_subvariant: str = ""
     planner_slots: Mapping[str, str] = field(default_factory=dict)
     planner_confidence: float = 0.0
-    selling: Mapping[str, Any] = field(default_factory=lambda: {"objection": "none", "exit_signal": False})
+    selling: Mapping[str, Any] = field(
+        default_factory=lambda: {
+            "objection": "none",
+            "exit_signal": False,
+            "anxiety": False,
+            "unmet_need": "",
+            "readiness": "exploring",
+        }
+    )
     forbidden_substitutions: tuple[str, ...] = ()
     client_state: str = ""
     answerability: str = "manager_only"
@@ -371,7 +379,7 @@ def build_understanding_prompt(
         "{ current_question, client_state, continued_topics[], denied_topics[], switched_topics[], forbidden_substitutions[],\n"
         "  known_slots: { имя: {value, source} },\n"
         "  planner_intent, planner_subvariant, planner_slots: {slot:value}, planner_confidence:0..1,\n"
-        "  selling: {objection:'price'|'none', exit_signal:bool},\n"
+        "  selling: {objection:'price'|'none', exit_signal:bool, anxiety:bool, unmet_need:str, readiness:'exploring'|'comparing'|'ready'},\n"
         "  subquestions: [ {text, answerable:'self'|'manager', question_type:'existence_yes_no'|'', existence_target, needed_fact_keys[], next_step} ],\n"
         "  answerability:'answer_self'|'manager_only', question_type:'existence_yes_no'|'', existence_target, is_p0:bool, p0_reason, confidence:0..1 }\n"
         "Правила:\n"
@@ -412,7 +420,13 @@ def build_understanding_prompt(
         "- selling — только для мягких коммерческих сигналов, НЕ для P0. objection='price', если клиент прямо или по смыслу "
         "сомневается в цене/бюджете: «дорого», «серьёзная сумма для семьи», «не потянем», «есть дешевле?». "
         "exit_signal=true, если клиент уходит подумать/сравнить/обсудить: «подумаю», «посоветуюсь с мужем/семьёй», "
-        "«посмотрю другие варианты». Для нейтрального «сколько стоит/расскажите» ставь objection='none', exit_signal=false. "
+        "«посмотрю другие варианты». anxiety=true, если клиент боится ошибиться, недоверяет или прямо спрашивает, "
+        "нормальный ли центр; НЕ путай с юридической угрозой или претензией. unmet_need — короткий внутренний ярлык "
+        "невысказанной потребности без дословной цитаты клиента, например 'нужна мягкая поддержка по физике'; не ставь туда "
+        "ПДн и не обещай оценку. readiness='ready', если клиент явно готов записываться/платить/просит следующий шаг; "
+        "например «куда платить», «как записаться», «готовы оформить». "
+        "readiness='comparing', если сравнивает варианты; иначе 'exploring'. Для нейтрального «сколько стоит/расскажите» "
+        "ставь objection='none', exit_signal=false, anxiety=false, unmet_need='', readiness='exploring'. "
         "Реальный возврат, жалоба или спор оплаты остаются is_p0=true и selling не должен менять маршрут.\n"
         f"Уже известные данные: {json.dumps(dict(known_slots), ensure_ascii=False)}\n"
         f"Фокус темы из памяти: {json.dumps(dict(topic_focus), ensure_ascii=False)}\n"
@@ -499,14 +513,28 @@ def _clean_planner_intent(value: object) -> str:
 
 
 def _clean_selling(value: object) -> Mapping[str, Any]:
+    default = {
+        "objection": "none",
+        "exit_signal": False,
+        "anxiety": False,
+        "unmet_need": "",
+        "readiness": "exploring",
+    }
     if not isinstance(value, MappingABC):
-        return {"objection": "none", "exit_signal": False}
+        return default
     objection = str(value.get("objection") or "none").strip().casefold()
     if objection != "price":
         objection = "none"
+    readiness = str(value.get("readiness") or "exploring").strip().casefold()
+    if readiness not in {"exploring", "comparing", "ready"}:
+        readiness = "exploring"
+    unmet_need = " ".join(str(value.get("unmet_need") or "").split())[:120]
     return {
         "objection": objection,
         "exit_signal": bool(value.get("exit_signal")),
+        "anxiety": bool(value.get("anxiety")),
+        "unmet_need": unmet_need,
+        "readiness": readiness,
     }
 
 

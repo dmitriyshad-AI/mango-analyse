@@ -12,6 +12,7 @@ from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
 
 DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
 SELLING_MODE_ENV = "TELEGRAM_A_SELLING_MODE"
+SELLING_SIGNALS_FULL_ENV = "TELEGRAM_A_SELLING_SIGNALS_FULL"
 MIGRATED = frozenset(
     {
         "teacher",
@@ -1658,6 +1659,30 @@ def _apply_selling_det_variants(
             flags.append("rules_engine_selling_exit_signal")
             applied.append("exit_signal")
 
+    if _selling_signals_full_enabled(context):
+        if bool(selling.get("anxiety")):
+            suffix, suffix_facts = _selling_anxiety_step(all_facts, active_brand=brand)
+            if suffix and suffix.casefold() not in text.casefold():
+                text = f"{text.rstrip()} {suffix}"
+                source.update(suffix_facts)
+                flags.append("rules_engine_selling_anxiety")
+                applied.append("anxiety")
+        unmet_need = str(selling.get("unmet_need") or "").strip()
+        if unmet_need:
+            suffix, suffix_facts = _selling_unmet_need_step(all_facts, active_brand=brand)
+            if suffix and suffix.casefold() not in text.casefold():
+                text = f"{text.rstrip()} {suffix}"
+                source.update(suffix_facts)
+                flags.append("rules_engine_selling_unmet_need")
+                applied.append("unmet_need")
+        if str(selling.get("readiness") or "exploring") == "ready":
+            suffix, suffix_facts = _selling_readiness_step(all_facts, active_brand=brand)
+            if suffix and suffix.casefold() not in text.casefold():
+                text = f"{text.rstrip()} {suffix}"
+                source.update(suffix_facts)
+                flags.append("rules_engine_selling_readiness")
+                applied.append("readiness")
+
     if not applied:
         return outcome
     metadata = {
@@ -1666,6 +1691,9 @@ def _apply_selling_det_variants(
             "applied": applied,
             "objection": str(selling.get("objection") or "none"),
             "exit_signal": bool(selling.get("exit_signal")),
+            "anxiety": bool(selling.get("anxiety")),
+            "unmet_need": str(selling.get("unmet_need") or "")[:120],
+            "readiness": str(selling.get("readiness") or "exploring"),
         },
     }
     return replace(outcome, text=text, facts=source, flags=tuple(dict.fromkeys(flags)), metadata=metadata)
@@ -1678,6 +1706,20 @@ def _selling_mode(context: Mapping[str, Any] | None) -> str:
             return value
     value = os.getenv(SELLING_MODE_ENV, "gen").strip().casefold()
     return value if value in {"gen", "det"} else "gen"
+
+
+def _selling_signals_full_enabled(context: Mapping[str, Any] | None) -> bool:
+    if isinstance(context, Mapping):
+        for key in ("selling_signals_full", SELLING_SIGNALS_FULL_ENV):
+            if key in context:
+                return _truthy(context.get(key))
+    return _truthy(os.getenv(SELLING_SIGNALS_FULL_ENV))
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "y"}
 
 
 def _selling_compose_fn(context: Mapping[str, Any] | None) -> Callable[[str], object] | None:
@@ -1761,6 +1803,11 @@ _SELLING_GUARANTEE_RE = re.compile(
     r"гарантир|100\s*%|обязательно\s+(?:поступ|сдад|получ)|точно\s+(?:поступ|сдад|получ)",
     re.I,
 )
+_SELLING_DIAGNOSIS_RE = re.compile(
+    r"диагноз|продиагностир|исправим\s+на\s+(?:5|пят)|подтянем\s+на\s+(?:5|пят)|"
+    r"сделаем\s+(?:отличник|хорошист)|реб[её]нок\s+точно\s+станет",
+    re.I,
+)
 _SELLING_NUMBER_RE = re.compile(r"\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:₽|%|руб(?:\.|лей|ля|ль)?|месяц(?:ев|а)?|дн(?:ей|я)?|раз(?:а)?|балл(?:ов|а)?)?")
 
 
@@ -1779,6 +1826,8 @@ def _verify_selling_generated_text(
         return False, "pressure"
     if _SELLING_GUARANTEE_RE.search(candidate):
         return False, "guarantee"
+    if _SELLING_DIAGNOSIS_RE.search(candidate):
+        return False, "diagnosis_or_grade_promise"
     fact_text = " ".join(str(value or "") for value in facts.values())
     fact_norm = _normalize_number_surface(fact_text)
     for token in _SELLING_NUMBER_RE.findall(candidate):
@@ -1926,6 +1975,73 @@ def _selling_exit_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[
         )
     return (
         "Спокойно подумайте; если нужно, подскажу, что важно для решения по этому варианту.",
+        {},
+    )
+
+
+def _selling_anxiety_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    key, fact = _brand_scoped_first_matching_fact(
+        facts,
+        active_brand,
+        ("license", "лиценз", "документ", "юрлиц", "официаль"),
+    )
+    if fact:
+        return (
+            "Чтобы было спокойнее: по подтверждённым данным есть лицензия на образовательную деятельность; реквизиты можно запросить у менеджера.",
+            {key or "rules_engine.selling.anxiety_license": fact},
+        )
+    key, fact = _brand_scoped_first_matching_fact(
+        facts,
+        active_brand,
+        ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
+    )
+    if fact:
+        return (
+            f"Чтобы было спокойнее, можно начать с подтверждённого пробного шага: {_short_sentence(fact)}",
+            {key or "rules_engine.selling.anxiety_trial": fact},
+        )
+    return "", {}
+
+
+def _selling_unmet_need_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    key, fact = _brand_scoped_first_matching_fact(
+        facts,
+        active_brand,
+        ("teacher", "teachers", "преподав", "педагог", "мфти", "мгу", "вшэ", "мифи"),
+    )
+    if not fact:
+        key, fact = _brand_scoped_first_matching_fact(
+            facts,
+            active_brand,
+            ("process.enrollment", "запис", "менеджер уточнит класс", "подбер", "заявк"),
+        )
+    if not fact:
+        key, fact = _brand_scoped_first_matching_fact(
+            facts,
+            active_brand,
+            ("trial", "пробн", "фрагмент занятия", "online_fragment", "trial_class"),
+        )
+    if not fact:
+        return "", {}
+    return (
+        f"По вашей ситуации лучше опираться на подтверждённые условия, без обещаний оценки: {_short_sentence(fact)}",
+        {key or "rules_engine.selling.unmet_need_fact": fact},
+    )
+
+
+def _selling_readiness_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    key, fact = _brand_scoped_first_matching_fact(
+        facts,
+        active_brand,
+        ("process.enrollment", "enrollment", "запис", "заявк", "менеджер уточнит класс", "оформ"),
+    )
+    if fact:
+        return (
+            f"Если готовы к следующему шагу: {_short_sentence(fact)}",
+            {key or "rules_engine.selling.readiness_enrollment": fact},
+        )
+    return (
+        "Если готовы к следующему шагу, менеджер подтвердит порядок записи по выбранному курсу.",
         {},
     )
 

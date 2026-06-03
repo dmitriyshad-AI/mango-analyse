@@ -597,6 +597,33 @@ def test_rules_engine_selling_price_objection_unpk_uses_only_unpk_terms() -> Non
     assert "Долями" not in outcome.text
 
 
+def test_rules_engine_selling_cross_brand_uses_canonical_current_center_phrase() -> None:
+    rule = load_rules_registry()["installment"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "installment",
+            "direct_question": "А в Фотоне дешевле и есть рассрочка?",
+            "active_brand": "unpk",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts={
+            "payment_options.bank_installment.absent.client_safe_text": "В УНПК отдельной банковской рассрочки нет.",
+            "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+        },
+        context={"active_brand": "unpk", "selling_signals_full": True},
+    )
+
+    assert outcome is not None
+    assert outcome.route == "bot_answer_self_for_pilot"
+    assert outcome.text == "Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра."
+    assert "rules_engine_cross_brand_current_center" in outcome.flags
+    assert "Фотон" not in outcome.text
+    assert "Т-Банк" not in outcome.text
+    assert "Долями" not in outcome.text
+    assert "менеджер" not in outcome.text.casefold()
+
+
 def test_rules_engine_discount_second_subject_multichild_stacking_and_promocode_are_safe() -> None:
     rule = load_rules_registry()["discount"]
     facts = {
@@ -1007,6 +1034,63 @@ def test_rules_engine_selling_readiness_without_enrollment_fact_does_not_invent_
     assert "менеджер подтвердит порядок записи" in outcome.text
 
 
+def test_rules_engine_selling_det_suffix_omits_dirty_address_online_fact_and_dedupes_fragment() -> None:
+    rule = load_rules_registry()["format_choice"]
+    facts = {
+        "formats.unpk.online": "УНПК: онлайн-курсы проходят дистанционно.",
+        "dirty.address.online": "УНПК: адрес и место занятий, онлайн — да.",
+        "trial.unpk.same_dirty": "УНПК: адрес и место занятий, онлайн — да.",
+    }
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Переживаю, ребёнку тяжело, онлайн есть?",
+            "active_brand": "unpk",
+            "selling": {
+                "objection": "none",
+                "exit_signal": False,
+                "anxiety": True,
+                "unmet_need": "ребёнку тяжело",
+                "readiness": "none",
+            },
+        },
+        facts=facts,
+        context={"active_brand": "unpk", "selling_mode": "det", "selling_signals_full": True},
+    )
+
+    assert outcome is not None
+    assert "адрес и место занятий" not in outcome.text.casefold()
+    assert outcome.text.count("онлайн-курсы проходят дистанционно") == 1
+    assert "rules_engine_selling_anxiety" not in outcome.flags
+    assert "rules_engine_selling_unmet_need" not in outcome.flags
+
+
+def test_rules_engine_selling_det_exact_repeat_gets_short_variation() -> None:
+    rule = load_rules_registry()["installment"]
+    plan = {
+        "primary_intent": "installment",
+        "direct_question": "Дороговато, можно частями?",
+        "active_brand": "foton",
+        "selling": {"objection": "price", "exit_signal": False},
+    }
+    facts = {"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."}
+    first = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "selling_mode": "det"})
+    assert first is not None
+    second = apply_rule(
+        rule,
+        plan=plan,
+        facts=facts,
+        context={"active_brand": "foton", "selling_mode": "det", "previous_bot_texts": [first.text]},
+    )
+
+    assert second is not None
+    assert second.text != first.text
+    assert second.text.startswith("Если коротко:")
+    assert "6, 10 или 12 месяцев" in second.text
+    assert "Долями" in second.text
+
+
 def test_rules_engine_selling_full_signals_are_default_off_for_plain_domain_answer() -> None:
     rule = load_rules_registry()["format_choice"]
     outcome = apply_rule(
@@ -1281,7 +1365,10 @@ def test_rules_engine_selling_exit_signal_is_grounded_or_neutral() -> None:
     assert "фрагмент занятия" in grounded.text
     assert "Подсказать, как записаться" in grounded.text
 
-    assert cross_brand is None
+    assert cross_brand is not None
+    assert cross_brand.text == "Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра."
+    assert "УНПК" not in cross_brand.text
+    assert "cross_brand_safe_template_applied" in cross_brand.flags
 
 
 def test_rules_engine_camp_live_seats_and_refund_stay_manager_only() -> None:

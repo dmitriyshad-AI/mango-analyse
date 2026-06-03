@@ -167,6 +167,9 @@ def apply_rule(
     facts: Mapping[str, str],
     context: Mapping[str, Any] | None = None,
 ) -> RuleOutcome | None:
+    cross_brand = _cross_brand_current_center_outcome(rule, plan=plan, context=context)
+    if cross_brand is not None:
+        return cross_brand
     outcome: RuleOutcome | None
     if rule.rule_id == "teacher":
         outcome = _apply_teacher_rule(rule, plan=plan, facts=facts, context=context)
@@ -203,6 +206,32 @@ def apply_rule(
     else:
         return None
     return _apply_selling_variants(outcome, rule=rule, plan=plan, facts=facts, context=context)
+
+
+def _cross_brand_current_center_outcome(
+    rule: Rule,
+    *,
+    plan: Mapping[str, Any],
+    context: Mapping[str, Any] | None,
+) -> RuleOutcome | None:
+    question = _question_text(plan, context)
+    brand = _active_brand(plan, context)
+    if brand not in {"foton", "unpk"} or not _mentions_other_brand(question, brand):
+        return None
+    if not (_selling_signals_full_enabled(context) or bool(_selling_view(plan, context))):
+        return None
+    if _real_refund_claim(question):
+        return None
+    return RuleOutcome(
+        rule_id=rule.rule_id,
+        subvariant="cross_brand_current_center",
+        route="bot_answer_self_for_pilot",
+        text="Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра.",
+        facts={"rules_engine.cross_brand.current_center": "Кросс-бренд: не сравнивать организации, отвечать только в рамках active brand."},
+        flags=("rules_engine_cross_brand_current_center", "cross_brand_safe_template_applied"),
+        checklist=("Rule engine: cross-brand — не консультировать по другому бренду и не сравнивать условия.",),
+        metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": "cross_brand_current_center", "brand": brand},
+    )
 
 
 def _rule_id_for_intent(intent: str) -> str:
@@ -1765,38 +1794,39 @@ def _apply_selling_det_variants(
 
     if bool(selling.get("exit_signal")):
         suffix, suffix_facts = _selling_exit_step(all_facts, active_brand=brand)
-        if suffix and suffix.casefold() not in text.casefold():
-            text = f"{text.rstrip()} {suffix}"
-            source.update(suffix_facts)
+        appended = _append_selling_suffix(text, source, suffix, suffix_facts)
+        if appended is not None:
+            text, source = appended
             flags.append("rules_engine_selling_exit_signal")
             applied.append("exit_signal")
 
     if _selling_signals_full_enabled(context):
         if bool(selling.get("anxiety")):
             suffix, suffix_facts = _selling_anxiety_step(all_facts, active_brand=brand)
-            if suffix and suffix.casefold() not in text.casefold():
-                text = f"{text.rstrip()} {suffix}"
-                source.update(suffix_facts)
+            appended = _append_selling_suffix(text, source, suffix, suffix_facts)
+            if appended is not None:
+                text, source = appended
                 flags.append("rules_engine_selling_anxiety")
                 applied.append("anxiety")
         unmet_need = str(selling.get("unmet_need") or "").strip()
         if unmet_need:
             suffix, suffix_facts = _selling_unmet_need_step(all_facts, active_brand=brand)
-            if suffix and suffix.casefold() not in text.casefold():
-                text = f"{text.rstrip()} {suffix}"
-                source.update(suffix_facts)
+            appended = _append_selling_suffix(text, source, suffix, suffix_facts)
+            if appended is not None:
+                text, source = appended
                 flags.append("rules_engine_selling_unmet_need")
                 applied.append("unmet_need")
         if str(selling.get("readiness") or "exploring") == "ready":
             suffix, suffix_facts = _selling_readiness_step(all_facts, active_brand=brand)
-            if suffix and suffix.casefold() not in text.casefold():
-                text = f"{text.rstrip()} {suffix}"
-                source.update(suffix_facts)
+            appended = _append_selling_suffix(text, source, suffix, suffix_facts)
+            if appended is not None:
+                text, source = appended
                 flags.append("rules_engine_selling_readiness")
                 applied.append("readiness")
 
     if not applied:
         return outcome
+    text = _avoid_exact_rule_repeat(text, context)
     metadata = {
         **dict(outcome.metadata),
         "selling": {
@@ -2082,8 +2112,98 @@ def _first_percent(text: str) -> str:
     return f"{match.group(1)}%" if match else ""
 
 
+_BAD_SELLING_SUPPORT_FACT_RE = re.compile(
+    r"адрес|место\s+занятий|площадк|сретен|красносельск|скорняж|пацаев|институтск|"
+    r"контакт|телефон|на\s+связи|ежедневно\s+с\s+\d",
+    re.I,
+)
+
+
+def _append_selling_suffix(
+    text: str,
+    source: Mapping[str, str],
+    suffix: str,
+    suffix_facts: Mapping[str, str],
+) -> tuple[str, dict[str, str]] | None:
+    suffix_text = " ".join(str(suffix or "").split()).strip()
+    if not suffix_text:
+        return None
+    current_norm = _norm_for_repeat(text)
+    if _norm_for_repeat(suffix_text) in current_norm:
+        return None
+    for fact in suffix_facts.values():
+        if _selling_fact_already_used(fact, text=text, source=source):
+            return None
+    updated = dict(source)
+    updated.update(suffix_facts)
+    return f"{text.rstrip()} {suffix_text}", updated
+
+
+def _selling_fact_already_used(fact: str, *, text: str, source: Mapping[str, str]) -> bool:
+    fact_norm = _norm_for_repeat(_short_sentence(fact))
+    if not fact_norm:
+        return False
+    if fact_norm in _norm_for_repeat(text):
+        return True
+    return any(fact_norm == _norm_for_repeat(_short_sentence(value)) for value in source.values())
+
+
+def _avoid_exact_rule_repeat(text: str, context: Mapping[str, Any] | None) -> str:
+    current = _norm_for_repeat(text)
+    if not current:
+        return text
+    if any(current == _norm_for_repeat(previous) for previous in _previous_rule_bot_texts(context)):
+        return f"Если коротко: {text.strip()}"
+    return text
+
+
+def _previous_rule_bot_texts(context: Mapping[str, Any] | None) -> tuple[str, ...]:
+    if not isinstance(context, Mapping):
+        return ()
+    result: list[str] = []
+    for key in ("previous_bot_texts", "recent_bot_texts"):
+        value = context.get(key)
+        if isinstance(value, (list, tuple)):
+            result.extend(str(item or "") for item in value if str(item or "").strip())
+    recent = context.get("recent_messages")
+    if isinstance(recent, (list, tuple)):
+        for item in recent:
+            if isinstance(item, Mapping):
+                role = str(item.get("role") or item.get("sender") or item.get("direction") or "").casefold()
+                if role in {"bot", "assistant", "outbound"}:
+                    text = str(item.get("text") or item.get("message") or "").strip()
+                    if text:
+                        result.append(text)
+    return tuple(result)
+
+
+def _norm_for_repeat(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").casefold().replace("ё", "е")).strip()
+
+
+def _clean_selling_support_fact(
+    facts: Mapping[str, str],
+    active_brand: str,
+    markers: Sequence[str],
+) -> tuple[str, str]:
+    other_brand_markers = ("унпк", "kmipt") if active_brand == "foton" else ("фотон", "cdpofoton", "цдпо") if active_brand == "unpk" else ()
+    for key, value in facts.items():
+        text = " ".join(str(value or "").split()).strip()
+        combined = f"{key} {text}".casefold().replace("ё", "е")
+        if not text:
+            continue
+        if other_brand_markers and any(marker in combined for marker in other_brand_markers):
+            continue
+        if not any(str(marker).casefold().replace("ё", "е") in combined for marker in markers):
+            continue
+        if _BAD_SELLING_SUPPORT_FACT_RE.search(text) or _BAD_SELLING_SUPPORT_FACT_RE.search(str(key)):
+            continue
+        return str(key), text
+    return "", ""
+
+
 def _selling_exit_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
-    key, fact = _brand_scoped_first_matching_fact(
+    key, fact = _clean_selling_support_fact(
         facts,
         active_brand,
         ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
@@ -2100,7 +2220,7 @@ def _selling_exit_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[
 
 
 def _selling_anxiety_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
-    key, fact = _brand_scoped_first_matching_fact(
+    key, fact = _clean_selling_support_fact(
         facts,
         active_brand,
         ("license", "лиценз", "документ", "юрлиц", "официаль"),
@@ -2110,7 +2230,7 @@ def _selling_anxiety_step(facts: Mapping[str, str], *, active_brand: str) -> tup
             "Чтобы было спокойнее: по подтверждённым данным есть лицензия на образовательную деятельность; реквизиты можно запросить у менеджера.",
             {key or "rules_engine.selling.anxiety_license": fact},
         )
-    key, fact = _brand_scoped_first_matching_fact(
+    key, fact = _clean_selling_support_fact(
         facts,
         active_brand,
         ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
@@ -2124,19 +2244,19 @@ def _selling_anxiety_step(facts: Mapping[str, str], *, active_brand: str) -> tup
 
 
 def _selling_unmet_need_step(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
-    key, fact = _brand_scoped_first_matching_fact(
+    key, fact = _clean_selling_support_fact(
         facts,
         active_brand,
         ("teacher", "teachers", "преподав", "педагог", "мфти", "мгу", "вшэ", "мифи"),
     )
     if not fact:
-        key, fact = _brand_scoped_first_matching_fact(
+        key, fact = _clean_selling_support_fact(
             facts,
             active_brand,
             ("process.enrollment", "запис", "менеджер уточнит класс", "подбер", "заявк"),
         )
     if not fact:
-        key, fact = _brand_scoped_first_matching_fact(
+        key, fact = _clean_selling_support_fact(
             facts,
             active_brand,
             ("trial", "пробн", "фрагмент занятия", "online_fragment", "trial_class"),

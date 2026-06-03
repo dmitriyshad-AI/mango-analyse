@@ -2345,7 +2345,7 @@ def _selling_unmet_need_step(facts: Mapping[str, str], *, active_brand: str) -> 
     if not fact:
         return "", {}
     return (
-        f"По вашей ситуации лучше опираться на подтверждённые условия, без обещаний оценки: {_short_sentence(fact)}",
+        f"Если по сути — вот что подтверждено: {_short_sentence(fact)}",
         {key or "rules_engine.selling.unmet_need_fact": fact},
     )
 

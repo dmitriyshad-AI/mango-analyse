@@ -719,10 +719,20 @@ def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() ->
     )
     assert strip_internal_service_markers("без обещаний оценки: Контрольные помогают увидеть динамику.") == "Контрольные помогают увидеть динамику."
     assert strip_internal_service_markers("без давления на клиента: Можно спокойно сравнить варианты.") == "Можно спокойно сравнить варианты."
+    assert (
+        strip_internal_service_markers(
+            "Текст. По вашей ситуации лучше опираться на подтверждённые условия, без обещаний оценки: Факт."
+        )
+        == "Текст. Факт."
+    )
+    assert strip_internal_service_markers("Ориентир без обещаний результата: Факт.") == "Ориентир Факт."
 
     normal = "Если удобно, повторите класс и предмет — я сориентирую по подходящему варианту."
     assert strip_internal_service_markers(normal) == normal
     assert not draft_has_internal_service_markers(normal)
+    normal_conditions = "По условиям курса можно опираться на подтверждённые факты из договора."
+    assert strip_internal_service_markers(normal_conditions) == normal_conditions
+    assert not draft_has_internal_service_markers(normal_conditions)
 
     leaked = "Менеджер подтвердит порядок записи. Если класс, предмет и формат уже есть в диалоге, повторять их не нужно."
     assert strip_internal_service_markers(leaked) == ""

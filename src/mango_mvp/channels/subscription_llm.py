@@ -401,6 +401,11 @@ INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE = re.compile(
     r"^\s*без\s+(?:обещан\w+|давлен\w+)[^:\n]{0,180}:\s*",
     re.I,
 )
+INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE = re.compile(
+    r"\s*(?:по\s+вашей\s+ситуации\s+лучше\s+опираться\s+на\s+подтвержд[её]нные\s+условия,\s*)?"
+    r"без\s+обещан\w+[^:\n]{0,120}:\s*",
+    re.I,
+)
 INTERNAL_CLIENT_INSTRUCTION_RE = re.compile(
     r"(?:\bповторять\s+(?:их\s+)?не\s+нужно\b|\bне\s+упоминай\w*\b|"
     r"\bесли\b[^.?!\n]{0,140}\bуже\s+есть\s+в\s+диалоге\b[^.?!\n]{0,140})",
@@ -3034,6 +3039,7 @@ def strip_internal_service_markers(text: str) -> str:
         value = value.lstrip()
     if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
         return ""
+    value = INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.sub(" ", value)
     value = INTERNAL_SERVICE_MARKER_RE.sub("", value)
     value = INTERNAL_SERVICE_TOKEN_RE.sub("", value)
     if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
@@ -3050,6 +3056,7 @@ def draft_has_internal_service_markers(text: str) -> bool:
         or INTERNAL_SERVICE_TOKEN_RE.search(value)
         or INTERNAL_SCAFFOLD_PREFIX_RE.search(value)
         or INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE.search(value)
+        or INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.search(value)
         or INTERNAL_CLIENT_INSTRUCTION_RE.search(value)
         or INTERNAL_MANAGER_DRAFT_RE.search(value)
     )

@@ -1271,6 +1271,9 @@ def test_rules_engine_selling_unmet_need_never_echoes_free_text_or_promises_grad
     assert "дво" not in outcome.text.casefold()
     assert "исправ" not in outcome.text.casefold()
     assert "на 5" not in outcome.text
+    assert "Если по сути — вот что подтверждено:" in outcome.text
+    assert "без обещаний оценки" not in outcome.text.casefold()
+    assert "опираться на подтверждённые условия" not in outcome.text.casefold()
 
 
 def test_rules_engine_selling_anxiety_does_not_invent_license_or_result_guarantee() -> None:

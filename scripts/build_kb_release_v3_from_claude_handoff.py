@@ -2161,7 +2161,7 @@ def render_objection_response_text(path: tuple[str, ...], value: Any, *, brand_l
         )
     if "приведи друга" in raw.casefold() and "условие:" not in raw.casefold():
         raw = f"{raw.rstrip('.')}; условие: проверить по программе «приведи друга» перед отправкой"
-    return f"{brand_label}: черновик для ситуации «{topic}»: {raw.rstrip('.')}."
+    return f"{raw.rstrip('.')}."
 
 
 def render_social_proof_text(path: tuple[str, ...], value: Any, *, brand_label: str) -> str:

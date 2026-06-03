@@ -1,0 +1,270 @@
+schema_version: kb_facts_internal_v6_1_2026_05_20_team_answers
+generated_at: '2026-05-20'
+brand: internal
+forbidden_for_client: true
+allowed_for_client_answer: false
+usable_in_client_draft: false
+usable_in_manager_internal_view: true
+legal_entities_full_map:
+- name: АНО ДПО «УНПК МФТИ»
+  brand: unpk
+  used_for:
+  - Очные курсы УНПК Долгопрудный
+  - ЛШ городская АНО июль
+  - ЛВШ Менделеево
+  - Маткапитал
+  - Налоговый вычет
+  license: 70369 от 06.03.2013
+- name: НОУ УНПК МФТИ
+  brand: unpk
+  used_for:
+  - Альтернативное юр. лицо УНПК
+- name: ООО «ЦДПО Фотон»
+  brand: foton
+  used_for:
+  - Курсы Фотон Москва
+  - Онлайн Фотон
+  - ЛШ городская Москва Фотон
+  - Рассрочка Т-Банк
+  receipt_rules:
+    under_18: QR + Квитанция без НДС
+    over_18: Квитанция с НДС 5%
+- name: ООО «ЦРДО Фотон»
+  brand: foton
+  used_for:
+  - Альтернативное юр. лицо Фотон
+cross_brand_handoff_notes:
+  installment:
+    rule: Рассрочка Т-Банк/Долями есть только в Фотоне. Если клиент бота УНПК спросил
+      про рассрочку — бот не упоминает Фотон, а делает handoff менеджеру. Менеджер
+      сам решает, отправлять ли клиента на отдельный диалог с Фотоном (если организационно
+      возможно). Менеджер УНПК не консультирует клиента по условиям Фотона в текущем
+      диалоге.
+  intensive:
+    rule: ОГЭ-интенсив есть только в Фотоне (8-9 кл). ЕГЭ-интенсив есть только в УНПК
+      (10-11 кл). Каждый бот говорит только про свой интенсив. На «нет такого продукта»
+      — нейтральный handoff менеджеру без названия другого бренда.
+  matkap:
+    rule: Маткапитал принимает только УНПК (через АНО ДПО). Бот Фотон при вопросе
+      про маткапитал делает handoff менеджеру, не консультируя по УНПК. Менеджер Фотона
+      может организовать переход на отдельный диалог с УНПК, но это не задача бота.
+  lvsh_mendeleevo:
+    rule: Менделеево — общая физическая база. Свои лагеря там проводят и ЦДПО Фотон,
+      и АНО ДПО УНПК МФТИ. Бот клиенту юр.лицо не раскрывает. Договор для клиента
+      бота Фотон оформляется через ЦДПО Фотон; для клиента бота УНПК — через АНО ДПО
+      УНПК МФТИ.
+  shared_address_patsayeva:
+    address: Долгопрудный, Проспект Пацаева, 7к1
+    rule: Пацаева используется только УНПК МФТИ. У Фотона очных занятий на Пацаева
+      НЕТ (Фотон в Долгопрудном работает в Школе дизайна — но бот про неё не упоминает).
+      Если клиент бота Фотон спрашивает «можно очно в Долгопрудном?» — handoff менеджеру.
+crm_brand_groups:
+  amo:
+    brand_split_in_funnels: false
+    rule: Воронок с брендом нет. Бот определяет бренд НЕ из AMO, а из самого Telegram-канала
+      входа.
+  tallanto:
+    brand_split_in_groups: false
+    heuristics_for_manager:
+      mfti_branch: МФТИ-филиал — почти всегда УНПК МФТИ
+      patsayeva_branch: Пацаева — почти всегда УНПК МФТИ
+      moscow: Москва — есть и УНПК и Фотон (скорее Фотон, но много исключений)
+      online: Онлайн — есть и УНПК и Фотон (скорее Фотон, но много исключений)
+    note: Эвристики не используются ботом — они для менеджера. Бот определяет бренд
+      только по каналу входа.
+    detection_in_scripts: 'В скрипте обзвонов Насти: ''Если в названии группы стоит
+      (УНПК), то звоним от УНПК. Остальным звоним от ФОТОН.'' — это правило обзвонов,
+      не определение бренда.'
+  bot_brand_detection_strategy:
+    architecture: two_separate_bots
+    foton_bot_telegram: '@TODO_foton_bot'
+    unpk_bot_telegram: '@TODO_unpk_bot'
+    additional_lvsh_channel: '@kmiptlvs (выездные школы, относится к УНПК)'
+    safety_implication: 'Полная изоляция: клиент пишет одному боту, второй не видит.
+      Cross-brand утечка невозможна на уровне канала.'
+high_risk_keywords:
+  always_manager_only:
+  - вернуть деньги
+  - возврат денег
+  - расторгн
+  - забрать деньги
+  - отказ от обучения
+  - жалоб
+  - претензи
+  - роспотребнадзор
+  - прокуратур
+  - суд
+  - иск
+  - нарушаете права
+  - отзыв в интернете
+  - обещайте баллов
+  - гарантируйте баллов
+  - гарантируйте поступление
+  removed_2026_05_17_dmitri_decision:
+  - маткапитал (общая лексика — теперь идёт по информационному маршруту)
+  - региональный
+  - семейный сертификат
+  - налоговый
+  - вычет
+  - 13%
+  - юридический (общая лексика)
+  - оплатил
+  - провели платёж
+  - зачислили
+internal_processes:
+  amo_duplicate_check: Проверить активную сделку перед связью
+  history_vs_lead:
+    history: Для филиала, синхронизируется с Tallanto
+    lead_feed: Только КЦ
+  mango_carousel_url: https://lk.mango-office.ru
+oc_script_brand_routing:
+  source: Обзвоны - скрипты (Google Drive)
+  rule_internal: Если в названии группы стоит (УНПК) — звоним от УНПК. Остальным —
+    от Фотон.
+  client_facing: false
+cross_brand_sources_inventory:
+- source_id: unpk_to_foton_script.txt
+  type: google_drive_doc_export
+  severity: critical
+  rule: Весь файл — internal_only. Это скрипт перевода клиента с УНПК на Фотон. Бот
+    ни одного из брендов не должен использовать ни одну фразу из этого скрипта.
+  found_in: enrichment_log/01_gdrive_exports_review_part2.md
+- source_id: courses_pk_mfti_unpk.txt
+  type: google_drive_doc_export
+  severity: critical
+  rule: Стратегический pre-sales документ для МФТИ/РосНОУ. Перечисляет обе компании
+    и внутренних людей (Тавлеев, Фабарисов и т.д.). Internal_only.
+  found_in: enrichment_log/01_gdrive_exports_review_part3.md
+- source_id: script_positive_answer_flow.txt
+  type: google_drive_doc_export
+  severity: critical
+  rule: Пункт 8 содержит фразу «лучшими являются две компании УНПК МФТИ и Фотон».
+    Эта фраза запрещена в клиентском тексте.
+  found_in: enrichment_log/01_gdrive_exports_review_part4.md
+- source_id: qa_pairs.csv:cross_brand_21
+  type: qa_pairs_subset
+  severity: high
+  count: 21
+  rule: 21 QA-пара упоминает оба бренда в одном ответе. Не использовать как client_safe_text.
+  found_in: enrichment_log/03_qa_pairs_topX_per_theme.md
+- source_id: knowledge_chunks.csv:brand=mixed
+  type: chunks_subset
+  severity: high
+  count: 101
+  rule: 101 chunk с brand=mixed. Внутренние — нельзя как client_safe_text.
+  found_in: enrichment_log/04_chunks_per_theme.md
+- source_id: conversation_scripts.csv:cross_brand_3
+  type: scripts_subset
+  severity: critical
+  count: 3
+  rule: 3 скрипта явно cross-brand. Перечислены в 06_conversation_scripts_classification.md.
+  found_in: enrichment_log/06_conversation_scripts_classification.md
+returns_analytics_25_26:
+  status: verified
+  top_reasons:
+  - reason: по СО (семейному обучению)
+    count_online: 15
+  - reason: уровень группы не подходит
+    count_online: 10
+  insight_for_bot: '2026-05-20 команда поправила: диагностика идёт ПОСЛЕ оплаты и
+    включена в стоимость обучения. После диагностики — распределение на учебные группы
+    по уровню. Бот не предлагает диагностику как способ снизить риск возврата ДО оплаты.'
+  client_facing: false
+open_discrepancies:
+- id: skoryaznyy_vs_skornyaznyy
+  issue: 'Адрес Москвы пишется по-разному в разных источниках: «Скоряжный пер.» и
+    «Скорняжный пер.»'
+  resolution: 'ЗАКРЫТО маркетингом 2026-05-17: «Скорняжный и только так». Заменено
+    во всех YAML.'
+  status: closed
+- id: dolyami_terms
+  issue: 'Долями: в одном источнике 4 части, в другом 3/6/10 месяцев'
+  resolution: ЗАКРЫТО блоком A. С 2026 — Долями Плюс Т-Банк 3/6/10 мес, 0-16.9%. Раньше
+    — Тинькофф 6/12 мес.
+  status: closed
+- id: foton_online_second_subject_discount
+  issue: В одном источнике онлайн Фотон 2-й предмет = 20%, в другом 30%
+  resolution_needed: Уточнить актуальный размер скидки
+- id: mfti_employees_discount_pct
+  issue: В одном источнике 10%, в другом 25%
+  resolution_needed: Уточнить — возможно, 25% это устаревшее или для разных продуктов
+- id: telegram_handle_foton
+  issue: В моих YAML telegram Фотон = @unpkmfti, но это handle с историческим именем
+  resolution: 'ЗАКРЫТО 2026-05-19: handle обновлён на @cdpoFoton.'
+  status: closed
+signatories_2026:
+  ooo_cdpo_foton:
+    name: Кузнецова А.Е.
+    authority: Доверенность №6 от 17.11.2025
+  ano_dpo_unpk_mfti:
+    name: Харламов М.Ю.
+    authority: Доверенность №8 от 15.08.2025
+  note: Это для бухгалтерии и менеджеров. Бот клиенту имена подписантов не озвучивает.
+refund_withholdings_2026:
+  ooo_cdpo_foton:
+    deposit_kept: 15000
+    withholding_tiers:
+    - 40 000
+    - 50 000
+    - 100 000
+    note: Точные условия и пороги — см. договор и заявление на возврат Фотон
+  ano_dpo_unpk_mfti:
+    withholding_tiers:
+    - 20 000
+    - 30 000
+    - 50 000
+    - 100 000
+    note: Точные условия и пороги — см. договор и заявление на возврат АНО
+  client_facing: false
+  bot_behavior_on_refund_question: manager_only (high_risk). Бот не озвучивает конкретные
+    суммы удержаний.
+vat_exemption:
+  legal_basis: подп. 4 п. 2 ст. 149 НК РФ
+  applicability: Все 4 юр.лица как образовательные организации
+  client_facing: false
+  manager_use: Менеджер может ссылаться при оформлении договоров с НДС/без НДС
+teacher_promo_codes:
+  status: removed_2026_05_19
+  bot_use: false
+  manager_use: Промокоды больше не применяются.
+  codes: []
+  flocktory:
+    discount_options:
+    - -10 000 ₽
+    - -20 000 ₽
+  brand_internal_split:
+    note: Уточнить у маркетинга, к какому бренду относится каждый промокод
+medical_certificates_validity:
+  form_079u:
+    valid_for: 3 месяца
+    purpose: Для летних выездных лагерей
+  certificate_291:
+    valid_for: 3 дня
+    purpose: Срочная справка
+source_coverage_audit_2026_05_17:
+  total_sources: 208
+  by_kind:
+    website_extract: 134
+    local_extract: 52
+    google_drive_doc_export: 21
+    local_docx: 1
+  by_brand:
+    foton: 110
+    unpk: 74
+    mixed: 24
+    unknown: 0
+  explicit_processed: 28
+  indirect_via_chunks_or_qa: 17
+  not_touched: 163
+  usable_for_precise_answer: 0
+  critical_untouched:
+  - source: kc_knowledge_base.docx
+    reason: главный docx, прямо не разобран
+    action: Прочитать в следующей итерации (если будут пробелы в YAML)
+  - source: 24 mixed-источника
+    reason: потенциально cross-brand
+    action: Codex автопривязка через sha256 + ручной аудит по требованию
+  - source: 123 website-extracts из 134
+    reason: веб-страницы, в основном содержание уже отражено в моих YAML через основные
+      документы
+    action: Прочитать выборочно по теме, если возникнут пробелы

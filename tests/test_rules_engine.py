@@ -1409,8 +1409,45 @@ def test_rules_engine_trial_guards_free_offline_and_manager_request() -> None:
     assert "онлайн-фрагмент" in offline_free.text
     assert manager is not None
     assert manager.route == "draft_for_manager"
-    assert "фрагмент занятия" not in manager.text.casefold()
+    assert "пробный формат есть" in manager.text.casefold()
+    assert "менеджер подберёт доступный вариант" in manager.text.casefold()
+    assert "успейте" not in manager.text.casefold()
     assert negated_online is None
+
+
+def test_rules_engine_trial_manager_handoff_needs_brand_fact_and_stays_warm() -> None:
+    rule = load_rules_registry()["trial"]
+    with_fact = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "direct_question": "Есть пробное? Передайте менеджеру", "active_brand": "unpk"},
+        facts={"trial.unpk.online_fragment": "УНПК: по онлайн-формату можно прислать фрагмент занятия."},
+        context={"active_brand": "unpk"},
+    )
+    without_fact = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "direct_question": "Есть пробное? Передайте менеджеру", "active_brand": "unpk"},
+        facts={},
+        context={"active_brand": "unpk"},
+    )
+    cross_brand = apply_rule(
+        rule,
+        plan={"primary_intent": "trial", "direct_question": "А у Фотона есть пробное?", "active_brand": "unpk"},
+        facts={"trial.unpk.online_fragment": "УНПК: по онлайн-формату можно прислать фрагмент занятия."},
+        context={"active_brand": "unpk"},
+    )
+
+    assert with_fact is not None
+    assert with_fact.route == "draft_for_manager"
+    assert "пробный формат есть" in with_fact.text.casefold()
+    assert "менеджер подберёт доступный вариант" in with_fact.text.casefold()
+    assert "Фотон" not in with_fact.text
+
+    assert without_fact is not None
+    assert without_fact.route == "draft_for_manager"
+    assert "пробный формат есть" not in without_fact.text.casefold()
+    assert "менеджер" in without_fact.text.casefold()
+
+    assert cross_brand is None
 
 
 def test_rules_engine_trial_uses_active_brand_fragment_fact() -> None:
@@ -1690,6 +1727,45 @@ def test_rules_engine_enrollment_presale_refund_vs_real_p0_and_dolyami() -> None
     assert dolyami is None
     assert process is not None
     assert "менеджер уточнит класс" in process.text.casefold()
+    assert "повторять" not in process.text.casefold()
+
+
+def test_rules_engine_enrollment_warm_handoff_uses_fact_or_short_manager_text() -> None:
+    rule = load_rules_registry()["enrollment_process"]
+    with_fact = apply_rule(
+        rule,
+        plan={"primary_intent": "enrollment_process", "direct_question": "Как записаться?", "active_brand": "foton"},
+        facts={"process.enrollment.steps": "Фотон: запись проходит дистанционно, менеджер помогает оформить заявку."},
+        context={"active_brand": "foton"},
+    )
+    no_fact = apply_rule(
+        rule,
+        plan={"primary_intent": "enrollment_process", "direct_question": "Как записаться?", "active_brand": "foton"},
+        facts={},
+        context={"active_brand": "foton"},
+    )
+    p0 = apply_rule(
+        rule,
+        plan={"primary_intent": "enrollment_process", "direct_question": "Я оплатил, занятий нет, верните деньги", "active_brand": "foton"},
+        facts={"process.enrollment.steps": "Фотон: запись проходит дистанционно, менеджер помогает оформить заявку."},
+        context={"active_brand": "foton"},
+    )
+
+    assert with_fact is not None
+    assert with_fact.route == "bot_answer_self_for_pilot"
+    assert "запись проходит дистанционно" in with_fact.text.casefold()
+    assert "оформить заявку" in with_fact.text.casefold()
+    assert "повторять" not in with_fact.text.casefold()
+
+    assert no_fact is not None
+    assert no_fact.route == "draft_for_manager"
+    assert "Менеджер подтвердит порядок записи" in no_fact.text
+    assert "повторять" not in no_fact.text.casefold()
+    assert "успейте" not in no_fact.text.casefold()
+
+    assert p0 is not None
+    assert p0.route == "manager_only"
+    assert "high_risk_manager_only" in p0.flags
 
 
 def test_rules_engine_selling_does_not_override_real_refund_p0() -> None:

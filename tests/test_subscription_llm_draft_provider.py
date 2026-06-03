@@ -7866,7 +7866,9 @@ def test_step2b5_trial_rule_answers_fragment_but_does_not_override_manager_reque
     assert "фрагмент занятия" in result.draft_text.casefold()
     assert manager.route == "draft_for_manager"
     assert "rules_engine_trial_direct_manager_request" in manager.safety_flags
-    assert "фрагмент занятия" not in manager.draft_text.casefold()
+    assert "пробный формат есть" in manager.draft_text.casefold()
+    assert "менеджер подберёт доступный вариант" in manager.draft_text.casefold()
+    assert "успейте" not in manager.draft_text.casefold()
 
 
 def test_step2b5_camp_live_status_and_brand_split_stay_safe() -> None:

@@ -1390,15 +1390,25 @@ def _apply_trial_rule(
     brand = _active_brand(plan, context)
     if brand not in {"foton", "unpk"} or _mentions_other_brand(question, brand):
         return None
+    key, fact = _first_matching_fact(
+        facts,
+        ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
+    )
     if _direct_manager_request_without_process(question):
+        if fact:
+            text = "Да, пробный формат есть — менеджер подберёт доступный вариант и запишет."
+            source = {key or "rules_engine.trial.manager_request_fact": fact}
+        else:
+            text = "Передам запрос менеджеру: он свяжется и ответит по пробному формату."
+            source = {"rules_engine.trial.manager_request": "Прямой запрос менеджера по пробному без client-safe факта."}
         return _rule_outcome(
             rule,
             subvariant="direct_manager_request",
             route="draft_for_manager",
-            text="Передам запрос менеджеру: он свяжется и ответит по пробному формату.",
-            facts={"rules_engine.trial.manager_request": "Прямой запрос менеджера по пробному не заменяется шаблоном про фрагмент."},
+            text=text,
+            facts=source,
             flags=("rules_engine_trial_direct_manager_request",),
-            checklist="Rule engine: trial — прямой запрос менеджера не переписывать в ответ про пробное.",
+            checklist="Rule engine: trial — прямой запрос менеджера: факт о пробном можно подтвердить, детали подбирает менеджер.",
         )
     if brand == "foton" and _asks_offline_free_trial(question, plan, context):
         return _rule_outcome(
@@ -1417,10 +1427,6 @@ def _apply_trial_rule(
     if _client_negates_online(question):
         return None
 
-    key, fact = _first_matching_fact(
-        facts,
-        ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
-    )
     if not fact:
         return None
     online_requested = _requested_training_format(question, plan, context) == "online" or _has_any(question, ("онлайн", "дистанц", "фрагмент"))
@@ -1430,7 +1436,7 @@ def _apply_trial_rule(
         if data_question or ack:
             text = (
                 "Для подбора онлайн-фрагмента в Фотоне достаточно класса, предмета и формата. "
-                "Если эти данные уже есть в диалоге, повторять их не нужно; менеджер подтвердит условия просмотра."
+                "Менеджер подтвердит условия просмотра и согласует доступный вариант."
             )
             subvariant = "online_fragment_process"
         else:
@@ -1442,7 +1448,7 @@ def _apply_trial_rule(
         if online_requested and (data_question or ack):
             text = (
                 "Для онлайн-фрагмента УНПК нужны только класс, предмет и формат. "
-                "Если они уже есть в диалоге, повторять не нужно; менеджер подберёт фрагмент и подтвердит способ просмотра."
+                "Менеджер подберёт фрагмент и подтвердит способ просмотра."
             )
             subvariant = "online_fragment_process"
         else:
@@ -1642,7 +1648,7 @@ def _apply_enrollment_process_rule(
         ("process.enrollment", "как записаться", "оформ", "запис", "менеджер поможет", "заявк"),
     )
     if fact:
-        text = _short_sentence(fact, max_chars=300)
+        text = _warm_enrollment_process_text(fact)
     else:
         key = "rules_engine.enrollment.process"
         text = "Менеджер подтвердит порядок записи по выбранному курсу."
@@ -1664,6 +1670,14 @@ def _apply_enrollment_process_rule(
         flags=("rules_engine_enrollment_process_applied",),
         checklist="Rule engine: enrollment_process — процесс записи без подмены способов оплаты и без P0.",
     )
+
+
+def _warm_enrollment_process_text(fact: str) -> str:
+    text = _short_sentence(fact, max_chars=300)
+    lower = text.casefold()
+    if "менеджер" in lower and ("оформ" in lower or "запис" in lower):
+        return text
+    return f"{text} Менеджер уточнит конкретную группу и поможет оформить запись."
 
 
 def _apply_schedule_rule(

@@ -509,6 +509,42 @@ def test_rules_engine_selling_gen_accepts_grounded_composition() -> None:
     assert "Долями" in outcome.text
 
 
+def test_rules_engine_selling_gen_prompt_varies_empathic_opening_without_relaxing_guard() -> None:
+    rule = load_rules_registry()["installment"]
+    facts = {"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."}
+    seen_prompts: list[str] = []
+
+    def _compose(prompt: str) -> dict[str, str]:
+        seen_prompts.append(prompt)
+        return {
+            "text": (
+                "Да, это важный момент. В Фотоне оплату можно разбить на 6, 10 или 12 месяцев; "
+                "доступен сервис Долями. Подобрать удобный вариант?"
+            )
+        }
+
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "installment",
+            "direct_question": "Серьёзная сумма для семьи, можно частями?",
+            "active_brand": "foton",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts=facts,
+        context={"active_brand": "foton", "selling_mode": "gen", "selling_compose_fn": _compose},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_gen_applied" in outcome.flags
+    assert seen_prompts
+    assert "не начинай каждый ответ с «Понимаю»" in seen_prompts[0]
+    assert "Числа, проценты, суммы, даты и сроки можно брать ТОЛЬКО дословно из фактов" in seen_prompts[0]
+    assert outcome.text.startswith("Да, это важный момент.")
+    assert "6, 10 или 12 месяцев" in outcome.text
+    assert "24" not in outcome.text
+
+
 def test_rules_engine_selling_gen_falls_back_on_unsupported_number_pressure_or_brand() -> None:
     rule = load_rules_registry()["installment"]
     facts = {"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."}

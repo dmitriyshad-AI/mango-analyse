@@ -446,7 +446,11 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "p0_promise": "block",
     "p0_semantic_risk": "block",
     "unsupported_promise": "block",
+    "unsupported_product_claim": "block",
     "fact_grounding": "downgrade",
+    "estimate_without_uncertainty_marker": "downgrade",
+    "estimate_individual_child_advice": "downgrade",
+    "estimate_general_advice_risk": "downgrade",
     "unsupported_entity": "downgrade",
     "forbidden_scope": "downgrade",
     "preemptive_format": "downgrade",
@@ -1909,6 +1913,11 @@ class SubscriptionLlmDraftProvider:
                     "fallback_reason": pipeline_result.fallback_reason,
                     "recovery_candidate": pipeline_result.recovery_candidate,
                     "recovery_candidate_validated": bool(pipeline_result.recovery_candidate),
+                    "estimate": {
+                        "is_estimate": bool(pipeline_result.is_estimate),
+                        "answer_mode": pipeline_result.estimate_answer_mode,
+                        "estimate_domain": pipeline_result.estimate_domain,
+                    },
                     "warmed": pipeline_result.warmed,
                     "repaired": pipeline_result.repaired,
                 }
@@ -8310,6 +8319,8 @@ def _dialogue_contract_safety_flags(pipeline_result: Any) -> list[str]:
         flags.append("dialogue_contract_x2_warmth_applied")
     if getattr(pipeline_result, "repaired", False):
         flags.append("dialogue_contract_safety_repair_applied")
+    if getattr(pipeline_result, "is_estimate", False):
+        flags.append("dialogue_contract_estimate_answer")
     return flags
 
 

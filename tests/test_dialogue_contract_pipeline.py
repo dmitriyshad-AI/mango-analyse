@@ -86,6 +86,310 @@ def test_parse_contract_accepts_model_selling_signals_but_keeps_them_narrow() ->
     }
 
 
+def test_parse_contract_cleans_estimate_fields() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько ехать от Лобни до Долгопрудного",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "travel_time",
+            "estimate_confidence": 0.81,
+        },
+        active_brand="unpk",
+        fact_key_catalog=(),
+    )
+
+    assert contract.answer_mode == "estimate_allowed"
+    assert contract.estimate_domain == "travel_time"
+    assert contract.estimate_confidence == 0.81
+
+
+def test_level_a_estimate_travel_answers_with_uncertainty_marker(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=(), store={"unpk": {}})
+
+    result = run_pipeline(
+        conversation=_conv("из Лобни до Долгопрудного сколько по времени ехать?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько ехать от Лобни до Долгопрудного",
+                "answerability": "manager_only",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "travel_time",
+                "estimate_confidence": 0.84,
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно от Лобни до Долгопрудного на электричке 15-20 минут, плюс дорога до филиала.",
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_domain == "travel_time"
+    assert "Ориентировочно" in result.draft_text
+    assert "₽" not in result.draft_text
+    assert not result.findings
+
+
+def test_level_a_estimate_flag_off_keeps_existing_handoff(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_A_ESTIMATE_MODE", raising=False)
+    store = FactStore(catalog=(), store={"unpk": {}})
+
+    result = run_pipeline(
+        conversation=_conv("из Лобни до Долгопрудного сколько по времени ехать?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько ехать от Лобни до Долгопрудного",
+                "answerability": "manager_only",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "travel_time",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно 15-20 минут.",
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert result.fallback_reason == "contract_manager_only"
+
+
+def test_level_a_estimate_general_advice_allowed_with_marker(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=(), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("с какого класса обычно лучше начинать подготовку к ЕГЭ?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "с какого класса обычно лучше начинать подготовку к ЕГЭ",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+                "estimate_confidence": 0.77,
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно к ЕГЭ часто начинают готовиться за полтора-два года, но точный темп зависит от цели и текущего уровня.",
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_domain == "general_advice"
+    assert "Ориентировочно" in result.draft_text
+
+
+def test_level_a_estimate_general_advice_individual_child_goes_to_manager(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=(), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("мой ребёнок отстаёт по математике, потянет ли курс?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "потянет ли мой ребёнок курс",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно потянет, если заниматься регулярно.",
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert "ориентировочно" not in result.draft_text.casefold()
+
+
+def test_level_a_product_price_cannot_be_estimated_even_if_planner_allows(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=(), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("ну хоть примерно сколько стоит онлайн физика 9 класс?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "примерная цена онлайн физика 9 класс",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "travel_time",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно онлайн может стоить 30 000 ₽ за семестр.",
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert result.fallback_reason == "hard_verification_failed"
+    assert "30 000" not in result.draft_text
+
+
+def test_level_a_lesson_duration_is_product_number_not_estimate(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=(), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("занятие 90 минут?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько длится занятие",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно занятие 90 минут.",
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert "90" not in result.draft_text
+
+
+def test_level_a_estimate_without_uncertainty_marker_falls_back(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=(), store={"unpk": {}})
+
+    result = run_pipeline(
+        conversation=_conv("сколько ехать от Лобни до Долгопрудного?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько ехать от Лобни до Долгопрудного",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "travel_time",
+            }
+        ),
+        draft_fn=lambda _prompt: "От Лобни до Долгопрудного 15 минут на электричке.",
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "estimate_guard_failed"
+    assert result.is_estimate is False
+
+
+def test_level_a_p0_overrides_estimate_mode(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=(), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно разберёмся.",
+    )
+
+    assert result.route == "manager_only"
+    assert result.contract.is_p0
+    assert result.is_estimate is False
+
+
+def test_level_a_gate_allows_general_numbers_only_in_estimate_mode() -> None:
+    estimate_contract = parse_contract(
+        {
+            "current_question": "сколько идти от станции",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "route_logistics",
+        },
+        active_brand="unpk",
+        fact_key_catalog=(),
+    )
+    confirmed_contract = parse_contract(
+        {
+            "current_question": "сколько идти от станции",
+            "answerability": "answer_self",
+            "answer_mode": "confirmed_only",
+        },
+        active_brand="unpk",
+        fact_key_catalog=(),
+    )
+
+    assert not verify_output(
+        "Ориентировочно от станции около 20 минут пешком.",
+        facts={},
+        active_brand="unpk",
+        contract=estimate_contract,
+        client_message="сколько идти от станции",
+    )
+    assert any(
+        finding.code == "fact_grounding"
+        for finding in verify_output(
+            "От станции около 20 минут пешком.",
+            facts={},
+            active_brand="unpk",
+            contract=confirmed_contract,
+            client_message="сколько идти от станции",
+        )
+    )
+
+
+def test_level_a_gate_allows_grounded_product_number_inside_estimate() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "как ехать и какая цена",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "route_logistics",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Ориентировочно ехать 15 минут; онлайн стоит 29 750 ₽.",
+        facts={"price.online": "Онлайн стоит 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="как ехать и какая цена онлайн",
+    )
+
+    assert not findings
+
+
+def test_level_a_general_advice_gate_blocks_pressure_or_result_promise() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "как лучше готовиться",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+
+    findings = verify_output(
+        "Ориентировочно надо срочно записываться, тогда ребёнок точно сдаст.",
+        facts={},
+        active_brand="foton",
+        contract=contract,
+        client_message="как лучше готовиться",
+    )
+
+    codes = {finding.code for finding in findings}
+    assert "estimate_general_advice_risk" in codes or "p0_promise" in codes
+
+
 def test_understanding_prompt_requests_selling_subtext_without_new_call() -> None:
     prompt = build_understanding_prompt(
         conversation=({"role": "client", "text": "Посоветуюсь с мужем, сумма серьёзная"},),

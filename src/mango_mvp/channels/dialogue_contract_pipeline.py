@@ -33,6 +33,7 @@ from mango_mvp.insights.sanitizers import sanitize_answer
 
 
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
+ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json"
@@ -66,6 +67,50 @@ _MONEY_OR_VALUE_RE = re.compile(
     re.I,
 )
 _NUMBER_RE = re.compile(r"\d+")
+_ESTIMATE_DOMAINS = ("travel_time", "route_logistics", "general_advice")
+_ESTIMATE_NUMBER_TOKEN_RE = re.compile(
+    r"\d[\d\s\u00a0]*(?:[.,]\d+)?\s*"
+    r"(?:₽|%|руб(?:\.|лей|ля|ль)?|р\.|месяц(?:ев|а)?|дн(?:ей|я)?|"
+    r"раз(?:а)?|балл(?:ов|а)?|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?)?",
+    re.I,
+)
+_PRODUCT_QUESTION_RE = re.compile(
+    r"цена|стоит|стоимост|сколько\s+стоит|скидк|рассрочк|долями|тариф|расписан|"
+    r"во\s+сколько|какие\s+дни|время\s+занят|дат[аеуы]|смен[аеуы]|лагер|формат|"
+    r"сколько\s+длится|длительност|документ|справк|возврат|вернут|оплат|мест[ао]|"
+    r"записать|запис[ьи]|₽|%",
+    re.I,
+)
+_PRODUCT_NUMBER_CTX_RE = re.compile(
+    r"₽|руб|р\.|%|скидк|рассрочк|долями|\b\d{1,2}:\d{2}\b|семестр|за\s+год|"
+    r"стоит|цена|тариф|сколько\s+длится|длительност|урок|занят|январ|феврал|март|"
+    r"апрел|ма[яй]|июн|июл|август|сентяб|октяб|ноябр|декабр|смен[аеуы]",
+    re.I,
+)
+_INDIVIDUAL_CHILD_RE = re.compile(
+    r"мой\s+(?:реб[её]нок|сын|дочь)|у\s+моего|потянет\s+ли|справится\s+ли|"
+    r"отста[её]т|не\s+тянет|что\s+с\s+ним|что\s+с\s+ней|подойд[её]т\s+ли\s+(?:моему|нам)|"
+    r"уровень\s+моего",
+    re.I,
+)
+_UNCERTAINTY_MARKERS = (
+    "ориентировочно",
+    "примерно",
+    "навскидку",
+    "точно подскажет менеджер",
+    "не возьмусь утверждать точно",
+    "точную информацию уточнит менеджер",
+)
+_ESTIMATE_PRESSURE_RE = re.compile(
+    r"срочно\s+записыва\w+|мест\s+почти\s+нет|надо\s+успеть|иначе\s+не\s+попад[её]те|"
+    r"лучше\s+не\s+тянуть",
+    re.I,
+)
+_ESTIMATE_GUARANTEE_RE = re.compile(
+    r"гарантир|100\s*%|обязательно\s+(?:поступ|сдад|сдаст|получ)|точно\s+(?:поступ|сдад|сдаст|получ)|"
+    r"исправим\s+на\s+(?:5|пят)|подтянем\s+на\s+(?:5|пят)|точно\s+станет",
+    re.I,
+)
 _AI_SELF_DISCLOSURE_RE = re.compile(
     r"\bя\s+(?:бот|gpt|нейросеть|искусственн\w+\s+интеллект)\b",
     re.I,
@@ -163,6 +208,9 @@ class AnswerContract:
     planner_subvariant: str = ""
     planner_slots: Mapping[str, str] = field(default_factory=dict)
     planner_confidence: float = 0.0
+    answer_mode: str = "confirmed_only"
+    estimate_domain: str = "none"
+    estimate_confidence: float = 0.0
     selling: Mapping[str, Any] = field(
         default_factory=lambda: {
             "objection": "none",
@@ -219,6 +267,9 @@ class AnswerContract:
             "planner_subvariant": self.planner_subvariant,
             "planner_slots": dict(self.planner_slots),
             "planner_confidence": self.planner_confidence,
+            "answer_mode": self.answer_mode,
+            "estimate_domain": self.estimate_domain,
+            "estimate_confidence": self.estimate_confidence,
             "selling": dict(self.selling),
             "assertable_slots": self.assertable_slots(),
             "unsourced_slots": list(self.unsourced_slots()),
@@ -307,6 +358,9 @@ class DialogueContractPipelineResult:
     warmth_semantic_available: bool = True
     repaired: bool = False
     recovery_candidate: str = ""
+    is_estimate: bool = False
+    estimate_domain: str = "none"
+    estimate_answer_mode: str = "confirmed_only"
 
 
 @dataclass(frozen=True)
@@ -321,6 +375,12 @@ def pipeline_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(DIALOGUE_CONTRACT_PIPELINE_ENV) is not None:
         return _truthy(context.get(DIALOGUE_CONTRACT_PIPELINE_ENV))
     return _truthy(os.getenv(DIALOGUE_CONTRACT_PIPELINE_ENV))
+
+
+def estimate_mode_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(ESTIMATE_MODE_ENV) is not None:
+        return _truthy(context.get(ESTIMATE_MODE_ENV))
+    return _truthy(os.getenv(ESTIMATE_MODE_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -379,6 +439,8 @@ def build_understanding_prompt(
         "{ current_question, client_state, continued_topics[], denied_topics[], switched_topics[], forbidden_substitutions[],\n"
         "  known_slots: { имя: {value, source} },\n"
         "  planner_intent, planner_subvariant, planner_slots: {slot:value}, planner_confidence:0..1,\n"
+        "  answer_mode:'confirmed_only'|'estimate_allowed', "
+        "estimate_domain:'travel_time'|'route_logistics'|'general_advice'|'none', estimate_confidence:0..1,\n"
         "  selling: {objection:'price'|'none', exit_signal:bool, anxiety:bool, unmet_need:str, readiness:'exploring'|'comparing'|'ready'},\n"
         "  subquestions: [ {text, answerable:'self'|'manager', question_type:'existence_yes_no'|'', existence_target, needed_fact_keys[], next_step} ],\n"
         "  answerability:'answer_self'|'manager_only', question_type:'existence_yes_no'|'', existence_target, is_p0:bool, p0_reason, confidence:0..1 }\n"
@@ -417,6 +479,13 @@ def build_understanding_prompt(
         "product_family, payment_method. Не добавляй active_brand: бренд задаётся каналом, а не текстом клиента.\n"
         "- На эллипсисе используй topic_focus и known_slots для planner_intent/planner_slots так же, как для current_question: "
         "«а очно?» после цены информатики остаётся pricing/format по той же теме, не general_consultation.\n"
+        "- answer_mode='estimate_allowed' ТОЛЬКО для низкорисковой оценки: дорога/логистика/география "
+        "(как добраться, сколько ехать, расстояние) или общий педагогический совет в общем виде. "
+        "Для дороги ставь estimate_domain='travel_time' или 'route_logistics'; для общего совета — 'general_advice'. "
+        "Для всего продуктового — цены, скидки, расписание, даты, смены, лагерь, формат-условия, длительность урока, "
+        "документы, возврат, оплата, места, запись — ставь answer_mode='confirmed_only', estimate_domain='none'. "
+        "Диагноз конкретного ребёнка, обещание результата/поступления или вопрос «потянет ли мой ребёнок» — "
+        "confirmed_only/none. Если сомневаешься — confirmed_only/none.\n"
         "- selling — только для мягких коммерческих сигналов, НЕ для P0. objection='price', если клиент прямо или по смыслу "
         "сомневается в цене/бюджете: «дорого», «серьёзная сумма для семьи», «не потянем», «есть дешевле?». "
         "exit_signal=true, если клиент уходит подумать/сравнить/обсудить: «подумаю», «посоветуюсь с мужем/семьёй», "
@@ -495,6 +564,9 @@ def parse_contract(
         planner_subvariant=str(data.get("planner_subvariant") or "").strip()[:80],
         planner_slots=_clean_planner_slots(data.get("planner_slots")),
         planner_confidence=_clamp_float(data.get("planner_confidence")),
+        answer_mode=_clean_answer_mode(data.get("answer_mode")),
+        estimate_domain=_clean_estimate_domain(data.get("estimate_domain")),
+        estimate_confidence=_clamp_float(data.get("estimate_confidence")),
         selling=_clean_selling(data.get("selling")),
         forbidden_substitutions=tuple(_seq(data.get("forbidden_substitutions"))),
         client_state=str(data.get("client_state") or "").strip()[:180],
@@ -510,6 +582,15 @@ def parse_contract(
 def _clean_planner_intent(value: object) -> str:
     intent = str(value or "").strip().casefold()
     return intent if intent in PLANNER_INTENT_VALUES else ""
+
+
+def _clean_answer_mode(value: object) -> str:
+    return "estimate_allowed" if str(value or "").strip().casefold() == "estimate_allowed" else "confirmed_only"
+
+
+def _clean_estimate_domain(value: object) -> str:
+    domain = str(value or "").strip().casefold()
+    return domain if domain in (*_ESTIMATE_DOMAINS, "none") else "none"
 
 
 def _clean_selling(value: object) -> Mapping[str, Any]:
@@ -896,6 +977,92 @@ def retrieve_facts(
     return RetrievalResult(facts=facts, missing=tuple(missing), matched_keys=matched)
 
 
+def _resolve_answer_mode(
+    *,
+    contract: AnswerContract,
+    question_text: str,
+    has_p0: bool,
+    has_kb_fact: bool,
+) -> tuple[str, str]:
+    if has_p0:
+        return "confirmed_only", "none"
+    if _is_product_question(
+        question_text,
+        planner_intent=contract.planner_intent,
+        needed_fact_keys=contract.all_needed_fact_keys(),
+    ):
+        return "confirmed_only", "none"
+    if has_kb_fact:
+        return "confirmed_only", "none"
+    if contract.answer_mode == "estimate_allowed" and contract.estimate_domain in _ESTIMATE_DOMAINS:
+        return "estimate_allowed", contract.estimate_domain
+    return "confirmed_only", "none"
+
+
+def _is_product_question(
+    text: str,
+    *,
+    planner_intent: str = "",
+    needed_fact_keys: Sequence[str] = (),
+) -> bool:
+    combined = " ".join(str(item or "") for item in (text, planner_intent, *needed_fact_keys))
+    if _PRODUCT_QUESTION_RE.search(combined):
+        return True
+    if _INDIVIDUAL_CHILD_RE.search(str(text or "")):
+        return True
+    normalized_intent = str(planner_intent or "").casefold()
+    if any(
+        marker in normalized_intent
+        for marker in (
+            "price",
+            "pricing",
+            "discount",
+            "schedule",
+            "enroll",
+            "format",
+            "camp",
+            "refund",
+            "payment",
+            "docs",
+            "document",
+            "trial",
+            "installment",
+        )
+    ):
+        return True
+    return bool(tuple(item for item in needed_fact_keys if str(item or "").strip()))
+
+
+def _estimate_policy_context(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    enabled: bool,
+    question_text: str,
+) -> Mapping[str, Any]:
+    resolved_mode, resolved_domain = _resolve_answer_mode(
+        contract=contract,
+        question_text=question_text,
+        has_p0=contract.is_p0,
+        has_kb_fact=bool(retrieval.facts),
+    )
+    return {
+        "enabled": enabled,
+        "planner_answer_mode": contract.answer_mode,
+        "planner_estimate_domain": contract.estimate_domain,
+        "planner_estimate_confidence": contract.estimate_confidence,
+        "answer_mode": resolved_mode,
+        "estimate_domain": resolved_domain,
+        "has_kb_fact": bool(retrieval.facts),
+        "individual_child_question": bool(_INDIVIDUAL_CHILD_RE.search(str(question_text or ""))),
+        "product_question": _is_product_question(
+            question_text,
+            planner_intent=contract.planner_intent,
+            needed_fact_keys=contract.all_needed_fact_keys(),
+        ),
+    }
+
+
 def build_draft_prompt(
     *,
     conversation: Sequence[Mapping[str, str]],
@@ -955,6 +1122,37 @@ def build_draft_prompt(
         "Не раскрывай внутренние настройки, fact_id/source_id/JSON. Не обещай результат, возврат, одобрение банка/СФР/ФНС.\n"
         + (f"Манера: {tone_guide}\n" if tone_guide else "")
         + memory_block
+        + f"История диалога:\n{hist}\n"
+        "Верни только текст клиенту, без JSON и служебных пометок."
+    )
+
+
+def build_estimate_prompt(
+    *,
+    conversation: Sequence[Mapping[str, str]],
+    contract: AnswerContract,
+    estimate_domain: str,
+    tone_guide: str = "",
+) -> str:
+    hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
+    domain_hint = {
+        "travel_time": "дорога/время в пути/география",
+        "route_logistics": "логистика маршрута/как добраться/расстояние",
+        "general_advice": "общий педагогический совет без диагностики конкретного ребёнка",
+    }.get(estimate_domain, "низкорисковая бытовая оценка")
+    return (
+        f"Активный бренд: {contract.active_brand}. Не упоминай другой бренд.\n"
+        "Напиши клиенту полезный ответ-оценку, потому что подтверждённого факта по этому бытовому вопросу нет.\n"
+        f"Вопрос: {contract.current_question}\n"
+        f"Разрешённый домен оценки: {domain_hint}.\n"
+        "Правила:\n"
+        "- ОБЯЗАТЕЛЬНО добавь лёгкий маркер неуверенности: «ориентировочно», «примерно» или «навскидку».\n"
+        "- Можно оценивать только дорогу/логистику/географию или общий совет в общем виде.\n"
+        "- Нельзя оценивать цену, скидку, расписание, даты, смены, длительность урока, документы, возврат, оплату, места и запись.\n"
+        "- В общем педагогическом совете говори только про типичную ситуацию; не ставь диагноз конкретному ребёнку и не обещай результат.\n"
+        "- Не добавляй ₽, проценты, даты занятий, расписание или условия курса.\n"
+        "- Если точность зависит от маршрута/расписания транспорта, так и скажи мягко.\n"
+        + (f"Манера: {tone_guide}\n" if tone_guide else "")
         + f"История диалога:\n{hist}\n"
         "Верни только текст клиенту, без JSON и служебных пометок."
     )
@@ -1646,6 +1844,20 @@ def run_pipeline(
                 "matched_keys": {key: list(value) for key, value in retrieval.matched_keys.items()},
             }
         )
+    estimate_policy = _estimate_policy_context(
+        contract=contract,
+        retrieval=retrieval,
+        enabled=estimate_mode_enabled(context),
+        question_text=client_words or contract.current_question,
+    )
+    contract = replace(
+        contract,
+        answer_mode=str(estimate_policy["answer_mode"]),
+        estimate_domain=str(estimate_policy["estimate_domain"]),
+    )
+    if estimate_policy["enabled"] and estimate_policy["individual_child_question"] and not retrieval.facts:
+        contract = replace(contract, answerability="manager_only")
+    trace_event(context, "estimate_answer_mode", estimate_policy)
     if _asks_refund_policy(contract) and had_hard_p0_claim:
         guarded_contract = replace(contract, is_p0=True, p0_reason=contract.p0_reason or "prior_hard_p0_refund_claim")
         fallback = _safe_fallback_text(guarded_contract, facts=retrieval.facts, context=context)
@@ -1668,6 +1880,82 @@ def run_pipeline(
             facts=retrieval.facts,
             missing=retrieval.missing,
             fallback_reason="refund_policy_manager_only",
+        )
+    if (
+        estimate_policy["enabled"]
+        and contract.answer_mode == "estimate_allowed"
+        and contract.estimate_domain in _ESTIMATE_DOMAINS
+        and draft_fn is not None
+    ):
+        estimate_prompt = build_estimate_prompt(
+            conversation=conversation,
+            contract=contract,
+            estimate_domain=contract.estimate_domain,
+            tone_guide=tone_guide,
+        )
+        try:
+            estimate_draft = str(draft_fn(estimate_prompt) or "").strip()
+        except Exception:
+            estimate_draft = ""
+        trace_event(
+            context,
+            "estimate_compose",
+            {"attempted": True, "domain": contract.estimate_domain, "draft": estimate_draft},
+        )
+        if estimate_draft:
+            findings, unsupported, semantic_available = _hard_check(
+                estimate_draft,
+                facts=retrieval.facts,
+                contract=contract,
+                client_words=client_words,
+                faithfulness_fn=faithfulness_fn,
+                toggles=toggles,
+                context=context,
+                previous_bot_texts=previous_bot_texts,
+            )
+            if semantic_available and not findings and not unsupported:
+                final_estimate = _avoid_repeating_text(
+                    estimate_draft,
+                    conversation=conversation,
+                    contract=contract,
+                    facts=retrieval.facts,
+                )
+                trace_event(context, "estimate_gate", {"passed": True, "domain": contract.estimate_domain, "draft": final_estimate})
+                return DialogueContractPipelineResult(
+                    draft_text=final_estimate,
+                    route="bot_answer_self",
+                    manager_only=False,
+                    contract=contract,
+                    facts=retrieval.facts,
+                    missing=retrieval.missing,
+                    fallback_reason="",
+                    is_estimate=True,
+                    estimate_domain=contract.estimate_domain,
+                    estimate_answer_mode=contract.answer_mode,
+                )
+            trace_event(
+                context,
+                "estimate_gate",
+                {
+                    "passed": False,
+                    "domain": contract.estimate_domain,
+                    "findings": [{"code": item.code, "detail": item.detail} for item in findings],
+                    "unsupported": list(unsupported),
+                    "semantic_available": semantic_available,
+                },
+            )
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
+            route="draft_for_manager",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="estimate_guard_failed",
+            is_estimate=False,
+            estimate_domain=contract.estimate_domain,
+            estimate_answer_mode=contract.answer_mode,
         )
     slot_question = _single_missing_slot_question(contract, retrieval)
     if slot_question:
@@ -2314,6 +2602,9 @@ def verify_output(
     client_message: str = "",
     context: Mapping[str, Any] | None = None,
     previous_bot_texts: Sequence[str] = (),
+    answer_mode: str | None = None,
+    estimate_domain: str | None = None,
+    is_estimate: bool | None = None,
 ) -> list[VerificationFinding]:
     text = str(draft_text or "")
     low = text.casefold()
@@ -2323,12 +2614,19 @@ def verify_output(
         if _brand_token_present(low, token):
             findings.append(VerificationFinding("brand_leak", f"чужой бренд/токен: {token}"))
             break
-    backed_numbers = _numbers(" ".join(str(value) for value in facts.values()))
-    client_numbers = _numbers(client_message)
-    introduced = _numbers(text) - backed_numbers
-    introduced = {num for num in introduced if not _is_allowed_ungrounded_number(num, client_numbers=client_numbers)}
-    if introduced:
-        findings.append(VerificationFinding("fact_grounding", f"числа вне подтверждённых фактов: {sorted(introduced)}"))
+    gate_answer_mode = _gate_answer_mode(contract=contract, context=context, explicit=answer_mode)
+    gate_estimate_domain = _gate_estimate_domain(contract=contract, context=context, explicit=estimate_domain)
+    gate_is_estimate = _gate_is_estimate(contract=contract, context=context, explicit=is_estimate)
+    findings.extend(
+        _answer_mode_number_findings(
+            text,
+            facts=facts,
+            client_message=client_message,
+            contract=contract,
+            answer_mode=gate_answer_mode,
+            estimate_domain=gate_estimate_domain,
+        )
+    )
     unsupported_entities = unsupported_named_entities(
         text,
         facts=facts,
@@ -2363,10 +2661,183 @@ def verify_output(
         findings.append(VerificationFinding("ai_disclosure", "самораскрытие без прямого вопроса клиента"))
     if _P0_PROMISE_RE.search(text):
         findings.append(VerificationFinding("p0_promise", "обещание возврата/результата/поступления"))
+    if gate_answer_mode == "estimate_allowed" and gate_is_estimate and not _has_uncertainty_marker(text):
+        findings.append(VerificationFinding("estimate_without_uncertainty_marker", "оценка без явного маркера неуверенности"))
+    if gate_answer_mode == "estimate_allowed" and gate_estimate_domain == "general_advice":
+        findings.extend(_general_advice_estimate_findings(text, client_message=client_message))
     safety = classify_answer_safety(client_message=client_message, context=context, route="bot_answer_self")
     if safety.p0_required and not p0_pre_gate(client_message, context=context):
         findings.append(VerificationFinding("p0_semantic_risk", "семантический P0 требует менеджера"))
     return findings
+
+
+def _answer_mode_number_findings(
+    text: str,
+    *,
+    facts: Mapping[str, str],
+    client_message: str,
+    contract: AnswerContract | None,
+    answer_mode: str,
+    estimate_domain: str = "none",
+) -> list[VerificationFinding]:
+    backed_numbers = _numbers(" ".join(str(value) for value in facts.values()))
+    client_numbers = _numbers(client_message)
+    introduced: set[str] = set()
+    product_introduced: set[str] = set()
+    token_map = _number_token_map(text)
+    for num in _numbers(text) - backed_numbers:
+        tokens = token_map.get(num, ())
+        is_product = any(
+            _is_product_number_context(text, token)
+            and not _is_route_estimate_number_context(text, token, estimate_domain=estimate_domain)
+            for token in tokens
+        )
+        if _is_allowed_ungrounded_number(num, client_numbers=client_numbers) and (
+            not is_product or any(_is_client_grade_number_context(text, token) for token in tokens)
+        ):
+            continue
+        if answer_mode == "estimate_allowed" and is_product:
+            product_introduced.add(num)
+            continue
+        if answer_mode != "estimate_allowed":
+            introduced.add(num)
+    findings: list[VerificationFinding] = []
+    if product_introduced:
+        findings.append(
+            VerificationFinding(
+                "unsupported_product_claim",
+                f"продуктовые числа вне подтверждённых фактов: {sorted(product_introduced)}",
+            )
+        )
+    if introduced:
+        findings.append(VerificationFinding("fact_grounding", f"числа вне подтверждённых фактов: {sorted(introduced)}"))
+    return findings
+
+
+def _number_token_map(text: str) -> Mapping[str, tuple[str, ...]]:
+    result: dict[str, list[str]] = {}
+    for match in _ESTIMATE_NUMBER_TOKEN_RE.finditer(str(text or "")):
+        token = match.group(0).strip()
+        if not token:
+            continue
+        for number in _numbers(token):
+            result.setdefault(number, []).append(token)
+    return {key: tuple(value) for key, value in result.items()}
+
+
+def _is_product_number_context(text: str, token: str) -> bool:
+    raw = str(text or "")
+    item = str(token or "").strip()
+    if not item:
+        return bool(_PRODUCT_NUMBER_CTX_RE.search(raw))
+    index = raw.find(item)
+    if index < 0:
+        return bool(_PRODUCT_NUMBER_CTX_RE.search(raw))
+    window = raw[max(0, index - 25) : index + len(item) + 25]
+    return bool(_PRODUCT_NUMBER_CTX_RE.search(window))
+
+
+def _is_route_estimate_number_context(text: str, token: str, *, estimate_domain: str) -> bool:
+    if estimate_domain not in {"travel_time", "route_logistics"}:
+        return False
+    raw = str(text or "")
+    item = str(token or "").strip()
+    if not item:
+        return False
+    index = raw.find(item)
+    if index < 0:
+        return False
+    window = raw[max(0, index - 45) : index + len(item) + 45].casefold().replace("ё", "е")
+    if not re.search(r"минут|час|км|километр", item.casefold(), re.I):
+        return False
+    return bool(re.search(r"ехать|дорог|пешком|электрич|метро|автобус|маршрут|такси|станци", window, re.I))
+
+
+def _is_client_grade_number_context(text: str, token: str) -> bool:
+    raw = str(text or "")
+    item = str(token or "").strip()
+    if not item:
+        return False
+    index = raw.find(item)
+    if index < 0:
+        return False
+    window = raw[max(0, index - 16) : index + len(item) + 24].casefold().replace("ё", "е")
+    return bool(re.search(r"\bкласс(?:а|е|ов|ы)?\b|\bкл\.?\b", window, re.I))
+
+
+def _has_uncertainty_marker(text: str) -> bool:
+    low = str(text or "").casefold()
+    return any(marker in low for marker in _UNCERTAINTY_MARKERS)
+
+
+def _general_advice_estimate_findings(text: str, *, client_message: str) -> list[VerificationFinding]:
+    combined = " ".join([str(client_message or ""), str(text or "")])
+    findings: list[VerificationFinding] = []
+    if _INDIVIDUAL_CHILD_RE.search(combined):
+        findings.append(VerificationFinding("estimate_individual_child_advice", "оценка похожа на диагноз конкретного ребёнка"))
+    if _ESTIMATE_PRESSURE_RE.search(text) or _ESTIMATE_GUARANTEE_RE.search(text):
+        findings.append(VerificationFinding("estimate_general_advice_risk", "совет содержит давление или обещание результата"))
+    return findings
+
+
+def _estimate_gate_payload_from_context(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(context, MappingABC):
+        return {}
+    direct = context.get("estimate_mode")
+    if isinstance(direct, MappingABC):
+        return direct
+    pipeline = context.get("dialogue_contract_pipeline")
+    if isinstance(pipeline, MappingABC):
+        estimate = pipeline.get("estimate")
+        if isinstance(estimate, MappingABC):
+            return estimate
+    return {}
+
+
+def _gate_answer_mode(
+    *,
+    contract: AnswerContract | None,
+    context: Mapping[str, Any] | None,
+    explicit: str | None,
+) -> str:
+    if explicit is not None:
+        return _clean_answer_mode(explicit)
+    payload = _estimate_gate_payload_from_context(context)
+    if payload.get("answer_mode") is not None:
+        return _clean_answer_mode(payload.get("answer_mode"))
+    if contract is not None:
+        return _clean_answer_mode(contract.answer_mode)
+    return "confirmed_only"
+
+
+def _gate_estimate_domain(
+    *,
+    contract: AnswerContract | None,
+    context: Mapping[str, Any] | None,
+    explicit: str | None,
+) -> str:
+    if explicit is not None:
+        return _clean_estimate_domain(explicit)
+    payload = _estimate_gate_payload_from_context(context)
+    if payload.get("estimate_domain") is not None:
+        return _clean_estimate_domain(payload.get("estimate_domain"))
+    if contract is not None:
+        return _clean_estimate_domain(contract.estimate_domain)
+    return "none"
+
+
+def _gate_is_estimate(
+    *,
+    contract: AnswerContract | None,
+    context: Mapping[str, Any] | None,
+    explicit: bool | None,
+) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    payload = _estimate_gate_payload_from_context(context)
+    if payload.get("is_estimate") is not None:
+        return _truthy(payload.get("is_estimate"))
+    return bool(contract is not None and contract.answer_mode == "estimate_allowed")
 
 
 def _preemptive_format_choice_finding(answer_low: str, *, contract: AnswerContract) -> bool:
@@ -2519,7 +2990,7 @@ def _hard_check(
     findings.extend(_payment_method_findings(text_to_check, contract=contract, facts=facts))
     unsupported: tuple[str, ...] = ()
     semantic_available = True
-    if toggles.semantic_faithfulness:
+    if toggles.semantic_faithfulness and contract.answer_mode != "estimate_allowed":
         result = check_claim_faithfulness(
             text_to_check,
             facts=facts,

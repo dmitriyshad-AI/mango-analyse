@@ -41,6 +41,45 @@ def _contract_payload(question: str, *, keys: tuple[str, ...] = ()) -> Mapping[s
     }
 
 
+def test_parse_contract_accepts_model_selling_signals_but_keeps_them_narrow() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "Серьёзная сумма для семьи, можно как-то удобнее?",
+            "answerability": "answer_self",
+            "planner_intent": "pricing",
+            "planner_confidence": 0.91,
+            "selling": {"objection": "price", "exit_signal": True, "extra": "ignored"},
+        },
+        active_brand="foton",
+    )
+    neutral = parse_contract(
+        {
+            "current_question": "Расскажите про курс",
+            "answerability": "answer_self",
+            "planner_intent": "general_consultation",
+            "selling": {"objection": "quality", "exit_signal": False},
+        },
+        active_brand="foton",
+    )
+
+    assert contract.selling == {"objection": "price", "exit_signal": True}
+    assert contract.to_json_dict()["selling"] == {"objection": "price", "exit_signal": True}
+    assert neutral.selling == {"objection": "none", "exit_signal": False}
+
+
+def test_understanding_prompt_requests_selling_subtext_without_new_call() -> None:
+    prompt = build_understanding_prompt(
+        conversation=({"role": "client", "text": "Посоветуюсь с мужем, сумма серьёзная"},),
+        active_brand="foton",
+        fact_key_catalog=("prices.current",),
+    )
+
+    assert "selling:" in prompt
+    assert "серьёзная сумма для семьи" in prompt
+    assert "посоветуюсь с мужем" in prompt
+    assert "Реальный возврат, жалоба или спор оплаты остаются is_p0=true" in prompt
+
+
 def _refund_fact() -> str:
     return (
         "Если клиент заранее спрашивает про возврат до оплаты, можно спокойно ответить, "

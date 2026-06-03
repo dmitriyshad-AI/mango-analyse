@@ -1299,6 +1299,7 @@ def _apply_migrated_rules_engine(
         "planner_subvariant": str(contract.get("planner_subvariant") or ""),
         "planner_slots": dict(contract.get("planner_slots") or {}) if isinstance(contract.get("planner_slots"), Mapping) else {},
         "planner_confidence": _float_value(contract.get("planner_confidence")),
+        "selling": _merged_selling_signals(contract.get("selling"), plan.get("selling")),
         "rules_engine_intent_source": str(shadow.get("selected_source") or ""),
         "direct_question": direct_question,
     }
@@ -1319,11 +1320,23 @@ def _apply_migrated_rules_engine(
                     **dict(plan),
                     "primary_intent": fallback_intent,
                     "direct_question": str(contract.get("current_question") or client_message or ""),
+                    "selling": _merged_selling_signals(contract.get("selling"), plan.get("selling")),
                 }
                 outcome = apply_migrated_domain_rule(fallback_rule, plan=fallback_plan, facts=facts, context=context)
     if outcome is None:
         return None
     return _apply_rules_engine_outcome(result, outcome)
+
+
+def _merged_selling_signals(model_value: object, keyword_value: object) -> Mapping[str, Any]:
+    model = model_value if isinstance(model_value, Mapping) else {}
+    keyword = keyword_value if isinstance(keyword_value, Mapping) else {}
+    model_objection = str(model.get("objection") or "none").strip().casefold()
+    keyword_objection = str(keyword.get("objection") or "none").strip().casefold()
+    return {
+        "objection": "price" if model_objection == "price" or keyword_objection == "price" else "none",
+        "exit_signal": bool(model.get("exit_signal")) or bool(keyword.get("exit_signal")),
+    }
 
 
 def _manager_route_migrated_rules_override_allowed(result: SubscriptionDraftResult, *, intent: str) -> bool:

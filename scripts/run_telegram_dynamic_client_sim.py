@@ -101,6 +101,11 @@ class FakeSemanticMatchModel:
         return {"covers": True, "same_product": True, "reason": "fake semantic match"}
 
 
+class FakeSellingComposeModel:
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        return {"text": "Понимаю, сумма важная. Опираюсь только на подтверждённые условия; менеджер поможет выбрать удобный шаг."}
+
+
 class FakeBotProvider:
     def build_draft(self, client_message: str, *, context: Optional[Mapping[str, Any]] = None) -> SubscriptionDraftResult:
         return normalize_subscription_draft_payload(
@@ -302,6 +307,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--semantic-mode", choices=("codex", "fake", "off"), default="codex")
     parser.add_argument("--semantic-model", default="gpt-5.5")
     parser.add_argument("--semantic-reasoning", default="medium")
+    parser.add_argument("--selling-mode", choices=("gen", "det"), default=os.getenv("TELEGRAM_A_SELLING_MODE", "gen"))
+    parser.add_argument("--selling-model", default="gpt-5.5")
+    parser.add_argument("--selling-reasoning", default="medium")
+    parser.add_argument("--selling-compose-fake", action="store_true", help="Use deterministic fake selling composer for smoke tests.")
     parser.add_argument("--timeout-sec", type=int, default=180)
     parser.add_argument(
         "--disable-bot-cache",
@@ -322,6 +331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.environ["TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"] = "1"
     if args.memory_mode == "codex" and str(args.memory_reasoning or "").strip().lower() != "low":
         raise ValueError("--memory-reasoning must be low for codex memory mode")
+    os.environ["TELEGRAM_A_SELLING_MODE"] = str(args.selling_mode or "gen")
 
     if "stable_runtime" in args.out_dir.resolve(strict=False).parts:
         raise ValueError("Refusing to write dynamic sim outputs under stable_runtime")
@@ -402,6 +412,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             judge_model = build_judge_model(args)
             bot_provider = build_bot_provider(args)
             memory_model = build_memory_model(args)
+            selling_compose_model = build_selling_compose_model(args)
             for persona in pending_personas:
                 dialog_id = str(persona.get("dialog_id") or "")
                 print(f"run_dialog={dialog_id}", flush=True)
@@ -415,6 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         judge_model=judge_model,
                         bot_provider=bot_provider,
                         memory_model=memory_model,
+                        selling_compose_model=selling_compose_model,
                         snapshot_path=args.snapshot,
                         max_turns_override=args.max_turns,
                         debug_trace_run_dir=args.out_dir,
@@ -655,6 +667,27 @@ def build_semantic_match_model(args: argparse.Namespace) -> Any:
     )
 
 
+def build_selling_compose_model(args: argparse.Namespace) -> Any:
+    if str(getattr(args, "selling_mode", "gen") or "gen") == "det":
+        return None
+    if getattr(args, "selling_compose_fake", False):
+        return maybe_counting_model(
+            FakeSellingComposeModel(),
+            role="bot_selling_compose",
+            counter=getattr(args, "llm_call_counter", None),
+        )
+    return maybe_counting_model(
+        CodexJsonModel(
+            model=args.selling_model,
+            reasoning_effort=args.selling_reasoning,
+            timeout_sec=args.timeout_sec,
+            codex_bin=getattr(args, "codex_bin", "codex"),
+        ),
+        role="bot_selling_compose",
+        counter=getattr(args, "llm_call_counter", None),
+    )
+
+
 def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
     if args.bot_mode == "fake":
         return FakeBotProvider()
@@ -696,6 +729,7 @@ def run_one_dialog_isolated(
         judge_model=build_judge_model(args),
         bot_provider=build_bot_provider(args, dialog_id=dialog_id),
         memory_model=build_memory_model(args),
+        selling_compose_model=build_selling_compose_model(args),
         snapshot_path=snapshot_path,
         max_turns_override=max_turns_override,
         debug_trace_run_dir=args.out_dir,
@@ -892,6 +926,7 @@ def run_one_dialog(
     bot_provider: Any,
     snapshot_path: Path,
     memory_model: Any = None,
+    selling_compose_model: Any = None,
     max_turns_override: int = 0,
     debug_trace_run_dir: Path | None = None,
 ) -> Mapping[str, Any]:
@@ -927,6 +962,10 @@ def run_one_dialog(
                 "dialog_id": dialog_id,
                 "turn": turn_index,
             }
+        if selling_compose_model is not None:
+            context = dict(context)
+            context["selling_compose_fn"] = selling_compose_model.generate
+            context["selling_mode"] = "gen"
         result = bot_provider.build_draft(client_message, context=context)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
         dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)
@@ -1521,6 +1560,7 @@ def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) ->
         "client": role_counts.get("client", 0),
         "bot_draft": role_counts.get("bot_draft", 0),
         "bot_critic": role_counts.get("bot_critic", 0),
+        "bot_selling_compose": role_counts.get("bot_selling_compose", 0),
         "memory": role_counts.get("memory", 0),
         "judge": role_counts.get("judge", 0),
         "dialogs": int(dialogs),

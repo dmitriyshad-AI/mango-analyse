@@ -7737,6 +7737,30 @@ def test_step_b1_price_without_fact_downgrades_self_defer_but_keeps_boundaries()
     assert not any(flag.startswith("rules_engine_price") for flag in p0.safety_flags)
 
 
+def test_model_selling_signal_from_dialogue_contract_feeds_rules_engine_with_keyword_floor_absent() -> None:
+    price_facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
+    question = "Серьёзная сумма для семьи, сколько стоит онлайн для 10 класса?"
+    result = _step2b1_result(question=question, facts=price_facts, topic_id="theme:001_pricing")
+    pipeline = dict(result.metadata["dialogue_contract_pipeline"])
+    contract = dict(pipeline["contract"])
+    contract["selling"] = {"objection": "price", "exit_signal": False}
+    pipeline["contract"] = contract
+    result = replace(result, metadata={**dict(result.metadata), "dialogue_contract_pipeline": pipeline})
+    context = _step2b1_context(brand="foton", intent="pricing", question=question, facts=price_facts)
+    context["selling_mode"] = "det"
+
+    routed = _apply_v2_guard_chain(result, question, context)
+
+    assert routed.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_price_objection" in routed.safety_flags
+    assert "6, 10 или 12 месяцев" in routed.draft_text
+    assert "Подсказать удобный вариант" in routed.draft_text
+
+
 def test_step2b4_price_and_format_do_not_override_cross_brand_or_p0() -> None:
     price_facts = {
         "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",

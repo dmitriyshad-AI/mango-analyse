@@ -514,20 +514,39 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         scenario_path=tmp_path / "scenarios.jsonl",
         snapshot_path=tmp_path / "snapshot.json",
         parallel=1,
-        llm_calls={"client": 2, "bot_draft": 3, "bot_critic": 1, "memory": 2},
+        llm_calls={"client": 2, "bot_draft": 3, "bot_critic": 1, "bot_selling_compose": 1, "memory": 2},
     )
 
     assert summary["llm_calls"] == {
-        "total": 8,
+        "total": 9,
         "client": 2,
         "bot_draft": 3,
         "bot_critic": 1,
+        "bot_selling_compose": 1,
         "memory": 2,
         "judge": 0,
         "dialogs": 1,
         "turns": 2,
-        "avg_calls_per_dialog": 8.0,
+        "avg_calls_per_dialog": 9.0,
     }
+
+
+def test_build_selling_compose_model_counts_dedicated_role() -> None:
+    counter = sim.LlmCallCounter()
+    args = argparse.Namespace(
+        selling_mode="gen",
+        selling_compose_fake=True,
+        selling_model="gpt-5.5",
+        selling_reasoning="medium",
+        timeout_sec=180,
+        llm_call_counter=counter,
+    )
+
+    model = sim.build_selling_compose_model(args)
+
+    assert model is not None
+    assert model.generate("test")["text"]
+    assert counter.snapshot() == {"bot_selling_compose": 1}
 
 
 def test_dynamic_summary_counts_over_handoff_turns_and_false_handoff_only_retrieved(tmp_path):

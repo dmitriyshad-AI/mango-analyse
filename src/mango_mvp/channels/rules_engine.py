@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
 
 
 DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
+SELLING_MODE_ENV = "TELEGRAM_A_SELLING_MODE"
 MIGRATED = frozenset(
     {
         "teacher",
@@ -1580,6 +1582,55 @@ def _apply_selling_variants(
     selling = _selling_view(plan, context)
     if not selling:
         return outcome
+    det_outcome = _apply_selling_det_variants(outcome, rule=rule, plan=plan, facts=facts, context=context, selling=selling)
+    if det_outcome is outcome:
+        return outcome
+    if _selling_mode(context) == "det":
+        return det_outcome
+    compose_fn = _selling_compose_fn(context)
+    if compose_fn is None:
+        return _mark_selling_gen_fallback(det_outcome, reason="composer_unavailable")
+    candidate, error = _compose_selling_text(
+        compose_fn,
+        rule=rule,
+        plan=plan,
+        facts={**dict(facts), **dict(det_outcome.facts)},
+        base_outcome=outcome,
+        det_outcome=det_outcome,
+        selling=selling,
+        context=context,
+    )
+    if not candidate:
+        return _mark_selling_gen_fallback(det_outcome, reason=error or "empty_candidate")
+    valid, reason = _verify_selling_generated_text(
+        candidate,
+        facts={**dict(facts), **dict(det_outcome.facts)},
+        active_brand=_active_brand(plan, context),
+    )
+    if not valid:
+        return _mark_selling_gen_fallback(det_outcome, reason=reason)
+    metadata = {
+        **dict(det_outcome.metadata),
+        "selling": {
+            **(dict(det_outcome.metadata.get("selling") or {}) if isinstance(det_outcome.metadata.get("selling"), Mapping) else {}),
+            "mode": "gen",
+            "gen_applied": True,
+            "gen_fallback": False,
+        },
+    }
+    flags = tuple(dict.fromkeys([*det_outcome.flags, "rules_engine_selling_gen_applied"]))
+    return replace(det_outcome, text=candidate, flags=flags, metadata=metadata)
+
+
+def _apply_selling_det_variants(
+    outcome: RuleOutcome,
+    *,
+    rule: Rule,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+    selling: Mapping[str, Any],
+) -> RuleOutcome:
     brand = _active_brand(plan, context)
     all_facts = {**dict(facts), **dict(outcome.facts)}
     text = outcome.text
@@ -1618,6 +1669,142 @@ def _apply_selling_variants(
         },
     }
     return replace(outcome, text=text, facts=source, flags=tuple(dict.fromkeys(flags)), metadata=metadata)
+
+
+def _selling_mode(context: Mapping[str, Any] | None) -> str:
+    if isinstance(context, Mapping):
+        value = str(context.get("selling_mode") or context.get(SELLING_MODE_ENV) or "").strip().casefold()
+        if value in {"gen", "det"}:
+            return value
+    value = os.getenv(SELLING_MODE_ENV, "gen").strip().casefold()
+    return value if value in {"gen", "det"} else "gen"
+
+
+def _selling_compose_fn(context: Mapping[str, Any] | None) -> Callable[[str], object] | None:
+    if not isinstance(context, Mapping):
+        return None
+    value = context.get("selling_compose_fn") or context.get("a_selling_compose_fn")
+    return value if callable(value) else None
+
+
+def _compose_selling_text(
+    compose_fn: Callable[[str], object],
+    *,
+    rule: Rule,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    base_outcome: RuleOutcome,
+    det_outcome: RuleOutcome,
+    selling: Mapping[str, Any],
+    context: Mapping[str, Any] | None,
+) -> tuple[str, str]:
+    prompt = _build_selling_compose_prompt(
+        rule=rule,
+        plan=plan,
+        facts=facts,
+        base_outcome=base_outcome,
+        det_outcome=det_outcome,
+        selling=selling,
+        context=context,
+    )
+    try:
+        raw = compose_fn(prompt)
+    except Exception as exc:
+        return "", f"composer_error:{exc.__class__.__name__}"
+    if isinstance(raw, Mapping):
+        text = str(raw.get("text") or raw.get("draft_text") or raw.get("answer") or "").strip()
+    else:
+        text = str(raw or "").strip()
+    return (" ".join(text.split())[:900], "") if text else ("", "empty_candidate")
+
+
+def _build_selling_compose_prompt(
+    *,
+    rule: Rule,
+    plan: Mapping[str, Any],
+    facts: Mapping[str, str],
+    base_outcome: RuleOutcome,
+    det_outcome: RuleOutcome,
+    selling: Mapping[str, Any],
+    context: Mapping[str, Any] | None,
+) -> str:
+    brand = _active_brand(plan, context)
+    facts_text = "\n".join(f"- {key}: {value}" for key, value in facts.items())
+    history = ""
+    if isinstance(context, Mapping):
+        recent = context.get("recent_messages")
+        if isinstance(recent, (list, tuple)):
+            history = "\n".join(str(item) for item in recent[-6:])
+    return (
+        "Ты формулируешь короткий клиентский ответ для учебного центра.\n"
+        f"Активный бренд: {brand}. Нельзя упоминать другой бренд.\n"
+        f"Вопрос клиента: {_raw_question_text(plan, context)}\n"
+        f"Правило: {rule.rule_id}/{det_outcome.subvariant}. Selling: {dict(selling)}.\n"
+        "Задача: признать сомнение клиента, дать ценность/способ оплаты из фактов и мягкий следующий шаг. "
+        "Без давления, без обещаний результата/поступления, 1-3 предложения.\n"
+        "Числа, проценты, суммы, даты и сроки можно брать ТОЛЬКО дословно из фактов ниже. Не выдумывай.\n"
+        "Если факта не хватает, не добавляй этот фрагмент.\n"
+        f"Базовый факт-ответ: {base_outcome.text}\n"
+        f"Детерминированный fallback: {det_outcome.text}\n"
+        f"История:\n{history}\n"
+        f"Факты:\n{facts_text}\n"
+        "Верни строго JSON: {\"text\":\"...\"}"
+    )
+
+
+_SELLING_PRESSURE_RE = re.compile(
+    r"только\s+сегодня|успейт|последн(?:ий|яя)\s+шанс|решайт[е]?\s+сейчас|"
+    r"срочно\s+(?:оформ|запис|реш)|иначе\s+(?:мест|скид|цен)",
+    re.I,
+)
+_SELLING_GUARANTEE_RE = re.compile(
+    r"гарантир|100\s*%|обязательно\s+(?:поступ|сдад|получ)|точно\s+(?:поступ|сдад|получ)",
+    re.I,
+)
+_SELLING_NUMBER_RE = re.compile(r"\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:₽|%|руб(?:\.|лей|ля|ль)?|месяц(?:ев|а)?|дн(?:ей|я)?|раз(?:а)?|балл(?:ов|а)?)?")
+
+
+def _verify_selling_generated_text(
+    text: str,
+    *,
+    facts: Mapping[str, str],
+    active_brand: str,
+) -> tuple[bool, str]:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return False, "empty_candidate"
+    if _mentions_other_brand(candidate, active_brand):
+        return False, "other_brand"
+    if _SELLING_PRESSURE_RE.search(candidate):
+        return False, "pressure"
+    if _SELLING_GUARANTEE_RE.search(candidate):
+        return False, "guarantee"
+    fact_text = " ".join(str(value or "") for value in facts.values())
+    fact_norm = _normalize_number_surface(fact_text)
+    for token in _SELLING_NUMBER_RE.findall(candidate):
+        normalized = _normalize_number_surface(token)
+        if normalized and normalized not in fact_norm:
+            return False, f"unsupported_number:{token.strip()}"
+    return True, ""
+
+
+def _normalize_number_surface(text: str) -> str:
+    return str(text or "").replace("\u00a0", " ").casefold().replace("ё", "е")
+
+
+def _mark_selling_gen_fallback(outcome: RuleOutcome, *, reason: str) -> RuleOutcome:
+    metadata = {
+        **dict(outcome.metadata),
+        "selling": {
+            **(dict(outcome.metadata.get("selling") or {}) if isinstance(outcome.metadata.get("selling"), Mapping) else {}),
+            "mode": "gen",
+            "gen_applied": False,
+            "gen_fallback": True,
+            "gen_fallback_reason": reason,
+        },
+    }
+    flags = tuple(dict.fromkeys([*outcome.flags, "rules_engine_selling_gen_fallback"]))
+    return replace(outcome, flags=flags, metadata=metadata)
 
 
 def _selling_view(plan: Mapping[str, Any], context: Mapping[str, Any] | None) -> Mapping[str, Any]:

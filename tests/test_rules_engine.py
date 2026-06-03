@@ -475,6 +475,95 @@ def test_rules_engine_selling_price_objection_foton_installment_uses_fact_number
     assert "УНПК" not in outcome.text
 
 
+def test_rules_engine_selling_gen_accepts_grounded_composition() -> None:
+    rule = load_rules_registry()["installment"]
+    facts = {"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."}
+
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "installment",
+            "direct_question": "Серьёзная сумма для семьи, можно частями?",
+            "active_brand": "foton",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts=facts,
+        context={
+            "active_brand": "foton",
+            "selling_mode": "gen",
+            "selling_compose_fn": lambda _prompt: {
+                "text": (
+                    "Понимаю, важно распределить оплату. В Фотоне оплату можно разбить на 6, 10 или 12 месяцев; "
+                    "доступен сервис Долями. Подобрать удобный вариант?"
+                )
+            },
+        },
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_gen_applied" in outcome.flags
+    assert "rules_engine_selling_gen_fallback" not in outcome.flags
+    assert outcome.metadata["selling"]["mode"] == "gen"
+    assert outcome.metadata["selling"]["gen_applied"] is True
+    assert "6, 10 или 12 месяцев" in outcome.text
+    assert "Долями" in outcome.text
+
+
+def test_rules_engine_selling_gen_falls_back_on_unsupported_number_pressure_or_brand() -> None:
+    rule = load_rules_registry()["installment"]
+    facts = {"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."}
+    plan = {
+        "primary_intent": "installment",
+        "direct_question": "Дорого, можно частями?",
+        "active_brand": "foton",
+        "selling": {"objection": "price", "exit_signal": False},
+    }
+
+    bad_outputs = (
+        "Понимаю, можно оформить на 24 месяца.",
+        "Только сегодня успейте оформить оплату на 6, 10 или 12 месяцев.",
+        "В УНПК можно оплатить частями на 6, 10 или 12 месяцев.",
+    )
+    for bad_text in bad_outputs:
+        outcome = apply_rule(
+            rule,
+            plan=plan,
+            facts=facts,
+            context={"active_brand": "foton", "selling_mode": "gen", "selling_compose_fn": lambda _prompt, text=bad_text: {"text": text}},
+        )
+
+        assert outcome is not None
+        assert "rules_engine_selling_gen_fallback" in outcome.flags
+        assert "24" not in outcome.text
+        assert "Только сегодня" not in outcome.text
+        assert "УНПК" not in outcome.text
+        assert "6, 10 или 12 месяцев" in outcome.text
+
+
+def test_rules_engine_selling_det_mode_ignores_gen_composer() -> None:
+    rule = load_rules_registry()["installment"]
+
+    def _must_not_call(_prompt: str):
+        raise AssertionError("det mode must not call selling composer")
+
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "installment",
+            "direct_question": "Дороговато, можно частями?",
+            "active_brand": "foton",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts={"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."},
+        context={"active_brand": "foton", "selling_mode": "det", "selling_compose_fn": _must_not_call},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_price_objection" in outcome.flags
+    assert "rules_engine_selling_gen_applied" not in outcome.flags
+    assert "rules_engine_selling_gen_fallback" not in outcome.flags
+
+
 def test_rules_engine_selling_price_objection_unpk_uses_only_unpk_terms() -> None:
     rule = load_rules_registry()["installment"]
     facts = {

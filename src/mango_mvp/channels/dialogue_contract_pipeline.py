@@ -163,6 +163,7 @@ class AnswerContract:
     planner_subvariant: str = ""
     planner_slots: Mapping[str, str] = field(default_factory=dict)
     planner_confidence: float = 0.0
+    selling: Mapping[str, Any] = field(default_factory=lambda: {"objection": "none", "exit_signal": False})
     forbidden_substitutions: tuple[str, ...] = ()
     client_state: str = ""
     answerability: str = "manager_only"
@@ -210,6 +211,7 @@ class AnswerContract:
             "planner_subvariant": self.planner_subvariant,
             "planner_slots": dict(self.planner_slots),
             "planner_confidence": self.planner_confidence,
+            "selling": dict(self.selling),
             "assertable_slots": self.assertable_slots(),
             "unsourced_slots": list(self.unsourced_slots()),
             "needed_fact_keys": list(self.needed_fact_keys),
@@ -369,6 +371,7 @@ def build_understanding_prompt(
         "{ current_question, client_state, continued_topics[], denied_topics[], switched_topics[], forbidden_substitutions[],\n"
         "  known_slots: { имя: {value, source} },\n"
         "  planner_intent, planner_subvariant, planner_slots: {slot:value}, planner_confidence:0..1,\n"
+        "  selling: {objection:'price'|'none', exit_signal:bool},\n"
         "  subquestions: [ {text, answerable:'self'|'manager', question_type:'existence_yes_no'|'', existence_target, needed_fact_keys[], next_step} ],\n"
         "  answerability:'answer_self'|'manager_only', question_type:'existence_yes_no'|'', existence_target, is_p0:bool, p0_reason, confidence:0..1 }\n"
         "Правила:\n"
@@ -406,6 +409,11 @@ def build_understanding_prompt(
         "product_family, payment_method. Не добавляй active_brand: бренд задаётся каналом, а не текстом клиента.\n"
         "- На эллипсисе используй topic_focus и known_slots для planner_intent/planner_slots так же, как для current_question: "
         "«а очно?» после цены информатики остаётся pricing/format по той же теме, не general_consultation.\n"
+        "- selling — только для мягких коммерческих сигналов, НЕ для P0. objection='price', если клиент прямо или по смыслу "
+        "сомневается в цене/бюджете: «дорого», «серьёзная сумма для семьи», «не потянем», «есть дешевле?». "
+        "exit_signal=true, если клиент уходит подумать/сравнить/обсудить: «подумаю», «посоветуюсь с мужем/семьёй», "
+        "«посмотрю другие варианты». Для нейтрального «сколько стоит/расскажите» ставь objection='none', exit_signal=false. "
+        "Реальный возврат, жалоба или спор оплаты остаются is_p0=true и selling не должен менять маршрут.\n"
         f"Уже известные данные: {json.dumps(dict(known_slots), ensure_ascii=False)}\n"
         f"Фокус темы из памяти: {json.dumps(dict(topic_focus), ensure_ascii=False)}\n"
         f"Каталог ключей фактов: {catalog}\n"
@@ -473,6 +481,7 @@ def parse_contract(
         planner_subvariant=str(data.get("planner_subvariant") or "").strip()[:80],
         planner_slots=_clean_planner_slots(data.get("planner_slots")),
         planner_confidence=_clamp_float(data.get("planner_confidence")),
+        selling=_clean_selling(data.get("selling")),
         forbidden_substitutions=tuple(_seq(data.get("forbidden_substitutions"))),
         client_state=str(data.get("client_state") or "").strip()[:180],
         answerability=answerability,
@@ -487,6 +496,18 @@ def parse_contract(
 def _clean_planner_intent(value: object) -> str:
     intent = str(value or "").strip().casefold()
     return intent if intent in PLANNER_INTENT_VALUES else ""
+
+
+def _clean_selling(value: object) -> Mapping[str, Any]:
+    if not isinstance(value, MappingABC):
+        return {"objection": "none", "exit_signal": False}
+    objection = str(value.get("objection") or "none").strip().casefold()
+    if objection != "price":
+        objection = "none"
+    return {
+        "objection": objection,
+        "exit_signal": bool(value.get("exit_signal")),
+    }
 
 
 def _clean_planner_slots(raw: object) -> Mapping[str, str]:
@@ -1553,6 +1574,7 @@ def run_pipeline(
                 "planner_intent": contract.planner_intent,
                 "planner_subvariant": contract.planner_subvariant,
                 "planner_confidence": contract.planner_confidence,
+                "selling": dict(contract.selling),
             }
         )
     if contract.is_p0:

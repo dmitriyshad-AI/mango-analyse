@@ -7,6 +7,32 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 
+def _write_minimal_master_export(tmp_path: Path) -> Path:
+    master_export_dir = tmp_path / "master_export"
+    master_export_dir.mkdir()
+    (master_export_dir / "master_contacts_ru.csv").write_text(
+        "\n".join(
+            [
+                "Телефон клиента,Краткая история общения,Хронология общения (последние 5 касаний),Краткое резюме последнего свежего звонка",
+                '"+79990000001","Минимальная история 1","Минимальная хронология 1","Минимальное резюме 1"',
+                '"+79990000002","Минимальная история 2","Минимальная хронология 2","Минимальное резюме 2"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (master_export_dir / "master_calls_ru.csv").write_text(
+        "\n".join(
+            [
+                "Телефон клиента,Дата и время звонка",
+                "+79990000001,2026-04-12 10:00:00",
+                "+79990000002,2026-04-12 10:00:00",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return master_export_dir
+
+
 def test_build_rop_deal_pack_creates_expected_sheets(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -108,7 +134,9 @@ def test_build_rop_deal_pack_creates_expected_sheets(tmp_path: Path) -> None:
         },
     ]
     (run_dir / "all_results.json").write_text(json.dumps(all_results, ensure_ascii=False), encoding="utf-8")
+    (run_dir / "live_recent_leads.json").write_text("[]", encoding="utf-8")
 
+    master_export_dir = _write_minimal_master_export(tmp_path)
     out_path = tmp_path / "rop.xlsx"
     subprocess.run(
         [
@@ -118,6 +146,8 @@ def test_build_rop_deal_pack_creates_expected_sheets(tmp_path: Path) -> None:
             str(run_dir),
             "--out",
             str(out_path),
+            "--master-export-dir",
+            str(master_export_dir),
         ],
         cwd=Path(__file__).resolve().parents[1],
         check=True,
@@ -265,6 +295,7 @@ def test_build_rop_deal_pack_keeps_full_post_close_history_and_skips_active_clie
         encoding="utf-8",
     )
 
+    master_export_dir = _write_minimal_master_export(tmp_path)
     out_path = tmp_path / "rop.xlsx"
     subprocess.run(
         [
@@ -276,6 +307,8 @@ def test_build_rop_deal_pack_keeps_full_post_close_history_and_skips_active_clie
             str(out_path),
             "--lead-snapshot-json",
             str(lead_snapshot_path),
+            "--master-export-dir",
+            str(master_export_dir),
         ],
         cwd=Path(__file__).resolve().parents[1],
         check=True,
@@ -371,6 +404,7 @@ def test_build_rop_deal_pack_adds_open_deals_from_full_snapshot(tmp_path: Path) 
         encoding="utf-8",
     )
 
+    master_export_dir = _write_minimal_master_export(tmp_path)
     out_path = tmp_path / "rop.xlsx"
     subprocess.run(
         [
@@ -384,6 +418,8 @@ def test_build_rop_deal_pack_adds_open_deals_from_full_snapshot(tmp_path: Path) 
             str(lead_snapshot_path),
             "--full-lead-snapshot-json",
             str(full_snapshot_path),
+            "--master-export-dir",
+            str(master_export_dir),
         ],
         cwd=Path(__file__).resolve().parents[1],
         check=True,

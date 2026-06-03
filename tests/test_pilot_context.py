@@ -1,11 +1,40 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mango_mvp.channels.contracts import ChannelDirection, ChannelMessage
 from mango_mvp.channels.pilot_context import build_pilot_context, pilot_context_safety_contract
 from mango_mvp.channels.draft_prompt_builder import build_prompt_context
 from mango_mvp.channels.few_shot_reference import build_gold_answer_context, build_few_shot_reference
+
+
+def _write_gold_answers_fixture(tmp_path: Path) -> Path:
+    path = tmp_path / "bot_gold_answers.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "gold_answers_test_v1",
+                "global_rules": ["Не использовать gold как источник фактов."],
+                "topics": {
+                    "camps": {
+                        "unpk": {
+                            "gold_answer_example": (
+                                "ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽, "
+                                "полная стоимость — 120 000 ₽."
+                            ),
+                            "must_include": ["ЛВШ Менделеево"],
+                            "must_not_include": ["Фотон"],
+                        }
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_pilot_context_marks_family_phone_and_quality() -> None:
@@ -96,14 +125,16 @@ def test_pilot_context_compaction_preserves_held_state_and_focus() -> None:
     assert "по онлайн-занятиям записи доступны" in memory["safe_answered_parts"]
 
 
-def test_gold_answer_context_is_brand_topic_filtered_and_not_fact_source(monkeypatch) -> None:
-    monkeypatch.delenv("TELEGRAM_DRAFT_GOLD_V3_CONTEXT", raising=False)
+def test_gold_answer_context_is_brand_topic_filtered_and_not_fact_source(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_DRAFT_GOLD_V3_CONTEXT", "1")
+    gold_path = _write_gold_answers_fixture(tmp_path)
 
     context = build_gold_answer_context(
         message_text="Сколько стоит ЛВШ Менделеево?",
         active_brand="unpk",
         topic_id="theme:026_camp_general",
         confirmed_facts={"unpk_lvsh": "ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽, полная стоимость — 120 000 ₽."},
+        gold_path=gold_path,
     )
 
     assert context["active_brand"] == "unpk"
@@ -115,14 +146,16 @@ def test_gold_answer_context_is_brand_topic_filtered_and_not_fact_source(monkeyp
     assert "tone_and_structure_only_not_fact_source" in context["purpose"]
 
 
-def test_gold_answer_context_skips_precise_example_without_confirmed_fact(monkeypatch) -> None:
-    monkeypatch.delenv("TELEGRAM_DRAFT_GOLD_V3_CONTEXT", raising=False)
+def test_gold_answer_context_skips_precise_example_without_confirmed_fact(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_DRAFT_GOLD_V3_CONTEXT", "1")
+    gold_path = _write_gold_answers_fixture(tmp_path)
 
     context = build_gold_answer_context(
         message_text="Сколько стоит ЛВШ Менделеево?",
         active_brand="unpk",
         topic_id="theme:026_camp_general",
         confirmed_facts={},
+        gold_path=gold_path,
     )
 
     assert context.get("examples") in (None, [])

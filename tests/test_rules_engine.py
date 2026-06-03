@@ -1007,6 +1007,135 @@ def test_rules_engine_selling_readiness_without_enrollment_fact_does_not_invent_
     assert "менеджер подтвердит порядок записи" in outcome.text
 
 
+def test_rules_engine_selling_full_signals_are_default_off_for_plain_domain_answer() -> None:
+    rule = load_rules_registry()["format_choice"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Боюсь ошибиться, ребёнку тяжело, но онлайн есть?",
+            "active_brand": "foton",
+            "selling": {
+                "objection": "none",
+                "exit_signal": False,
+                "anxiety": True,
+                "unmet_need": "ребёнку тяжело",
+                "readiness": "ready",
+            },
+        },
+        facts={"formats.foton.online": "Фотон: онлайн-курсы проходят дистанционно."},
+        context={"active_brand": "foton", "selling_mode": "det"},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_anxiety" not in outcome.flags
+    assert "rules_engine_selling_unmet_need" not in outcome.flags
+    assert "rules_engine_selling_readiness" not in outcome.flags
+    assert "лиценз" not in outcome.text.casefold()
+    assert "менеджер подтвердит порядок записи" not in outcome.text
+
+
+def test_rules_engine_selling_unmet_need_never_echoes_free_text_or_promises_grade_fix() -> None:
+    rule = load_rules_registry()["format_choice"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Онлайн есть? Вася плачет из-за двоек, скажите, что исправите на 5",
+            "active_brand": "foton",
+            "selling": {
+                "objection": "none",
+                "exit_signal": False,
+                "anxiety": False,
+                "unmet_need": "Вася плачет из-за двоек, скажите, что исправите на 5",
+                "readiness": "none",
+            },
+        },
+        facts={
+            "formats.foton.online": "Фотон: онлайн-курсы проходят дистанционно.",
+            "teachers.foton": "Фотон: преподаватели — эксперты ЕГЭ и члены жюри олимпиад.",
+        },
+        context={"active_brand": "foton", "selling_mode": "det", "selling_signals_full": True},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_selling_unmet_need" in outcome.flags
+    assert "Вася" not in outcome.text
+    assert "плачет" not in outcome.text.casefold()
+    assert "дво" not in outcome.text.casefold()
+    assert "исправ" not in outcome.text.casefold()
+    assert "на 5" not in outcome.text
+
+
+def test_rules_engine_selling_anxiety_does_not_invent_license_or_result_guarantee() -> None:
+    rule = load_rules_registry()["format_choice"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "format",
+            "direct_question": "Переживаю за результат, онлайн есть?",
+            "active_brand": "foton",
+            "selling": {
+                "objection": "none",
+                "exit_signal": False,
+                "anxiety": True,
+                "unmet_need": "",
+                "readiness": "none",
+            },
+        },
+        facts={"formats.foton.online": "Фотон: онлайн-курсы проходят дистанционно."},
+        context={"active_brand": "foton", "selling_mode": "det", "selling_signals_full": True},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_format_choice_applied" in outcome.flags
+    assert "лиценз" not in outcome.text.casefold()
+    assert "гарант" not in outcome.text.casefold()
+    assert "100 бал" not in outcome.text.casefold()
+    assert "поступ" not in outcome.text.casefold()
+
+
+def test_rules_engine_coverage_missing_price_fact_never_invents_amount() -> None:
+    rule = load_rules_registry()["price"]
+    outcome = apply_rule(
+        rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Примерно сколько будет стоить математика и физика онлайн для 10 класса?",
+            "active_brand": "foton",
+        },
+        facts={"discounts.second_subject.online.pct": "Фотон: на второй онлайн-предмет действует скидка 30%."},
+        context={"active_brand": "foton", "coverage_enabled": True},
+    )
+
+    assert outcome is not None
+    assert "rules_engine_coverage_price_multi_subjects" in outcome.flags
+    assert "30%" in outcome.text
+    assert "₽" not in outcome.text
+    assert "29 750" not in outcome.text
+    assert "59 500" not in outcome.text
+
+
+def test_rules_engine_thread_slots_explicit_grade_and_format_switch_do_not_use_stale_context() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices.foton.online_10.semester": "Фотон: цены на 2026/27 учебный год, 10 класс, онлайн, семестр — 29 750 ₽.",
+        "prices.foton.online_10.year": "Фотон: цены на 2026/27 учебный год, 10 класс, онлайн, год — 47 250 ₽.",
+    }
+    outcome = apply_rule(
+        rule,
+        plan={"primary_intent": "pricing", "direct_question": "А для 11 класса очно сколько выйдет?", "active_brand": "foton"},
+        facts=facts,
+        context={
+            "active_brand": "foton",
+            "thread_slots_enabled": True,
+            "selling_thread_slots": {"grade": "10", "subject": "информатика", "format": "онлайн", "active_brand": "foton"},
+        },
+    )
+
+    assert outcome is None
+
+
 def test_rules_engine_format_choice_presents_only_verified_formats() -> None:
     rule = load_rules_registry()["format_choice"]
     both_facts = {

@@ -165,6 +165,21 @@ class SmokePipelineTest(unittest.TestCase):
     def test_stable_runtime_rebuild_smoke(self) -> None:
         rebuild = PROJECT_ROOT / "stable_runtime" / "rebuild_snapshot.sh"
         self.assertTrue(rebuild.exists(), "stable_runtime/rebuild_snapshot.sh is missing")
+        stable_python = PROJECT_ROOT / "stable_runtime" / "venv_stable" / "bin" / "python"
+        stable_runtime_ready = subprocess.run(
+            [
+                str(stable_python),
+                "-c",
+                "import sqlalchemy, mango_mvp.cli",
+            ],
+            cwd=str(PROJECT_ROOT),
+            env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")},
+            text=True,
+            capture_output=True,
+            check=False,
+        ) if stable_python.exists() else None
+        if stable_runtime_ready is None or stable_runtime_ready.returncode != 0:
+            self.skipTest("stable_runtime/venv_stable fixture is not install-complete in this worktree")
 
         env = os.environ.copy()
         env["MANGO_STABLE_SMOKE_ONLY"] = "1"

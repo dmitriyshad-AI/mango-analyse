@@ -1113,6 +1113,8 @@ def test_rules_engine_selling_readiness_without_fact_is_short_handoff_not_steps(
     assert outcome.route == "draft_for_manager"
     assert "rules_engine_selling_readiness_no_fact_handoff" in outcome.flags
     assert "Менеджер подтвердит порядок записи" in outcome.text
+    assert "Если класс" not in outcome.text
+    assert "повторять" not in outcome.text.casefold()
     assert "оплат" not in outcome.text.casefold()
 
 

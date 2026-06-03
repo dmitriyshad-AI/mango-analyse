@@ -712,6 +712,26 @@ def test_draft_text_strips_kb_source_and_freshness_metadata() -> None:
     assert "kc_chunk:" not in strip_internal_service_markers("Ответ kc_chunk:safe_template")
 
 
+def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() -> None:
+    assert (
+        strip_internal_service_markers('Фотон: черновик для ситуации «возражение о стоимости курса»: Это отдельные организации.')
+        == "Это отдельные организации."
+    )
+    assert strip_internal_service_markers("без обещаний оценки: Контрольные помогают увидеть динамику.") == "Контрольные помогают увидеть динамику."
+    assert strip_internal_service_markers("без давления на клиента: Можно спокойно сравнить варианты.") == "Можно спокойно сравнить варианты."
+
+    normal = "Если удобно, повторите класс и предмет — я сориентирую по подходящему варианту."
+    assert strip_internal_service_markers(normal) == normal
+    assert not draft_has_internal_service_markers(normal)
+
+    leaked = "Менеджер подтвердит порядок записи. Если класс, предмет и формат уже есть в диалоге, повторять их не нужно."
+    assert strip_internal_service_markers(leaked) == ""
+    assert draft_has_internal_service_markers(leaked)
+    result = SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=leaked, topic_id="theme:020_enrollment")
+    assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert "internal_metadata_removed_from_draft" in result.safety_flags
+
+
 def test_humanity_trims_repeated_cosmetic_opening_when_safe_fact_exists() -> None:
     result = SubscriptionDraftResult(
         route="draft_for_manager",

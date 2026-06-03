@@ -393,6 +393,19 @@ INTERNAL_SERVICE_TOKEN_RE = re.compile(
     r"\b(?:source|source_id|fact_id|trace_id|freshness)\s*[:=]\s*[^\s;\],.]+|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+|kb_release_[A-Za-z0-9_\-]+|product_data/[^\s;\],.]+|/Users/[^\s;\],.]+",
     re.I,
 )
+INTERNAL_SCAFFOLD_PREFIX_RE = re.compile(
+    r"^\s*(?:[^:\n]{1,80}:\s*)?(?:черновик\s+)?для\s+ситуации\s+[«\"][^»\"\n]{1,160}[»\"]\s*:\s*",
+    re.I,
+)
+INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE = re.compile(
+    r"^\s*без\s+(?:обещан\w+|давлен\w+)[^:\n]{0,180}:\s*",
+    re.I,
+)
+INTERNAL_CLIENT_INSTRUCTION_RE = re.compile(
+    r"(?:\bповторять\s+(?:их\s+)?не\s+нужно\b|\bне\s+упоминай\w*\b|"
+    r"\bесли\b[^.?!\n]{0,140}\bуже\s+есть\s+в\s+диалоге\b[^.?!\n]{0,140})",
+    re.I,
+)
 INTERNAL_MANAGER_DRAFT_RE = re.compile(
     r"(?:автономн\w+\s+ответ\s+не\s+требуется|дополнительн\w+\s+ответ\s+клиенту\s+сейчас\s+не\s+нужен|если\s+менеджер\s+решит\s+ответить|безопасн\w+\s+вариант|без\s+служебн\w+\s+помет\w+|клиент\s+(?:понял|подтвердил|взял\s+пауз))",
     re.I,
@@ -3013,8 +3026,18 @@ def strip_internal_service_markers(text: str) -> str:
             return candidate.strip()
     if INTERNAL_MANAGER_DRAFT_RE.search(value):
         return ""
+    previous = None
+    while previous != value:
+        previous = value
+        value = INTERNAL_SCAFFOLD_PREFIX_RE.sub("", value)
+        value = INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE.sub("", value)
+        value = value.lstrip()
+    if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
+        return ""
     value = INTERNAL_SERVICE_MARKER_RE.sub("", value)
     value = INTERNAL_SERVICE_TOKEN_RE.sub("", value)
+    if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
+        return ""
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
     value = re.sub(r"\s{2,}", " ", value)
     return value.strip()
@@ -3025,6 +3048,9 @@ def draft_has_internal_service_markers(text: str) -> bool:
     return bool(
         INTERNAL_SERVICE_MARKER_RE.search(value)
         or INTERNAL_SERVICE_TOKEN_RE.search(value)
+        or INTERNAL_SCAFFOLD_PREFIX_RE.search(value)
+        or INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE.search(value)
+        or INTERNAL_CLIENT_INSTRUCTION_RE.search(value)
         or INTERNAL_MANAGER_DRAFT_RE.search(value)
     )
 
@@ -8281,6 +8307,19 @@ def _dialogue_contract_safety_flags(pipeline_result: Any) -> list[str]:
 
 
 def _sanitize_dialogue_contract_client_text(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    stripped = strip_internal_service_markers(result.draft_text)
+    if stripped != result.draft_text:
+        flags = tuple(dict.fromkeys([*result.safety_flags, "dialogue_contract_internal_text_sanitized"]))
+        metadata = {**dict(result.metadata), "dialogue_contract_internal_text_sanitized": True}
+        if not stripped.strip():
+            return replace(
+                result,
+                draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+                route="draft_for_manager" if result.route != "manager_only" else result.route,
+                safety_flags=tuple(dict.fromkeys([*flags, "manager_approval_required", "no_auto_send"])),
+                metadata=metadata,
+            )
+        result = replace(result, draft_text=stripped, safety_flags=flags, metadata=metadata)
     sanitized = sanitize_answer(result.draft_text, mode="bot")
     blocking_flags = {
         "raw_json_leak",

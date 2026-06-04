@@ -1918,6 +1918,9 @@ class SubscriptionLlmDraftProvider:
                     "partial_yield_applied": bool(getattr(pipeline_result, "partial_yield_applied", False)),
                     "partial_yield_fact_keys": list(getattr(pipeline_result, "partial_yield_fact_keys", ())),
                     "partial_yield_missing": list(getattr(pipeline_result, "partial_yield_missing", ())),
+                    "composite_applied": bool(getattr(pipeline_result, "composite_applied", False)),
+                    "composite_fact_keys": list(getattr(pipeline_result, "composite_fact_keys", ())),
+                    "composite_missing": list(getattr(pipeline_result, "composite_missing", ())),
                     "estimate": {
                         "is_estimate": bool(pipeline_result.is_estimate),
                         "answer_mode": pipeline_result.estimate_answer_mode,
@@ -8328,6 +8331,8 @@ def _dialogue_contract_safety_flags(pipeline_result: Any) -> list[str]:
         flags.append("dialogue_contract_estimate_answer")
     if getattr(pipeline_result, "partial_yield_applied", False):
         flags.append("dialogue_contract_partial_yield_applied")
+    if getattr(pipeline_result, "composite_applied", False):
+        flags.append("dialogue_contract_composite_applied")
     return flags
 
 

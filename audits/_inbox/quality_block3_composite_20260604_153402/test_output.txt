@@ -1,0 +1,55 @@
+# Test Output
+
+## Targeted
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py -k 'q_composite or q_partial_yield or q_thread_memory'
+```
+
+Result:
+
+```text
+24 passed, 187 deselected in 0.95s
+```
+
+## Pipeline Suite
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+```
+
+Result:
+
+```text
+211 passed in 2.16s
+```
+
+## Full Suite
+
+Command:
+
+```bash
+KB_RELEASE_V3_DIR='/Users/dmitrijfabarisov/Projects/Mango analyse.phase12/product_data/knowledge_base/kb_release_20260530_v6_4_team_answers' PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/
+```
+
+Result:
+
+```text
+2513 passed, 5 skipped, 1 warning in 42.69s
+```
+
+Note: running without `KB_RELEASE_V3_DIR` in this worktree produced 44 infrastructure errors in `tests/test_kb_release_v3_import.py` because the expected KB release directory is not present locally in this worktree. The same full suite passed with the explicit release path from the `.phase12` worktree.
+
+## Diff Check
+
+Command:
+
+```bash
+git diff --check
+```
+
+Result: clean.

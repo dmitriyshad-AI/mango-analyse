@@ -37,6 +37,7 @@ ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
+QUALITY_COMPOSITE_ENV = "TELEGRAM_Q_COMPOSITE"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json"
@@ -416,6 +417,9 @@ class DialogueContractPipelineResult:
     partial_yield_applied: bool = False
     partial_yield_fact_keys: tuple[str, ...] = ()
     partial_yield_missing: tuple[str, ...] = ()
+    composite_applied: bool = False
+    composite_fact_keys: tuple[str, ...] = ()
+    composite_missing: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -454,6 +458,12 @@ def quality_thread_memory_enabled(context: Mapping[str, Any] | None = None) -> b
     if isinstance(context, MappingABC) and context.get(QUALITY_THREAD_MEMORY_ENV) is not None:
         return _truthy(context.get(QUALITY_THREAD_MEMORY_ENV))
     return _truthy(os.getenv(QUALITY_THREAD_MEMORY_ENV))
+
+
+def quality_composite_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(QUALITY_COMPOSITE_ENV) is not None:
+        return _truthy(context.get(QUALITY_COMPOSITE_ENV))
+    return _truthy(os.getenv(QUALITY_COMPOSITE_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -2229,6 +2239,18 @@ def run_pipeline(
             estimate_domain=contract.estimate_domain,
             estimate_answer_mode=contract.answer_mode,
         )
+    composite = _quality_composite_result_before_draft(
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        conversation=conversation,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+    if composite:
+        return composite
     slot_question = _single_missing_slot_question(contract, retrieval)
     if slot_question:
         return DialogueContractPipelineResult(
@@ -3781,6 +3803,127 @@ def _key_coverage_ok(contract: AnswerContract, retrieval: RetrievalResult) -> bo
         any(matched_key in retrieval.facts for matched_key in retrieval.matched_keys.get(required_key, ()))
         for required_key in needed
     )
+
+
+def _quality_composite_result_before_draft(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    conversation: Sequence[Mapping[str, str]],
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str],
+) -> DialogueContractPipelineResult | None:
+    if not quality_composite_enabled(context):
+        return None
+    if _cite_only_recover_blocked(contract, client_words=client_words, context=context) or _composite_has_hard_p0_part(
+        contract,
+        client_words=client_words,
+        context=context,
+    ):
+        trace_event(context, "composite_answer", {"applied": False, "reason": "p0_or_high_risk"})
+        return None
+    subquestions = _contract_subquestions(contract)
+    if len(subquestions) < 2 or not any(item.answerable == "self" for item in subquestions):
+        return None
+    if toggles.semantic_faithfulness and faithfulness_fn is None:
+        trace_event(context, "composite_answer", {"applied": False, "reason": "faithfulness_fn_missing"})
+        return None
+    findings, missing_details = _partial_yield_findings_and_missing(contract, retrieval)
+    if not findings:
+        trace_event(context, "composite_answer", {"applied": False, "reason": "no_grounded_parts"})
+        return None
+    candidate = _composite_candidate_from_parts(findings, missing_details)
+    if not candidate:
+        return None
+    candidate_facts = _facts_with_derived_answer(retrieval.facts, candidate)
+    check_findings, unsupported, semantic_available = _partial_yield_full_check(
+        candidate,
+        facts=candidate_facts,
+        contract=contract,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+    if check_findings or unsupported or not semantic_available:
+        trace_event(
+            context,
+            "composite_answer",
+            {
+                "applied": False,
+                "reason": "hard_check_failed" if semantic_available else "semantic_unavailable",
+                "findings": [finding.code for finding in check_findings],
+                "unsupported": list(unsupported),
+            },
+        )
+        return None
+    final = _avoid_repeating_text(candidate, conversation=conversation, contract=contract, facts=retrieval.facts)
+    fact_keys = tuple(dict.fromkeys(item.fact_key for item in findings if item.fact_key))
+    trace_event(
+        context,
+        "composite_answer",
+        {
+            "applied": True,
+            "fact_keys": list(fact_keys),
+            "missing": list(missing_details),
+        },
+    )
+    return DialogueContractPipelineResult(
+        draft_text=final,
+        route="bot_answer_self",
+        manager_only=False,
+        contract=contract,
+        facts=retrieval.facts,
+        missing=retrieval.missing,
+        fallback_reason="composite_partial_yield" if missing_details else "composite_grounded_answer",
+        repaired=True,
+        recovery_candidate=final,
+        composite_applied=True,
+        composite_fact_keys=fact_keys,
+        composite_missing=tuple(missing_details),
+    )
+
+
+def _contract_subquestions(contract: AnswerContract) -> tuple[Subquestion, ...]:
+    return contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+
+
+def _composite_has_hard_p0_part(
+    contract: AnswerContract,
+    *,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+) -> bool:
+    for text in (client_words, contract.current_question, *(item.text for item in contract.subquestions)):
+        if str(text or "").strip() and p0_pre_gate(str(text), context=context):
+            return True
+    return False
+
+
+def _composite_candidate_from_parts(
+    findings: Sequence[_CoverageFinding],
+    missing_details: Sequence[str],
+) -> str:
+    grounded = _coverage_cite_only_answer_from_findings(findings)
+    if not grounded:
+        return ""
+    parts = [grounded.rstrip(" .")]
+    if missing_details:
+        missing_text = _partial_yield_missing_text(missing_details)
+        parts.append(f"{missing_text} менеджер сверит точный ответ; я передам ему этот вопрос")
+    return ". ".join(part for part in parts if part).rstrip(".") + "."
 
 
 def _partial_yield_result_before_handoff(

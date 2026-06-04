@@ -1,0 +1,8 @@
+src/mango_mvp/channels/dialogue_contract_pipeline.py
+src/mango_mvp/channels/subscription_llm.py
+tests/test_dialogue_contract_pipeline.py
+audits/_inbox/quality_block3_composite_20260604_153402/implementation_notes.md
+audits/_inbox/quality_block3_composite_20260604_153402/test_output.txt
+audits/_inbox/quality_block3_composite_20260604_153402/semantic_review.md
+audits/_inbox/quality_block3_composite_20260604_153402/risk_review.md
+audits/_inbox/quality_block3_composite_20260604_153402/backward_compatibility.md

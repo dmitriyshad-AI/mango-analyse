@@ -1,0 +1,53 @@
+# Test Output
+
+## Targeted
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py -k 'q_next_step or q_composite or q_partial_yield or q_thread_memory'
+```
+
+Result:
+
+```text
+31 passed, 187 deselected in 1.04s
+```
+
+## Pipeline Suite
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+```
+
+Result:
+
+```text
+218 passed in 2.19s
+```
+
+## Full Suite
+
+Command:
+
+```bash
+KB_RELEASE_V3_DIR='/Users/dmitrijfabarisov/Projects/Mango analyse.phase12/product_data/knowledge_base/kb_release_20260530_v6_4_team_answers' PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/
+```
+
+Result:
+
+```text
+2520 passed, 5 skipped, 1 warning in 42.26s
+```
+
+## Diff Check
+
+Command:
+
+```bash
+git diff --check
+```
+
+Result: clean.

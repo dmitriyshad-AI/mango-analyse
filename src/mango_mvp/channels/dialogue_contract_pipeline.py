@@ -38,6 +38,7 @@ FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
 QUALITY_COMPOSITE_ENV = "TELEGRAM_Q_COMPOSITE"
+QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json"
@@ -420,6 +421,8 @@ class DialogueContractPipelineResult:
     composite_applied: bool = False
     composite_fact_keys: tuple[str, ...] = ()
     composite_missing: tuple[str, ...] = ()
+    next_step_applied: bool = False
+    next_step_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -464,6 +467,12 @@ def quality_composite_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(QUALITY_COMPOSITE_ENV) is not None:
         return _truthy(context.get(QUALITY_COMPOSITE_ENV))
     return _truthy(os.getenv(QUALITY_COMPOSITE_ENV))
+
+
+def quality_next_step_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(QUALITY_NEXT_STEP_ENV) is not None:
+        return _truthy(context.get(QUALITY_NEXT_STEP_ENV))
+    return _truthy(os.getenv(QUALITY_NEXT_STEP_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -1762,7 +1771,7 @@ def _cite_only_recover_result_before_handoff(
     if not recovered:
         return None
     trace_event(context, "cite_only_recover", {"replaced": True, "fallback_reason": fallback_reason})
-    return DialogueContractPipelineResult(
+    result = DialogueContractPipelineResult(
         draft_text=_avoid_repeating_text(
             recovered,
             conversation=conversation,
@@ -1778,6 +1787,148 @@ def _cite_only_recover_result_before_handoff(
         repaired=True,
         recovery_candidate=recovered,
     )
+    return _quality_next_step_result(
+        result,
+        conversation=conversation,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+
+
+_NEXT_STEP_ALREADY_RE = re.compile(
+    r"\?|если\s+(?:хотите|подходит|удобно)|напишите|подскажите|дальше|следующ|"
+    r"менеджер[^.?!\n]{0,90}(?:поможет|подбер|сверит|проверит|подскажет|свяжется|оформ)",
+    re.I,
+)
+_NEXT_STEP_PII_RE = re.compile(r"\b(?:телефон|номер|почт|email|e-mail|фио|фамили|паспорт|снилс)\b", re.I)
+_NEXT_STEP_CONCRETE_RE = re.compile(
+    r"(?:₽|руб|%|\b\d|\b(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*)",
+    re.I,
+)
+_NEXT_STEP_PRESSURE_RE = re.compile(
+    r"сроч|мест\s+(?:почти\s+)?нет|надо\s+успеть|иначе|не\s+тяните|лучше\s+не\s+тянуть|гарантир|точно\s+получ",
+    re.I,
+)
+
+
+def _quality_next_step_result(
+    result: DialogueContractPipelineResult,
+    *,
+    conversation: Sequence[Mapping[str, str]],
+    client_words: str,
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str],
+) -> DialogueContractPipelineResult:
+    if not quality_next_step_enabled(context):
+        return result
+    if result.route != "bot_answer_self" or result.manager_only or result.contract.is_p0:
+        trace_event(context, "quality_next_step", {"applied": False, "reason": "non_autonomous_or_p0"})
+        return result
+    if _cite_only_recover_blocked(result.contract, client_words=client_words, context=context):
+        trace_event(context, "quality_next_step", {"applied": False, "reason": "blocked_risk"})
+        return result
+    if _has_next_step(result.draft_text):
+        trace_event(context, "quality_next_step", {"applied": False, "reason": "already_has_next_step"})
+        return result
+    if toggles.semantic_faithfulness and faithfulness_fn is None:
+        trace_event(context, "quality_next_step", {"applied": False, "reason": "faithfulness_fn_missing"})
+        return result
+    step = _quality_next_step_text(result.contract, client_words=client_words)
+    if not step:
+        trace_event(context, "quality_next_step", {"applied": False, "reason": "empty_step"})
+        return result
+    candidate = f"{result.draft_text.rstrip(' .')} {step}".strip()
+    facts = _facts_with_derived_answer(result.facts, candidate)
+    findings, unsupported, semantic_available = _hard_check(
+        candidate,
+        facts=facts,
+        contract=result.contract,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+    if findings or unsupported or not semantic_available:
+        trace_event(
+            context,
+            "quality_next_step",
+            {
+                "applied": False,
+                "reason": "hard_check_failed" if semantic_available else "semantic_unavailable",
+                "findings": [finding.code for finding in findings],
+                "unsupported": list(unsupported),
+            },
+        )
+        return result
+    final = _avoid_repeating_text(candidate, conversation=conversation, contract=result.contract, facts=result.facts)
+    trace_event(context, "quality_next_step", {"applied": True, "step": step})
+    form_findings = tuple(finding for finding in result.form_findings if finding.code != "no_next_step")
+    return replace(
+        result,
+        draft_text=final,
+        form_findings=form_findings,
+        next_step_applied=True,
+        next_step_text=step,
+    )
+
+
+def _has_next_step(text: str) -> bool:
+    value = str(text or "")
+    return bool(_NEXT_STEP_ALREADY_RE.search(value))
+
+
+def _quality_next_step_text(contract: AnswerContract, *, client_words: str) -> str:
+    explicit = _explicit_contract_next_step(contract)
+    if explicit:
+        return explicit
+    text = " ".join(part for part in (client_words, contract.current_question, contract.planner_intent) if part)
+    low = text.casefold().replace("ё", "е")
+    if any(marker in low for marker in ("цен", "стоим", "сколько", "оплат", "рассроч", "долями", "скид")):
+        if not _known_slot_value(contract, "grade") or not _known_slot_value(contract, "format"):
+            return "Напишите класс ребёнка и удобный формат — подберём подходящий вариант."
+        return "Если подходит, менеджер поможет подобрать удобный вариант оплаты и группу."
+    if any(marker in low for marker in ("распис", "день", "время", "старт", "когда", "группа")):
+        if not _known_slot_value(contract, "grade") or not _known_slot_value(contract, "subject"):
+            return "Напишите класс и предмет — менеджер сверит ближайшую подходящую группу."
+        return "Если хотите, менеджер сверит ближайшую подходящую группу."
+    if any(marker in low for marker in ("запис", "пробн", "оформ", "поступить")):
+        return "Если хотите продолжить, менеджер подскажет ближайший шаг по записи."
+    if not _known_slot_value(contract, "grade") or not _known_slot_value(contract, "subject"):
+        return "Напишите класс ребёнка и предмет — подберём подходящий вариант."
+    return "Если хотите, менеджер подскажет ближайший подходящий шаг."
+
+
+def _explicit_contract_next_step(contract: AnswerContract) -> str:
+    for item in contract.subquestions:
+        step = _clean_next_step_text(item.next_step)
+        if step:
+            return step
+    return ""
+
+
+def _clean_next_step_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    if _NEXT_STEP_PII_RE.search(text) or _NEXT_STEP_CONCRETE_RE.search(text) or _NEXT_STEP_PRESSURE_RE.search(text):
+        return ""
+    if len(text) > 160:
+        return ""
+    return text.rstrip(".") + "."
+
+
+def _known_slot_value(contract: AnswerContract, key: str) -> str:
+    slot = contract.known_slots.get(key)
+    if slot and slot.value:
+        return slot.value
+    return str(contract.planner_slots.get(key) or "").strip()
 
 
 _RISKY_ENTITY_ALIASES: Mapping[str, tuple[str, ...]] = {
@@ -2190,7 +2341,7 @@ def run_pipeline(
                     facts=retrieval.facts,
                 )
                 trace_event(context, "estimate_gate", {"passed": True, "domain": contract.estimate_domain, "draft": final_estimate})
-                return DialogueContractPipelineResult(
+                result = DialogueContractPipelineResult(
                     draft_text=final_estimate,
                     route="bot_answer_self",
                     manager_only=False,
@@ -2201,6 +2352,15 @@ def run_pipeline(
                     is_estimate=True,
                     estimate_domain=contract.estimate_domain,
                     estimate_answer_mode=contract.answer_mode,
+                )
+                return _quality_next_step_result(
+                    result,
+                    conversation=conversation,
+                    client_words=client_words,
+                    faithfulness_fn=faithfulness_fn,
+                    toggles=toggles,
+                    context=context,
+                    previous_bot_texts=previous_bot_texts,
                 )
             trace_event(
                 context,
@@ -2250,7 +2410,15 @@ def run_pipeline(
         previous_bot_texts=previous_bot_texts,
     )
     if composite:
-        return composite
+        return _quality_next_step_result(
+            composite,
+            conversation=conversation,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
     slot_question = _single_missing_slot_question(contract, retrieval)
     if slot_question:
         return DialogueContractPipelineResult(
@@ -2277,7 +2445,7 @@ def run_pipeline(
         )
     schedule_answer = _class_schedule_publication_answer(contract, retrieval.facts, conversation=conversation)
     if schedule_answer:
-        return DialogueContractPipelineResult(
+        result = DialogueContractPipelineResult(
             draft_text=schedule_answer,
             route="bot_answer_self",
             manager_only=False,
@@ -2286,10 +2454,19 @@ def run_pipeline(
             missing=retrieval.missing,
             fallback_reason="schedule_publication_answer",
         )
+        return _quality_next_step_result(
+            result,
+            conversation=conversation,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
     direct_answer = _direct_exact_fact_answer(contract, retrieval)
     if direct_answer:
         direct_draft = _avoid_repeating_text(direct_answer, conversation=conversation, contract=contract, facts=retrieval.facts)
-        return DialogueContractPipelineResult(
+        result = DialogueContractPipelineResult(
             draft_text=direct_draft,
             route="bot_answer_self",
             manager_only=False,
@@ -2304,6 +2481,15 @@ def run_pipeline(
                 client_words=client_words,
                 context=context,
             ),
+        )
+        return _quality_next_step_result(
+            result,
+            conversation=conversation,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
         )
     force_draft_for_manager = (
         contract.answerability != "answer_self"
@@ -2619,7 +2805,7 @@ def run_pipeline(
                     contract=contract,
                     facts=retrieval.facts,
                 )
-                return DialogueContractPipelineResult(
+                result = DialogueContractPipelineResult(
                     draft_text=verified_draft,
                     route="bot_answer_self",
                     manager_only=False,
@@ -2637,6 +2823,15 @@ def run_pipeline(
                         client_words=client_words,
                         context=context,
                     ),
+                )
+                return _quality_next_step_result(
+                    result,
+                    conversation=conversation,
+                    client_words=client_words,
+                    faithfulness_fn=faithfulness_fn,
+                    toggles=toggles,
+                    context=context,
+                    previous_bot_texts=previous_bot_texts,
                 )
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         recovered = _cite_only_recover_result_before_handoff(
@@ -2856,7 +3051,7 @@ def run_pipeline(
                         warmth_rejected_reason = "unknown_rejection"
 
     final_draft = _avoid_repeating_text(draft, conversation=conversation, contract=contract, facts=retrieval.facts)
-    return DialogueContractPipelineResult(
+    result = DialogueContractPipelineResult(
         draft_text=final_draft,
         route="draft_for_manager" if force_draft_for_manager else "bot_answer_self",
         manager_only=False,
@@ -2882,6 +3077,15 @@ def run_pipeline(
             client_words=client_words,
             context=context,
         ),
+    )
+    return _quality_next_step_result(
+        result,
+        conversation=conversation,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
     )
 
 

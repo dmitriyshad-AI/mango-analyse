@@ -4571,6 +4571,289 @@ def test_q_composite_invariant_suite_with_quality_flags_on(monkeypatch) -> None:
     assert "30 000" not in price.draft_text
 
 
+def test_q_next_step_flag_off_keeps_dry_answer(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_NEXT_STEP", raising=False)
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [{"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.next_step_applied is False
+    assert "Напишите класс" not in result.draft_text
+
+
+def test_q_next_step_adds_one_safe_step_to_autonomous_fact_answer(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_NEXT_STEP", "1")
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [{"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]}],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.next_step_applied is True
+    assert "29 750" in result.draft_text
+    assert "Напишите класс ребёнка и удобный формат" in result.draft_text
+    assert result.draft_text.count("Напишите") == 1
+    assert "срочно" not in result.draft_text.casefold()
+
+
+def test_q_next_step_uses_explicit_contract_step_when_safe(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_NEXT_STEP", "1")
+    store = FactStore(
+        catalog=("format.online",),
+        store={"foton": {"format.online": "Онлайн-занятия проходят в малых группах."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("какой формат онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "формат онлайн",
+                "subquestions": [
+                    {
+                        "text": "формат онлайн",
+                        "answerable": "self",
+                        "needed_fact_keys": ["format.online"],
+                        "next_step": "Напишите класс ребёнка — подберём подходящую группу.",
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.next_step_applied is True
+    assert result.next_step_text == "Напишите класс ребёнка — подберём подходящую группу."
+    assert "малых группах" in result.draft_text
+    assert "Напишите класс ребёнка — подберём подходящую группу" in result.draft_text
+
+
+def test_q_next_step_does_not_duplicate_existing_step(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_NEXT_STEP", "1")
+
+    result = run_pipeline(
+        conversation=_conv("расскажите про курс"),
+        active_brand="foton",
+        fact_store=FactStore(catalog=(), store={"foton": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "расскажите про курс",
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Курс помогает системно готовиться по школьной программе. Напишите класс ребёнка — подберём вариант.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.next_step_applied is False
+    assert result.draft_text.count("Напишите класс") == 1
+
+
+def test_q_next_step_does_not_touch_p0_or_manager_only(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_NEXT_STEP", "1")
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+
+    p0 = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги; и сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "претензия по оплате и цена онлайн",
+                "needed_fact_keys": ["price.online"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert p0.route == "manager_only"
+    assert p0.next_step_applied is False
+    assert "29 750" not in p0.draft_text
+
+    manager = run_pipeline(
+        conversation=_conv("точно какой день занятий?"),
+        active_brand="foton",
+        fact_store=FactStore(catalog=("schedule.exact_day",), store={"foton": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "точный день занятий",
+                "needed_fact_keys": ["schedule.exact_day"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert manager.route == "draft_for_manager"
+    assert manager.next_step_applied is False
+
+
+def test_q_next_step_blocks_pressure_or_concrete_contract_step(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_NEXT_STEP", "1")
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+
+    pressure = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {
+                        "text": "цена онлайн",
+                        "answerable": "self",
+                        "needed_fact_keys": ["price.online"],
+                        "next_step": "Срочно записывайтесь, мест почти нет.",
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert pressure.next_step_applied is True
+    assert "срочно" not in pressure.draft_text.casefold()
+    assert "мест почти нет" not in pressure.draft_text.casefold()
+
+    concrete = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {
+                        "text": "цена онлайн",
+                        "answerable": "self",
+                        "needed_fact_keys": ["price.online"],
+                        "next_step": "Запишитесь до 1 августа.",
+                    }
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert concrete.next_step_applied is True
+    assert "1 августа" not in concrete.draft_text.casefold()
+
+
+def test_q_next_step_invariant_suite_with_all_quality_flags_on(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_NEXT_STEP", "1")
+    monkeypatch.setenv("TELEGRAM_Q_COMPOSITE", "1")
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+
+    safe = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и какой формат?"),
+        active_brand="foton",
+        fact_store=FactStore(
+            catalog=("price.online", "format.online"),
+            store={
+                "foton": {
+                    "price.online": "Онлайн: семестр — 29 750 ₽.",
+                    "format.online": "Онлайн-занятия проходят в малых группах.",
+                }
+            },
+        ),
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и формат",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "формат онлайн", "answerable": "self", "needed_fact_keys": ["format.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert safe.route == "bot_answer_self"
+    assert safe.next_step_applied is True
+    assert "29 750" in safe.draft_text
+
+    p0 = run_pipeline(
+        conversation=_conv("верните деньги, я оплатил; и сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "претензия и цена онлайн",
+                "subquestions": [
+                    {"text": "верните деньги", "answerable": "manager", "needed_fact_keys": []},
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert p0.route == "manager_only"
+    assert p0.next_step_applied is False
+    assert "29 750" not in p0.draft_text
+
+    brand = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и какой формат?"),
+        active_brand="foton",
+        fact_store=FactStore(
+            catalog=("price.online", "format.online"),
+            store={"foton": {"price.online": "УНПК онлайн: семестр — 29 750 ₽.", "format.online": "Онлайн-занятия проходят в малых группах."}},
+        ),
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и формат",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "формат онлайн", "answerable": "self", "needed_fact_keys": ["format.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert "УНПК онлайн" not in brand.draft_text
+
+
 def test_manager_only_refund_does_not_substitute_course_rules_fact() -> None:
     store = FactStore(
         catalog=("course_rules_safe",),

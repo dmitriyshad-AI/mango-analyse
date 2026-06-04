@@ -31,6 +31,7 @@ from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_fun
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
+from mango_mvp.insights.tone_score import summarize_tone_scores
 
 
 DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke_tests_v7_dynamic_sim_2026-05-21/v7_dynamic_client_sim_2026-05-21.jsonl")
@@ -1601,6 +1602,7 @@ def build_summary(
     run_statuses = Counter(str(dialog.get("run_status") or "completed") for dialog in transcripts)
     send_unedited = _send_unedited_proxy(transcripts, judge_results)
     over_handoff = _over_handoff_metrics(transcripts)
+    tone_metric = summarize_tone_scores(transcripts)
     llm_call_summary = _llm_call_summary(
         llm_calls or {},
         dialogs=len(judge_results),
@@ -1698,6 +1700,7 @@ def build_summary(
             ),
         },
         "branch_metrics": _branch_count_metrics(transcripts),
+        "tone_metric": tone_metric,
         "llm_calls": llm_call_summary,
         "over_handoff": over_handoff,
         "judge_fact_audit": judge_fact_audit_summary(transcripts),

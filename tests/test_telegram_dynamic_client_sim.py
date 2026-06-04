@@ -637,6 +637,53 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
     }
 
 
+def test_dynamic_summary_includes_deterministic_tone_metric(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "tone_metric_case",
+            "brand": "unpk",
+            "turns": [
+                {
+                    "turn": 1,
+                    "bot_text": "В рамках текущего учебного центра услуга предоставляется, менеджер уточнит ближайший шаг.",
+                    "context_parity_checked": True,
+                },
+                {
+                    "turn": 2,
+                    "bot_text": "Да, помогу сориентироваться по сути и подобрать следующий шаг.",
+                    "context_parity_checked": True,
+                },
+            ],
+        }
+    ]
+    judge_results = [
+        {
+            "dialog_id": "tone_metric_case",
+            "brand": "unpk",
+            "hard_gates_passed": True,
+            "soft_flags_present": [],
+            "verdict": "PASS",
+            "human_tone_score_0_100": 80,
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    tone = summary["tone_metric"]
+    assert tone["turns_count"] == 2
+    assert tone["tone_canc"] >= 3
+    assert tone["tone_warm"] >= 3
+    assert tone["tone_score"] is not None
+    assert tone["turns"][0]["dialog_id"] == "tone_metric_case"
+    assert {"tone_canc", "tone_warm", "tone_score"} <= set(tone["turns"][0])
+
+
 def test_build_selling_compose_model_counts_dedicated_role() -> None:
     counter = sim.LlmCallCounter()
     args = argparse.Namespace(

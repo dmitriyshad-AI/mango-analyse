@@ -276,6 +276,135 @@ def test_a2_proactive_offer_callback_uses_known_phone_and_respects_fatigue() -> 
     assert "когда лучше связаться" not in fatigued.text
 
 
+def test_a2_proactive_handle_time_objection_only_with_fact() -> None:
+    rule = load_rules_registry()["schedule"]
+    facts = {"schedule.weekend": "Фотон: очные занятия проходят по выходным."}
+    plan = {
+        "primary_intent": "schedule",
+        "direct_question": "По выходным получится? Боюсь, по времени не получится",
+        "active_brand": "foton",
+        "selling": {"readiness": "comparing", "objection_type": "time", "exit_signal": False},
+    }
+
+    with_fact = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "a_proactive_enabled": True})
+    no_fact = apply_rule(
+        rule,
+        plan=plan,
+        facts={},
+        context={"active_brand": "foton", "a_proactive_enabled": True},
+    )
+
+    assert with_fact is not None
+    assert "rules_engine_a2_handle_objection" in with_fact.flags
+    assert "По времени ориентир" in with_fact.text
+    assert "по выходным" in with_fact.text
+    assert no_fact is None or "rules_engine_a2_handle_objection" not in no_fact.flags
+
+
+def test_a2_proactive_price_objection_without_active_brand_fact_has_no_dovetail() -> None:
+    rule = load_rules_registry()["teacher"]
+    plan = {
+        "primary_intent": "teacher",
+        "direct_question": "Серьёзная сумма, есть варианты?",
+        "active_brand": "foton",
+        "selling": {"readiness": "comparing", "objection_type": "price", "exit_signal": False},
+    }
+    facts = {
+        "teacher.fact": "Фотон: преподаватели — эксперты ЕГЭ.",
+        "unpk.installment": "УНПК: отдельной банковской рассрочки нет.",
+    }
+
+    result = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "a_proactive_enabled": True})
+
+    assert result is not None
+    assert "rules_engine_a2_handle_objection" not in result.flags
+    assert "УНПК" not in result.text
+    assert "рассроч" not in result.text.casefold()
+
+
+def test_a2_proactive_fit_check_is_fact_frame_not_child_diagnosis() -> None:
+    rule = load_rules_registry()["format_choice"]
+    facts = {"format.online": "Фотон: онлайн-курс есть для 10 класса по математике."}
+    plan = {
+        "primary_intent": "format",
+        "direct_question": "не понимаю, нам это вообще подходит?",
+        "active_brand": "foton",
+        "selling": {"readiness": "comparing", "objection_type": "none", "fit_confirmed": False},
+    }
+
+    result = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "a_proactive_enabled": True})
+
+    assert result is not None
+    assert "rules_engine_a2_fit_check" in result.flags
+    assert "По фактам" in result.text
+    assert "Уровень и группу менеджер сверит" in result.text
+    assert "вам подходит" not in result.text.casefold()
+    assert "точно" not in result.text.casefold()
+
+
+def test_a2_proactive_qualify_asks_once_only_if_fact_can_be_unlocked() -> None:
+    rule = load_rules_registry()["format_choice"]
+    facts = {"format.by_grade": "Фотон: онлайн-курс есть для 5-11 класса."}
+    plan = {
+        "primary_intent": "format",
+        "direct_question": "какой формат выбрать?",
+        "active_brand": "foton",
+        "selling": {"readiness": "exploring", "missing_qualifier": "class"},
+    }
+
+    result = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "a_proactive_enabled": True})
+    repeated = apply_rule(
+        rule,
+        plan=plan,
+        facts=facts,
+        context={"active_brand": "foton", "a_proactive_enabled": True, "proactive_state": {"already_asked": ["class"]}},
+    )
+
+    assert result is not None
+    assert "rules_engine_a2_qualify" in result.flags
+    assert result.text.count("?") <= 1
+    assert "класс" in result.text.casefold()
+    assert repeated is not None
+    assert "rules_engine_a2_qualify" not in repeated.flags
+
+
+def test_a2_proactive_offer_enroll_uses_enrollment_fact_without_fake_done() -> None:
+    rule = load_rules_registry()["enrollment_process"]
+    facts = {"process.enrollment": "Фотон: запись проходит дистанционно через менеджера."}
+    plan = {
+        "primary_intent": "enrollment_process",
+        "direct_question": "да, хочу записаться",
+        "active_brand": "foton",
+        "selling": {"readiness": "ready", "contact_shared": True, "exit_signal": False},
+    }
+
+    result = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "a_proactive_enabled": True})
+
+    assert result is not None
+    assert "rules_engine_a2_offer_enroll" in result.flags
+    assert "запись проходит дистанционно" in result.text
+    assert "передам менеджеру" in result.text
+    assert "вы записаны" not in result.text.casefold()
+    assert "я вас записал" not in result.text.casefold()
+
+
+def test_a2_proactive_p0_blocks_any_selling_step() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {"prices.current": "Фотон: онлайн-курс, семестр — 29 750 ₽."}
+    plan = {
+        "primary_intent": "pricing",
+        "direct_question": "верните деньги, занятий нет; сколько стоит курс?",
+        "active_brand": "foton",
+        "selling": {"readiness": "ready", "objection_type": "price", "exit_signal": False},
+    }
+
+    result = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "a_proactive_enabled": True})
+
+    if result is not None:
+        assert not any(flag.startswith("rules_engine_a2_") for flag in result.flags)
+        assert "подскажите телефон" not in result.text.casefold()
+
+
 def test_rules_engine_schedule_weekend_is_soft_guidance() -> None:
     rule = load_rules_registry()["schedule"]
     outcome = apply_rule(

@@ -1908,21 +1908,28 @@ def _apply_selling_det_variants(
     proactive_step = _resolve_a2_proactive_step(
         selling=selling,
         question=_raw_question_text(plan, context),
+        facts=all_facts,
+        active_brand=brand,
         context=context,
     )
-    if proactive_step == "offer_callback":
-        suffix = _a2_offer_callback_text(context)
-        appended = _append_selling_suffix(
-            text,
-            source,
-            suffix,
-            {},
-            rich_format=_rich_format_enabled(context),
+    if proactive_step != "none" and not applied:
+        suffix, suffix_facts = _a2_proactive_step_text(
+            proactive_step,
+            selling=selling,
+            facts=all_facts,
+            active_brand=brand,
+            context=context,
         )
+        suffix_facts = {
+            key: value
+            for key, value in suffix_facts.items()
+            if not _selling_fact_already_used(value, text=text, source=source)
+        }
+        appended = _append_selling_suffix(text, source, suffix, suffix_facts, rich_format=_rich_format_enabled(context))
         if appended is not None:
             text, source = appended
-            flags.append("rules_engine_a2_offer_callback")
-            applied.append("offer_callback")
+            flags.append(f"rules_engine_a2_{proactive_step}")
+            applied.append(proactive_step)
 
     if not applied:
         return outcome
@@ -2006,17 +2013,40 @@ def _resolve_a2_proactive_step(
     *,
     selling: Mapping[str, Any],
     question: str,
+    facts: Mapping[str, str],
+    active_brand: str,
     context: Mapping[str, Any] | None,
 ) -> str:
     if not _proactive_enabled(context):
         return "none"
-    if _proactive_recent_ignored(context) >= 2 and not _A2_PROCEED_RE.search(str(question or "")):
+    if _a2_p0_signal(selling=selling, question=question):
+        return "none"
+    explicit_proceed = bool(_A2_PROCEED_RE.search(str(question or "")))
+    if _proactive_recent_ignored(context) >= 2 and not explicit_proceed:
         return "none"
     if _current_message_has_phone(question):
         return "none"
+    exit_signal = selling.get("exit_signal")
+    if _truthy(exit_signal) or str(exit_signal or "").strip().casefold() in {"strong", "browsing"}:
+        return "soft_close"
+    objection = _a2_objection_type(selling)
+    if objection == "refund":
+        return "none"
+    if objection in {"price", "time", "fit", "trust"}:
+        return "handle_objection" if _a2_objection_fact_available(objection, facts=facts, active_brand=active_brand) else "none"
+    if explicit_proceed:
+        return "offer_enroll" if _a2_contact_shared(selling=selling, question=question, context=context) and _a2_enrollment_fact_available(facts, active_brand=active_brand) else "offer_callback"
     readiness = str(selling.get("readiness") or "exploring").strip().casefold()
-    if readiness == "ready" or _A2_PROCEED_RE.search(str(question or "")):
-        return "offer_callback"
+    if readiness == "ready":
+        return "offer_enroll" if _a2_contact_shared(selling=selling, question=question, context=context) and _a2_enrollment_fact_available(facts, active_brand=active_brand) else "offer_callback"
+    missing = _a2_missing_qualifier(selling)
+    if missing != "none" and missing not in _a2_already_asked(context) and _a2_qualifier_unlocks_fact(missing, facts=facts, active_brand=active_brand):
+        return "qualify"
+    if readiness in {"warm", "comparing"}:
+        if not _truthy(selling.get("fit_confirmed")) and _a2_fit_fact_available(facts, active_brand=active_brand):
+            return "fit_check"
+        if not _truthy(selling.get("stalled_asked")):
+            return "elicit_objection"
     return "none"
 
 
@@ -2024,6 +2054,155 @@ def _a2_offer_callback_text(context: Mapping[str, Any] | None) -> str:
     if _context_phone_known(context):
         return "Если удобно, передам менеджеру — подскажите, когда лучше связаться?"
     return "Если удобно, передам менеджеру — подскажите телефон и когда лучше связаться?"
+
+
+def _a2_proactive_step_text(
+    step: str,
+    *,
+    selling: Mapping[str, Any],
+    facts: Mapping[str, str],
+    active_brand: str,
+    context: Mapping[str, Any] | None,
+) -> tuple[str, Mapping[str, str]]:
+    if step == "offer_callback":
+        return _a2_offer_callback_text(context), {}
+    if step == "soft_close":
+        return "Хорошо, спокойно подумайте. Если понадобится, я рядом и подскажу по подтверждённым условиям.", {}
+    if step == "qualify":
+        return _a2_qualify_text(_a2_missing_qualifier(selling)), {}
+    if step == "fit_check":
+        return _a2_fit_check_text(facts, active_brand=active_brand)
+    if step == "elicit_objection":
+        return "Что для вас сейчас важнее всего при выборе — цена, расписание или формат?", {}
+    if step == "handle_objection":
+        return _a2_handle_objection_text(_a2_objection_type(selling), facts=facts, active_brand=active_brand)
+    if step == "offer_enroll":
+        return _a2_offer_enroll_text(facts, active_brand=active_brand)
+    return "", {}
+
+
+def _a2_p0_signal(*, selling: Mapping[str, Any], question: str) -> bool:
+    objection = _a2_objection_type(selling)
+    if objection == "refund":
+        return True
+    text = str(question or "").casefold().replace("ё", "е")
+    return bool(re.search(r"верните\s+деньг|возврат|жалоб|суд|юрист|двойн(?:ое|ая)\s+списан|оплатил[аи]?,?\s+занят", text))
+
+
+def _a2_objection_type(selling: Mapping[str, Any]) -> str:
+    value = str(selling.get("objection_type") or selling.get("objection") or "none").strip().casefold()
+    return value if value in {"price", "time", "fit", "trust", "refund"} else "none"
+
+
+def _a2_contact_shared(*, selling: Mapping[str, Any], question: str, context: Mapping[str, Any] | None) -> bool:
+    return _truthy(selling.get("contact_shared")) or _current_message_has_phone(question) or _context_phone_known(context)
+
+
+def _a2_missing_qualifier(selling: Mapping[str, Any]) -> str:
+    value = str(selling.get("missing_qualifier") or "none").strip().casefold()
+    return value if value in {"class", "subject", "format", "goal"} else "none"
+
+
+def _a2_already_asked(context: Mapping[str, Any] | None) -> set[str]:
+    result: set[str] = set()
+    if not isinstance(context, Mapping):
+        return result
+    for container in _proactive_state_containers(context):
+        raw = container.get("already_asked") or container.get("qualifiers_asked")
+        if isinstance(raw, Mapping):
+            result.update(str(key).strip().casefold() for key, value in raw.items() if _truthy(value))
+        elif isinstance(raw, (list, tuple, set)):
+            result.update(str(item).strip().casefold() for item in raw if str(item).strip())
+    return result
+
+
+def _a2_qualifier_unlocks_fact(missing: str, *, facts: Mapping[str, str], active_brand: str) -> bool:
+    markers = {
+        "class": ("класс", "grade", "5-11", "9", "10", "11"),
+        "subject": ("предмет", "математ", "физик", "информ", "subject"),
+        "format": ("онлайн", "очно", "формат", "мтс линк"),
+        "goal": ("егэ", "огэ", "олимпиад", "цель", "уров"),
+    }.get(missing, ())
+    _, fact = _clean_selling_support_fact(facts, active_brand, markers)
+    return bool(fact)
+
+
+def _a2_objection_fact_available(objection: str, *, facts: Mapping[str, str], active_brand: str) -> bool:
+    return bool(_a2_objection_support_fact(objection, facts=facts, active_brand=active_brand)[1])
+
+
+def _a2_objection_support_fact(objection: str, *, facts: Mapping[str, str], active_brand: str) -> tuple[str, str]:
+    markers = {
+        "price": ("рассроч", "помесяч", "скид", "долями", "оплат", "семестр", "год"),
+        "time": ("распис", "выходн", "будн", "слот", "время", "день"),
+        "fit": ("класс", "формат", "предмет", "уров", "программ", "олимпиад"),
+        "trust": ("лиценз", "преподав", "мфти", "мгу", "результат", "запис"),
+    }.get(objection, ())
+    return _clean_selling_support_fact(facts, active_brand, markers)
+
+
+def _a2_handle_objection_text(
+    objection: str,
+    *,
+    facts: Mapping[str, str],
+    active_brand: str,
+) -> tuple[str, Mapping[str, str]]:
+    key, fact = _a2_objection_support_fact(objection, facts=facts, active_brand=active_brand)
+    if not fact:
+        return "", {}
+    if objection == "price":
+        return f"По бюджету можно смотреть подтверждённые варианты оплаты: {_short_sentence(fact)}", {key: fact}
+    if objection == "time":
+        return f"По времени ориентир такой: {_short_sentence(fact)}", {key: fact}
+    if objection == "fit":
+        return f"По фактам рамка такая: {_short_sentence(fact)} Уровень и группу менеджер сверит отдельно.", {key: fact}
+    if objection == "trust":
+        return f"Для спокойствия можно опереться на подтверждённый факт: {_short_sentence(fact)}", {key: fact}
+    return "", {}
+
+
+def _a2_fit_fact_available(facts: Mapping[str, str], *, active_brand: str) -> bool:
+    return bool(_clean_selling_support_fact(facts, active_brand, ("класс", "формат", "предмет", "программ", "уров"))[1])
+
+
+def _a2_fit_check_text(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    key, fact = _clean_selling_support_fact(facts, active_brand, ("класс", "формат", "предмет", "программ", "уров"))
+    if not fact:
+        return "", {}
+    return f"По фактам это рамка курса: {_short_sentence(fact)} Уровень и группу менеджер сверит отдельно.", {key: fact}
+
+
+def _a2_qualify_text(missing: str) -> str:
+    if missing == "class":
+        return "Подскажите класс ребёнка — тогда сориентирую точнее по подходящему варианту."
+    if missing == "subject":
+        return "Подскажите предмет — тогда сориентирую точнее по программе."
+    if missing == "format":
+        return "Подскажите, удобнее онлайн или очно — тогда сориентирую точнее."
+    if missing == "goal":
+        return "Подскажите цель подготовки — школьная программа, ЕГЭ/ОГЭ или олимпиада?"
+    return ""
+
+
+def _a2_offer_enroll_text(facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    key, fact = _brand_scoped_first_matching_fact(
+        facts,
+        active_brand,
+        ("process.enrollment", "enrollment", "запис", "заявк", "оформ", "менеджер"),
+    )
+    if not fact:
+        return "", {}
+    return f"Если хотите продолжить, передам менеджеру — он поможет с записью: {_short_sentence(fact)}", {key: fact}
+
+
+def _a2_enrollment_fact_available(facts: Mapping[str, str], *, active_brand: str) -> bool:
+    return bool(
+        _brand_scoped_first_matching_fact(
+            facts,
+            active_brand,
+            ("process.enrollment", "enrollment", "запис", "заявк", "оформ", "менеджер"),
+        )[1]
+    )
 
 
 def _current_message_has_phone(text: str) -> bool:

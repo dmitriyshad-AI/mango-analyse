@@ -4187,7 +4187,7 @@ def _coverage_findings(
         if not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
             continue
         for required_key in keys:
-            matched = [key for key in retrieval.matched_keys.get(required_key, ()) if key in retrieval.facts]
+            matched = list(_matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required_key))
             if not matched:
                 continue
             if any(_answer_cites_fact(draft, retrieval.facts[key]) for key in matched):
@@ -4342,9 +4342,7 @@ def _key_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult)
         if subquestion.answerable != "self":
             continue
         for required_key in tuple(key for key in subquestion.needed_fact_keys if key):
-            for fact_key in retrieval.matched_keys.get(required_key, ()):
-                if fact_key not in retrieval.facts:
-                    continue
+            for fact_key in _matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required_key):
                 findings.append(
                     _CoverageFinding(
                         subquestion=subquestion.text or contract.current_question,
@@ -4357,13 +4355,15 @@ def _key_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult)
 
 
 def _key_coverage_ok(contract: AnswerContract, retrieval: RetrievalResult) -> bool:
-    needed = contract.all_needed_fact_keys()
-    if not needed:
+    if contract.is_p0 or contract.answerability != "answer_self":
         return False
-    return any(
-        any(matched_key in retrieval.facts for matched_key in retrieval.matched_keys.get(required_key, ()))
-        for required_key in needed
-    )
+    for subquestion in _contract_subquestions(contract):
+        if subquestion.answerable != "self":
+            continue
+        for required_key in tuple(key for key in subquestion.needed_fact_keys if key):
+            if _matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required_key):
+                return True
+    return False
 
 
 def _quality_composite_result_before_draft(
@@ -4641,6 +4641,8 @@ def _partial_yield_findings_and_missing(
     contract: AnswerContract,
     retrieval: RetrievalResult,
 ) -> tuple[tuple[_CoverageFinding, ...], tuple[str, ...]]:
+    if _has_foreign_brand_matched_self_fact(contract, retrieval):
+        return (), ()
     subquestions = contract.subquestions or (
         Subquestion(
             text=contract.current_question,
@@ -4666,7 +4668,7 @@ def _partial_yield_findings_and_missing(
             continue
         has_fact = False
         for required_key in keys:
-            matched = [key for key in retrieval.matched_keys.get(required_key, ()) if key in retrieval.facts]
+            matched = list(_matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required_key))
             if not matched:
                 missing.append(_client_safe_question_detail(subquestion.text or required_key))
                 continue
@@ -4891,9 +4893,7 @@ def _exact_scope_coverage_findings(contract: AnswerContract, retrieval: Retrieva
         if not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
             continue
         for required_key in keys:
-            for fact_key in retrieval.matched_keys.get(required_key, ()):
-                if fact_key not in retrieval.facts:
-                    continue
+            for fact_key in _matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required_key):
                 findings.append(
                     _CoverageFinding(
                         subquestion=subquestion.text or contract.current_question,
@@ -4950,8 +4950,8 @@ def _draft_cites_any_retrieved_self_fact(
         if not keys or not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
             continue
         for required_key in keys:
-            for fact_key in retrieval.matched_keys.get(required_key, ()):
-                if fact_key in retrieval.facts and _answer_cites_fact(draft, retrieval.facts[fact_key]):
+            for fact_key in _matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required_key):
+                if _answer_cites_fact(draft, retrieval.facts[fact_key]):
                     return True
     return False
 
@@ -5029,12 +5029,13 @@ def _compose_price_plus_format(contract: AnswerContract, retrieval: RetrievalRes
         if price and format_answer:
             return f"{price} {format_answer}"
         return price or format_answer
-    price = _direct_price_answer_from_facts(contract, retrieval.facts)
+    scoped_facts = _scope_matched_facts_for_contract(contract, retrieval)
+    price = _direct_price_answer_from_facts(contract, scoped_facts)
     if not price:
         return ""
-    if _answer_cites_fact(current_draft, " ".join(retrieval.facts.values())):
+    if _answer_cites_fact(current_draft, " ".join(scoped_facts.values())):
         return ""
-    format_answer = _direct_format_answer_from_facts(contract, retrieval.facts)
+    format_answer = _direct_format_answer_from_facts(contract, scoped_facts)
     if format_answer:
         return f"{price} {format_answer}"
     return price
@@ -5454,6 +5455,13 @@ def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> 
         for key, text in facts.items():
             if _is_camp_or_lvsh_fact(key, str(text or "")) and not _contract_mentions_camp_or_lvsh(contract):
                 continue
+            if not _fact_scope_matches_question(
+                contract,
+                Subquestion(text=contract.current_question, answerable="self", needed_fact_keys=()),
+                str(key),
+                str(text or ""),
+            ):
+                continue
             fact_anchors = _payment_method_anchors_from_text(str(text or ""))
             if fact_anchors and payment_targets.issubset(fact_anchors):
                 return _short_fact_sentence(str(text or ""))
@@ -5498,6 +5506,13 @@ def _fact_is_safe_partial_orientation(
     if asks_camp and not is_camp_fact:
         return False
     if is_camp_fact and not asks_camp:
+        return False
+    if not _fact_scope_matches_question(
+        contract,
+        Subquestion(text=contract.current_question, answerable="self", needed_fact_keys=()),
+        key,
+        text,
+    ):
         return False
     if _asks_class_schedule_days(contract) and _is_contact_hours_fact(key, text):
         return False
@@ -6063,7 +6078,10 @@ def _has_retrieved_self_answer_part(contract: AnswerContract, retrieval: Retriev
         keys = tuple(key for key in subquestion.needed_fact_keys if key)
         if not keys:
             continue
-        if all(key not in retrieval.missing and retrieval.matched_keys.get(key) for key in keys):
+        if all(
+            key not in retrieval.missing and _matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, key)
+            for key in keys
+        ):
             return True
     return False
 
@@ -6099,8 +6117,11 @@ def _has_exact_retrieved_answer_part(contract: AnswerContract, retrieval: Retrie
 def _direct_exact_fact_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
     if not _has_exact_retrieved_answer_part(contract, retrieval):
         return ""
+    facts = _scope_matched_facts_for_contract(contract, retrieval, include_manager=True)
+    if not facts:
+        return ""
     if _asks_address(contract):
-        address = _first_address_from_facts(retrieval.facts)
+        address = _first_address_from_facts(facts)
         if not address:
             return ""
         city = address.get("city") or "Москве"
@@ -6112,7 +6133,7 @@ def _direct_exact_fact_answer(contract: AnswerContract, retrieval: RetrievalResu
         if metro:
             parts.append(f"метро {metro}")
         return "; ".join(parts) + ". Если хотите, менеджер поможет выбрать удобную площадку."
-    payment = _direct_payment_answer_from_facts(contract, retrieval.facts)
+    payment = _direct_payment_answer_from_facts(contract, facts)
     if payment:
         return payment
     return ""
@@ -6121,13 +6142,16 @@ def _direct_exact_fact_answer(contract: AnswerContract, retrieval: RetrievalResu
 def _hard_failure_exact_fact_fallback(contract: AnswerContract, retrieval: RetrievalResult) -> str:
     if not _has_exact_retrieved_answer_part(contract, retrieval):
         return ""
-    price = _direct_price_answer_from_facts(contract, retrieval.facts)
+    facts = _scope_matched_facts_for_contract(contract, retrieval, include_manager=True)
+    if not facts:
+        return ""
+    price = _direct_price_answer_from_facts(contract, facts)
     if price:
         return price
-    format_answer = _direct_format_answer_from_facts(contract, retrieval.facts)
+    format_answer = _direct_format_answer_from_facts(contract, facts)
     if format_answer:
         return format_answer
-    recording = _direct_recording_answer_from_facts(contract, retrieval.facts)
+    recording = _direct_recording_answer_from_facts(contract, facts)
     if recording:
         return recording
     return _direct_exact_fact_answer(contract, retrieval)
@@ -6321,7 +6345,7 @@ def _retrieved_keys_match_question_scope(
     retrieval: RetrievalResult,
     keys: Sequence[str],
 ) -> bool:
-    matched_text = _matched_fact_text_for_required_keys(retrieval, keys)
+    matched_text = _matched_scope_fact_text_for_required_keys(contract, subquestion, retrieval, keys)
     if not matched_text:
         return False
     if _asks_refund_policy(contract):
@@ -6356,6 +6380,129 @@ def _retrieved_keys_match_question_scope(
             for key, value in matched_text.items()
         )
     return True
+
+
+def _matched_scope_fact_text_for_required_keys(
+    contract: AnswerContract,
+    subquestion: Subquestion,
+    retrieval: RetrievalResult,
+    keys: Sequence[str],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for required in keys:
+        for key in _matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required):
+            result[key] = str(retrieval.facts[key])
+    return result
+
+
+def _matched_scope_fact_keys_for_required_key(
+    contract: AnswerContract,
+    subquestion: Subquestion,
+    retrieval: RetrievalResult,
+    required_key: str,
+) -> tuple[str, ...]:
+    return tuple(
+        key
+        for key in retrieval.matched_keys.get(required_key, ())
+        if key in retrieval.facts and _fact_scope_matches_question(contract, subquestion, key, str(retrieval.facts[key]))
+    )
+
+
+def _scope_matched_facts_for_contract(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    *,
+    include_manager: bool = False,
+) -> dict[str, str]:
+    scoped: dict[str, str] = {}
+    for subquestion in _contract_subquestions(contract):
+        if not include_manager and subquestion.answerable != "self":
+            continue
+        for required_key in tuple(key for key in subquestion.needed_fact_keys if key):
+            for fact_key in _matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, required_key):
+                scoped[fact_key] = str(retrieval.facts[fact_key])
+    return scoped
+
+
+def _has_foreign_brand_matched_self_fact(contract: AnswerContract, retrieval: RetrievalResult) -> bool:
+    active_brand = _normalize_brand(contract.active_brand)
+    tokens = tuple(token for token in _BRAND_TOKENS.get(active_brand, ()) if token)
+    if not tokens:
+        return False
+    for subquestion in _contract_subquestions(contract):
+        if subquestion.answerable != "self":
+            continue
+        for required_key in tuple(key for key in subquestion.needed_fact_keys if key):
+            for fact_key in retrieval.matched_keys.get(required_key, ()):
+                if fact_key not in retrieval.facts:
+                    continue
+                combined = f"{fact_key} {retrieval.facts[fact_key]}".casefold().replace("ё", "е")
+                if any(token in combined for token in tokens):
+                    return True
+    return False
+
+
+def _fact_scope_matches_question(
+    contract: AnswerContract,
+    subquestion: Subquestion,
+    fact_key: str,
+    fact_text: str,
+) -> bool:
+    combined = f"{fact_key} {fact_text}".casefold().replace("ё", "е")
+    active_brand = _normalize_brand(contract.active_brand)
+    for token in _BRAND_TOKENS.get(active_brand, ()):
+        if token and token in combined:
+            return False
+
+    question_text = _subquestion_scope_text(contract, subquestion)
+    requested_formats = _format_values_from_text(question_text)
+    fact_formats = _format_values_from_text(combined)
+    if requested_formats and fact_formats and requested_formats.isdisjoint(fact_formats):
+        return False
+
+    requested_grade = _grade_from_text(question_text)
+    fact_grades = _grade_values_from_fact_scope(fact_key, fact_text)
+    if requested_grade and fact_grades and requested_grade not in fact_grades:
+        return False
+    return True
+
+
+def _format_values_from_text(text: str) -> set[str]:
+    low = str(text or "").casefold().replace("ё", "е")
+    values: set[str] = set()
+    if re.search(r"онлайн|online|дистанционно", low, re.I):
+        values.add("онлайн")
+    if re.search(r"очно|очная|очный|офлайн|offline|ochno", low, re.I):
+        values.add("очно")
+    return values
+
+
+def _grade_values_from_fact_scope(fact_key: str, fact_text: str) -> set[str]:
+    key_source = str(fact_key or "").casefold().replace("ё", "е")
+    source = f"{fact_key} {fact_text}".casefold().replace("ё", "е")
+    grades: set[int] = set()
+    for match in re.finditer(
+        r"(?<!\d)([1-9]|10|11)\s*[-–_]\s*([1-9]|10|11)\s*(?:класс(?:а|е|ов|ы)?|кл\.?|grade|class|grades|classes)",
+        source,
+        re.I,
+    ):
+        low, high = int(match.group(1)), int(match.group(2))
+        if low > high:
+            low, high = high, low
+        if 1 <= low <= 11 and 1 <= high <= 11:
+            grades.update(range(low, high + 1))
+    if re.search(r"price|prices|course|courses|grade|class|tuition|цена|стоим|курс", key_source, re.I):
+        for match in re.finditer(r"(?<!\d)([1-9]|10|11)[._-]([1-9]|10|11)(?!\d)", key_source, re.I):
+            low, high = int(match.group(1)), int(match.group(2))
+            if low > high:
+                low, high = high, low
+            if 1 <= low <= 11 and 1 <= high <= 11:
+                grades.update(range(low, high + 1))
+    for match in re.finditer(r"(?<!\d)(?:grade|class|klass)[_.\s-]?([1-9]|10|11)(?!\d)", source, re.I):
+        grades.add(int(match.group(1)))
+    for match in re.finditer(r"(?<!\d)([1-9]|10|11)\s*(?:класс(?:а|е|ов|ы)?|кл\.?|class)(?!\d)", source, re.I):
+        grades.add(int(match.group(1)))
+    return {str(item) for item in sorted(grades)}
 
 
 def _matched_fact_text_for_required_keys(retrieval: RetrievalResult, keys: Sequence[str]) -> dict[str, str]:

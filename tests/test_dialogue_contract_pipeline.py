@@ -4224,6 +4224,149 @@ def test_q_partial_yield_with_no_grounded_fact_keeps_handoff(monkeypatch) -> Non
     assert "29 750" not in result.draft_text
 
 
+def test_g2_scope_guard_defers_online_price_when_only_offline_fact_matches(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("prices.offline.grade5_11", "schedule.start.current"),
+        store={
+            "unpk": {
+                "prices.offline.grade5_11": "УНПК: очный курс для 5-11 классов — 49 000 ₽ за семестр.",
+                "schedule.start.current": "Старт ближайшего набора — 15 сентября.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("онлайн для 9 класса сколько стоит и когда старт?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "онлайн цена для 9 класса и старт",
+                "subquestions": [
+                    {"text": "онлайн цена для 9 класса", "answerable": "self", "needed_fact_keys": ["prices.offline.grade5_11"]},
+                    {"text": "когда старт", "answerable": "self", "needed_fact_keys": ["schedule.start.current"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route in {"bot_answer_self", "draft_for_manager"}
+    assert "15 сентября" in result.draft_text
+    assert "49 000" not in result.draft_text
+    assert "очный курс" not in result.draft_text.casefold()
+
+
+def test_g2_scope_guard_allows_price_when_format_and_grade_range_match() -> None:
+    store = FactStore(
+        catalog=("prices.offline.grade5_11",),
+        store={"unpk": {"prices.offline.grade5_11": "УНПК: очный курс для 5-11 классов, семестр — 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("очная цена для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "очная цена для 9 класса",
+                "subquestions": [
+                    {"text": "очная цена для 9 класса", "answerable": "self", "needed_fact_keys": ["prices.offline.grade5_11"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "49 000" in result.draft_text
+
+
+def test_g2_scope_guard_defers_price_when_grade_outside_fact_range() -> None:
+    store = FactStore(
+        catalog=("prices.offline.grade5_11",),
+        store={"unpk": {"prices.offline.grade5_11": "УНПК: очный курс для 5-11 классов, семестр — 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("очная цена для 3 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "очная цена для 3 класса",
+                "subquestions": [
+                    {"text": "очная цена для 3 класса", "answerable": "self", "needed_fact_keys": ["prices.offline.grade5_11"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "49 000" not in result.draft_text
+    assert result.fallback_reason != "direct_exact_fact_answer"
+
+
+def test_g2_scope_guard_does_not_override_p0_part(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("prices.offline.grade5_11",),
+        store={"unpk": {"prices.offline.grade5_11": "УНПК: очный курс для 5-11 классов, семестр — 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги; и очная цена для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги и очная цена для 9 класса",
+                "subquestions": [
+                    {"text": "очная цена для 9 класса", "answerable": "self", "needed_fact_keys": ["prices.offline.grade5_11"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Очный курс стоит 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert "49 000" not in result.draft_text
+
+
+def test_g2_scope_guard_keeps_number_gate_blocking_unconfirmed_product_price() -> None:
+    store = FactStore(catalog=("prices.offline.grade5_11",), store={"unpk": {}})
+
+    result = run_pipeline(
+        conversation=_conv("очная цена для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "очная цена для 9 класса",
+                "subquestions": [
+                    {"text": "очная цена для 9 класса", "answerable": "self", "needed_fact_keys": ["prices.offline.grade5_11"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Семестр стоит 50 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert "50 000" not in result.draft_text
+    assert result.fallback_reason == "empty_facts_no_fabrication"
+
+
 def test_q_partial_yield_estimates_lobnya_travel_before_manager_handoff(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")

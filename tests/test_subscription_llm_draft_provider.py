@@ -2765,7 +2765,8 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
         context={"active_brand": "unpk"},
     )
     assert "менеджер" in detail.casefold()
-    assert "Какая цена для 6 класса" in detail
+    assert "Какая цена для 6 класса" not in detail
+    assert "стоимость" in detail.casefold()
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:

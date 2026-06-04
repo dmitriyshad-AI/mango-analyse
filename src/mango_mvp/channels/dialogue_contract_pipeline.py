@@ -165,6 +165,13 @@ _ESTIMATE_GUARANTEE_RE = re.compile(
     r"исправим\s+на\s+(?:5|пят)|подтянем\s+на\s+(?:5|пят)|точно\s+станет",
     re.I,
 )
+_RECORDING_SCOPE_RE = re.compile(
+    r"recording|recordings|пересмотр|\bзаписи\b|\bзапись\b(?!\s+на)|"
+    r"запис[ьи]\s+(?:занят|урок|вебинар|эфир|трансляц)|"
+    r"записанн\w+\s+(?:занят|урок|вебинар)|(?:занят|урок|вебинар)\w*\s+в\s+запис",
+    re.I,
+)
+_ENROLLMENT_SCOPE_RE = re.compile(r"записаться|запись\s+на|оформить|оформление|заявк", re.I)
 _AI_SELF_DISCLOSURE_RE = re.compile(
     r"\bя\s+(?:бот|gpt|нейросеть|искусственн\w+\s+интеллект)\b",
     re.I,
@@ -1198,8 +1205,10 @@ def _contract_query_aliases(contract: AnswerContract) -> tuple[str, ...]:
         aliases.extend(("offline", "ochno", "очно", "офлайн"))
     if re.search(r"распис|дни|когда|выходн|будн", text, re.I):
         aliases.extend(("schedule", "days", "weekly", "распис", "дни", "weekend"))
-    if re.search(r"запис|материал|кабинет", text, re.I):
+    if _RECORDING_SCOPE_RE.search(text) or re.search(r"материал|кабинет", text, re.I):
         aliases.extend(("recording", "materials", "cabinet", "запис"))
+    elif _ENROLLMENT_SCOPE_RE.search(text):
+        aliases.extend(("enrollment", "enrollment_process", "запись на"))
     return tuple(dict.fromkeys(aliases))
 
 
@@ -2045,6 +2054,7 @@ def _quality_estimate_result_before_handoff(
         candidate = str(draft_fn(prompt) or "").strip()
     except Exception:
         candidate = ""
+    candidate = _ensure_estimate_uncertainty_marker(candidate, domain=domain)
     if not candidate:
         trace_event(context, "estimate_recover", {"applied": False, "reason": "empty_candidate", "source_reason": source_reason, "domain": domain})
         return None
@@ -2141,6 +2151,14 @@ def _estimate_recover_check(
         context=context,
         previous_bot_texts=previous_bot_texts,
     )
+
+
+def _ensure_estimate_uncertainty_marker(text: str, *, domain: str) -> str:
+    source = str(text or "").strip()
+    if not source or _has_uncertainty_marker(source):
+        return source
+    marker = "Обычно" if domain == "general_advice" else "Ориентировочно"
+    return f"{marker}: {source}"
 
 
 _NEXT_STEP_ALREADY_RE = re.compile(
@@ -2315,7 +2333,8 @@ _CONDITION_ANCHOR_ALIASES: Mapping[str, tuple[str, ...]] = {
     "format:offline": ("очно", "очная", "очный"),
 }
 _SUBJECT_ANCHOR_ALIASES: Mapping[str, tuple[str, ...]] = {
-    "subject:recording": ("запис", "пересмотр"),
+    "subject:recording": ("записи занятий", "запись занятия", "запись урок", "записи урок", "пересмотр", "recording"),
+    "subject:enrollment": ("записаться", "запись на", "оформить", "оформление", "заявка"),
     "subject:cabinet": ("личный кабинет", "личном кабинете", "личного кабинета"),
     "subject:matkap": ("маткап", "материнск", "сфр"),
     "subject:discount": ("скидк",),
@@ -2697,6 +2716,7 @@ def run_pipeline(
             estimate_draft = str(draft_fn(estimate_prompt) or "").strip()
         except Exception:
             estimate_draft = ""
+        estimate_draft = _ensure_estimate_uncertainty_marker(estimate_draft, domain=contract.estimate_domain)
         trace_event(
             context,
             "estimate_compose",
@@ -4365,7 +4385,7 @@ def _coverage_cite_only_answer_from_findings(findings: Sequence[_CoverageFinding
         return ""
     if len(snippets) == 1:
         return f"По подтверждённым данным: {snippets[0]}"
-    return "По подтверждённым данным: " + " ".join(snippets[:3])
+    return "По подтверждённым данным: " + " ".join(snippets[:5])
 
 
 def _key_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult) -> tuple[_CoverageFinding, ...]:
@@ -5327,8 +5347,10 @@ def _semantic_topic_anchors(text: str) -> set[str]:
         anchors.add("payment:dolyami")
     if re.search(r"перевод|по\s+сч[её]ту|квитанц|реквизит|invoice", source, re.I):
         anchors.add("payment:invoice")
-    if re.search(r"запис|пересмотр|recording", source, re.I):
+    if _RECORDING_SCOPE_RE.search(source):
         anchors.add("topic:recording")
+    elif _ENROLLMENT_SCOPE_RE.search(source):
+        anchors.add("topic:enrollment")
     if re.search(r"расписан|дни\s+занят|по\s+дням|schedule", source, re.I):
         anchors.add("topic:schedule")
     if re.search(r"адрес|где\s+вы|находит|метро|location|address", source, re.I):
@@ -5426,6 +5448,7 @@ def _safe_fallback_text(
     context: Mapping[str, Any] | None = None,
 ) -> str:
     def traced(text: str, reason: str) -> str:
+        text = _handoff_text_without_meta_leak(text)
         trace_event(
             context,
             "_safe_fallback_text",
@@ -5504,9 +5527,27 @@ def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:
 
 
 _RAW_QUESTION_DETAIL_RE = re.compile(
-    r"^есть\s+ли\b",
+    r"\?|^(?:есть\s+ли|как\s+|какие\s+|какой\s+|какая\s+|куда\s+|где\s+|что\s+|можно\s+ли|можно\b|"
+    r"сколько\s+|во\s+сколько|по\s+каким)\b",
     re.I,
 )
+_HANDOFF_TOPIC_LABELS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"дорог|ехать|доехать|добират|добраться|маршрут|электрич|метро|автобус|такси", re.I), "дорогу до площадки"),
+    (re.compile(r"распис|дни\s+занят|по\s+каким\s+дням|точн\w+\s+день|день\s+групп|во\s+сколько|время\s+занят|выходн|будн", re.I), "расписание занятий"),
+    (re.compile(r"запис[ьи]\s+(?:занят|урок|вебинар)|пересмотр|материал", re.I), "записи занятий"),
+    (re.compile(r"записаться|запись\s+на|оформить|оформление|заявк", re.I), "запись на курс"),
+    (re.compile(r"контакт|телефон|связаться|куда\s+писать|как\s+связ", re.I), "контакты"),
+    (re.compile(r"адрес|где\s+вы|куда\s+ехать|площадк|метро", re.I), "адрес площадки"),
+    (re.compile(r"прям\w+\s+перевод|по\s+сч[её]ту|на\s+сч[её]т", re.I), "прямым переводом на счёт"),
+    (re.compile(r"цен|стоим|тариф|сколько\s+стоит|оплат", re.I), "стоимость"),
+    (re.compile(r"формат|онлайн|очно|офлайн", re.I), "формат занятий"),
+    (re.compile(r"скидк|льгот|многодет|второй\s+предмет", re.I), "условия скидки"),
+    (re.compile(r"рассроч|долями|банк|счет|сч[её]т|перевод", re.I), "способ оплаты"),
+    (re.compile(r"документ|договор|справк|лиценз", re.I), "документы"),
+    (re.compile(r"пробн|фрагмент", re.I), "пробное занятие"),
+    (re.compile(r"лагер|лвш|смен", re.I), "лагерную смену"),
+)
+_HANDOFF_TOPIC_LABEL_VALUES = frozenset(label for _pattern, label in _HANDOFF_TOPIC_LABELS)
 
 
 def _handoff_detail_text(value: str) -> str:
@@ -5516,9 +5557,24 @@ def _handoff_detail_text(value: str) -> str:
     detail = re.sub(r"^(?:можно\s+ли|можно)\s+", "", detail, flags=re.I).strip(" \t\n\r:;,.—-?")
     if not detail:
         return ""
-    if "?" in detail or _RAW_QUESTION_DETAIL_RE.search(detail):
+    low = detail.casefold().replace("ё", "е")
+    for pattern, label in _HANDOFF_TOPIC_LABELS:
+        if pattern.search(low):
+            return label
+    if _RAW_QUESTION_DETAIL_RE.search(detail):
         return ""
-    return detail
+    # Не возвращаем сырой подвопрос как "очищенный" detail: это снова утекает
+    # клиенту в виде "уточнит именно про <ваш вопрос>".
+    return ""
+
+
+def _handoff_text_without_meta_leak(text: str) -> str:
+    source = str(text or "").strip()
+    if not source:
+        return source
+    if has_meta_leak(source) and _is_handoff_text(source):
+        return _generic_handoff_text()
+    return source
 
 
 def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:
@@ -5598,7 +5654,11 @@ def _generic_handoff_text() -> str:
 
 
 def _detail_handoff_text(detail: str) -> str:
-    clean = _handoff_detail_text(detail) or "эту часть вопроса"
+    clean = str(detail or "").strip()
+    if clean not in _HANDOFF_TOPIC_LABEL_VALUES:
+        clean = _handoff_detail_text(clean)
+    if not clean:
+        return _generic_handoff_text()
     return _DETAIL_HANDOFF_TEXTS[0].format(detail=clean)
 
 
@@ -5636,8 +5696,12 @@ def _avoid_repeating_text(
         )
     if _is_refund_handoff_text(source) or _asks_refund_policy(contract):
         return _select_unused_handoff_variant(_REFUND_POLICY_TEXTS, prior_bot_texts, fallback=source)
-    detail = _handoff_detail_text(contract.current_question) or "эту часть вопроса"
-    rendered = tuple(item.format(detail=detail) for item in (*_DETAIL_HANDOFF_TEXTS, *_GENERIC_HANDOFF_TEXTS))
+    detail = _handoff_detail_text(contract.current_question)
+    rendered = (
+        tuple(item.format(detail=detail) for item in _DETAIL_HANDOFF_TEXTS) + _GENERIC_HANDOFF_TEXTS
+        if detail
+        else _GENERIC_HANDOFF_TEXTS
+    )
     exhausted = _select_unused_handoff_variant(
         _HANDOFF_EXHAUSTED_TEXTS,
         prior_bot_texts,
@@ -6306,13 +6370,13 @@ def _direct_camp_format_answer_from_facts(contract: AnswerContract, facts: Mappi
 
 def _direct_recording_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
     text = _contract_intent_text(contract)
-    if not re.search(r"запис|пересмотр|мтс|mts|link|линк", text, re.I):
+    if not (_RECORDING_SCOPE_RE.search(text) or re.search(r"мтс|mts|link|линк", text, re.I)):
         return ""
     recording_fact = ""
     platform_fact = ""
     for key, value in facts.items():
         combined = f"{key} {value}".casefold().replace("ё", "е")
-        if not recording_fact and re.search(r"record|запис|пересмотр", combined, re.I):
+        if not recording_fact and _RECORDING_SCOPE_RE.search(combined):
             recording_fact = _short_fact_sentence(str(value or ""), max_chars=180)
         if not platform_fact and (re.search(r"мтс|mts|link|линк|webinar", combined, re.I) or str(key or "").endswith(".name")):
             platform_fact = _short_fact_sentence(str(value or ""), max_chars=140)
@@ -6610,7 +6674,7 @@ def _existence_target_anchors(contract: AnswerContract) -> set[str]:
         anchors.add("installment")
     if re.search(r"пробн|фрагмент", text, re.I):
         anchors.add("trial")
-    if re.search(r"запис|пересмотр", text, re.I):
+    if _RECORDING_SCOPE_RE.search(text):
         anchors.add("recording")
     return anchors
 
@@ -6623,7 +6687,7 @@ def _fact_has_existence_anchors(text: str, *, target_anchors: set[str]) -> bool:
         return False
     if "trial" in target_anchors and not re.search(r"пробн|фрагмент", low, re.I):
         return False
-    if "recording" in target_anchors and not re.search(r"запис|пересмотр", low, re.I):
+    if "recording" in target_anchors and not _RECORDING_SCOPE_RE.search(low):
         return False
     return True
 

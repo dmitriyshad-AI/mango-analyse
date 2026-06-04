@@ -375,6 +375,42 @@ def test_level_a_estimate_general_advice_allowed_with_marker(monkeypatch) -> Non
     assert "Ориентировочно" in result.draft_text
 
 
+def test_level_a_estimate_general_advice_without_marker_gets_usually_marker(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    store = FactStore(catalog=(), store={"unpk": {}})
+
+    result = run_pipeline(
+        conversation=_conv("с какого класса обычно лучше начинать подготовку к ЕГЭ?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "с какого класса лучше начинать подготовку к ЕГЭ",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+                "estimate_confidence": 0.78,
+            }
+        ),
+        draft_fn=lambda _prompt: "Лучше начинать в 8 классе, старт с 9 класса тоже возможен при регулярной работе.",
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_domain == "general_advice"
+    assert "Обычно" in result.draft_text
+    findings = verify_output(
+        result.draft_text,
+        facts=result.facts,
+        active_brand="unpk",
+        contract=result.contract,
+        client_message="с какого класса обычно лучше начинать подготовку к ЕГЭ?",
+        is_estimate=True,
+    )
+    assert "estimate_without_uncertainty_marker" not in {finding.code for finding in findings}
+
+
 def test_level_a_estimate_general_advice_individual_child_goes_to_manager(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
     store = FactStore(catalog=(), store={"foton": {}})
@@ -475,7 +511,7 @@ def test_level_a_lesson_duration_is_product_number_not_estimate(monkeypatch) -> 
     assert "90" not in result.draft_text
 
 
-def test_level_a_estimate_without_uncertainty_marker_falls_back(monkeypatch) -> None:
+def test_level_a_estimate_without_uncertainty_marker_gets_marker_before_gate(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
     store = FactStore(catalog=(), store={"unpk": {}})
 
@@ -494,9 +530,19 @@ def test_level_a_estimate_without_uncertainty_marker_falls_back(monkeypatch) -> 
         draft_fn=lambda _prompt: "От Лобни до Долгопрудного 15 минут на электричке.",
     )
 
-    assert result.route == "draft_for_manager"
-    assert result.fallback_reason == "estimate_guard_failed"
-    assert result.is_estimate is False
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert "Ориентировочно" in result.draft_text
+    assert "15 минут" in result.draft_text
+    findings = verify_output(
+        result.draft_text,
+        facts=result.facts,
+        active_brand="unpk",
+        contract=result.contract,
+        client_message="сколько ехать от Лобни до Долгопрудного?",
+        is_estimate=True,
+    )
+    assert "estimate_without_uncertainty_marker" not in {finding.code for finding in findings}
 
 
 def test_level_a_p0_overrides_estimate_mode(monkeypatch) -> None:
@@ -4194,7 +4240,8 @@ def test_q_partial_yield_answers_grounded_part_and_defers_missing(monkeypatch) -
     assert result.partial_yield_fact_keys == ("price.online",)
     assert result.partial_yield_missing == ("точный день группы",)
     assert "29 750" in result.draft_text
-    assert "точный день группы" in result.draft_text.casefold()
+    assert "точный день группы" not in result.draft_text.casefold()
+    assert "расписание занятий" in result.draft_text.casefold()
     assert "менеджер" in result.draft_text.casefold()
 
 
@@ -4236,6 +4283,55 @@ def test_q_partial_yield_answers_all_grounded_composite_parts_after_handoff(monk
     assert "Передам менеджеру уточнить" not in result.draft_text
 
 
+def test_q_partial_yield_keeps_schedule_contacts_enrollment_and_recordings_distinct(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("schedule.weekdays", "contacts.manager", "recordings.cabinet", "enrollment.steps"),
+        store={
+            "unpk": {
+                "schedule.weekdays": "Занятия проходят по будням вечером; точное время зависит от группы.",
+                "contacts.manager": "Связаться с менеджером можно в Telegram или по телефону центра.",
+                "recordings.cabinet": "Записи занятий доступны для пересмотра в личном кабинете.",
+                "enrollment.steps": "Для записи на курс нужно оставить заявку, менеджер подтвердит группу.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("по каким дням и во сколько, какие контакты, как записаться и будут ли записи занятий?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "расписание, контакты, запись на курс и записи занятий",
+                "subquestions": [
+                    {"text": "по каким дням и во сколько занятия", "answerable": "self", "needed_fact_keys": ["schedule.weekdays"]},
+                    {"text": "какие контакты", "answerable": "self", "needed_fact_keys": ["contacts.manager"]},
+                    {"text": "как записаться на занятие", "answerable": "self", "needed_fact_keys": ["enrollment.steps"]},
+                    {"text": "будут ли записи занятий", "answerable": "self", "needed_fact_keys": ["recordings.cabinet"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.partial_yield_applied is True
+    assert result.partial_yield_missing == ()
+    assert result.partial_yield_fact_keys == (
+        "schedule.weekdays",
+        "contacts.manager",
+        "enrollment.steps",
+        "recordings.cabinet",
+    )
+    assert "по будням вечером" in result.draft_text
+    assert "Telegram" in result.draft_text
+    assert "Для записи на курс" in result.draft_text
+    assert "Записи занятий доступны" in result.draft_text
+
+
 def test_q_partial_yield_hides_raw_question_subpart_in_missing_tail(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     store = FactStore(
@@ -4271,6 +4367,37 @@ def test_q_partial_yield_hides_raw_question_subpart_in_missing_tail(monkeypatch)
     assert "есть ли сам" not in result.draft_text.casefold()
     assert "по остальной части вопроса" in result.draft_text.casefold()
     assert "менеджер" in result.draft_text.casefold()
+
+
+def test_safe_fallback_builder_uses_topic_label_not_raw_subquestion() -> None:
+    contract = AnswerContract(
+        current_question="Можно ли уточнить, по каким дням занятия и во сколько?",
+        active_brand="unpk",
+        answerability="manager_only",
+    )
+
+    text = _safe_fallback_text(contract, facts={}, context={})
+    low = text.casefold()
+
+    assert "по каким дням" not in low
+    assert "во сколько" not in low
+    assert "можно ли" not in low
+    assert "расписание занятий" in low or "менеджер" in low
+
+
+def test_safe_fallback_builder_drops_unknown_raw_subquestion_detail() -> None:
+    contract = AnswerContract(
+        current_question="Можете объяснить, что лучше выбрать для Маши?",
+        active_brand="foton",
+        answerability="manager_only",
+    )
+
+    text = _safe_fallback_text(contract, facts={}, context={})
+    low = text.casefold()
+
+    assert "для маши" not in low
+    assert "что лучше выбрать" not in low
+    assert "менеджер" in low
 
 
 def test_q_partial_yield_does_not_override_p0_even_when_fact_exists(monkeypatch) -> None:
@@ -4476,7 +4603,7 @@ def test_q_partial_yield_estimate_does_not_override_p0(monkeypatch) -> None:
     assert "41 800" not in result.draft_text
 
 
-def test_q_partial_yield_estimate_without_uncertainty_marker_keeps_handoff(monkeypatch) -> None:
+def test_q_partial_yield_estimate_without_uncertainty_marker_gets_marker(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
 
@@ -4496,10 +4623,11 @@ def test_q_partial_yield_estimate_without_uncertainty_marker_keeps_handoff(monke
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert result.route == "draft_for_manager"
-    assert result.is_estimate is False
-    assert result.estimate_applied is False
-    assert "40–50 минут" not in result.draft_text
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_applied is True
+    assert "Ориентировочно" in result.draft_text
+    assert "40–50 минут" in result.draft_text
 
 
 def test_q_partial_yield_estimate_blocks_brand_leak(monkeypatch) -> None:
@@ -4696,7 +4824,8 @@ def test_q_composite_answers_grounded_parts_and_defers_missing_tail(monkeypatch)
     assert result.composite_fact_keys == ("price.online",)
     assert result.composite_missing == ("точный день группы",)
     assert "29 750" in result.draft_text
-    assert "точный день группы" in result.draft_text.casefold()
+    assert "точный день группы" not in result.draft_text.casefold()
+    assert "расписание занятий" in result.draft_text.casefold()
     assert "менеджер" in result.draft_text.casefold()
 
 

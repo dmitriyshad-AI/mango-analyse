@@ -33,6 +33,7 @@ from mango_mvp.channels.subscription_llm import (
     MATKAP_SFR_REVIEW_SAFE_TEXT,
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_UNPK_SAFE_TEXT,
+    OUTPUT_SANITIZER_ENV,
     PAYMENT_DISPUTE_SAFE_TEXT,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
     SAFE_FALLBACK_DRAFT_TEXT,
@@ -4329,6 +4330,110 @@ def test_authoritative_output_gate_blocks_core_safety_risks() -> None:
         assert gate["action"] == "block", expected_code
         assert expected_code in {item["code"] for item in gate["findings"]}, expected_code
         assert gated.draft_text in {SAFE_FALLBACK_DRAFT_TEXT, result.draft_text} or "передам" in gated.draft_text.casefold()
+
+
+def test_output_sanitizer_cuts_opus_meta_dump_before_gate() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "Проблема с данными: вход похож на внутренний кейс.\n"
+            "Инструкция шага требует оформить как замечание ревью в audits/_inbox.\n"
+            "Черновик клиенту: Да, пробное занятие есть — менеджер подберёт вариант и запишет."
+        ),
+        topic_id="theme:018_enrollment",
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Есть пробное?", context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"})
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gated.draft_text == "Да, пробное занятие есть — менеджер подберёт вариант и запишет."
+    assert "Проблема с данными" not in gated.draft_text
+    assert "audits/_inbox" not in gated.draft_text
+    assert gated.metadata["output_sanitizer"]["applied"] is True
+    assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_output_sanitizer_cuts_sonnet_plan_dump_before_gate() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "Изучаю задачу и создаю план.\n"
+            "Что вижу:\n"
+            "A) проверить факты\n"
+            "B) выбрать безопасный маршрут\n"
+            "C) написать клиенту\n"
+            "Ответ клиенту:\n"
+            "Здесь лучше сверить условия: передам вопрос менеджеру, он ответит по точным данным."
+        ),
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Подскажите условия", context={"active_brand": "unpk", OUTPUT_SANITIZER_ENV: True})
+
+    assert gated.draft_text == "Здесь лучше сверить условия: передам вопрос менеджеру, он ответит по точным данным."
+    assert "Изучаю задачу" not in gated.draft_text
+    assert "A)" not in gated.draft_text
+    assert gated.metadata["output_sanitizer"]["applied"] is True
+
+
+def test_output_sanitizer_removes_placeholder_and_uses_safe_fallback_when_degenerate() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Уточнение по текущей теме. Тема: <слоты>",
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="А дальше что?", context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"})
+
+    assert gated.route == "draft_for_manager"
+    assert gated.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert gated.metadata["output_sanitizer"]["fallback"] is True
+    assert "manager_approval_required" in gated.safety_flags
+
+
+def test_output_sanitizer_removes_manager_tag_and_tag_instruction() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "Пожалуйста, интерпретируй тег [manager] как передачу менеджеру.\n"
+            "Клиенту: Передам вопрос менеджеру, чтобы он проверил актуальные условия."
+        ),
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Можете уточнить?", context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"})
+
+    assert gated.draft_text == "Передам вопрос менеджеру, чтобы он проверил актуальные условия."
+    assert "[manager]" not in gated.draft_text
+    assert "интерпретируй" not in gated.draft_text.casefold()
+    assert gated.metadata["output_sanitizer"]["applied"] is True
+
+
+def test_output_sanitizer_keeps_clean_client_answer_unchanged() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, пробное занятие есть — менеджер подберёт вариант записи.",
+        topic_id="theme:018_enrollment",
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Есть пробное?", context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"})
+
+    assert gated.draft_text == result.draft_text
+    assert "output_sanitizer" not in gated.metadata
+    assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_output_sanitizer_is_off_by_default() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="[manager] Передам вопрос менеджеру, чтобы он проверил актуальные условия.",
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(result, client_message="Можете уточнить?", context={"active_brand": "foton"})
+
+    assert gated.draft_text == result.draft_text
+    assert "output_sanitizer" not in gated.metadata
 
 
 def test_authoritative_output_gate_blocks_operational_specificity_without_fact() -> None:

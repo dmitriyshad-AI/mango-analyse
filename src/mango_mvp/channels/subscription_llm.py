@@ -79,6 +79,7 @@ ANTIREPEAT_STRICT_ENV = "TELEGRAM_ANTIREPEAT_STRICT"
 A_THREAD_ENV = "TELEGRAM_A_THREAD"
 A_PROACTIVE_ENV = "TELEGRAM_A_PROACTIVE"
 A_RICH_FORMAT_ENV = "TELEGRAM_A_RICH_FORMAT"
+OUTPUT_SANITIZER_ENV = "TELEGRAM_OUTPUT_SANITIZER"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -423,6 +424,26 @@ INTERNAL_SAFE_VARIANT_RE = re.compile(
 )
 DRAFT_PLACEHOLDER_RE = re.compile(
     r"\[(?:[^\]\n]{0,80})?(?:вставить|указать|подставить|TODO|проверенн\w+\s+ссылк|актуальн\w+\s+ссылк)(?:[^\]\n]{0,120})?\]",
+    re.I,
+)
+OUTPUT_SANITIZER_CLIENT_TEXT_RE = re.compile(
+    r"(?:^|\n)\s*(?:черновик|ответ|сообщение)\s+клиенту\s*:\s*|(?:^|\n)\s*клиенту\s*:\s*",
+    re.I,
+)
+OUTPUT_SANITIZER_META_LINE_RE = re.compile(
+    r"(?:изуча\w+\s+задач\w+|созда\w+\s+план|что\s+вижу\s*:|вопрос\s+к\s+тебе\s*:|"
+    r"прежде\s+чем\s+дать\s+черновик|проблема\s+с\s+данными|инструкци\w+\s+шаг\w+\s+требу\w+|"
+    r"правил\w+\s+шаг\w+\s+требу\w+|оформ\w+[^.\n]{0,120}audits/_inbox|audits/_inbox)",
+    re.I,
+)
+OUTPUT_SANITIZER_OPTION_LINE_RE = re.compile(r"^\s*(?:[A-CА-В]\)|[A-CА-В]\.)\s+", re.I)
+OUTPUT_SANITIZER_PLACEHOLDER_RE = re.compile(
+    r"\bуточнен\w+\s+по\s+текущей\s+теме\s*\.\s*тема\s*:\s*[^.?!\n]*(?:[.?!]|$)",
+    re.I,
+)
+OUTPUT_SANITIZER_MANAGER_TAG_RE = re.compile(r"\[/?manager\]\s*", re.I)
+OUTPUT_SANITIZER_MANAGER_TAG_INSTRUCTION_RE = re.compile(
+    r"^(?=.*\[/?manager\])(?=.*(?:интерпретир\w+|служебн\w+\s+тег|тег\s+\[/?manager\])).*$",
     re.I,
 )
 PROMOCODE_DRAFT_RE = re.compile(r"\b(?:LVSH-VEB20|LVSH-KF-10|ABRAMOV|VAGIN)\b", re.I)
@@ -2894,6 +2915,7 @@ def apply_authoritative_output_gate(
     invents replacement facts.
     """
 
+    result = apply_output_sanitizer(result, context=context)
     findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
     actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
     actionable = [finding for finding, action in zip(findings, actions) if action in {"block", "downgrade"}]
@@ -2942,6 +2964,129 @@ def apply_authoritative_output_gate(
         metadata=metadata,
         error=result.error or "authoritative_output_gate_blocked",
     )
+
+
+def apply_output_sanitizer(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _output_sanitizer_enabled(context):
+        return result
+
+    cleaned, reasons = _sanitize_output_client_text(result.draft_text)
+    if not reasons and cleaned == result.draft_text:
+        return result
+
+    fallback = not cleaned.strip()
+    route = result.route
+    flags = [*result.safety_flags, "output_sanitizer_applied", *[f"output_sanitizer:{reason}" for reason in reasons]]
+    checklist = list(result.manager_checklist)
+    if fallback:
+        cleaned = SAFE_FALLBACK_DRAFT_TEXT
+        if route != "manager_only":
+            route = "draft_for_manager"
+        flags.extend(["manager_approval_required", "no_auto_send"])
+        checklist.append("Output sanitizer удалил внутренний текст целиком: не отправлять без ручной проверки.")
+    metadata = dict(result.metadata)
+    metadata["output_sanitizer"] = {
+        "enabled": True,
+        "applied": True,
+        "fallback": fallback,
+        "reasons": list(reasons),
+        "route_before": result.route,
+        "route_after": route,
+        "text_before_len": len(str(result.draft_text or "")),
+        "text_after_len": len(cleaned),
+    }
+    return replace(
+        result,
+        route=route,
+        draft_text=cleaned,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        manager_checklist=tuple(dict.fromkeys(checklist)),
+        metadata=metadata,
+        error=result.error or ("output_sanitizer_fallback" if fallback else result.error),
+    )
+
+
+def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
+    raw = str(text or "")
+    if not raw:
+        return "", ()
+
+    value = raw
+    reasons: list[str] = []
+    marker_matches = list(OUTPUT_SANITIZER_CLIENT_TEXT_RE.finditer(value))
+    if marker_matches:
+        tail = value[marker_matches[-1].end() :].strip()
+        if tail:
+            value = tail
+            reasons.append("client_text_marker")
+
+    plan_context = bool(
+        OUTPUT_SANITIZER_META_LINE_RE.search(raw)
+        or re.search(r"^\s*(?:[A-CА-В]\)|[A-CА-В]\.)\s+", raw, flags=re.I | re.M)
+    )
+    value, placeholder_removed = OUTPUT_SANITIZER_PLACEHOLDER_RE.subn(" ", value)
+    if placeholder_removed:
+        reasons.append("topic_placeholder")
+
+    kept_lines: list[str] = []
+    for line in value.splitlines() or [value]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if OUTPUT_SANITIZER_MANAGER_TAG_INSTRUCTION_RE.search(stripped):
+            reasons.append("manager_tag_instruction")
+            continue
+        if OUTPUT_SANITIZER_META_LINE_RE.search(stripped):
+            reasons.append("meta_process_line")
+            continue
+        if plan_context and OUTPUT_SANITIZER_OPTION_LINE_RE.search(stripped):
+            reasons.append("plan_option_line")
+            continue
+        kept_lines.append(stripped)
+    value = "\n".join(kept_lines)
+
+    value, tag_removed = OUTPUT_SANITIZER_MANAGER_TAG_RE.subn("", value)
+    if tag_removed:
+        reasons.append("manager_tag")
+
+    stripped = strip_internal_service_markers(value)
+    if stripped != value:
+        value = stripped
+        reasons.append("internal_service_marker")
+
+    value = _normalize_output_sanitizer_text(value)
+    if _output_sanitizer_degenerate(value):
+        reasons.append("degenerate_output")
+        return "", tuple(dict.fromkeys(reasons))
+    if value != raw and not reasons:
+        reasons.append("normalized")
+    return value, tuple(dict.fromkeys(reasons))
+
+
+def _normalize_output_sanitizer_text(text: str) -> str:
+    value = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"\s+", " ", line).strip() for line in value.split("\n")]
+    value = "\n".join(line for line in lines if line)
+    value = re.sub(r"\s+([,.;:!?])", r"\1", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+
+def _output_sanitizer_degenerate(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return True
+    if OUTPUT_SANITIZER_META_LINE_RE.search(value) or OUTPUT_SANITIZER_MANAGER_TAG_RE.search(value):
+        return True
+    if re.fullmatch(r"(?:[A-CА-В][).]\s*[^.?!\n]{1,120}\s*)+", value, flags=re.I):
+        return True
+    if not re.search(r"[а-яёa-z]", value, flags=re.I):
+        return True
+    return False
 
 
 def _authoritative_gate_action(code: str) -> str:
@@ -8874,6 +9019,14 @@ def _truthy_value(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да"}
+
+
+def _output_sanitizer_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (OUTPUT_SANITIZER_ENV, "output_sanitizer_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(OUTPUT_SANITIZER_ENV))
 
 
 def _answer_quality_llm_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

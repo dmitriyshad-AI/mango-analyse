@@ -262,6 +262,8 @@ _CLAUDE_REASONING_ARGS: Mapping[str, tuple[str, ...]] = {
     "xhigh": ("--effort", "xhigh"),
     "max": ("--effort", "max"),
 }
+_CLAUDE_AUTH_MODES = frozenset({"subscription", "bare"})
+_EMPTY_CLAUDE_MCP_CONFIG = '{"mcpServers":{}}'
 
 
 def _claude_reasoning_args(level: str) -> list[str]:
@@ -280,11 +282,14 @@ def build_claude_print_command(
     claude_bin: str = "claude",
     model: str = _CLAUDE_DEFAULT_MODEL,
     reasoning_effort: str = "high",
+    auth_mode: str = "subscription",
 ) -> list[str]:
+    normalized_auth_mode = str(auth_mode or "subscription").strip().lower()
+    if normalized_auth_mode not in _CLAUDE_AUTH_MODES:
+        raise ValueError(f"Unsupported claude auth mode: {auth_mode!r}")
     cmd = [
         str(claude_bin or "claude").strip() or "claude",
         "-p",
-        "--bare",
         "--model",
         str(model or _CLAUDE_DEFAULT_MODEL).strip() or _CLAUDE_DEFAULT_MODEL,
         "--output-format",
@@ -293,12 +298,14 @@ def build_claude_print_command(
         "",
         "--strict-mcp-config",
         "--mcp-config",
-        "{}",
+        _EMPTY_CLAUDE_MCP_CONFIG,
         "--no-session-persistence",
         "--disable-slash-commands",
         "--permission-mode",
         "plan",
     ]
+    if normalized_auth_mode == "bare":
+        cmd.insert(2, "--bare")
     cmd.extend(_claude_reasoning_args(reasoning_effort))
     return cmd
 
@@ -311,17 +318,20 @@ class ClaudeJsonModel:
         reasoning_effort: str = "high",
         timeout_sec: int = 180,
         claude_bin: str = "claude",
+        auth_mode: str = "subscription",
     ) -> None:
         self.model = str(model or _CLAUDE_DEFAULT_MODEL).strip() or _CLAUDE_DEFAULT_MODEL
         self.reasoning_effort = reasoning_effort
         self.timeout_sec = timeout_sec
         self.claude_bin = str(claude_bin or "claude").strip() or "claude"
+        self.auth_mode = str(auth_mode or "subscription").strip().lower() or "subscription"
 
     def generate(self, prompt: str) -> Mapping[str, Any]:
         cmd = build_claude_print_command(
             claude_bin=self.claude_bin,
             model=self.model,
             reasoning_effort=self.reasoning_effort,
+            auth_mode=self.auth_mode,
         )
         proc = subprocess.run(
             cmd,
@@ -345,11 +355,13 @@ class ClaudeCliRunner:
         reasoning_effort: str = "high",
         timeout_sec: int = 180,
         claude_bin: str = "claude",
+        auth_mode: str = "subscription",
     ) -> None:
         self.model = str(model or _CLAUDE_DEFAULT_MODEL).strip() or _CLAUDE_DEFAULT_MODEL
         self.reasoning_effort = reasoning_effort
         self.timeout_sec = timeout_sec
         self.claude_bin = str(claude_bin or "claude").strip() or "claude"
+        self.auth_mode = str(auth_mode or "subscription").strip().lower() or "subscription"
         self.last_commands: list[list[str]] = []
 
     def __call__(
@@ -367,6 +379,7 @@ class ClaudeCliRunner:
             claude_bin=self.claude_bin,
             model=self.model,
             reasoning_effort=self.reasoning_effort,
+            auth_mode=self.auth_mode,
         )
         self.last_commands.append(cmd)
         proc = subprocess.run(
@@ -437,6 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--claude-model", default=_CLAUDE_DEFAULT_MODEL)
     parser.add_argument("--claude-bin", default="claude")
+    parser.add_argument("--claude-auth-mode", choices=tuple(sorted(_CLAUDE_AUTH_MODES)), default="subscription")
     parser.add_argument("--bot-reasoning", default="medium")
     parser.add_argument("--client-reasoning", default="medium")
     parser.add_argument("--judge-reasoning", default="high")
@@ -846,6 +860,7 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
             reasoning_effort=args.bot_reasoning,
             timeout_sec=args.timeout_sec,
             claude_bin=getattr(args, "claude_bin", "claude"),
+            auth_mode=getattr(args, "claude_auth_mode", "subscription"),
         )
     return CountingSubscriptionLlmDraftProvider(
         model=model,

@@ -419,11 +419,11 @@ def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
 
     cmd, kwargs = calls[0]
     assert cmd[:2] == ["claude", "-p"]
-    assert "--bare" in cmd
+    assert "--bare" not in cmd
     assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-6"
     assert cmd[cmd.index("--output-format") + 1] == "text"
     assert cmd[cmd.index("--tools") + 1] == ""
-    assert cmd[cmd.index("--mcp-config") + 1] == "{}"
+    assert cmd[cmd.index("--mcp-config") + 1] == '{"mcpServers":{}}'
     assert "--strict-mcp-config" in cmd
     assert "--no-session-persistence" in cmd
     assert "--disable-slash-commands" in cmd
@@ -433,12 +433,24 @@ def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
     assert kwargs["check"] is False
 
 
+def test_claude_print_command_can_use_bare_mode_for_api_helper() -> None:
+    cmd = sim.build_claude_print_command(
+        model="claude-sonnet-4-6",
+        reasoning_effort="xhigh",
+        auth_mode="bare",
+    )
+
+    assert cmd[:3] == ["claude", "-p", "--bare"]
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+
 def test_build_bot_provider_claude_mode_uses_claude_runner() -> None:
     args = argparse.Namespace(
         bot_mode="claude",
         model="gpt-5.5",
         claude_model="claude-sonnet-4-6",
         claude_bin="claude",
+        claude_auth_mode="subscription",
         bot_reasoning="high",
         timeout_sec=180,
         disable_bot_cache=True,

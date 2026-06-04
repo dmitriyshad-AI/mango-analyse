@@ -120,7 +120,7 @@ _FREE_NUMBER_TOKEN_RE = re.compile(
     r"\b\d{1,2}:\d{2}\b|"
     r"\b\d+(?:[.,]\d+)?\s*[-–]\s*\d+(?:[.,]\d+)?(?:\s*(?:км|километр(?:а|ов)?|минут(?:ы|у)?|час(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|процент(?:ов|а)?|%))?|"
     r"\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b|"
-    r"\b\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:к|тыс\.?|тысяч|₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|ак\.?\s*ч\.?|раз(?:а)?)?\b",
+    r"\b\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:к|тыс\.?|тысяч|₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|ак\.?\s*ч(?:\.|аса|асов)?|раз(?:а)?)?\b",
     re.I,
 )
 _FREE_NUMBER_UNCERTAINTY_MARKERS = (
@@ -144,9 +144,14 @@ _FREE_NUMBER_UNCERTAINTY_MARKERS = (
 _STRUCTURAL_NUMBER_OK = {str(number) for number in range(1, 12)}
 _YEAR_NUMBER_OK = {"2024", "2025", "2026", "2027", "2024/25", "2025/26", "2026/27"}
 _INDIVIDUAL_CHILD_RE = re.compile(
-    r"мой\s+(?:реб[её]нок|сын|дочь)|у\s+моего|потянет\s+ли|справится\s+ли|"
+    r"мой\s+(?:реб[её]нок|сын|дочь|дочк\w*)|моя\s+(?:дочь|дочк\w*)|"
+    r"у\s+моего|у\s+моей|потянет\s+ли|справится\s+ли|"
     r"отста[её]т|не\s+тянет|что\s+с\s+ним|что\s+с\s+ней|подойд[её]т\s+ли\s+(?:моему|нам)|"
     r"уровень\s+моего",
+    re.I,
+)
+_INDIVIDUAL_CHILD_CONFIDENT_RE = re.compile(
+    r"^\s*да\b|точно\s+(?:справится|потянет|подойд[её]т)|\b(?:справится|потянет|подойд[её]т)\b",
     re.I,
 )
 _UNCERTAINTY_MARKERS = (
@@ -2059,6 +2064,7 @@ def _quality_estimate_result_before_handoff(
         candidate = str(draft_fn(prompt) or "").strip()
     except Exception:
         candidate = ""
+    candidate = _ensure_estimate_uncertainty_marker(candidate, context=context)
     if not candidate:
         trace_event(context, "estimate_recover", {"applied": False, "reason": "empty_candidate", "source_reason": source_reason, "domain": domain})
         return None
@@ -2668,6 +2674,7 @@ def run_pipeline(
             estimate_draft = str(draft_fn(estimate_prompt) or "").strip()
         except Exception:
             estimate_draft = ""
+        estimate_draft = _ensure_estimate_uncertainty_marker(estimate_draft, context=context)
         trace_event(
             context,
             "estimate_compose",
@@ -3558,6 +3565,8 @@ def verify_output(
         findings.append(VerificationFinding("estimate_without_uncertainty_marker", "оценка без явного маркера неуверенности"))
     if gate_answer_mode == "estimate_allowed" and gate_estimate_domain == "general_advice":
         findings.extend(_general_advice_estimate_findings(text, client_message=client_message))
+    if not any(finding.code == "estimate_individual_child_advice" for finding in findings):
+        findings.extend(_individual_child_diagnosis_findings(text, client_message=client_message))
     safety = classify_answer_safety(client_message=client_message, context=context, route="bot_answer_self")
     if safety.p0_required and not p0_pre_gate(client_message, context=context):
         findings.append(VerificationFinding("p0_semantic_risk", "семантический P0 требует менеджера"))
@@ -3724,7 +3733,7 @@ def _normalize_free_number_token(token: str) -> set[str]:
     unitless = re.sub(
         r"(?:₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|"
         r"км|километр(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|"
-        r"ак\.?\s*ч\.?|раз(?:а)?|тыс\.?|тысяч|(?<=\d)\s*к\b)",
+        r"ак\.?\s*ч(?:\.|аса|асов)?|раз(?:а)?|тыс\.?|тысяч|(?<=\d)\s*к\b)",
         "",
         raw,
         flags=re.I,
@@ -3832,6 +3841,18 @@ def _has_free_uncertainty_marker_near(
     return any(marker in low for marker in _FREE_NUMBER_UNCERTAINTY_MARKERS)
 
 
+def _has_free_uncertainty_marker(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    return any(marker in low for marker in _FREE_NUMBER_UNCERTAINTY_MARKERS)
+
+
+def _ensure_estimate_uncertainty_marker(text: str, *, context: Mapping[str, Any] | None) -> str:
+    value = str(text or "").strip()
+    if not value or not free_number_gate_enabled(context) or _has_free_uncertainty_marker(value):
+        return value
+    return f"Ориентировочно: {value}"
+
+
 def _is_client_grade_number_context_at(text: str, *, start: int, end: int) -> bool:
     raw = str(text or "")
     window = raw[max(0, start - 16) : end + 24].casefold().replace("ё", "е")
@@ -3931,6 +3952,14 @@ def _general_advice_estimate_findings(text: str, *, client_message: str) -> list
     if _ESTIMATE_PRESSURE_RE.search(text) or _ESTIMATE_GUARANTEE_RE.search(text):
         findings.append(VerificationFinding("estimate_general_advice_risk", "совет содержит давление или обещание результата"))
     return findings
+
+
+def _individual_child_diagnosis_findings(text: str, *, client_message: str) -> list[VerificationFinding]:
+    if not _INDIVIDUAL_CHILD_RE.search(str(client_message or "")):
+        return []
+    if not _INDIVIDUAL_CHILD_CONFIDENT_RE.search(str(text or "")):
+        return []
+    return [VerificationFinding("estimate_individual_child_advice", "ответ уверенно оценивает конкретного ребёнка")]
 
 
 def _estimate_gate_payload_from_context(context: Mapping[str, Any] | None) -> Mapping[str, Any]:

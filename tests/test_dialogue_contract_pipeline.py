@@ -205,6 +205,36 @@ def test_q_partial_yield_travel_reaches_estimate_before_manager_handoff(monkeypa
     assert "20-30 минут" in result.draft_text
 
 
+def test_gpt_g2p1_travel_recover_adds_marker_before_number_gate(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    store = FactStore(catalog=("prices.current",), store={"unpk": {}})
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке от Лобни сколько ехать?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda _prompt: "На электричке дорога занимает 20-30 минут, зависит от маршрута.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_domain == "route_logistics"
+    assert "ориентировочно" in result.draft_text.casefold()
+    assert "20-30 минут" in result.draft_text
+
+
 def test_q_partial_yield_travel_does_not_estimate_product_price_with_travel_words(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
@@ -576,6 +606,40 @@ def test_level_a_free_number_gate_marker_does_not_save_product_numbers() -> None
         assert "unsupported_product_number" in {finding.code for finding in findings}, text
 
 
+def test_gpt_g2p1_product_duration_blocks_converted_number_but_allows_grounded_form() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько длится занятие",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="unpk",
+        fact_key_catalog=("lesson.duration",),
+    )
+    facts = {"lesson.duration": "Занятие длится 2 ак. часа."}
+
+    converted = verify_output(
+        "Обычно занятие длится 90 минут.",
+        facts=facts,
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько длится занятие?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+    grounded = verify_output(
+        "Занятие длится 2 ак. часа.",
+        facts=facts,
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько длится занятие?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in converted}
+    assert not grounded
+
+
 def test_level_a_free_number_gate_client_number_does_not_ground_product_claim() -> None:
     contract = parse_contract(
         {
@@ -730,6 +794,51 @@ def test_level_a_general_advice_gate_blocks_pressure_or_result_promise() -> None
 
     codes = {finding.code for finding in findings}
     assert "estimate_general_advice_risk" in codes or "p0_promise" in codes
+
+
+def test_gpt_g2p1_individual_child_diagnosis_blocks_confident_yes() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "справится ли дочка с курсом",
+            "answerability": "answer_self",
+            "answer_mode": "confirmed_only",
+        },
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+
+    findings = verify_output(
+        "Да, дочка справится с курсом.",
+        facts={},
+        active_brand="foton",
+        contract=contract,
+        client_message="справится ли дочка с курсом?",
+    )
+
+    assert "estimate_individual_child_advice" in {finding.code for finding in findings}
+
+
+def test_gpt_g2p1_individual_child_guard_keeps_general_advice() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "как понять уровень подготовки",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+
+    findings = verify_output(
+        "Обычно уровень лучше оценивать после знакомства с задачами.",
+        facts={},
+        active_brand="foton",
+        contract=contract,
+        client_message="как понять уровень подготовки?",
+    )
+
+    assert "estimate_individual_child_advice" not in {finding.code for finding in findings}
 
 
 def test_level_a_faithfulness_runs_for_estimate_allowed_non_numeric_claim(monkeypatch) -> None:
@@ -4703,7 +4812,7 @@ def test_q_partial_yield_estimate_does_not_override_p0(monkeypatch) -> None:
     assert "41 800" not in result.draft_text
 
 
-def test_q_partial_yield_estimate_without_uncertainty_marker_keeps_handoff(monkeypatch) -> None:
+def test_q_partial_yield_estimate_without_uncertainty_marker_gets_marker(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
 
@@ -4723,10 +4832,12 @@ def test_q_partial_yield_estimate_without_uncertainty_marker_keeps_handoff(monke
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert result.route == "draft_for_manager"
-    assert result.is_estimate is False
-    assert result.estimate_applied is False
-    assert "40–50 минут" not in result.draft_text
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_applied is True
+    assert "ориентировочно" in result.draft_text.casefold()
+    assert "40–50 минут" in result.draft_text
+    assert "41 800" not in result.draft_text
 
 
 def test_q_partial_yield_estimate_blocks_brand_leak(monkeypatch) -> None:

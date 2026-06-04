@@ -35,6 +35,7 @@ from mango_mvp.insights.sanitizers import sanitize_answer
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
+QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json"
@@ -86,6 +87,17 @@ _PRODUCT_NUMBER_CTX_RE = re.compile(
     r"₽|руб|р\.|%|скидк|рассрочк|долями|\b\d{1,2}:\d{2}\b|семестр|за\s+год|"
     r"стоит|цена|тариф|сколько\s+длится|длительност|урок|занят|январ|феврал|март|"
     r"апрел|ма[яй]|июн|июл|август|сентяб|октяб|ноябр|декабр|смен[аеуы]",
+    re.I,
+)
+_TRAVEL_ESTIMATE_TEXT_RE = re.compile(
+    r"дорог|ехать|доехать|добират|добраться|как\s+проехать|маршрут|пешком|электрич|метро|автобус|"
+    r"такси|станци|остановк|лобн|долгопрудн|пацаев|сретенк|красносельск",
+    re.I,
+)
+_TRAVEL_ESTIMATE_PRODUCT_BLOCK_RE = re.compile(
+    r"цена|стоимост|сколько\s+стоит|стоит\s+курс|скидк|рассрочк|долями|тариф|расписан|"
+    r"какие\s+дни|во\s+сколько|сколько\s+длится|длительност|дат[аеуы]|смен[аеуы]|лагер|"
+    r"формат|документ|справк|возврат|вернут|оплат|мест[ао]\b|запис",
     re.I,
 )
 _FREE_NUMBER_PRODUCT_CTX_RE = re.compile(
@@ -400,6 +412,9 @@ class DialogueContractPipelineResult:
     is_estimate: bool = False
     estimate_domain: str = "none"
     estimate_answer_mode: str = "confirmed_only"
+    partial_yield_applied: bool = False
+    partial_yield_fact_keys: tuple[str, ...] = ()
+    partial_yield_missing: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -426,6 +441,12 @@ def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(FREE_NUMBER_GATE_ENV) is not None:
         return _truthy(context.get(FREE_NUMBER_GATE_ENV))
     return _truthy(os.getenv(FREE_NUMBER_GATE_ENV))
+
+
+def quality_partial_yield_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(QUALITY_PARTIAL_YIELD_ENV) is not None:
+        return _truthy(context.get(QUALITY_PARTIAL_YIELD_ENV))
+    return _truthy(os.getenv(QUALITY_PARTIAL_YIELD_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -1122,6 +1143,41 @@ def _estimate_policy_context(
     }
 
 
+def _quality_partial_yield_travel_domain(
+    *,
+    contract: AnswerContract,
+    client_words: str,
+    retrieval: RetrievalResult,
+    context: Mapping[str, Any] | None,
+    free_number_gate: bool,
+) -> str:
+    if (
+        not quality_partial_yield_enabled(context)
+        or not free_number_gate
+        or retrieval.facts
+        or contract.is_p0
+    ):
+        return ""
+    combined = " ".join(
+        part
+        for part in (
+            client_words,
+            contract.current_question,
+            " ".join(item.text for item in contract.subquestions if item.text),
+        )
+        if part
+    )
+    if not _TRAVEL_ESTIMATE_TEXT_RE.search(combined):
+        return ""
+    product_guard_text = client_words or combined
+    if _TRAVEL_ESTIMATE_PRODUCT_BLOCK_RE.search(product_guard_text):
+        return ""
+    normalized = combined.casefold().replace("ё", "е")
+    if re.search(r"как\s+добраться|маршрут|проехать|электрич|метро|автобус|такси|станци|остановк", normalized, re.I):
+        return "route_logistics"
+    return "travel_time"
+
+
 def build_draft_prompt(
     *,
     conversation: Sequence[Mapping[str, str]],
@@ -1556,6 +1612,19 @@ def _cite_only_recover_result_before_handoff(
     original_findings: Sequence[VerificationFinding] = (),
     original_unsupported: Sequence[str] = (),
 ) -> DialogueContractPipelineResult | None:
+    partial = _partial_yield_result_before_handoff(
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        conversation=conversation,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        source_reason=fallback_reason,
+    )
+    if partial:
+        return partial
     recovered = _cite_only_recover_before_handoff(
         contract=contract,
         retrieval=retrieval,
@@ -1907,13 +1976,28 @@ def run_pipeline(
         )
     estimate_enabled = estimate_mode_enabled(context)
     free_number_enabled = free_number_gate_enabled(context)
-    estimate_policy = _estimate_policy_context(
+    estimate_policy = dict(_estimate_policy_context(
         contract=contract,
         retrieval=retrieval,
         enabled=estimate_enabled or free_number_enabled,
         free_number_gate=free_number_enabled,
         question_text=client_words or contract.current_question,
+    ))
+    partial_travel_domain = _quality_partial_yield_travel_domain(
+        contract=contract,
+        client_words=client_words,
+        retrieval=retrieval,
+        context=context,
+        free_number_gate=free_number_enabled,
     )
+    if partial_travel_domain:
+        estimate_policy = {
+            **estimate_policy,
+            "enabled": True,
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": partial_travel_domain,
+            "partial_yield_travel": True,
+        }
     contract = replace(
         contract,
         answer_mode=str(estimate_policy["answer_mode"]),
@@ -2009,6 +2093,19 @@ def run_pipeline(
                 },
             )
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        partial = _partial_yield_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            conversation=conversation,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+            source_reason="estimate_guard_failed",
+        )
+        if partial:
+            return partial
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -3573,6 +3670,216 @@ def _key_coverage_ok(contract: AnswerContract, retrieval: RetrievalResult) -> bo
         any(matched_key in retrieval.facts for matched_key in retrieval.matched_keys.get(required_key, ()))
         for required_key in needed
     )
+
+
+def _partial_yield_result_before_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    conversation: Sequence[Mapping[str, str]],
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str],
+    source_reason: str,
+) -> DialogueContractPipelineResult | None:
+    if not quality_partial_yield_enabled(context):
+        return None
+    if toggles.semantic_faithfulness and faithfulness_fn is None:
+        trace_event(
+            context,
+            "partial_yield",
+            {"applied": False, "reason": "faithfulness_fn_missing", "source_reason": source_reason},
+        )
+        return None
+    if _cite_only_recover_blocked(contract, client_words=client_words, context=context):
+        trace_event(
+            context,
+            "partial_yield",
+            {"applied": False, "reason": "blocked_risk", "source_reason": source_reason},
+        )
+        return None
+    candidate, fact_keys, missing_details = _partial_yield_candidate(contract, retrieval)
+    if not candidate:
+        trace_event(
+            context,
+            "partial_yield",
+            {"applied": False, "reason": "empty_candidate", "source_reason": source_reason},
+        )
+        return None
+    candidate_facts = _facts_with_derived_answer(retrieval.facts, candidate)
+    findings, unsupported, semantic_available = _partial_yield_full_check(
+        candidate,
+        facts=candidate_facts,
+        contract=contract,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+    if findings or unsupported or not semantic_available:
+        trace_event(
+            context,
+            "partial_yield",
+            {
+                "applied": False,
+                "reason": "hard_check_failed" if semantic_available else "semantic_unavailable",
+                "source_reason": source_reason,
+                "findings": [finding.code for finding in findings],
+                "unsupported": list(unsupported),
+            },
+        )
+        return None
+    final = _avoid_repeating_text(candidate, conversation=conversation, contract=contract, facts=retrieval.facts)
+    trace_event(
+        context,
+        "partial_yield",
+        {
+            "applied": True,
+            "source_reason": source_reason,
+            "fact_keys": list(fact_keys),
+            "missing": list(missing_details),
+        },
+    )
+    return DialogueContractPipelineResult(
+        draft_text=final,
+        route="bot_answer_self",
+        manager_only=False,
+        contract=contract,
+        facts=retrieval.facts,
+        missing=retrieval.missing,
+        fallback_reason=f"partial_yield_{source_reason}",
+        repaired=True,
+        recovery_candidate=final,
+        partial_yield_applied=True,
+        partial_yield_fact_keys=tuple(fact_keys),
+        partial_yield_missing=tuple(missing_details),
+    )
+
+
+def _partial_yield_full_check(
+    draft: str,
+    *,
+    facts: Mapping[str, str],
+    contract: AnswerContract,
+    client_words: str,
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str],
+) -> tuple[tuple[VerificationFinding, ...], tuple[str, ...], bool]:
+    findings = list(
+        verify_output(
+            draft,
+            facts=facts,
+            active_brand=contract.active_brand,
+            contract=contract,
+            denied_topics=contract.denied_topics,
+            forbidden_substitutions=contract.forbidden_substitutions,
+            client_message=client_words,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
+    )
+    findings.extend(_existence_yes_no_findings(draft, contract=contract, facts=facts))
+    findings.extend(_payment_method_findings(draft, contract=contract, facts=facts))
+    unsupported: tuple[str, ...] = ()
+    semantic_available = True
+    if toggles.semantic_faithfulness:
+        result = check_claim_faithfulness(
+            draft,
+            facts=facts,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            established_topic=_established_topic_from_context(context),
+        )
+        semantic_available = result.available
+        unsupported = _unsupported_claims_without_current_fact_support(
+            result.unsupported,
+            facts=facts,
+            contract=contract,
+        )
+    return tuple(findings), unsupported, semantic_available
+
+
+def _partial_yield_candidate(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    if contract.is_p0 or not retrieval.facts:
+        return "", (), ()
+    findings, missing_details = _partial_yield_findings_and_missing(contract, retrieval)
+    if not findings or not missing_details:
+        return "", (), ()
+    grounded = _coverage_cite_only_answer_from_findings(findings)
+    if not grounded:
+        return "", (), ()
+    missing_text = _partial_yield_missing_text(missing_details)
+    text = f"{grounded.rstrip(' .')}. {missing_text} менеджер сверит точный ответ; я передам ему этот вопрос."
+    fact_keys = tuple(dict.fromkeys(item.fact_key for item in findings if item.fact_key))
+    return text, fact_keys, tuple(missing_details)
+
+
+def _partial_yield_findings_and_missing(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+) -> tuple[tuple[_CoverageFinding, ...], tuple[str, ...]]:
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    findings: list[_CoverageFinding] = []
+    missing: list[str] = []
+    for subquestion in subquestions:
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys:
+            if subquestion.answerable != "self":
+                missing.append(_client_safe_question_detail(subquestion.text or contract.current_question))
+            continue
+        if subquestion.answerable != "self":
+            missing.append(_client_safe_question_detail(subquestion.text or contract.current_question))
+            continue
+        if not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            missing.append(_client_safe_question_detail(subquestion.text or contract.current_question))
+            continue
+        has_fact = False
+        for required_key in keys:
+            matched = [key for key in retrieval.matched_keys.get(required_key, ()) if key in retrieval.facts]
+            if not matched:
+                missing.append(_client_safe_question_detail(subquestion.text or required_key))
+                continue
+            has_fact = True
+            first_key = matched[0]
+            findings.append(
+                _CoverageFinding(
+                    subquestion=subquestion.text or contract.current_question,
+                    required_key=required_key,
+                    fact_key=first_key,
+                    fact_text=str(retrieval.facts[first_key]),
+                )
+            )
+        if not has_fact:
+            missing.append(_client_safe_question_detail(subquestion.text or contract.current_question))
+    if not missing and retrieval.missing:
+        missing.extend(_client_safe_question_detail(item) for item in retrieval.missing)
+    clean_missing = tuple(dict.fromkeys(item for item in missing if item))
+    return tuple(findings), clean_missing
+
+
+def _partial_yield_missing_text(missing_details: Sequence[str]) -> str:
+    details = tuple(dict.fromkeys(_client_safe_question_detail(item) for item in missing_details if item))
+    if not details:
+        return "По остальной части вопроса"
+    if len(details) == 1:
+        return f"По части «{details[0]}»"
+    return "По остальным частям вопроса"
 
 
 def _composition_answer(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:

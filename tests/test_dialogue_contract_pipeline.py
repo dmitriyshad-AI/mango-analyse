@@ -174,6 +174,65 @@ def test_level_a_free_number_gate_allows_travel_even_when_planner_says_pricing(m
     assert "₽" not in result.draft_text
 
 
+def test_q_partial_yield_travel_reaches_estimate_before_manager_handoff(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    store = FactStore(catalog=("prices.current",), store={"unpk": {}})
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке сколько от Лобни?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно на электричке дорога занимает около 20-30 минут, зависит от маршрута.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_domain == "route_logistics"
+    assert "ориентировочно" in result.draft_text.casefold()
+    assert "20-30 минут" in result.draft_text
+
+
+def test_q_partial_yield_travel_does_not_estimate_product_price_with_travel_words(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    store = FactStore(catalog=("prices.current",), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит курс, если дорога далеко?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит курс",
+                "answerability": "manager_only",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "travel_time",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно курс стоит 30 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert "30 000" not in result.draft_text
+    assert "₽" not in result.draft_text
+
+
 def test_level_a_free_number_estimate_prompt_requires_markers_and_blocks_product_numbers() -> None:
     contract = parse_contract(
         {
@@ -3985,6 +4044,245 @@ def test_p9_self_subquestion_with_fact_is_autonomous_without_global_override() -
     assert result.route == "bot_answer_self"
     assert "29 750" in result.draft_text
     assert result.missing == ("schedule.exact_day",)
+
+
+def test_q_partial_yield_flag_off_keeps_existing_cite_only_recovery(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_PARTIAL_YIELD", raising=False)
+    store = FactStore(
+        catalog=("price.online", "schedule.exact_day"),
+        store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и в какой день группа?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и точный день группы",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "точный день группы", "answerable": "self", "needed_fact_keys": ["schedule.exact_day"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "cite_only_recover"
+    assert result.partial_yield_applied is False
+    assert "29 750" in result.draft_text
+    assert "точный день" not in result.draft_text.casefold()
+
+
+def test_q_partial_yield_answers_grounded_part_and_defers_missing(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("price.online", "schedule.exact_day"),
+        store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и в какой день группа?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и точный день группы",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "точный день группы", "answerable": "self", "needed_fact_keys": ["schedule.exact_day"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "partial_yield_cite_only_recover"
+    assert result.partial_yield_applied is True
+    assert result.partial_yield_fact_keys == ("price.online",)
+    assert result.partial_yield_missing == ("точный день группы",)
+    assert "29 750" in result.draft_text
+    assert "точный день группы" in result.draft_text.casefold()
+    assert "менеджер" in result.draft_text.casefold()
+
+
+def test_q_partial_yield_does_not_override_p0_even_when_fact_exists(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+
+    result = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги; и сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги и цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert result.partial_yield_applied is False
+    assert "29 750" not in result.draft_text
+
+
+def test_q_partial_yield_does_not_substitute_refund_with_neighbor_fact(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("price.online",),
+        store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("если передумаем до занятий, как возврат?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "правила возврата до занятий",
+                "needed_fact_keys": ["price.online"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "refund_policy_manager_only"
+    assert result.partial_yield_applied is False
+    assert "29 750" not in result.draft_text
+
+
+def test_q_partial_yield_blocks_foreign_brand_fact_candidate(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("price.online", "schedule.exact_day"),
+        store={"foton": {"price.online": "УНПК онлайн: семестр — 29 750 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и в какой день группа?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и точный день группы",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "точный день группы", "answerable": "self", "needed_fact_keys": ["schedule.exact_day"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.partial_yield_applied is False
+    assert "УНПК онлайн" not in result.draft_text
+
+
+def test_q_partial_yield_with_no_grounded_fact_keeps_handoff(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(catalog=("price.online",), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн стоит 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "empty_facts_no_fabrication"
+    assert result.partial_yield_applied is False
+    assert "29 750" not in result.draft_text
+
+
+def test_q_partial_yield_invariant_suite_with_quality_flags_on(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    p0_store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+    p0 = run_pipeline(
+        conversation=_conv("верните деньги, я оплатил; и сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=p0_store,
+        understand_fn=_understanding({"current_question": "цена онлайн", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}),
+        draft_fn=lambda _prompt: "Онлайн: семестр — 29 750 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert p0.route == "manager_only"
+    assert "29 750" not in p0.draft_text
+
+    brand_store = FactStore(
+        catalog=("price.online", "schedule.exact_day"),
+        store={"foton": {"price.online": "УНПК онлайн: семестр — 29 750 ₽."}},
+    )
+    brand = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и в какой день группа?"),
+        active_brand="foton",
+        fact_store=brand_store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и точный день группы",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "точный день группы", "answerable": "self", "needed_fact_keys": ["schedule.exact_day"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert brand.partial_yield_applied is False
+    assert "УНПК онлайн" not in brand.draft_text
+
+    price = run_pipeline(
+        conversation=_conv("ну хоть примерно сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=FactStore(catalog=("prices.current",), store={"foton": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "примерная цена онлайн",
+                "answerability": "answer_self",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно онлайн стоит 30 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    assert price.route == "draft_for_manager"
+    assert "30 000" not in price.draft_text
 
 
 def test_manager_only_refund_does_not_substitute_course_rules_fact() -> None:

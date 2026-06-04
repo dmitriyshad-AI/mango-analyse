@@ -1,0 +1,61 @@
+# Test Output
+
+## Targeted partial-yield / Level A slice
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py -k 'q_partial_yield or level_a_free_number or level_a_estimate or product_price_cannot or price_words_stay_product or lesson_duration_is_product or p0_overrides_estimate'
+```
+
+Result:
+
+```text
+27 passed, 169 deselected in 0.72s
+```
+
+## Full dialogue contract pipeline tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+```
+
+Result:
+
+```text
+196 passed in 1.85s
+```
+
+## Subscription draft provider focused slice
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'dialogue_contract or recovery_candidate or a2_recovery or p0 or brand'
+```
+
+Result:
+
+```text
+51 passed, 228 deselected in 1.49s
+```
+
+## Full pytest
+
+Command:
+
+```bash
+KB_RELEASE_V3_DIR='/Users/dmitrijfabarisov/Projects/Mango analyse.phase12/product_data/knowledge_base/kb_release_20260530_v6_4_team_answers' PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/
+```
+
+Result:
+
+```text
+2498 passed, 5 skipped, 1 warning in 41.17s
+```
+
+Note:
+
+Without `KB_RELEASE_V3_DIR`, this worktree lacks the v6.4 release artifact expected by KB import tests. That is an infrastructure/artifact issue in the worktree, not a code regression in this block.

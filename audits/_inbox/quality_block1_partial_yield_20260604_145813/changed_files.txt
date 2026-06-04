@@ -1,0 +1,9 @@
+src/mango_mvp/channels/dialogue_contract_pipeline.py
+src/mango_mvp/channels/subscription_llm.py
+tests/test_dialogue_contract_pipeline.py
+audits/_inbox/quality_block1_partial_yield_20260604_145813/implementation_notes.md
+audits/_inbox/quality_block1_partial_yield_20260604_145813/changed_files.txt
+audits/_inbox/quality_block1_partial_yield_20260604_145813/test_output.txt
+audits/_inbox/quality_block1_partial_yield_20260604_145813/semantic_review.md
+audits/_inbox/quality_block1_partial_yield_20260604_145813/risk_review.md
+audits/_inbox/quality_block1_partial_yield_20260604_145813/backward_compatibility.md

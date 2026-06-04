@@ -1915,6 +1915,9 @@ class SubscriptionLlmDraftProvider:
                     "fallback_reason": pipeline_result.fallback_reason,
                     "recovery_candidate": pipeline_result.recovery_candidate,
                     "recovery_candidate_validated": bool(pipeline_result.recovery_candidate),
+                    "partial_yield_applied": bool(getattr(pipeline_result, "partial_yield_applied", False)),
+                    "partial_yield_fact_keys": list(getattr(pipeline_result, "partial_yield_fact_keys", ())),
+                    "partial_yield_missing": list(getattr(pipeline_result, "partial_yield_missing", ())),
                     "estimate": {
                         "is_estimate": bool(pipeline_result.is_estimate),
                         "answer_mode": pipeline_result.estimate_answer_mode,
@@ -8323,6 +8326,8 @@ def _dialogue_contract_safety_flags(pipeline_result: Any) -> list[str]:
         flags.append("dialogue_contract_safety_repair_applied")
     if getattr(pipeline_result, "is_estimate", False):
         flags.append("dialogue_contract_estimate_answer")
+    if getattr(pipeline_result, "partial_yield_applied", False):
+        flags.append("dialogue_contract_partial_yield_applied")
     return flags
 
 

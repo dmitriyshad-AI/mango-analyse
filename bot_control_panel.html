@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mango Bot — пульт управления</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#161c24; --panel2:#1d2530; --line:#2a3340;
+    --txt:#e6edf3; --muted:#8b98a8; --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444;
+    --unpk:#6366f1; --foton:#f97316;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);height:100vh;overflow:hidden}
+  .app{display:grid;grid-template-columns:210px 1fr;grid-template-rows:56px 1fr;height:100vh}
+  header{grid-column:1/3;display:flex;align-items:center;gap:16px;padding:0 18px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header .title{font-weight:700;font-size:15px}
+  header .mode{padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;background:var(--panel2);border:1px solid var(--line)}
+  header .spacer{flex:1}
+  .stop{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .stopbtn{cursor:pointer;border:0;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;color:#fff;background:var(--bad)}
+  .stopbtn.off{background:var(--panel2);color:var(--muted);border:1px solid var(--line)}
+  nav{background:var(--panel);border-right:1px solid var(--line);padding:12px 8px;display:flex;flex-direction:column;gap:4px}
+  nav button{text-align:left;background:none;border:0;color:var(--muted);padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px}
+  nav button.active{background:var(--panel2);color:var(--txt);font-weight:600}
+  main{overflow:auto;padding:22px 26px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px}
+  .card h3{margin:0 0 12px;font-size:14px}
+  .field{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+  .field:last-child{border-bottom:0}
+  .field label{color:var(--muted)}
+  select,input[type=text],input[type=number],input[type=time]{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:6px 9px;font-size:13px}
+  .toggle{position:relative;width:44px;height:24px;background:var(--panel2);border:1px solid var(--line);border-radius:20px;cursor:pointer;transition:.15s}
+  .toggle.on{background:var(--accent)}
+  .toggle::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.15s}
+  .toggle.on::after{left:23px}
+  .seg{display:flex;gap:6px}
+  .seg button{background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:6px 12px;border-radius:7px;cursor:pointer;font-size:13px}
+  .seg button.sel{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .kpi{flex:1;min-width:130px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .kpi .v{font-size:24px;font-weight:700}
+  .kpi .l{color:var(--muted);font-size:12px;margin-top:2px}
+  .btns{display:flex;gap:10px;margin-top:14px}
+  .btns button{cursor:pointer;border:0;border-radius:8px;padding:9px 16px;font-weight:600;font-size:13px}
+  .b-primary{background:var(--accent);color:#fff}
+  .b-ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line)!important}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  .tag{font-size:11px;padding:2px 7px;border-radius:5px;font-weight:600}
+  .t-send{background:rgba(34,197,94,.15);color:var(--ok)} .t-hold{background:rgba(245,158,11,.15);color:var(--warn)} .t-mgr{background:rgba(239,68,68,.15);color:var(--bad)}
+  .muted{color:var(--muted)} .hint{color:var(--muted);font-size:12.5px;margin-top:8px}
+  .banner{background:rgba(245,158,11,.12);border:1px solid var(--warn);color:#fde6bd;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:13px}
+  .hidden{display:none}
+  input[type=search]{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 12px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <span class="title">🤖 Mango Bot — пульт управления</span>
+    <span class="mode" id="modeBadge">режим: —</span>
+    <span class="spacer"></span>
+    <span class="muted" id="cfgState">конфиг не загружен</span>
+    <div class="stop">
+      <span class="muted">Стоп-кран</span>
+      <button class="stopbtn off" id="stopBtn">ВЫКЛ</button>
+    </div>
+  </header>
+  <nav>
+    <button data-tab="control" class="active">Управление</button>
+    <button data-tab="monitor">Мониторинг</button>
+    <button data-tab="kb">База знаний</button>
+    <button data-tab="log">Журнал</button>
+    <button data-tab="help">Как это работает</button>
+  </nav>
+  <main>
+    <div class="banner" id="depBanner">Пульт редактирует <b>bot_control.json</b> и читает <b>bot_status.json</b>. «Реальное» управление включится, когда Кодекс добавит чтение/запись этих файлов в рантайм бота (см. вкладку «Как это работает»).</div>
+
+    <!-- УПРАВЛЕНИЕ -->
+    <section id="tab-control">
+      <div class="card">
+        <h3>Режим работы</h3>
+        <div class="field"><label>Текущий режим</label>
+          <div class="seg" id="modeSeg">
+            <button data-v="off">Выкл</button><button data-v="draft">Черновик</button>
+            <button data-v="shadow">Shadow</button><button data-v="live_narrow">Live (узкий)</button>
+          </div>
+        </div>
+        <div class="hint">Черновик — менеджер проверяет всё. Shadow — бот решает, но не отправляет (валидация). Live — автоотправка по GATE.</div>
+      </div>
+
+      <div class="card">
+        <h3>Боты по брендам</h3>
+        <div class="field"><label>УНПК (kmipt.ru)</label><div class="toggle" data-path="brands.unpk"></div></div>
+        <div class="field"><label>Фотон (cdpofoton.ru)</label><div class="toggle" data-path="brands.foton"></div></div>
+        <div class="hint">active_brand задаётся каналом и не угадывается. Бренды не смешиваются.</div>
+      </div>
+
+      <div class="card">
+        <h3>Пайплайн ответа</h3>
+        <div class="field"><label>Контрактный пайплайн (v2)</label><div class="toggle" data-path="pipeline.dialogue_contract_pipeline"></div></div>
+        <div class="field"><label>Тёплое переписывание (X2)</label><div class="toggle" data-path="pipeline.x2_rewrite"></div></div>
+        <div class="field"><label>Режим X2</label><select data-path="pipeline.x2_mode"><option>all_eligible</option><option>conservative</option><option>off</option></select></div>
+        <div class="field"><label>Reasoning бота</label><select data-path="pipeline.bot_reasoning"><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></div>
+        <div class="field"><label>Reasoning судьи</label><select data-path="pipeline.judge_reasoning"><option>low</option><option>medium</option><option>high</option></select></div>
+      </div>
+
+      <div class="card">
+        <h3>Ночная рекламная воронка</h3>
+        <div class="field"><label>Включена</label><div class="toggle" data-path="night.enabled"></div></div>
+        <div class="field"><label>Ночь с / до</label><span><input type="time" data-path="night.hours_start"> — <input type="time" data-path="night.hours_end"></span></div>
+        <div class="field"><label>Лимит диалогов за ночь</label><input type="number" min="0" data-path="night.max_dialogs"></div>
+        <div class="field"><label>Источники для LIVE (через запятую)</label><input type="text" data-path="night.allowed_sources" placeholder="напр. yd_search, rsya_retarget"></div>
+        <div class="field"><label>Темы авто-ответа</label><input type="text" data-path="night.auto_send_topics" placeholder="price, format, address, schedule"></div>
+        <div class="hint">P0 (претензия/жалоба/спор) и любое спорное — НИКОГДА не авто, всегда холд → менеджер утром.</div>
+      </div>
+
+      <div class="btns">
+        <button class="b-primary" id="loadBtn">Загрузить bot_control.json</button>
+        <button class="b-primary" id="saveBtn">Сохранить</button>
+        <button class="b-ghost" id="downloadBtn">Скачать копию</button>
+        <button class="b-ghost" id="newBtn">Шаблон по умолчанию</button>
+      </div>
+      <div class="hint" id="saveHint"></div>
+    </section>
+
+    <!-- МОНИТОРИНГ -->
+    <section id="tab-monitor" class="hidden">
+      <div class="row">
+        <div class="kpi"><div class="v" id="k-mode">—</div><div class="l">Режим</div></div>
+        <div class="kpi"><div class="v" id="k-hard">—</div><div class="l">hard-gate (сегодня)</div></div>
+        <div class="kpi"><div class="v" id="k-false">—</div><div class="l">false_handoff</div></div>
+        <div class="kpi"><div class="v" id="k-oh">—</div><div class="l">over_handoff / ход</div></div>
+        <div class="kpi"><div class="v" id="k-tone">—</div><div class="l">тон</div></div>
+      </div>
+      <div class="row">
+        <div class="kpi"><div class="v" id="k-send">—</div><div class="l">авто-отправлено</div></div>
+        <div class="kpi"><div class="v" id="k-hold">—</div><div class="l">холд</div></div>
+        <div class="kpi"><div class="v" id="k-mgr">—</div><div class="l">в менеджера</div></div>
+        <div class="kpi"><div class="v" id="k-leads">—</div><div class="l">лиды захвачены</div></div>
+      </div>
+      <div class="card">
+        <h3>Последние решения GATE</h3>
+        <table><thead><tr><th>Время</th><th>Бренд</th><th>Вопрос</th><th>Решение</th><th>Причина</th></tr></thead><tbody id="decBody"><tr><td colspan="5" class="muted">Загрузите bot_status.json…</td></tr></tbody></table>
+      </div>
+      <div class="btns"><button class="b-primary" id="statusBtn">Загрузить bot_status.json</button><button class="b-ghost" id="statusReload">Обновить</button></div>
+    </section>
+
+    <!-- БАЗА ЗНАНИЙ -->
+    <section id="tab-kb" class="hidden">
+      <div class="card">
+        <h3>Просмотр client-safe фактов</h3>
+        <input type="search" id="kbSearch" placeholder="поиск по тексту факта…">
+        <table><thead><tr><th>Бренд</th><th>Ключ</th><th>Текст</th></tr></thead><tbody id="kbBody"><tr><td colspan="3" class="muted">Загрузите client_safe_facts_*.jsonl…</td></tr></tbody></table>
+        <div class="btns"><button class="b-primary" id="kbBtn">Загрузить факты (.jsonl)</button></div>
+        <div class="hint">Только просмотр. Правка фактов — через сборщик KB v6.1 (Кодекс), не отсюда.</div>
+      </div>
+    </section>
+
+    <!-- ЖУРНАЛ -->
+    <section id="tab-log" class="hidden">
+      <div class="card">
+        <h3>Журнал диалогов</h3>
+        <input type="search" id="logSearch" placeholder="поиск…">
+        <table><thead><tr><th>Диалог</th><th>Ход</th><th>Клиент</th><th>Бот</th><th>Маршрут</th></tr></thead><tbody id="logBody"><tr><td colspan="5" class="muted">Загрузите dynamic_dialog_transcripts.jsonl…</td></tr></tbody></table>
+        <div class="btns"><button class="b-primary" id="logBtn">Загрузить транскрипты (.jsonl)</button></div>
+      </div>
+    </section>
+
+    <!-- ПОМОЩЬ -->
+    <section id="tab-help" class="hidden">
+      <div class="card">
+        <h3>Как это работает</h3>
+        <p>Пульт — один HTML-файл, открывается как приложение, без сервера и портов. Он управляет ботом через два файла-контракта в проекте:</p>
+        <p><b>bot_control.json</b> — пульт пишет (режим, флаги, ночная воронка, стоп-кран). Бот должен читать его на каждом цикле — это и есть управление в реальном времени.</p>
+        <p><b>bot_status.json</b> — бот пишет (метрики, последние решения GATE, лиды). Пульт показывает на вкладке «Мониторинг».</p>
+        <p class="muted">Чтобы управление реально влияло на бота, Кодексу нужно добавить в рантайм: чтение bot_control.json (+ горячее применение флагов и стоп-крана) и запись bot_status.json. До этого пульт работает как редактор контракта и дашборд по файлам прогонов.</p>
+        <p class="muted">В Chrome/Edge сохранение пишет прямо в выбранный файл (File System Access API). В других браузерах — кнопка «Скачать копию».</p>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+const DEFAULT={mode:"draft",brands:{unpk:true,foton:false},
+ pipeline:{dialogue_contract_pipeline:true,x2_rewrite:true,x2_mode:"all_eligible",bot_reasoning:"high",judge_reasoning:"medium"},
+ night:{enabled:false,hours_start:"20:00",hours_end:"09:00",max_dialogs:50,allowed_sources:"",auto_send_topics:"price, format, address, schedule"},
+ stop_crane:{engaged:false,reason:""}};
+let cfg=JSON.parse(JSON.stringify(DEFAULT)), fileHandle=null;
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
+const get=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
+const set=(o,p,v)=>{const ks=p.split('.');const last=ks.pop();let t=o;ks.forEach(k=>t=t[k]=t[k]||{});t[last]=v;};
+
+function render(){
+  $('#modeBadge').textContent='режим: '+cfg.mode;
+  $$('#modeSeg button').forEach(b=>b.classList.toggle('sel',b.dataset.v===cfg.mode));
+  $$('.toggle[data-path]').forEach(t=>t.classList.toggle('on',!!get(cfg,t.dataset.path)));
+  $$('[data-path]').forEach(el=>{ if(el.tagName==='SELECT'||el.type==='text'||el.type==='number'||el.type==='time'){let v=get(cfg,el.dataset.path); if(Array.isArray(v))v=v.join(', '); if(v!=null)el.value=v;}});
+  const eng=cfg.stop_crane.engaged; $('#stopBtn').textContent=eng?'ВКЛЮЧЕН':'ВЫКЛ'; $('#stopBtn').classList.toggle('off',!eng);
+}
+// bindings
+$$('#modeSeg button').forEach(b=>b.onclick=()=>{cfg.mode=b.dataset.v;render();});
+$$('.toggle[data-path]').forEach(t=>t.onclick=()=>{set(cfg,t.dataset.path,!get(cfg,t.dataset.path));render();});
+$$('[data-path]').forEach(el=>{ if(el.tagName==='SELECT'||el.type==='text'||el.type==='number'||el.type==='time'){
+  el.onchange=()=>{let v=el.value; if(el.type==='number')v=+v; set(cfg,el.dataset.path,v);};}});
+$('#stopBtn').onclick=()=>{cfg.stop_crane.engaged=!cfg.stop_crane.engaged; if(cfg.stop_crane.engaged&&!cfg.stop_crane.reason)cfg.stop_crane.reason='ручной стоп с пульта'; render();};
+// nav
+$$('nav button').forEach(b=>b.onclick=()=>{$$('nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  ['control','monitor','kb','log','help'].forEach(t=>$('#tab-'+t).classList.toggle('hidden',t!==b.dataset.tab));});
+// config file
+async function loadFile(){ try{
+  if(window.showOpenFilePicker){const[h]=await showOpenFilePicker({types:[{accept:{'application/json':['.json']}}]});fileHandle=h;const f=await h.getFile();cfg=Object.assign(JSON.parse(JSON.stringify(DEFAULT)),JSON.parse(await f.text()));$('#cfgState').textContent='загружен: '+h.name;render();}
+  else{const i=document.createElement('input');i.type='file';i.accept='.json';i.onchange=async()=>{cfg=Object.assign(JSON.parse(JSON.stringify(DEFAULT)),JSON.parse(await i.files[0].text()));$('#cfgState').textContent='загружен (только чтение)';render();};i.click();}
+ }catch(e){} }
+async function saveFile(){ const data=JSON.stringify(cfg,null,2);
+  try{ if(!fileHandle&&window.showSaveFilePicker){fileHandle=await showSaveFilePicker({suggestedName:'bot_control.json',types:[{accept:{'application/json':['.json']}}]});}
+    if(fileHandle){const w=await fileHandle.createWritable();await w.write(data);await w.close();$('#saveHint').textContent='Сохранено в '+fileHandle.name+' · '+new Date().toLocaleTimeString();return;} }catch(e){}
+  download(data); $('#saveHint').textContent='Браузер без записи в файл — скачана копия, положи рядом с ботом.'; }
+function download(data){const b=new Blob([data],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='bot_control.json';a.click();}
+$('#loadBtn').onclick=loadFile; $('#saveBtn').onclick=saveFile;
+$('#downloadBtn').onclick=()=>download(JSON.stringify(cfg,null,2));
+$('#newBtn').onclick=()=>{cfg=JSON.parse(JSON.stringify(DEFAULT));$('#cfgState').textContent='шаблон по умолчанию';render();};
+// monitor
+async function pickJsonl(){ if(window.showOpenFilePicker){const[h]=await showOpenFilePicker();const f=await h.getFile();return await f.text();}
+  return await new Promise(r=>{const i=document.createElement('input');i.type='file';i.onchange=async()=>r(await i.files[0].text());i.click();}); }
+let statusHandle=null;
+$('#statusBtn').onclick=async()=>{try{const t=await pickJsonl();applyStatus(JSON.parse(t));}catch(e){}};
+$('#statusReload').onclick=()=>$('#statusBtn').click();
+function applyStatus(s){const g=(id,v)=>$(id).textContent=(v==null?'—':v);
+  g('#k-mode',s.mode);g('#k-hard',s.hard_gate_failures);g('#k-false',s.false_handoff_count);g('#k-oh',s.over_handoff_turn_rate);g('#k-tone',s.avg_tone);
+  g('#k-send',s.auto_sent);g('#k-hold',s.held);g('#k-mgr',s.to_manager);g('#k-leads',s.leads_captured);
+  const tb=$('#decBody');tb.innerHTML='';(s.recent_decisions||[]).slice(0,30).forEach(d=>{const cls=d.decision==='AUTO_SEND'?'t-send':d.decision==='SAFE_HOLD'?'t-hold':'t-mgr';
+    tb.innerHTML+=`<tr><td class="muted">${d.time||''}</td><td>${d.brand||''}</td><td>${(d.question||'').slice(0,60)}</td><td><span class="tag ${cls}">${d.decision||''}</span></td><td class="muted">${d.reason||''}</td></tr>`;});
+  if(!(s.recent_decisions||[]).length)$('#decBody').innerHTML='<tr><td colspan="5" class="muted">нет решений</td></tr>';}
+// kb viewer
+let kbRows=[];
+$('#kbBtn').onclick=async()=>{try{const t=await pickJsonl();kbRows=t.split('\n').filter(Boolean).map(l=>{try{return JSON.parse(l)}catch(e){return null}}).filter(Boolean);renderKb('');}catch(e){}};
+$('#kbSearch').oninput=e=>renderKb(e.target.value.toLowerCase());
+function renderKb(q){const b=$('#kbBody');b.innerHTML='';kbRows.filter(r=>!q||JSON.stringify(r).toLowerCase().includes(q)).slice(0,200).forEach(r=>{
+  b.innerHTML+=`<tr><td>${r.brand||r.active_brand||''}</td><td class="muted">${(r.fact_id||r.key||'').slice(0,40)}</td><td>${(r.client_safe_text||r.text||'').slice(0,140)}</td></tr>`;});
+  if(!b.innerHTML)b.innerHTML='<tr><td colspan="3" class="muted">ничего не найдено</td></tr>';}
+// log viewer
+let logRows=[];
+$('#logBtn').onclick=async()=>{try{const t=await pickJsonl();logRows=[];t.split('\n').filter(Boolean).forEach(l=>{try{const d=JSON.parse(l);(d.turns||[]).forEach(tn=>logRows.push({id:d.dialog_id,turn:tn.turn,c:tn.client_message,b:tn.bot_text,r:tn.bot_route}))}catch(e){}});renderLog('');}catch(e){}};
+$('#logSearch').oninput=e=>renderLog(e.target.value.toLowerCase());
+function renderLog(q){const b=$('#logBody');b.innerHTML='';logRows.filter(r=>!q||JSON.stringify(r).toLowerCase().includes(q)).slice(0,300).forEach(r=>{
+  b.innerHTML+=`<tr><td class="muted">${(r.id||'').slice(0,30)}</td><td>${r.turn||''}</td><td>${(r.c||'').slice(0,55)}</td><td>${(r.b||'').slice(0,70)}</td><td class="muted">${r.r||''}</td></tr>`;});
+  if(!b.innerHTML)b.innerHTML='<tr><td colspan="5" class="muted">пусто</td></tr>';}
+render();
+</script>
+</body>
+</html>

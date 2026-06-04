@@ -1,0 +1,20 @@
+{
+  "mode": "draft",
+  "brands": { "unpk": true, "foton": false },
+  "pipeline": {
+    "dialogue_contract_pipeline": true,
+    "x2_rewrite": true,
+    "x2_mode": "all_eligible",
+    "bot_reasoning": "high",
+    "judge_reasoning": "medium"
+  },
+  "night": {
+    "enabled": false,
+    "hours_start": "20:00",
+    "hours_end": "09:00",
+    "max_dialogs": 50,
+    "allowed_sources": "",
+    "auto_send_topics": "price, format, address, schedule"
+  },
+  "stop_crane": { "engaged": false, "reason": "" }
+}

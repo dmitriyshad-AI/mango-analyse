@@ -40,6 +40,7 @@ QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
 QUALITY_COMPOSITE_ENV = "TELEGRAM_Q_COMPOSITE"
 QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
 QUALITY_CLARIFY_SCOPE_ENV = "TELEGRAM_Q_CLARIFY_SCOPE"
+QUALITY_USEFUL_HANDOFF_ENV = "TELEGRAM_Q_USEFUL_HANDOFF"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json"
@@ -481,6 +482,12 @@ def quality_clarify_scope_enabled(context: Mapping[str, Any] | None = None) -> b
     if isinstance(context, MappingABC) and context.get(QUALITY_CLARIFY_SCOPE_ENV) is not None:
         return _truthy(context.get(QUALITY_CLARIFY_SCOPE_ENV))
     return _truthy(os.getenv(QUALITY_CLARIFY_SCOPE_ENV))
+
+
+def quality_useful_handoff_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(QUALITY_USEFUL_HANDOFF_ENV) is not None:
+        return _truthy(context.get(QUALITY_USEFUL_HANDOFF_ENV))
+    return _truthy(os.getenv(QUALITY_USEFUL_HANDOFF_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -5435,6 +5442,9 @@ def _safe_fallback_text(
     if _asks_refund_policy(contract):
         return traced(_refund_policy_handoff_text(), "refund_policy_handoff")
     detail = _client_safe_question_detail(contract.current_question)
+    useful = _useful_handoff_text(contract, facts or {}, context=context)
+    if useful:
+        return traced(useful, "useful_handoff")
     secondary = _partial_orientation_text(contract, facts or {})
     if secondary:
         detail_part = f": {detail}" if detail else ""
@@ -5446,6 +5456,39 @@ def _safe_fallback_text(
     if detail:
         return traced(_detail_handoff_text(detail), "question_detail")
     return traced(_generic_handoff_text(), "generic")
+
+
+def _useful_handoff_text(
+    contract: AnswerContract,
+    facts: Mapping[str, str],
+    *,
+    context: Mapping[str, Any] | None,
+) -> str:
+    if not quality_useful_handoff_enabled(context):
+        return ""
+    if contract.is_p0 or _asks_refund_policy(contract):
+        return ""
+    orientation = _partial_orientation_text(contract, facts)
+    if not orientation:
+        return ""
+    open_point = _handoff_open_point_label(contract)
+    return (
+        f"Из подтверждённого: {orientation} "
+        f"{open_point} менеджер сверит по актуальным данным и вернётся к вам."
+    )
+
+
+def _handoff_open_point_label(contract: AnswerContract) -> str:
+    text = _contract_intent_text(contract).casefold().replace("ё", "е")
+    if re.search(r"цен|стоим|стоит|сколько\s+стоит|оплат|руб|₽|price", text, re.I):
+        return "По цене или условиям именно нужного варианта"
+    if re.search(r"распис|дни|когда|старт|выходн|будн", text, re.I):
+        return "По расписанию или старту конкретной группы"
+    if re.search(r"формат|онлайн|очно", text, re.I):
+        return "По формату именно для вашего варианта"
+    if re.search(r"адрес|площадк|где\s+вы|куда\s+ехать", text, re.I):
+        return "По площадке для вашего варианта"
+    return "По открытому пункту"
 
 
 def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:

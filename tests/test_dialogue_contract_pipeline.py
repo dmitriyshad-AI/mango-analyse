@@ -8,6 +8,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     FactStore,
     Toggles,
+    _avoid_repeating_text,
     _safe_fallback_text,
     build_conversation,
     build_draft_prompt,
@@ -4520,6 +4521,94 @@ def test_b1_clarify_scope_does_not_mask_cross_brand_retrieval(monkeypatch) -> No
     assert "онлайн или очно" not in result.draft_text.casefold()
     assert "41 800" not in result.draft_text
     assert "49 000" not in result.draft_text
+
+
+def test_b2_useful_handoff_gives_grounded_orientation_before_open_point(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_USEFUL_HANDOFF", "1")
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит онлайн и когда старт?",
+            "answerability": "manager_only",
+        },
+        active_brand="unpk",
+    )
+
+    text = _safe_fallback_text(
+        contract,
+        facts={"prices.online.grade9": "УНПК: онлайн-курс для 9 класса, семестр — 41 800 ₽."},
+    )
+
+    assert text.startswith("Из подтверждённого:")
+    assert "41 800" in text
+    assert "менеджер" in text.casefold()
+    assert "По цене или условиям именно нужного варианта" in text
+
+
+def test_b2_useful_handoff_does_not_invent_when_no_grounded_fact(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_USEFUL_HANDOFF", "1")
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит онлайн и когда старт?",
+            "answerability": "manager_only",
+        },
+        active_brand="unpk",
+    )
+
+    text = _safe_fallback_text(contract, facts={})
+
+    assert not text.startswith("Из подтверждённого:")
+    assert "41 800" not in text
+    assert "менеджер" in text.casefold()
+
+
+def test_b2_useful_handoff_keeps_refund_and_p0_clean(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_USEFUL_HANDOFF", "1")
+    refund_contract = parse_contract(
+        {
+            "current_question": "если оплатил и передумал, верните деньги?",
+            "answerability": "manager_only",
+        },
+        active_brand="unpk",
+    )
+    p0_contract = AnswerContract(
+        active_brand="unpk",
+        current_question="верните деньги, занятий нет",
+        answerability="manager_only",
+        is_p0=True,
+        p0_reason="refund",
+    )
+
+    facts = {"prices.online.grade9": "УНПК: онлайн-курс для 9 класса, семестр — 41 800 ₽."}
+    refund_text = _safe_fallback_text(refund_contract, facts=facts)
+    p0_text = _safe_fallback_text(p0_contract, facts=facts)
+
+    assert "41 800" not in refund_text
+    assert "41 800" not in p0_text
+    assert not refund_text.startswith("Из подтверждённого:")
+    assert not p0_text.startswith("Из подтверждённого:")
+
+
+def test_b2_useful_handoff_anti_repeat_does_not_repeat_same_text(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_USEFUL_HANDOFF", "1")
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит онлайн и когда старт?",
+            "answerability": "manager_only",
+        },
+        active_brand="unpk",
+    )
+    facts = {"prices.online.grade9": "УНПК: онлайн-курс для 9 класса, семестр — 41 800 ₽."}
+    first = _safe_fallback_text(contract, facts=facts)
+
+    second = _avoid_repeating_text(
+        first,
+        conversation=({"role": "bot", "text": first},),
+        contract=contract,
+        facts=facts,
+    )
+
+    assert second != first
+    assert "41 800" not in second or "менеджер" in second.casefold()
 
 
 def test_q_partial_yield_estimates_lobnya_travel_before_manager_handoff(monkeypatch) -> None:

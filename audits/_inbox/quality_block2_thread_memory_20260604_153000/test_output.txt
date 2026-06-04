@@ -1,0 +1,47 @@
+# Test Output
+
+## Targeted Block 2 / Memory / Invariant Slice
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py -k 'q_thread_memory or memory_topic_augment or step3a_ellipsis or p0_pre_gate or q_partial_yield'
+```
+
+Result:
+
+```text
+24 passed, 180 deselected in 0.80s
+```
+
+## Full Dialogue Contract Pipeline Tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py
+```
+
+Result:
+
+```text
+204 passed in 1.91s
+```
+
+## Full Pytest
+
+Command:
+
+```bash
+KB_RELEASE_V3_DIR='/Users/dmitrijfabarisov/Projects/Mango analyse.phase12/product_data/knowledge_base/kb_release_20260530_v6_4_team_answers' PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/
+```
+
+Result:
+
+```text
+2506 passed, 5 skipped, 1 warning in 42.64s
+```
+
+Note:
+
+The explicit `KB_RELEASE_V3_DIR` is required because this worktree does not contain the accepted v6.4 release artifact locally.

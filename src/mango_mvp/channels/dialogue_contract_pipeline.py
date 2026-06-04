@@ -36,6 +36,7 @@ DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
+QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json"
@@ -449,6 +450,12 @@ def quality_partial_yield_enabled(context: Mapping[str, Any] | None = None) -> b
     return _truthy(os.getenv(QUALITY_PARTIAL_YIELD_ENV))
 
 
+def quality_thread_memory_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(QUALITY_THREAD_MEMORY_ENV) is not None:
+        return _truthy(context.get(QUALITY_THREAD_MEMORY_ENV))
+    return _truthy(os.getenv(QUALITY_THREAD_MEMORY_ENV))
+
+
 def _normalize_warmth_mode(mode: object) -> str:
     value = str(mode or "").strip().casefold()
     return value if value in {"linter", "all_eligible"} else "linter"
@@ -753,8 +760,9 @@ def _augment_contract_with_memory_topic(
     memory = context.get("dialogue_memory_view")
     if not isinstance(memory, MappingABC):
         return contract
-    focus = memory.get("topic_focus")
-    if not isinstance(focus, MappingABC):
+    thread_memory = quality_thread_memory_enabled(context)
+    focus = _memory_focus_for_contract(memory, include_known_slots=thread_memory)
+    if not focus:
         return contract
     subject = str(focus.get("subject") or "").strip()
     if not subject or _contract_has_topic(contract):
@@ -763,7 +771,76 @@ def _augment_contract_with_memory_topic(
     if not topic_keys:
         return contract
     current_question = _compose_topic_question(contract.current_question, focus)
-    return replace_contract_topic(contract, current_question=current_question, needed_fact_keys=topic_keys)
+    trace_event(
+        context,
+        "thread_memory_topic",
+        {
+            "applied": True,
+            "flag_enabled": thread_memory,
+            "current_question": current_question,
+            "needed_fact_keys": list(topic_keys),
+            "focus": dict(focus),
+        },
+    )
+    return replace_contract_topic(
+        contract,
+        current_question=current_question,
+        needed_fact_keys=topic_keys,
+        memory_focus=focus if thread_memory else None,
+    )
+
+
+def _memory_focus_for_contract(memory: Mapping[str, Any], *, include_known_slots: bool) -> Mapping[str, str]:
+    focus: dict[str, str] = {}
+    raw_focus = memory.get("topic_focus")
+    if isinstance(raw_focus, MappingABC):
+        for key in ("subject", "grade", "format", "product", "product_family"):
+            value = str(raw_focus.get(key) or "").strip()
+            if value:
+                focus[key] = value[:120]
+    if not include_known_slots:
+        return focus
+    known_slots = memory.get("known_slots")
+    if not isinstance(known_slots, MappingABC):
+        return focus
+    slot_sources = memory.get("slot_sources") if isinstance(memory.get("slot_sources"), MappingABC) else {}
+    for key in ("subject", "grade", "format", "product", "product_family"):
+        if focus.get(key):
+            continue
+        raw = known_slots.get(key)
+        if raw is None and key == "grade":
+            raw = known_slots.get("class")
+        value = _memory_slot_value(raw)
+        if not value:
+            continue
+        source = _memory_slot_source(raw, slot_sources.get(key) if isinstance(slot_sources, MappingABC) else "")
+        if source and not _memory_slot_source_allowed(source):
+            continue
+        focus[key] = value[:120]
+    return focus
+
+
+def _memory_slot_value(raw: object) -> str:
+    if isinstance(raw, MappingABC):
+        return str(raw.get("value") or "").strip()
+    return str(raw or "").strip()
+
+
+def _memory_slot_source(raw: object, fallback: object = "") -> str:
+    if isinstance(raw, MappingABC):
+        return str(raw.get("source") or fallback or "").strip()
+    return str(fallback or "").strip()
+
+
+def _memory_slot_source_allowed(source: str) -> bool:
+    normalized = str(source or "").strip().casefold()
+    if not normalized:
+        return True
+    return (
+        normalized in {"dialogue_memory", "memory_llm", "provided_context", "client_confirmed"}
+        or normalized.startswith("client_turn")
+        or normalized.startswith("fact:")
+    )
 
 
 def _contract_has_topic(contract: AnswerContract) -> bool:
@@ -800,6 +877,7 @@ def replace_contract_topic(
     *,
     current_question: str,
     needed_fact_keys: Sequence[str],
+    memory_focus: Mapping[str, Any] | None = None,
 ) -> AnswerContract:
     keys = tuple(dict.fromkeys(str(item or "").strip() for item in needed_fact_keys if str(item or "").strip()))
     if not keys:
@@ -826,7 +904,40 @@ def replace_contract_topic(
             )
         else:
             updated.append(item)
-    return replace(contract, current_question=current_question, subquestions=tuple(updated))
+    updates: dict[str, Any] = {
+        "current_question": current_question,
+        "subquestions": tuple(updated),
+    }
+    if isinstance(memory_focus, MappingABC) and memory_focus:
+        planner_slots = dict(contract.planner_slots)
+        known_slots = dict(contract.known_slots)
+        for key in ("subject", "grade", "format", "product", "product_family"):
+            value = _memory_focus_value_for_contract(key, memory_focus, contract=contract, current_question=current_question)
+            if not value:
+                continue
+            planner_slots.setdefault(key, value[:120])
+            known_slots.setdefault(key, Slot(value=value[:120], source="dialogue_memory"))
+        updates["planner_slots"] = planner_slots
+        updates["known_slots"] = known_slots
+    return replace(contract, **updates)
+
+
+def _memory_focus_value_for_contract(
+    key: str,
+    memory_focus: Mapping[str, Any],
+    *,
+    contract: AnswerContract,
+    current_question: str,
+) -> str:
+    if key == "format":
+        explicit_format = _format_from_text(contract.current_question) or _format_from_text(current_question)
+        if explicit_format:
+            return explicit_format
+    if key == "grade":
+        explicit_grade = _grade_from_text(contract.current_question) or _grade_from_text(current_question)
+        if explicit_grade:
+            return explicit_grade
+    return str(memory_focus.get(key) or "").strip()
 
 
 def _keys_for_topic(

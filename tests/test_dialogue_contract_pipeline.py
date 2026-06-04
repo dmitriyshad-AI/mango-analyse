@@ -5109,6 +5109,361 @@ def test_memory_topic_augment_without_memory_keeps_single_turn_unchanged() -> No
     assert "предмет" in result.draft_text.casefold()
 
 
+def test_q_thread_memory_flag_off_does_not_promote_known_slots_without_topic_focus(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_THREAD_MEMORY", raising=False)
+    fact_key = "regular_course.informatics.grade10.offline.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса онлайн"},
+            {"role": "client", "text": "а очно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а очно?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10", "format": "онлайн"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1", "format": "client_turn_1"},
+            }
+        },
+    )
+
+    assert result.facts == {}
+    assert "49 000" not in result.draft_text
+
+
+def test_q_thread_memory_uses_known_slots_for_elliptic_format_when_flagged(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    fact_key = "regular_course.informatics.grade10.offline.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса онлайн"},
+            {"role": "client", "text": "а очно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а очно?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+                "planner_slots": {"format": "очно"},
+            }
+        ),
+        draft_fn=lambda _prompt: "Информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10", "format": "онлайн"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1", "format": "client_turn_1"},
+            }
+        },
+    )
+
+    assert result.route == "bot_answer_self"
+    assert fact_key in result.facts
+    assert "49 000" in result.draft_text
+    assert result.contract.planner_slots["subject"] == "информатика"
+    assert result.contract.planner_slots["grade"] == "10"
+    assert result.contract.planner_slots["format"] == "очно"
+    assert result.contract.known_slots["format"].value == "очно"
+
+
+def test_q_thread_memory_does_not_trust_bot_inferred_known_slots_without_topic_focus(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    fact_key = "regular_course.informatics.grade10.offline.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "какие есть варианты?"},
+            {"role": "client", "text": "а очно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а очно?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "slot_sources": {"subject": "bot_inferred", "grade": "bot_inferred"},
+            }
+        },
+    )
+
+    assert result.facts == {}
+    assert "49 000" not in result.draft_text
+
+
+def test_q_thread_memory_does_not_mask_p0_with_previous_topic(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    fact_key = "regular_course.informatics.grade10.offline.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса онлайн"},
+            {"role": "client", "text": "верните деньги, занятия не идут"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1"},
+            }
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert fact_key not in result.facts
+    assert "49 000" not in result.draft_text
+
+
+def test_q_thread_memory_does_not_glue_explicit_subject_switch_when_flagged(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    informatics_key = "regular_course.informatics.grade10.offline.price"
+    physics_key = "regular_course.physics.grade10.offline.price"
+    store = FactStore(
+        catalog=(informatics_key, physics_key),
+        store={
+            "foton": {
+                informatics_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽.",
+                physics_key: "Фотон: физика 10 класс очно — семестр 31 000 ₽.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса"},
+            {"role": "client", "text": "а по физике очно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а по физике очно?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1"},
+            }
+        },
+    )
+
+    assert result.facts == {}
+    assert informatics_key not in result.facts
+    assert "49 000" not in result.draft_text
+
+
+def test_q_thread_memory_keeps_camp_family_from_known_slots_when_flagged(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    regular_key = "regular_course.informatics.grade10.online.price"
+    camp_key = "lvsh_mendeleevo_2026.informatics.online_format"
+    store = FactStore(
+        catalog=(regular_key, camp_key),
+        store={
+            "foton": {
+                regular_key: "Фотон: регулярный курс информатики 10 класс онлайн — семестр 29 750 ₽.",
+                camp_key: "ЛВШ Менделеево: онлайн-формат смены не опубликован, менеджер сориентирует отдельно.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует ЛВШ по информатике"},
+            {"role": "client", "text": "а онлайн?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а онлайн?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "По ЛВШ Менделеево онлайн-формат смены менеджер сориентирует отдельно.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {
+                    "subject": "информатика",
+                    "product": "ЛВШ Менделеево",
+                    "product_family": "camp",
+                },
+                "slot_sources": {
+                    "subject": "client_turn_1",
+                    "product": "client_turn_1",
+                    "product_family": "client_turn_1",
+                },
+            }
+        },
+    )
+
+    assert camp_key in result.facts
+    assert regular_key not in result.facts
+    assert "ЛВШ" in result.draft_text
+
+
+def test_q_thread_memory_keeps_active_brand_from_channel_when_memory_mentions_other_brand(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    fact_key = "regular_course.informatics.grade10.offline.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={
+            "foton": {fact_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽."},
+            "unpk": {fact_key: "УНПК: информатика 10 класс очно — семестр 41 800 ₽."},
+        },
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса онлайн"},
+            {"role": "client", "text": "а очно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а очно?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Фотон: информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "active_brand": "unpk",
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1"},
+            }
+        },
+    )
+
+    assert result.contract.active_brand == "foton"
+    assert "49 000" in result.draft_text
+    assert "41 800" not in result.draft_text
+
+
+def test_q_thread_memory_invariant_suite_with_quality_flags_on(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    fact_key = "regular_course.informatics.grade10.offline.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽."}},
+    )
+
+    p0 = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса"},
+            {"role": "client", "text": "оплатил, занятий нет, верните деньги"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Фотон: информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1"},
+            }
+        },
+    )
+
+    assert p0.route == "manager_only"
+    assert "49 000" not in p0.draft_text
+
+    product_price = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса"},
+            {"role": "client", "text": "а примерно сколько стоит очно?"},
+        ),
+        active_brand="foton",
+        fact_store=FactStore(catalog=("prices.current",), store={"foton": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "примерная цена очно",
+                "answerability": "answer_self",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно очный курс стоит 50 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1"},
+            }
+        },
+    )
+
+    assert product_price.route == "draft_for_manager"
+    assert "50 000" not in product_price.draft_text
+
+
 def test_semantic_faithfulness_exception_fail_closed() -> None:
     store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
 

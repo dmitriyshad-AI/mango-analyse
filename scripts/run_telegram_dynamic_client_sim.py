@@ -34,7 +34,7 @@ from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT
 
 
 DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke_tests_v7_dynamic_sim_2026-05-21/v7_dynamic_client_sim_2026-05-21.jsonl")
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
 METRIC_TARGETS = {

@@ -777,7 +777,7 @@ def _augment_contract_with_memory_topic(
 ) -> AnswerContract:
     if contract.is_p0 or contract.switched_topics or not isinstance(context, MappingABC):
         return contract
-    memory = context.get("dialogue_memory_view")
+    memory = _thread_memory_view_for_contract(contract, context=context)
     if not isinstance(memory, MappingABC):
         return contract
     thread_memory = quality_thread_memory_enabled(context)
@@ -838,6 +838,145 @@ def _memory_focus_for_contract(memory: Mapping[str, Any], *, include_known_slots
             continue
         focus[key] = value[:120]
     return focus
+
+
+def _thread_memory_view_for_contract(
+    contract: AnswerContract,
+    *,
+    context: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    if not isinstance(context, MappingABC):
+        return None
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, MappingABC):
+        return memory if isinstance(memory, MappingABC) else None
+    if not quality_thread_memory_enabled(context):
+        return memory
+    return _suppress_stale_thread_memory(memory, contract=contract)
+
+
+def _suppress_stale_thread_memory(memory: Mapping[str, Any], *, contract: AnswerContract) -> Mapping[str, Any]:
+    focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), MappingABC) else {}
+    known_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), MappingABC) else {}
+    if not focus and not known_slots:
+        return memory
+    text = _contract_intent_text(contract)
+    fields_to_drop: set[str] = set()
+    clear_narrative = False
+
+    current_family = _explicit_product_family_from_text(text)
+    previous_family = str(focus.get("product_family") or _memory_slot_value(known_slots.get("product_family")) or "").strip()
+    if current_family and previous_family and current_family != previous_family:
+        fields_to_drop.update({"product", "product_family", "format"})
+        clear_narrative = True
+
+    current_subject = _explicit_subject_from_text(text)
+    previous_subject = str(focus.get("subject") or _memory_slot_value(known_slots.get("subject")) or "").strip()
+    if current_subject and previous_subject and current_subject != _canonical_subject(previous_subject):
+        fields_to_drop.add("subject")
+        clear_narrative = True
+
+    current_camp_scope = _camp_scope_from_text(text)
+    previous_camp_scope = _camp_scope_from_memory(focus, known_slots)
+    if current_camp_scope and previous_camp_scope and current_camp_scope != previous_camp_scope:
+        fields_to_drop.add("product")
+        clear_narrative = True
+
+    if _explicit_service_topic_from_text(text):
+        fields_to_drop.update({"subject", "grade", "format", "product", "product_family"})
+        clear_narrative = True
+
+    if not fields_to_drop and not clear_narrative:
+        return memory
+
+    sanitized: dict[str, Any] = dict(memory)
+    replacement_focus: dict[str, str] = {}
+    if current_family:
+        replacement_focus["product_family"] = current_family
+    if current_camp_scope:
+        replacement_focus["product_family"] = "camp"
+        replacement_focus["product"] = "lvsh_mendeleevo" if current_camp_scope == "residential_lvsh" else "city_camp"
+    if focus:
+        new_focus = {key: value for key, value in dict(focus).items() if key not in fields_to_drop}
+        new_focus.update(replacement_focus)
+        if new_focus:
+            sanitized["topic_focus"] = new_focus
+        else:
+            sanitized.pop("topic_focus", None)
+    elif replacement_focus:
+        sanitized["topic_focus"] = replacement_focus
+    if known_slots:
+        new_known = {key: value for key, value in dict(known_slots).items() if key not in fields_to_drop}
+        if new_known:
+            sanitized["known_slots"] = new_known
+        else:
+            sanitized.pop("known_slots", None)
+    slot_sources = sanitized.get("slot_sources")
+    if isinstance(slot_sources, MappingABC):
+        new_sources = {key: value for key, value in dict(slot_sources).items() if key not in fields_to_drop}
+        if new_sources:
+            sanitized["slot_sources"] = new_sources
+        else:
+            sanitized.pop("slot_sources", None)
+    if clear_narrative:
+        for key in ("open_question", "last_bot_commitments", "conversation_summary_short"):
+            sanitized.pop(key, None)
+    return sanitized
+
+
+def _explicit_product_family_from_text(text: str) -> str:
+    low = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"не\s+лагер|не\s+лвш|вместо\s+лагер|обычн\w*\s+курс|регулярн\w*\s+курс", low, re.I):
+        return "regular_course"
+    if re.search(r"лвш|лагер|летн\w*\s+школ|смен|менделеев|выездн|каникул", low, re.I):
+        return "camp"
+    if re.search(r"\bкурс\b|онлайн-курс|очные\s+курсы|регулярн", low, re.I) and not re.search(r"лагер|лвш|смен", low, re.I):
+        return "regular_course"
+    return ""
+
+
+def _explicit_service_topic_from_text(text: str) -> str:
+    low = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"налог|вычет|3-ндфл|фнс|кнд", low, re.I):
+        return "tax"
+    if re.search(r"маткап|материнск", low, re.I):
+        return "matkap"
+    if re.search(r"справк|договор|сертификат|чек|квитанц|документ", low, re.I):
+        return "document"
+    return ""
+
+
+def _canonical_subject(value: str) -> str:
+    raw = str(value or "").casefold().replace("ё", "е")
+    if "информ" in raw:
+        return "информатика"
+    if "физ" in raw:
+        return "физика"
+    if "мат" in raw:
+        return "математика"
+    if "хим" in raw:
+        return "химия"
+    if "био" in raw:
+        return "биология"
+    if "рус" in raw:
+        return "русский"
+    if "анг" in raw:
+        return "английский"
+    return raw.strip()
+
+
+def _explicit_subject_from_text(text: str) -> str:
+    low = str(text or "").casefold().replace("ё", "е")
+    for subject in ("информатика", "физика", "математика", "химия", "биология", "русский", "английский"):
+        if _focus_aliases("subject", subject) and _key_has_any_topic_alias(low, _focus_aliases("subject", subject)):
+            return subject
+    return ""
+
+
+def _camp_scope_from_memory(focus: Mapping[str, Any], known_slots: Mapping[str, Any]) -> str:
+    product = str(focus.get("product") or _memory_slot_value(known_slots.get("product")) or "").strip()
+    family = str(focus.get("product_family") or _memory_slot_value(known_slots.get("product_family")) or "").strip()
+    return _camp_scope_from_text(f"{product} {family}")
 
 
 def _memory_slot_value(raw: object) -> str:
@@ -1447,10 +1586,18 @@ def _format_established_topic_block(topic: Mapping[str, Any] | None) -> str:
     )
 
 
-def _established_topic_from_context(context: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+def _established_topic_from_context(
+    context: Mapping[str, Any] | None,
+    *,
+    contract: AnswerContract | None = None,
+) -> Mapping[str, Any] | None:
     if not isinstance(context, MappingABC):
         return None
-    memory = context.get("dialogue_memory_view")
+    memory = (
+        _thread_memory_view_for_contract(contract, context=context)
+        if contract is not None
+        else context.get("dialogue_memory_view")
+    )
     if not isinstance(memory, MappingABC):
         return None
     topic: dict[str, Any] = {}
@@ -2397,6 +2544,7 @@ def run_pipeline(
             fact_store=fact_store,
             context=context,
         )
+        retrieval = _scope_camp_retrieval_for_contract(retrieval, contract=contract, context=context)
         trace.update(
             {
                 "fact_keys": list(retrieval.facts.keys()),
@@ -2778,6 +2926,7 @@ def run_pipeline(
         "build_draft",
         {"answerability": contract.answerability, "fact_keys": list(retrieval.facts.keys()), "missing": list(retrieval.missing)},
     ) as trace:
+        prompt_memory_view = _thread_memory_view_for_contract(contract, context=context)
         prompt = build_draft_prompt(
             conversation=conversation,
             contract=contract,
@@ -2786,7 +2935,7 @@ def run_pipeline(
             tone_guide=tone_guide,
             style_examples=style_examples,
             toggles=toggles,
-            dialogue_memory_view=(context or {}).get("dialogue_memory_view"),
+            dialogue_memory_view=prompt_memory_view,
         )
         trace["prompt_chars"] = len(prompt)
         try:
@@ -3975,7 +4124,7 @@ def _hard_check(
             facts=facts,
             client_words=client_words,
             faithfulness_fn=faithfulness_fn,
-            established_topic=_established_topic_from_context(context),
+            established_topic=_established_topic_from_context(context, contract=contract),
         )
         semantic_available = result.available
         if not pure_handoff:
@@ -4459,7 +4608,7 @@ def _partial_yield_full_check(
             facts=facts,
             client_words=client_words,
             faithfulness_fn=faithfulness_fn,
-            established_topic=_established_topic_from_context(context),
+            established_topic=_established_topic_from_context(context, contract=contract),
         )
         semantic_available = result.available
         unsupported = _unsupported_claims_without_current_fact_support(
@@ -4872,7 +5021,7 @@ def _compose_price_plus_format(contract: AnswerContract, retrieval: RetrievalRes
     if not (_asks_price(contract) or _asks_training_format_choice(contract)):
         return ""
     if _contract_mentions_camp_or_lvsh(contract):
-        camp_facts = _camp_or_lvsh_facts(retrieval.facts)
+        camp_facts = _camp_or_lvsh_facts(retrieval.facts, contract=contract)
         if not camp_facts:
             return ""
         price = _direct_price_answer_from_facts(contract, camp_facts)
@@ -5658,6 +5807,43 @@ def _augment_with_presale_refund_policy(
     return RetrievalResult(facts=facts, missing=tuple(item for item in retrieval.missing if item != "refund_policy.current"), matched_keys=matched)
 
 
+def _scope_camp_retrieval_for_contract(
+    retrieval: RetrievalResult,
+    *,
+    contract: AnswerContract,
+    context: Mapping[str, Any] | None,
+) -> RetrievalResult:
+    if not quality_thread_memory_enabled(context):
+        return retrieval
+    requested_scope = _camp_scope_from_contract(contract)
+    if not requested_scope:
+        return retrieval
+    facts: dict[str, str] = {}
+    removed: list[str] = []
+    for key, value in retrieval.facts.items():
+        fact_scope = _camp_scope_from_fact(str(key), str(value or ""))
+        if fact_scope and fact_scope != requested_scope:
+            removed.append(str(key))
+            continue
+        facts[str(key)] = str(value or "")
+    if not removed:
+        return retrieval
+    matched: dict[str, tuple[str, ...]] = {}
+    missing = list(retrieval.missing)
+    for required, keys in retrieval.matched_keys.items():
+        kept = tuple(key for key in keys if key in facts)
+        if kept:
+            matched[str(required)] = kept
+        elif str(required) not in missing:
+            missing.append(str(required))
+    trace_event(
+        context,
+        "thread_memory_camp_scope_filter",
+        {"requested_scope": requested_scope, "removed_fact_keys": removed},
+    )
+    return RetrievalResult(facts=facts, missing=tuple(dict.fromkeys(missing)), matched_keys=matched)
+
+
 def _asks_weekend_or_slot(contract: AnswerContract) -> bool:
     text = " ".join(
         [
@@ -5819,12 +6005,18 @@ def _draft_uses_camp_or_lvsh_fact(draft: str, facts: Mapping[str, str]) -> bool:
     return any(_is_camp_or_lvsh_fact(key, str(value or "")) for key, value in facts.items())
 
 
-def _camp_or_lvsh_facts(facts: Mapping[str, str]) -> dict[str, str]:
-    return {
-        str(key): str(value or "")
-        for key, value in facts.items()
-        if _is_camp_or_lvsh_fact(str(key), str(value or ""))
-    }
+def _camp_or_lvsh_facts(facts: Mapping[str, str], *, contract: AnswerContract | None = None) -> dict[str, str]:
+    requested_scope = _camp_scope_from_contract(contract) if contract is not None else ""
+    selected: dict[str, str] = {}
+    for key, value in facts.items():
+        text = str(value or "")
+        if not _is_camp_or_lvsh_fact(str(key), text):
+            continue
+        fact_scope = _camp_scope_from_fact(str(key), text)
+        if requested_scope and fact_scope and fact_scope != requested_scope:
+            continue
+        selected[str(key)] = text
+    return selected
 
 
 def _is_camp_or_lvsh_fact(key: str, text: str) -> bool:
@@ -5834,6 +6026,30 @@ def _is_camp_or_lvsh_fact(key: str, text: str) -> bool:
 
 def _contract_mentions_camp_or_lvsh(contract: AnswerContract) -> bool:
     return bool(re.search(r"лвш|менделеев|лагер|camp|летн", _contract_intent_text(contract), re.I))
+
+
+def _camp_scope_from_contract(contract: AnswerContract | None) -> str:
+    if contract is None:
+        return ""
+    return _camp_scope_from_text(_contract_intent_text(contract))
+
+
+def _camp_scope_from_text(text: str) -> str:
+    low = str(text or "").casefold().replace("ё", "е")
+    residential = bool(
+        re.search(r"лвш|lvsh|менделеев|выездн|трансфер|с\s+прожив", low, re.I)
+        or (re.search(r"прожив", low, re.I) and not re.search(r"без\s+прожив|без\s+ночев", low, re.I))
+    )
+    city = bool(re.search(r"city_day_camp|city_camp|городск|дневн|без\s+прожив|без\s+ночев|лш\s+москв", low, re.I))
+    if residential and not city:
+        return "residential_lvsh"
+    if city and not residential:
+        return "city_day_camp"
+    return ""
+
+
+def _camp_scope_from_fact(key: str, text: str) -> str:
+    return _camp_scope_from_text(f"{key} {text}")
 
 
 def _has_self_answerable_subquestion(contract: AnswerContract) -> bool:
@@ -5931,7 +6147,7 @@ def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str
     if not _asks_price(contract):
         return ""
     if _contract_mentions_camp_or_lvsh(contract):
-        facts = _camp_or_lvsh_facts(facts)
+        facts = _camp_or_lvsh_facts(facts, contract=contract)
         if not facts:
             return ""
     items: list[tuple[str, str]] = []
@@ -6003,7 +6219,7 @@ def _direct_camp_format_answer_from_facts(contract: AnswerContract, facts: Mappi
     text = _contract_intent_text(contract)
     if not re.search(r"формат|очно|онлайн|прожив|дневн|ночев", text, re.I):
         return ""
-    for key, value in _camp_or_lvsh_facts(facts).items():
+    for key, value in _camp_or_lvsh_facts(facts, contract=contract).items():
         combined = f"{key} {value}".casefold().replace("ё", "е")
         if not re.search(r"без\s+прожив|дневн|очная\s+городск|городск\w+\s+школ|городск\w+\s+лагер", combined, re.I):
             continue

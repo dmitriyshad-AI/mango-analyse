@@ -6015,6 +6015,188 @@ def test_q_thread_memory_does_not_glue_explicit_subject_switch_when_flagged(monk
     assert "49 000" not in result.draft_text
 
 
+def test_q_thread_memory_drops_stale_course_context_on_explicit_camp_switch(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    camp_key = "camp.unpk.lvsh_mendeleevo.enrollment"
+    captured: dict[str, str] = {}
+    store = FactStore(
+        catalog=(camp_key,),
+        store={"unpk": {camp_key: "УНПК: по ЛВШ Менделеево порядок записи подтверждает менеджер."}},
+    )
+
+    def draft_from_prompt(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "По ЛВШ Менделеево порядок записи подтверждает менеджер."
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует физика 9 онлайн"},
+            {"role": "client", "text": "а летний лагерь есть?"},
+        ),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "летний лагерь есть?",
+                "needed_fact_keys": ["camp.unpk.lvsh_mendeleevo.enrollment"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=draft_from_prompt,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "conversation_summary_short": "Обсуждали регулярный курс физики 9 класса онлайн.",
+                "open_question": {"kind": "pricing", "text": "Подобрать онлайн-курс по физике"},
+                "topic_focus": {
+                    "subject": "физика",
+                    "grade": "9",
+                    "format": "онлайн",
+                    "product": "онлайн-курс",
+                    "product_family": "regular_course",
+                },
+                "known_slots": {
+                    "subject": "физика",
+                    "grade": "9",
+                    "format": "онлайн",
+                    "product": "онлайн-курс",
+                    "product_family": "regular_course",
+                },
+                "slot_sources": {
+                    "subject": "client_turn_1",
+                    "grade": "client_turn_1",
+                    "format": "client_turn_1",
+                    "product": "client_turn_1",
+                    "product_family": "client_turn_1",
+                },
+            }
+        },
+    )
+
+    assert result.route == "bot_answer_self"
+    assert camp_key in result.facts
+    prompt = captured["prompt"].casefold()
+    assert "обсуждали регулярный курс" not in prompt
+    assert "онлайн-курс" not in prompt
+    assert "выбранному курсу" not in result.draft_text.casefold()
+
+
+def test_q_thread_memory_drops_course_subject_on_tax_document_switch(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    tax_key = "tax_deduction.client_safe_text"
+    captured: dict[str, str] = {}
+    store = FactStore(
+        catalog=(tax_key,),
+        store={
+            "foton": {
+                tax_key: "Фотон: справку для налогового вычета можно запросить у менеджера; используется форма КНД 1151158."
+            }
+        },
+    )
+
+    def draft_from_prompt(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "Да, справку для налогового вычета можно запросить у менеджера."
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "физика 10 очно"},
+            {"role": "client", "text": "а справку для налогового вычета даёте?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "справка для налогового вычета",
+                "needed_fact_keys": ["tax_deduction.client_safe_text"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=draft_from_prompt,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "conversation_summary_short": "Обсуждали очную физику для 10 класса.",
+                "open_question": {"kind": "format", "text": "Подобрать очную физику"},
+                "topic_focus": {
+                    "subject": "физика",
+                    "grade": "10",
+                    "format": "очно",
+                    "product_family": "regular_course",
+                },
+                "known_slots": {
+                    "subject": "физика",
+                    "grade": "10",
+                    "format": "очно",
+                    "product_family": "regular_course",
+                },
+                "slot_sources": {
+                    "subject": "client_turn_1",
+                    "grade": "client_turn_1",
+                    "format": "client_turn_1",
+                    "product_family": "client_turn_1",
+                },
+            }
+        },
+    )
+
+    assert result.route == "bot_answer_self"
+    assert tax_key in result.facts
+    memory_block = captured["prompt"].split("История диалога:", 1)[0].casefold()
+    assert "очная физика" not in memory_block
+    assert "физика" not in result.draft_text.casefold()
+
+
+def test_q_thread_memory_scopes_lvsh_away_from_city_camp_facts(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
+    lvsh_key = "camp.foton.lvsh_mendeleevo.dates"
+    city_key = "camp.foton.city_camp.included"
+    captured: dict[str, str] = {}
+    store = FactStore(
+        catalog=("programs.current", lvsh_key, city_key),
+        store={
+            "foton": {
+                lvsh_key: "Фотон: ЛВШ Менделеево проходит 20-28 июня и 18-26 июля.",
+                city_key: "Фотон: городская летняя школа в Москве проходит без проживания; в неё входят занятия и материалы.",
+            }
+        },
+    )
+
+    def draft_from_prompt(prompt: str) -> str:
+        captured["prompt"] = prompt
+        return "ЛВШ Менделеево проходит 20-28 июня и 18-26 июля."
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует городская летняя школа"},
+            {"role": "client", "text": "а что входит в ЛВШ Менделеево?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "что входит в ЛВШ Менделеево?",
+                "needed_fact_keys": ["programs.current"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=draft_from_prompt,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "topic_focus": {"product_family": "camp", "product": "city_camp"},
+                "known_slots": {"product_family": "camp", "product": "city_camp"},
+                "slot_sources": {"product_family": "client_turn_1", "product": "client_turn_1"},
+            }
+        },
+    )
+
+    assert result.route == "bot_answer_self"
+    assert lvsh_key in result.facts
+    assert city_key not in result.facts
+    assert "в неё входят занятия и материалы" not in captured["prompt"].casefold()
+
+
 def test_q_thread_memory_keeps_camp_family_from_known_slots_when_flagged(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_THREAD_MEMORY", "1")
     regular_key = "regular_course.informatics.grade10.online.price"

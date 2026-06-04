@@ -4367,6 +4367,161 @@ def test_g2_scope_guard_keeps_number_gate_blocking_unconfirmed_product_price() -
     assert result.fallback_reason == "empty_facts_no_fabrication"
 
 
+def test_b1_clarify_scope_asks_one_question_for_ambiguous_price_format(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_CLARIFY_SCOPE", "1")
+    store = FactStore(
+        catalog=("prices.online.grade9", "prices.offline.grade9"),
+        store={
+            "unpk": {
+                "prices.online.grade9": "УНПК: онлайн-курс для 9 класса, семестр — 41 800 ₽.",
+                "prices.offline.grade9": "УНПК: очный курс для 9 класса, семестр — 49 000 ₽.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена для 9 класса",
+                "subquestions": [
+                    {
+                        "text": "цена для 9 класса",
+                        "answerable": "self",
+                        "needed_fact_keys": ["prices.online.grade9", "prices.offline.grade9"],
+                    },
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason == "scope_clarification_question"
+    assert result.draft_text.count("?") == 1
+    assert "онлайн" in result.draft_text.casefold()
+    assert "очно" in result.draft_text.casefold()
+    assert "41 800" not in result.draft_text
+    assert "49 000" not in result.draft_text
+    assert "менеджер" not in result.draft_text.casefold()
+
+
+def test_b1_clarify_scope_does_not_ask_when_scope_is_clear_and_fact_exists(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_CLARIFY_SCOPE", "1")
+    store = FactStore(
+        catalog=("prices.online.grade9", "prices.offline.grade9"),
+        store={
+            "unpk": {
+                "prices.online.grade9": "УНПК: онлайн-курс для 9 класса, семестр — 41 800 ₽.",
+                "prices.offline.grade9": "УНПК: очный курс для 9 класса, семестр — 49 000 ₽.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн для 9 класса",
+                "subquestions": [
+                    {"text": "цена онлайн для 9 класса", "answerable": "self", "needed_fact_keys": ["prices.online.grade9"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.fallback_reason != "scope_clarification_question"
+    assert "41 800" in result.draft_text
+
+
+def test_b1_clarify_scope_does_not_override_p0(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_CLARIFY_SCOPE", "1")
+    store = FactStore(
+        catalog=("prices.online.grade9", "prices.offline.grade9"),
+        store={
+            "unpk": {
+                "prices.online.grade9": "УНПК: онлайн-курс для 9 класса, семестр — 41 800 ₽.",
+                "prices.offline.grade9": "УНПК: очный курс для 9 класса, семестр — 49 000 ₽.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("я оплатил, занятий нет, верните деньги; сколько стоит для 9 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги и цена для 9 класса",
+                "subquestions": [
+                    {
+                        "text": "цена для 9 класса",
+                        "answerable": "self",
+                        "needed_fact_keys": ["prices.online.grade9", "prices.offline.grade9"],
+                    },
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн стоит 41 800 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert result.fallback_reason == "p0"
+    assert "онлайн или очно" not in result.draft_text.casefold()
+    assert "41 800" not in result.draft_text
+
+
+def test_b1_clarify_scope_does_not_mask_cross_brand_retrieval(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_CLARIFY_SCOPE", "1")
+    store = FactStore(
+        catalog=("prices.online.grade9", "prices.offline.grade9"),
+        store={
+            "foton": {
+                "prices.online.grade9": "УНПК: онлайн-курс для 9 класса, семестр — 41 800 ₽.",
+                "prices.offline.grade9": "УНПК: очный курс для 9 класса, семестр — 49 000 ₽.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит для 9 класса?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена для 9 класса",
+                "subquestions": [
+                    {
+                        "text": "цена для 9 класса",
+                        "answerable": "self",
+                        "needed_fact_keys": ["prices.online.grade9", "prices.offline.grade9"],
+                    },
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.fallback_reason != "scope_clarification_question"
+    assert "онлайн или очно" not in result.draft_text.casefold()
+    assert "41 800" not in result.draft_text
+    assert "49 000" not in result.draft_text
+
+
 def test_q_partial_yield_estimates_lobnya_travel_before_manager_handoff(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")

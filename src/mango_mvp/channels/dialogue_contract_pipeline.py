@@ -39,6 +39,7 @@ QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
 QUALITY_COMPOSITE_ENV = "TELEGRAM_Q_COMPOSITE"
 QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
+QUALITY_CLARIFY_SCOPE_ENV = "TELEGRAM_Q_CLARIFY_SCOPE"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json"
@@ -474,6 +475,12 @@ def quality_next_step_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(QUALITY_NEXT_STEP_ENV) is not None:
         return _truthy(context.get(QUALITY_NEXT_STEP_ENV))
     return _truthy(os.getenv(QUALITY_NEXT_STEP_ENV))
+
+
+def quality_clarify_scope_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(QUALITY_CLARIFY_SCOPE_ENV) is not None:
+        return _truthy(context.get(QUALITY_CLARIFY_SCOPE_ENV))
+    return _truthy(os.getenv(QUALITY_CLARIFY_SCOPE_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -2758,6 +2765,17 @@ def run_pipeline(
             previous_bot_texts=previous_bot_texts,
             draft_fn=draft_fn,
             tone_guide=tone_guide,
+        )
+    clarify_question = _scope_clarification_question(contract, retrieval, client_words=client_words, context=context)
+    if clarify_question:
+        return DialogueContractPipelineResult(
+            draft_text=clarify_question,
+            route="bot_answer_self",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="scope_clarification_question",
         )
     slot_question = _single_missing_slot_question(contract, retrieval)
     if slot_question:
@@ -6639,6 +6657,51 @@ def _current_refund_dispute_signal(*, client_words: str, contract: AnswerContrac
             re.I,
         )
     )
+
+
+def _scope_clarification_question(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    *,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+) -> str:
+    if not quality_clarify_scope_enabled(context):
+        return ""
+    if _cite_only_recover_blocked(contract, client_words=client_words, context=context):
+        return ""
+    if _has_foreign_brand_matched_self_fact(contract, retrieval):
+        return ""
+    if not retrieval.facts or contract.answerability != "answer_self":
+        return ""
+    if not (_asks_price(contract) or _asks_class_schedule_days(contract)):
+        return ""
+
+    question_text = _contract_intent_text(contract)
+    requested_formats = _format_values_from_text(question_text)
+    available_formats = _format_values_from_facts(retrieval.facts)
+    if not requested_formats and len(available_formats) > 1:
+        return "Уточните, пожалуйста, какой формат нужен: онлайн или очно?"
+
+    requested_grade = _grade_from_text(question_text)
+    available_grades = _grade_values_from_retrieved_facts(retrieval.facts)
+    if not requested_grade and len(available_grades) > 1:
+        return "Уточните, пожалуйста, для какого класса нужен вариант?"
+    return ""
+
+
+def _format_values_from_facts(facts: Mapping[str, str]) -> set[str]:
+    values: set[str] = set()
+    for key, text in facts.items():
+        values.update(_format_values_from_text(f"{key} {text}"))
+    return values
+
+
+def _grade_values_from_retrieved_facts(facts: Mapping[str, str]) -> set[str]:
+    values: set[str] = set()
+    for key, text in facts.items():
+        values.update(_grade_values_from_fact_scope(str(key), str(text or "")))
+    return values
 
 
 def _single_missing_slot_question(contract: AnswerContract, retrieval: RetrievalResult) -> str:

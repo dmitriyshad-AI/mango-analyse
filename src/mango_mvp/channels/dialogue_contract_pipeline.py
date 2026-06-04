@@ -34,6 +34,7 @@ from mango_mvp.insights.sanitizers import sanitize_answer
 
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
+FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json"
@@ -81,29 +82,50 @@ _PRODUCT_QUESTION_RE = re.compile(
     r"записать|запис[ьи]|₽|%",
     re.I,
 )
-_TRAVEL_LOGISTICS_RE = re.compile(
-    r"ехать|доехать|добира\w+|добраться|как\s+добраться|дорог[аеиуой]|далеко|"
-    r"пешком|электричк|метро|маршрут|путь",
-    re.I,
-)
-_TRAVEL_GEO_HINT_RE = re.compile(
-    r"\b(?:от|из|до|к)\s+[а-яёa-z][а-яёa-z-]{2,}|лобн|долгопруд|москв|"
-    r"менделеев|сретенк|красносельск|пацаев|станци|метро|электричк|пешком|филиал|центр",
-    re.I,
-)
-_TRAVEL_PRODUCT_EXCLUSION_RE = re.compile(
-    r"сколько\s+стоит|стоимост|цена|тариф|₽|руб|скидк|рассрочк|долями|оплат|"
-    r"расписан|какие\s+дни|по\s+каким\s+дням|во\s+сколько|время\s+занят|"
-    r"сколько\s+длится|длительност|урок|смен[аеуы]|лагер|формат|документ|"
-    r"справк|возврат|вернут|записать|запис[ьи]",
-    re.I,
-)
 _PRODUCT_NUMBER_CTX_RE = re.compile(
     r"₽|руб|р\.|%|скидк|рассрочк|долями|\b\d{1,2}:\d{2}\b|семестр|за\s+год|"
     r"стоит|цена|тариф|сколько\s+длится|длительност|урок|занят|январ|феврал|март|"
     r"апрел|ма[яй]|июн|июл|август|сентяб|октяб|ноябр|декабр|смен[аеуы]",
     re.I,
 )
+_FREE_NUMBER_PRODUCT_CTX_RE = re.compile(
+    r"₽|руб|р\.|%|процент|скидк|рассрочк|долями|цена|стоит|стоимост|тариф|семестр|за\s+год|оплат|"
+    r"\b\d{1,2}:\d{2}\b|расписан|по\s+(?:понедельник|вторник|сред|четверг|пятниц|суббот|воскресень)|"
+    r"\b(?:пн|вт|ср|чт|пт|сб|вс)\b|\bв\s+(?:1[0-9]|2[0-3])\b|"
+    r"\d{1,2}[-–]\d{1,2}\.\d{1,2}|\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b|"
+    r"январ|феврал|март|апрел|ма[яй]|июн|июл|август|сентяб|октяб|ноябр|декабр|"
+    r"смен[аеуы]|заезд|лагер|лвш|\bлш\b|интенсив|мест[ао]\b|балл|групп|сфр|фнс|справк|"
+    r"ак\.?\s*ч|занятий|недел|длится|длительност|академ|раз(?:а)?\s+в\s+недел|час[аов]*\s+в\s+недел",
+    re.I,
+)
+_FREE_NUMBER_TOKEN_RE = re.compile(
+    r"\b20\d{2}/\d{2}\b|"
+    r"\b\d{1,2}:\d{2}\b|"
+    r"\b\d+(?:[.,]\d+)?\s*[-–]\s*\d+(?:[.,]\d+)?(?:\s*(?:км|километр(?:а|ов)?|минут(?:ы|у)?|час(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|процент(?:ов|а)?|%))?|"
+    r"\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b|"
+    r"\b\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:к|тыс\.?|тысяч|₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|ак\.?\s*ч\.?|раз(?:а)?)?\b",
+    re.I,
+)
+_FREE_NUMBER_UNCERTAINTY_MARKERS = (
+    "ориентировоч",
+    "примерно",
+    "навскидк",
+    "скорее всего",
+    "не уверен",
+    "точно подскажет менеджер",
+    "точную информацию уточнит менеджер",
+    "около",
+    "порядка",
+    "в районе",
+    "приблизительно",
+    "где-то",
+    "обычно",
+    "как правило",
+    "в среднем",
+    "чаще всего",
+)
+_STRUCTURAL_NUMBER_OK = {str(number) for number in range(1, 12)}
+_YEAR_NUMBER_OK = {"2024", "2025", "2026", "2027", "2024/25", "2025/26", "2026/27"}
 _INDIVIDUAL_CHILD_RE = re.compile(
     r"мой\s+(?:реб[её]нок|сын|дочь)|у\s+моего|потянет\s+ли|справится\s+ли|"
     r"отста[её]т|не\s+тянет|что\s+с\s+ним|что\s+с\s+ней|подойд[её]т\s+ли\s+(?:моему|нам)|"
@@ -400,6 +422,12 @@ def estimate_mode_enabled(context: Mapping[str, Any] | None = None) -> bool:
     return _truthy(os.getenv(ESTIMATE_MODE_ENV))
 
 
+def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(FREE_NUMBER_GATE_ENV) is not None:
+        return _truthy(context.get(FREE_NUMBER_GATE_ENV))
+    return _truthy(os.getenv(FREE_NUMBER_GATE_ENV))
+
+
 def _normalize_warmth_mode(mode: object) -> str:
     value = str(mode or "").strip().casefold()
     return value if value in {"linter", "all_eligible"} else "linter"
@@ -470,11 +498,6 @@ def build_understanding_prompt(
         "не подменяй его соседним способом оплаты; в current_question и subquestion.text сохрани именно спрошенный способ.\n"
         "- Гипотетический вопрос до оплаты «если передумаю / если не понравится, вернут ли деньги?» — это refund_policy, не P0; "
         "попроси ключ refund_policy.current и отвечай из факта. Реальная просьба «верните деньги», спор оплаты или жалоба — P0 manager_only.\n"
-        "- Вопросы про дорогу и логистику НЕ являются pricing, даже если начинаются со «сколько»: "
-        "«сколько ехать», «дорога от Лобни», «как добраться», «минут пешком», «на электричке», «далеко ли» + география "
-        "→ planner_intent='general_consultation', answer_mode='estimate_allowed', "
-        "estimate_domain='travel_time' или 'route_logistics', needed_fact_keys=[]. "
-        "Не ставь prices.current для времени дороги или маршрута.\n"
         "- Если реплика — уточнение/эллипсис (короткий вопрос про класс/формат/цену/срок без названия предмета или продукта), "
         "ВОССТАНОВИ тему из истории, known_slots и topic_focus: в current_question и needed_fact_keys укажи полную тему "
         "(предмет+формат+класс+продукт), а не только новую деталь.\n"
@@ -688,70 +711,6 @@ def understand(
         active_brand=active_brand,
         fact_key_catalog=fact_key_catalog,
         p0_reason_pregate=pregate,
-    )
-
-
-def _travel_logistics_question_text(contract: AnswerContract, *, client_words: str = "") -> str:
-    return " ".join(
-        part
-        for part in (
-            client_words,
-            contract.current_question,
-            " ".join(item.text for item in contract.subquestions),
-        )
-        if part
-    )
-
-
-def _has_travel_logistics_signal(text: str) -> bool:
-    normalized = str(text or "").casefold().replace("ё", "е")
-    if not normalized or _TRAVEL_PRODUCT_EXCLUSION_RE.search(normalized):
-        return False
-    if re.search(r"как\s+добраться", normalized, re.I):
-        return True
-    return bool(_TRAVEL_LOGISTICS_RE.search(normalized) and _TRAVEL_GEO_HINT_RE.search(normalized))
-
-
-def _travel_estimate_domain(text: str) -> str:
-    normalized = str(text or "").casefold().replace("ё", "е")
-    if re.search(r"как\s+добраться|маршрут|пешком|электричк|метро|станци", normalized, re.I):
-        return "route_logistics"
-    return "travel_time"
-
-
-def _apply_travel_estimate_override(
-    contract: AnswerContract,
-    *,
-    client_words: str,
-    enabled: bool,
-) -> AnswerContract:
-    if not enabled or contract.is_p0:
-        return contract
-    question_text = _travel_logistics_question_text(contract, client_words=client_words)
-    if not _has_travel_logistics_signal(question_text):
-        return contract
-    current_question = contract.current_question or str(client_words or "").strip()[:300]
-    subquestions = contract.subquestions or (
-        Subquestion(text=current_question, answerable="self", needed_fact_keys=()),
-    )
-    updated_subquestions = tuple(
-        replace(
-            item,
-            text=item.text or current_question,
-            answerable="self",
-            needed_fact_keys=(),
-        )
-        for item in subquestions
-    )
-    return replace(
-        contract,
-        current_question=current_question,
-        subquestions=updated_subquestions,
-        planner_intent="general_consultation" if contract.planner_intent == "pricing" else contract.planner_intent,
-        answerability="answer_self",
-        answer_mode="estimate_allowed",
-        estimate_domain=_travel_estimate_domain(question_text),
-        estimate_confidence=max(contract.estimate_confidence, 0.70),
     )
 
 
@@ -1070,11 +1029,18 @@ def _resolve_answer_mode(
     has_p0: bool,
     has_kb_fact: bool,
     estimate_enabled: bool = False,
+    free_number_gate: bool = False,
 ) -> tuple[str, str]:
     if has_p0:
         return "confirmed_only", "none"
-    if estimate_enabled and not has_kb_fact and _has_travel_logistics_signal(question_text):
-        return "estimate_allowed", _travel_estimate_domain(question_text)
+    if free_number_gate:
+        if has_kb_fact:
+            return "confirmed_only", "none"
+        if contract.answer_mode == "estimate_allowed" and contract.estimate_domain in _ESTIMATE_DOMAINS:
+            return "estimate_allowed", contract.estimate_domain
+        if contract.answerability == "answer_self":
+            return "estimate_allowed", "general_advice"
+        return "confirmed_only", "none"
     if _is_product_question(
         question_text,
         planner_intent=contract.planner_intent,
@@ -1094,8 +1060,6 @@ def _is_product_question(
     planner_intent: str = "",
     needed_fact_keys: Sequence[str] = (),
 ) -> bool:
-    if _has_travel_logistics_signal(text):
-        return False
     combined = " ".join(str(item or "") for item in (text, planner_intent, *needed_fact_keys))
     if _PRODUCT_QUESTION_RE.search(combined):
         return True
@@ -1129,6 +1093,7 @@ def _estimate_policy_context(
     contract: AnswerContract,
     retrieval: RetrievalResult,
     enabled: bool,
+    free_number_gate: bool = False,
     question_text: str,
 ) -> Mapping[str, Any]:
     resolved_mode, resolved_domain = _resolve_answer_mode(
@@ -1137,9 +1102,11 @@ def _estimate_policy_context(
         has_p0=contract.is_p0,
         has_kb_fact=bool(retrieval.facts),
         estimate_enabled=enabled,
+        free_number_gate=free_number_gate,
     )
     return {
         "enabled": enabled,
+        "free_number_gate": free_number_gate,
         "planner_answer_mode": contract.answer_mode,
         "planner_estimate_domain": contract.estimate_domain,
         "planner_estimate_confidence": contract.estimate_confidence,
@@ -1234,13 +1201,15 @@ def build_estimate_prompt(
     }.get(estimate_domain, "низкорисковая бытовая оценка")
     return (
         f"Активный бренд: {contract.active_brand}. Не упоминай другой бренд.\n"
-        "Напиши клиенту полезный ответ-оценку, потому что подтверждённого факта по этому бытовому вопросу нет.\n"
+        "Напиши клиенту полезный ответ, потому что подтверждённого факта по этому вопросу может не быть.\n"
         f"Вопрос: {contract.current_question}\n"
         f"Разрешённый домен оценки: {domain_hint}.\n"
         "Правила:\n"
-        "- ОБЯЗАТЕЛЬНО добавь лёгкий маркер неуверенности: «ориентировочно», «примерно» или «навскидку».\n"
-        "- Можно оценивать только дорогу/логистику/географию или общий совет в общем виде.\n"
-        "- Нельзя оценивать цену, скидку, расписание, даты, смены, длительность урока, документы, возврат, оплату, места и запись.\n"
+        "- Отвечай естественно и помогай по сути вопроса.\n"
+        "- Если это бытовое/дорога/логистика/география или общий совет без продуктовой конкретики, можно дать полезную оценку.\n"
+        "- Для любой такой оценки с числом ОБЯЗАТЕЛЬНО поставь рядом маркер неуверенности: «ориентировочно», «примерно», «около», «обычно» или «скорее всего».\n"
+        "- Нельзя оценивать цену, скидку, расписание, даты, смены, длительность занятия, документы, возврат, оплату, места и запись.\n"
+        "- Если клиент спрашивает продуктовую конкретику без подтверждённого факта, честно скажи, что это проверит менеджер; не придумывай число даже с оговоркой.\n"
         "- В общем педагогическом совете говори только про типичную ситуацию; не ставь диагноз конкретному ребёнку и не обещай результат.\n"
         "- Не добавляй ₽, проценты, даты занятий, расписание или условия курса.\n"
         "- Если точность зависит от маршрута/расписания транспорта, так и скажи мягко.\n"
@@ -1882,11 +1851,6 @@ def run_pipeline(
             context=context,
             fact_key_catalog=fact_store.catalog,
         )
-        contract = _apply_travel_estimate_override(
-            contract,
-            client_words=client_words,
-            enabled=estimate_mode_enabled(context),
-        )
         trace.update(
             {
                 "answerability": contract.answerability,
@@ -1941,10 +1905,13 @@ def run_pipeline(
                 "matched_keys": {key: list(value) for key, value in retrieval.matched_keys.items()},
             }
         )
+    estimate_enabled = estimate_mode_enabled(context)
+    free_number_enabled = free_number_gate_enabled(context)
     estimate_policy = _estimate_policy_context(
         contract=contract,
         retrieval=retrieval,
-        enabled=estimate_mode_enabled(context),
+        enabled=estimate_enabled or free_number_enabled,
+        free_number_gate=free_number_enabled,
         question_text=client_words or contract.current_question,
     )
     contract = replace(
@@ -2714,16 +2681,27 @@ def verify_output(
     gate_answer_mode = _gate_answer_mode(contract=contract, context=context, explicit=answer_mode)
     gate_estimate_domain = _gate_estimate_domain(contract=contract, context=context, explicit=estimate_domain)
     gate_is_estimate = _gate_is_estimate(contract=contract, context=context, explicit=is_estimate)
-    findings.extend(
-        _answer_mode_number_findings(
-            text,
-            facts=facts,
-            client_message=client_message,
-            contract=contract,
-            answer_mode=gate_answer_mode,
-            estimate_domain=gate_estimate_domain,
+    gate_free_number = free_number_gate_enabled(context)
+    if gate_free_number:
+        findings.extend(
+            _free_number_gate_findings(
+                text,
+                facts=facts,
+                client_message=client_message,
+                context=context,
+            )
         )
-    )
+    else:
+        findings.extend(
+            _answer_mode_number_findings(
+                text,
+                facts=facts,
+                client_message=client_message,
+                contract=contract,
+                answer_mode=gate_answer_mode,
+                estimate_domain=gate_estimate_domain,
+            )
+        )
     unsupported_entities = unsupported_named_entities(
         text,
         facts=facts,
@@ -2758,7 +2736,12 @@ def verify_output(
         findings.append(VerificationFinding("ai_disclosure", "самораскрытие без прямого вопроса клиента"))
     if _P0_PROMISE_RE.search(text):
         findings.append(VerificationFinding("p0_promise", "обещание возврата/результата/поступления"))
-    if gate_answer_mode == "estimate_allowed" and gate_is_estimate and not _has_uncertainty_marker(text):
+    if (
+        not gate_free_number
+        and gate_answer_mode == "estimate_allowed"
+        and gate_is_estimate
+        and not _has_uncertainty_marker(text)
+    ):
         findings.append(VerificationFinding("estimate_without_uncertainty_marker", "оценка без явного маркера неуверенности"))
     if gate_answer_mode == "estimate_allowed" and gate_estimate_domain == "general_advice":
         findings.extend(_general_advice_estimate_findings(text, client_message=client_message))
@@ -2809,6 +2792,263 @@ def _answer_mode_number_findings(
     if introduced:
         findings.append(VerificationFinding("fact_grounding", f"числа вне подтверждённых фактов: {sorted(introduced)}"))
     return findings
+
+
+def _free_number_gate_findings(
+    text: str,
+    *,
+    facts: Mapping[str, str],
+    client_message: str,
+    context: Mapping[str, Any] | None,
+) -> list[VerificationFinding]:
+    fact_surfaces = _free_number_surfaces(" ".join(str(value) for value in facts.values()))
+    client_surfaces = _free_number_surfaces(_client_number_context_text(client_message, context=context))
+    product_tokens: list[str] = []
+    general_without_marker: list[str] = []
+    for token, start, end in _free_number_token_matches(text):
+        surfaces = _free_number_surfaces(token)
+        if not surfaces:
+            continue
+        if fact_surfaces.intersection(surfaces):
+            continue
+        if _is_free_product_number_context(text, token, start=start, end=end):
+            product_tokens.append(token)
+            continue
+        if _is_free_structural_number(token, surfaces, text=text, start=start, end=end) or client_surfaces.intersection(surfaces):
+            continue
+        if not _has_free_uncertainty_marker_near(text, token, start=start, end=end):
+            general_without_marker.append(token)
+    findings: list[VerificationFinding] = []
+    if product_tokens:
+        findings.append(
+            VerificationFinding(
+                "unsupported_product_number",
+                f"продуктовые числа вне подтверждённых фактов: {sorted(dict.fromkeys(product_tokens))}",
+            )
+        )
+    if general_without_marker:
+        findings.append(
+            VerificationFinding(
+                "general_number_without_marker",
+                f"общее негрунтованное число без маркера неуверенности рядом: {sorted(dict.fromkeys(general_without_marker))}",
+            )
+        )
+    return findings
+
+
+def _client_number_context_text(client_message: str, *, context: Mapping[str, Any] | None) -> str:
+    parts = [str(client_message or "")]
+    if not isinstance(context, MappingABC):
+        return " ".join(part for part in parts if part)
+    for key in ("conversation", "messages", "dialogue", "turns"):
+        value = context.get(key)
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            continue
+        for item in value:
+            if not isinstance(item, MappingABC):
+                continue
+            role = str(item.get("role") or item.get("speaker") or "").casefold()
+            if role and role not in {"client", "user", "customer"}:
+                continue
+            text = item.get("text") or item.get("message") or item.get("content")
+            if text:
+                parts.append(str(text))
+    return " ".join(part for part in parts if part)
+
+
+def _free_number_tokens(text: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(token for token, _start, _end in _free_number_token_matches(text)))
+
+
+def _free_number_token_matches(text: str) -> tuple[tuple[str, int, int], ...]:
+    tokens: list[tuple[str, int, int]] = []
+    for match in _FREE_NUMBER_TOKEN_RE.finditer(str(text or "")):
+        token = match.group(0).strip()
+        if token:
+            tokens.append((token, match.start(), match.end()))
+    return tuple(tokens)
+
+
+def _free_number_surfaces(text: str) -> set[str]:
+    surfaces: set[str] = set()
+    for token in _free_number_tokens(text):
+        surfaces.update(_normalize_free_number_token(token))
+    surfaces.update(_free_number_word_surfaces(text))
+    return {surface for surface in surfaces if surface}
+
+
+def _normalize_free_number_token(token: str) -> set[str]:
+    raw = str(token or "").casefold().replace("ё", "е").replace("\u00a0", " ").strip()
+    if not raw:
+        return set()
+    raw = raw.replace("–", "-").replace("—", "-")
+    raw = re.sub(r"\s+", " ", raw)
+    surfaces: set[str] = set()
+    time_match = re.fullmatch(r"\d{1,2}:\d{2}", raw)
+    if time_match:
+        hour, minute = raw.split(":", 1)
+        return {f"{int(hour)}:{minute}", f"{int(hour):02d}:{minute}"}
+    academic_year = re.fullmatch(r"(20\d{2})/(\d{2})", raw)
+    if academic_year:
+        year, short = academic_year.groups()
+        return {f"{year}/{short}"}
+    date_match = re.fullmatch(r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?", raw)
+    if date_match:
+        day, month, year = date_match.groups()
+        day_i = int(day)
+        month_i = int(month)
+        surfaces.add(f"{day_i}.{month_i}")
+        surfaces.add(f"{day_i:02d}.{month_i:02d}")
+        if year:
+            surfaces.add(f"{day_i}.{month_i}.{year}")
+            surfaces.add(f"{day_i:02d}.{month_i:02d}.{year}")
+        return surfaces
+    percent = bool(re.search(r"%|процент", raw, re.I))
+    thousand = bool(re.search(r"(?<=\d)\s*к\b|\b(?:тыс\.?|тысяч)\b", raw, re.I))
+    unitless = re.sub(
+        r"(?:₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|"
+        r"км|километр(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|"
+        r"ак\.?\s*ч\.?|раз(?:а)?|тыс\.?|тысяч|(?<=\d)\s*к\b)",
+        "",
+        raw,
+        flags=re.I,
+    ).strip()
+    unitless = re.sub(r"\s+", "", unitless)
+    range_match = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)", unitless)
+    if range_match:
+        left = _normalize_decimal_surface(range_match.group(1))
+        right = _normalize_decimal_surface(range_match.group(2))
+        surfaces.update({left, right, f"{left}-{right}"})
+        if percent:
+            surfaces.update({f"{left}%", f"{right}%", f"{left}-{right}%"})
+        return surfaces
+    number_match = re.search(r"\d+(?:[.,]\d+)?", unitless)
+    if not number_match:
+        return set()
+    value = _normalize_decimal_surface(number_match.group(0))
+    if thousand:
+        value = _multiply_thousand_surface(value)
+    surfaces.add(value)
+    if percent:
+        surfaces.add(f"{value}%")
+    return surfaces
+
+
+def _normalize_decimal_surface(value: str) -> str:
+    normalized = str(value or "").replace(",", ".").strip()
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized
+
+
+def _multiply_thousand_surface(value: str) -> str:
+    try:
+        number = float(value)
+    except Exception:
+        return value
+    multiplied = number * 1000
+    if multiplied.is_integer():
+        return str(int(multiplied))
+    return str(multiplied).rstrip("0").rstrip(".")
+
+
+def _is_free_product_number_context(
+    text: str,
+    token: str,
+    *,
+    start: int | None = None,
+    end: int | None = None,
+) -> bool:
+    raw = str(text or "")
+    item = str(token or "").strip()
+    if start is not None and end is not None:
+        if _is_client_grade_number_context_at(raw, start=start, end=end):
+            return False
+        window = _free_number_context_window(raw, start=start, end=end, radius=35)
+        if _is_decimal_year_range(item) and not _FREE_NUMBER_PRODUCT_CTX_RE.search(window.replace(item, " ")):
+            return False
+        return bool(_FREE_NUMBER_PRODUCT_CTX_RE.search(window))
+    if _is_client_grade_number_context(raw, item):
+        return False
+    if not item:
+        return bool(_FREE_NUMBER_PRODUCT_CTX_RE.search(raw))
+    index = raw.find(item)
+    if index < 0:
+        return bool(_FREE_NUMBER_PRODUCT_CTX_RE.search(raw))
+    window = raw[max(0, index - 35) : index + len(item) + 35]
+    if _is_decimal_year_range(item) and not _FREE_NUMBER_PRODUCT_CTX_RE.search(window.replace(item, " ")):
+        return False
+    return bool(_FREE_NUMBER_PRODUCT_CTX_RE.search(window))
+
+
+def _is_free_structural_number(
+    token: str,
+    surfaces: set[str],
+    *,
+    text: str,
+    start: int | None = None,
+    end: int | None = None,
+) -> bool:
+    if surfaces.intersection(_YEAR_NUMBER_OK):
+        return True
+    if start is not None and end is not None:
+        return bool(surfaces.intersection(_STRUCTURAL_NUMBER_OK) and _is_client_grade_number_context_at(text, start=start, end=end))
+    return bool(surfaces.intersection(_STRUCTURAL_NUMBER_OK) and _is_client_grade_number_context(text, token))
+
+
+def _has_free_uncertainty_marker_near(
+    text: str,
+    token: str,
+    *,
+    start: int | None = None,
+    end: int | None = None,
+) -> bool:
+    raw = str(text or "")
+    item = str(token or "").strip()
+    if not item:
+        segment = raw
+    elif start is not None and end is not None:
+        segment = raw[max(0, start - 60) : end + 60]
+    else:
+        index = raw.find(item)
+        segment = raw if index < 0 else raw[max(0, index - 60) : index + len(item) + 60]
+    low = segment.casefold().replace("ё", "е")
+    return any(marker in low for marker in _FREE_NUMBER_UNCERTAINTY_MARKERS)
+
+
+def _is_client_grade_number_context_at(text: str, *, start: int, end: int) -> bool:
+    raw = str(text or "")
+    window = raw[max(0, start - 16) : end + 24].casefold().replace("ё", "е")
+    return bool(re.search(r"\bкласс(?:а|е|ов|ы)?\b|\bкл\.?\b", window, re.I))
+
+
+def _free_number_context_window(text: str, *, start: int, end: int, radius: int) -> str:
+    raw = str(text or "")
+    left = max(0, start - radius)
+    right = min(len(raw), end + radius)
+    for separator in ".?!;\n":
+        pos = raw.rfind(separator, left, start)
+        if pos >= 0:
+            left = max(left, pos + 1)
+        pos = raw.find(separator, end, right)
+        if pos >= 0:
+            right = min(right, pos)
+    return raw[left:right]
+
+
+def _is_decimal_year_range(token: str) -> bool:
+    item = str(token or "").casefold().replace("ё", "е")
+    return bool(re.search(r"\d+[.,]\d+\s*[-–]\s*\d+(?:[.,]\d+)?", item) and re.search(r"год|лет", item))
+
+
+def _free_number_word_surfaces(text: str) -> set[str]:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    surfaces: set[str] = set()
+    if re.search(r"\b(?:два|двое|двух|второ[йеюя])\b", normalized):
+        surfaces.add("2")
+    if re.search(r"\b(?:три|трое|трех|трёх|трети[йеюя])\b", normalized):
+        surfaces.add("3")
+    return surfaces
 
 
 def _number_token_map(text: str) -> Mapping[str, tuple[str, ...]]:
@@ -3087,7 +3327,7 @@ def _hard_check(
     findings.extend(_payment_method_findings(text_to_check, contract=contract, facts=facts))
     unsupported: tuple[str, ...] = ()
     semantic_available = True
-    if toggles.semantic_faithfulness and contract.answer_mode != "estimate_allowed":
+    if toggles.semantic_faithfulness:
         result = check_claim_faithfulness(
             text_to_check,
             facts=facts,

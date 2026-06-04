@@ -11,6 +11,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     _safe_fallback_text,
     build_conversation,
     build_draft_prompt,
+    build_estimate_prompt,
     build_faithfulness_prompt,
     build_semantic_match_prompt,
     build_understanding_prompt,
@@ -132,8 +133,8 @@ def test_level_a_estimate_travel_answers_with_uncertainty_marker(monkeypatch) ->
     assert not result.findings
 
 
-def test_level_a_travel_pricing_misclassification_is_overridden(monkeypatch) -> None:
-    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+def test_level_a_free_number_gate_allows_travel_even_when_planner_says_pricing(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
     store = FactStore(catalog=("prices.current",), store={"unpk": {}})
     prompts: list[str] = []
 
@@ -165,25 +166,30 @@ def test_level_a_travel_pricing_misclassification_is_overridden(monkeypatch) -> 
 
     assert result.route == "bot_answer_self"
     assert result.is_estimate is True
-    assert result.estimate_domain == "travel_time"
-    assert result.contract.planner_intent == "general_consultation"
-    assert result.contract.needed_fact_keys == ()
-    assert result.missing == ()
+    assert result.estimate_domain == "general_advice"
+    assert result.contract.planner_intent == "pricing"
+    assert result.missing == ("prices.current",)
     assert "Ориентировочно" in result.draft_text
-    assert "ответ-оценку" in prompts[0]
+    assert "Напиши клиенту полезный ответ" in prompts[0]
     assert "₽" not in result.draft_text
 
 
-def test_understanding_prompt_tells_planner_travel_is_not_pricing() -> None:
-    prompt = build_understanding_prompt(
-        conversation=({"role": "client", "text": "сколько по времени дорога от Лобни до вас?"},),
+def test_level_a_free_number_estimate_prompt_requires_markers_and_blocks_product_numbers() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько ехать от Лобни",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
         active_brand="unpk",
-        fact_key_catalog=("prices.current",),
+        fact_key_catalog=(),
     )
+    prompt = build_estimate_prompt(conversation=_conv("сколько ехать от Лобни"), contract=contract, estimate_domain="general_advice")
 
-    assert "Вопросы про дорогу и логистику НЕ являются pricing" in prompt
-    assert "Не ставь prices.current для времени дороги или маршрута" in prompt
-    assert "estimate_domain='travel_time' или 'route_logistics'" in prompt
+    assert "Напиши клиенту полезный ответ" in prompt
+    assert "ОБЯЗАТЕЛЬНО поставь рядом маркер неуверенности" in prompt
+    assert "не придумывай число даже с оговоркой" in prompt
 
 
 def test_level_a_estimate_flag_off_keeps_existing_handoff(monkeypatch) -> None:
@@ -447,6 +453,201 @@ def test_level_a_gate_allows_grounded_product_number_inside_estimate() -> None:
     assert not findings
 
 
+def test_level_a_free_number_gate_allows_general_numbers_only_with_near_marker() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько ехать от станции",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "route_logistics",
+        },
+        active_brand="unpk",
+        fact_key_catalog=(),
+    )
+    ok = verify_output(
+        "Ориентировочно от станции около 15-20 минут пешком.",
+        facts={},
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько идти от станции",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+    blocked = verify_output(
+        "От станции 15 минут пешком.",
+        facts={},
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько идти от станции",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert not ok
+    assert {finding.code for finding in blocked} == {"general_number_without_marker"}
+
+
+def test_level_a_free_number_gate_marker_does_not_save_product_numbers() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "примерная цена и расписание",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+    cases = (
+        "Скорее всего курс около 50 000 ₽.",
+        "Ориентировочно скидка 20%.",
+        "Вроде занятия по вторникам в 18:00.",
+        "Обычно занятие длится 90 минут.",
+        "Как правило занятия 3 раза в неделю.",
+    )
+
+    for text in cases:
+        findings = verify_output(
+            text,
+            facts={},
+            active_brand="foton",
+            contract=contract,
+            client_message="можно примерно?",
+            context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+        )
+        assert "unsupported_product_number" in {finding.code for finding in findings}, text
+
+
+def test_level_a_free_number_gate_client_number_does_not_ground_product_claim() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "курс 50 000?",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=(),
+    )
+
+    findings = verify_output(
+        "Да, курс стоит 50 000 ₽.",
+        facts={},
+        active_brand="foton",
+        contract=contract,
+        client_message="курс 50 000?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in findings}
+
+
+def test_level_a_free_number_gate_allows_grounded_product_and_structural_numbers() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "цена для 9 класса и двоих детей",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Для 9 класса онлайн стоит 29 750 ₽. Вы писали про 2 детей.",
+        facts={"price.online": "Онлайн для 9 класса стоит 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="для 9 класса, двое детей",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert not findings
+
+
+def test_level_a_free_number_gate_does_not_treat_zanyatie_as_duration_by_itself() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько идти до занятия",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "route_logistics",
+        },
+        active_brand="unpk",
+        fact_key_catalog=(),
+    )
+
+    findings = verify_output(
+        "Ориентировочно 15 минут до занятия.",
+        facts={},
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько идти до занятия",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert not findings
+
+
+def test_level_a_free_number_gate_normalizes_ranges_money_time_dates_years_and_percent() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "проверьте числа",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("mixed.facts",),
+    )
+
+    findings = verify_output(
+        "Ориентировочно дорога 15-20 минут, подготовка обычно 1.5-2 года. "
+        "Цена 29750 ₽, ориентир 50к, занятие в 18:00, дата 01.08, год 2026/27, скидка 20%.",
+        facts={
+            "mixed.facts": "Цена 29 750 ₽. Ориентир 50 000 ₽. Занятие в 18:00. "
+            "Дата 1.08. Учебный год 2026/27. Скидка 20 процентов."
+        },
+        active_brand="foton",
+        contract=contract,
+        client_message="что по числам?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert not findings
+
+
+def test_level_a_free_number_gate_flag_off_keeps_legacy_number_policy() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько ехать",
+            "answerability": "answer_self",
+            "answer_mode": "confirmed_only",
+        },
+        active_brand="unpk",
+        fact_key_catalog=(),
+    )
+
+    legacy = verify_output(
+        "Ориентировочно 15 минут пешком.",
+        facts={},
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько ехать",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "0"},
+    )
+    free = verify_output(
+        "Ориентировочно 15 минут пешком.",
+        facts={},
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько ехать",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert "fact_grounding" in {finding.code for finding in legacy}
+    assert not free
+
+
 def test_level_a_general_advice_gate_blocks_pressure_or_result_promise() -> None:
     contract = parse_contract(
         {
@@ -469,6 +670,40 @@ def test_level_a_general_advice_gate_blocks_pressure_or_result_promise() -> None
 
     codes = {finding.code for finding in findings}
     assert "estimate_general_advice_risk" in codes or "p0_promise" in codes
+
+
+def test_level_a_faithfulness_runs_for_estimate_allowed_non_numeric_claim(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    store = FactStore(catalog=(), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("можно ли оформить рассрочку?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "можно ли оформить рассрочку",
+                "answerability": "answer_self",
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "general_advice",
+            }
+        ),
+        draft_fn=lambda _prompt: "Рассрочка доступна, можно оформить.",
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "Рассрочка доступна",
+                    "evidence_fact_key": "",
+                    "verdict": "unsupported",
+                    "reason": "нет факта",
+                }
+            ]
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.fallback_reason == "estimate_guard_failed"
+    assert "Рассрочка доступна" not in result.draft_text
 
 
 def test_understanding_prompt_requests_selling_subtext_without_new_call() -> None:

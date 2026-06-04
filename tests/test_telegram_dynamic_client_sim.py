@@ -1,5 +1,6 @@
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -396,6 +397,99 @@ def test_build_memory_model_modes_use_low_reasoning() -> None:
     assert isinstance(codex_model, sim.CodexJsonModel)
     assert codex_model.model == "gpt-5.5"
     assert codex_model.reasoning_effort == "low"
+
+
+def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+
+    model = sim.ClaudeJsonModel(
+        model="claude-sonnet-4-6",
+        reasoning_effort="high",
+        timeout_sec=20,
+        claude_bin="claude",
+    )
+
+    assert model.generate("Верни JSON") == {"ok": True}
+
+    cmd, kwargs = calls[0]
+    assert cmd[:2] == ["claude", "-p"]
+    assert "--bare" in cmd
+    assert cmd[cmd.index("--model") + 1] == "claude-sonnet-4-6"
+    assert cmd[cmd.index("--output-format") + 1] == "text"
+    assert cmd[cmd.index("--tools") + 1] == ""
+    assert cmd[cmd.index("--mcp-config") + 1] == "{}"
+    assert "--strict-mcp-config" in cmd
+    assert "--no-session-persistence" in cmd
+    assert "--disable-slash-commands" in cmd
+    assert cmd[cmd.index("--permission-mode") + 1] == "plan"
+    assert cmd[cmd.index("--effort") + 1] == "high"
+    assert kwargs["input"] == "Верни JSON"
+    assert kwargs["check"] is False
+
+
+def test_build_bot_provider_claude_mode_uses_claude_runner() -> None:
+    args = argparse.Namespace(
+        bot_mode="claude",
+        model="gpt-5.5",
+        claude_model="claude-sonnet-4-6",
+        claude_bin="claude",
+        bot_reasoning="high",
+        timeout_sec=180,
+        disable_bot_cache=True,
+        semantic_mode="off",
+        semantic_model="gpt-5.5",
+        semantic_reasoning="medium",
+        llm_call_counter=None,
+    )
+
+    provider = sim.build_bot_provider(args)
+
+    assert isinstance(provider.runner, sim.ClaudeCliRunner)
+    assert provider.model == "claude-sonnet-4-6"
+    assert provider.reasoning_effort == "high"
+
+
+def test_claude_bot_mode_still_uses_existing_safety_gates() -> None:
+    payloads = {
+        "promise": {
+            "client": "Гарантируете 100 баллов?",
+            "text": "Гарантируем 100 баллов на ЕГЭ.",
+            "expected_flag": "result_guarantee_safe_template_applied",
+        },
+        "brand": {
+            "client": "У Фотона и УНПК одинаковые условия?",
+            "text": "У Фотона и УНПК одинаковые условия.",
+            "expected_flag": "brand_separation_guarded",
+        },
+        "p0": {
+            "client": "Я оплатил, занятий нет, верните деньги",
+            "text": "Я помогу, но сначала расскажите, какой курс интересует.",
+            "expected_flag": "high_risk_manager_only",
+        },
+    }
+
+    for case in payloads.values():
+        def runner(cmd, input, capture_output, text, check, timeout, env, *, draft=case["text"]):
+            response = {
+                "route": "bot_answer_self",
+                "draft_text": draft,
+                "message_type": "question",
+                "topic_id": "service:S5_general_consultation",
+                "confidence_theme": 0.9,
+            }
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(response, ensure_ascii=False), stderr="")
+
+        provider = sim.CountingSubscriptionLlmDraftProvider(runner=runner, cache_dir=None)
+        result = provider.build_draft(case["client"], context={"active_brand": "foton"})
+
+        assert result.route in {"draft_for_manager", "manager_only"}
+        assert case["expected_flag"] in result.safety_flags
 
 
 def test_run_one_dialog_uses_fake_memory_model(monkeypatch, tmp_path):

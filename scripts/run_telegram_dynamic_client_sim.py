@@ -254,6 +254,143 @@ class CodexJsonModel:
         return extract_json_object(raw or proc.stdout or proc.stderr)
 
 
+_CLAUDE_DEFAULT_MODEL = "claude-sonnet-4-6"
+_CLAUDE_REASONING_ARGS: Mapping[str, tuple[str, ...]] = {
+    "low": ("--effort", "low"),
+    "medium": ("--effort", "medium"),
+    "high": ("--effort", "high"),
+    "xhigh": ("--effort", "xhigh"),
+    "max": ("--effort", "max"),
+}
+
+
+def _claude_reasoning_args(level: str) -> list[str]:
+    value = str(level or "").strip().lower()
+    if value in {"", "none", "off"}:
+        return []
+    return list(_CLAUDE_REASONING_ARGS.get(value, _CLAUDE_REASONING_ARGS["high"]))
+
+
+def _claude_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    return dict(os.environ if base_env is None else base_env)
+
+
+def build_claude_print_command(
+    *,
+    claude_bin: str = "claude",
+    model: str = _CLAUDE_DEFAULT_MODEL,
+    reasoning_effort: str = "high",
+) -> list[str]:
+    cmd = [
+        str(claude_bin or "claude").strip() or "claude",
+        "-p",
+        "--bare",
+        "--model",
+        str(model or _CLAUDE_DEFAULT_MODEL).strip() or _CLAUDE_DEFAULT_MODEL,
+        "--output-format",
+        "text",
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "{}",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+        "--permission-mode",
+        "plan",
+    ]
+    cmd.extend(_claude_reasoning_args(reasoning_effort))
+    return cmd
+
+
+class ClaudeJsonModel:
+    def __init__(
+        self,
+        *,
+        model: str = _CLAUDE_DEFAULT_MODEL,
+        reasoning_effort: str = "high",
+        timeout_sec: int = 180,
+        claude_bin: str = "claude",
+    ) -> None:
+        self.model = str(model or _CLAUDE_DEFAULT_MODEL).strip() or _CLAUDE_DEFAULT_MODEL
+        self.reasoning_effort = reasoning_effort
+        self.timeout_sec = timeout_sec
+        self.claude_bin = str(claude_bin or "claude").strip() or "claude"
+
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        cmd = build_claude_print_command(
+            claude_bin=self.claude_bin,
+            model=self.model,
+            reasoning_effort=self.reasoning_effort,
+        )
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=self.timeout_sec,
+            check=False,
+            env=_claude_env(),
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"claude -p failed rc={proc.returncode}: {(proc.stderr or '')[-500:]}")
+        return extract_json_object(proc.stdout or proc.stderr)
+
+
+class ClaudeCliRunner:
+    def __init__(
+        self,
+        *,
+        model: str = _CLAUDE_DEFAULT_MODEL,
+        reasoning_effort: str = "high",
+        timeout_sec: int = 180,
+        claude_bin: str = "claude",
+    ) -> None:
+        self.model = str(model or _CLAUDE_DEFAULT_MODEL).strip() or _CLAUDE_DEFAULT_MODEL
+        self.reasoning_effort = reasoning_effort
+        self.timeout_sec = timeout_sec
+        self.claude_bin = str(claude_bin or "claude").strip() or "claude"
+        self.last_commands: list[list[str]] = []
+
+    def __call__(
+        self,
+        _cmd: Sequence[str],
+        *,
+        input: str,
+        capture_output: bool,
+        text: bool,
+        check: bool,
+        timeout: int,
+        env: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        cmd = build_claude_print_command(
+            claude_bin=self.claude_bin,
+            model=self.model,
+            reasoning_effort=self.reasoning_effort,
+        )
+        self.last_commands.append(cmd)
+        proc = subprocess.run(
+            cmd,
+            input=input,
+            capture_output=capture_output,
+            text=text,
+            check=check,
+            timeout=timeout or self.timeout_sec,
+            env=_claude_env(env),
+        )
+        return subprocess.CompletedProcess(_cmd, proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+
+
+def _claude_model_from_args(args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "claude_model", "") or "").strip()
+    if explicit:
+        return explicit
+    model = str(getattr(args, "model", "") or "").strip()
+    if model.startswith("claude"):
+        return model
+    return _CLAUDE_DEFAULT_MODEL
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run dynamic client simulator against Telegram bot draft logic.")
     parser.add_argument("--scenarios", type=Path, default=DEFAULT_V7_PATH)
@@ -296,8 +433,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--client-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
-    parser.add_argument("--bot-mode", choices=("codex", "fake"), default="codex")
+    parser.add_argument("--bot-mode", choices=("codex", "claude", "fake"), default="codex")
     parser.add_argument("--model", default="gpt-5.5")
+    parser.add_argument("--claude-model", default=_CLAUDE_DEFAULT_MODEL)
+    parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--bot-reasoning", default="medium")
     parser.add_argument("--client-reasoning", default="medium")
     parser.add_argument("--judge-reasoning", default="high")
@@ -698,11 +837,22 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         if dialog_id:
             cache_dir = cache_dir / safe_filename(dialog_id)
     semantic_match_model = build_semantic_match_model(args)
+    runner = None
+    model = args.model
+    if args.bot_mode == "claude":
+        model = _claude_model_from_args(args)
+        runner = ClaudeCliRunner(
+            model=model,
+            reasoning_effort=args.bot_reasoning,
+            timeout_sec=args.timeout_sec,
+            claude_bin=getattr(args, "claude_bin", "claude"),
+        )
     return CountingSubscriptionLlmDraftProvider(
-        model=args.model,
+        model=model,
         reasoning_effort=args.bot_reasoning,
         timeout_sec=args.timeout_sec,
         cache_dir=cache_dir,
+        runner=runner,
         dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,
         dialogue_contract_semantic_match_enabled=semantic_match_model is not None,
         llm_call_counter=getattr(args, "llm_call_counter", None),

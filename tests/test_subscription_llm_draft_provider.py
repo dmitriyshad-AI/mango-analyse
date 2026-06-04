@@ -53,6 +53,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_conversation_intent_plan_guard,
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
+    apply_phase2_tone_layer,
     apply_unstated_subject_guard,
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
@@ -3883,6 +3884,80 @@ def test_humanity_x2_rewriter_never_touches_identity_policy_c() -> None:
     assert result.draft_text == IDENTITY_FOTON_SAFE_TEXT
     assert "humanity_x2_rewritten" not in result.safety_flags
     assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_identity_policy"
+
+
+def test_phase2_tone_reduces_bureaucratic_text_behind_flag() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В рамках текущего учебного центра обучение осуществляется онлайн. Менеджер уточнит ближайший шаг.",
+        safety_flags=("rules_engine_format_choice_present_both",),
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question="Как проходит обучение?", keys=("format.online",)),
+                "retrieved_facts": {"format.online": "Обучение проходит онлайн."},
+                "retrieved_fact_keys": ["format.online"],
+            }
+        },
+    )
+
+    result = apply_phase2_tone_layer(
+        base,
+        client_message="Как проходит обучение?",
+        context={"active_brand": "foton", "phase2_tone_enabled": True},
+    )
+
+    assert result.draft_text != base.draft_text
+    assert "в рамках текущего учебного центра" not in result.draft_text.casefold()
+    assert "осуществляется" not in result.draft_text.casefold()
+    assert "phase2_tone_rewritten" in result.safety_flags
+    assert result.metadata["phase2_tone"]["tone_after"]["tone_canc"] < result.metadata["phase2_tone"]["tone_before"]["tone_canc"]
+
+
+def test_phase2_tone_rolls_back_candidate_with_new_product_number() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В рамках текущего учебного центра обучение осуществляется онлайн.",
+        safety_flags=("rules_engine_format_choice_present_both",),
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question="Как проходит обучение?", keys=("format.online",)),
+                "retrieved_facts": {"format.online": "Обучение проходит онлайн."},
+                "retrieved_fact_keys": ["format.online"],
+            }
+        },
+    )
+
+    result = apply_phase2_tone_layer(
+        base,
+        client_message="Как проходит обучение?",
+        context={
+            "active_brand": "foton",
+            "phase2_tone_enabled": True,
+            "phase2_tone_rewrite_fn": lambda _text: "Обучение проходит онлайн. Год стоит 100 000 ₽.",
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "phase2_tone_rewritten" not in result.safety_flags
+    assert "verify_output" in result.metadata["phase2_tone"]["fallback_reason"]
+
+
+def test_phase2_tone_does_not_touch_p0_or_manager_only() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="В рамках текущего учебного центра вопрос передам менеджеру.",
+        safety_flags=("high_risk_manager_only",),
+    )
+
+    result = apply_phase2_tone_layer(
+        base,
+        client_message="Верните деньги",
+        context={"active_brand": "foton", "phase2_tone_enabled": True},
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "phase2_tone_rewritten" not in result.safety_flags
+    assert result.metadata["phase2_tone"]["fallback_reason"] == "locked_p0_or_manager_only"
 
 
 def test_humanity_x2_rewriter_allows_migrated_rule_answers_with_stripped_internal_marker() -> None:

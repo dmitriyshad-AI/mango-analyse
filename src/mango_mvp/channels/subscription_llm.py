@@ -25,6 +25,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     check_claim_faithfulness as check_dialogue_contract_faithfulness,
     concrete_anchors as dialogue_contract_concrete_anchors,
     _established_topic_from_context as dialogue_contract_established_topic_from_context,
+    new_concrete_anchors as dialogue_contract_new_concrete_anchors,
     parse_contract as parse_dialogue_contract,
     pipeline_enabled as dialogue_contract_pipeline_enabled,
     run_pipeline as run_dialogue_contract_pipeline,
@@ -55,6 +56,7 @@ from mango_mvp.channels.draft_prompt_builder import (
     should_force_manager_only,
 )
 from mango_mvp.insights.sanitizers import sanitize_answer
+from mango_mvp.insights.tone_score import score_tone
 from mango_mvp.question_catalog.classifier import load_valid_theme_and_service_ids
 
 
@@ -80,6 +82,7 @@ A_THREAD_ENV = "TELEGRAM_A_THREAD"
 A_PROACTIVE_ENV = "TELEGRAM_A_PROACTIVE"
 A_RICH_FORMAT_ENV = "TELEGRAM_A_RICH_FORMAT"
 OUTPUT_SANITIZER_ENV = "TELEGRAM_OUTPUT_SANITIZER"
+PH2_TONE_ENV = "TELEGRAM_PH2_TONE"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -1818,7 +1821,8 @@ class SubscriptionLlmDraftProvider:
                 if _humanity_x2_rewrite_enabled(context)
                 else None,
             )
-            proactive = apply_a2_proactive_layer(rewritten, client_message=client_message, context=context)
+            toned = apply_phase2_tone_layer(rewritten, client_message=client_message, context=context)
+            proactive = apply_a2_proactive_layer(toned, client_message=client_message, context=context)
             return apply_authoritative_output_gate(proactive, client_message=client_message, context=context)
         else:
             prompt = build_draft_prompt(client_message, context=context)
@@ -1861,6 +1865,7 @@ class SubscriptionLlmDraftProvider:
             if _humanity_x2_rewrite_enabled(context)
             else None,
         )
+        result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
@@ -2563,6 +2568,7 @@ class FakeSubscriptionLlmDraftProvider:
         result = apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
         result = apply_humanity_guards(result, client_message=client_message, context=context)
         result = apply_humanity_x2_rewriter(result, client_message=client_message, context=context)
+        result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
@@ -4552,6 +4558,113 @@ def apply_humanity_x2_rewriter(
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, "humanity_x2_rewritten"])),
         metadata=metadata,
     )
+
+
+def apply_phase2_tone_layer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _phase2_tone_enabled(context):
+        return result
+    before = score_tone(result.draft_text)
+    metadata = dict(result.metadata)
+    metadata["phase2_tone"] = {
+        "enabled": True,
+        "tone_before": before.as_dict(),
+    }
+    if result.route == "manager_only" or _humanity_p0_required(result):
+        metadata["phase2_tone"]["fallback_reason"] = "locked_p0_or_manager_only"
+        return replace(result, metadata=metadata)
+    if before.tone_canc <= 0:
+        metadata["phase2_tone"]["fallback_reason"] = "tone_ok"
+        return replace(result, metadata=metadata)
+    rewrite_fn = _phase2_tone_rewrite_override(context)
+    candidate = rewrite_fn(result.draft_text) if rewrite_fn is not None else _phase2_tone_rewrite(result.draft_text)
+    candidate = str(candidate or "").strip()
+    if not candidate or candidate == str(result.draft_text or "").strip():
+        metadata["phase2_tone"]["fallback_reason"] = "no_change"
+        return replace(result, metadata=metadata)
+    violation = _phase2_text_change_violation(result, candidate, client_message=client_message, context=context)
+    if violation:
+        metadata["phase2_tone"]["fallback_reason"] = violation
+        metadata["phase2_tone"]["candidate_rejected"] = True
+        return replace(result, metadata=metadata)
+    after = score_tone(candidate)
+    metadata["phase2_tone"].update(
+        {
+            "rewritten": True,
+            "tone_after": after.as_dict(),
+        }
+    )
+    return replace(
+        result,
+        draft_text=candidate,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "phase2_tone_rewritten"])),
+        metadata=metadata,
+    )
+
+
+def _phase2_tone_rewrite(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    replacements = (
+        (r"\bСориентирую по проверенным данным[:：]?\s*", ""),
+        (r"\bсориентирую по проверенным данным[:：]?\s*", ""),
+        (r"\bв рамках текущего учебного центра\b", "по этому центру"),
+        (r"\bВ рамках текущего учебного центра\b", "По этому центру"),
+        (r"\bосуществляется\b", "проходит"),
+        (r"\bОсуществляется\b", "Проходит"),
+        (r"\bпредоставляется\b", "есть"),
+        (r"\bПредоставляется\b", "Есть"),
+        (r"\bближайший шаг уточнит менеджер\b", "дальше подскажет менеджер"),
+        (r"\bМенеджер уточнит ближайший шаг\b", "Дальше подскажет менеджер"),
+    )
+    for pattern, repl in replacements:
+        value = re.sub(pattern, repl, value)
+    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\s+([,.!?;:])", r"\1", value)
+    return value
+
+
+def _phase2_text_change_violation(
+    result: SubscriptionDraftResult,
+    candidate: str,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    if draft_has_identity_disclosure(candidate):
+        return "identity_disclosure"
+    if _humanity_x2_repo_gate(candidate, result=result, client_message=client_message, context=context):
+        return "repo_gate"
+    facts = _rules_engine_facts(result, context)
+    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(facts.keys()))
+    findings = verify_dialogue_contract_output(
+        candidate,
+        facts=facts,
+        active_brand=_active_brand(context),
+        contract=contract,
+        client_message=client_message,
+        context=context,
+        previous_bot_texts=_humanity_previous_bot_texts(context),
+    )
+    if findings:
+        return "verify_output:" + ",".join(dict.fromkeys(finding.code for finding in findings))
+    added_anchors = dialogue_contract_new_concrete_anchors(candidate, original=result.draft_text, facts=facts)
+    if added_anchors:
+        return "new_concrete_anchor"
+    return ""
+
+
+def _phase2_tone_rewrite_override(context: Optional[Mapping[str, Any]]) -> Optional[Callable[[str], str]]:
+    if isinstance(context, Mapping):
+        value = context.get("phase2_tone_rewrite_fn")
+        if callable(value):
+            return value
+    return None
 
 
 def _humanity_x2_identity_policy_locked(result: SubscriptionDraftResult) -> bool:
@@ -9027,6 +9140,14 @@ def _output_sanitizer_enabled(context: Optional[Mapping[str, Any]] = None) -> bo
             if key in context:
                 return _truthy_value(context.get(key))
     return _truthy_value(os.getenv(OUTPUT_SANITIZER_ENV))
+
+
+def _phase2_tone_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (PH2_TONE_ENV, "phase2_tone_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(PH2_TONE_ENV))
 
 
 def _answer_quality_llm_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

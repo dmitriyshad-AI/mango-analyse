@@ -1925,6 +1925,7 @@ class SubscriptionLlmDraftProvider:
                     "next_step_text": str(getattr(pipeline_result, "next_step_text", "") or ""),
                     "estimate": {
                         "is_estimate": bool(pipeline_result.is_estimate),
+                        "estimate_applied": bool(getattr(pipeline_result, "estimate_applied", False) or pipeline_result.is_estimate),
                         "answer_mode": pipeline_result.estimate_answer_mode,
                         "estimate_domain": pipeline_result.estimate_domain,
                     },

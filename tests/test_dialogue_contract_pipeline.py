@@ -4224,6 +4224,148 @@ def test_q_partial_yield_with_no_grounded_fact_keeps_handoff(monkeypatch) -> Non
     assert "29 750" not in result.draft_text
 
 
+def test_q_partial_yield_estimates_lobnya_travel_before_manager_handoff(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    store = FactStore(
+        catalog=("prices.current",),
+        store={"unpk": {"prices.current": "УНПК: онлайн-курс стоит 41 800 ₽ за семестр."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке от Лобни?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена/дорога от Лобни",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно на электричке дорога занимает около 40–50 минут, точное время зависит от расписания."
+        if "Разрешённый домен оценки" in prompt
+        else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_applied is True
+    assert result.estimate_domain == "route_logistics"
+    assert "Ориентировочно" in result.draft_text
+    assert "40–50 минут" in result.draft_text
+    assert "41 800" not in result.draft_text
+
+
+def test_q_partial_yield_estimates_prospekt_mira_travel_before_handoff(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("с проспекта Мира сколько ехать до занятий?"),
+        active_brand="foton",
+        fact_store=FactStore(catalog=("schedule.current",), store={"foton": {"schedule.current": "Расписание занятий менеджер сверяет по группе."}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "расписание занятий",
+                "planner_intent": "schedule",
+                "needed_fact_keys": ["schedule.current"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda prompt: "Примерно 25–35 минут на метро, но точное время зависит от маршрута."
+        if "Разрешённый домен оценки" in prompt
+        else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_applied is True
+    assert result.estimate_domain == "travel_time"
+    assert "Примерно" in result.draft_text
+    assert "25–35 минут" in result.draft_text
+    assert "Расписание занятий" not in result.draft_text
+
+
+def test_q_partial_yield_estimate_does_not_override_p0(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("верните деньги, занятий нет; и сколько ехать от Лобни?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=("prices.current",), store={"unpk": {"prices.current": "УНПК: онлайн-курс стоит 41 800 ₽ за семестр."}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги и дорога от Лобни",
+                "needed_fact_keys": ["prices.current"],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно дорога займёт около 40 минут." if "Разрешённый домен оценки" in prompt else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert result.is_estimate is False
+    assert result.estimate_applied is False
+    assert "40 минут" not in result.draft_text
+    assert "41 800" not in result.draft_text
+
+
+def test_q_partial_yield_estimate_without_uncertainty_marker_keeps_handoff(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке от Лобни?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=("prices.current",), store={"unpk": {"prices.current": "УНПК: онлайн-курс стоит 41 800 ₽ за семестр."}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "цена/дорога от Лобни",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda prompt: "На электричке дорога занимает 40–50 минут." if "Разрешённый домен оценки" in prompt else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert result.estimate_applied is False
+    assert "40–50 минут" not in result.draft_text
+
+
+def test_q_partial_yield_estimate_blocks_brand_leak(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("с проспекта Мира сколько ехать?"),
+        active_brand="foton",
+        fact_store=FactStore(catalog=("schedule.current",), store={"foton": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "дорога от проспекта Мира",
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно до УНПК дорога занимает около 25 минут." if "Разрешённый домен оценки" in prompt else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert result.estimate_applied is False
+    assert "УНПК" not in result.draft_text
+
+
 def test_q_partial_yield_invariant_suite_with_quality_flags_on(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")

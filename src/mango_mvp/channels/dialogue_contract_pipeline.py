@@ -413,6 +413,7 @@ class DialogueContractPipelineResult:
     repaired: bool = False
     recovery_candidate: str = ""
     is_estimate: bool = False
+    estimate_applied: bool = False
     estimate_domain: str = "none"
     estimate_answer_mode: str = "confirmed_only"
     partial_yield_applied: bool = False
@@ -1650,6 +1651,43 @@ def _semantic_match_question_text(contract: AnswerContract, *, client_words: str
     )
 
 
+def _quality_handoff_estimate_domain(
+    *,
+    contract: AnswerContract,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+) -> str:
+    if not quality_partial_yield_enabled(context) or not free_number_gate_enabled(context) or contract.is_p0:
+        return ""
+    combined = " ".join(
+        part
+        for part in (
+            client_words,
+            contract.current_question,
+            " ".join(item.text for item in contract.subquestions if item.text),
+            contract.existence_target,
+        )
+        if part
+    )
+    if not combined.strip():
+        return ""
+    product_guard_text = client_words or combined
+    if _TRAVEL_ESTIMATE_PRODUCT_BLOCK_RE.search(product_guard_text):
+        return ""
+    if _TRAVEL_ESTIMATE_TEXT_RE.search(combined):
+        normalized = combined.casefold().replace("ё", "е")
+        if re.search(r"как\s+добраться|маршрут|проехать|электрич|метро|автобус|такси|станци|остановк", normalized, re.I):
+            return "route_logistics"
+        return "travel_time"
+    if (
+        contract.answer_mode == "estimate_allowed"
+        and contract.estimate_domain in _ESTIMATE_DOMAINS
+        and not _INDIVIDUAL_CHILD_RE.search(combined)
+    ):
+        return contract.estimate_domain
+    return ""
+
+
 def _semantic_recover_or_handoff(
     *,
     contract: AnswerContract,
@@ -1737,10 +1775,12 @@ def _cite_only_recover_result_before_handoff(
     toggles: Toggles,
     context: Mapping[str, Any] | None,
     previous_bot_texts: Sequence[str] = (),
+    tone_guide: str = "",
     fallback_reason: str = "cite_only_recover",
     allow_key_coverage: bool = False,
     original_findings: Sequence[VerificationFinding] = (),
     original_unsupported: Sequence[str] = (),
+    draft_fn: Callable[[str], str] | None = None,
 ) -> DialogueContractPipelineResult | None:
     partial = _partial_yield_result_before_handoff(
         contract=contract,
@@ -1755,6 +1795,21 @@ def _cite_only_recover_result_before_handoff(
     )
     if partial:
         return partial
+    estimate = _quality_estimate_result_before_handoff(
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        conversation=conversation,
+        faithfulness_fn=faithfulness_fn,
+        draft_fn=draft_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        tone_guide=tone_guide,
+        source_reason=fallback_reason,
+    )
+    if estimate:
+        return estimate
     recovered = _cite_only_recover_before_handoff(
         contract=contract,
         retrieval=retrieval,
@@ -1798,6 +1853,106 @@ def _cite_only_recover_result_before_handoff(
     )
 
 
+def _quality_estimate_result_before_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    conversation: Sequence[Mapping[str, str]],
+    faithfulness_fn: Callable[[str], object] | None,
+    draft_fn: Callable[[str], str] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str],
+    tone_guide: str,
+    source_reason: str,
+) -> DialogueContractPipelineResult | None:
+    if draft_fn is None:
+        return None
+    if _cite_only_recover_blocked(contract, client_words=client_words, context=context):
+        trace_event(context, "estimate_recover", {"applied": False, "reason": "blocked_risk", "source_reason": source_reason})
+        return None
+    domain = _quality_handoff_estimate_domain(contract=contract, client_words=client_words, context=context)
+    if not domain:
+        trace_event(context, "estimate_recover", {"applied": False, "reason": "not_estimate_domain", "source_reason": source_reason})
+        return None
+    estimate_contract = replace(
+        contract,
+        current_question=client_words or contract.current_question,
+        subquestions=(),
+        planner_intent="general_consultation",
+        planner_subvariant="",
+        answer_mode="estimate_allowed",
+        estimate_domain=domain,
+        answerability="answer_self",
+        question_type="",
+        existence_target="",
+    )
+    prompt = build_estimate_prompt(
+        conversation=conversation,
+        contract=estimate_contract,
+        estimate_domain=domain,
+        tone_guide=tone_guide,
+    )
+    try:
+        candidate = str(draft_fn(prompt) or "").strip()
+    except Exception:
+        candidate = ""
+    if not candidate:
+        trace_event(context, "estimate_recover", {"applied": False, "reason": "empty_candidate", "source_reason": source_reason, "domain": domain})
+        return None
+    findings, unsupported, semantic_available = _hard_check(
+        candidate,
+        facts=retrieval.facts,
+        contract=estimate_contract,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+    if findings or unsupported or not semantic_available:
+        trace_event(
+            context,
+            "estimate_recover",
+            {
+                "applied": False,
+                "reason": "hard_check_failed" if semantic_available else "semantic_unavailable",
+                "source_reason": source_reason,
+                "domain": domain,
+                "findings": [finding.code for finding in findings],
+                "unsupported": list(unsupported),
+            },
+        )
+        return None
+    final = _avoid_repeating_text(candidate, conversation=conversation, contract=estimate_contract, facts=retrieval.facts)
+    trace_event(context, "estimate_recover", {"applied": True, "source_reason": source_reason, "domain": domain})
+    result = DialogueContractPipelineResult(
+        draft_text=final,
+        route="bot_answer_self",
+        manager_only=False,
+        contract=estimate_contract,
+        facts=retrieval.facts,
+        missing=retrieval.missing,
+        fallback_reason=f"estimate_{source_reason}",
+        repaired=True,
+        recovery_candidate=final,
+        is_estimate=True,
+        estimate_applied=True,
+        estimate_domain=domain,
+        estimate_answer_mode="estimate_allowed",
+    )
+    return _quality_next_step_result(
+        result,
+        conversation=conversation,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+
+
 _NEXT_STEP_ALREADY_RE = re.compile(
     r"\?|если\s+(?:хотите|подходит|удобно)|напишите|подскажите|дальше|следующ|"
     r"менеджер[^.?!\n]{0,90}(?:поможет|подбер|сверит|проверит|подскажет|свяжется|оформ)",
@@ -1823,7 +1978,10 @@ def _quality_next_step_result(
     toggles: Toggles,
     context: Mapping[str, Any] | None,
     previous_bot_texts: Sequence[str],
+    draft_fn: Callable[[str], str] | None = None,
+    tone_guide: str = "",
 ) -> DialogueContractPipelineResult:
+    del draft_fn, tone_guide
     if not quality_next_step_enabled(context):
         return result
     if result.route != "bot_answer_self" or result.manager_only or result.contract.is_p0:
@@ -2301,6 +2459,37 @@ def run_pipeline(
             missing=retrieval.missing,
             fallback_reason="refund_policy_manager_only",
         )
+    early_estimate_domain = _quality_handoff_estimate_domain(
+        contract=contract,
+        client_words=client_words,
+        context=context,
+    )
+    if early_estimate_domain and not _cite_only_recover_blocked(contract, client_words=client_words, context=context):
+        recovered_estimate = _quality_estimate_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            conversation=conversation,
+            faithfulness_fn=faithfulness_fn,
+            draft_fn=draft_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+            tone_guide=tone_guide,
+            source_reason="pre_handoff_estimate",
+        )
+        if recovered_estimate:
+            return recovered_estimate
+        fallback = _safe_fallback_text(contract, facts={}, context=context)
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=()),
+            route="draft_for_manager",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="estimate_guard_failed",
+        )
     if (
         estimate_policy["enabled"]
         and contract.answer_mode == "estimate_allowed"
@@ -2350,6 +2539,7 @@ def run_pipeline(
                     missing=retrieval.missing,
                     fallback_reason="",
                     is_estimate=True,
+                    estimate_applied=True,
                     estimate_domain=contract.estimate_domain,
                     estimate_answer_mode=contract.answer_mode,
                 )
@@ -2418,6 +2608,8 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            draft_fn=draft_fn,
+            tone_guide=tone_guide,
         )
     slot_question = _single_missing_slot_question(contract, retrieval)
     if slot_question:
@@ -2462,6 +2654,8 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            draft_fn=None,
+            tone_guide=tone_guide,
         )
     direct_answer = _direct_exact_fact_answer(contract, retrieval)
     if direct_answer:
@@ -2490,6 +2684,8 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            draft_fn=draft_fn,
+            tone_guide=tone_guide,
         )
     force_draft_for_manager = (
         contract.answerability != "answer_self"
@@ -2718,6 +2914,8 @@ def run_pipeline(
             original_findings=findings,
             original_unsupported=unsupported,
             allow_key_coverage=True,
+            draft_fn=draft_fn,
+            tone_guide=tone_guide,
         )
         if recovered:
             return recovered
@@ -2771,6 +2969,8 @@ def run_pipeline(
                 original_findings=findings,
                 original_unsupported=unsupported,
                 allow_key_coverage=True,
+                draft_fn=draft_fn,
+                tone_guide=tone_guide,
             )
             if recovered:
                 return recovered
@@ -2847,6 +3047,8 @@ def run_pipeline(
             original_findings=findings,
             original_unsupported=unsupported,
             allow_key_coverage=True,
+            draft_fn=draft_fn,
+            tone_guide=tone_guide,
         )
         if recovered:
             return recovered
@@ -2929,6 +3131,8 @@ def run_pipeline(
                 original_findings=candidate_findings,
                 original_unsupported=candidate_unsupported,
                 allow_key_coverage=True,
+                draft_fn=draft_fn,
+                tone_guide=tone_guide,
             )
             if recovered:
                 return recovered
@@ -3123,6 +3327,7 @@ def verify_output(
                 facts=facts,
                 client_message=client_message,
                 context=context,
+                estimate_domain=gate_estimate_domain,
             )
         )
     else:
@@ -3234,6 +3439,7 @@ def _free_number_gate_findings(
     facts: Mapping[str, str],
     client_message: str,
     context: Mapping[str, Any] | None,
+    estimate_domain: str = "none",
 ) -> list[VerificationFinding]:
     fact_surfaces = _free_number_surfaces(" ".join(str(value) for value in facts.values()))
     client_surfaces = _free_number_surfaces(_client_number_context_text(client_message, context=context))
@@ -3245,7 +3451,9 @@ def _free_number_gate_findings(
             continue
         if fact_surfaces.intersection(surfaces):
             continue
-        if _is_free_product_number_context(text, token, start=start, end=end):
+        if _is_route_estimate_number_context(text, token, estimate_domain=estimate_domain):
+            pass
+        elif _is_free_product_number_context(text, token, start=start, end=end):
             product_tokens.append(token)
             continue
         if _is_free_structural_number(token, surfaces, text=text, start=start, end=end) or client_surfaces.intersection(surfaces):

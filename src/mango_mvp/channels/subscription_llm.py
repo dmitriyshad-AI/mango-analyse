@@ -77,6 +77,8 @@ RULES_ENGINE_PLANNER_INTENT_ENV = "TELEGRAM_RULES_ENGINE_PLANNER_INTENT"
 SCOPE_FACT_GUARD_ENV = "TELEGRAM_SCOPE_FACT_GUARD"
 ANTIREPEAT_STRICT_ENV = "TELEGRAM_ANTIREPEAT_STRICT"
 A_THREAD_ENV = "TELEGRAM_A_THREAD"
+A_PROACTIVE_ENV = "TELEGRAM_A_PROACTIVE"
+A_RICH_FORMAT_ENV = "TELEGRAM_A_RICH_FORMAT"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -464,6 +466,10 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "unsupported_offline_visit_invitation": "downgrade",
     "unsupported_content_delivery_action": "downgrade",
     "unconfirmed_operational_specificity": "downgrade",
+    "fake_enrollment_claim": "block",
+    "proactive_pii_echo": "block",
+    "proactive_too_many_questions": "downgrade",
+    "proactive_emoji_overuse": "downgrade",
 }
 ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for_more", "manager_only"}
 BASE_SAFETY_FLAGS = ("manager_approval_required", "no_auto_send")
@@ -1791,7 +1797,8 @@ class SubscriptionLlmDraftProvider:
                 if _humanity_x2_rewrite_enabled(context)
                 else None,
             )
-            return apply_authoritative_output_gate(rewritten, client_message=client_message, context=context)
+            proactive = apply_a2_proactive_layer(rewritten, client_message=client_message, context=context)
+            return apply_authoritative_output_gate(proactive, client_message=client_message, context=context)
         else:
             prompt = build_draft_prompt(client_message, context=context)
             result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
@@ -1833,6 +1840,7 @@ class SubscriptionLlmDraftProvider:
             if _humanity_x2_rewrite_enabled(context)
             else None,
         )
+        result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
     def _build_dialogue_contract_pipeline_draft(
@@ -2534,6 +2542,7 @@ class FakeSubscriptionLlmDraftProvider:
         result = apply_autonomy_matrix_guard(result, client_message=client_message, context=context)
         result = apply_humanity_guards(result, client_message=client_message, context=context)
         result = apply_humanity_x2_rewriter(result, client_message=client_message, context=context)
+        result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -2652,6 +2661,226 @@ def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = 
     )
 
 
+_A2_PHONE_RE = re.compile(r"(?:\+7|8|7)?[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
+_A2_TIME_RE = re.compile(
+    r"\b(?:сегодня|завтра|послезавтра|утром|дн[её]м|вечером|после\s+обеда|до\s+\d{1,2}|"
+    r"после\s+\d{1,2}|в\s+\d{1,2}(?::\d{2})?|с\s+\d{1,2}\s+до\s+\d{1,2})\b",
+    re.I,
+)
+_A2_FAKE_DONE_RE = re.compile(
+    r"я\s+(?:вас\s+)?записал|вы\s+записаны|запись\s+оформлена|оформил\s+запись|записал\s+на\s+курс",
+    re.I,
+)
+_A2_EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F900-\U0001F9FF\U0001FA70-\U0001FAFF]")
+_A2_SERIOUS_TAGS = {"p0", "refund", "complaint", "manager_only", "legal", "guarantee"}
+
+
+def apply_a2_proactive_layer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    """A2.1 callback/contact capture plus deterministic rich-format guard."""
+
+    updated = result
+    if _a2_proactive_enabled(context):
+        updated = _a2_contact_capture_handoff(updated, client_message=client_message, context=context)
+    if _a2_rich_format_enabled(context):
+        updated = _a2_apply_rich_format_guard(updated, client_message=client_message, context=context)
+    return updated
+
+
+def _a2_contact_capture_handoff(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    if result.route == "manager_only" or _a2_p0_or_high_risk(result, client_message=client_message, context=context):
+        return result
+    phone = _a2_extract_phone(client_message)
+    phone_known = _a2_context_phone_known(context)
+    has_time = _a2_has_time(client_message)
+    if not phone and not (phone_known and has_time):
+        return result
+    metadata = dict(result.metadata)
+    metadata["a2_proactive"] = {
+        **(dict(metadata.get("a2_proactive") or {}) if isinstance(metadata.get("a2_proactive"), Mapping) else {}),
+        "enabled": True,
+        "step": "offer_callback",
+        "contact_captured": True,
+        "phone_masked": _a2_mask_phone(phone) if phone else "[known_phone]",
+        "preferred_time": "[provided]" if has_time else "",
+        "crm_write": False,
+        "policy_source": "deterministic",
+    }
+    text = (
+        "Спасибо, передам менеджеру — он свяжется с вами в удобное время."
+        if has_time
+        else "Спасибо, передам менеджеру — он свяжется с вами и уточнит удобное время."
+    )
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "A2.1: клиент оставил контакт/время; связаться вручную, без CRM-записи из бота.",
+            ]
+        )
+    )
+    return replace(
+        result,
+        route="draft_for_manager" if result.route != "manager_only" else result.route,
+        draft_text=text,
+        safety_flags=tuple(
+            dict.fromkeys(
+                [
+                    *result.safety_flags,
+                    "a2_proactive_contact_captured",
+                    "manager_approval_required",
+                    "no_auto_send",
+                ]
+            )
+        ),
+        manager_checklist=checklist,
+        manager_followup_required=True,
+        metadata=metadata,
+    )
+
+
+def _a2_apply_rich_format_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    text = str(result.draft_text or "")
+    context_tag = _a2_context_tag(result, client_message=client_message, context=context)
+    cleaned = _a2_enforce_emoji_limit(text, context_tag=context_tag)
+    if cleaned == text:
+        return result
+    metadata = dict(result.metadata)
+    metadata["a2_rich_format"] = {
+        **(dict(metadata.get("a2_rich_format") or {}) if isinstance(metadata.get("a2_rich_format"), Mapping) else {}),
+        "enabled": True,
+        "emoji_guard_applied": True,
+        "context_tag": context_tag,
+    }
+    return replace(
+        result,
+        draft_text=cleaned,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "a2_rich_format_emoji_guarded"])),
+        metadata=metadata,
+    )
+
+
+def _a2_proactive_enabled(context: Optional[Mapping[str, Any]]) -> bool:
+    if isinstance(context, Mapping):
+        for key in ("a_proactive_enabled", "proactive_enabled", A_PROACTIVE_ENV):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(A_PROACTIVE_ENV))
+
+
+def _a2_rich_format_enabled(context: Optional[Mapping[str, Any]]) -> bool:
+    if isinstance(context, Mapping):
+        for key in ("a_rich_format_enabled", "rich_format_enabled", A_RICH_FORMAT_ENV):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(A_RICH_FORMAT_ENV))
+
+
+def _a2_p0_or_high_risk(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    flags = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
+    if any(marker in flags for marker in ("high_risk", "zero_collect", "legal", "complaint", "payment_dispute")):
+        return True
+    safety = classify_answer_safety(
+        client_message=client_message,
+        context=context,
+        topic_id=result.topic_id,
+        route=result.route,
+        safety_flags=result.safety_flags,
+    )
+    return bool(safety.p0_required and not safety.semantic_non_p0)
+
+
+def _a2_extract_phone(text: str) -> str:
+    match = _A2_PHONE_RE.search(str(text or ""))
+    return match.group(0).strip() if match else ""
+
+
+def _a2_has_time(text: str) -> bool:
+    return bool(_A2_TIME_RE.search(str(text or "")))
+
+
+def _a2_mask_phone(phone: str) -> str:
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if not digits:
+        return ""
+    return f"[phone:***{digits[-2:]}]"
+
+
+def _a2_context_phone_known(context: Optional[Mapping[str, Any]]) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    containers: list[Mapping[str, Any]] = []
+    for key in ("known_slots", "known_dialog_fields", "known_client_fields", "client_identity"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        for key in ("known_slots", "client_confirmed_slots", "crm_known_slots"):
+            value = memory.get(key)
+            if isinstance(value, Mapping):
+                containers.append(value)
+    for container in containers:
+        for key in ("phone_known", "phone", "normalized_phone", "client_phone"):
+            raw = container.get(key)
+            if isinstance(raw, Mapping):
+                raw = raw.get("value")
+            if str(raw or "").strip().casefold() not in {"", "false", "none", "0"}:
+                return True
+    return False
+
+
+def _a2_context_tag(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    if result.route == "manager_only":
+        return "manager_only"
+    flags = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
+    for tag in ("complaint", "refund", "legal", "guarantee"):
+        if tag in flags:
+            return tag
+    safety = classify_answer_safety(client_message=client_message, context=context, topic_id=result.topic_id, route=result.route)
+    if safety.p0_required and not safety.semantic_non_p0:
+        return "p0"
+    return "warm" if "a2_proactive" in result.metadata or any("a2_proactive" in flag for flag in result.safety_flags) else "neutral"
+
+
+def _a2_enforce_emoji_limit(text: str, *, context_tag: str, max_emoji: int = 1) -> str:
+    if context_tag in _A2_SERIOUS_TAGS:
+        return _A2_EMOJI_RE.sub("", str(text or "")).strip()
+    count = 0
+    chars: list[str] = []
+    for char in str(text or ""):
+        if _A2_EMOJI_RE.match(char):
+            count += 1
+            if count > max_emoji:
+                continue
+        chars.append(char)
+    return "".join(chars).strip()
+
+
 def apply_authoritative_output_gate(
     result: SubscriptionDraftResult,
     *,
@@ -2747,6 +2976,7 @@ def _authoritative_gate_findings(
     text_only = not client_message and context is None and not _pipeline_fact_texts(result)
 
     findings.extend(_authoritative_gate_text_guard_findings(result))
+    findings.extend(_authoritative_gate_a2_findings(result, client_message=client_message, context=context))
     if text_only:
         return _dedupe_gate_findings(findings)
 
@@ -2819,6 +3049,57 @@ def _authoritative_gate_text_guard_findings(result: SubscriptionDraftResult) -> 
     if guarded is not result and guarded.draft_text != result.draft_text:
         findings.append(_authoritative_gate_finding("promocode_leak", source="guard_promocode_leak"))
     return findings
+
+
+def _authoritative_gate_a2_findings(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    text = str(result.draft_text or "")
+    proactive_active = _a2_proactive_enabled(context) or _a2_is_proactive_result(result)
+    if proactive_active:
+        if _A2_FAKE_DONE_RE.search(text):
+            findings.append(_authoritative_gate_finding("fake_enrollment_claim", source="a2_proactive_gate"))
+        phone = _a2_extract_phone(client_message)
+        if phone and _a2_phone_echoed(phone, text):
+            findings.append(_authoritative_gate_finding("proactive_pii_echo", source="a2_proactive_gate"))
+        if _a2_is_proactive_result(result) and text.count("?") > 1:
+            findings.append(
+                _authoritative_gate_finding("proactive_too_many_questions", detail="more_than_one_question", source="a2_proactive_gate")
+            )
+    if _a2_rich_format_enabled(context):
+        context_tag = _a2_context_tag(result, client_message=client_message, context=context)
+        cleaned = _a2_enforce_emoji_limit(text, context_tag=context_tag)
+        if cleaned != text:
+            findings.append(_authoritative_gate_finding("proactive_emoji_overuse", detail="emoji_guard_not_applied", source="a2_rich_format_gate"))
+    return findings
+
+
+def _a2_is_proactive_result(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    a2 = metadata.get("a2_proactive") if isinstance(metadata.get("a2_proactive"), Mapping) else {}
+    selling = metadata.get("selling") if isinstance(metadata.get("selling"), Mapping) else {}
+    rules = metadata.get("rules_engine") if isinstance(metadata.get("rules_engine"), Mapping) else {}
+    rules_selling = rules.get("selling") if isinstance(rules.get("selling"), Mapping) else {}
+    flags = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
+    return bool(
+        a2.get("step")
+        or selling.get("proactive")
+        or rules_selling.get("proactive")
+        or "a2_proactive" in flags
+        or "offer_callback" in flags
+    )
+
+
+def _a2_phone_echoed(phone: str, text: str) -> bool:
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if len(digits) < 7:
+        return False
+    haystack = re.sub(r"\D+", "", str(text or ""))
+    return bool(haystack and digits in haystack)
 
 
 def _authoritative_gate_existing_guard_findings(

@@ -218,6 +218,64 @@ def test_rules_engine_schedule_unpublished_group_goes_to_manager_check() -> None
     assert "вторник" not in outcome.text.casefold()
 
 
+def test_a2_proactive_offer_callback_appends_only_when_flagged_and_ready() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices_regular_2026_27.online_grade10.semester": "Фотон: цены на 2026/27 учебный год, 10 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_grade10.year": "Фотон: цены на 2026/27 учебный год, 10 класс, онлайн, год — 47 250 ₽.",
+    }
+    plan = {
+        "primary_intent": "pricing",
+        "direct_question": "Готовы записаться, сколько стоит онлайн для 10 класса?",
+        "active_brand": "foton",
+        "selling": {"readiness": "ready", "objection": "none", "exit_signal": False},
+    }
+
+    off = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton"})
+    on = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "a_proactive_enabled": True})
+
+    assert off is not None and on is not None
+    assert "rules_engine_a2_offer_callback" not in off.flags
+    assert "rules_engine_a2_offer_callback" in on.flags
+    assert "29 750 ₽" in on.text
+    assert "подскажите телефон и когда лучше связаться" in on.text
+    assert on.metadata["selling"]["proactive"]["step"] == "offer_callback"
+    assert on.metadata["selling"]["proactive"]["policy_source"] == "deterministic"
+
+
+def test_a2_proactive_offer_callback_uses_known_phone_and_respects_fatigue() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices_regular_2026_27.online_grade10.semester": "Фотон: цены на 2026/27 учебный год, 10 класс, онлайн, семестр — 29 750 ₽.",
+    }
+    plan = {
+        "primary_intent": "pricing",
+        "direct_question": "Готовы записаться, сколько стоит онлайн для 10 класса?",
+        "active_brand": "foton",
+        "selling": {"readiness": "ready", "objection": "none", "exit_signal": False},
+    }
+
+    known_phone = apply_rule(
+        rule,
+        plan=plan,
+        facts=facts,
+        context={"active_brand": "foton", "a_proactive_enabled": True, "known_slots": {"phone_known": True}},
+    )
+    fatigued = apply_rule(
+        rule,
+        plan={**plan, "direct_question": "Сколько стоит онлайн для 10 класса?"},
+        facts=facts,
+        context={"active_brand": "foton", "a_proactive_enabled": True, "proactive_state": {"recent_ignored": 2}},
+    )
+
+    assert known_phone is not None and fatigued is not None
+    assert "rules_engine_a2_offer_callback" in known_phone.flags
+    assert "телефон" not in known_phone.text.casefold()
+    assert "когда лучше связаться" in known_phone.text
+    assert "rules_engine_a2_offer_callback" not in fatigued.flags
+    assert "когда лучше связаться" not in fatigued.text
+
+
 def test_rules_engine_schedule_weekend_is_soft_guidance() -> None:
     rule = load_rules_registry()["schedule"]
     outcome = apply_rule(

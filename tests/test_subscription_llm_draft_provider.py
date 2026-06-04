@@ -3951,6 +3951,30 @@ def test_humanity_x2_rewriter_rejects_cross_brand_candidate() -> None:
     assert result.metadata["humanity_x2"]["fallback_reason"] == "brand_leak"
 
 
+def test_humanity_x2_rewriter_rejects_pressure_candidate() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Пробное занятие есть, менеджер поможет подобрать удобный вариант.",
+        safety_flags=("rules_engine_trial_available",),
+    )
+
+    result = apply_humanity_x2_rewriter(
+        base,
+        client_message="Можно пробное?",
+        context={
+            "active_brand": "foton",
+            "humanity_x2_rewrite_enabled": True,
+            "confirmed_facts": {"trial": "Пробное занятие есть."},
+        },
+        rewrite_runner=lambda prompt: "Пробное занятие есть, срочно записывайтесь сейчас, иначе мест не останется.",
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "humanity_x2_rewritten" not in result.safety_flags
+    assert result.metadata["humanity_x2"]["rewritten"] is False
+    assert result.metadata["humanity_x2"]["fallback_reason"] == "pressure"
+
+
 def test_humanity_x2_rewriter_falls_back_on_repo_gate_meta_leak() -> None:
     base = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

@@ -8977,6 +8977,12 @@ _HUMANITY_X2_BLOCKING_SANITIZER_FLAGS: tuple[str, ...] = (
     "refund_policy_redacted",
     "service_promise_redacted",
 )
+_HUMANITY_X2_PRESSURE_RE = re.compile(
+    r"только\s+сегодня|последн(?:ий|яя)\s+шанс|успейт|решайт[е]?\s+сейчас|"
+    r"срочно\s+(?:оформ|запис|реш)|иначе\s+(?:мест|скид|цен)|мест\s+почти\s+нет|"
+    r"надо\s+успеть|не\s+тяните|лучше\s+не\s+тянуть",
+    re.I,
+)
 
 
 def _humanity_x2_repo_gate(
@@ -9000,6 +9006,8 @@ def _humanity_x2_repo_gate(
     )
     if safety.blocks_rewriter or safety.p0_required or safety.manager_only:
         return f"answer_safety:{safety.primary_risk or 'manager_only'}"
+    if _HUMANITY_X2_PRESSURE_RE.search(candidate):
+        return "pressure"
     sanitized = sanitize_answer(candidate, mode="bot")
     if not sanitized.fixpoint_reached or sanitized.status == "fixpoint_not_reached":
         return "sanitize_answer:fixpoint_not_reached"

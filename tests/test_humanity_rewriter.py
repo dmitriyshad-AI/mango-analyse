@@ -3,6 +3,7 @@ from __future__ import annotations
 from mango_mvp.channels.humanity_rewriter import (
     apply_rewrite,
     brand_leak,
+    build_rewrite_prompt,
     fact_drift,
     should_rewrite,
 )
@@ -26,6 +27,23 @@ def test_should_rewrite_gates() -> None:
     assert should_rewrite(ok, {"stock_opener": ("crutch", "x")}) is True
     assert should_rewrite(ok, {}) is False
     assert should_rewrite(ok, {}, mode="all_eligible") is True
+
+
+def test_build_rewrite_prompt_contains_manager_playbook_and_downgrade_rules() -> None:
+    prompt = build_rewrite_prompt(
+        "Сориентирую по проверенным данным: семестр 29 750 ₽. Передам менеджеру.",
+        client_message="Дорого, есть варианты?",
+        confirmed_facts=FACTS,
+        active_brand="foton",
+        linter_flags={"stock_opener": True},
+    )
+
+    assert "Playbook менеджера" in prompt
+    assert "Сначала прямой ответ" in prompt
+    assert "Срочность допустима только честная" in prompt
+    assert "Никаких новых чисел" in prompt
+    assert "Не меняй маршрут" in prompt
+    assert "Иначе не создавай" in prompt
 
 
 def test_fact_drift_detects_new_number() -> None:

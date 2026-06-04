@@ -1,0 +1,4 @@
+interface:
+  display_name: "TZ Contract Implementation"
+  short_description: "Implement Mango TZ safely."
+  default_prompt: "Use this skill to implement an approved Mango TZ with rule #1 source checks, scoped edits, negative controls, tests, audit pack, and clean commits."

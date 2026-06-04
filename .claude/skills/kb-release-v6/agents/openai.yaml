@@ -1,0 +1,4 @@
+interface:
+  display_name: "KB Release v6"
+  short_description: "Build Mango KB v6 releases."
+  default_prompt: "Use this skill to prepare a Mango KB release through source YAML, release_manifest, approved v6.1 builder, semantic review, and v6 diff."

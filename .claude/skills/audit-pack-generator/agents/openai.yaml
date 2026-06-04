@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Pack Generator"
+  short_description: "Create Mango audit packs."
+  default_prompt: "Use this skill to create or update a Mango audit pack after an implementation block."

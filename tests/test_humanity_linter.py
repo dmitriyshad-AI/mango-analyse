@@ -13,6 +13,7 @@ from mango_mvp.channels.humanity_linter import (
 def test_meta_leak_service_phrase() -> None:
     assert detect_meta_leak("Передам менеджеру, он ответит без служебных пометок.")
     assert detect_meta_leak("fact_id: FP-2025-0099 цена")
+    assert detect_meta_leak("Менеджер уточнит именно про Есть ли сам годовой курс и ответит.")
     assert not detect_meta_leak("Здравствуйте! Цена семестра 29 750 ₽.")
 
 

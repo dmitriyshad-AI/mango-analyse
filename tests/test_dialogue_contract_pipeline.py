@@ -204,6 +204,80 @@ def test_q_partial_yield_travel_reaches_estimate_before_manager_handoff(monkeypa
     assert "20-30 минут" in result.draft_text
 
 
+def test_q_partial_yield_travel_estimate_uses_number_gate_not_fact_faithfulness(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+    store = FactStore(
+        catalog=("prices.current",),
+        store={"unpk": {"prices.current": "УНПК: онлайн-курс стоит 41 800 ₽ за семестр."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке сколько от Лобни?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена/дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно на электричке дорога занимает около 35-45 минут."
+        if "Разрешённый домен оценки" in prompt
+        else "",
+        faithfulness_fn=lambda _prompt: {
+            "claims": [
+                {
+                    "claim": "дорога занимает около 35-45 минут",
+                    "evidence_fact_key": "",
+                    "verdict": "unsupported",
+                    "reason": "общая оценка не из KB",
+                }
+            ]
+        },
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_applied is True
+    assert result.fallback_reason == "estimate_pre_handoff_estimate"
+    assert "35-45 минут" in result.draft_text
+    assert "41 800" not in result.draft_text
+
+
+def test_q_partial_yield_travel_estimate_still_blocks_product_number(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке сколько от Лобни?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=("prices.current",), store={"unpk": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "general_consultation",
+                "needed_fact_keys": ["prices.current"],
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно курс стоит 30 000 ₽."
+        if "Разрешённый домен оценки" in prompt
+        else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert result.fallback_reason == "estimate_guard_failed"
+    assert "30 000" not in result.draft_text
+    assert "₽" not in result.draft_text
+
+
 def test_q_partial_yield_travel_does_not_estimate_product_price_with_travel_words(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")
@@ -1320,6 +1394,17 @@ def test_verify_output_blocks_named_entity_not_in_current_facts() -> None:
     )
 
     assert any(finding.code == "unsupported_entity" for finding in findings)
+
+
+def test_verify_output_blocks_raw_subquestion_echo_meta_leak() -> None:
+    findings = verify_output(
+        "Менеджер уточнит именно про Есть ли сам годовой курс и ответит.",
+        facts={},
+        active_brand="unpk",
+        client_message="есть ли годовой курс?",
+    )
+
+    assert any(finding.code == "meta_leak" for finding in findings)
 
 
 def test_verify_output_allows_named_entity_from_current_facts_and_neutral_words() -> None:
@@ -4110,6 +4195,81 @@ def test_q_partial_yield_answers_grounded_part_and_defers_missing(monkeypatch) -
     assert result.partial_yield_missing == ("точный день группы",)
     assert "29 750" in result.draft_text
     assert "точный день группы" in result.draft_text.casefold()
+    assert "менеджер" in result.draft_text.casefold()
+
+
+def test_q_partial_yield_answers_all_grounded_composite_parts_after_handoff(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("price.online", "format.online"),
+        store={
+            "foton": {
+                "price.online": "Онлайн: семестр — 29 750 ₽.",
+                "format.online": "Онлайн-занятия идут дистанционно, 2 раза в неделю по 90 минут.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("онлайн и сколько стоит?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "онлайн и цена",
+                "subquestions": [
+                    {"text": "формат онлайн", "answerable": "self", "needed_fact_keys": ["format.online"]},
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        repair_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.partial_yield_applied is True
+    assert "29 750" in result.draft_text
+    assert "2 раза в неделю" in result.draft_text
+    assert "Передам менеджеру уточнить" not in result.draft_text
+
+
+def test_q_partial_yield_hides_raw_question_subpart_in_missing_tail(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    store = FactStore(
+        catalog=("course.format", "year_program.exists"),
+        store={"unpk": {"course.format": "Онлайн-курс проходит 2 раза в неделю по 90 минут."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("формат и есть ли сам годовой курс для 10 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "формат и наличие годового курса",
+                "subquestions": [
+                    {"text": "формат занятий", "answerable": "self", "needed_fact_keys": ["course.format"]},
+                    {
+                        "text": "Есть ли сам годовой курс для 10 класса?",
+                        "answerable": "self",
+                        "needed_fact_keys": ["year_program.exists"],
+                    },
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.partial_yield_applied is True
+    assert "2 раза в неделю" in result.draft_text
+    assert "есть ли сам" not in result.draft_text.casefold()
+    assert "по остальной части вопроса" in result.draft_text.casefold()
     assert "менеджер" in result.draft_text.casefold()
 
 

@@ -20,6 +20,11 @@ _META_MARKERS: tuple[str, ...] = (
     "дополнительный ответ клиенту сейчас не нужен",
 )
 _INTERNAL_ID_RE = re.compile(r"\b(?:fact_id|source_id|trace_id)\s*[:=]|fact:v3:", re.I)
+_RAW_SUBQUESTION_ECHO_RE = re.compile(
+    r"(?:именно\s+про\s+|по\s+(?:пункту|части)\s+«?)"
+    r"(?:есть\s+ли|можно\s+ли|сколько|как(?:ой|ая|ое|ие)?|когда|где|куда|что)\b",
+    re.I,
+)
 
 _HANDOFF_RE = re.compile(
     r"переда[мя]\s+(?:вопрос\s+|запрос\s+|это\s+|его\s+|контекст\s+)?(?:менеджер|ответственн)"
@@ -47,6 +52,8 @@ def detect_meta_leak(text: str) -> list[str]:
     hits = [marker for marker in _META_MARKERS if marker in lowered]
     if _INTERNAL_ID_RE.search(str(text or "")):
         hits.append("internal_id")
+    if _RAW_SUBQUESTION_ECHO_RE.search(str(text or "")):
+        hits.append("raw_subquestion_echo")
     return hits
 
 

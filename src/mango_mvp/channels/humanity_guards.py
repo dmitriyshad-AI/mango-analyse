@@ -83,19 +83,27 @@ _META_CLIENT_MARKERS: tuple[str, ...] = (
     "trace_id",
     "source_id",
 )
+_RAW_SUBQUESTION_ECHO_RE = re.compile(
+    r"(?:именно\s+про\s+|по\s+(?:пункту|части)\s+«?)"
+    r"(?:есть\s+ли|можно\s+ли|сколько|как(?:ой|ая|ое|ие)?|когда|где|куда|что)\b",
+    re.I,
+)
 
 
 def has_meta_leak(text: object) -> bool:
     """Клиенту виден внутренний/служебный текст."""
     low = _norm(text)
     low_raw = str(text or "").casefold()
-    return any((m in low) or (m in low_raw) for m in _META_CLIENT_MARKERS)
+    return any((m in low) or (m in low_raw) for m in _META_CLIENT_MARKERS) or bool(_RAW_SUBQUESTION_ECHO_RE.search(str(text or "")))
 
 
 def meta_markers_present(text: object) -> list[str]:
     low = _norm(text)
     low_raw = str(text or "").casefold()
-    return [m for m in _META_CLIENT_MARKERS if (m in low) or (m in low_raw)]
+    markers = [m for m in _META_CLIENT_MARKERS if (m in low) or (m in low_raw)]
+    if _RAW_SUBQUESTION_ECHO_RE.search(str(text or "")):
+        markers.append("raw_subquestion_echo")
+    return markers
 
 
 def should_answer_not_handoff(

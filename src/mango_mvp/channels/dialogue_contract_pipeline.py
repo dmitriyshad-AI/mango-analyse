@@ -2048,7 +2048,7 @@ def _quality_estimate_result_before_handoff(
     if not candidate:
         trace_event(context, "estimate_recover", {"applied": False, "reason": "empty_candidate", "source_reason": source_reason, "domain": domain})
         return None
-    findings, unsupported, semantic_available = _hard_check(
+    findings, unsupported, semantic_available = _estimate_recover_check(
         candidate,
         facts=retrieval.facts,
         contract=estimate_contract,
@@ -2057,6 +2057,7 @@ def _quality_estimate_result_before_handoff(
         toggles=toggles,
         context=context,
         previous_bot_texts=previous_bot_texts,
+        domain=domain,
     )
     if findings or unsupported or not semantic_available:
         trace_event(
@@ -2092,6 +2093,48 @@ def _quality_estimate_result_before_handoff(
     return _quality_next_step_result(
         result,
         conversation=conversation,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+
+
+def _estimate_recover_check(
+    draft: str,
+    *,
+    facts: Mapping[str, str],
+    contract: AnswerContract,
+    client_words: str,
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str],
+    domain: str,
+) -> tuple[tuple[VerificationFinding, ...], tuple[str, ...], bool]:
+    if free_number_gate_enabled(context) and domain in {"travel_time", "route_logistics"}:
+        findings = tuple(
+            verify_output(
+                draft,
+                facts=facts,
+                active_brand=contract.active_brand,
+                contract=contract,
+                denied_topics=contract.denied_topics,
+                forbidden_substitutions=contract.forbidden_substitutions,
+                client_message=client_words,
+                context=context,
+                previous_bot_texts=previous_bot_texts,
+                answer_mode="estimate_allowed",
+                estimate_domain=domain,
+                is_estimate=True,
+            )
+        )
+        return findings, (), True
+    return _hard_check(
+        draft,
+        facts=facts,
+        contract=contract,
         client_words=client_words,
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
@@ -4508,7 +4551,11 @@ def _partial_yield_result_before_handoff(
             {"applied": False, "reason": "faithfulness_fn_missing", "source_reason": source_reason},
         )
         return None
-    if _cite_only_recover_blocked(contract, client_words=client_words, context=context):
+    if _cite_only_recover_blocked(contract, client_words=client_words, context=context) or _composite_has_hard_p0_part(
+        contract,
+        client_words=client_words,
+        context=context,
+    ):
         trace_event(
             context,
             "partial_yield",
@@ -4626,13 +4673,17 @@ def _partial_yield_candidate(
     if contract.is_p0 or not retrieval.facts:
         return "", (), ()
     findings, missing_details = _partial_yield_findings_and_missing(contract, retrieval)
-    if not findings or not missing_details:
+    subquestions = _contract_subquestions(contract)
+    if not findings or (not missing_details and len(subquestions) < 2):
         return "", (), ()
     grounded = _coverage_cite_only_answer_from_findings(findings)
     if not grounded:
         return "", (), ()
-    missing_text = _partial_yield_missing_text(missing_details)
-    text = f"{grounded.rstrip(' .')}. {missing_text} менеджер сверит точный ответ; я передам ему этот вопрос."
+    text = grounded.rstrip(" .")
+    if missing_details:
+        missing_text = _partial_yield_missing_text(missing_details)
+        text = f"{text}. {missing_text} менеджер сверит точный ответ; я передам ему этот вопрос"
+    text = text.rstrip(".") + "."
     fact_keys = tuple(dict.fromkeys(item.fact_key for item in findings if item.fact_key))
     return text, fact_keys, tuple(missing_details)
 
@@ -4689,7 +4740,13 @@ def _partial_yield_findings_and_missing(
 
 
 def _partial_yield_missing_text(missing_details: Sequence[str]) -> str:
-    details = tuple(dict.fromkeys(_client_safe_question_detail(item) for item in missing_details if item))
+    details = tuple(
+        dict.fromkeys(
+            detail
+            for detail in (_handoff_detail_text(item) for item in missing_details if item)
+            if detail
+        )
+    )
     if not details:
         return "По остальной части вопроса"
     if len(details) == 1:
@@ -5415,7 +5472,7 @@ def _safe_fallback_text(
         return traced(schedule_publication, "schedule_publication")
     if _asks_refund_policy(contract):
         return traced(_refund_policy_handoff_text(), "refund_policy_handoff")
-    detail = _client_safe_question_detail(contract.current_question)
+    detail = _handoff_detail_text(contract.current_question)
     secondary = _partial_orientation_text(contract, facts or {})
     if secondary:
         detail_part = f": {detail}" if detail else ""
@@ -5444,6 +5501,24 @@ def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
     return text
+
+
+_RAW_QUESTION_DETAIL_RE = re.compile(
+    r"^есть\s+ли\b",
+    re.I,
+)
+
+
+def _handoff_detail_text(value: str) -> str:
+    detail = _client_safe_question_detail(value)
+    if not detail:
+        return ""
+    detail = re.sub(r"^(?:можно\s+ли|можно)\s+", "", detail, flags=re.I).strip(" \t\n\r:;,.—-?")
+    if not detail:
+        return ""
+    if "?" in detail or _RAW_QUESTION_DETAIL_RE.search(detail):
+        return ""
+    return detail
 
 
 def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:
@@ -5523,7 +5598,7 @@ def _generic_handoff_text() -> str:
 
 
 def _detail_handoff_text(detail: str) -> str:
-    clean = _client_safe_question_detail(detail) or "эту деталь"
+    clean = _handoff_detail_text(detail) or "эту часть вопроса"
     return _DETAIL_HANDOFF_TEXTS[0].format(detail=clean)
 
 
@@ -5561,7 +5636,7 @@ def _avoid_repeating_text(
         )
     if _is_refund_handoff_text(source) or _asks_refund_policy(contract):
         return _select_unused_handoff_variant(_REFUND_POLICY_TEXTS, prior_bot_texts, fallback=source)
-    detail = _client_safe_question_detail(contract.current_question) or "эту деталь"
+    detail = _handoff_detail_text(contract.current_question) or "эту часть вопроса"
     rendered = tuple(item.format(detail=detail) for item in (*_DETAIL_HANDOFF_TEXTS, *_GENERIC_HANDOFF_TEXTS))
     exhausted = _select_unused_handoff_variant(
         _HANDOFF_EXHAUSTED_TEXTS,

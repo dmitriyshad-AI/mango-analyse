@@ -132,6 +132,60 @@ def test_level_a_estimate_travel_answers_with_uncertainty_marker(monkeypatch) ->
     assert not result.findings
 
 
+def test_level_a_travel_pricing_misclassification_is_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=("prices.current",), store={"unpk": {}})
+    prompts: list[str] = []
+
+    result = run_pipeline(
+        conversation=_conv("сколько по времени дорога от Лобни до вас?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько дорога от Лобни до вас",
+                "answerability": "answer_self",
+                "planner_intent": "pricing",
+                "planner_confidence": 0.88,
+                "needed_fact_keys": ["prices.current"],
+                "subquestions": [
+                    {
+                        "text": "сколько дорога от Лобни до вас",
+                        "answerable": "self",
+                        "needed_fact_keys": ["prices.current"],
+                    }
+                ],
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda prompt: prompts.append(prompt)
+        or "Ориентировочно от Лобни до Долгопрудного дорога займёт около 20-30 минут, зависит от маршрута.",
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_domain == "travel_time"
+    assert result.contract.planner_intent == "general_consultation"
+    assert result.contract.needed_fact_keys == ()
+    assert result.missing == ()
+    assert "Ориентировочно" in result.draft_text
+    assert "ответ-оценку" in prompts[0]
+    assert "₽" not in result.draft_text
+
+
+def test_understanding_prompt_tells_planner_travel_is_not_pricing() -> None:
+    prompt = build_understanding_prompt(
+        conversation=({"role": "client", "text": "сколько по времени дорога от Лобни до вас?"},),
+        active_brand="unpk",
+        fact_key_catalog=("prices.current",),
+    )
+
+    assert "Вопросы про дорогу и логистику НЕ являются pricing" in prompt
+    assert "Не ставь prices.current для времени дороги или маршрута" in prompt
+    assert "estimate_domain='travel_time' или 'route_logistics'" in prompt
+
+
 def test_level_a_estimate_flag_off_keeps_existing_handoff(monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_A_ESTIMATE_MODE", raising=False)
     store = FactStore(catalog=(), store={"unpk": {}})
@@ -228,6 +282,33 @@ def test_level_a_product_price_cannot_be_estimated_even_if_planner_allows(monkey
     assert result.route == "draft_for_manager"
     assert result.is_estimate is False
     assert result.fallback_reason == "hard_verification_failed"
+    assert "30 000" not in result.draft_text
+
+
+def test_level_a_price_words_stay_product_even_with_travel_terms(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_ESTIMATE_MODE", "1")
+    store = FactStore(catalog=("prices.current",), store={"foton": {}})
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит курс, если дорога далеко?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит курс",
+                "answerability": "answer_self",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "estimate_allowed",
+                "estimate_domain": "travel_time",
+            }
+        ),
+        draft_fn=lambda _prompt: "Ориентировочно курс стоит 30 000 ₽.",
+    )
+
+    assert result.is_estimate is False
+    assert result.estimate_answer_mode == "confirmed_only"
+    assert result.fallback_reason in {"empty_facts_no_fabrication", "hard_verification_failed"}
     assert "30 000" not in result.draft_text
 
 

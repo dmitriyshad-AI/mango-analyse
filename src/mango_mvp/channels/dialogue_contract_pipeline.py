@@ -81,6 +81,23 @@ _PRODUCT_QUESTION_RE = re.compile(
     r"записать|запис[ьи]|₽|%",
     re.I,
 )
+_TRAVEL_LOGISTICS_RE = re.compile(
+    r"ехать|доехать|добира\w+|добраться|как\s+добраться|дорог[аеиуой]|далеко|"
+    r"пешком|электричк|метро|маршрут|путь",
+    re.I,
+)
+_TRAVEL_GEO_HINT_RE = re.compile(
+    r"\b(?:от|из|до|к)\s+[а-яёa-z][а-яёa-z-]{2,}|лобн|долгопруд|москв|"
+    r"менделеев|сретенк|красносельск|пацаев|станци|метро|электричк|пешком|филиал|центр",
+    re.I,
+)
+_TRAVEL_PRODUCT_EXCLUSION_RE = re.compile(
+    r"сколько\s+стоит|стоимост|цена|тариф|₽|руб|скидк|рассрочк|долями|оплат|"
+    r"расписан|какие\s+дни|по\s+каким\s+дням|во\s+сколько|время\s+занят|"
+    r"сколько\s+длится|длительност|урок|смен[аеуы]|лагер|формат|документ|"
+    r"справк|возврат|вернут|записать|запис[ьи]",
+    re.I,
+)
 _PRODUCT_NUMBER_CTX_RE = re.compile(
     r"₽|руб|р\.|%|скидк|рассрочк|долями|\b\d{1,2}:\d{2}\b|семестр|за\s+год|"
     r"стоит|цена|тариф|сколько\s+длится|длительност|урок|занят|январ|феврал|март|"
@@ -453,6 +470,11 @@ def build_understanding_prompt(
         "не подменяй его соседним способом оплаты; в current_question и subquestion.text сохрани именно спрошенный способ.\n"
         "- Гипотетический вопрос до оплаты «если передумаю / если не понравится, вернут ли деньги?» — это refund_policy, не P0; "
         "попроси ключ refund_policy.current и отвечай из факта. Реальная просьба «верните деньги», спор оплаты или жалоба — P0 manager_only.\n"
+        "- Вопросы про дорогу и логистику НЕ являются pricing, даже если начинаются со «сколько»: "
+        "«сколько ехать», «дорога от Лобни», «как добраться», «минут пешком», «на электричке», «далеко ли» + география "
+        "→ planner_intent='general_consultation', answer_mode='estimate_allowed', "
+        "estimate_domain='travel_time' или 'route_logistics', needed_fact_keys=[]. "
+        "Не ставь prices.current для времени дороги или маршрута.\n"
         "- Если реплика — уточнение/эллипсис (короткий вопрос про класс/формат/цену/срок без названия предмета или продукта), "
         "ВОССТАНОВИ тему из истории, known_slots и topic_focus: в current_question и needed_fact_keys укажи полную тему "
         "(предмет+формат+класс+продукт), а не только новую деталь.\n"
@@ -666,6 +688,70 @@ def understand(
         active_brand=active_brand,
         fact_key_catalog=fact_key_catalog,
         p0_reason_pregate=pregate,
+    )
+
+
+def _travel_logistics_question_text(contract: AnswerContract, *, client_words: str = "") -> str:
+    return " ".join(
+        part
+        for part in (
+            client_words,
+            contract.current_question,
+            " ".join(item.text for item in contract.subquestions),
+        )
+        if part
+    )
+
+
+def _has_travel_logistics_signal(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    if not normalized or _TRAVEL_PRODUCT_EXCLUSION_RE.search(normalized):
+        return False
+    if re.search(r"как\s+добраться", normalized, re.I):
+        return True
+    return bool(_TRAVEL_LOGISTICS_RE.search(normalized) and _TRAVEL_GEO_HINT_RE.search(normalized))
+
+
+def _travel_estimate_domain(text: str) -> str:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"как\s+добраться|маршрут|пешком|электричк|метро|станци", normalized, re.I):
+        return "route_logistics"
+    return "travel_time"
+
+
+def _apply_travel_estimate_override(
+    contract: AnswerContract,
+    *,
+    client_words: str,
+    enabled: bool,
+) -> AnswerContract:
+    if not enabled or contract.is_p0:
+        return contract
+    question_text = _travel_logistics_question_text(contract, client_words=client_words)
+    if not _has_travel_logistics_signal(question_text):
+        return contract
+    current_question = contract.current_question or str(client_words or "").strip()[:300]
+    subquestions = contract.subquestions or (
+        Subquestion(text=current_question, answerable="self", needed_fact_keys=()),
+    )
+    updated_subquestions = tuple(
+        replace(
+            item,
+            text=item.text or current_question,
+            answerable="self",
+            needed_fact_keys=(),
+        )
+        for item in subquestions
+    )
+    return replace(
+        contract,
+        current_question=current_question,
+        subquestions=updated_subquestions,
+        planner_intent="general_consultation" if contract.planner_intent == "pricing" else contract.planner_intent,
+        answerability="answer_self",
+        answer_mode="estimate_allowed",
+        estimate_domain=_travel_estimate_domain(question_text),
+        estimate_confidence=max(contract.estimate_confidence, 0.70),
     )
 
 
@@ -983,9 +1069,12 @@ def _resolve_answer_mode(
     question_text: str,
     has_p0: bool,
     has_kb_fact: bool,
+    estimate_enabled: bool = False,
 ) -> tuple[str, str]:
     if has_p0:
         return "confirmed_only", "none"
+    if estimate_enabled and not has_kb_fact and _has_travel_logistics_signal(question_text):
+        return "estimate_allowed", _travel_estimate_domain(question_text)
     if _is_product_question(
         question_text,
         planner_intent=contract.planner_intent,
@@ -1005,6 +1094,8 @@ def _is_product_question(
     planner_intent: str = "",
     needed_fact_keys: Sequence[str] = (),
 ) -> bool:
+    if _has_travel_logistics_signal(text):
+        return False
     combined = " ".join(str(item or "") for item in (text, planner_intent, *needed_fact_keys))
     if _PRODUCT_QUESTION_RE.search(combined):
         return True
@@ -1045,6 +1136,7 @@ def _estimate_policy_context(
         question_text=question_text,
         has_p0=contract.is_p0,
         has_kb_fact=bool(retrieval.facts),
+        estimate_enabled=enabled,
     )
     return {
         "enabled": enabled,
@@ -1789,6 +1881,11 @@ def run_pipeline(
             contract,
             context=context,
             fact_key_catalog=fact_store.catalog,
+        )
+        contract = _apply_travel_estimate_override(
+            contract,
+            client_words=client_words,
+            enabled=estimate_mode_enabled(context),
         )
         trace.update(
             {

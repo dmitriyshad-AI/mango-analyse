@@ -63,7 +63,7 @@
     ],
     "missing": []
   },
-  "created_at": "2026-06-03T11:14:13.093894+00:00",
+  "created_at": "2026-06-04T16:32:17.232994+00:00",
   "details": {
     "allowed_client_text_violations": [],
     "allowed_license_fact_ids": [],
@@ -72,7 +72,34 @@
     "forbidden_to_say_fact_ids": [],
     "invalid_weekly_frequency_fact_ids": [],
     "orphan_source_ids": [],
-    "text_number_global_match_suspects": [],
+    "text_number_global_match_suspects": [
+      {
+        "brand": "unpk",
+        "claim": "2 раза в недел",
+        "fact_id": "fact:v3:unpk:team_answers_q15_unpk_online_other_classes_manager_handoff:1ad4ff2655",
+        "fact_key": "team_answers.q15.unpk_online_other_classes.manager_handoff",
+        "field": "client_safe_text",
+        "kind": "weekly_frequency",
+        "matched_fact_keys": [
+          "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 2
+      },
+      {
+        "brand": "unpk",
+        "claim": "2 раза в недел",
+        "fact_id": "fact:v3:unpk:team_answers_q15_unpk_online_other_classes_manager_handoff:1ad4ff2655",
+        "fact_key": "team_answers.q15.unpk_online_other_classes.manager_handoff",
+        "field": "fact_text",
+        "kind": "weekly_frequency",
+        "matched_fact_keys": [
+          "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 2
+      }
+    ],
     "text_number_grounding_findings": []
   },
   "quality_passed": true,
@@ -93,17 +120,17 @@
       "installment": 27,
       "intensive": 34,
       "matkap": 50,
-      "policy": 6,
-      "price": 48,
-      "program": 267,
+      "policy": 8,
+      "price": 47,
+      "program": 268,
       "promocode": 13,
       "refund": 18,
       "tax": 40,
       "teacher": 13
     },
-    "approval_queue_items": 936,
-    "client_allowed_facts": 594,
-    "facts_total": 956,
+    "approval_queue_items": 938,
+    "client_allowed_facts": 597,
+    "facts_total": 958,
     "source_registry_total": 11
   }
 }

@@ -3,6 +3,33 @@ release_id: kb_release_20260603_v6_5_summer_format_cleanup
 builder_version: kb_release_v6_1_builder_2026_05_20
 freshness_check_date: '2026-06-03'
 source_mutation_policy: read_only_yaml_sources_no_business_patches_in_python
+client_safe_path_markers:
+- refund_presale_policy
+- refund_post_payment
+manual_decision_fact_overrides:
+- fact_key: team_answers.q15.unpk_online_other_classes.manager_handoff
+  fact_type: program
+  brand: unpk
+  product: online_olympiad_phystech_9_and_11
+  fact_text: По онлайн-направлениям УНПК вне подтверждённого формата 2 раза в неделю для 5-11 классов точные условия должен проверить менеджер.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: q15_closed
+  structured_value:
+    scope_exception: other_unpk_online_classes_require_manager
+structured_metadata_rules:
+- brand: unpk
+  fact_key_prefix: prices_regular_2026_27.online_olympiad_phystech_classes.
+  applies_to:
+    grades:
+    - 9
+    - 11
+    formats:
+    - online
+    products:
+    - online_olympiad_phystech
+  is_positive_statement: true
 control_numbers:
   remove:
   - '11900'

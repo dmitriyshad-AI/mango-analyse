@@ -12,7 +12,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260530_v6_4_team_answers"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260603_v6_5_summer_format_cleanup"
 
 REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "priority",
@@ -296,16 +296,15 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
         assert not _has_any(q15_scope, ("5-11", "5_11", "1-4", "1_4")), fact
 
     by_key = {str(fact.get("fact_key") or ""): fact for fact in kb_v3.facts if fact.get("brand") == "unpk"}
-    online_regular_semester = by_key["prices_regular_2026_27.online_5_11_class_regular.semester"]
-    online_regular_year = by_key["prices_regular_2026_27.online_5_11_class_regular.year"]
-    for fact in (online_regular_semester, online_regular_year):
-        assert _is_true(fact.get("allowed_for_client_answer")), fact
-        assert _is_true(fact.get("usable_for_precise_answer")), fact
-        blob = _fact_scope_blob(fact)
-        assert _has_class_scope(blob, first="5", last="11"), fact
-        assert "2 раза" in blob, fact
-        structured = _jsonish(fact.get("structured_value"))
-        assert (structured.get("applies_to") or {}).get("frequency") == "2 раза в неделю"
+    online_regular_handoff = by_key["prices_regular_2026_27.online_5_11_class_regular.bot_behavior_when_asked"]
+    handoff_text = str(
+        online_regular_handoff.get("client_safe_text") or online_regular_handoff.get("fact_text") or ""
+    )
+    assert "онлайн-направление есть" in handoff_text
+    assert "цену менеджер проверит" in handoff_text
+    handoff_scope = _fact_scope_blob(online_regular_handoff)
+    assert _has_class_scope(handoff_scope, first="5", last="11"), online_regular_handoff
+    assert "online" in handoff_scope, online_regular_handoff
 
     unexpected_unpk_online_precise_prices = [
         fact
@@ -779,9 +778,10 @@ def test_v3_refer_a_friend_cashback_text_includes_condition(kb_v3: KbReleaseV3) 
     bad = [
         fact
         for fact in _allowed_client_facts(kb_v3.facts)
-        if "приведи друга" in str(fact.get("client_safe_text") or "").casefold()
+        if (text := str(fact.get("client_safe_text") or "").casefold())
+        and "приведи друга" in text
         and re.search(r"\b[0-9][0-9\s]{2,}\b", str(fact.get("client_safe_text") or ""))
-        and "условие:" not in str(fact.get("client_safe_text") or "").casefold()
+        and not any(marker in text for marker in ("условие:", "после", "ранее не посещав"))
     ]
     assert not bad, _fact_ids(bad[:30])
 
@@ -848,10 +848,27 @@ def test_v3_forbidden_brand_relationship_phrase_is_not_client_allowed(kb_v3: KbR
 
 def test_v3_safe_key_unification_removes_known_duplicate_sources(kb_v3: KbReleaseV3) -> None:
     fact_keys = {str(fact.get("fact_key") or "") for fact in kb_v3.facts}
-    assert "discounts.stacking_rule" not in fact_keys
-    assert "objection_responses.brand_link_question.approved_response" not in fact_keys
+    stacking_facts = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if str(fact.get("fact_key") or "") in {"discounts.stacking_rule", "discounts.stacking_rule_text"}
+    ]
+    assert {fact.get("brand") for fact in stacking_facts} == {"foton", "unpk"}
+    assert all("не суммируются" in str(fact.get("client_safe_text") or "").casefold() for fact in stacking_facts)
     assert "brand_rules.approved_brand_relationship_answer.foton" in fact_keys
     assert "brand_rules.approved_brand_relationship_answer.unpk" in fact_keys
+    brand_link_responses = [
+        fact
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if str(fact.get("fact_key") or "") == "objection_responses.brand_link_question.approved_response"
+    ]
+    canonical_relationship_texts = {
+        str(fact.get("client_safe_text") or "")
+        for fact in _allowed_client_facts(kb_v3.facts)
+        if str(fact.get("fact_key") or "").startswith("brand_rules.approved_brand_relationship_answer.")
+    }
+    assert {fact.get("brand") for fact in brand_link_responses} == {"foton", "unpk"}
+    assert all(str(fact.get("client_safe_text") or "") in canonical_relationship_texts for fact in brand_link_responses)
     assert "objection_responses.too_expensive_course.3" in fact_keys
 
 

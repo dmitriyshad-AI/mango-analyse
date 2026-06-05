@@ -492,6 +492,58 @@ def test_handoff_trace_empty_for_autonomous_answer(monkeypatch):
     assert trace == {}
 
 
+def test_handoff_trace_uses_provider_error_when_pipeline_reason_missing(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+
+    turn = {
+        "turn": 1,
+        "client_message": "Сколько стоит?",
+        "bot_text": "Передам менеджеру.",
+        "bot_route": "manager_only",
+        "bot_safety_flags": ["manager_approval_required", "no_auto_send"],
+        "bot_provider_error": "timeout",
+        "bot_dialogue_contract_pipeline": {},
+        "number_audit": {"items": []},
+    }
+
+    trace = sim._handoff_trace_for_turn(turn)
+
+    assert trace["layer"] == "provider_runtime"
+    assert trace["guard"] == "timeout"
+    assert trace["reason"] == "timeout"
+    assert trace["provider_error"] == "timeout"
+    assert sim._turn_fallback_reason_summary([{"turns": [turn]}]) == {"timeout": 1}
+
+
+def test_handoff_trace_uses_authoritative_gate_findings_when_reason_missing(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+
+    turn = {
+        "turn": 1,
+        "client_message": "Подскажите условия",
+        "bot_text": "Передам менеджеру.",
+        "bot_route": "draft_for_manager",
+        "bot_safety_flags": ["authoritative_output_gate_blocked", "authoritative_gate:brand_leak"],
+        "bot_authoritative_output_gate": {
+            "checked": True,
+            "action": "block",
+            "findings": [{"code": "brand_leak", "policy": "block", "source": "verify_output"}],
+        },
+        "bot_dialogue_contract_pipeline": {},
+        "number_audit": {"items": []},
+    }
+
+    trace = sim._handoff_trace_for_turn(turn)
+    summary = sim._handoff_trace_summary([{"turns": [{**turn, "handoff_trace": trace}]}])
+
+    assert trace["layer"] == "authoritative_output_gate"
+    assert trace["guard"] == "brand_leak"
+    assert trace["reason"] == "authoritative_output_gate:brand_leak"
+    assert trace["gate_findings"] == ["brand_leak"]
+    assert summary["by_gate_finding"] == {"brand_leak": 1}
+    assert sim._turn_fallback_reason_summary([{"turns": [turn]}]) == {"authoritative_output_gate:brand_leak": 1}
+
+
 def test_build_memory_model_modes_use_low_reasoning() -> None:
     fake_args = argparse.Namespace(memory_mode="fake", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
     off_args = argparse.Namespace(memory_mode="off", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)

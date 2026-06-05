@@ -1134,6 +1134,11 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                     "bot_safety_flags": "|".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])),
                     "bot_fallback_reason": turn.get("bot_fallback_reason") or "",
                     "bot_provider_error": turn.get("bot_provider_error") or "",
+                    "bot_authoritative_output_gate": json.dumps(
+                        turn.get("bot_authoritative_output_gate") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_claude_cli_error_count": int(turn.get("bot_claude_cli_error_count") or 0),
                     "bot_claude_cli_errors": json.dumps(
                         turn.get("bot_claude_cli_errors") or [],
@@ -1271,6 +1276,7 @@ def run_one_dialog(
         claude_cli_events = _consume_claude_cli_events(bot_provider)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
         dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)
+        authoritative_gate_metadata = _authoritative_output_gate_metadata_from_result(result)
         bot_fallback_reason = str(dialogue_contract_metadata.get("fallback_reason") or "")
         bot_provider_error = str(getattr(result, "error", "") or "")
         updated_memory = update_dialogue_memory_after_answer(
@@ -1329,6 +1335,7 @@ def run_one_dialog(
             "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
             "bot_fallback_reason": bot_fallback_reason,
             "bot_provider_error": bot_provider_error,
+            "bot_authoritative_output_gate": authoritative_gate_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
             "bot_humanity_x2": humanity_x2_metadata,
@@ -1803,14 +1810,38 @@ def _turn_fallback_reason_summary(transcripts: Sequence[Mapping[str, Any]]) -> M
         for turn in dialog.get("turns") or []:
             if not isinstance(turn, Mapping):
                 continue
-            reason = str(turn.get("bot_fallback_reason") or "").strip()
-            if not reason:
-                pipeline = turn.get("bot_dialogue_contract_pipeline")
-                if isinstance(pipeline, Mapping):
-                    reason = str(pipeline.get("fallback_reason") or "").strip()
+            reason = _turn_primary_fallback_reason(turn)
             if reason:
                 reasons[reason] += 1
     return dict(reasons)
+
+
+def _turn_primary_fallback_reason(turn: Mapping[str, Any]) -> str:
+    reason = str(turn.get("bot_fallback_reason") or "").strip()
+    if reason:
+        return reason
+    pipeline = turn.get("bot_dialogue_contract_pipeline")
+    if isinstance(pipeline, Mapping):
+        reason = str(pipeline.get("fallback_reason") or "").strip()
+        if reason:
+            return reason
+    gate_reason = _turn_authoritative_gate_reason(turn)
+    if gate_reason:
+        return gate_reason
+    return str(turn.get("bot_provider_error") or "").strip()
+
+
+def _turn_authoritative_gate_reason(turn: Mapping[str, Any]) -> str:
+    gate = turn.get("bot_authoritative_output_gate")
+    if not isinstance(gate, Mapping):
+        return ""
+    action = str(gate.get("action") or "").strip()
+    if action not in {"block", "downgrade"}:
+        return ""
+    codes = _authoritative_gate_finding_codes(gate)
+    if codes:
+        return "authoritative_output_gate:" + ",".join(codes[:5])
+    return "authoritative_output_gate:" + action
 
 
 def build_summary(
@@ -2086,7 +2117,7 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
                 "route": turn.get("bot_route"),
                 "fact_level": level,
                 "client_message": turn.get("client_message"),
-                "fallback_reason": (turn.get("bot_dialogue_contract_pipeline") or {}).get("fallback_reason"),
+                "fallback_reason": _turn_primary_fallback_reason(turn),
                 "retrieved_fact_keys": list(((turn.get("bot_dialogue_contract_pipeline") or {}).get("retrieved_facts") or {}).keys())[:8],
                 "missing_fact_keys": list((turn.get("bot_dialogue_contract_pipeline") or {}).get("missing_fact_keys") or [])[:8],
             }
@@ -2122,6 +2153,10 @@ def _handoff_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[
         "by_layer": dict(Counter(str(item.get("layer") or "") for item in traces)),
         "by_guard": dict(Counter(str(item.get("guard") or "") for item in traces)),
         "by_fallback_reason": dict(Counter(str(item.get("fallback_reason") or "") for item in traces)),
+        "by_provider_error": dict(Counter(str(item.get("provider_error") or "") for item in traces if item.get("provider_error"))),
+        "by_gate_finding": dict(
+            Counter(str(code) for item in traces for code in (item.get("gate_findings") or []) if str(code).strip())
+        ),
         "examples": [dict(item) for item in traces[:20]],
     }
 
@@ -2134,9 +2169,14 @@ def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
     rules_engine = pipeline.get("rules_engine") if isinstance(pipeline.get("rules_engine"), Mapping) else {}
     flags = [str(flag) for flag in (turn.get("bot_safety_flags") or []) if str(flag).strip()]
     fallback_reason = str(pipeline.get("fallback_reason") or "")
+    provider_error = str(turn.get("bot_provider_error") or "").strip()
+    gate = turn.get("bot_authoritative_output_gate") if isinstance(turn.get("bot_authoritative_output_gate"), Mapping) else {}
+    gate_findings = _authoritative_gate_finding_codes(gate)
     layer, guard = _handoff_trace_layer_guard(
         route=str(turn.get("bot_route") or ""),
         fallback_reason=fallback_reason,
+        provider_error=provider_error,
+        gate_findings=gate_findings,
         flags=flags,
         pipeline=pipeline,
         rules_engine=rules_engine,
@@ -2144,6 +2184,8 @@ def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
     )
     reason = _handoff_trace_reason(
         fallback_reason=fallback_reason,
+        provider_error=provider_error,
+        gate_findings=gate_findings,
         flags=flags,
         pipeline=pipeline,
         fact_level=_handoff_fact_level(turn),
@@ -2152,6 +2194,8 @@ def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
         "layer": layer,
         "guard": guard,
         "fallback_reason": fallback_reason,
+        "provider_error": provider_error,
+        "gate_findings": list(gate_findings),
         "reason": reason,
         "route": str(turn.get("bot_route") or ""),
         "fact_level": _handoff_fact_level(turn),
@@ -2162,6 +2206,8 @@ def _handoff_trace_layer_guard(
     *,
     route: str,
     fallback_reason: str,
+    provider_error: str,
+    gate_findings: Sequence[str],
     flags: Sequence[str],
     pipeline: Mapping[str, Any],
     rules_engine: Mapping[str, Any],
@@ -2170,12 +2216,6 @@ def _handoff_trace_layer_guard(
     joined_flags = " ".join(flags).casefold()
     if contract.get("is_p0") or re.search(r"high_risk|p0|zero_collect|refund", joined_flags, re.I):
         return "safety", "p0_or_high_risk"
-    if re.search(r"cross_brand|brand_separation", joined_flags, re.I):
-        return "guard_chain", "brand_separation"
-    if re.search(r"guarantee|unsupported_promise|promocode|placeholder|identity", joined_flags, re.I):
-        return "guard_chain", "output_safety"
-    if rules_engine:
-        return "rules_engine", str(rules_engine.get("applied") or rules_engine.get("subvariant") or "domain_rule")
     if fallback_reason:
         if fallback_reason in {"hard_verification_failed", "semantic_check_unavailable", "estimate_guard_failed"}:
             return "dialogue_contract_pipeline", fallback_reason
@@ -2184,6 +2224,16 @@ def _handoff_trace_layer_guard(
         if fallback_reason.startswith("empty_facts") or fallback_reason in {"contract_manager_only", "no_draft_fn", "draft_error"}:
             return "dialogue_contract_pipeline", fallback_reason
         return "dialogue_contract_pipeline", fallback_reason
+    if gate_findings:
+        return "authoritative_output_gate", ",".join(gate_findings[:5])
+    if provider_error:
+        return "provider_runtime", provider_error[:80]
+    if re.search(r"cross_brand|brand_separation", joined_flags, re.I):
+        return "guard_chain", "brand_separation"
+    if re.search(r"guarantee|unsupported_promise|promocode|placeholder|identity", joined_flags, re.I):
+        return "guard_chain", "output_safety"
+    if rules_engine:
+        return "rules_engine", str(rules_engine.get("applied") or rules_engine.get("subvariant") or "domain_rule")
     findings = pipeline.get("findings") if isinstance(pipeline.get("findings"), Sequence) else ()
     if findings:
         return "dialogue_contract_pipeline", "output_verifier"
@@ -2195,12 +2245,18 @@ def _handoff_trace_layer_guard(
 def _handoff_trace_reason(
     *,
     fallback_reason: str,
+    provider_error: str,
+    gate_findings: Sequence[str],
     flags: Sequence[str],
     pipeline: Mapping[str, Any],
     fact_level: str,
 ) -> str:
     if fallback_reason:
         return fallback_reason
+    if gate_findings:
+        return "authoritative_output_gate:" + ",".join(gate_findings[:5])
+    if provider_error:
+        return provider_error
     findings = pipeline.get("findings") if isinstance(pipeline.get("findings"), Sequence) else ()
     finding_codes = [
         str(item.get("code") or "")
@@ -2475,6 +2531,52 @@ def _dialogue_contract_metadata_from_result(result: Any) -> Mapping[str, Any]:
         return {}
     pipeline = metadata.get("dialogue_contract_pipeline")
     return dict(pipeline) if isinstance(pipeline, Mapping) else {}
+
+
+def _authoritative_output_gate_metadata_from_result(result: Any) -> Mapping[str, Any]:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    gate = metadata.get("authoritative_output_gate")
+    if not isinstance(gate, Mapping):
+        return {}
+    findings = gate.get("findings")
+    compact_findings: list[Mapping[str, str]] = []
+    if isinstance(findings, Sequence) and not isinstance(findings, (str, bytes, bytearray)):
+        for item in findings[:8]:
+            if not isinstance(item, Mapping):
+                continue
+            code = str(item.get("code") or "").strip()
+            if not code:
+                continue
+            compact_findings.append(
+                {
+                    "code": code,
+                    "policy": str(item.get("policy") or "").strip(),
+                    "source": str(item.get("source") or "").strip(),
+                }
+            )
+    return {
+        "checked": bool(gate.get("checked")),
+        "action": str(gate.get("action") or "").strip(),
+        "route_before": str(gate.get("route_before") or "").strip(),
+        "route_after": str(gate.get("route_after") or "").strip(),
+        "findings": compact_findings,
+    }
+
+
+def _authoritative_gate_finding_codes(gate: Mapping[str, Any]) -> tuple[str, ...]:
+    findings = gate.get("findings") if isinstance(gate, Mapping) else ()
+    if not isinstance(findings, Sequence) or isinstance(findings, (str, bytes, bytearray)):
+        return ()
+    codes: list[str] = []
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        code = str(item.get("code") or "").strip()
+        if code:
+            codes.append(code)
+    return tuple(dict.fromkeys(codes))
 
 
 def facts_for_judge(

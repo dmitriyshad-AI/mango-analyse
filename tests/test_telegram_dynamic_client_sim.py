@@ -1243,6 +1243,65 @@ def test_number_audit_levels_against_retrieved_client_and_snapshot(tmp_path):
     assert audit["has_risky_number"] is True
 
 
+def test_number_audit_installment_months_are_kind_sensitive(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "grade6.scope",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: программа подходит для 6 класса.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "discount.ten",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: скидка 10%.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "installment.tbank",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: рассрочка через Т-Банк доступна на 6, 10 или 12 месяцев.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "installment.unpk",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: рассрочка доступна на 3 месяца.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_number_claims(
+        "Можно оформить на 2-3 месяца, 6 месяцев, 4 платежа и 12 месяцев?",
+        client_message="Можно на 2 месяца?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+
+    by_text = {(item["claim_text"], item["normalized"]): item for item in audit["items"]}
+    assert by_text[("2-3 месяца", "2")]["level"] == "no_match"
+    assert by_text[("2-3 месяца", "3")]["level"] == "other_brand_match"
+    assert by_text[("6 месяцев", "6")]["level"] == "same_brand_global_match"
+    assert by_text[("4 платежа", "4")]["level"] == "no_match"
+    assert by_text[("12 месяцев", "12")]["level"] == "same_brand_global_match"
+    assert audit["has_risky_number"] is True
+
+    cross_brand = sim.audit_number_claims(
+        "Можно оформить на 12 месяцев?",
+        client_message="",
+        active_brand="unpk",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    assert cross_brand["items"][0]["kind"] == "installment_months"
+    assert cross_brand["items"][0]["level"] == "other_brand_match"
+
+
 def test_number_audit_ignores_years_urls_phones_and_academic_year(tmp_path):
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")

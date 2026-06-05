@@ -35,6 +35,7 @@ from mango_mvp.insights.sanitizers import sanitize_answer
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
+STEP4_NUMBER_GROUNDING_ENV = "TELEGRAM_STEP4_NUMBER_GROUNDING"
 TRAVEL_COMPOSE_ENV = "TELEGRAM_A_TRAVEL_COMPOSE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
@@ -91,6 +92,7 @@ _PRODUCT_QUESTION_RE = re.compile(
 )
 _PRODUCT_NUMBER_CTX_RE = re.compile(
     r"₽|руб|р\.|%|скидк|рассрочк|долями|\b\d{1,2}:\d{2}\b|семестр|за\s+год|"
+    r"мес|месяц|плат[её]ж|на\s+\d+\s+част|в\s+рассрочку\s+на|"
     r"стоит|цена|тариф|сколько\s+длится|длительност|урок|занят|январ|феврал|март|"
     r"апрел|ма[яй]|июн|июл|август|сентяб|октяб|ноябр|декабр|смен[аеуы]",
     re.I,
@@ -108,6 +110,7 @@ _TRAVEL_ESTIMATE_PRODUCT_BLOCK_RE = re.compile(
 )
 _FREE_NUMBER_PRODUCT_CTX_RE = re.compile(
     r"₽|руб|р\.|%|процент|скидк|рассрочк|долями|цена|стоит|стоимост|тариф|семестр|за\s+год|оплат|"
+    r"мес|месяц|плат[её]ж|на\s+\d+\s+част|в\s+рассрочку\s+на|"
     r"\b\d{1,2}:\d{2}\b|расписан|по\s+(?:понедельник|вторник|сред|четверг|пятниц|суббот|воскресень)|"
     r"\b(?:пн|вт|ср|чт|пт|сб|вс)\b|\bв\s+(?:1[0-9]|2[0-3])\b|"
     r"\d{1,2}[-–]\d{1,2}\.\d{1,2}|\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b|"
@@ -119,9 +122,9 @@ _FREE_NUMBER_PRODUCT_CTX_RE = re.compile(
 _FREE_NUMBER_TOKEN_RE = re.compile(
     r"\b20\d{2}/\d{2}\b|"
     r"\b\d{1,2}:\d{2}\b|"
-    r"\b\d+(?:[.,]\d+)?\s*[-–]\s*\d+(?:[.,]\d+)?(?:\s*(?:км|километр(?:а|ов)?|минут(?:ы|у)?|час(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|процент(?:ов|а)?|%))?|"
+    r"\b\d+(?:[.,]\d+)?\s*[-–]\s*\d+(?:[.,]\d+)?(?:\s*(?:км|километр(?:а|ов)?|минут(?:ы|у)?|час(?:а|ов)?|год(?:а)?|лет|мес(?:\.|яц(?:ев|а)?)?|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|процент(?:ов|а)?|%))?|"
     r"\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b|"
-    r"\b\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:к|тыс\.?|тысяч|₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|ак\.?\s*ч(?:\.|аса|асов)?|раз(?:а)?)?\b",
+    r"\b\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:к|тыс\.?|тысяч|₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?|год(?:а)?|лет|мес(?:\.|яц(?:ев|а)?)?|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|ак\.?\s*ч(?:\.|аса|асов)?|раз(?:а)?)?\b",
     re.I,
 )
 _FREE_NUMBER_UNCERTAINTY_MARKERS = (
@@ -144,6 +147,16 @@ _FREE_NUMBER_UNCERTAINTY_MARKERS = (
 )
 _STRUCTURAL_NUMBER_OK = {str(number) for number in range(1, 12)}
 _YEAR_NUMBER_OK = {"2024", "2025", "2026", "2027", "2024/25", "2025/26", "2026/27"}
+_PAYMENT_PLAN_COUNT_PREFIX = "payment_plan_count:"
+_PAYMENT_PLAN_COUNT_RE = re.compile(
+    r"(?<!\d)((?:\d{1,2}\s*(?:,|/|и|или|[-–])\s*)*\d{1,2})\s*"
+    r"(?:мес\.?|месяц(?:ев|а)?|плат[её]ж(?:ей|а)?|част(?:ей|и|ями)?)",
+    re.I,
+)
+_PAYMENT_PLAN_CONTEXT_RE = re.compile(
+    r"мес\.?|месяц(?:ев|а)?|плат[её]ж(?:ей|а)?|част(?:ей|и|ями)?|рассрочк|долями",
+    re.I,
+)
 _INDIVIDUAL_CHILD_RE = re.compile(
     r"мой\s+(?:реб[её]нок|сын|дочь|дочк\w*)|моя\s+(?:дочь|дочк\w*)|"
     r"у\s+моего|у\s+моей|потянет\s+ли|справится\s+ли|"
@@ -559,9 +572,15 @@ def estimate_mode_enabled(context: Mapping[str, Any] | None = None) -> bool:
 
 
 def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
-    if isinstance(context, MappingABC) and context.get(FREE_NUMBER_GATE_ENV) is not None:
-        return _truthy(context.get(FREE_NUMBER_GATE_ENV))
-    return _truthy(os.getenv(FREE_NUMBER_GATE_ENV))
+    if isinstance(context, MappingABC):
+        if context.get(STEP4_NUMBER_GROUNDING_ENV) is not None:
+            if _truthy(context.get(STEP4_NUMBER_GROUNDING_ENV)):
+                return True
+            if context.get(FREE_NUMBER_GATE_ENV) is None:
+                return False
+        if context.get(FREE_NUMBER_GATE_ENV) is not None:
+            return _truthy(context.get(FREE_NUMBER_GATE_ENV))
+    return _truthy(os.getenv(FREE_NUMBER_GATE_ENV)) or _truthy(os.getenv(STEP4_NUMBER_GROUNDING_ENV))
 
 
 def travel_compose_enabled(context: Mapping[str, Any] | None = None) -> bool:
@@ -3773,7 +3792,11 @@ def _free_number_gate_findings(
         surfaces = _free_number_surfaces(token)
         if not surfaces:
             continue
-        if fact_surfaces.intersection(surfaces):
+        payment_plan_surfaces = _payment_plan_count_surfaces_for_token(text, token, start=start, end=end)
+        if payment_plan_surfaces:
+            if fact_surfaces.intersection(payment_plan_surfaces):
+                continue
+        elif fact_surfaces.intersection(surfaces):
             continue
         if _is_route_estimate_number_context(text, token, estimate_domain=estimate_domain):
             pass
@@ -3839,8 +3862,42 @@ def _free_number_surfaces(text: str) -> set[str]:
     surfaces: set[str] = set()
     for token in _free_number_tokens(text):
         surfaces.update(_normalize_free_number_token(token))
+        surfaces.update(_payment_plan_count_surfaces_for_token(text, token))
+    surfaces.update(_payment_plan_count_surfaces_from_text(text))
     surfaces.update(_free_number_word_surfaces(text))
     return {surface for surface in surfaces if surface}
+
+
+def _payment_plan_count_surfaces_from_text(text: str) -> set[str]:
+    surfaces: set[str] = set()
+    for match in _PAYMENT_PLAN_COUNT_RE.finditer(str(text or "")):
+        for raw_number in re.findall(r"\d{1,2}", match.group(1)):
+            normalized = _normalize_decimal_surface(raw_number)
+            if normalized:
+                surfaces.add(f"{_PAYMENT_PLAN_COUNT_PREFIX}{normalized}")
+    return surfaces
+
+
+def _payment_plan_count_surfaces_for_token(
+    text: str,
+    token: str,
+    *,
+    start: int | None = None,
+    end: int | None = None,
+) -> set[str]:
+    surfaces = _normalize_free_number_token(token)
+    if not surfaces:
+        return set()
+    if start is not None and end is not None:
+        window = _free_number_context_window(str(text or ""), start=start, end=end, radius=35)
+    else:
+        source = str(text or "")
+        item = str(token or "").strip()
+        index = source.find(item) if item else -1
+        window = source[max(0, index - 35) : index + len(item) + 35] if index >= 0 else source
+    if not _PAYMENT_PLAN_CONTEXT_RE.search(window):
+        return set()
+    return {f"{_PAYMENT_PLAN_COUNT_PREFIX}{surface}" for surface in surfaces if re.fullmatch(r"\d{1,2}", surface)}
 
 
 def _normalize_free_number_token(token: str) -> set[str]:
@@ -3873,7 +3930,7 @@ def _normalize_free_number_token(token: str) -> set[str]:
     thousand = bool(re.search(r"(?<=\d)\s*к\b|\b(?:тыс\.?|тысяч)\b", raw, re.I))
     unitless = re.sub(
         r"(?:₽|руб(?:\.|лей|ля|ль)?|р\.|процент(?:ов|а)?|%|минут(?:ы|у)?|час(?:а|ов)?|"
-        r"км|километр(?:а|ов)?|год(?:а)?|лет|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|"
+        r"км|километр(?:а|ов)?|год(?:а)?|лет|мес(?:\.|яц(?:ев|а)?)?|недел(?:и|ь)?|заняти(?:й|я)|балл(?:ов|а)?|"
         r"ак\.?\s*ч(?:\.|аса|асов)?|раз(?:а)?|тыс\.?|тысяч|(?<=\d)\s*к\b)",
         "",
         raw,

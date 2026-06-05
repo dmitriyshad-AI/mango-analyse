@@ -703,6 +703,83 @@ def test_level_a_free_number_gate_marker_does_not_save_product_numbers() -> None
         assert "unsupported_product_number" in {finding.code for finding in findings}, text
 
 
+def test_step4_number_grounding_blocks_ungrounded_installment_months_even_with_marker() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "есть рассрочка?",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("installment.tbank",),
+    )
+    facts = {"installment.tbank": "Фотон: рассрочка через Т-Банк доступна на 6, 10 или 12 месяцев."}
+
+    findings = verify_output(
+        "Обычно рассрочку можно оформить на 2-3 месяца.",
+        facts=facts,
+        active_brand="foton",
+        contract=contract,
+        client_message="есть рассрочка?",
+        context={"TELEGRAM_STEP4_NUMBER_GROUNDING": "1"},
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in findings}
+    assert any("2-3 месяца" in finding.detail for finding in findings)
+
+
+def test_step4_number_grounding_requires_typed_payment_match_not_class_or_client_echo() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "можно на 6 месяцев?",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("grade.scope",),
+    )
+
+    findings = verify_output(
+        "Да, рассрочку можно оформить на 6 месяцев.",
+        facts={"grade.scope": "Фотон: программа подходит для 6 класса."},
+        active_brand="foton",
+        contract=contract,
+        client_message="можно на 6 месяцев?",
+        context={"TELEGRAM_STEP4_NUMBER_GROUNDING": "1"},
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in findings}
+
+
+def test_step4_number_grounding_allows_grounded_installment_months_and_structural_numbers() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "какая рассрочка для 9 класса?",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("installment.tbank", "lesson.count"),
+    )
+
+    findings = verify_output(
+        "Для 9 класса рассрочка через Т-Банк доступна на 6, 10 или 12 месяцев. В курсе 32 занятия.",
+        facts={
+            "installment.tbank": "Фотон: рассрочка через Т-Банк доступна на 6, 10 или 12 месяцев.",
+            "lesson.count": "Фотон: в курсе 32 занятия.",
+        },
+        active_brand="foton",
+        contract=contract,
+        client_message="какая рассрочка для 9 класса?",
+        context={"TELEGRAM_STEP4_NUMBER_GROUNDING": "1"},
+    )
+
+    assert not findings
+
+
 def test_gpt_g2p1_product_duration_blocks_converted_number_but_allows_grounded_form() -> None:
     contract = parse_contract(
         {

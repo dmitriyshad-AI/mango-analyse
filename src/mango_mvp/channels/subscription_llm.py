@@ -90,6 +90,7 @@ PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 SEMANTIC_DIAGNOSIS_GUARD_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD"
 SEMANTIC_DIAGNOSIS_MODEL_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_MODEL"
 SEMANTIC_DIAGNOSIS_REASONING_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_REASONING"
+STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -1610,8 +1611,12 @@ def _migrated_rules_keep_existing_verified_answer(
         return False
     if not str(result.draft_text or "").strip() or not facts:
         return False
-    if not _claim_supported_by_facts(result.draft_text, tuple(facts.values())):
-        return False
+    if _step4_keep_answer_enabled(context):
+        if not _keep_answer_supported(result.draft_text, tuple(facts.values())):
+            return False
+    else:
+        if not _claim_supported_by_facts(result.draft_text, tuple(facts.values())):
+            return False
     contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(facts.keys()))
     if getattr(contract, "is_p0", False):
         return False
@@ -1654,6 +1659,23 @@ def _yield_dispatcher_to_travel_estimate(result: SubscriptionDraftResult) -> Sub
     return replace(result, metadata=metadata)
 
 
+def _metadata_with_self_route_deferral_cleared(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(metadata)
+    pipeline = (
+        dict(merged.get("dialogue_contract_pipeline"))
+        if isinstance(merged.get("dialogue_contract_pipeline"), Mapping)
+        else {}
+    )
+    if pipeline:
+        pipeline["is_manager_deferral"] = False
+        pipeline["reason_class"] = ""
+        pipeline["reason_evidence"] = {}
+        merged["dialogue_contract_pipeline"] = pipeline
+    merged["is_manager_deferral"] = False
+    merged["reason_class"] = ""
+    return merged
+
+
 def _safe_template_yield_result(
     result: SubscriptionDraftResult,
     *,
@@ -1678,6 +1700,8 @@ def _safe_template_yield_result(
             "priority": spec.priority,
         },
     }
+    if _step4_keep_answer_enabled(context):
+        metadata = _metadata_with_self_route_deferral_cleared(metadata)
     flags = tuple(dict.fromkeys([*result.safety_flags, "safe_template_yielded_to_verified_answer"]))
     return replace(result, safety_flags=flags, metadata=metadata)
 
@@ -1814,6 +1838,8 @@ def apply_dialogue_contract_v2_template_dispatcher(
                     "cite_only_recover_at_guardchain": True,
                     "cite_only_recover_at_guardchain_source": "safe_template_dispatcher",
                 }
+                if _step4_keep_answer_enabled(context):
+                    recovered_metadata = _metadata_with_self_route_deferral_cleared(recovered_metadata)
                 recovered = replace(
                     guarded,
                     route="bot_answer_self_for_pilot",
@@ -2372,6 +2398,8 @@ class SubscriptionLlmDraftProvider:
                 "cite_only_recover_at_guardchain": True,
                 "cite_only_recover_at_guardchain_source": "text_change_reverify",
             }
+            if _step4_keep_answer_enabled(context):
+                recovered_metadata = _metadata_with_self_route_deferral_cleared(recovered_metadata)
             return replace(
                 after,
                 route="bot_answer_self_for_pilot",
@@ -3973,8 +4001,12 @@ def _verified_informational_answer(
     fact_texts = _pipeline_fact_texts(result)
     if not fact_texts:
         return False
-    if not _claim_supported_by_facts(result.draft_text, tuple(fact_texts.values())):
-        return False
+    if _step4_keep_answer_enabled(context):
+        if not _keep_answer_supported(result.draft_text, tuple(fact_texts.values())):
+            return False
+    else:
+        if not _claim_supported_by_facts(result.draft_text, tuple(fact_texts.values())):
+            return False
     contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(fact_texts.keys()))
     if contract.is_p0:
         return False
@@ -9431,6 +9463,33 @@ def _claim_supported_by_facts(claim: str, fact_texts: Sequence[str]) -> bool:
     return any(claim_anchors <= _fact_match_anchors(text) for text in fact_texts)
 
 
+def _keep_answer_supported(claim: str, fact_texts: Sequence[str]) -> bool:
+    normalized_claim = _normalize_fact_match_text(claim)
+    if not normalized_claim:
+        return False
+    normalized_facts = [_normalize_fact_match_text(text) for text in fact_texts if _normalize_fact_match_text(text)]
+    if not normalized_facts:
+        return False
+    hard_claim_anchors = _keep_answer_hard_anchors(claim)
+    if not hard_claim_anchors:
+        return True
+    fact_hard_anchors: set[str] = set()
+    for text in fact_texts:
+        fact_hard_anchors.update(_keep_answer_hard_anchors(text))
+    return hard_claim_anchors <= fact_hard_anchors
+
+
+def _keep_answer_hard_anchors(text: Any) -> set[str]:
+    result: set[str] = set()
+    for anchor in _fact_match_anchors(text):
+        value = str(anchor or "")
+        if value.startswith(("brand:", "unit:", "deadline:")):
+            result.add(value)
+        elif re.search(r"\d", value):
+            result.add(value)
+    return result
+
+
 def _fact_match_anchors(text: Any) -> set[str]:
     source = str(text or "")
     low = source.casefold().replace("ё", "е").replace("\u00a0", " ")
@@ -9488,6 +9547,14 @@ def _truthy_value(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да"}
+
+
+def _step4_keep_answer_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping) and context.get(STEP4_KEEP_ANSWER_ENV) is not None:
+        return _truthy_value(context.get(STEP4_KEEP_ANSWER_ENV))
+    if isinstance(context, Mapping) and context.get("step4_keep_answer_enabled") is not None:
+        return _truthy_value(context.get("step4_keep_answer_enabled"))
+    return _truthy_value(os.getenv(STEP4_KEEP_ANSWER_ENV))
 
 
 def _output_sanitizer_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

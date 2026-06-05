@@ -62,7 +62,9 @@ from mango_mvp.channels.subscription_llm import (
     _claim_supported_by_facts,
     _context_with_selling_thread_slots,
     _fresh_fact_texts,
+    _keep_answer_supported,
     _validated_guardchain_recovery_candidate,
+    _verified_informational_answer,
     contains_bot_identity_disclosure,
     decide_route,
     draft_has_internal_service_markers,
@@ -4935,6 +4937,71 @@ def test_volna_peresborki_semantic_coverage_negative_controls_block_real_fabrica
     )
     for claim, facts in cases:
         assert not _claim_supported_by_facts(claim, facts), claim
+
+
+def test_step4_keep_answer_supported_allows_rephrasing_but_keeps_hard_anchors() -> None:
+    assert _keep_answer_supported(
+        "На второй предмет действует скидка 20%.",
+        ("Фотон: для второго и последующих очных предметов одного ребёнка скидка составляет 20 процентов.",),
+    )
+    assert not _keep_answer_supported(
+        "Год стоит 70 900 ₽.",
+        ("УНПК: онлайн-курс для 9 класса, год — 69 900 ₽.",),
+    )
+    assert not _keep_answer_supported(
+        "Фотон: скидка 20%.",
+        ("УНПК: скидка на второй предмет составляет 20%.",),
+    )
+    assert not _keep_answer_supported(
+        "Менеджер вернётся завтра.",
+        ("Менеджер свяжется сегодня.",),
+    )
+
+
+def test_step4_keep_answer_flag_uses_verifier_not_substring_for_informational_yield() -> None:
+    facts = {
+        "discount.second_subject": (
+            "Фотон: для второго и последующих очных предметов одного ребёнка скидка составляет 20 процентов."
+        )
+    }
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="На второй предмет действует скидка 20%.",
+        message_type="question",
+        topic_id="theme:005_discounts",
+        metadata=_a2_pipeline_metadata(
+            question="Есть скидка на второй предмет?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    assert _verified_informational_answer(
+        result,
+        client_message="Есть скидка на второй предмет?",
+        context={"active_brand": "foton", "TELEGRAM_STEP4_KEEP_ANSWER": "1"},
+    )
+
+
+def test_step4_keep_answer_does_not_bypass_output_verifier_for_non_numeric_fabrication() -> None:
+    facts = {"platform.webinars": "УНПК: онлайн-вебинары проходят на платформе МТС Линк."}
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Онлайн-занятия проходят в Zoom.",
+        message_type="question",
+        topic_id="theme:014_format",
+        metadata=_a2_pipeline_metadata(
+            question="Где проходят онлайн-занятия?",
+            facts=facts,
+            recovery_candidate="",
+        ),
+    )
+
+    assert not _verified_informational_answer(
+        result,
+        client_message="Где проходят онлайн-занятия?",
+        context={"active_brand": "unpk", "TELEGRAM_STEP4_KEEP_ANSWER": "1"},
+    )
 
 
 def test_volna_peresborki_operational_guard_uses_retrieved_fact_metadata_semantically() -> None:

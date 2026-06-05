@@ -2783,7 +2783,11 @@ def audit_number_claims(
     snapshot_path: Path,
 ) -> Mapping[str, Any]:
     claims = extract_number_claims(text)
-    client_values = {claim["normalized"] for claim in extract_number_claims(client_message)}
+    client_values = {
+        _number_claim_index_key(claim)
+        for claim in extract_number_claims(client_message)
+        if str(claim.get("kind") or "") != "installment_months"
+    }
     retrieved = {
         str(key): str(value)
         for key, value in (retrieved_facts or {}).items()
@@ -2794,21 +2798,22 @@ def audit_number_claims(
     items: list[dict[str, Any]] = []
     for claim in claims:
         normalized = str(claim["normalized"])
+        index_key = _number_claim_index_key(claim)
         retrieved_matches = [
             key
             for key, fact_text in retrieved.items()
             if claim_matches_text(claim, fact_text)
         ]
-        same_brand_matches = sorted(snapshot_index.get(brand, {}).get(normalized, set()))
+        same_brand_matches = sorted(snapshot_index.get(brand, {}).get(index_key, set()))
         other_brand_matches = sorted(
             key
             for item_brand, values in snapshot_index.items()
             if item_brand != brand
-            for key in values.get(normalized, set())
+            for key in values.get(index_key, set())
         )
         if str(claim.get("kind") or "") == "weekly_frequency" and int(float(normalized)) > 7:
             level = "kb_integrity_issue"
-        elif normalized in client_values:
+        elif index_key in client_values:
             level = "client_echo"
         elif retrieved_matches:
             level = "retrieved_match"
@@ -2841,6 +2846,11 @@ _MONEY_AUDIT_RE = re.compile(r"(?<!\d)(\d[\d \u00a0]{2,})(?:\s*(?:₽|руб\.?|
 _PERCENT_AUDIT_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*%")
 _WEEKLY_AUDIT_RE = re.compile(r"(?<!\d)(\d{1,4})\s+раз(?:а)?\s+в\s+недел", re.I)
 _DATE_AUDIT_RE = re.compile(r"(?<!\d)(\d{1,2})[. ](?:\d{1,2}|январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)", re.I)
+_INSTALLMENT_MONTHS_AUDIT_RE = re.compile(
+    r"(?<!\d)((?:\d{1,2}\s*(?:,|/|и|или|[-–])\s*)*\d{1,2})\s*"
+    r"(?:месяц(?:ев|а)?|мес\.?|плат[её]ж(?:ей|а)?|част(?:ей|и|ями)?)",
+    re.I,
+)
 _PLAIN_AUDIT_RE = re.compile(r"(?<![\w@/.-])(\d[\d \u00a0]{1,})(?![\w@/.-])")
 
 
@@ -2849,6 +2859,14 @@ def extract_number_claims(text: str) -> list[Mapping[str, str]]:
     claims: list[dict[str, str]] = []
     spans: list[tuple[int, int]] = []
     ignored_spans = list(ignored_number_spans(source))
+    for match in _INSTALLMENT_MONTHS_AUDIT_RE.finditer(source):
+        if any(start <= match.start() < end for start, end in ignored_spans):
+            continue
+        for raw_value in re.findall(r"\d{1,2}", match.group(1)):
+            normalized = normalize_audit_number(raw_value)
+            if normalized:
+                claims.append({"kind": "installment_months", "text": match.group(0), "normalized": normalized})
+        spans.append(match.span())
     for kind, regex in (
         ("money", _MONEY_AUDIT_RE),
         ("percent", _PERCENT_AUDIT_RE),
@@ -2948,10 +2966,23 @@ def claim_matches_text(claim: Mapping[str, Any], text: str) -> bool:
     normalized = str(claim.get("normalized") or "")
     if not normalized:
         return False
+    if str(claim.get("kind") or "") == "installment_months":
+        return any(
+            str(item.get("kind") or "") == "installment_months"
+            and str(item.get("normalized") or "") == normalized
+            for item in extract_number_claims(text)
+        )
     text_numbers = {str(item["normalized"]) for item in extract_number_claims(text)}
     if normalized in text_numbers:
         return True
     return normalized in re.sub(r"\D+", " ", str(text or "")).split()
+
+
+def _number_claim_index_key(claim: Mapping[str, Any]) -> str:
+    normalized = str(claim.get("normalized") or "")
+    if str(claim.get("kind") or "") == "installment_months":
+        return f"installment_months:{normalized}"
+    return normalized
 
 
 @lru_cache(maxsize=8)
@@ -2976,7 +3007,7 @@ def snapshot_number_index(snapshot_path: Path) -> Mapping[str, Mapping[str, froz
         key = str(fact.get("fact_key") or fact.get("fact_id") or "")
         text = " ".join(str(fact.get(field) or "") for field in ("client_safe_text", "fact_text", "manager_check_text", "structured_value"))
         for claim in extract_number_claims(text):
-            index.setdefault(brand, {}).setdefault(str(claim["normalized"]), set()).add(key)
+            index.setdefault(brand, {}).setdefault(_number_claim_index_key(claim), set()).add(key)
     return {brand: {number: frozenset(keys) for number, keys in values.items()} for brand, values in index.items()}
 
 

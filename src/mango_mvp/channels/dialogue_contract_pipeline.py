@@ -289,6 +289,7 @@ class AnswerContract:
     existence_target: str = ""
     is_p0: bool = False
     p0_reason: str = ""
+    p0_source: str = ""
     confidence: float = 0.0
 
     @property
@@ -343,6 +344,7 @@ class AnswerContract:
             "existence_target": self.existence_target,
             "is_p0": self.is_p0,
             "p0_reason": self.p0_reason,
+            "p0_source": self.p0_source,
             "confidence": self.confidence,
         }
 
@@ -408,6 +410,9 @@ class DialogueContractPipelineResult:
     unsupported_claims: tuple[str, ...] = ()
     form_findings: tuple[FormFinding, ...] = ()
     fallback_reason: str = ""
+    is_manager_deferral: bool = False
+    reason_class: str = ""
+    reason_evidence: Mapping[str, Any] = field(default_factory=dict)
     semantic_match_attempted: bool = False
     semantic_match_replaced: bool = False
     semantic_match_reason: str = ""
@@ -432,6 +437,104 @@ class DialogueContractPipelineResult:
     composite_missing: tuple[str, ...] = ()
     next_step_applied: bool = False
     next_step_text: str = ""
+
+    def __post_init__(self) -> None:
+        route = str(self.route or "").strip()
+        fallback_reason = str(self.fallback_reason or "").strip()
+        is_manager_deferral = route != "bot_answer_self"
+        reason_class = str(self.reason_class or "").strip()
+        if is_manager_deferral and not reason_class:
+            reason_class = _pipeline_reason_class(
+                fallback_reason=fallback_reason,
+                contract=self.contract,
+                findings=self.findings,
+                unsupported_claims=self.unsupported_claims,
+            )
+        if not is_manager_deferral:
+            reason_class = ""
+        evidence = dict(self.reason_evidence or {})
+        if is_manager_deferral:
+            if fallback_reason:
+                evidence.setdefault("fallback_reason", fallback_reason)
+            if reason_class == "p0_deferral":
+                evidence.setdefault("p0_source", self.contract.p0_source or "model")
+                if self.contract.p0_reason:
+                    evidence.setdefault("p0_reason", self.contract.p0_reason)
+        else:
+            evidence = {}
+        object.__setattr__(self, "fallback_reason", fallback_reason)
+        object.__setattr__(self, "is_manager_deferral", is_manager_deferral)
+        object.__setattr__(self, "reason_class", reason_class)
+        object.__setattr__(self, "reason_evidence", evidence)
+
+
+def _pipeline_reason_class(
+    *,
+    fallback_reason: str,
+    contract: AnswerContract,
+    findings: Sequence[VerificationFinding] = (),
+    unsupported_claims: Sequence[str] = (),
+) -> str:
+    reason = str(fallback_reason or "").strip().casefold()
+    finding_codes = {str(item.code or "").strip() for item in findings if str(item.code or "").strip()}
+    for visible_code in ("estimate_individual_child_advice", "estimate_general_advice_risk"):
+        if visible_code in finding_codes:
+            return visible_code
+    if contract.is_p0 or reason.startswith("p0") or reason == "prior_hard_p0_refund_claim":
+        return "p0_deferral"
+    if "refund" in reason:
+        return "refund"
+    if "high_risk" in reason:
+        return "high_risk"
+    if reason == "low_confidence":
+        return "low_confidence"
+    if reason == "payment":
+        return "payment"
+    if reason == "terminal":
+        return "terminal"
+    if reason in {"no_fact_or_unverified", "empty_facts_no_fabrication", "estimate_guard_failed"}:
+        return "no_fact_or_unverified"
+    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn"}:
+        return "provider_runtime"
+    if reason in {"hard_verification_failed", "authoritative_output_gate_blocked"} or findings or unsupported_claims:
+        return "output_safety"
+    if reason in {"contract_manager_only", "policy_permission"}:
+        return "policy_permission"
+    if not reason:
+        return "policy_permission"
+    return reason
+
+
+_MANAGER_DEFERRAL_TEXT_RE = re.compile(
+    r"(?:передам\s+(?:вопрос|его|её|обращение|менеджеру|ответственному)|"
+    r"(?:менеджер|сотрудник|ответственный)[^.?!\n]{0,140}"
+    r"(?:уточнит|сверит|проверит|подтвердит|свяжется|верн[её]тся))",
+    re.I,
+)
+
+
+def _manager_deferral_text(text: str) -> bool:
+    return bool(_MANAGER_DEFERRAL_TEXT_RE.search(str(text or "")))
+
+
+def _force_draft_for_manager_reason_class(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    intent_text = _contract_intent_text(contract).casefold().replace("ё", "е")
+    if _asks_refund_policy(contract):
+        return "refund"
+    if _payment_method_target_anchors(contract) or re.search(r"оплат|рассроч|долями|счет|сч[её]т|payment", intent_text, re.I):
+        return "payment"
+    if re.search(r"terminal|prompt|инъекц|служебн|системн|ignore previous|инструкц", intent_text, re.I):
+        return "terminal"
+    confidence_values = tuple(
+        value
+        for value in (contract.confidence, contract.planner_confidence)
+        if isinstance(value, (int, float)) and value > 0
+    )
+    if confidence_values and min(confidence_values) < 0.70:
+        return "low_confidence"
+    if contract.all_needed_fact_keys() and not retrieval.facts:
+        return "no_fact_or_unverified"
+    return "policy_permission"
 
 
 @dataclass(frozen=True)
@@ -645,6 +748,7 @@ def parse_contract(
             answerability="manager_only",
             is_p0=bool(p0_reason_pregate),
             p0_reason=p0_reason_pregate or "",
+            p0_source="floor" if p0_reason_pregate else "",
         )
 
     catalog = tuple(str(item or "").strip() for item in fact_key_catalog if str(item or "").strip())
@@ -665,7 +769,8 @@ def parse_contract(
             ),
         )
 
-    is_p0 = bool(data.get("is_p0")) or bool(p0_reason_pregate)
+    model_p0 = bool(data.get("is_p0"))
+    is_p0 = model_p0 or bool(p0_reason_pregate)
     answerability = raw_answerability
     if answerability not in {"answer_self", "manager_only"}:
         answerability = "manager_only"
@@ -694,6 +799,7 @@ def parse_contract(
         existence_target=existence_target,
         is_p0=is_p0,
         p0_reason=str(data.get("p0_reason") or p0_reason_pregate or "").strip()[:200],
+        p0_source="floor" if p0_reason_pregate else ("model" if model_p0 else ""),
         confidence=_clamp_float(data.get("confidence")),
     )
 
@@ -2556,7 +2662,7 @@ def run_pipeline(
             client_words=client_words,
             contract=contract,
         ) and not had_hard_p0_claim:
-            contract = replace(contract, is_p0=False, p0_reason="", answerability="answer_self")
+            contract = replace(contract, is_p0=False, p0_reason="", p0_source="", answerability="answer_self")
         else:
             text = _p0_handoff_text(contract, conversation=conversation)
             text = _avoid_repeating_text(text, conversation=conversation, contract=contract, facts={})
@@ -2904,24 +3010,29 @@ def run_pipeline(
     )
     if empty_factual_answer_self:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        final_text = _avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts)
+        route = "draft_for_manager" if _manager_deferral_text(final_text) else "bot_answer_self"
         trace_event(
             context,
             "build_draft",
             {
-                "route": "bot_answer_self",
+                "route": route,
                 "fallback_reason": "empty_facts_no_fabrication",
-                "draft": fallback,
+                "draft": final_text,
             },
         )
         return DialogueContractPipelineResult(
-            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
-            route="bot_answer_self",
+            draft_text=final_text,
+            route=route,
             manager_only=False,
             contract=contract,
             facts=retrieval.facts,
             missing=retrieval.missing,
             fallback_reason="empty_facts_no_fabrication",
+            reason_class="no_fact_or_unverified" if route != "bot_answer_self" else "",
+            reason_evidence={"source": "empty_facts_text_discriminator"} if route != "bot_answer_self" else {},
         )
+    force_manager_reason_class = _force_draft_for_manager_reason_class(contract, retrieval) if force_draft_for_manager else ""
     if force_draft_for_manager and (
         _asks_refund_policy(contract)
         or not retrieval.facts
@@ -2948,7 +3059,9 @@ def run_pipeline(
             contract=contract,
             facts=retrieval.facts,
             missing=retrieval.missing,
-            fallback_reason="contract_manager_only",
+            fallback_reason=force_manager_reason_class,
+            reason_class=force_manager_reason_class,
+            reason_evidence={"source": "force_draft_for_manager"},
         )
     if draft_fn is None:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -3483,6 +3596,9 @@ def run_pipeline(
             client_words=client_words,
             context=context,
         ),
+        fallback_reason=force_manager_reason_class if force_draft_for_manager else "",
+        reason_class=force_manager_reason_class if force_draft_for_manager else "",
+        reason_evidence={"source": "force_draft_for_manager_final"} if force_draft_for_manager else {},
     )
     return _quality_next_step_result(
         result,

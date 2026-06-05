@@ -544,6 +544,46 @@ def test_handoff_trace_uses_authoritative_gate_findings_when_reason_missing(monk
     assert sim._turn_fallback_reason_summary([{"turns": [turn]}]) == {"authoritative_output_gate:brand_leak": 1}
 
 
+def test_manager_deferral_summary_enforces_route_reason_invariant():
+    summary = sim._manager_deferral_summary(
+        [
+            {
+                "dialog_id": "deferral_ok",
+                "turns": [
+                    {
+                        "turn": 1,
+                        "bot_route": "draft_for_manager",
+                        "bot_is_manager_deferral": True,
+                        "bot_reason_class": "no_fact_or_unverified",
+                    },
+                    {
+                        "turn": 2,
+                        "bot_route": "bot_answer_self",
+                        "bot_is_manager_deferral": False,
+                        "bot_reason_class": "",
+                    },
+                ],
+            },
+            {
+                "dialog_id": "deferral_bad",
+                "turns": [
+                    {
+                        "turn": 1,
+                        "bot_route": "manager_only",
+                        "bot_is_manager_deferral": False,
+                        "bot_reason_class": "",
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert summary["total"] == 1
+    assert summary["by_reason_class"] == {"no_fact_or_unverified": 1}
+    assert summary["invariant_violations"] == 1
+    assert summary["violation_examples"][0]["violation"] == "non_self_route_without_deferral_reason"
+
+
 def test_build_memory_model_modes_use_low_reasoning() -> None:
     fake_args = argparse.Namespace(memory_mode="fake", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
     off_args = argparse.Namespace(memory_mode="off", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)

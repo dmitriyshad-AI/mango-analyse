@@ -1134,6 +1134,13 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                     "bot_safety_flags": "|".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])),
                     "bot_fallback_reason": turn.get("bot_fallback_reason") or "",
                     "bot_provider_error": turn.get("bot_provider_error") or "",
+                    "bot_is_manager_deferral": bool(turn.get("bot_is_manager_deferral")),
+                    "bot_reason_class": turn.get("bot_reason_class") or "",
+                    "bot_reason_evidence": json.dumps(
+                        turn.get("bot_reason_evidence") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_authoritative_output_gate": json.dumps(
                         turn.get("bot_authoritative_output_gate") or {},
                         ensure_ascii=False,
@@ -1279,6 +1286,11 @@ def run_one_dialog(
         authoritative_gate_metadata = _authoritative_output_gate_metadata_from_result(result)
         bot_fallback_reason = str(dialogue_contract_metadata.get("fallback_reason") or "")
         bot_provider_error = str(getattr(result, "error", "") or "")
+        deferral_metadata = _manager_deferral_metadata_from_result(
+            result,
+            dialogue_contract_metadata=dialogue_contract_metadata,
+            authoritative_gate_metadata=authoritative_gate_metadata,
+        )
         updated_memory = update_dialogue_memory_after_answer(
             context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
             answer_text=bot_text,
@@ -1335,6 +1347,9 @@ def run_one_dialog(
             "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
             "bot_fallback_reason": bot_fallback_reason,
             "bot_provider_error": bot_provider_error,
+            "bot_is_manager_deferral": bool(deferral_metadata.get("is_manager_deferral")),
+            "bot_reason_class": str(deferral_metadata.get("reason_class") or ""),
+            "bot_reason_evidence": dict(deferral_metadata.get("reason_evidence") or {}),
             "bot_authoritative_output_gate": authoritative_gate_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
@@ -1844,6 +1859,49 @@ def _turn_authoritative_gate_reason(turn: Mapping[str, Any]) -> str:
     return "authoritative_output_gate:" + action
 
 
+def _manager_deferral_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    reason_classes: Counter[str] = Counter()
+    violations: list[Mapping[str, Any]] = []
+    total_deferrals = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            route = str(turn.get("bot_route") or "")
+            is_self_route = route in _BOT_SELF_ROUTES
+            is_deferral = bool(turn.get("bot_is_manager_deferral"))
+            reason_class = str(turn.get("bot_reason_class") or "").strip()
+            if is_deferral and reason_class:
+                reason_classes[reason_class] += 1
+                total_deferrals += 1
+            if is_self_route and is_deferral:
+                violations.append(
+                    {
+                        "dialog_id": dialog.get("dialog_id"),
+                        "turn": turn.get("turn"),
+                        "route": route,
+                        "reason_class": reason_class,
+                        "violation": "bot_answer_self_marked_deferral",
+                    }
+                )
+            if not is_self_route and (not is_deferral or not reason_class):
+                violations.append(
+                    {
+                        "dialog_id": dialog.get("dialog_id"),
+                        "turn": turn.get("turn"),
+                        "route": route,
+                        "reason_class": reason_class,
+                        "violation": "non_self_route_without_deferral_reason",
+                    }
+                )
+    return {
+        "total": total_deferrals,
+        "by_reason_class": dict(reason_classes),
+        "invariant_violations": len(violations),
+        "violation_examples": violations[:20],
+    }
+
+
 def build_summary(
     transcripts: Sequence[Mapping[str, Any]],
     judge_results: Sequence[Mapping[str, Any]],
@@ -1876,6 +1934,7 @@ def build_summary(
     tone_metric = summarize_tone_scores(transcripts)
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
+    manager_deferrals = _manager_deferral_summary(transcripts)
     include_handoff_trace = _handoff_trace_enabled() or any(
         isinstance(turn, Mapping) and isinstance(turn.get("handoff_trace"), Mapping) and bool(turn.get("handoff_trace"))
         for dialog in transcripts
@@ -1982,6 +2041,7 @@ def build_summary(
         "tone_metric": tone_metric,
         "llm_calls": llm_call_summary,
         "turn_fallback_reasons": fallback_reasons,
+        "manager_deferrals": manager_deferrals,
         "claude_cli_errors": claude_cli_errors,
         "over_handoff": over_handoff,
         **({"handoff_trace": handoff_trace} if include_handoff_trace else {}),
@@ -2531,6 +2591,87 @@ def _dialogue_contract_metadata_from_result(result: Any) -> Mapping[str, Any]:
         return {}
     pipeline = metadata.get("dialogue_contract_pipeline")
     return dict(pipeline) if isinstance(pipeline, Mapping) else {}
+
+
+_BOT_SELF_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
+_VISIBLE_ADVICE_REASON_CODES = {"estimate_individual_child_advice", "estimate_general_advice_risk"}
+
+
+def _manager_deferral_metadata_from_result(
+    result: Any,
+    *,
+    dialogue_contract_metadata: Mapping[str, Any],
+    authoritative_gate_metadata: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    route = str(getattr(result, "route", "") or "")
+    if route in _BOT_SELF_ROUTES:
+        return {"is_manager_deferral": False, "reason_class": "", "reason_evidence": {}}
+
+    pipeline_deferral = dialogue_contract_metadata.get("is_manager_deferral")
+    pipeline_reason_class = str(dialogue_contract_metadata.get("reason_class") or "").strip()
+    pipeline_evidence = (
+        dict(dialogue_contract_metadata.get("reason_evidence") or {})
+        if isinstance(dialogue_contract_metadata.get("reason_evidence"), Mapping)
+        else {}
+    )
+    if pipeline_deferral is not None and pipeline_reason_class:
+        return {
+            "is_manager_deferral": bool(pipeline_deferral),
+            "reason_class": pipeline_reason_class,
+            "reason_evidence": pipeline_evidence,
+        }
+
+    provider_error = str(getattr(result, "error", "") or "").strip()
+    gate_codes = _authoritative_gate_finding_codes(authoritative_gate_metadata)
+    reason_class = _reason_class_from_runtime_channels(
+        fallback_reason=str(dialogue_contract_metadata.get("fallback_reason") or "").strip(),
+        provider_error=provider_error,
+        gate_codes=gate_codes,
+        safety_flags=tuple(str(flag) for flag in (getattr(result, "safety_flags", ()) or ())),
+    )
+    evidence: dict[str, Any] = {}
+    if dialogue_contract_metadata.get("fallback_reason"):
+        evidence["fallback_reason"] = str(dialogue_contract_metadata.get("fallback_reason") or "")
+    if gate_codes:
+        evidence["gate_findings"] = list(gate_codes)
+    if provider_error:
+        evidence["provider_error"] = provider_error
+    return {"is_manager_deferral": True, "reason_class": reason_class, "reason_evidence": evidence}
+
+
+def _reason_class_from_runtime_channels(
+    *,
+    fallback_reason: str,
+    provider_error: str,
+    gate_codes: Sequence[str],
+    safety_flags: Sequence[str],
+) -> str:
+    if provider_error:
+        return "provider_runtime"
+    for code in gate_codes:
+        if code in _VISIBLE_ADVICE_REASON_CODES:
+            return code
+    if gate_codes:
+        return "output_safety"
+    reason = str(fallback_reason or "").strip().casefold()
+    flags = " ".join(str(item or "") for item in safety_flags).casefold()
+    if re.search(r"p0|zero_collect|refund_claim|complaint", flags, re.I) or reason.startswith("p0"):
+        return "p0_deferral"
+    if "refund" in reason:
+        return "refund"
+    if "high_risk" in reason:
+        return "high_risk"
+    if reason in {"low_confidence", "no_fact_or_unverified", "policy_permission", "payment", "terminal"}:
+        return reason
+    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn"}:
+        return "provider_runtime"
+    if reason in {"hard_verification_failed", "authoritative_output_gate_blocked"}:
+        return "output_safety"
+    if reason in {"empty_facts_no_fabrication", "estimate_guard_failed"}:
+        return "no_fact_or_unverified"
+    if reason:
+        return reason
+    return "policy_permission"
 
 
 def _authoritative_output_gate_metadata_from_result(result: Any) -> Mapping[str, Any]:

@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
+    DialogueContractPipelineResult,
     FactStore,
     Toggles,
     _avoid_repeating_text,
@@ -394,7 +395,9 @@ def test_level_a_estimate_flag_off_keeps_existing_handoff(monkeypatch) -> None:
 
     assert result.route == "draft_for_manager"
     assert result.is_estimate is False
-    assert result.fallback_reason == "contract_manager_only"
+    assert result.fallback_reason == "policy_permission"
+    assert result.is_manager_deferral is True
+    assert result.reason_class == "policy_permission"
 
 
 def test_level_a_estimate_general_advice_allowed_with_marker(monkeypatch) -> None:
@@ -1968,7 +1971,9 @@ def test_pipeline_missing_fact_uses_narrow_handoff() -> None:
         draft_fn=lambda _prompt: "Точный день группы подтвердит менеджер по выбранной группе.",
     )
     assert result.missing == ("schedule.exact_day",)
-    assert result.route == "bot_answer_self"
+    assert result.route == "draft_for_manager"
+    assert result.is_manager_deferral is True
+    assert result.reason_class == "no_fact_or_unverified"
 
 
 def test_handoff_paraphrase_without_claim_does_not_fail_hard_check() -> None:
@@ -2177,7 +2182,9 @@ def test_phase1_coverage_does_not_force_manager_subquestion() -> None:
     )
 
     assert result.route == "draft_for_manager"
-    assert result.fallback_reason == "contract_manager_only"
+    assert result.fallback_reason == "no_fact_or_unverified"
+    assert result.is_manager_deferral is True
+    assert result.reason_class == "no_fact_or_unverified"
     assert "менеджер" in result.draft_text.casefold()
 
 
@@ -2201,7 +2208,9 @@ def test_phase1_coverage_noop_when_no_rfk() -> None:
     )
 
     assert result.missing == ("price.online",)
-    assert result.route == "bot_answer_self"
+    assert result.route == "draft_for_manager"
+    assert result.is_manager_deferral is True
+    assert result.reason_class == "no_fact_or_unverified"
     assert "менеджер" in result.draft_text.casefold()
 
 
@@ -3427,7 +3436,8 @@ def test_phase1_empty_handoff_does_not_override_manager_no_fact() -> None:
     )
 
     assert result.route == "draft_for_manager"
-    assert result.fallback_reason == "contract_manager_only"
+    assert result.fallback_reason == "no_fact_or_unverified"
+    assert result.reason_class == "no_fact_or_unverified"
     assert "менеджер" in result.draft_text.casefold()
 
 
@@ -3451,7 +3461,31 @@ def test_phase1_empty_handoff_does_not_override_p0() -> None:
 
     assert result.route == "manager_only"
     assert result.fallback_reason == "p0"
+    assert result.reason_class == "p0_deferral"
+    assert result.reason_evidence["p0_source"] == "floor"
     assert "29 750" not in result.draft_text
+
+
+def test_p0_model_only_deferral_evidence_is_visible() -> None:
+    store = FactStore(catalog=(), store={"foton": {}})
+    result = run_pipeline(
+        conversation=_conv("подскажите по курсу"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "жалоба клиента",
+                "answerability": "manager_only",
+                "is_p0": True,
+                "p0_reason": "complaint",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не должно вызываться",
+    )
+
+    assert result.route == "manager_only"
+    assert result.reason_class == "p0_deferral"
+    assert result.reason_evidence["p0_source"] == "model"
 
 
 def test_empty_facts_guard_blocks_answer_self_fact_question_without_rfk() -> None:
@@ -3477,11 +3511,28 @@ def test_empty_facts_guard_blocks_answer_self_fact_question_without_rfk() -> Non
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert result.route == "bot_answer_self"
+    assert result.route == "draft_for_manager"
     assert result.fallback_reason == "empty_facts_no_fabrication"
+    assert result.is_manager_deferral is True
+    assert result.reason_class == "no_fact_or_unverified"
     assert "менеджер" in result.draft_text.casefold()
     assert "вторник" not in result.draft_text.casefold()
     assert result.missing == ("schedule.exact_day",)
+
+
+def test_empty_facts_reason_stays_autonomous_for_client_question_text() -> None:
+    contract = AnswerContract(active_brand="unpk", current_question="нужен класс", answerability="answer_self")
+    result = DialogueContractPipelineResult(
+        draft_text="Подскажите, пожалуйста, класс ребёнка?",
+        route="bot_answer_self",
+        manager_only=False,
+        contract=contract,
+        fallback_reason="empty_facts_no_fabrication",
+        reason_class="no_fact_or_unverified",
+    )
+
+    assert result.is_manager_deferral is False
+    assert result.reason_class == ""
 
 
 def test_empty_facts_guard_does_not_intercept_answer_self_with_retrieved_fact() -> None:
@@ -3820,7 +3871,8 @@ def test_safe_fallback_does_not_leak_third_person_question() -> None:
         )
 
         assert result.route == "draft_for_manager"
-        assert result.fallback_reason == "contract_manager_only"
+        assert result.fallback_reason in {"no_fact_or_unverified", "payment"}
+        assert result.reason_class in {"no_fact_or_unverified", "payment"}
         assert "клиент" not in result.draft_text.casefold()
         assert "спрашивает" not in result.draft_text.casefold()
         assert "уточняет" not in result.draft_text.casefold()
@@ -3872,8 +3924,9 @@ def test_humane_fallback_uses_warm_text_and_rotates_repeats() -> None:
         draft_fn=lambda _prompt: "Адрес уточнит менеджер.",
     )
 
-    assert first.route == second.route == "bot_answer_self"
+    assert first.route == second.route == "draft_for_manager"
     assert first.fallback_reason == second.fallback_reason == "empty_facts_no_fabrication"
+    assert first.reason_class == second.reason_class == "no_fact_or_unverified"
     assert "спасибо за сообщение" not in first.draft_text.casefold()
     assert "точно ответить не могу" not in first.draft_text.casefold()
     assert first.draft_text != second.draft_text
@@ -4230,7 +4283,8 @@ def test_r1_semester_price_is_not_exact_monthly_amount_fact() -> None:
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
     assert result.route == "draft_for_manager"
-    assert result.fallback_reason in {"", "hard_verification_failed"}
+    assert result.fallback_reason in {"policy_permission", "hard_verification_failed"}
+    assert result.reason_class in {"policy_permission", "output_safety"}
 
 
 def test_p9_self_subquestion_with_fact_is_autonomous_without_global_override() -> None:
@@ -4437,8 +4491,9 @@ def test_q_partial_yield_with_no_grounded_fact_keeps_handoff(monkeypatch) -> Non
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert result.route == "bot_answer_self"
+    assert result.route == "draft_for_manager"
     assert result.fallback_reason == "empty_facts_no_fabrication"
+    assert result.reason_class == "no_fact_or_unverified"
     assert result.partial_yield_applied is False
     assert "29 750" not in result.draft_text
 
@@ -5248,8 +5303,9 @@ def test_q_composite_with_no_grounded_fact_keeps_no_fabrication_guard(monkeypatc
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert result.route == "bot_answer_self"
+    assert result.route == "draft_for_manager"
     assert result.fallback_reason == "empty_facts_no_fabrication"
+    assert result.reason_class == "no_fact_or_unverified"
     assert result.composite_applied is False
     assert "29 750" not in result.draft_text
     assert "вторник" not in result.draft_text.casefold()

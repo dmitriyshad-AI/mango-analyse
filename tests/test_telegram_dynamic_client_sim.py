@@ -386,6 +386,92 @@ def test_run_one_dialog_injects_debug_trace_context_when_enabled(monkeypatch, tm
     assert trace_cfg["turn"] == 1
 
 
+def test_handoff_trace_records_handoff_origin_and_summary_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    class HandoffBotProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "theme:001_pricing",
+                    "route": "draft_for_manager",
+                    "draft_text": "Передам менеджеру, он сверит точную цену.",
+                    "safety_flags": ["manager_approval_required", "no_auto_send"],
+                    "metadata": {
+                        "dialogue_contract_pipeline": {
+                            "contract": {"is_p0": False},
+                            "fallback_reason": "contract_manager_only",
+                            "retrieved_facts": {"prices.current": "Стоимость уточняется по группе."},
+                            "missing_fact_keys": [],
+                        }
+                    },
+                }
+            )
+
+    dialog = sim.run_one_dialog(
+        {
+            "dialog_id": "handoff_trace_dynamic",
+            "brand": "unpk",
+            "persona": "родитель",
+            "goal": "проверить trace",
+            "max_turns": 1,
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.FakeClientModel(),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=HandoffBotProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+    )
+
+    trace = dialog["turns"][0]["handoff_trace"]
+    assert trace["layer"] == "dialogue_contract_pipeline"
+    assert trace["guard"] == "contract_manager_only"
+    assert trace["fallback_reason"] == "contract_manager_only"
+    assert trace["reason"] == "contract_manager_only"
+    assert trace["route"] == dialog["turns"][0]["bot_route"] == "manager_only"
+
+    summary = sim.build_summary(
+        [dialog],
+        [dialog["judge_result"]],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+    assert summary["handoff_trace"]["count"] == 1
+    assert summary["handoff_trace"]["by_layer"] == {"dialogue_contract_pipeline": 1}
+    assert summary["handoff_trace"]["by_guard"] == {"contract_manager_only": 1}
+    assert sim.build_turn_rows([dialog])[0]["handoff_trace"]
+    assert "Handoff trace" in sim.render_summary_md(summary)
+    assert "contract_manager_only" in sim.render_one_dialog_md(dialog)
+
+
+def test_handoff_trace_empty_for_autonomous_answer(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+
+    trace = sim._handoff_trace_for_turn(
+        {
+            "turn": 1,
+            "client_message": "где адрес?",
+            "bot_text": "Адрес: Сретенка, 20.",
+            "bot_route": "bot_answer_self_for_pilot",
+            "bot_safety_flags": [],
+            "bot_dialogue_contract_pipeline": {
+                "contract": {"is_p0": False},
+                "fallback_reason": "",
+                "retrieved_facts": {"locations.address": "Адрес: Сретенка, 20."},
+                "missing_fact_keys": [],
+            },
+            "number_audit": {"items": []},
+        }
+    )
+
+    assert trace == {}
+
+
 def test_build_memory_model_modes_use_low_reasoning() -> None:
     fake_args = argparse.Namespace(memory_mode="fake", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
     off_args = argparse.Namespace(memory_mode="off", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)

@@ -226,6 +226,19 @@ _HANDOFF_EXHAUSTED_TEXTS: tuple[str, ...] = (
     "Вижу, это важно — отдельно отмечу менеджеру, чтобы он ответил именно по этому пункту.",
     "Зафиксирую этот пункт отдельно для менеджера, чтобы он вернулся не общим ответом, а по сути вопроса.",
 )
+_SAFE_FALLBACK_PUNT_REASONS: frozenset[str] = frozenset(
+    {
+        "complaint_zero_collect",
+        "refund_zero_collect",
+        "p0_zero_collect",
+        "refund_policy_handoff",
+        "soft_weekend",
+        "useful_handoff",
+        "secondary_fact",
+        "question_detail",
+        "generic",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -503,18 +516,6 @@ def _pipeline_reason_class(
     if not reason:
         return "policy_permission"
     return reason
-
-
-_MANAGER_DEFERRAL_TEXT_RE = re.compile(
-    r"(?:передам\s+(?:вопрос|его|её|обращение|менеджеру|ответственному)|"
-    r"(?:менеджер|сотрудник|ответственный)[^.?!\n]{0,140}"
-    r"(?:уточнит|сверит|проверит|подтвердит|свяжется|верн[её]тся))",
-    re.I,
-)
-
-
-def _manager_deferral_text(text: str) -> bool:
-    return bool(_MANAGER_DEFERRAL_TEXT_RE.search(str(text or "")))
 
 
 def _force_draft_for_manager_reason_class(contract: AnswerContract, retrieval: RetrievalResult) -> str:
@@ -3009,15 +3010,16 @@ def run_pipeline(
         and not _has_retrieved_self_answer_part(contract, retrieval)
     )
     if empty_factual_answer_self:
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        fallback, fallback_source_reason = _safe_fallback_text_with_reason(contract, facts=retrieval.facts, context=context)
         final_text = _avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts)
-        route = "draft_for_manager" if _manager_deferral_text(final_text) else "bot_answer_self"
+        route = "draft_for_manager" if _safe_fallback_reason_is_punt(fallback_source_reason) else "bot_answer_self"
         trace_event(
             context,
             "build_draft",
             {
                 "route": route,
                 "fallback_reason": "empty_facts_no_fabrication",
+                "fallback_source_reason": fallback_source_reason,
                 "draft": final_text,
             },
         )
@@ -3030,7 +3032,9 @@ def run_pipeline(
             missing=retrieval.missing,
             fallback_reason="empty_facts_no_fabrication",
             reason_class="no_fact_or_unverified" if route != "bot_answer_self" else "",
-            reason_evidence={"source": "empty_facts_text_discriminator"} if route != "bot_answer_self" else {},
+            reason_evidence={"source": "empty_facts_fallback_reason", "fallback_source_reason": fallback_source_reason}
+            if route != "bot_answer_self"
+            else {},
         )
     force_manager_reason_class = _force_draft_for_manager_reason_class(contract, retrieval) if force_draft_for_manager else ""
     if force_draft_for_manager and (
@@ -5578,7 +5582,17 @@ def _safe_fallback_text(
     facts: Mapping[str, str] | None = None,
     context: Mapping[str, Any] | None = None,
 ) -> str:
-    def traced(text: str, reason: str) -> str:
+    text, _reason = _safe_fallback_text_with_reason(contract, facts=facts, context=context)
+    return text
+
+
+def _safe_fallback_text_with_reason(
+    contract: AnswerContract,
+    *,
+    facts: Mapping[str, str] | None = None,
+    context: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
+    def traced(text: str, reason: str) -> tuple[str, str]:
         trace_event(
             context,
             "_safe_fallback_text",
@@ -5590,7 +5604,7 @@ def _safe_fallback_text(
                 "text": text,
             },
         )
-        return text
+        return text, reason
 
     safety = classify_answer_safety(
         client_message=contract.current_question or "",
@@ -5640,6 +5654,10 @@ def _safe_fallback_text(
     if detail:
         return traced(_detail_handoff_text(detail), "question_detail")
     return traced(_generic_handoff_text(), "generic")
+
+
+def _safe_fallback_reason_is_punt(reason: str) -> bool:
+    return str(reason or "").strip() in _SAFE_FALLBACK_PUNT_REASONS
 
 
 def _useful_handoff_text(

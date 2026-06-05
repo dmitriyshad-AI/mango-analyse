@@ -9,6 +9,9 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     DialogueContractPipelineResult,
     FactStore,
     Toggles,
+    _DETAIL_HANDOFF_TEXTS,
+    _GENERIC_HANDOFF_TEXTS,
+    _HANDOFF_EXHAUSTED_TEXTS,
     _avoid_repeating_text,
     _ensure_estimate_uncertainty_marker,
     _safe_fallback_text,
@@ -3518,6 +3521,41 @@ def test_empty_facts_guard_blocks_answer_self_fact_question_without_rfk() -> Non
     assert "менеджер" in result.draft_text.casefold()
     assert "вторник" not in result.draft_text.casefold()
     assert result.missing == ("schedule.exact_day",)
+
+
+def test_empty_facts_uses_fallback_reason_tag_after_antirepeat_exhaustion() -> None:
+    detail = "точный день группы"
+    exhausted_variants = tuple(
+        item.format(detail=detail)
+        for item in (*_DETAIL_HANDOFF_TEXTS, *_GENERIC_HANDOFF_TEXTS)
+    )
+    prior_handoffs = tuple(
+        {"role": "bot", "text": item.format(detail=detail)}
+        for item in (*_DETAIL_HANDOFF_TEXTS, *_GENERIC_HANDOFF_TEXTS, _DETAIL_HANDOFF_TEXTS[0])
+    )
+    store = FactStore(catalog=("schedule.exact_day",), store={"unpk": {}})
+    result = run_pipeline(
+        conversation=(*prior_handoffs, {"role": "client", "text": "в какой день группа?"}),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": detail,
+                "subquestions": [
+                    {"text": detail, "answerable": "self", "needed_fact_keys": ["schedule.exact_day"]}
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не должно вызываться",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.reason_class == "no_fact_or_unverified"
+    assert result.reason_evidence["fallback_source_reason"] == "question_detail"
+    assert result.draft_text not in exhausted_variants
+    assert result.draft_text in _HANDOFF_EXHAUSTED_TEXTS
 
 
 def test_empty_facts_reason_stays_autonomous_for_client_question_text() -> None:

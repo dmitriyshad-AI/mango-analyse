@@ -67,6 +67,7 @@ from mango_mvp.channels.subscription_llm import (
     find_unsupported_numeric_promises,
     find_unsupported_followup_deadline_claims,
     find_redundant_questions_for_known_context,
+    build_codex_exec_env,
     parse_llm_json,
     strip_internal_service_markers,
     known_context_fields,
@@ -82,9 +83,110 @@ def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -
     command = CodexExecConfig(model="gpt-5.5", reasoning_effort="medium").build_command(tmp_path / "out.txt")
 
     assert "OPENAI_API_KEY" not in " ".join(command)
-    assert command[:2] == ["codex", "exec"]
+    assert command[0] == "codex"
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "exec" in command
     assert "--sandbox" in command
     assert "read-only" in command
+
+
+def test_codex_exec_isolated_command_ignores_user_config_and_uses_clean_cwd(tmp_path: Path) -> None:
+    command = CodexExecConfig(
+        model="gpt-5.5",
+        reasoning_effort="medium",
+        isolated=True,
+        cwd=tmp_path,
+    ).build_command(tmp_path / "out.txt")
+
+    assert "--ignore-user-config" in command
+    assert "--ignore-rules" in command
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "--ephemeral" in command
+    assert "--skip-git-repo-check" in command
+    assert command[command.index("-C") + 1] == str(tmp_path)
+    assert "personality" not in " ".join(command)
+
+
+def test_codex_exec_env_preserves_codex_home_auth_but_drops_openai_key() -> None:
+    env = build_codex_exec_env({"CODEX_HOME": "/tmp/codex-home", "OPENAI_API_KEY": "secret", "PATH": "/bin"})
+
+    assert env["CODEX_HOME"] == "/tmp/codex-home"
+    assert env["PATH"] == "/bin"
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_codex_exec_provider_isolated_bot_run_uses_clean_cwd_and_metadata(tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def runner(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["env"] = dict(kwargs["env"])
+        cwd = Path(cmd[cmd.index("-C") + 1])
+        assert cwd.exists()
+        assert not (cwd / "AGENTS.md").exists()
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "route": "bot_answer_self_for_pilot",
+                    "draft_text": "Да, сориентирую по проверенным условиям.",
+                    "message_type": "question",
+                    "topic_id": "service:S5_general_consultation",
+                    "confidence_theme": 0.9,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    provider = CodexExecDraftProvider(
+        runner=runner,
+        cache_dir=None,
+        codex_isolated=True,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "OPENAI_API_KEY": "secret", "PATH": "/bin"},
+    )
+
+    result = provider.generate_from_prompt("Верни JSON")
+
+    assert "--ignore-user-config" in seen["cmd"]
+    assert "--ignore-rules" in seen["cmd"]
+    assert "-C" in seen["cmd"]
+    assert seen["env"]["CODEX_HOME"].endswith("codex-home")
+    assert "OPENAI_API_KEY" not in seen["env"]
+    assert result.metadata["codex_exec"] == {
+        "isolated": True,
+        "ignore_user_config": True,
+        "ignore_rules": True,
+    }
+
+
+def test_codex_exec_provider_isolates_dialogue_contract_subcalls(tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def runner(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["env"] = dict(kwargs["env"])
+        cwd = Path(cmd[cmd.index("-C") + 1])
+        assert cwd.exists()
+        assert not (cwd / "AGENTS.md").exists()
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text('{"ok": true}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    provider = CodexExecDraftProvider(
+        runner=runner,
+        cache_dir=None,
+        codex_isolated=True,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "OPENAI_API_KEY": "secret", "PATH": "/bin"},
+    )
+
+    assert provider._run_prompt_text("Верни JSON", prefix="mango_test_", suffix=".json") == '{"ok": true}'
+    assert "--ignore-user-config" in seen["cmd"]
+    assert "--ignore-rules" in seen["cmd"]
+    assert "-C" in seen["cmd"]
+    assert seen["env"]["CODEX_HOME"].endswith("codex-home")
+    assert "OPENAI_API_KEY" not in seen["env"]
 
 
 def test_provider_parses_valid_json() -> None:

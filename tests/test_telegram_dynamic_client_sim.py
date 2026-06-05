@@ -485,6 +485,33 @@ def test_build_memory_model_modes_use_low_reasoning() -> None:
     assert codex_model.reasoning_effort == "low"
 
 
+def test_codex_json_model_can_run_isolated(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = Path(cmd[cmd.index("-C") + 1])
+        assert cwd.exists()
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text('{"ok": true}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+
+    model = sim.CodexJsonModel(model="gpt-5.5", reasoning_effort="medium", timeout_sec=20, isolated=True)
+
+    assert model.generate("Верни JSON") == {"ok": True}
+    cmd, kwargs = calls[0]
+    assert "--ignore-user-config" in cmd
+    assert "--ignore-rules" in cmd
+    assert cmd[cmd.index("--ask-for-approval") + 1] == "never"
+    assert "--ephemeral" in cmd
+    assert "--skip-git-repo-check" in cmd
+    assert "-C" in cmd
+    assert "personality" not in " ".join(cmd)
+    assert "OPENAI_API_KEY" not in kwargs["env"]
+
+
 def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
     calls = []
 
@@ -551,6 +578,27 @@ def test_build_bot_provider_claude_mode_uses_claude_runner() -> None:
     assert isinstance(provider.runner, sim.ClaudeCliRunner)
     assert provider.model == "claude-sonnet-4-6"
     assert provider.reasoning_effort == "high"
+
+
+def test_build_bot_provider_codex_mode_is_isolated_by_default_and_can_disable() -> None:
+    base = dict(
+        bot_mode="codex",
+        model="gpt-5.5",
+        bot_reasoning="medium",
+        timeout_sec=180,
+        disable_bot_cache=True,
+        semantic_mode="off",
+        semantic_model="gpt-5.5",
+        semantic_reasoning="medium",
+        llm_call_counter=None,
+    )
+
+    isolated = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=True))
+    baseline = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=False))
+
+    assert isinstance(isolated, sim.CountingSubscriptionLlmDraftProvider)
+    assert isolated.codex_isolated is True
+    assert baseline.codex_isolated is False
 
 
 def test_claude_bot_mode_still_uses_existing_safety_gates() -> None:

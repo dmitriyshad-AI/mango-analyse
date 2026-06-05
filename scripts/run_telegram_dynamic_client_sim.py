@@ -22,6 +22,8 @@ from typing import Any, Mapping, Optional, Sequence
 from mango_mvp.channels.subscription_llm import (
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
+    build_codex_exec_command,
+    codex_isolation_cwd,
     normalize_subscription_draft_payload,
     strip_internal_service_markers,
 )
@@ -219,37 +221,42 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
 
 
 class CodexJsonModel:
-    def __init__(self, *, model: str, reasoning_effort: str, timeout_sec: int, codex_bin: str = "codex") -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        reasoning_effort: str,
+        timeout_sec: int,
+        codex_bin: str = "codex",
+        isolated: bool = False,
+    ) -> None:
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.timeout_sec = timeout_sec
         self.codex_bin = codex_bin
+        self.isolated = bool(isolated)
 
     def generate(self, prompt: str) -> Mapping[str, Any]:
         with tempfile.NamedTemporaryFile(prefix="mango_dynamic_sim_", suffix=".json") as out_file:
             output_path = Path(out_file.name)
-            cmd = [
-                self.codex_bin,
-                "exec",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "--model",
-                self.model,
-            ]
-            if self.reasoning_effort:
-                cmd.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
-            cmd.extend(["--output-last-message", str(output_path), "-"])
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_sec,
-                check=False,
-                env=_codex_env(),
-            )
+            with codex_isolation_cwd(self.isolated) as isolated_cwd:
+                cmd = build_codex_exec_command(
+                    output_path=output_path,
+                    codex_bin=self.codex_bin,
+                    model=self.model,
+                    reasoning_effort=self.reasoning_effort,
+                    isolated=self.isolated,
+                    cwd=isolated_cwd,
+                )
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_sec,
+                    check=False,
+                    env=_codex_env(),
+                )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
             raise RuntimeError(f"codex exec failed rc={proc.returncode}: {(proc.stderr or '')[-500:]}")
@@ -449,6 +456,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--client-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--bot-mode", choices=("codex", "claude", "fake"), default="codex")
+    parser.add_argument(
+        "--codex-isolated",
+        dest="codex_isolated",
+        action="store_true",
+        default=True,
+        help="Run Codex bot-side calls without user config/rules in a clean temporary cwd. Default for honest tone A/B.",
+    )
+    parser.add_argument(
+        "--no-codex-isolated",
+        dest="codex_isolated",
+        action="store_false",
+        help="Use current Codex user config for GPT bot calls; intended only as baseline A.",
+    )
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--claude-model", default=_CLAUDE_DEFAULT_MODEL)
     parser.add_argument("--claude-bin", default="claude")
@@ -837,6 +857,7 @@ def build_selling_compose_model(args: argparse.Namespace) -> Any:
             reasoning_effort=args.selling_reasoning,
             timeout_sec=args.timeout_sec,
             codex_bin=getattr(args, "codex_bin", "codex"),
+            isolated=bool(getattr(args, "codex_isolated", False)),
         ),
         role="bot_selling_compose",
         counter=getattr(args, "llm_call_counter", None),
@@ -873,6 +894,7 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,
         dialogue_contract_semantic_match_enabled=semantic_match_model is not None,
         llm_call_counter=getattr(args, "llm_call_counter", None),
+        codex_isolated=bool(getattr(args, "codex_isolated", True)) if args.bot_mode == "codex" else False,
     )
 
 

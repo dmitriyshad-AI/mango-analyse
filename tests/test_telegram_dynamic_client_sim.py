@@ -463,8 +463,84 @@ def test_build_bot_provider_claude_mode_uses_claude_runner() -> None:
     provider = sim.build_bot_provider(args)
 
     assert isinstance(provider.runner, sim.ClaudeCliRunner)
+    assert provider._dynamic_sim_claude_runner is provider.runner
     assert provider.model == "claude-sonnet-4-6"
     assert provider.reasoning_effort == "high"
+
+
+def test_claude_cli_event_records_nonzero_failure_with_stage() -> None:
+    event = sim._claude_cli_event_if_visible_failure(
+        requested_cmd=[
+            "codex-llm",
+            "--output-last-message",
+            "/tmp/abc_build_draft_xyz.json",
+        ],
+        actual_cmd=["claude", "-p", "--model", "claude-sonnet-4-6"],
+        returncode=2,
+        stdout="partial stdout\nline",
+        stderr="stderr details\nsecond line",
+        prompt="Верни JSON",
+    )
+
+    assert event["reason"] == "nonzero_returncode"
+    assert event["stage"] == "build_draft"
+    assert event["returncode"] == 2
+    assert event["cmd"] == "claude -p --model claude-sonnet-4-6"
+    assert event["stdout_tail"] == "partial stdout line"
+    assert event["stderr_tail"] == "stderr details second line"
+    assert event["prompt_chars"] == len("Верни JSON")
+
+
+def test_claude_cli_event_records_empty_output_but_ignores_success_with_output() -> None:
+    empty = sim._claude_cli_event_if_visible_failure(
+        requested_cmd=["codex-llm"],
+        actual_cmd=["claude", "-p"],
+        returncode=0,
+        stdout="",
+        stderr="",
+        prompt="prompt",
+    )
+    success = sim._claude_cli_event_if_visible_failure(
+        requested_cmd=["codex-llm"],
+        actual_cmd=["claude", "-p"],
+        returncode=0,
+        stdout='{"draft_text":"ok"}',
+        stderr="",
+        prompt="prompt",
+    )
+
+    assert empty["reason"] == "empty_output"
+    assert success == {}
+
+
+def test_claude_cli_runner_surfaces_and_drains_visible_failures(monkeypatch, capsys, tmp_path) -> None:
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="permission denied")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+    runner = sim.ClaudeCliRunner(model="claude-sonnet-4-6", reasoning_effort="high")
+
+    result = runner(
+        [
+            "codex-llm",
+            "--output-last-message",
+            str(tmp_path / "abc_build_draft_xyz.json"),
+        ],
+        input="Верни JSON",
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env={},
+    )
+
+    assert result.returncode == 1
+    assert result.args[:2] == ["claude", "-p"]
+    events = runner.drain_events()
+    assert events[0]["stage"] == "build_draft"
+    assert events[0]["stderr_tail"] == "permission denied"
+    assert runner.drain_events() == []
+    assert "claude_cli_error=" in capsys.readouterr().err
 
 
 def test_claude_bot_mode_still_uses_existing_safety_gates() -> None:
@@ -635,6 +711,82 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         "turns": 2,
         "avg_calls_per_dialog": 9.0,
     }
+
+
+def test_dynamic_outputs_include_claude_cli_errors_and_fallback_reasons(tmp_path):
+    event = {
+        "stage": "build_draft",
+        "reason": "nonzero_returncode",
+        "returncode": 2,
+        "cmd": "claude -p --model claude-sonnet-4-6",
+        "stdout_tail": "partial stdout",
+        "stderr_tail": "rate limit",
+        "prompt_chars": 123,
+    }
+    transcripts = [
+        {
+            "dialog_id": "claude_error_case",
+            "brand": "foton",
+            "persona": {"persona": "родитель", "goal": "проверить диагностику"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Сколько стоит?",
+                    "bot_text": "Передам менеджеру.",
+                    "bot_route": "draft_for_manager",
+                    "bot_safety_flags": [],
+                    "bot_fallback_reason": "provider_empty_draft",
+                    "bot_provider_error": "claude output empty",
+                    "bot_claude_cli_errors": [event],
+                    "bot_claude_cli_error_count": 1,
+                    "context_parity_checked": True,
+                }
+            ],
+            "judge_result": {
+                "verdict": "PASS_WITH_NOTES",
+                "hard_gates_passed": True,
+                "soft_flags_present": [],
+                "violated_gates": [],
+                "human_tone_score_0_100": 65,
+            },
+        }
+    ]
+    judge_results = [
+        {
+            "dialog_id": "claude_error_case",
+            "brand": "foton",
+            "hard_gates_passed": True,
+            "soft_flags_present": [],
+            "verdict": "PASS_WITH_NOTES",
+            "human_tone_score_0_100": 65,
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+    rows = sim.build_turn_rows(transcripts)
+    summary_md = sim.render_summary_md(summary)
+    dialog_md = sim.render_one_dialog_md(transcripts[0])
+
+    assert summary["claude_cli_errors"]["count"] == 1
+    assert summary["claude_cli_errors"]["by_reason"] == {"nonzero_returncode": 1}
+    assert summary["claude_cli_errors"]["by_stage"] == {"build_draft": 1}
+    assert summary["claude_cli_errors"]["by_returncode"] == {"2": 1}
+    assert summary["claude_cli_errors"]["examples"][0]["stderr_tail"] == "rate limit"
+    assert summary["turn_fallback_reasons"] == {"provider_empty_draft": 1}
+    assert rows[0]["bot_claude_cli_error_count"] == 1
+    assert "rate limit" in rows[0]["bot_claude_cli_errors"]
+    assert rows[0]["bot_fallback_reason"] == "provider_empty_draft"
+    assert rows[0]["bot_provider_error"] == "claude output empty"
+    assert "Claude CLI errors" in summary_md
+    assert "Turn fallback reasons" in summary_md
+    assert "claude_cli_errors" in dialog_md
+    assert "provider_empty_draft" in dialog_md
 
 
 def test_dynamic_summary_includes_deterministic_tone_metric(tmp_path):

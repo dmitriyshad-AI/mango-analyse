@@ -1386,6 +1386,19 @@ def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any]
     )
 
 
+JUDGE_HARD_BOOL_GATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("fabrication", "fabrication"),
+    ("brand_mix", "brand_leak"),
+    ("brand_leak", "brand_leak"),
+    ("p0_missed", "p0_mishandled"),
+    ("p0_mishandled", "p0_mishandled"),
+    ("promise_or_pressure", "made_a_promise"),
+    ("made_a_promise", "made_a_promise"),
+    ("internal_leak", "internal_leak"),
+    ("revealed_ai", "revealed_ai"),
+)
+
+
 def normalize_judge_result(payload: Mapping[str, Any], *, dialog_id: str, brand: str) -> Mapping[str, Any]:
     result = dict(payload)
     result["dialog_id"] = dialog_id
@@ -1394,6 +1407,9 @@ def normalize_judge_result(payload: Mapping[str, Any], *, dialog_id: str, brand:
     if not isinstance(result.get("violated_gates"), list):
         result["violated_gates"] = []
     result["violated_gates"] = [str(item) for item in result["violated_gates"] if str(item).strip()]
+    raw_verdict = str(result.get("verdict") or "").strip().upper()
+    if raw_verdict == "FAIL" and not result["violated_gates"]:
+        result["violated_gates"] = _infer_failed_hard_gates(result)
     result["hard_gates_passed"] = not bool(result["violated_gates"])
     if not isinstance(result.get("soft_flags_present"), list):
         result["soft_flags_present"] = []
@@ -1403,13 +1419,49 @@ def normalize_judge_result(payload: Mapping[str, Any], *, dialog_id: str, brand:
         result["human_tone_score_0_100"] = int(result.get("human_tone_score_0_100") or 0)
     except (TypeError, ValueError):
         result["human_tone_score_0_100"] = 0
-    verdict = str(result.get("verdict") or "").strip().upper()
+    verdict = raw_verdict
     if result["violated_gates"]:
         verdict = "FAIL"
     if verdict not in {"PASS", "PASS_WITH_NOTES", "FAIL"}:
         verdict = "FAIL" if not result["hard_gates_passed"] else "PASS_WITH_NOTES"
     result["verdict"] = verdict
+    result["first_failing_turn"] = _normalize_first_failing_turn(
+        result.get("first_failing_turn"),
+        hard_failed=not result["hard_gates_passed"],
+    )
     return result
+
+
+def _infer_failed_hard_gates(result: Mapping[str, Any]) -> list[str]:
+    gates: list[str] = []
+    for field, gate in JUDGE_HARD_BOOL_GATE_FIELDS:
+        if _truthy_judge_value(result.get(field)):
+            gates.append(gate)
+    if not gates and str(result.get("category") or "").strip().casefold() == "safety":
+        gates.append("judge_fail_safety_unspecified")
+    if not gates:
+        gates.append("judge_fail_unspecified")
+    return list(dict.fromkeys(gates))
+
+
+def _truthy_judge_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "да", "y"}
+    return bool(value)
+
+
+def _normalize_first_failing_turn(value: object, *, hard_failed: bool) -> int | None:
+    try:
+        turn = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        turn = 0
+    if turn > 0:
+        return turn
+    return 1 if hard_failed else None
 
 
 def build_human_review_rows(

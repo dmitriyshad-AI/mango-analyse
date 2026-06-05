@@ -250,6 +250,26 @@ def test_normalize_judge_result_violated_gate_forces_fail():
     assert result["verdict"] == "FAIL"
 
 
+def test_normalize_judge_result_fail_hard_class_fills_consistency_fields():
+    result = sim.normalize_judge_result(
+        {
+            "verdict": "FAIL",
+            "hard_gates_passed": True,
+            "violated_gates": [],
+            "fabrication": True,
+            "first_failing_turn": None,
+            "human_tone_score_0_100": 45,
+        },
+        dialog_id="hard_fail_missing_fields",
+        brand="foton",
+    )
+
+    assert result["verdict"] == "FAIL"
+    assert result["hard_gates_passed"] is False
+    assert result["violated_gates"] == ["fabrication"]
+    assert result["first_failing_turn"] == 1
+
+
 def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch):
     path = tmp_path / "v7.jsonl"
     out_dir = tmp_path / "out"

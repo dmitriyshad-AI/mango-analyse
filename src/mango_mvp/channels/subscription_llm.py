@@ -441,6 +441,12 @@ OUTPUT_SANITIZER_PLACEHOLDER_RE = re.compile(
     r"\bуточнен\w+\s+по\s+текущей\s+теме\s*\.\s*тема\s*:\s*[^.?!\n]*(?:[.?!]|$)",
     re.I,
 )
+OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE = re.compile(
+    r"(?:чтобы\s+не\s+ошибиться,\s*)?менеджер\s+уточнит\s+именно\s+про\s+(?P<detail>[^.?!\n]{20,220}?)(?=\s+и\s+верн[её]тся\s+с\s+ответом|[.?!]|$)(?:\s+и\s+верн[её]тся\s+с\s+ответом)?[.?!]?"
+    r"|не\s+хочу\s+гадать\s+по\s+неподтвержд[её]нному\s+пункту:\s*менеджер\s+проверит\s+именно\s+(?P<detail2>[^.?!\n]{20,220}?)(?=\s+и\s+ответит\s+вам|[.?!]|$)(?:\s+и\s+ответит\s+вам)?[.?!]?"
+    r"|передам\s+менеджеру\s+именно\s+вопрос\s+про\s+(?P<detail3>[^.?!\n]{20,220}?)(?=,\s*чтобы\s+он\s+проверил\s+актуальные\s+условия|[.?!]|$)(?:,\s*чтобы\s+он\s+проверил\s+актуальные\s+условия)?[.?!]?",
+    re.I,
+)
 OUTPUT_SANITIZER_MANAGER_TAG_RE = re.compile(r"\[/?manager\]\s*", re.I)
 OUTPUT_SANITIZER_MANAGER_TAG_INSTRUCTION_RE = re.compile(
     r"^(?=.*\[/?manager\])(?=.*(?:интерпретир\w+|служебн\w+\s+тег|тег\s+\[/?manager\])).*$",
@@ -3059,6 +3065,9 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
     value, placeholder_removed = OUTPUT_SANITIZER_PLACEHOLDER_RE.subn(" ", value)
     if placeholder_removed:
         reasons.append("topic_placeholder")
+    value, raw_detail_removed = _sanitize_raw_detail_handoff_text(value)
+    if raw_detail_removed:
+        reasons.append("raw_detail_handoff")
 
     kept_lines: list[str] = []
     for line in value.splitlines() or [value]:
@@ -3093,6 +3102,41 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
     if value != raw and not reasons:
         reasons.append("normalized")
     return value, tuple(dict.fromkeys(reasons))
+
+
+def _sanitize_raw_detail_handoff_text(text: str) -> tuple[str, bool]:
+    changed = False
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal changed
+        replacement = _sanitize_raw_detail_handoff_match(match)
+        if replacement != match.group(0):
+            changed = True
+        return replacement
+
+    return OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE.sub(repl, str(text or "")), changed
+
+
+def _sanitize_raw_detail_handoff_match(match: re.Match[str]) -> str:
+    detail = next((str(item or "") for item in match.groups() if item), "")
+    if not _raw_detail_handoff_looks_like_question(detail):
+        return match.group(0)
+    return SAFE_FALLBACK_DRAFT_TEXT
+
+
+def _raw_detail_handoff_looks_like_question(detail: str) -> bool:
+    value = " ".join(str(detail or "").split())
+    low = value.casefold().replace("ё", "е")
+    if len(value) >= 55:
+        return True
+    return bool(
+        re.search(
+            r"\b(?:сможет|можно|есть|будет|получится|подойдет|подойд[её]т|оценить|сколько|когда|как|где)\s+ли\b|"
+            r"\b(?:сын|дочк|дочь|реб[её]н|школьник|ученик)\b|\?$",
+            low,
+            re.I,
+        )
+    )
 
 
 def _normalize_output_sanitizer_text(text: str) -> str:

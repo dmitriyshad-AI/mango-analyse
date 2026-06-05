@@ -2752,7 +2752,7 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
         context={"active_brand": "unpk"},
     )
     assert "менеджер" in secondary.casefold()
-    assert "прямым переводом" in secondary.casefold()
+    assert "оплату прямым переводом на счёт" in secondary.casefold()
     assert "как отдельная справка" not in secondary.casefold()
     assert "т-банк" not in secondary.casefold()
 
@@ -2766,7 +2766,8 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
         context={"active_brand": "unpk"},
     )
     assert "менеджер" in detail.casefold()
-    assert "Какая цена для 6 класса" in detail
+    assert "цену или условия оплаты" in detail
+    assert "Какая цена для 6 класса" not in detail
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:
@@ -4407,6 +4408,46 @@ def test_output_sanitizer_removes_manager_tag_and_tag_instruction() -> None:
     assert "[manager]" not in gated.draft_text
     assert "интерпретируй" not in gated.draft_text.casefold()
     assert gated.metadata["output_sanitizer"]["applied"] is True
+
+
+def test_output_sanitizer_replaces_raw_question_detail_handoff() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "Чтобы не ошибиться, менеджер уточнит именно про Сможет ли менеджер оценить, "
+            "есть ли у сына пробелы по математике и подойдет ли курс, и вернется с ответом."
+        ),
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Сможете оценить, есть ли у сына пробелы?",
+        context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert "Сможет ли менеджер" not in gated.draft_text
+    assert "есть ли у сына" not in gated.draft_text.casefold()
+    assert "передам вопрос менеджеру" in gated.draft_text.casefold()
+    assert gated.metadata["output_sanitizer"]["applied"] is True
+    assert "raw_detail_handoff" in gated.metadata["output_sanitizer"]["reasons"]
+
+
+def test_output_sanitizer_keeps_clean_detail_handoff_unchanged() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Чтобы не ошибиться, менеджер уточнит именно про дни и время занятий нужной группы и вернется с ответом.",
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Какие дни занятий?",
+        context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert gated.draft_text == result.draft_text
+    assert "output_sanitizer" not in gated.metadata
 
 
 def test_output_sanitizer_keeps_clean_client_answer_unchanged() -> None:

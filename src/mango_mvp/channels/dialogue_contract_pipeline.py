@@ -3871,7 +3871,25 @@ def _ensure_estimate_uncertainty_marker(text: str, *, context: Mapping[str, Any]
     value = str(text or "").strip()
     if not value or not (free_number_gate_enabled(context) or travel_compose_enabled(context)) or _has_free_uncertainty_marker(value):
         return value
+    if not _estimate_text_needs_uncertainty_marker(value):
+        return value
     return f"Ориентировочно: {value}"
+
+
+def _estimate_text_needs_uncertainty_marker(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    low = value.casefold().replace("ё", "е")
+    if re.fullmatch(r"(?:пожалуйста|рада?\s+был[аио]?\s+помочь|обращайтесь|спасибо)[!. ]*", low, re.I):
+        return False
+    for token, start, end in _free_number_token_matches(value):
+        if _is_free_product_number_context(value, token, start=start, end=end):
+            continue
+        window = _free_number_context_window(value, start=start, end=end, radius=60).casefold().replace("ё", "е")
+        if re.search(r"минут|час|км|километр|дорог|ехать|доехать|пешком|электрич|метро|маршрут|обычно|примерно|около", window, re.I):
+            return True
+    return False
 
 
 def _is_client_grade_number_context_at(text: str, *, start: int, end: int) -> bool:
@@ -5553,9 +5571,49 @@ def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:
     ).strip(" \t\n\r:;,.—-")
     if not text or text.casefold().startswith("клиент "):
         return ""
+    label = _question_detail_topic_label(text)
+    if label:
+        return label
+    if _looks_like_raw_question_detail(text):
+        return ""
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
     return text
+
+
+def _question_detail_topic_label(value: str) -> str:
+    text = str(value or "").casefold().replace("ё", "е")
+    if not text:
+        return ""
+    if re.search(r"сын|дочк|дочь|реб[её]н|школьник|ученик|справит|потянет|пробел|уровен|индивидуальн|подойд[её]т\s+ли", text, re.I):
+        return "индивидуальную ситуацию ребёнка"
+    if re.search(r"прям\w*\s+перевод|помесячн\w*[^.?!]{0,40}(?:счет|счёт)|(?:счет|счёт)[^.?!]{0,40}перевод", text, re.I):
+        return "оплату прямым переводом на счёт"
+    if re.search(r"цен|стоим|сколько\s+стоит|оплат|счет|счёт|руб|₽|тариф|рассроч|долями", text, re.I):
+        return "цену или условия оплаты"
+    if re.search(r"распис|дни|когда|старт|выходн|будн|время|во\s+сколько", text, re.I):
+        return "расписание или старт конкретной группы"
+    if re.search(r"формат|онлайн|очно|дистанц", text, re.I):
+        return "формат занятий"
+    if re.search(r"адрес|площадк|где\s+вы|куда\s+ехать|дорог|доехать|добират|маршрут|метро|электрич", text, re.I):
+        return "дорогу или площадку"
+    if re.search(r"маткап|материнск|сфр|налог|вычет|фнс|документ|справк|договор", text, re.I):
+        return "документы или порядок оформления"
+    if re.search(r"пробн|фрагмент", text, re.I):
+        return "пробный формат или фрагмент занятия"
+    if re.search(r"лагер|лвш|смен|мест[ао]\b", text, re.I):
+        return "смену или условия лагеря"
+    if re.search(r"запис|оформ|поступить|заявк", text, re.I):
+        return "порядок записи"
+    return ""
+
+
+def _looks_like_raw_question_detail(value: str) -> bool:
+    text = " ".join(str(value or "").split())
+    low = text.casefold().replace("ё", "е")
+    if len(text) > 70:
+        return True
+    return bool(re.search(r"\b(?:можно|сможет|есть|будет|подойдет|подойд[её]т|получится|стоит|сколько|когда|как|где|почему|нужно)\s+ли\b|\?$", low, re.I))
 
 
 def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:

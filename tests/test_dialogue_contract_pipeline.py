@@ -9,6 +9,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     FactStore,
     Toggles,
     _avoid_repeating_text,
+    _ensure_estimate_uncertainty_marker,
     _safe_fallback_text,
     build_conversation,
     build_draft_prompt,
@@ -3827,6 +3828,24 @@ def test_safe_fallback_does_not_leak_third_person_question() -> None:
         assert "менеджер" in result.draft_text.casefold()
 
 
+def test_safe_fallback_uses_topic_label_for_long_rephrased_detail() -> None:
+    text = _safe_fallback_text(
+        AnswerContract(
+            active_brand="foton",
+            current_question="Сможет ли менеджер оценить, есть ли у сына пробелы по математике и подойдет ли курс?",
+            answerability="manager_only",
+        ),
+        facts={},
+        context={"active_brand": "foton"},
+    )
+    lowered = text.casefold().replace("ё", "е")
+
+    assert "менеджер" in lowered
+    assert "индивидуальную ситуацию ребёнка" in text
+    assert "Сможет ли менеджер" not in text
+    assert "есть ли у сына" not in lowered
+
+
 def test_humane_fallback_uses_warm_text_and_rotates_repeats() -> None:
     store = FactStore(catalog=("address.exact",), store={"unpk": {}})
     payload = {
@@ -4928,6 +4947,22 @@ def test_q_partial_yield_estimate_without_uncertainty_marker_gets_marker(monkeyp
     assert "ориентировочно" in result.draft_text.casefold()
     assert "40–50 минут" in result.draft_text
     assert "41 800" not in result.draft_text
+
+
+def test_travel_estimate_marker_only_for_contentful_estimate(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+
+    estimate = _ensure_estimate_uncertainty_marker(
+        "На электричке дорога занимает 40–50 минут.",
+        context={},
+    )
+    courtesy = _ensure_estimate_uncertainty_marker("Пожалуйста!", context={})
+    closing = _ensure_estimate_uncertainty_marker("Рада была помочь!", context={})
+
+    assert estimate.startswith("Ориентировочно:")
+    assert "40–50 минут" in estimate
+    assert courtesy == "Пожалуйста!"
+    assert closing == "Рада была помочь!"
 
 
 def test_q_partial_yield_estimate_blocks_brand_leak(monkeypatch) -> None:

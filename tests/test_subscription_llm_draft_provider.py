@@ -8326,6 +8326,47 @@ def test_semantic_diagnosis_guard_rewrites_claude_paraphrase_real_text() -> None
     assert "authoritative_output_gate_blocked" not in gated.safety_flags
 
 
+def test_semantic_diagnosis_guard_rewrites_manager_only_substantive_real_text() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=(
+            "По таким вводным слишком тяжело быть не должно: ритм посильный, "
+            "а группу подберут под ребёнка."
+        ),
+        topic_id="theme:024_advice",
+        safety_flags=("high_risk_manager_only",),
+    )
+    calls: list[str] = []
+
+    def classifier(prompt: str) -> dict[str, object]:
+        calls.append(prompt)
+        return {
+            "individual_diagnosis": True,
+            "span": "слишком тяжело быть не должно",
+            "reason": "косвенная оценка нагрузки конкретного ребёнка",
+        }
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Дочка тревожится, ей не будет слишком тяжело?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": classifier,
+        },
+    )
+
+    text = result.draft_text.casefold()
+    assert calls, "classifier must run for substantive manager_only drafts"
+    assert "слишком тяжело" not in text
+    assert "посильный ритм" not in text
+    assert "подберут под ребёнка" not in text
+    assert result.route == "manager_only"
+    assert "semantic_diagnosis_guard_rewritten" in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["checked"] is True
+    assert result.metadata["semantic_diagnosis_guard"]["rewritten"] is True
+
+
 def test_semantic_diagnosis_guard_keeps_general_program_info_false_case() -> None:
     base = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -8349,6 +8390,37 @@ def test_semantic_diagnosis_guard_keeps_general_program_info_false_case() -> Non
     )
 
     assert result.draft_text == base.draft_text
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "not_individual_diagnosis"
+
+
+def test_semantic_diagnosis_guard_keeps_manager_only_general_info_false_case() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Есть базовый уровень и формат мини-группы; менеджер поможет подобрать подходящую группу.",
+        topic_id="theme:024_advice",
+        safety_flags=("draft_for_manager",),
+    )
+    called = False
+
+    def classifier(_prompt: str) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {"individual_diagnosis": False, "span": "", "reason": "общая справка"}
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Есть уровень попроще?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": classifier,
+        },
+    )
+
+    assert called is True
+    assert result.draft_text == base.draft_text
+    assert result.route == "manager_only"
     assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
     assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "not_individual_diagnosis"
 
@@ -8431,7 +8503,7 @@ def test_semantic_diagnosis_guard_does_not_touch_p0_manager_only() -> None:
     assert result.route == "manager_only"
     assert result.draft_text == base.draft_text
     assert called is False
-    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "locked_p0_or_manager_only"
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "locked_p0_or_high_risk_deferral"
 
 
 def test_semantic_diagnosis_prompt_contains_true_false_controls() -> None:
@@ -8441,6 +8513,8 @@ def test_semantic_diagnosis_prompt_contains_true_false_controls() -> None:
     )
 
     assert "с тройками можно идти" in prompt
+    assert "слишком тяжело быть не должно" in prompt
+    assert "посильный ритм" in prompt
     assert "есть базовый и продвинутый уровень" in prompt
     assert "Верни СТРОГО JSON" in prompt
 

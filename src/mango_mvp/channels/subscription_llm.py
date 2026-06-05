@@ -4699,7 +4699,8 @@ def build_semantic_diagnosis_prompt(
         "подойдёт ли / потянет ли именно этот ребёнок — БЕЗ хеджа неуверенности и БЕЗ передачи менеджеру/преподавателю.\n\n"
         "СЧИТАЕТСЯ диагнозом (true):\n"
         "- утверждение про конкретного ученика: «да, справится», «с тройками можно идти», «потянет», «ему подойдёт»,\n"
-        "  «догонять заранее не нужно», «сможет влиться» — как оценка бота;\n"
+        "  «догонять заранее не нужно», «сможет влиться», «слишком тяжело быть не должно», «посильный ритм»,\n"
+        "  «подберут под ребёнка» — как оценка бота;\n"
         "- обещание результата/балла конкретному ученику.\n\n"
         "НЕ считается (false):\n"
         "- общая справка о программе/форматах/уровнях: «есть базовый и продвинутый уровень», «программа идёт от азов»,\n"
@@ -4729,11 +4730,11 @@ def apply_semantic_diagnosis_guard(
         "rewritten": False,
     }
     metadata["semantic_diagnosis_guard"] = guard_meta
-    if result.route == "manager_only" or _humanity_p0_required(result) or _hard_p0_in_client_text(client_message):
-        guard_meta["fallback_reason"] = "locked_p0_or_manager_only"
+    if _semantic_diagnosis_locked_deferral(result, client_message=client_message):
+        guard_meta["fallback_reason"] = "locked_p0_or_high_risk_deferral"
         return replace(result, metadata=metadata)
-    if result.route not in {"bot_answer_self", "bot_answer_self_for_pilot"}:
-        guard_meta["fallback_reason"] = "non_autonomous_route"
+    if result.route not in {"bot_answer_self", "bot_answer_self_for_pilot", "draft_for_manager", "manager_only"}:
+        guard_meta["fallback_reason"] = "unsupported_route"
         return replace(result, metadata=metadata)
     override = _semantic_diagnosis_classifier_override(context)
     classifier = override or classifier_fn
@@ -4786,6 +4787,43 @@ def _semantic_diagnosis_classifier_override(context: Optional[Mapping[str, Any]]
         return None
     value = context.get("semantic_diagnosis_classifier_fn")
     return value if callable(value) else None
+
+
+def _semantic_diagnosis_locked_deferral(result: SubscriptionDraftResult, *, client_message: str = "") -> bool:
+    if result.route != "manager_only":
+        return False
+    if not (
+        _humanity_p0_required(result)
+        or _hard_p0_in_client_text(client_message)
+        or _semantic_diagnosis_high_risk_flagged(result)
+    ):
+        return False
+    return _semantic_diagnosis_plain_deferral_text(result.draft_text)
+
+
+def _semantic_diagnosis_high_risk_flagged(result: SubscriptionDraftResult) -> bool:
+    flags = " ".join(str(flag or "") for flag in result.safety_flags).casefold()
+    return bool(
+        re.search(
+            r"high[_-]?risk|p0|refund|complaint|payment[_-]?dispute|legal|zero[_-]?collect|manager[_-]?only",
+            flags,
+            re.I,
+        )
+    )
+
+
+def _semantic_diagnosis_plain_deferral_text(text: str) -> bool:
+    value = " ".join(str(text or "").split())
+    if not value:
+        return True
+    low = value.casefold().replace("ё", "е")
+    if re.search(
+        r"справит|потян|подойдет|тяжело|посильн|влит|догонять|подберут?\s+под\s+реб",
+        low,
+        re.I,
+    ):
+        return False
+    return bool(re.search(r"передам|верн[её]тся|ответственн|менеджер|сотрудник|сверит|проверит", low, re.I))
 
 
 def _has_diagnosis_hedge_and_transfer(text: str) -> bool:

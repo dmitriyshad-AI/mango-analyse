@@ -86,6 +86,9 @@ OUTPUT_SANITIZER_ENV = "TELEGRAM_OUTPUT_SANITIZER"
 PH2_TONE_ENV = "TELEGRAM_PH2_TONE"
 PH2_OBJECTION_ENV = "TELEGRAM_PH2_OBJECTION"
 PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
+SEMANTIC_DIAGNOSIS_GUARD_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD"
+SEMANTIC_DIAGNOSIS_MODEL_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_MODEL"
+SEMANTIC_DIAGNOSIS_REASONING_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_REASONING"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -115,6 +118,10 @@ COMPLAINT_SAFE_TEXT = "Приняли обращение. Передам воп�
 PAYMENT_DISPUTE_SAFE_TEXT = (
     "Приняли вопрос по оплате. Передам его менеджеру: он проверит данные в системе и вернется с ответом. "
     "Пока ничего дополнительно присылать не нужно."
+)
+SEMANTIC_DIAGNOSIS_SAFE_TEXT = (
+    "Заочно не буду оценивать уровень конкретного ребёнка. Лучше сверить уровень и нагрузку с преподавателем; "
+    "менеджер поможет сверить детали и подобрать аккуратный следующий шаг."
 )
 _HUMANE_GENERIC_HANDOFF_TEXTS: tuple[str, ...] = (
     SAFE_FALLBACK_DRAFT_TEXT,
@@ -1868,7 +1875,15 @@ class SubscriptionLlmDraftProvider:
             )
             toned = apply_phase2_tone_layer(rewritten, client_message=client_message, context=context)
             proactive = apply_a2_proactive_layer(toned, client_message=client_message, context=context)
-            return apply_authoritative_output_gate(proactive, client_message=client_message, context=context)
+            diagnosed = apply_semantic_diagnosis_guard(
+                proactive,
+                client_message=client_message,
+                context=context,
+                classifier_fn=self._semantic_diagnosis_guard_runner
+                if _semantic_diagnosis_guard_enabled(context)
+                else None,
+            )
+            return apply_authoritative_output_gate(diagnosed, client_message=client_message, context=context)
         else:
             prompt = build_draft_prompt(client_message, context=context)
             result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
@@ -1912,6 +1927,14 @@ class SubscriptionLlmDraftProvider:
         )
         result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
+        result = apply_semantic_diagnosis_guard(
+            result,
+            client_message=client_message,
+            context=context,
+            classifier_fn=self._semantic_diagnosis_guard_runner
+            if _semantic_diagnosis_guard_enabled(context)
+            else None,
+        )
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
     def _build_dialogue_contract_pipeline_draft(
@@ -2057,6 +2080,19 @@ class SubscriptionLlmDraftProvider:
             suffix=".json",
             model=os.getenv(DIALOGUE_CONTRACT_SEMANTIC_MATCH_MODEL_ENV) or self.model,
             reasoning_effort=os.getenv(DIALOGUE_CONTRACT_SEMANTIC_MATCH_REASONING_ENV) or "medium",
+        )
+        try:
+            return extract_json_object(raw)
+        except Exception:
+            return raw
+
+    def _semantic_diagnosis_guard_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        raw = self._run_prompt_text(
+            prompt,
+            prefix="mango_semantic_diagnosis_guard_",
+            suffix=".json",
+            model=os.getenv(SEMANTIC_DIAGNOSIS_MODEL_ENV) or self.model,
+            reasoning_effort=os.getenv(SEMANTIC_DIAGNOSIS_REASONING_ENV) or "low",
         )
         try:
             return extract_json_object(raw)
@@ -2615,6 +2651,7 @@ class FakeSubscriptionLlmDraftProvider:
         result = apply_humanity_x2_rewriter(result, client_message=client_message, context=context)
         result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
+        result = apply_semantic_diagnosis_guard(result, client_message=client_message, context=context)
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
     def generate(self, prompt: str) -> SubscriptionDraftResult:
@@ -4649,6 +4686,124 @@ def apply_phase2_tone_layer(
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, "phase2_tone_rewritten"])),
         metadata=metadata,
     )
+
+
+def build_semantic_diagnosis_prompt(
+    *,
+    bot_text: str,
+    client_message: str = "",
+) -> str:
+    return (
+        "Ты — строгий классификатор ОДНОГО ответа бота учебного центра. Определи, содержит ли ответ\n"
+        "ИНДИВИДУАЛЬНЫЙ ДИАГНОЗ/ГАРАНТИЮ по КОНКРЕТНОМУ ученику: собственную оценку бота, справится ли /\n"
+        "подойдёт ли / потянет ли именно этот ребёнок — БЕЗ хеджа неуверенности и БЕЗ передачи менеджеру/преподавателю.\n\n"
+        "СЧИТАЕТСЯ диагнозом (true):\n"
+        "- утверждение про конкретного ученика: «да, справится», «с тройками можно идти», «потянет», «ему подойдёт»,\n"
+        "  «догонять заранее не нужно», «сможет влиться» — как оценка бота;\n"
+        "- обещание результата/балла конкретному ученику.\n\n"
+        "НЕ считается (false):\n"
+        "- общая справка о программе/форматах/уровнях: «есть базовый и продвинутый уровень», «программа идёт от азов»,\n"
+        "  «формат семинара, мини-группа»;\n"
+        "- хеджированный ответ С ПЕРЕДАЧЕЙ: «уровень лучше подобрать на пробном / уточнит преподаватель / сориентирует менеджер»;\n"
+        "- ответ про расписание, цены, документы, логистику.\n\n"
+        "Верни СТРОГО JSON, без текста вне него:\n"
+        '{"individual_diagnosis": true|false, "span": "<цитата ответа, если true; иначе пусто>", "reason": "<кратко>"}\n\n'
+        f"Вопрос клиента для контекста:\n{str(client_message or '').strip()}\n\n"
+        f"Ответ бота:\n{str(bot_text or '').strip()}\n"
+    )
+
+
+def apply_semantic_diagnosis_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+    classifier_fn: Optional[Callable[[str], object]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_diagnosis_guard_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    guard_meta: dict[str, Any] = {
+        "enabled": True,
+        "checked": False,
+        "rewritten": False,
+    }
+    metadata["semantic_diagnosis_guard"] = guard_meta
+    if result.route == "manager_only" or _humanity_p0_required(result) or _hard_p0_in_client_text(client_message):
+        guard_meta["fallback_reason"] = "locked_p0_or_manager_only"
+        return replace(result, metadata=metadata)
+    if result.route not in {"bot_answer_self", "bot_answer_self_for_pilot"}:
+        guard_meta["fallback_reason"] = "non_autonomous_route"
+        return replace(result, metadata=metadata)
+    override = _semantic_diagnosis_classifier_override(context)
+    classifier = override or classifier_fn
+    if classifier is None:
+        guard_meta["fallback_reason"] = "classifier_unavailable"
+        return replace(result, metadata=metadata)
+    prompt = build_semantic_diagnosis_prompt(bot_text=result.draft_text, client_message=client_message)
+    try:
+        raw_payload = classifier(prompt)
+        payload = extract_json_object(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    except Exception as exc:  # noqa: BLE001
+        guard_meta["fallback_reason"] = "classifier_error"
+        guard_meta["error"] = str(exc)[:200]
+        return replace(result, metadata=metadata)
+    guard_meta["checked"] = True
+    if not isinstance(payload, Mapping):
+        guard_meta["fallback_reason"] = "classifier_invalid_payload"
+        return replace(result, metadata=metadata)
+    diagnosis = _truthy_value(payload.get("individual_diagnosis"))
+    guard_meta["individual_diagnosis"] = diagnosis
+    guard_meta["span"] = str(payload.get("span") or "")[:220]
+    guard_meta["reason"] = str(payload.get("reason") or "")[:220]
+    if not diagnosis:
+        guard_meta["fallback_reason"] = "not_individual_diagnosis"
+        return replace(result, metadata=metadata)
+    if _has_diagnosis_hedge_and_transfer(result.draft_text):
+        guard_meta["fallback_reason"] = "already_hedged_and_transferred"
+        return replace(result, metadata=metadata)
+    candidate = SEMANTIC_DIAGNOSIS_SAFE_TEXT
+    guard_meta["rewritten"] = True
+    guard_meta["fallback_reason"] = None
+    return replace(
+        result,
+        draft_text=candidate,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "semantic_diagnosis_guard_rewritten"])),
+        manager_checklist=tuple(
+            dict.fromkeys(
+                [
+                    *result.manager_checklist,
+                    "Semantic diagnosis guard: не оценивать конкретного ребёнка заочно; сверить уровень с преподавателем/менеджером.",
+                ]
+            )
+        ),
+        metadata=metadata,
+    )
+
+
+def _semantic_diagnosis_classifier_override(context: Optional[Mapping[str, Any]]) -> Optional[Callable[[str], object]]:
+    if not isinstance(context, Mapping):
+        return None
+    value = context.get("semantic_diagnosis_classifier_fn")
+    return value if callable(value) else None
+
+
+def _has_diagnosis_hedge_and_transfer(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    hedge = bool(
+        re.search(
+            r"заочно|не\s+буду\s+обещ|не\s+возьмусь|лучше\s+(?:сверить|подобрать|оценить)|"
+            r"стоит\s+сверить|на\s+пробн|без\s+обещан|уровень\s+лучше",
+            value,
+            re.I,
+        )
+    )
+    transfer = bool(re.search(r"менеджер|преподавател|педагог|куратор|пробн", value, re.I))
+    return hedge and transfer
+
+
+def _hard_p0_in_client_text(text: str) -> bool:
+    return bool(set(codes_from_text(text)).intersection(HARD_P0_CODES))
 
 
 def _phase2_tone_rewrite(text: str) -> str:
@@ -9209,6 +9364,14 @@ def _phase2_anxiety_enabled(context: Optional[Mapping[str, Any]] = None) -> bool
             if key in context:
                 return _truthy_value(context.get(key))
     return _truthy_value(os.getenv(PH2_ANXIETY_ENV))
+
+
+def _semantic_diagnosis_guard_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (SEMANTIC_DIAGNOSIS_GUARD_ENV, "semantic_diagnosis_guard_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(SEMANTIC_DIAGNOSIS_GUARD_ENV))
 
 
 def _answer_quality_llm_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

@@ -192,6 +192,10 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
         self._count_llm_call("bot_critic")
         return super()._dialogue_contract_semantic_match_runner(prompt)
 
+    def _semantic_diagnosis_guard_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        self._count_llm_call("bot_diagnosis_guard")
+        return super()._semantic_diagnosis_guard_runner(prompt)
+
     def _answer_quality_llm_rewrite_runner(
         self,
         *,

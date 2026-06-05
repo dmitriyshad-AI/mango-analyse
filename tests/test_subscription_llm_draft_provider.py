@@ -54,6 +54,8 @@ from mango_mvp.channels.subscription_llm import (
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
     apply_phase2_tone_layer,
+    apply_semantic_diagnosis_guard,
+    build_semantic_diagnosis_prompt,
     apply_unstated_subject_guard,
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
@@ -8281,6 +8283,166 @@ def test_phase2_anxiety_never_precedes_p0() -> None:
     assert routed.route == "manager_only"
     assert not any(flag.startswith("rules_engine_phase2_anxiety") for flag in routed.safety_flags)
     assert "фрагмент занятия" not in routed.draft_text.casefold()
+
+
+def test_semantic_diagnosis_guard_rewrites_claude_paraphrase_real_text() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, с тройками можно идти: сын сможет влиться в группу, отдельно догонять заранее не нужно.",
+        topic_id="theme:024_advice",
+        safety_flags=("rules_engine_phase2_anxiety_level_fit",),
+    )
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="У сына тройки, сможет ли он влиться?",
+        context={
+            "active_brand": "unpk",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": lambda _prompt: {
+                "individual_diagnosis": True,
+                "span": "сын сможет влиться",
+                "reason": "уверенная оценка конкретного ребёнка",
+            },
+        },
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "semantic_diagnosis_guard_rewritten" in result.safety_flags
+    assert "сможет влиться" not in text
+    assert "с тройками можно идти" not in text
+    assert "заочно не буду оценивать" in text
+    assert "преподавател" in text
+    assert "менеджер" in text
+    assert result.metadata["semantic_diagnosis_guard"]["individual_diagnosis"] is True
+    assert result.metadata["semantic_diagnosis_guard"]["rewritten"] is True
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="У сына тройки, сможет ли он влиться?",
+        context={"active_brand": "unpk"},
+    )
+    assert gated.draft_text == result.draft_text
+    assert "authoritative_output_gate_blocked" not in gated.safety_flags
+
+
+def test_semantic_diagnosis_guard_keeps_general_program_info_false_case() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="На платформе есть базовый уровень — он для тех, кто начинает с азов.",
+        topic_id="theme:024_advice",
+        safety_flags=("rules_engine_phase2_anxiety_capability",),
+    )
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Есть уровень попроще?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": lambda _prompt: {
+                "individual_diagnosis": False,
+                "span": "",
+                "reason": "общая справка",
+            },
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "not_individual_diagnosis"
+
+
+def test_semantic_diagnosis_guard_keeps_already_hedged_transfer() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Уровень лучше сверить на пробном занятии: преподаватель сориентирует, а менеджер поможет подобрать группу.",
+        topic_id="theme:024_advice",
+    )
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Дочка справится?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": lambda _prompt: {
+                "individual_diagnosis": True,
+                "span": "уровень лучше сверить",
+                "reason": "модель перестраховалась",
+            },
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "already_hedged_and_transferred"
+
+
+def test_semantic_diagnosis_guard_fail_soft_on_classifier_error() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, дочка справится.",
+        topic_id="theme:024_advice",
+    )
+
+    def broken(_prompt: str):
+        raise RuntimeError("classifier down")
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Дочка справится?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": broken,
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "classifier_error"
+
+
+def test_semantic_diagnosis_guard_does_not_touch_p0_manager_only() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:009_refund",
+        safety_flags=("high_risk_manager_only",),
+    )
+    called = False
+
+    def classifier(_prompt: str):
+        nonlocal called
+        called = True
+        return {"individual_diagnosis": True}
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Верните деньги, ребёнок не справится",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": classifier,
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.draft_text == base.draft_text
+    assert called is False
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "locked_p0_or_manager_only"
+
+
+def test_semantic_diagnosis_prompt_contains_true_false_controls() -> None:
+    prompt = build_semantic_diagnosis_prompt(
+        client_message="С тройками можно?",
+        bot_text="Да, с тройками можно идти.",
+    )
+
+    assert "с тройками можно идти" in prompt
+    assert "есть базовый и продвинутый уровень" in prompt
+    assert "Верни СТРОГО JSON" in prompt
 
 
 def test_a_thread_context_carries_only_current_selling_slots_without_brand_override() -> None:

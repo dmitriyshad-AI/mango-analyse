@@ -399,6 +399,29 @@ def test_build_memory_model_modes_use_low_reasoning() -> None:
     assert codex_model.reasoning_effort == "low"
 
 
+def test_semantic_diagnosis_guard_runner_counts_llm_role(monkeypatch, tmp_path: Path) -> None:
+    counter = sim.LlmCallCounter()
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"individual_diagnosis": true, "span": "сможет влиться", "reason": "уверенная оценка"}',
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        runner=sim.subprocess.run,
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    assert provider._semantic_diagnosis_guard_runner("Верни JSON")["individual_diagnosis"] is True
+    assert counter.snapshot()["bot_diagnosis_guard"] == 1
+
+
 def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
     calls = []
 

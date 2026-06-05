@@ -7,7 +7,9 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -364,6 +366,14 @@ class ClaudeCliRunner:
         self.claude_bin = str(claude_bin or "claude").strip() or "claude"
         self.auth_mode = str(auth_mode or "subscription").strip().lower() or "subscription"
         self.last_commands: list[list[str]] = []
+        self._events: list[dict[str, Any]] = []
+        self._events_lock = threading.Lock()
+
+    def drain_events(self) -> list[dict[str, Any]]:
+        with self._events_lock:
+            events = list(self._events)
+            self._events.clear()
+        return events
 
     def __call__(
         self,
@@ -392,7 +402,93 @@ class ClaudeCliRunner:
             timeout=timeout or self.timeout_sec,
             env=_claude_env(env),
         )
-        return subprocess.CompletedProcess(_cmd, proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+        event = _claude_cli_event_if_visible_failure(
+            requested_cmd=_cmd,
+            actual_cmd=cmd,
+            returncode=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+            prompt=input,
+        )
+        if event:
+            with self._events_lock:
+                self._events.append(event)
+            print(_format_claude_cli_event_log(event), file=sys.stderr, flush=True)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+
+
+def _claude_cli_event_if_visible_failure(
+    *,
+    requested_cmd: Sequence[str],
+    actual_cmd: Sequence[str],
+    returncode: int,
+    stdout: str | None,
+    stderr: str | None,
+    prompt: str,
+) -> dict[str, Any]:
+    stdout_text = str(stdout or "")
+    stderr_text = str(stderr or "")
+    if returncode == 0 and (stdout_text.strip() or stderr_text.strip()):
+        return {}
+    reason = "nonzero_returncode" if returncode != 0 else "empty_output"
+    return {
+        "reason": reason,
+        "stage": _claude_cli_stage_from_requested_cmd(requested_cmd),
+        "returncode": int(returncode),
+        "cmd": _shell_join(actual_cmd),
+        "stdout_tail": _tail_compact(stdout_text),
+        "stderr_tail": _tail_compact(stderr_text),
+        "prompt_chars": len(str(prompt or "")),
+    }
+
+
+def _claude_cli_stage_from_requested_cmd(cmd: Sequence[str]) -> str:
+    values = [str(item) for item in cmd]
+    try:
+        output_path = values[values.index("--output-last-message") + 1]
+    except (ValueError, IndexError):
+        return ""
+    name = Path(output_path).name
+    name = re.sub(r"^[A-Za-z0-9]+_", "", name)
+    name = re.sub(r"_[A-Za-z0-9]+(?:\.[^.]+)?$", "", name)
+    return name
+
+
+def _shell_join(cmd: Sequence[str]) -> str:
+    return shlex.join(str(part) for part in cmd)
+
+
+def _tail_compact(text: str, *, limit: int = 1200) -> str:
+    compact = " ".join(str(text or "").split())
+    return compact[-limit:]
+
+
+def _format_claude_cli_event_log(event: Mapping[str, Any]) -> str:
+    return (
+        "claude_cli_error="
+        + json.dumps(
+            {
+                "stage": event.get("stage") or "",
+                "reason": event.get("reason") or "",
+                "returncode": event.get("returncode"),
+                "stderr_tail": event.get("stderr_tail") or "",
+                "stdout_tail": event.get("stdout_tail") or "",
+                "cmd": event.get("cmd") or "",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+def _consume_claude_cli_events(bot_provider: Any) -> list[dict[str, Any]]:
+    runner = getattr(bot_provider, "_dynamic_sim_claude_runner", None)
+    if runner is None or not hasattr(runner, "drain_events"):
+        return []
+    try:
+        return list(runner.drain_events())
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _claude_model_from_args(args: argparse.Namespace) -> str:
@@ -863,7 +959,7 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
             claude_bin=getattr(args, "claude_bin", "claude"),
             auth_mode=getattr(args, "claude_auth_mode", "subscription"),
         )
-    return CountingSubscriptionLlmDraftProvider(
+    provider = CountingSubscriptionLlmDraftProvider(
         model=model,
         reasoning_effort=args.bot_reasoning,
         timeout_sec=args.timeout_sec,
@@ -873,6 +969,9 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         dialogue_contract_semantic_match_enabled=semantic_match_model is not None,
         llm_call_counter=getattr(args, "llm_call_counter", None),
     )
+    if runner is not None:
+        setattr(provider, "_dynamic_sim_claude_runner", runner)
+    return provider
 
 
 def run_one_dialog_isolated(
@@ -1006,6 +1105,14 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                     if isinstance(turn.get("bot_answer_contract"), Mapping)
                     else "",
                     "bot_safety_flags": "|".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])),
+                    "bot_fallback_reason": turn.get("bot_fallback_reason") or "",
+                    "bot_provider_error": turn.get("bot_provider_error") or "",
+                    "bot_claude_cli_error_count": int(turn.get("bot_claude_cli_error_count") or 0),
+                    "bot_claude_cli_errors": json.dumps(
+                        turn.get("bot_claude_cli_errors") or [],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_answer_quality_findings": "|".join(str(flag) for flag in (turn.get("bot_answer_quality_findings") or [])),
                     "bot_answer_quality_rewritten": turn.get("bot_answer_quality_rewritten"),
                     "judge_fact_audit_levels": "|".join(
@@ -1133,8 +1240,11 @@ def run_one_dialog(
             context["selling_compose_fn"] = selling_compose_model.generate
             context["selling_mode"] = "gen"
         result = bot_provider.build_draft(client_message, context=context)
+        claude_cli_events = _consume_claude_cli_events(bot_provider)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
         dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)
+        bot_fallback_reason = str(dialogue_contract_metadata.get("fallback_reason") or "")
+        bot_provider_error = str(getattr(result, "error", "") or "")
         updated_memory = update_dialogue_memory_after_answer(
             context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
             answer_text=bot_text,
@@ -1189,6 +1299,10 @@ def run_one_dialog(
             "bot_manager_checklist": list(result.manager_checklist),
             "bot_missing_facts": list(result.missing_facts),
             "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
+            "bot_fallback_reason": bot_fallback_reason,
+            "bot_provider_error": bot_provider_error,
+            "bot_claude_cli_errors": claude_cli_events,
+            "bot_claude_cli_error_count": len(claude_cli_events),
             "bot_humanity_x2": humanity_x2_metadata,
             "bot_humanity_x2_rewritten": bool(humanity_x2_metadata.get("rewritten"))
             or bool(dialogue_contract_metadata.get("warmed")),
@@ -1573,6 +1687,50 @@ def dialog_number_audit_worst_level(dialog: Mapping[str, Any]) -> str:
     return ""
 
 
+def _claude_cli_error_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    events: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            for event in turn.get("bot_claude_cli_errors") or []:
+                if isinstance(event, Mapping):
+                    events.append(event)
+    return {
+        "count": len(events),
+        "by_reason": dict(Counter(str(event.get("reason") or "") for event in events)),
+        "by_stage": dict(Counter(str(event.get("stage") or "") for event in events)),
+        "by_returncode": dict(Counter(str(event.get("returncode") or "") for event in events)),
+        "examples": [
+            {
+                "stage": event.get("stage") or "",
+                "reason": event.get("reason") or "",
+                "returncode": event.get("returncode"),
+                "stderr_tail": event.get("stderr_tail") or "",
+                "stdout_tail": event.get("stdout_tail") or "",
+                "cmd": event.get("cmd") or "",
+            }
+            for event in events[:5]
+        ],
+    }
+
+
+def _turn_fallback_reason_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, int]:
+    reasons: Counter[str] = Counter()
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            reason = str(turn.get("bot_fallback_reason") or "").strip()
+            if not reason:
+                pipeline = turn.get("bot_dialogue_contract_pipeline")
+                if isinstance(pipeline, Mapping):
+                    reason = str(pipeline.get("fallback_reason") or "").strip()
+            if reason:
+                reasons[reason] += 1
+    return dict(reasons)
+
+
 def build_summary(
     transcripts: Sequence[Mapping[str, Any]],
     judge_results: Sequence[Mapping[str, Any]],
@@ -1603,6 +1761,8 @@ def build_summary(
     send_unedited = _send_unedited_proxy(transcripts, judge_results)
     over_handoff = _over_handoff_metrics(transcripts)
     tone_metric = summarize_tone_scores(transcripts)
+    claude_cli_errors = _claude_cli_error_summary(transcripts)
+    fallback_reasons = _turn_fallback_reason_summary(transcripts)
     llm_call_summary = _llm_call_summary(
         llm_calls or {},
         dialogs=len(judge_results),
@@ -1702,6 +1862,8 @@ def build_summary(
         "branch_metrics": _branch_count_metrics(transcripts),
         "tone_metric": tone_metric,
         "llm_calls": llm_call_summary,
+        "turn_fallback_reasons": fallback_reasons,
+        "claude_cli_errors": claude_cli_errors,
         "over_handoff": over_handoff,
         "judge_fact_audit": judge_fact_audit_summary(transcripts),
         "send_unedited_proxy": send_unedited,
@@ -2433,6 +2595,8 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Scenario metadata: `{summary.get('scenario_metadata')}`",
             f"- Branch metrics: `{summary.get('branch_metrics')}`",
             f"- LLM calls: `{llm_calls}`",
+            f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",
+            f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             f"- Over-handoff: `{over_handoff}`",
             f"- Judge fact audit: `{judge_fact_audit}`",
@@ -2503,6 +2667,10 @@ def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
                 f"- message_type: `{turn.get('bot_message_type')}`",
                 f"- risk: `{turn.get('bot_risk_level')}`",
                 f"- safety_flags: `{format_list(turn.get('bot_safety_flags') or [])}`",
+                f"- fallback_reason: `{turn.get('bot_fallback_reason') or ''}`",
+                f"- provider_error: `{turn.get('bot_provider_error') or ''}`",
+                f"- claude_cli_error_count: `{turn.get('bot_claude_cli_error_count') or 0}`",
+                f"- claude_cli_errors: `{turn.get('bot_claude_cli_errors') or []}`",
                 f"- manager_checklist: `{format_list(turn.get('bot_manager_checklist') or [])}`",
                 f"- missing_facts: `{format_list(turn.get('bot_missing_facts') or [])}`",
                 f"- answer_quality_findings: `{format_list(turn.get('bot_answer_quality_findings') or [])}`",

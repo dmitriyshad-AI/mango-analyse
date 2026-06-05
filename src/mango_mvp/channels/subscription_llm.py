@@ -1575,6 +1575,23 @@ def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
     return bool(str(pipeline_rules.get("applied") or "").strip())
 
 
+def _pipeline_travel_estimate_applied(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    estimate = pipeline.get("estimate") if isinstance(pipeline.get("estimate"), Mapping) else {}
+    domain = str(estimate.get("estimate_domain") or "").strip()
+    return bool(estimate.get("estimate_applied") or estimate.get("is_estimate")) and domain in {"travel_time", "route_logistics"}
+
+
+def _yield_dispatcher_to_travel_estimate(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    pipeline = dict(pipeline)
+    pipeline["travel_estimate_yielded_dispatcher"] = True
+    metadata["dialogue_contract_pipeline"] = pipeline
+    return replace(result, metadata=metadata)
+
+
 def _safe_template_yield_result(
     result: SubscriptionDraftResult,
     *,
@@ -1617,6 +1634,17 @@ def apply_dialogue_contract_v2_template_dispatcher(
     shadow = result.metadata.get("rules_engine_intent_shadow") if isinstance(result.metadata, Mapping) else {}
     if not isinstance(shadow, Mapping):
         shadow = {}
+    if _pipeline_travel_estimate_applied(result):
+        trace_event(
+            context,
+            "safe_template_dispatcher",
+            {
+                "skipped": "travel_estimate_already_applied",
+                "route": result.route,
+                "topic_id": result.topic_id,
+            },
+        )
+        return _yield_dispatcher_to_travel_estimate(result)
     if _safe_template_already_applied(result):
         if _safe_template_can_yield_to_dispatcher(result, context=context, shadow=shadow, registry=registry):
             trace_event(

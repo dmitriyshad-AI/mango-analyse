@@ -6919,6 +6919,43 @@ def test_step3a_planner_intent_is_primary_by_default_and_can_be_disabled() -> No
     assert "rules_engine_contact_address_foton" not in disabled.safety_flags
 
 
+def test_travel_estimate_is_not_overwritten_by_address_rules_engine() -> None:
+    facts = {
+        "locations_foton.address": "Фотон очно занимается по адресу Москва, Верхняя Красносельская ул., 30.",
+    }
+    question = "С проспекта Мира сколько ехать до занятий?"
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Ориентировочно дорога займёт около 20–30 минут, зависит от маршрута.",
+        topic_id="theme:015_address",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=question, answerability="answer_self", keys=tuple(facts.keys())),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts),
+                "estimate": {
+                    "is_estimate": True,
+                    "estimate_applied": True,
+                    "answer_mode": "estimate_allowed",
+                    "estimate_domain": "travel_time",
+                },
+            }
+        },
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        question,
+        _step2b1_context(brand="foton", intent="address", question=question, facts=facts),
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "20–30 минут" in guarded.draft_text
+    assert "Красносельская" not in guarded.draft_text
+    assert "rules_engine_contact_address_foton" not in guarded.safety_flags
+    assert guarded.metadata["dialogue_contract_pipeline"]["travel_estimate_yielded_dispatcher"] is True
+
+
 def test_step3a_low_confidence_identity_question_keeps_policy_c_terminal_answer() -> None:
     facts = {
         "presentation_format_facts_2026_05_21.client_facts.student_account_access.client_safe_text": (

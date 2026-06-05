@@ -35,6 +35,7 @@ from mango_mvp.insights.sanitizers import sanitize_answer
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
+TRAVEL_COMPOSE_ENV = "TELEGRAM_A_TRAVEL_COMPOSE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
 QUALITY_COMPOSITE_ENV = "TELEGRAM_Q_COMPOSITE"
@@ -457,6 +458,12 @@ def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(FREE_NUMBER_GATE_ENV) is not None:
         return _truthy(context.get(FREE_NUMBER_GATE_ENV))
     return _truthy(os.getenv(FREE_NUMBER_GATE_ENV))
+
+
+def travel_compose_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(TRAVEL_COMPOSE_ENV) is not None:
+        return _truthy(context.get(TRAVEL_COMPOSE_ENV))
+    return _truthy(os.getenv(TRAVEL_COMPOSE_ENV))
 
 
 def quality_partial_yield_enabled(context: Mapping[str, Any] | None = None) -> bool:
@@ -1440,9 +1447,11 @@ def _quality_partial_yield_travel_domain(
     context: Mapping[str, Any] | None,
     free_number_gate: bool,
 ) -> str:
+    enabled = quality_partial_yield_enabled(context) or travel_compose_enabled(context)
+    number_gate = free_number_gate or travel_compose_enabled(context)
     if (
-        not quality_partial_yield_enabled(context)
-        or not free_number_gate
+        not enabled
+        or not number_gate
         or retrieval.facts
         or contract.is_p0
     ):
@@ -1552,6 +1561,7 @@ def build_estimate_prompt(
         "Правила:\n"
         "- Отвечай естественно и помогай по сути вопроса.\n"
         "- Если это бытовое/дорога/логистика/география или общий совет без продуктовой конкретики, можно дать полезную оценку.\n"
+        "- Для дороги/маршрута дай именно ориентир по времени в минутах, а не повторяй только адрес или площадку.\n"
         "- Для любой такой оценки с числом ОБЯЗАТЕЛЬНО поставь рядом маркер неуверенности: «ориентировочно», «примерно», «около», «обычно» или «скорее всего».\n"
         "- Нельзя оценивать цену, скидку, расписание, даты, смены, длительность занятия, документы, возврат, оплату, места и запись.\n"
         "- Если клиент спрашивает продуктовую конкретику без подтверждённого факта, честно скажи, что это проверит менеджер; не придумывай число даже с оговоркой.\n"
@@ -1823,7 +1833,9 @@ def _quality_handoff_estimate_domain(
     client_words: str,
     context: Mapping[str, Any] | None,
 ) -> str:
-    if not quality_partial_yield_enabled(context) or not free_number_gate_enabled(context) or contract.is_p0:
+    enabled = quality_partial_yield_enabled(context) or travel_compose_enabled(context)
+    number_gate = free_number_gate_enabled(context) or travel_compose_enabled(context)
+    if not enabled or not number_gate or contract.is_p0:
         return ""
     combined = " ".join(
         part
@@ -2064,7 +2076,8 @@ def _quality_estimate_result_before_handoff(
         candidate = str(draft_fn(prompt) or "").strip()
     except Exception:
         candidate = ""
-    candidate = _ensure_estimate_uncertainty_marker(candidate, context=context)
+    gate_context = _estimate_number_gate_context(context)
+    candidate = _ensure_estimate_uncertainty_marker(candidate, context=gate_context)
     if not candidate:
         trace_event(context, "estimate_recover", {"applied": False, "reason": "empty_candidate", "source_reason": source_reason, "domain": domain})
         return None
@@ -2075,7 +2088,7 @@ def _quality_estimate_result_before_handoff(
         client_words=client_words,
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
-        context=context,
+        context=gate_context,
         previous_bot_texts=previous_bot_texts,
     )
     if findings or unsupported or not semantic_available:
@@ -2115,9 +2128,17 @@ def _quality_estimate_result_before_handoff(
         client_words=client_words,
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
-        context=context,
+        context=gate_context,
         previous_bot_texts=previous_bot_texts,
     )
+
+
+def _estimate_number_gate_context(context: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if free_number_gate_enabled(context) or not travel_compose_enabled(context):
+        return context
+    merged = dict(context or {})
+    merged[FREE_NUMBER_GATE_ENV] = True
+    return merged
 
 
 _NEXT_STEP_ALREADY_RE = re.compile(
@@ -2573,7 +2594,7 @@ def run_pipeline(
             }
         )
     estimate_enabled = estimate_mode_enabled(context)
-    free_number_enabled = free_number_gate_enabled(context)
+    free_number_enabled = free_number_gate_enabled(context) or travel_compose_enabled(context)
     estimate_policy = dict(_estimate_policy_context(
         contract=contract,
         retrieval=retrieval,
@@ -3848,7 +3869,7 @@ def _has_free_uncertainty_marker(text: str) -> bool:
 
 def _ensure_estimate_uncertainty_marker(text: str, *, context: Mapping[str, Any] | None) -> str:
     value = str(text or "").strip()
-    if not value or not free_number_gate_enabled(context) or _has_free_uncertainty_marker(value):
+    if not value or not (free_number_gate_enabled(context) or travel_compose_enabled(context)) or _has_free_uncertainty_marker(value):
         return value
     return f"Ориентировочно: {value}"
 

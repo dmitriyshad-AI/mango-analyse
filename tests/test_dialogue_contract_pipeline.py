@@ -175,6 +175,96 @@ def test_level_a_free_number_gate_allows_travel_even_when_planner_says_pricing(m
     assert "₽" not in result.draft_text
 
 
+def test_travel_compose_flag_estimates_lobnya_without_partial_yield_or_free_gate(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_PARTIAL_YIELD", raising=False)
+    monkeypatch.delenv("TELEGRAM_A_FREE_NUMBER_GATE", raising=False)
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+    prompts: list[str] = []
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке от Лобни сколько ехать?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=("prices.current",), store={"unpk": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "цена и дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda prompt: prompts.append(prompt)
+        or "От Лобни до Долгопрудного на электричке ориентировочно 20–30 минут, зависит от маршрута до площадки.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_applied is True
+    assert result.estimate_domain == "route_logistics"
+    assert "ориентировочно" in result.draft_text.casefold()
+    assert "20–30 минут" in result.draft_text
+    assert "₽" not in result.draft_text
+    assert "Разрешённый домен оценки" in prompts[0]
+    assert "ориентир по времени в минутах" in prompts[0]
+
+
+def test_travel_compose_flag_blocks_product_number_from_bad_estimate(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_PARTIAL_YIELD", raising=False)
+    monkeypatch.delenv("TELEGRAM_A_FREE_NUMBER_GATE", raising=False)
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("сколько ехать от Лобни до вас?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=("general.info",), store={"unpk": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "general_consultation",
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно курс стоит 50 000 ₽." if "Разрешённый домен оценки" in prompt else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert result.estimate_applied is False
+    assert "50 000" not in result.draft_text
+    assert "₽" not in result.draft_text
+
+
+def test_travel_compose_flag_does_not_override_p0(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("верните деньги, занятий нет; и сколько ехать от Лобни?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=(), store={"unpk": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги и дорога от Лобни",
+                "answerability": "manager_only",
+                "is_p0": True,
+                "p0_reason": "refund_claim",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно дорога занимает 20 минут." if "Разрешённый домен оценки" in prompt else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert result.is_estimate is False
+    assert result.estimate_applied is False
+    assert "20 минут" not in result.draft_text
+
+
 def test_q_partial_yield_travel_reaches_estimate_before_manager_handoff(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     monkeypatch.setenv("TELEGRAM_A_FREE_NUMBER_GATE", "1")

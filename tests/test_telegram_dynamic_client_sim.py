@@ -250,6 +250,26 @@ def test_normalize_judge_result_violated_gate_forces_fail():
     assert result["verdict"] == "FAIL"
 
 
+def test_normalize_judge_result_fail_hard_class_fills_consistency_fields():
+    result = sim.normalize_judge_result(
+        {
+            "verdict": "FAIL",
+            "hard_gates_passed": True,
+            "violated_gates": [],
+            "fabrication": True,
+            "first_failing_turn": None,
+            "human_tone_score_0_100": 45,
+        },
+        dialog_id="hard_fail_missing_fields",
+        brand="foton",
+    )
+
+    assert result["verdict"] == "FAIL"
+    assert result["hard_gates_passed"] is False
+    assert result["violated_gates"] == ["fabrication"]
+    assert result["first_failing_turn"] == 1
+
+
 def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch):
     path = tmp_path / "v7.jsonl"
     out_dir = tmp_path / "out"
@@ -510,6 +530,29 @@ def test_codex_json_model_can_run_isolated(monkeypatch) -> None:
     assert "-C" in cmd
     assert "personality" not in " ".join(cmd)
     assert "OPENAI_API_KEY" not in kwargs["env"]
+
+
+def test_semantic_diagnosis_guard_runner_counts_llm_role(monkeypatch, tmp_path: Path) -> None:
+    counter = sim.LlmCallCounter()
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"individual_diagnosis": true, "span": "сможет влиться", "reason": "уверенная оценка"}',
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        runner=sim.subprocess.run,
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    assert provider._semantic_diagnosis_guard_runner("Верни JSON")["individual_diagnosis"] is True
+    assert counter.snapshot()["bot_diagnosis_guard"] == 1
 
 
 def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:

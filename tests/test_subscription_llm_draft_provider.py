@@ -53,6 +53,9 @@ from mango_mvp.channels.subscription_llm import (
     apply_conversation_intent_plan_guard,
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
+    apply_phase2_tone_layer,
+    apply_semantic_diagnosis_guard,
+    build_semantic_diagnosis_prompt,
     apply_unstated_subject_guard,
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
@@ -3986,6 +3989,80 @@ def test_humanity_x2_rewriter_never_touches_identity_policy_c() -> None:
     assert result.draft_text == IDENTITY_FOTON_SAFE_TEXT
     assert "humanity_x2_rewritten" not in result.safety_flags
     assert result.metadata["humanity_x2"]["fallback_reason"] == "locked_identity_policy"
+
+
+def test_phase2_tone_reduces_bureaucratic_text_behind_flag() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В рамках текущего учебного центра обучение осуществляется онлайн. Менеджер уточнит ближайший шаг.",
+        safety_flags=("rules_engine_format_choice_present_both",),
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question="Как проходит обучение?", keys=("format.online",)),
+                "retrieved_facts": {"format.online": "Обучение проходит онлайн."},
+                "retrieved_fact_keys": ["format.online"],
+            }
+        },
+    )
+
+    result = apply_phase2_tone_layer(
+        base,
+        client_message="Как проходит обучение?",
+        context={"active_brand": "foton", "phase2_tone_enabled": True},
+    )
+
+    assert result.draft_text != base.draft_text
+    assert "в рамках текущего учебного центра" not in result.draft_text.casefold()
+    assert "осуществляется" not in result.draft_text.casefold()
+    assert "phase2_tone_rewritten" in result.safety_flags
+    assert result.metadata["phase2_tone"]["tone_after"]["tone_canc"] < result.metadata["phase2_tone"]["tone_before"]["tone_canc"]
+
+
+def test_phase2_tone_rolls_back_candidate_with_new_product_number() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В рамках текущего учебного центра обучение осуществляется онлайн.",
+        safety_flags=("rules_engine_format_choice_present_both",),
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question="Как проходит обучение?", keys=("format.online",)),
+                "retrieved_facts": {"format.online": "Обучение проходит онлайн."},
+                "retrieved_fact_keys": ["format.online"],
+            }
+        },
+    )
+
+    result = apply_phase2_tone_layer(
+        base,
+        client_message="Как проходит обучение?",
+        context={
+            "active_brand": "foton",
+            "phase2_tone_enabled": True,
+            "phase2_tone_rewrite_fn": lambda _text: "Обучение проходит онлайн. Год стоит 100 000 ₽.",
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "phase2_tone_rewritten" not in result.safety_flags
+    assert "verify_output" in result.metadata["phase2_tone"]["fallback_reason"]
+
+
+def test_phase2_tone_does_not_touch_p0_or_manager_only() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="В рамках текущего учебного центра вопрос передам менеджеру.",
+        safety_flags=("high_risk_manager_only",),
+    )
+
+    result = apply_phase2_tone_layer(
+        base,
+        client_message="Верните деньги",
+        context={"active_brand": "foton", "phase2_tone_enabled": True},
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "phase2_tone_rewritten" not in result.safety_flags
+    assert result.metadata["phase2_tone"]["fallback_reason"] == "locked_p0_or_manager_only"
 
 
 def test_humanity_x2_rewriter_allows_migrated_rule_answers_with_stripped_internal_marker() -> None:
@@ -8215,6 +8292,411 @@ def test_model_selling_signal_from_dialogue_contract_feeds_rules_engine_with_key
     assert "rules_engine_selling_price_objection" in routed.safety_flags
     assert "6, 10 или 12 месяцев" in routed.draft_text
     assert "Подсказать удобный вариант" in routed.draft_text
+
+
+def test_phase2_objection_detector_feeds_price_objection_behind_flag() -> None:
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
+    question = "Серьёзная сумма для семьи, сколько стоит онлайн для 10 класса?"
+    context = _step2b1_context(brand="foton", intent="pricing", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_objection_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:001_pricing"),
+        question,
+        context,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_price_objection" in result.safety_flags
+    assert "6, 10 или 12 месяцев" in result.draft_text
+    assert result.metadata["rules_engine"]["selling"]["phase2_objection"] == "price"
+
+
+def test_phase2_objection_unpk_price_never_invents_bank_installment() -> None:
+    facts = {
+        "payment_options.bank_installment.absent": "УНПК: отдельной банковской рассрочки нет.",
+        "payment_options.client_safe_text.when_asked_about_installment": "УНПК: можно платить помесячно, за семестр или за год.",
+        "discounts.semester_payment": "УНПК: при оплате за семестр действует скидка 10%.",
+        "discounts.year_payment": "УНПК: при оплате за год действует скидка 14%.",
+    }
+    question = "Слишком дорого, можно растянуть оплату?"
+    context = _step2b1_context(brand="unpk", intent="payment_method", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_objection_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:002_payment_method"),
+        question,
+        context,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_price_objection" in result.safety_flags
+    assert "помесячно" in result.draft_text.casefold()
+    assert "10%" in result.draft_text
+    assert "14%" in result.draft_text
+    assert "рассроч" not in result.draft_text.casefold()
+    assert "долями" not in result.draft_text.casefold()
+    assert "фотон" not in result.draft_text.casefold()
+
+
+def test_phase2_objection_detector_never_precedes_p0_or_cross_brand() -> None:
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
+    p0_question = "Верните деньги, это слишком дорого"
+    p0_result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=p0_question, answerability="manager", keys=tuple(facts.keys()), is_p0=True),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+    p0_context = _step2b1_context(brand="foton", intent="pricing", question=p0_question, facts=facts)
+    p0_context["phase2_objection_enabled"] = True
+    p0_context["selling_mode"] = "det"
+
+    p0 = _apply_v2_guard_chain(p0_result, p0_question, p0_context)
+
+    cross_question = "В УНПК дешевле, чем у Фотона?"
+    cross_context = _step2b1_context(brand="foton", intent="pricing", question=cross_question, facts=facts)
+    cross_context["phase2_objection_enabled"] = True
+    cross_context["selling_mode"] = "det"
+    cross = _apply_v2_guard_chain(
+        _step2b1_result(question=cross_question, facts=facts, topic_id="theme:001_pricing"),
+        cross_question,
+        cross_context,
+    )
+
+    assert p0.route == "manager_only"
+    assert "rules_engine_selling_price_objection" not in p0.safety_flags
+    assert "6, 10 или 12 месяцев" not in p0.draft_text
+    assert "cross_brand_safe_template_applied" in cross.safety_flags
+    assert "rules_engine_selling_price_objection" not in cross.safety_flags
+    assert "29 750" not in cross.draft_text
+
+
+def test_phase2_anxiety_adds_hedged_trial_step_without_child_diagnosis() -> None:
+    facts = {
+        "trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное.",
+    }
+    question = "Боюсь, дочка не потянет, можно пробное?"
+    context = _step2b1_context(brand="foton", intent="trial", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_anxiety_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:023_trial_class"),
+        question,
+        context,
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_phase2_anxiety_capability" in result.safety_flags
+    assert "понимаю тревогу" in text
+    assert "не буду обещать заочно" in text
+    assert "фрагмент занятия" in text
+    assert "точно справ" not in text
+    assert not text.startswith("да, справ")
+
+
+def test_phase2_anxiety_level_fit_never_confidently_assesses_child() -> None:
+    facts = {
+        "trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное.",
+    }
+    question = "Справится ли дочка по уровню, можно фрагмент?"
+    context = _step2b1_context(brand="foton", intent="trial", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_anxiety_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:023_trial_class"),
+        question,
+        context,
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_phase2_anxiety_level_fit" in result.safety_flags
+    assert "не буду обещать заочно" in text
+    assert "да, справится" not in text
+    assert "точно подойд" not in text
+
+
+def test_phase2_anxiety_never_precedes_p0() -> None:
+    facts = {
+        "trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное.",
+    }
+    question = "Верните деньги, ребёнок не справится"
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:009_refund",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=question, answerability="manager", keys=tuple(facts.keys()), is_p0=True),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+    context = _step2b1_context(brand="foton", intent="trial", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_anxiety_enabled"] = True
+
+    routed = _apply_v2_guard_chain(result, question, context)
+
+    assert routed.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_phase2_anxiety") for flag in routed.safety_flags)
+    assert "фрагмент занятия" not in routed.draft_text.casefold()
+
+
+def test_semantic_diagnosis_guard_rewrites_claude_paraphrase_real_text() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, с тройками можно идти: сын сможет влиться в группу, отдельно догонять заранее не нужно.",
+        topic_id="theme:024_advice",
+        safety_flags=("rules_engine_phase2_anxiety_level_fit",),
+    )
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="У сына тройки, сможет ли он влиться?",
+        context={
+            "active_brand": "unpk",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": lambda _prompt: {
+                "individual_diagnosis": True,
+                "span": "сын сможет влиться",
+                "reason": "уверенная оценка конкретного ребёнка",
+            },
+        },
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "semantic_diagnosis_guard_rewritten" in result.safety_flags
+    assert "сможет влиться" not in text
+    assert "с тройками можно идти" not in text
+    assert "заочно не буду оценивать" in text
+    assert "преподавател" in text
+    assert "менеджер" in text
+    assert result.metadata["semantic_diagnosis_guard"]["individual_diagnosis"] is True
+    assert result.metadata["semantic_diagnosis_guard"]["rewritten"] is True
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="У сына тройки, сможет ли он влиться?",
+        context={"active_brand": "unpk"},
+    )
+    assert gated.draft_text == result.draft_text
+    assert "authoritative_output_gate_blocked" not in gated.safety_flags
+
+
+def test_semantic_diagnosis_guard_rewrites_manager_only_substantive_real_text() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=(
+            "По таким вводным слишком тяжело быть не должно: ритм посильный, "
+            "а группу подберут под ребёнка."
+        ),
+        topic_id="theme:024_advice",
+        safety_flags=("high_risk_manager_only",),
+    )
+    calls: list[str] = []
+
+    def classifier(prompt: str) -> dict[str, object]:
+        calls.append(prompt)
+        return {
+            "individual_diagnosis": True,
+            "span": "слишком тяжело быть не должно",
+            "reason": "косвенная оценка нагрузки конкретного ребёнка",
+        }
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Дочка тревожится, ей не будет слишком тяжело?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": classifier,
+        },
+    )
+
+    text = result.draft_text.casefold()
+    assert calls, "classifier must run for substantive manager_only drafts"
+    assert "слишком тяжело" not in text
+    assert "посильный ритм" not in text
+    assert "подберут под ребёнка" not in text
+    assert result.route == "manager_only"
+    assert "semantic_diagnosis_guard_rewritten" in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["checked"] is True
+    assert result.metadata["semantic_diagnosis_guard"]["rewritten"] is True
+
+
+def test_semantic_diagnosis_guard_keeps_general_program_info_false_case() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="На платформе есть базовый уровень — он для тех, кто начинает с азов.",
+        topic_id="theme:024_advice",
+        safety_flags=("rules_engine_phase2_anxiety_capability",),
+    )
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Есть уровень попроще?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": lambda _prompt: {
+                "individual_diagnosis": False,
+                "span": "",
+                "reason": "общая справка",
+            },
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "not_individual_diagnosis"
+
+
+def test_semantic_diagnosis_guard_keeps_manager_only_general_info_false_case() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Есть базовый уровень и формат мини-группы; менеджер поможет подобрать подходящую группу.",
+        topic_id="theme:024_advice",
+        safety_flags=("draft_for_manager",),
+    )
+    called = False
+
+    def classifier(_prompt: str) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {"individual_diagnosis": False, "span": "", "reason": "общая справка"}
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Есть уровень попроще?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": classifier,
+        },
+    )
+
+    assert called is True
+    assert result.draft_text == base.draft_text
+    assert result.route == "manager_only"
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "not_individual_diagnosis"
+
+
+def test_semantic_diagnosis_guard_keeps_already_hedged_transfer() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Уровень лучше сверить на пробном занятии: преподаватель сориентирует, а менеджер поможет подобрать группу.",
+        topic_id="theme:024_advice",
+    )
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Дочка справится?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": lambda _prompt: {
+                "individual_diagnosis": True,
+                "span": "уровень лучше сверить",
+                "reason": "модель перестраховалась",
+            },
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "already_hedged_and_transferred"
+
+
+def test_semantic_diagnosis_guard_fail_soft_on_classifier_error() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, дочка справится.",
+        topic_id="theme:024_advice",
+    )
+
+    def broken(_prompt: str):
+        raise RuntimeError("classifier down")
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Дочка справится?",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": broken,
+        },
+    )
+
+    assert result.draft_text == base.draft_text
+    assert "semantic_diagnosis_guard_rewritten" not in result.safety_flags
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "classifier_error"
+
+
+def test_semantic_diagnosis_guard_does_not_touch_p0_manager_only() -> None:
+    base = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:009_refund",
+        safety_flags=("high_risk_manager_only",),
+    )
+    called = False
+
+    def classifier(_prompt: str):
+        nonlocal called
+        called = True
+        return {"individual_diagnosis": True}
+
+    result = apply_semantic_diagnosis_guard(
+        base,
+        client_message="Верните деньги, ребёнок не справится",
+        context={
+            "active_brand": "foton",
+            "semantic_diagnosis_guard_enabled": True,
+            "semantic_diagnosis_classifier_fn": classifier,
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.draft_text == base.draft_text
+    assert called is False
+    assert result.metadata["semantic_diagnosis_guard"]["fallback_reason"] == "locked_p0_or_high_risk_deferral"
+
+
+def test_semantic_diagnosis_prompt_contains_true_false_controls() -> None:
+    prompt = build_semantic_diagnosis_prompt(
+        client_message="С тройками можно?",
+        bot_text="Да, с тройками можно идти.",
+    )
+
+    assert "с тройками можно идти" in prompt
+    assert "слишком тяжело быть не должно" in prompt
+    assert "посильный ритм" in prompt
+    assert "есть базовый и продвинутый уровень" in prompt
+    assert "Верни СТРОГО JSON" in prompt
 
 
 def test_a_thread_context_carries_only_current_selling_slots_without_brand_override() -> None:

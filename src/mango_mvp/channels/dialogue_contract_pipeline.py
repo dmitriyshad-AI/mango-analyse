@@ -35,6 +35,7 @@ from mango_mvp.insights.sanitizers import sanitize_answer
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
+TRAVEL_COMPOSE_ENV = "TELEGRAM_A_TRAVEL_COMPOSE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
 QUALITY_COMPOSITE_ENV = "TELEGRAM_Q_COMPOSITE"
@@ -457,6 +458,12 @@ def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(FREE_NUMBER_GATE_ENV) is not None:
         return _truthy(context.get(FREE_NUMBER_GATE_ENV))
     return _truthy(os.getenv(FREE_NUMBER_GATE_ENV))
+
+
+def travel_compose_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(TRAVEL_COMPOSE_ENV) is not None:
+        return _truthy(context.get(TRAVEL_COMPOSE_ENV))
+    return _truthy(os.getenv(TRAVEL_COMPOSE_ENV))
 
 
 def quality_partial_yield_enabled(context: Mapping[str, Any] | None = None) -> bool:
@@ -1440,9 +1447,11 @@ def _quality_partial_yield_travel_domain(
     context: Mapping[str, Any] | None,
     free_number_gate: bool,
 ) -> str:
+    enabled = quality_partial_yield_enabled(context) or travel_compose_enabled(context)
+    number_gate = free_number_gate or travel_compose_enabled(context)
     if (
-        not quality_partial_yield_enabled(context)
-        or not free_number_gate
+        not enabled
+        or not number_gate
         or retrieval.facts
         or contract.is_p0
     ):
@@ -1552,6 +1561,7 @@ def build_estimate_prompt(
         "Правила:\n"
         "- Отвечай естественно и помогай по сути вопроса.\n"
         "- Если это бытовое/дорога/логистика/география или общий совет без продуктовой конкретики, можно дать полезную оценку.\n"
+        "- Для дороги/маршрута дай именно ориентир по времени в минутах, а не повторяй только адрес или площадку.\n"
         "- Для любой такой оценки с числом ОБЯЗАТЕЛЬНО поставь рядом маркер неуверенности: «ориентировочно», «примерно», «около», «обычно» или «скорее всего».\n"
         "- Нельзя оценивать цену, скидку, расписание, даты, смены, длительность занятия, документы, возврат, оплату, места и запись.\n"
         "- Если клиент спрашивает продуктовую конкретику без подтверждённого факта, честно скажи, что это проверит менеджер; не придумывай число даже с оговоркой.\n"
@@ -1823,7 +1833,9 @@ def _quality_handoff_estimate_domain(
     client_words: str,
     context: Mapping[str, Any] | None,
 ) -> str:
-    if not quality_partial_yield_enabled(context) or not free_number_gate_enabled(context) or contract.is_p0:
+    enabled = quality_partial_yield_enabled(context) or travel_compose_enabled(context)
+    number_gate = free_number_gate_enabled(context) or travel_compose_enabled(context)
+    if not enabled or not number_gate or contract.is_p0:
         return ""
     combined = " ".join(
         part
@@ -2064,7 +2076,8 @@ def _quality_estimate_result_before_handoff(
         candidate = str(draft_fn(prompt) or "").strip()
     except Exception:
         candidate = ""
-    candidate = _ensure_estimate_uncertainty_marker(candidate, context=context)
+    gate_context = _estimate_number_gate_context(context)
+    candidate = _ensure_estimate_uncertainty_marker(candidate, context=gate_context)
     if not candidate:
         trace_event(context, "estimate_recover", {"applied": False, "reason": "empty_candidate", "source_reason": source_reason, "domain": domain})
         return None
@@ -2075,7 +2088,7 @@ def _quality_estimate_result_before_handoff(
         client_words=client_words,
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
-        context=context,
+        context=gate_context,
         previous_bot_texts=previous_bot_texts,
     )
     if findings or unsupported or not semantic_available:
@@ -2115,9 +2128,17 @@ def _quality_estimate_result_before_handoff(
         client_words=client_words,
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
-        context=context,
+        context=gate_context,
         previous_bot_texts=previous_bot_texts,
     )
+
+
+def _estimate_number_gate_context(context: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if free_number_gate_enabled(context) or not travel_compose_enabled(context):
+        return context
+    merged = dict(context or {})
+    merged[FREE_NUMBER_GATE_ENV] = True
+    return merged
 
 
 _NEXT_STEP_ALREADY_RE = re.compile(
@@ -2573,7 +2594,7 @@ def run_pipeline(
             }
         )
     estimate_enabled = estimate_mode_enabled(context)
-    free_number_enabled = free_number_gate_enabled(context)
+    free_number_enabled = free_number_gate_enabled(context) or travel_compose_enabled(context)
     estimate_policy = dict(_estimate_policy_context(
         contract=contract,
         retrieval=retrieval,
@@ -3848,9 +3869,27 @@ def _has_free_uncertainty_marker(text: str) -> bool:
 
 def _ensure_estimate_uncertainty_marker(text: str, *, context: Mapping[str, Any] | None) -> str:
     value = str(text or "").strip()
-    if not value or not free_number_gate_enabled(context) or _has_free_uncertainty_marker(value):
+    if not value or not (free_number_gate_enabled(context) or travel_compose_enabled(context)) or _has_free_uncertainty_marker(value):
+        return value
+    if not _estimate_text_needs_uncertainty_marker(value):
         return value
     return f"Ориентировочно: {value}"
+
+
+def _estimate_text_needs_uncertainty_marker(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    low = value.casefold().replace("ё", "е")
+    if re.fullmatch(r"(?:пожалуйста|рада?\s+был[аио]?\s+помочь|обращайтесь|спасибо)[!. ]*", low, re.I):
+        return False
+    for token, start, end in _free_number_token_matches(value):
+        if _is_free_product_number_context(value, token, start=start, end=end):
+            continue
+        window = _free_number_context_window(value, start=start, end=end, radius=60).casefold().replace("ё", "е")
+        if re.search(r"минут|час|км|километр|дорог|ехать|доехать|пешком|электрич|метро|маршрут|обычно|примерно|около", window, re.I):
+            return True
+    return False
 
 
 def _is_client_grade_number_context_at(text: str, *, start: int, end: int) -> bool:
@@ -5532,9 +5571,49 @@ def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:
     ).strip(" \t\n\r:;,.—-")
     if not text or text.casefold().startswith("клиент "):
         return ""
+    label = _question_detail_topic_label(text)
+    if label:
+        return label
+    if _looks_like_raw_question_detail(text):
+        return ""
     if len(text) > max_chars:
         text = text[: max_chars - 1].rstrip() + "…"
     return text
+
+
+def _question_detail_topic_label(value: str) -> str:
+    text = str(value or "").casefold().replace("ё", "е")
+    if not text:
+        return ""
+    if re.search(r"сын|дочк|дочь|реб[её]н|школьник|ученик|справит|потянет|пробел|уровен|индивидуальн|подойд[её]т\s+ли", text, re.I):
+        return "индивидуальную ситуацию ребёнка"
+    if re.search(r"прям\w*\s+перевод|помесячн\w*[^.?!]{0,40}(?:счет|счёт)|(?:счет|счёт)[^.?!]{0,40}перевод", text, re.I):
+        return "оплату прямым переводом на счёт"
+    if re.search(r"цен|стоим|сколько\s+стоит|оплат|счет|счёт|руб|₽|тариф|рассроч|долями", text, re.I):
+        return "цену или условия оплаты"
+    if re.search(r"распис|дни|когда|старт|выходн|будн|время|во\s+сколько", text, re.I):
+        return "расписание или старт конкретной группы"
+    if re.search(r"формат|онлайн|очно|дистанц", text, re.I):
+        return "формат занятий"
+    if re.search(r"адрес|площадк|где\s+вы|куда\s+ехать|дорог|доехать|добират|маршрут|метро|электрич", text, re.I):
+        return "дорогу или площадку"
+    if re.search(r"маткап|материнск|сфр|налог|вычет|фнс|документ|справк|договор", text, re.I):
+        return "документы или порядок оформления"
+    if re.search(r"пробн|фрагмент", text, re.I):
+        return "пробный формат или фрагмент занятия"
+    if re.search(r"лагер|лвш|смен|мест[ао]\b", text, re.I):
+        return "смену или условия лагеря"
+    if re.search(r"запис|оформ|поступить|заявк", text, re.I):
+        return "порядок записи"
+    return ""
+
+
+def _looks_like_raw_question_detail(value: str) -> bool:
+    text = " ".join(str(value or "").split())
+    low = text.casefold().replace("ё", "е")
+    if len(text) > 70:
+        return True
+    return bool(re.search(r"\b(?:можно|сможет|есть|будет|подойдет|подойд[её]т|получится|стоит|сколько|когда|как|где|почему|нужно)\s+ли\b|\?$", low, re.I))
 
 
 def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:

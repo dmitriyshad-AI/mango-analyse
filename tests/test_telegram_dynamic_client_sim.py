@@ -386,6 +386,92 @@ def test_run_one_dialog_injects_debug_trace_context_when_enabled(monkeypatch, tm
     assert trace_cfg["turn"] == 1
 
 
+def test_handoff_trace_records_handoff_origin_and_summary_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    class HandoffBotProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "theme:001_pricing",
+                    "route": "draft_for_manager",
+                    "draft_text": "Передам менеджеру, он сверит точную цену.",
+                    "safety_flags": ["manager_approval_required", "no_auto_send"],
+                    "metadata": {
+                        "dialogue_contract_pipeline": {
+                            "contract": {"is_p0": False},
+                            "fallback_reason": "contract_manager_only",
+                            "retrieved_facts": {"prices.current": "Стоимость уточняется по группе."},
+                            "missing_fact_keys": [],
+                        }
+                    },
+                }
+            )
+
+    dialog = sim.run_one_dialog(
+        {
+            "dialog_id": "handoff_trace_dynamic",
+            "brand": "unpk",
+            "persona": "родитель",
+            "goal": "проверить trace",
+            "max_turns": 1,
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.FakeClientModel(),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=HandoffBotProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+    )
+
+    trace = dialog["turns"][0]["handoff_trace"]
+    assert trace["layer"] == "dialogue_contract_pipeline"
+    assert trace["guard"] == "contract_manager_only"
+    assert trace["fallback_reason"] == "contract_manager_only"
+    assert trace["reason"] == "contract_manager_only"
+    assert trace["route"] == dialog["turns"][0]["bot_route"] == "manager_only"
+
+    summary = sim.build_summary(
+        [dialog],
+        [dialog["judge_result"]],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+    assert summary["handoff_trace"]["count"] == 1
+    assert summary["handoff_trace"]["by_layer"] == {"dialogue_contract_pipeline": 1}
+    assert summary["handoff_trace"]["by_guard"] == {"contract_manager_only": 1}
+    assert sim.build_turn_rows([dialog])[0]["handoff_trace"]
+    assert "Handoff trace" in sim.render_summary_md(summary)
+    assert "contract_manager_only" in sim.render_one_dialog_md(dialog)
+
+
+def test_handoff_trace_empty_for_autonomous_answer(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+
+    trace = sim._handoff_trace_for_turn(
+        {
+            "turn": 1,
+            "client_message": "где адрес?",
+            "bot_text": "Адрес: Сретенка, 20.",
+            "bot_route": "bot_answer_self_for_pilot",
+            "bot_safety_flags": [],
+            "bot_dialogue_contract_pipeline": {
+                "contract": {"is_p0": False},
+                "fallback_reason": "",
+                "retrieved_facts": {"locations.address": "Адрес: Сретенка, 20."},
+                "missing_fact_keys": [],
+            },
+            "number_audit": {"items": []},
+        }
+    )
+
+    assert trace == {}
+
+
 def test_build_memory_model_modes_use_low_reasoning() -> None:
     fake_args = argparse.Namespace(memory_mode="fake", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
     off_args = argparse.Namespace(memory_mode="off", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
@@ -397,6 +483,33 @@ def test_build_memory_model_modes_use_low_reasoning() -> None:
     assert isinstance(codex_model, sim.CodexJsonModel)
     assert codex_model.model == "gpt-5.5"
     assert codex_model.reasoning_effort == "low"
+
+
+def test_codex_json_model_can_run_isolated(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        cwd = Path(cmd[cmd.index("-C") + 1])
+        assert cwd.exists()
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text('{"ok": true}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+
+    model = sim.CodexJsonModel(model="gpt-5.5", reasoning_effort="medium", timeout_sec=20, isolated=True)
+
+    assert model.generate("Верни JSON") == {"ok": True}
+    cmd, kwargs = calls[0]
+    assert "--ignore-user-config" in cmd
+    assert "--ignore-rules" in cmd
+    assert cmd[cmd.index("--ask-for-approval") + 1] == "never"
+    assert "--ephemeral" in cmd
+    assert "--skip-git-repo-check" in cmd
+    assert "-C" in cmd
+    assert "personality" not in " ".join(cmd)
+    assert "OPENAI_API_KEY" not in kwargs["env"]
 
 
 def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
@@ -541,6 +654,27 @@ def test_claude_cli_runner_surfaces_and_drains_visible_failures(monkeypatch, cap
     assert events[0]["stderr_tail"] == "permission denied"
     assert runner.drain_events() == []
     assert "claude_cli_error=" in capsys.readouterr().err
+
+
+def test_build_bot_provider_codex_mode_is_isolated_by_default_and_can_disable() -> None:
+    base = dict(
+        bot_mode="codex",
+        model="gpt-5.5",
+        bot_reasoning="medium",
+        timeout_sec=180,
+        disable_bot_cache=True,
+        semantic_mode="off",
+        semantic_model="gpt-5.5",
+        semantic_reasoning="medium",
+        llm_call_counter=None,
+    )
+
+    isolated = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=True))
+    baseline = sim.build_bot_provider(argparse.Namespace(**base, codex_isolated=False))
+
+    assert isinstance(isolated, sim.CountingSubscriptionLlmDraftProvider)
+    assert isolated.codex_isolated is True
+    assert baseline.codex_isolated is False
 
 
 def test_claude_bot_mode_still_uses_existing_safety_gates() -> None:

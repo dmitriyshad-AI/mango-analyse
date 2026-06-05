@@ -67,6 +67,7 @@ from mango_mvp.channels.subscription_llm import (
     find_unsupported_numeric_promises,
     find_unsupported_followup_deadline_claims,
     find_redundant_questions_for_known_context,
+    build_codex_exec_env,
     parse_llm_json,
     strip_internal_service_markers,
     known_context_fields,
@@ -82,9 +83,110 @@ def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -
     command = CodexExecConfig(model="gpt-5.5", reasoning_effort="medium").build_command(tmp_path / "out.txt")
 
     assert "OPENAI_API_KEY" not in " ".join(command)
-    assert command[:2] == ["codex", "exec"]
+    assert command[0] == "codex"
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "exec" in command
     assert "--sandbox" in command
     assert "read-only" in command
+
+
+def test_codex_exec_isolated_command_ignores_user_config_and_uses_clean_cwd(tmp_path: Path) -> None:
+    command = CodexExecConfig(
+        model="gpt-5.5",
+        reasoning_effort="medium",
+        isolated=True,
+        cwd=tmp_path,
+    ).build_command(tmp_path / "out.txt")
+
+    assert "--ignore-user-config" in command
+    assert "--ignore-rules" in command
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "--ephemeral" in command
+    assert "--skip-git-repo-check" in command
+    assert command[command.index("-C") + 1] == str(tmp_path)
+    assert "personality" not in " ".join(command)
+
+
+def test_codex_exec_env_preserves_codex_home_auth_but_drops_openai_key() -> None:
+    env = build_codex_exec_env({"CODEX_HOME": "/tmp/codex-home", "OPENAI_API_KEY": "secret", "PATH": "/bin"})
+
+    assert env["CODEX_HOME"] == "/tmp/codex-home"
+    assert env["PATH"] == "/bin"
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_codex_exec_provider_isolated_bot_run_uses_clean_cwd_and_metadata(tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def runner(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["env"] = dict(kwargs["env"])
+        cwd = Path(cmd[cmd.index("-C") + 1])
+        assert cwd.exists()
+        assert not (cwd / "AGENTS.md").exists()
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "route": "bot_answer_self_for_pilot",
+                    "draft_text": "Да, сориентирую по проверенным условиям.",
+                    "message_type": "question",
+                    "topic_id": "service:S5_general_consultation",
+                    "confidence_theme": 0.9,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    provider = CodexExecDraftProvider(
+        runner=runner,
+        cache_dir=None,
+        codex_isolated=True,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "OPENAI_API_KEY": "secret", "PATH": "/bin"},
+    )
+
+    result = provider.generate_from_prompt("Верни JSON")
+
+    assert "--ignore-user-config" in seen["cmd"]
+    assert "--ignore-rules" in seen["cmd"]
+    assert "-C" in seen["cmd"]
+    assert seen["env"]["CODEX_HOME"].endswith("codex-home")
+    assert "OPENAI_API_KEY" not in seen["env"]
+    assert result.metadata["codex_exec"] == {
+        "isolated": True,
+        "ignore_user_config": True,
+        "ignore_rules": True,
+    }
+
+
+def test_codex_exec_provider_isolates_dialogue_contract_subcalls(tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def runner(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["env"] = dict(kwargs["env"])
+        cwd = Path(cmd[cmd.index("-C") + 1])
+        assert cwd.exists()
+        assert not (cwd / "AGENTS.md").exists()
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text('{"ok": true}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    provider = CodexExecDraftProvider(
+        runner=runner,
+        cache_dir=None,
+        codex_isolated=True,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "OPENAI_API_KEY": "secret", "PATH": "/bin"},
+    )
+
+    assert provider._run_prompt_text("Верни JSON", prefix="mango_test_", suffix=".json") == '{"ok": true}'
+    assert "--ignore-user-config" in seen["cmd"]
+    assert "--ignore-rules" in seen["cmd"]
+    assert "-C" in seen["cmd"]
+    assert seen["env"]["CODEX_HOME"].endswith("codex-home")
+    assert "OPENAI_API_KEY" not in seen["env"]
 
 
 def test_provider_parses_valid_json() -> None:
@@ -2752,7 +2854,7 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
         context={"active_brand": "unpk"},
     )
     assert "менеджер" in secondary.casefold()
-    assert "прямым переводом" in secondary.casefold()
+    assert "оплату прямым переводом на счёт" in secondary.casefold()
     assert "как отдельная справка" not in secondary.casefold()
     assert "т-банк" not in secondary.casefold()
 
@@ -2766,7 +2868,8 @@ def test_pravka5_2_non_p0_fallback_does_not_use_neighbor_payment_secondary() -> 
         context={"active_brand": "unpk"},
     )
     assert "менеджер" in detail.casefold()
-    assert "Какая цена для 6 класса" in detail
+    assert "цену или условия оплаты" in detail
+    assert "Какая цена для 6 класса" not in detail
 
 
 def test_v2_cross_brand_dispatcher_applies_generic_template() -> None:
@@ -4407,6 +4510,46 @@ def test_output_sanitizer_removes_manager_tag_and_tag_instruction() -> None:
     assert "[manager]" not in gated.draft_text
     assert "интерпретируй" not in gated.draft_text.casefold()
     assert gated.metadata["output_sanitizer"]["applied"] is True
+
+
+def test_output_sanitizer_replaces_raw_question_detail_handoff() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "Чтобы не ошибиться, менеджер уточнит именно про Сможет ли менеджер оценить, "
+            "есть ли у сына пробелы по математике и подойдет ли курс, и вернется с ответом."
+        ),
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Сможете оценить, есть ли у сына пробелы?",
+        context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert "Сможет ли менеджер" not in gated.draft_text
+    assert "есть ли у сына" not in gated.draft_text.casefold()
+    assert "передам вопрос менеджеру" in gated.draft_text.casefold()
+    assert gated.metadata["output_sanitizer"]["applied"] is True
+    assert "raw_detail_handoff" in gated.metadata["output_sanitizer"]["reasons"]
+
+
+def test_output_sanitizer_keeps_clean_detail_handoff_unchanged() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Чтобы не ошибиться, менеджер уточнит именно про дни и время занятий нужной группы и вернется с ответом.",
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Какие дни занятий?",
+        context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert gated.draft_text == result.draft_text
+    assert "output_sanitizer" not in gated.metadata
 
 
 def test_output_sanitizer_keeps_clean_client_answer_unchanged() -> None:
@@ -6917,6 +7060,43 @@ def test_step3a_planner_intent_is_primary_by_default_and_can_be_disabled() -> No
     assert disabled_shadow["planner_intent_enabled"] is False
     assert "rules_engine_teacher_applied" in disabled.safety_flags
     assert "rules_engine_contact_address_foton" not in disabled.safety_flags
+
+
+def test_travel_estimate_is_not_overwritten_by_address_rules_engine() -> None:
+    facts = {
+        "locations_foton.address": "Фотон очно занимается по адресу Москва, Верхняя Красносельская ул., 30.",
+    }
+    question = "С проспекта Мира сколько ехать до занятий?"
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Ориентировочно дорога займёт около 20–30 минут, зависит от маршрута.",
+        topic_id="theme:015_address",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=question, answerability="answer_self", keys=tuple(facts.keys())),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts),
+                "estimate": {
+                    "is_estimate": True,
+                    "estimate_applied": True,
+                    "answer_mode": "estimate_allowed",
+                    "estimate_domain": "travel_time",
+                },
+            }
+        },
+    )
+
+    guarded = _apply_v2_guard_chain(
+        result,
+        question,
+        _step2b1_context(brand="foton", intent="address", question=question, facts=facts),
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "20–30 минут" in guarded.draft_text
+    assert "Красносельская" not in guarded.draft_text
+    assert "rules_engine_contact_address_foton" not in guarded.safety_flags
+    assert guarded.metadata["dialogue_contract_pipeline"]["travel_estimate_yielded_dispatcher"] is True
 
 
 def test_step3a_low_confidence_identity_question_keeps_policy_c_terminal_answer() -> None:

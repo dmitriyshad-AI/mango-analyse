@@ -24,6 +24,8 @@ from typing import Any, Mapping, Optional, Sequence
 from mango_mvp.channels.subscription_llm import (
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
+    build_codex_exec_command,
+    codex_isolation_cwd,
     normalize_subscription_draft_payload,
     strip_internal_service_markers,
 )
@@ -46,6 +48,7 @@ METRIC_TARGETS = {
     "send_unedited_rate": 0.45,
     "avg_human_tone_score": 65.0,
 }
+HANDOFF_TRACE_ENV = "TELEGRAM_HANDOFF_TRACE"
 
 
 @dataclass(frozen=True)
@@ -220,37 +223,42 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
 
 
 class CodexJsonModel:
-    def __init__(self, *, model: str, reasoning_effort: str, timeout_sec: int, codex_bin: str = "codex") -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        reasoning_effort: str,
+        timeout_sec: int,
+        codex_bin: str = "codex",
+        isolated: bool = False,
+    ) -> None:
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.timeout_sec = timeout_sec
         self.codex_bin = codex_bin
+        self.isolated = bool(isolated)
 
     def generate(self, prompt: str) -> Mapping[str, Any]:
         with tempfile.NamedTemporaryFile(prefix="mango_dynamic_sim_", suffix=".json") as out_file:
             output_path = Path(out_file.name)
-            cmd = [
-                self.codex_bin,
-                "exec",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "--model",
-                self.model,
-            ]
-            if self.reasoning_effort:
-                cmd.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
-            cmd.extend(["--output-last-message", str(output_path), "-"])
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_sec,
-                check=False,
-                env=_codex_env(),
-            )
+            with codex_isolation_cwd(self.isolated) as isolated_cwd:
+                cmd = build_codex_exec_command(
+                    output_path=output_path,
+                    codex_bin=self.codex_bin,
+                    model=self.model,
+                    reasoning_effort=self.reasoning_effort,
+                    isolated=self.isolated,
+                    cwd=isolated_cwd,
+                )
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_sec,
+                    check=False,
+                    env=_codex_env(),
+                )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
             raise RuntimeError(f"codex exec failed rc={proc.returncode}: {(proc.stderr or '')[-500:]}")
@@ -544,6 +552,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--client-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--bot-mode", choices=("codex", "claude", "fake"), default="codex")
+    parser.add_argument(
+        "--codex-isolated",
+        dest="codex_isolated",
+        action="store_true",
+        default=True,
+        help="Run Codex bot-side calls without user config/rules in a clean temporary cwd. Default for honest tone A/B.",
+    )
+    parser.add_argument(
+        "--no-codex-isolated",
+        dest="codex_isolated",
+        action="store_false",
+        help="Use current Codex user config for GPT bot calls; intended only as baseline A.",
+    )
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--claude-model", default=_CLAUDE_DEFAULT_MODEL)
     parser.add_argument("--claude-bin", default="claude")
@@ -932,6 +953,7 @@ def build_selling_compose_model(args: argparse.Namespace) -> Any:
             reasoning_effort=args.selling_reasoning,
             timeout_sec=args.timeout_sec,
             codex_bin=getattr(args, "codex_bin", "codex"),
+            isolated=bool(getattr(args, "codex_isolated", False)),
         ),
         role="bot_selling_compose",
         counter=getattr(args, "llm_call_counter", None),
@@ -968,6 +990,7 @@ def build_bot_provider(args: argparse.Namespace, *, dialog_id: str = "") -> Any:
         dialogue_contract_semantic_match_fn=semantic_match_model.generate if semantic_match_model is not None else None,
         dialogue_contract_semantic_match_enabled=semantic_match_model is not None,
         llm_call_counter=getattr(args, "llm_call_counter", None),
+        codex_isolated=bool(getattr(args, "codex_isolated", True)) if args.bot_mode == "codex" else False,
     )
     if runner is not None:
         setattr(provider, "_dynamic_sim_claude_runner", runner)
@@ -1113,6 +1136,7 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "handoff_trace": json.dumps(turn.get("handoff_trace") or {}, ensure_ascii=False, sort_keys=True),
                     "bot_answer_quality_findings": "|".join(str(flag) for flag in (turn.get("bot_answer_quality_findings") or [])),
                     "bot_answer_quality_rewritten": turn.get("bot_answer_quality_rewritten"),
                     "judge_fact_audit_levels": "|".join(
@@ -1329,6 +1353,8 @@ def run_one_dialog(
             "number_audit": number_audit,
             "judge_fact_audit": judge_fact_audit,
         }
+        if _handoff_trace_enabled():
+            turn["handoff_trace"] = _handoff_trace_for_turn(turn)
         turns.append(turn)
         recent_messages.append(f"Клиент: {client_message}")
         recent_messages.append(f"Ответ: {bot_text}")
@@ -1763,6 +1789,12 @@ def build_summary(
     tone_metric = summarize_tone_scores(transcripts)
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
+    include_handoff_trace = _handoff_trace_enabled() or any(
+        isinstance(turn, Mapping) and isinstance(turn.get("handoff_trace"), Mapping) and bool(turn.get("handoff_trace"))
+        for dialog in transcripts
+        for turn in (dialog.get("turns") or [])
+    )
+    handoff_trace = _handoff_trace_summary(transcripts) if include_handoff_trace else {}
     llm_call_summary = _llm_call_summary(
         llm_calls or {},
         dialogs=len(judge_results),
@@ -1865,6 +1897,7 @@ def build_summary(
         "turn_fallback_reasons": fallback_reasons,
         "claude_cli_errors": claude_cli_errors,
         "over_handoff": over_handoff,
+        **({"handoff_trace": handoff_trace} if include_handoff_trace else {}),
         "judge_fact_audit": judge_fact_audit_summary(transcripts),
         "send_unedited_proxy": send_unedited,
         "metrics_intervals": metrics["metrics_intervals"],
@@ -2013,6 +2046,118 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
         "false_handoff": false_handoff,
         "candidates": handoff_turns[:80],
     }
+
+
+def _handoff_trace_enabled() -> bool:
+    return str(os.getenv(HANDOFF_TRACE_ENV) or "").strip().casefold() in {"1", "true", "yes", "да", "on"}
+
+
+def _handoff_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    traces: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            trace = turn.get("handoff_trace")
+            if isinstance(trace, Mapping) and trace:
+                traces.append(trace)
+    return {
+        "count": len(traces),
+        "by_layer": dict(Counter(str(item.get("layer") or "") for item in traces)),
+        "by_guard": dict(Counter(str(item.get("guard") or "") for item in traces)),
+        "by_fallback_reason": dict(Counter(str(item.get("fallback_reason") or "") for item in traces)),
+        "examples": [dict(item) for item in traces[:20]],
+    }
+
+
+def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not _is_over_handoff_turn(turn):
+        return {}
+    pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
+    contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
+    rules_engine = pipeline.get("rules_engine") if isinstance(pipeline.get("rules_engine"), Mapping) else {}
+    flags = [str(flag) for flag in (turn.get("bot_safety_flags") or []) if str(flag).strip()]
+    fallback_reason = str(pipeline.get("fallback_reason") or "")
+    layer, guard = _handoff_trace_layer_guard(
+        route=str(turn.get("bot_route") or ""),
+        fallback_reason=fallback_reason,
+        flags=flags,
+        pipeline=pipeline,
+        rules_engine=rules_engine,
+        contract=contract,
+    )
+    reason = _handoff_trace_reason(
+        fallback_reason=fallback_reason,
+        flags=flags,
+        pipeline=pipeline,
+        fact_level=_handoff_fact_level(turn),
+    )
+    return {
+        "layer": layer,
+        "guard": guard,
+        "fallback_reason": fallback_reason,
+        "reason": reason,
+        "route": str(turn.get("bot_route") or ""),
+        "fact_level": _handoff_fact_level(turn),
+    }
+
+
+def _handoff_trace_layer_guard(
+    *,
+    route: str,
+    fallback_reason: str,
+    flags: Sequence[str],
+    pipeline: Mapping[str, Any],
+    rules_engine: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> tuple[str, str]:
+    joined_flags = " ".join(flags).casefold()
+    if contract.get("is_p0") or re.search(r"high_risk|p0|zero_collect|refund", joined_flags, re.I):
+        return "safety", "p0_or_high_risk"
+    if re.search(r"cross_brand|brand_separation", joined_flags, re.I):
+        return "guard_chain", "brand_separation"
+    if re.search(r"guarantee|unsupported_promise|promocode|placeholder|identity", joined_flags, re.I):
+        return "guard_chain", "output_safety"
+    if rules_engine:
+        return "rules_engine", str(rules_engine.get("applied") or rules_engine.get("subvariant") or "domain_rule")
+    if fallback_reason:
+        if fallback_reason in {"hard_verification_failed", "semantic_check_unavailable", "estimate_guard_failed"}:
+            return "dialogue_contract_pipeline", fallback_reason
+        if fallback_reason.startswith("estimate_"):
+            return "dialogue_contract_pipeline", "estimate"
+        if fallback_reason.startswith("empty_facts") or fallback_reason in {"contract_manager_only", "no_draft_fn", "draft_error"}:
+            return "dialogue_contract_pipeline", fallback_reason
+        return "dialogue_contract_pipeline", fallback_reason
+    findings = pipeline.get("findings") if isinstance(pipeline.get("findings"), Sequence) else ()
+    if findings:
+        return "dialogue_contract_pipeline", "output_verifier"
+    if route == "manager_only":
+        return "route_policy", "manager_only"
+    return "handoff_text", "handoff_phrase"
+
+
+def _handoff_trace_reason(
+    *,
+    fallback_reason: str,
+    flags: Sequence[str],
+    pipeline: Mapping[str, Any],
+    fact_level: str,
+) -> str:
+    if fallback_reason:
+        return fallback_reason
+    findings = pipeline.get("findings") if isinstance(pipeline.get("findings"), Sequence) else ()
+    finding_codes = [
+        str(item.get("code") or "")
+        for item in findings
+        if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+    ]
+    if finding_codes:
+        return "findings:" + ",".join(finding_codes[:5])
+    if flags:
+        return "flags:" + ",".join(flags[:5])
+    if fact_level:
+        return "fact_level:" + fact_level
+    return "handoff_route_or_text"
 
 
 def _is_over_handoff_turn(turn: Mapping[str, Any]) -> bool:
@@ -2577,6 +2722,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
     totals = summary.get("totals") if isinstance(summary.get("totals"), Mapping) else {}
     llm_calls = summary.get("llm_calls") if isinstance(summary.get("llm_calls"), Mapping) else {}
     over_handoff = summary.get("over_handoff") if isinstance(summary.get("over_handoff"), Mapping) else {}
+    handoff_trace = summary.get("handoff_trace") if isinstance(summary.get("handoff_trace"), Mapping) else {}
     judge_fact_audit = summary.get("judge_fact_audit") if isinstance(summary.get("judge_fact_audit"), Mapping) else {}
     return "\n".join(
         [
@@ -2599,6 +2745,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             f"- Over-handoff: `{over_handoff}`",
+            f"- Handoff trace: `{handoff_trace}`",
             f"- Judge fact audit: `{judge_fact_audit}`",
             "",
             "Что смотреть вручную:",
@@ -2671,6 +2818,7 @@ def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
                 f"- provider_error: `{turn.get('bot_provider_error') or ''}`",
                 f"- claude_cli_error_count: `{turn.get('bot_claude_cli_error_count') or 0}`",
                 f"- claude_cli_errors: `{turn.get('bot_claude_cli_errors') or []}`",
+                f"- handoff_trace: `{turn.get('handoff_trace') or {}}`",
                 f"- manager_checklist: `{format_list(turn.get('bot_manager_checklist') or [])}`",
                 f"- missing_facts: `{format_list(turn.get('bot_missing_facts') or [])}`",
                 f"- answer_quality_findings: `{format_list(turn.get('bot_answer_quality_findings') or [])}`",

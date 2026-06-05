@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -439,6 +440,12 @@ OUTPUT_SANITIZER_META_LINE_RE = re.compile(
 OUTPUT_SANITIZER_OPTION_LINE_RE = re.compile(r"^\s*(?:[A-CА-В]\)|[A-CА-В]\.)\s+", re.I)
 OUTPUT_SANITIZER_PLACEHOLDER_RE = re.compile(
     r"\bуточнен\w+\s+по\s+текущей\s+теме\s*\.\s*тема\s*:\s*[^.?!\n]*(?:[.?!]|$)",
+    re.I,
+)
+OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE = re.compile(
+    r"(?:чтобы\s+не\s+ошибиться,\s*)?менеджер\s+уточнит\s+именно\s+про\s+(?P<detail>[^.?!\n]{20,220}?)(?=\s+и\s+верн[её]тся\s+с\s+ответом|[.?!]|$)(?:\s+и\s+верн[её]тся\s+с\s+ответом)?[.?!]?"
+    r"|не\s+хочу\s+гадать\s+по\s+неподтвержд[её]нному\s+пункту:\s*менеджер\s+проверит\s+именно\s+(?P<detail2>[^.?!\n]{20,220}?)(?=\s+и\s+ответит\s+вам|[.?!]|$)(?:\s+и\s+ответит\s+вам)?[.?!]?"
+    r"|передам\s+менеджеру\s+именно\s+вопрос\s+про\s+(?P<detail3>[^.?!\n]{20,220}?)(?=,\s*чтобы\s+он\s+проверил\s+актуальные\s+условия|[.?!]|$)(?:,\s*чтобы\s+он\s+проверил\s+актуальные\s+условия)?[.?!]?",
     re.I,
 )
 OUTPUT_SANITIZER_MANAGER_TAG_RE = re.compile(r"\[/?manager\]\s*", re.I)
@@ -1575,6 +1582,23 @@ def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
     return bool(str(pipeline_rules.get("applied") or "").strip())
 
 
+def _pipeline_travel_estimate_applied(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    estimate = pipeline.get("estimate") if isinstance(pipeline.get("estimate"), Mapping) else {}
+    domain = str(estimate.get("estimate_domain") or "").strip()
+    return bool(estimate.get("estimate_applied") or estimate.get("is_estimate")) and domain in {"travel_time", "route_logistics"}
+
+
+def _yield_dispatcher_to_travel_estimate(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    pipeline = dict(pipeline)
+    pipeline["travel_estimate_yielded_dispatcher"] = True
+    metadata["dialogue_contract_pipeline"] = pipeline
+    return replace(result, metadata=metadata)
+
+
 def _safe_template_yield_result(
     result: SubscriptionDraftResult,
     *,
@@ -1617,6 +1641,17 @@ def apply_dialogue_contract_v2_template_dispatcher(
     shadow = result.metadata.get("rules_engine_intent_shadow") if isinstance(result.metadata, Mapping) else {}
     if not isinstance(shadow, Mapping):
         shadow = {}
+    if _pipeline_travel_estimate_applied(result):
+        trace_event(
+            context,
+            "safe_template_dispatcher",
+            {
+                "skipped": "travel_estimate_already_applied",
+                "route": result.route,
+                "topic_id": result.topic_id,
+            },
+        )
+        return _yield_dispatcher_to_travel_estimate(result)
     if _safe_template_already_applied(result):
         if _safe_template_can_yield_to_dispatcher(result, context=context, shadow=shadow, registry=registry):
             trace_event(
@@ -1788,6 +1823,7 @@ class SubscriptionLlmDraftProvider:
         runner: Optional[_Runner] = None,
         sleep: Callable[[float], None] = time.sleep,
         base_env: Optional[Mapping[str, str]] = None,
+        codex_isolated: bool = False,
     ) -> None:
         self.codex_bin = str(codex_bin or "codex").strip() or "codex"
         self.model = str(model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
@@ -1797,9 +1833,27 @@ class SubscriptionLlmDraftProvider:
         self.runner = runner or subprocess.run
         self.sleep = sleep
         self.base_env = dict(base_env) if base_env is not None else None
+        self.codex_isolated = bool(codex_isolated)
         self.cache_dir = _guard_cache_dir(cache_dir) if cache_dir is not None else None
         self._dialogue_contract_semantic_match_override = dialogue_contract_semantic_match_fn
         self._dialogue_contract_semantic_match_enabled = bool(dialogue_contract_semantic_match_enabled)
+
+    def _build_codex_command(
+        self,
+        *,
+        output_path: Path,
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        isolated_cwd: Optional[Path] = None,
+    ) -> list[str]:
+        return build_codex_exec_command(
+            output_path=output_path,
+            codex_bin=self.codex_bin,
+            model=model or self.model,
+            reasoning_effort=reasoning_effort or self.reasoning_effort,
+            isolated=self.codex_isolated,
+            cwd=isolated_cwd,
+        )
 
     def build_draft(
         self,
@@ -2333,21 +2387,22 @@ class SubscriptionLlmDraftProvider:
     ) -> str:
         with tempfile.NamedTemporaryFile(prefix=prefix, suffix=suffix) as out_file:
             output_path = Path(out_file.name)
-            cmd = build_codex_exec_command(
-                output_path=output_path,
-                codex_bin=self.codex_bin,
-                model=model or self.model,
-                reasoning_effort=reasoning_effort or self.reasoning_effort,
-            )
-            proc = self.runner(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.timeout_sec,
-                env=build_codex_exec_env(self.base_env),
-            )
+            with codex_isolation_cwd(self.codex_isolated) as isolated_cwd:
+                cmd = self._build_codex_command(
+                    output_path=output_path,
+                    model=model or self.model,
+                    reasoning_effort=reasoning_effort or self.reasoning_effort,
+                    isolated_cwd=isolated_cwd,
+                )
+                proc = self.runner(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=self.timeout_sec,
+                    env=build_codex_exec_env(self.base_env),
+                )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
             return ""
@@ -2370,21 +2425,17 @@ class SubscriptionLlmDraftProvider:
         reasoning = str(os.getenv(ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV) or "xhigh").strip() or "xhigh"
         with tempfile.NamedTemporaryFile(prefix="mango_answer_quality_rewrite_", suffix=".json") as out_file:
             output_path = Path(out_file.name)
-            cmd = build_codex_exec_command(
-                output_path=output_path,
-                codex_bin=self.codex_bin,
-                model=self.model,
-                reasoning_effort=reasoning,
-            )
-            proc = self.runner(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.timeout_sec,
-                env=build_codex_exec_env(self.base_env),
-            )
+            with codex_isolation_cwd(self.codex_isolated) as isolated_cwd:
+                cmd = self._build_codex_command(output_path=output_path, reasoning_effort=reasoning, isolated_cwd=isolated_cwd)
+                proc = self.runner(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=self.timeout_sec,
+                    env=build_codex_exec_env(self.base_env),
+                )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
             return {}
@@ -2405,21 +2456,17 @@ class SubscriptionLlmDraftProvider:
         reasoning = str(os.getenv(HUMANITY_X2_REWRITE_REASONING_ENV) or "xhigh").strip() or "xhigh"
         with tempfile.NamedTemporaryFile(prefix="mango_humanity_x2_rewrite_", suffix=".txt") as out_file:
             output_path = Path(out_file.name)
-            cmd = build_codex_exec_command(
-                output_path=output_path,
-                codex_bin=self.codex_bin,
-                model=model,
-                reasoning_effort=reasoning,
-            )
-            proc = self.runner(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.timeout_sec,
-                env=build_codex_exec_env(self.base_env),
-            )
+            with codex_isolation_cwd(self.codex_isolated) as isolated_cwd:
+                cmd = self._build_codex_command(output_path=output_path, model=model, reasoning_effort=reasoning, isolated_cwd=isolated_cwd)
+                proc = self.runner(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=self.timeout_sec,
+                    env=build_codex_exec_env(self.base_env),
+                )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
             return ""
@@ -2439,6 +2486,7 @@ class SubscriptionLlmDraftProvider:
                 "provider": "codex_exec",
                 "model": self.model,
                 "reasoning_effort": self.reasoning_effort,
+                "codex_isolated": self.codex_isolated,
                 "prompt": prompt_text,
                 "force_manager_only": force_manager_only,
             }
@@ -2470,21 +2518,17 @@ class SubscriptionLlmDraftProvider:
     def _run_once(self, prompt: str, *, force_manager_only: bool) -> SubscriptionDraftResult:
         with tempfile.NamedTemporaryFile(prefix="mango_draft_codex_", suffix=".json") as out_file:
             output_path = Path(out_file.name)
-            cmd = build_codex_exec_command(
-                output_path=output_path,
-                codex_bin=self.codex_bin,
-                model=self.model,
-                reasoning_effort=self.reasoning_effort,
-            )
-            proc = self.runner(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=self.timeout_sec,
-                env=build_codex_exec_env(self.base_env),
-            )
+            with codex_isolation_cwd(self.codex_isolated) as isolated_cwd:
+                cmd = self._build_codex_command(output_path=output_path, isolated_cwd=isolated_cwd)
+                proc = self.runner(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=self.timeout_sec,
+                    env=build_codex_exec_env(self.base_env),
+                )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
 
         if proc.returncode != 0:
@@ -2496,6 +2540,7 @@ class SubscriptionLlmDraftProvider:
 
         payload = extract_json_object(raw or proc.stdout or proc.stderr or "")
         result = normalize_subscription_draft_payload(payload, raw_response=raw)
+        result = replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
         if force_manager_only and result.route != "manager_only":
             result = replace(
                 result,
@@ -2587,22 +2632,50 @@ def build_codex_exec_command(
     codex_bin: str = "codex",
     model: str = DEFAULT_CODEX_MODEL,
     reasoning_effort: str = DEFAULT_CODEX_REASONING_EFFORT,
+    isolated: bool = False,
+    cwd: Optional[Path | str] = None,
 ) -> list[str]:
     cmd = [
         str(codex_bin or "codex").strip() or "codex",
+        "--ask-for-approval",
+        "never",
         "exec",
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--sandbox",
-        "read-only",
-        "--model",
-        str(model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL,
     ]
+    if isolated:
+        cmd.extend(["--ignore-user-config", "--ignore-rules"])
+    cmd.extend(["--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only"])
+    if cwd is not None:
+        cmd.extend(["-C", str(cwd)])
+    cmd.extend(["--model", str(model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL])
     reasoning = str(reasoning_effort or "").strip()
     if reasoning:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
     cmd.extend(["--output-last-message", str(output_path), "-"])
     return cmd
+
+
+@contextmanager
+def codex_isolation_cwd(enabled: bool):
+    if not enabled:
+        yield None
+        return
+    with tempfile.TemporaryDirectory(prefix="mango_bot_codex_empty_") as tmp_dir:
+        yield Path(tmp_dir)
+
+
+def _with_codex_exec_metadata(metadata: Mapping[str, Any], *, isolated: bool) -> dict[str, Any]:
+    current = dict(metadata or {})
+    existing = current.get("codex_exec")
+    codex_exec = dict(existing) if isinstance(existing, Mapping) else {}
+    codex_exec.update(
+        {
+            "isolated": bool(isolated),
+            "ignore_user_config": bool(isolated),
+            "ignore_rules": bool(isolated),
+        }
+    )
+    current["codex_exec"] = codex_exec
+    return current
 
 
 def build_codex_exec_env(base_env: Optional[Mapping[str, str]] = None, *, codex_home: Optional[Path | str] = None) -> dict[str, str]:
@@ -2618,6 +2691,8 @@ class CodexExecConfig:
     codex_bin: str = "codex"
     model: str = DEFAULT_CODEX_MODEL
     reasoning_effort: str = DEFAULT_CODEX_REASONING_EFFORT
+    isolated: bool = False
+    cwd: Optional[Path | str] = None
 
     def build_command(self, output_path: Path | str) -> list[str]:
         return build_codex_exec_command(
@@ -2625,6 +2700,8 @@ class CodexExecConfig:
             codex_bin=self.codex_bin,
             model=self.model,
             reasoning_effort=self.reasoning_effort,
+            isolated=self.isolated,
+            cwd=self.cwd,
         )
 
 
@@ -3031,6 +3108,9 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
     value, placeholder_removed = OUTPUT_SANITIZER_PLACEHOLDER_RE.subn(" ", value)
     if placeholder_removed:
         reasons.append("topic_placeholder")
+    value, raw_detail_removed = _sanitize_raw_detail_handoff_text(value)
+    if raw_detail_removed:
+        reasons.append("raw_detail_handoff")
 
     kept_lines: list[str] = []
     for line in value.splitlines() or [value]:
@@ -3065,6 +3145,41 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
     if value != raw and not reasons:
         reasons.append("normalized")
     return value, tuple(dict.fromkeys(reasons))
+
+
+def _sanitize_raw_detail_handoff_text(text: str) -> tuple[str, bool]:
+    changed = False
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal changed
+        replacement = _sanitize_raw_detail_handoff_match(match)
+        if replacement != match.group(0):
+            changed = True
+        return replacement
+
+    return OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE.sub(repl, str(text or "")), changed
+
+
+def _sanitize_raw_detail_handoff_match(match: re.Match[str]) -> str:
+    detail = next((str(item or "") for item in match.groups() if item), "")
+    if not _raw_detail_handoff_looks_like_question(detail):
+        return match.group(0)
+    return SAFE_FALLBACK_DRAFT_TEXT
+
+
+def _raw_detail_handoff_looks_like_question(detail: str) -> bool:
+    value = " ".join(str(detail or "").split())
+    low = value.casefold().replace("ё", "е")
+    if len(value) >= 55:
+        return True
+    return bool(
+        re.search(
+            r"\b(?:сможет|можно|есть|будет|получится|подойдет|подойд[её]т|оценить|сколько|когда|как|где)\s+ли\b|"
+            r"\b(?:сын|дочк|дочь|реб[её]н|школьник|ученик)\b|\?$",
+            low,
+            re.I,
+        )
+    )
 
 
 def _normalize_output_sanitizer_text(text: str) -> str:

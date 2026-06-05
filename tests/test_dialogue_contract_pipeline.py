@@ -9,6 +9,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     FactStore,
     Toggles,
     _avoid_repeating_text,
+    _ensure_estimate_uncertainty_marker,
     _safe_fallback_text,
     build_conversation,
     build_draft_prompt,
@@ -173,6 +174,96 @@ def test_level_a_free_number_gate_allows_travel_even_when_planner_says_pricing(m
     assert "Ориентировочно" in result.draft_text
     assert "Напиши клиенту полезный ответ" in prompts[0]
     assert "₽" not in result.draft_text
+
+
+def test_travel_compose_flag_estimates_lobnya_without_partial_yield_or_free_gate(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_PARTIAL_YIELD", raising=False)
+    monkeypatch.delenv("TELEGRAM_A_FREE_NUMBER_GATE", raising=False)
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+    prompts: list[str] = []
+
+    result = run_pipeline(
+        conversation=_conv("ориентировочно на электричке от Лобни сколько ехать?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=("prices.current",), store={"unpk": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "цена и дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "pricing",
+                "needed_fact_keys": ["prices.current"],
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda prompt: prompts.append(prompt)
+        or "От Лобни до Долгопрудного на электричке ориентировочно 20–30 минут, зависит от маршрута до площадки.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.is_estimate is True
+    assert result.estimate_applied is True
+    assert result.estimate_domain == "route_logistics"
+    assert "ориентировочно" in result.draft_text.casefold()
+    assert "20–30 минут" in result.draft_text
+    assert "₽" not in result.draft_text
+    assert "Разрешённый домен оценки" in prompts[0]
+    assert "ориентир по времени в минутах" in prompts[0]
+
+
+def test_travel_compose_flag_blocks_product_number_from_bad_estimate(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_PARTIAL_YIELD", raising=False)
+    monkeypatch.delenv("TELEGRAM_A_FREE_NUMBER_GATE", raising=False)
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("сколько ехать от Лобни до вас?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=("general.info",), store={"unpk": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "дорога от Лобни",
+                "answerability": "manager_only",
+                "planner_intent": "general_consultation",
+                "answer_mode": "confirmed_only",
+                "estimate_domain": "none",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно курс стоит 50 000 ₽." if "Разрешённый домен оценки" in prompt else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.is_estimate is False
+    assert result.estimate_applied is False
+    assert "50 000" not in result.draft_text
+    assert "₽" not in result.draft_text
+
+
+def test_travel_compose_flag_does_not_override_p0(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+
+    result = run_pipeline(
+        conversation=_conv("верните деньги, занятий нет; и сколько ехать от Лобни?"),
+        active_brand="unpk",
+        fact_store=FactStore(catalog=(), store={"unpk": {}}),
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги и дорога от Лобни",
+                "answerability": "manager_only",
+                "is_p0": True,
+                "p0_reason": "refund_claim",
+            }
+        ),
+        draft_fn=lambda prompt: "Ориентировочно дорога занимает 20 минут." if "Разрешённый домен оценки" in prompt else "",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "manager_only"
+    assert result.is_estimate is False
+    assert result.estimate_applied is False
+    assert "20 минут" not in result.draft_text
 
 
 def test_q_partial_yield_travel_reaches_estimate_before_manager_handoff(monkeypatch) -> None:
@@ -3737,6 +3828,24 @@ def test_safe_fallback_does_not_leak_third_person_question() -> None:
         assert "менеджер" in result.draft_text.casefold()
 
 
+def test_safe_fallback_uses_topic_label_for_long_rephrased_detail() -> None:
+    text = _safe_fallback_text(
+        AnswerContract(
+            active_brand="foton",
+            current_question="Сможет ли менеджер оценить, есть ли у сына пробелы по математике и подойдет ли курс?",
+            answerability="manager_only",
+        ),
+        facts={},
+        context={"active_brand": "foton"},
+    )
+    lowered = text.casefold().replace("ё", "е")
+
+    assert "менеджер" in lowered
+    assert "индивидуальную ситуацию ребёнка" in text
+    assert "Сможет ли менеджер" not in text
+    assert "есть ли у сына" not in lowered
+
+
 def test_humane_fallback_uses_warm_text_and_rotates_repeats() -> None:
     store = FactStore(catalog=("address.exact",), store={"unpk": {}})
     payload = {
@@ -4838,6 +4947,22 @@ def test_q_partial_yield_estimate_without_uncertainty_marker_gets_marker(monkeyp
     assert "ориентировочно" in result.draft_text.casefold()
     assert "40–50 минут" in result.draft_text
     assert "41 800" not in result.draft_text
+
+
+def test_travel_estimate_marker_only_for_contentful_estimate(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_A_TRAVEL_COMPOSE", "1")
+
+    estimate = _ensure_estimate_uncertainty_marker(
+        "На электричке дорога занимает 40–50 минут.",
+        context={},
+    )
+    courtesy = _ensure_estimate_uncertainty_marker("Пожалуйста!", context={})
+    closing = _ensure_estimate_uncertainty_marker("Рада была помочь!", context={})
+
+    assert estimate.startswith("Ориентировочно:")
+    assert "40–50 минут" in estimate
+    assert courtesy == "Пожалуйста!"
+    assert closing == "Рада была помочь!"
 
 
 def test_q_partial_yield_estimate_blocks_brand_leak(monkeypatch) -> None:

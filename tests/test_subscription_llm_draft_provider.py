@@ -8112,6 +8112,100 @@ def test_model_selling_signal_from_dialogue_contract_feeds_rules_engine_with_key
     assert "Подсказать удобный вариант" in routed.draft_text
 
 
+def test_phase2_objection_detector_feeds_price_objection_behind_flag() -> None:
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
+    question = "Серьёзная сумма для семьи, сколько стоит онлайн для 10 класса?"
+    context = _step2b1_context(brand="foton", intent="pricing", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_objection_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:001_pricing"),
+        question,
+        context,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_price_objection" in result.safety_flags
+    assert "6, 10 или 12 месяцев" in result.draft_text
+    assert result.metadata["rules_engine"]["selling"]["phase2_objection"] == "price"
+
+
+def test_phase2_objection_unpk_price_never_invents_bank_installment() -> None:
+    facts = {
+        "payment_options.bank_installment.absent": "УНПК: отдельной банковской рассрочки нет.",
+        "payment_options.client_safe_text.when_asked_about_installment": "УНПК: можно платить помесячно, за семестр или за год.",
+        "discounts.semester_payment": "УНПК: при оплате за семестр действует скидка 10%.",
+        "discounts.year_payment": "УНПК: при оплате за год действует скидка 14%.",
+    }
+    question = "Слишком дорого, можно растянуть оплату?"
+    context = _step2b1_context(brand="unpk", intent="payment_method", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_objection_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:002_payment_method"),
+        question,
+        context,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_price_objection" in result.safety_flags
+    assert "помесячно" in result.draft_text.casefold()
+    assert "10%" in result.draft_text
+    assert "14%" in result.draft_text
+    assert "рассроч" not in result.draft_text.casefold()
+    assert "долями" not in result.draft_text.casefold()
+    assert "фотон" not in result.draft_text.casefold()
+
+
+def test_phase2_objection_detector_never_precedes_p0_or_cross_brand() -> None:
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
+    p0_question = "Верните деньги, это слишком дорого"
+    p0_result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=p0_question, answerability="manager", keys=tuple(facts.keys()), is_p0=True),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+    p0_context = _step2b1_context(brand="foton", intent="pricing", question=p0_question, facts=facts)
+    p0_context["phase2_objection_enabled"] = True
+    p0_context["selling_mode"] = "det"
+
+    p0 = _apply_v2_guard_chain(p0_result, p0_question, p0_context)
+
+    cross_question = "В УНПК дешевле, чем у Фотона?"
+    cross_context = _step2b1_context(brand="foton", intent="pricing", question=cross_question, facts=facts)
+    cross_context["phase2_objection_enabled"] = True
+    cross_context["selling_mode"] = "det"
+    cross = _apply_v2_guard_chain(
+        _step2b1_result(question=cross_question, facts=facts, topic_id="theme:001_pricing"),
+        cross_question,
+        cross_context,
+    )
+
+    assert p0.route == "manager_only"
+    assert "rules_engine_selling_price_objection" not in p0.safety_flags
+    assert "6, 10 или 12 месяцев" not in p0.draft_text
+    assert "cross_brand_safe_template_applied" in cross.safety_flags
+    assert "rules_engine_selling_price_objection" not in cross.safety_flags
+    assert "29 750" not in cross.draft_text
+
+
 def test_a_thread_context_carries_only_current_selling_slots_without_brand_override() -> None:
     contract = {
         "current_question": "А очно тогда сколько?",

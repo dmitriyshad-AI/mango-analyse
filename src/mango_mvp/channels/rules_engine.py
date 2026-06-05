@@ -1861,7 +1861,10 @@ def _apply_selling_det_variants(
     flags = list(outcome.flags)
     applied: list[str] = []
 
-    if str(selling.get("objection") or "none") == "price" and rule.rule_id in {"installment", "discount", "price"}:
+    objection = str(selling.get("objection") or "none").strip().casefold()
+    phase2_objection = str(selling.get("phase2_objection") or "none").strip().casefold()
+
+    if objection == "price" and rule.rule_id in {"installment", "discount", "price"}:
         objection_text = _selling_price_objection_text(
             rule_id=rule.rule_id,
             brand=brand,
@@ -1872,6 +1875,14 @@ def _apply_selling_det_variants(
             text = objection_text
             flags.append("rules_engine_selling_price_objection")
             applied.append("price_objection")
+
+    if phase2_objection in {"think", "compare", "format", "distance"}:
+        suffix, suffix_facts = _phase2_objection_step(phase2_objection, all_facts, active_brand=brand)
+        appended = _append_selling_suffix(text, source, suffix, suffix_facts)
+        if appended is not None:
+            text, source = appended
+            flags.append(f"rules_engine_phase2_objection_{phase2_objection}")
+            applied.append(f"phase2_objection_{phase2_objection}")
 
     if bool(selling.get("exit_signal")):
         suffix, suffix_facts = _selling_exit_step(all_facts, active_brand=brand)
@@ -1936,10 +1947,11 @@ def _apply_selling_det_variants(
     text = _avoid_exact_rule_repeat(text, context)
     metadata = {
         **dict(outcome.metadata),
-        "selling": {
-            "applied": applied,
-            "objection": str(selling.get("objection") or "none"),
-            "exit_signal": bool(selling.get("exit_signal")),
+            "selling": {
+                "applied": applied,
+                "objection": str(selling.get("objection") or "none"),
+                "phase2_objection": str(selling.get("phase2_objection") or "none"),
+                "exit_signal": bool(selling.get("exit_signal")),
             "anxiety": bool(selling.get("anxiety")),
             "unmet_need": str(selling.get("unmet_need") or "")[:120],
             "readiness": str(selling.get("readiness") or "exploring"),
@@ -2515,6 +2527,44 @@ def _month_options_from_fact(fact: str) -> str:
 def _first_percent(text: str) -> str:
     match = re.search(r"\b(\d{1,2})\s*%", str(text or ""))
     return f"{match.group(1)}%" if match else ""
+
+
+def _phase2_objection_step(objection: str, facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    if objection == "think":
+        key, fact = _clean_selling_support_fact(
+            facts,
+            active_brand,
+            ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
+        )
+        if fact:
+            return (
+                f"Спокойно подумайте; если поможет принять решение, можно начать с подтверждённого пробного шага: {_short_sentence(fact)}",
+                {key or "rules_engine.phase2_objection.think_trial": fact},
+            )
+        return "Спокойно подумайте; если нужно, я коротко подскажу, что сравнить перед решением.", {}
+    if objection == "compare":
+        return (
+            "Сравнивать нормально; я могу сориентировать только по подтверждённым условиям этого центра, без сравнения с чужими программами.",
+            {},
+        )
+    if objection == "format":
+        return (
+            "Если сомневаетесь в формате, можно отталкиваться от того, как ребёнку удобнее заниматься; конкретный вариант менеджер поможет подобрать по группе.",
+            {},
+        )
+    if objection == "distance":
+        key, fact = _clean_selling_support_fact(
+            facts,
+            active_brand,
+            ("online", "онлайн", "дистанц", "формат"),
+        )
+        if fact:
+            return (
+                f"Если дорога неудобна, можно рассмотреть подтверждённый онлайн-вариант: {_short_sentence(fact)}",
+                {key or "rules_engine.phase2_objection.distance_online": fact},
+            )
+        return "Если дорога неудобна, менеджер подберёт самый практичный формат по доступным группам.", {}
+    return "", {}
 
 
 _BAD_SELLING_SUPPORT_FACT_RE = re.compile(

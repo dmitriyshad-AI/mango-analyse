@@ -1863,6 +1863,7 @@ def _apply_selling_det_variants(
 
     objection = str(selling.get("objection") or "none").strip().casefold()
     phase2_objection = str(selling.get("phase2_objection") or "none").strip().casefold()
+    phase2_anxiety = str(selling.get("phase2_anxiety") or "none").strip().casefold()
 
     if objection == "price" and rule.rule_id in {"installment", "discount", "price"}:
         objection_text = _selling_price_objection_text(
@@ -1883,6 +1884,14 @@ def _apply_selling_det_variants(
             text, source = appended
             flags.append(f"rules_engine_phase2_objection_{phase2_objection}")
             applied.append(f"phase2_objection_{phase2_objection}")
+
+    if phase2_anxiety in {"capability", "late_start", "level_fit"}:
+        suffix, suffix_facts = _phase2_anxiety_step(phase2_anxiety, all_facts, active_brand=brand)
+        appended = _append_selling_suffix(text, source, suffix, suffix_facts)
+        if appended is not None:
+            text, source = appended
+            flags.append(f"rules_engine_phase2_anxiety_{phase2_anxiety}")
+            applied.append(f"phase2_anxiety_{phase2_anxiety}")
 
     if bool(selling.get("exit_signal")):
         suffix, suffix_facts = _selling_exit_step(all_facts, active_brand=brand)
@@ -1952,8 +1961,9 @@ def _apply_selling_det_variants(
                 "objection": str(selling.get("objection") or "none"),
                 "phase2_objection": str(selling.get("phase2_objection") or "none"),
                 "exit_signal": bool(selling.get("exit_signal")),
-            "anxiety": bool(selling.get("anxiety")),
-            "unmet_need": str(selling.get("unmet_need") or "")[:120],
+                "anxiety": bool(selling.get("anxiety")),
+                "phase2_anxiety": str(selling.get("phase2_anxiety") or "none"),
+                "unmet_need": str(selling.get("unmet_need") or "")[:120],
             "readiness": str(selling.get("readiness") or "exploring"),
             "proactive": {
                 "enabled": _proactive_enabled(context),
@@ -2564,6 +2574,40 @@ def _phase2_objection_step(objection: str, facts: Mapping[str, str], *, active_b
                 {key or "rules_engine.phase2_objection.distance_online": fact},
             )
         return "Если дорога неудобна, менеджер подберёт самый практичный формат по доступным группам.", {}
+    return "", {}
+
+
+def _phase2_anxiety_step(kind: str, facts: Mapping[str, str], *, active_brand: str) -> tuple[str, Mapping[str, str]]:
+    if kind in {"capability", "level_fit"}:
+        key, fact = _clean_selling_support_fact(
+            facts,
+            active_brand,
+            ("trial", "пробн", "фрагмент занятия", "фрагмент урок", "online_fragment", "trial_class"),
+        )
+        if fact:
+            return (
+                "Понимаю тревогу. По конкретному ребёнку не буду обещать заочно; пробный шаг помогает спокойно сверить уровень.",
+                {},
+            )
+        return (
+            "Понимаю тревогу. По конкретному ребёнку лучше не обещать заочно; менеджер или преподаватель поможет сверить уровень и нагрузку.",
+            {},
+        )
+    if kind == "late_start":
+        key, fact = _clean_selling_support_fact(
+            facts,
+            active_brand,
+            ("start", "старт", "начал", "идёт набор", "идет набор", "запис"),
+        )
+        if fact:
+            return (
+                f"Не поздно уточнить по факту: {_short_sentence(fact)} Дальше менеджер поможет сверить группу по уровню.",
+                {key or "rules_engine.phase2_anxiety.late_start": fact},
+            )
+        return (
+            "Не буду обещать заочно, что старт точно подойдёт; менеджер поможет сверить группу и уровень без угадывания.",
+            {},
+        )
     return "", {}
 
 

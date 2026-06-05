@@ -56,7 +56,7 @@ from mango_mvp.channels.draft_prompt_builder import (
     should_force_manager_only,
 )
 from mango_mvp.insights.sanitizers import sanitize_answer
-from mango_mvp.insights.phase2_detectors import detect_objection
+from mango_mvp.insights.phase2_detectors import detect_anxiety, detect_objection
 from mango_mvp.insights.tone_score import score_tone
 from mango_mvp.question_catalog.classifier import load_valid_theme_and_service_ids
 
@@ -85,6 +85,7 @@ A_RICH_FORMAT_ENV = "TELEGRAM_A_RICH_FORMAT"
 OUTPUT_SANITIZER_ENV = "TELEGRAM_OUTPUT_SANITIZER"
 PH2_TONE_ENV = "TELEGRAM_PH2_TONE"
 PH2_OBJECTION_ENV = "TELEGRAM_PH2_OBJECTION"
+PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
@@ -1350,6 +1351,7 @@ def _apply_migrated_rules_engine(
         or ""
     )
     phase2_objection = _phase2_objection_signal(direct_question, context)
+    phase2_anxiety = _phase2_anxiety_signal(direct_question, context)
     enriched_plan = {
         **dict(plan),
         "primary_intent": intent or str(plan.get("primary_intent") or ""),
@@ -1357,7 +1359,12 @@ def _apply_migrated_rules_engine(
         "planner_subvariant": str(contract.get("planner_subvariant") or ""),
         "planner_slots": dict(contract.get("planner_slots") or {}) if isinstance(contract.get("planner_slots"), Mapping) else {},
         "planner_confidence": _float_value(contract.get("planner_confidence")),
-        "selling": _merged_selling_signals(contract.get("selling"), plan.get("selling"), phase2_objection=phase2_objection),
+        "selling": _merged_selling_signals(
+            contract.get("selling"),
+            plan.get("selling"),
+            phase2_objection=phase2_objection,
+            phase2_anxiety=phase2_anxiety,
+        ),
         "rules_engine_intent_source": str(shadow.get("selected_source") or ""),
         "direct_question": direct_question,
     }
@@ -1379,7 +1386,12 @@ def _apply_migrated_rules_engine(
                     **dict(plan),
                     "primary_intent": fallback_intent,
                     "direct_question": str(contract.get("current_question") or client_message or ""),
-                    "selling": _merged_selling_signals(contract.get("selling"), plan.get("selling"), phase2_objection=phase2_objection),
+                    "selling": _merged_selling_signals(
+                        contract.get("selling"),
+                        plan.get("selling"),
+                        phase2_objection=phase2_objection,
+                        phase2_anxiety=phase2_anxiety,
+                    ),
                 }
                 outcome = apply_migrated_domain_rule(fallback_rule, plan=fallback_plan, facts=facts, context=rule_context)
     if outcome is None:
@@ -1509,17 +1521,26 @@ def _phase2_objection_signal(text: str, context: Optional[Mapping[str, Any]]) ->
     return detected if detected in {"price", "think", "compare", "format", "distance"} else None
 
 
+def _phase2_anxiety_signal(text: str, context: Optional[Mapping[str, Any]]) -> str | None:
+    if not _phase2_anxiety_enabled(context):
+        return None
+    detected = detect_anxiety(text)
+    return detected if detected in {"capability", "late_start", "level_fit"} else None
+
+
 def _merged_selling_signals(
     model_value: object,
     keyword_value: object,
     *,
     phase2_objection: str | None = None,
+    phase2_anxiety: str | None = None,
 ) -> Mapping[str, Any]:
     model = model_value if isinstance(model_value, Mapping) else {}
     keyword = keyword_value if isinstance(keyword_value, Mapping) else {}
     model_objection = str(model.get("objection") or "none").strip().casefold()
     keyword_objection = str(keyword.get("objection") or "none").strip().casefold()
     detector_objection = str(phase2_objection or "none").strip().casefold()
+    detector_anxiety = str(phase2_anxiety or "none").strip().casefold()
     allowed_objections = {"price", "think", "compare", "format", "distance"}
     objection = "none"
     for value in (model_objection, keyword_objection, detector_objection):
@@ -1537,7 +1558,8 @@ def _merged_selling_signals(
         "objection": objection,
         "phase2_objection": detector_objection if detector_objection in allowed_objections else "none",
         "exit_signal": bool(model.get("exit_signal")) or bool(keyword.get("exit_signal")),
-        "anxiety": bool(model.get("anxiety")) or bool(keyword.get("anxiety")),
+        "anxiety": bool(model.get("anxiety")) or bool(keyword.get("anxiety")) or detector_anxiety in {"capability", "late_start", "level_fit"},
+        "phase2_anxiety": detector_anxiety if detector_anxiety in {"capability", "late_start", "level_fit"} else "none",
         "unmet_need": " ".join(unmet_need.split())[:120],
         "readiness": model_readiness if model_readiness != "exploring" else keyword_readiness,
     }
@@ -9179,6 +9201,14 @@ def _phase2_objection_enabled(context: Optional[Mapping[str, Any]] = None) -> bo
             if key in context:
                 return _truthy_value(context.get(key))
     return _truthy_value(os.getenv(PH2_OBJECTION_ENV))
+
+
+def _phase2_anxiety_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (PH2_ANXIETY_ENV, "phase2_anxiety_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(PH2_ANXIETY_ENV))
 
 
 def _answer_quality_llm_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

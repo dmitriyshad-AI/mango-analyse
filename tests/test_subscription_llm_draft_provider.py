@@ -8206,6 +8206,83 @@ def test_phase2_objection_detector_never_precedes_p0_or_cross_brand() -> None:
     assert "29 750" not in cross.draft_text
 
 
+def test_phase2_anxiety_adds_hedged_trial_step_without_child_diagnosis() -> None:
+    facts = {
+        "trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное.",
+    }
+    question = "Боюсь, дочка не потянет, можно пробное?"
+    context = _step2b1_context(brand="foton", intent="trial", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_anxiety_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:023_trial_class"),
+        question,
+        context,
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_phase2_anxiety_capability" in result.safety_flags
+    assert "понимаю тревогу" in text
+    assert "не буду обещать заочно" in text
+    assert "фрагмент занятия" in text
+    assert "точно справ" not in text
+    assert not text.startswith("да, справ")
+
+
+def test_phase2_anxiety_level_fit_never_confidently_assesses_child() -> None:
+    facts = {
+        "trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное.",
+    }
+    question = "Справится ли дочка по уровню, можно фрагмент?"
+    context = _step2b1_context(brand="foton", intent="trial", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_anxiety_enabled"] = True
+
+    result = _apply_v2_guard_chain(
+        _step2b1_result(question=question, facts=facts, topic_id="theme:023_trial_class"),
+        question,
+        context,
+    )
+
+    text = result.draft_text.casefold()
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_phase2_anxiety_level_fit" in result.safety_flags
+    assert "не буду обещать заочно" in text
+    assert "да, справится" not in text
+    assert "точно подойд" not in text
+
+
+def test_phase2_anxiety_never_precedes_p0() -> None:
+    facts = {
+        "trial.foton.online_fragment": "Фотон: по онлайн-формату можно прислать фрагмент занятия, оформление дистанционное.",
+    }
+    question = "Верните деньги, ребёнок не справится"
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:009_refund",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "contract": _route_shield_contract(question=question, answerability="manager", keys=tuple(facts.keys()), is_p0=True),
+                "retrieved_facts": facts,
+                "retrieved_fact_keys": list(facts),
+            }
+        },
+        safety_flags=("high_risk_manager_only",),
+    )
+    context = _step2b1_context(brand="foton", intent="trial", question=question, facts=facts)
+    context["selling_mode"] = "det"
+    context["phase2_anxiety_enabled"] = True
+
+    routed = _apply_v2_guard_chain(result, question, context)
+
+    assert routed.route == "manager_only"
+    assert not any(flag.startswith("rules_engine_phase2_anxiety") for flag in routed.safety_flags)
+    assert "фрагмент занятия" not in routed.draft_text.casefold()
+
+
 def test_a_thread_context_carries_only_current_selling_slots_without_brand_override() -> None:
     contract = {
         "current_question": "А очно тогда сколько?",

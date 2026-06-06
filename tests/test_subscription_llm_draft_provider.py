@@ -8685,6 +8685,10 @@ def test_semantic_output_verifier_keeps_false_cases_and_prompt_controls() -> Non
     )
     assert "relation_to_base" in prompt
     assert "каноничную фразу разделения брендов" in prompt
+    assert "Очный курс физики есть" in prompt
+    assert "Олимпиадная физика есть онлайн и очно" in prompt
+    assert "Забронирую место на Сретенке" in prompt
+    assert "порядок записи не подтверждён" in prompt
 
     base = _semantic_verifier_base_result("Есть базовый и продвинутый уровень.")
     checked = apply_semantic_output_verifier(

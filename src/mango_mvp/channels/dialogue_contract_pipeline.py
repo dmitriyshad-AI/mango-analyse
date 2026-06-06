@@ -28,7 +28,7 @@ from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
-from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, soft_codes_from_text
+from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, is_benign_hypothetical_refund, soft_codes_from_text
 from mango_mvp.insights.sanitizers import sanitize_answer
 
 
@@ -882,6 +882,28 @@ def _clean_planner_slots(raw: object) -> Mapping[str, str]:
     return result
 
 
+def _context_with_conversation_messages(
+    context: Mapping[str, Any] | None,
+    conversation: Sequence[Mapping[str, str]],
+) -> Mapping[str, Any] | None:
+    if not conversation:
+        return context
+    messages = [
+        f"{str(item.get('role') or '').strip()}: {str(item.get('text') or '').strip()}"
+        for item in conversation[-8:]
+        if str(item.get("text") or "").strip()
+    ]
+    if not messages:
+        return context
+    if not isinstance(context, MappingABC):
+        return {"recent_messages": messages}
+    if isinstance(context.get("recent_messages"), SequenceABC) and not isinstance(context.get("recent_messages"), (str, bytes)):
+        return context
+    enriched = dict(context)
+    enriched["recent_messages"] = messages
+    return enriched
+
+
 def understand(
     *,
     conversation: Sequence[Mapping[str, str]],
@@ -891,7 +913,8 @@ def understand(
     context: Mapping[str, Any] | None = None,
 ) -> AnswerContract:
     last_text = str(conversation[-1].get("text") or "") if conversation else ""
-    pregate = p0_pre_gate(last_text, context=context)
+    pregate_context = _context_with_conversation_messages(context, conversation)
+    pregate = p0_pre_gate(last_text, context=pregate_context)
     if understand_fn is None:
         return AnswerContract(
             active_brand=_normalize_brand(active_brand),
@@ -1387,9 +1410,13 @@ def _key_has_any_topic_alias(key: str, aliases: Sequence[str]) -> bool:
     return False
 
 
-def _has_only_benign_refund_latch(context: Mapping[str, Any] | None) -> bool:
+_ACTIVE_HARD_P0_LATCH_CODES = {"payment_dispute", "refund_claim", "legal", "legal_threat", "complaint", "p0"}
+_P0_LATCH_REASON_PRIORITY = ("payment_dispute", "refund_claim", "refund", "legal", "legal_threat", "complaint", "p0")
+
+
+def _p0_latch_sources(context: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
     if not isinstance(context, MappingABC):
-        return False
+        return []
     sources: list[Mapping[str, Any]] = []
     for key in ("dialogue_memory_view", "dialogue_memory"):
         value = context.get(key)
@@ -1398,20 +1425,84 @@ def _has_only_benign_refund_latch(context: Mapping[str, Any] | None) -> bool:
     p0_latch = context.get("p0_latch")
     if isinstance(p0_latch, MappingABC):
         sources.append({"p0_latch": p0_latch})
-    hard_codes = {"payment_dispute", "legal", "legal_threat", "complaint"}
-    saw_refund_latch = False
-    for source in sources:
+    return sources
+
+
+def _latch_is_active(latch: Mapping[str, Any]) -> bool:
+    if "active" in latch:
+        return bool(latch.get("active"))
+    return bool(latch.get("codes") or latch.get("primary_risk"))
+
+
+def _first_p0_latch_reason(codes: set[str], *, default: str = "p0") -> str:
+    for code in _P0_LATCH_REASON_PRIORITY:
+        if code in codes:
+            return code
+    return next(iter(codes), default)
+
+
+def _has_presale_refund_evidence(context: Mapping[str, Any] | None, *, current_text: str = "") -> bool:
+    if is_benign_hypothetical_refund(current_text):
+        return True
+    if not isinstance(context, MappingABC):
+        return False
+    plan = context.get("conversation_intent_plan")
+    if isinstance(plan, MappingABC) and str(plan.get("refund_frame") or "") == "presale_policy":
+        return True
+    for source in _p0_latch_sources(context):
+        if str(source.get("refund_frame") or "") == "presale_policy" or bool(source.get("semantic_non_p0")):
+            return True
+    recent = context.get("recent_messages")
+    if isinstance(recent, SequenceABC) and not isinstance(recent, (str, bytes)):
+        for item in recent:
+            if is_benign_hypothetical_refund(str(item or "")):
+                return True
+    return False
+
+
+def _active_hard_p0_latch_reason(context: Mapping[str, Any] | None, *, current_text: str = "") -> str:
+    presale_evidence = _has_presale_refund_evidence(context, current_text=current_text)
+    for source in _p0_latch_sources(context):
         latch = source.get("p0_latch")
-        if isinstance(latch, MappingABC):
+        if isinstance(latch, MappingABC) and _latch_is_active(latch):
+            codes = {str(item or "").strip() for item in (latch.get("codes") or ()) if str(item or "").strip()}
+            primary = str(latch.get("primary_risk") or "").strip()
+            if bool(latch.get("had_hard_p0_claim")):
+                return primary or _first_p0_latch_reason(codes)
+            hard = codes.intersection(_ACTIVE_HARD_P0_LATCH_CODES)
+            if hard:
+                return _first_p0_latch_reason(hard)
+            if primary in _ACTIVE_HARD_P0_LATCH_CODES:
+                return primary
+            if ("refund" in codes or primary == "refund") and not presale_evidence:
+                return "refund"
+        risk_flags = {str(item or "").strip() for item in (source.get("risk_flags") or ()) if str(item or "").strip()}
+        hard_flags = risk_flags.intersection(_ACTIVE_HARD_P0_LATCH_CODES)
+        if hard_flags:
+            return _first_p0_latch_reason(hard_flags)
+        if "refund" in risk_flags and not presale_evidence:
+            return "refund"
+    return ""
+
+
+def _has_only_benign_refund_latch(context: Mapping[str, Any] | None, *, current_text: str = "") -> bool:
+    if not isinstance(context, MappingABC) or not _has_presale_refund_evidence(context, current_text=current_text):
+        return False
+    if _active_hard_p0_latch_reason(context, current_text=current_text):
+        return False
+    saw_refund_latch = False
+    for source in _p0_latch_sources(context):
+        latch = source.get("p0_latch")
+        if isinstance(latch, MappingABC) and _latch_is_active(latch):
             if bool(latch.get("had_hard_p0_claim")):
                 return False
             codes = {str(item or "").strip() for item in (latch.get("codes") or ()) if str(item or "").strip()}
-            if codes.intersection(hard_codes):
+            if codes.intersection(_ACTIVE_HARD_P0_LATCH_CODES):
                 return False
             if "refund" in codes or str(latch.get("primary_risk") or "").strip() == "refund":
                 saw_refund_latch = True
         risk_flags = {str(item or "").strip() for item in (source.get("risk_flags") or ()) if str(item or "").strip()}
-        if risk_flags.intersection(hard_codes):
+        if risk_flags.intersection(_ACTIVE_HARD_P0_LATCH_CODES):
             return False
     return saw_refund_latch
 
@@ -1425,12 +1516,16 @@ def p0_pre_gate(text: str, *, context: Mapping[str, Any] | None = None) -> str |
     soft_codes = soft_codes_from_text(text)
     if soft_codes:
         trace_event(context, "p0_pre_gate", {"source": "regex_soft", "codes": list(soft_codes), "result": ""})
+    latch_reason = _active_hard_p0_latch_reason(context, current_text=text)
+    if latch_reason:
+        trace_event(context, "p0_pre_gate", {"source": "active_p0_latch", "codes": [latch_reason], "result": latch_reason})
+        return latch_reason
     decision = classify_answer_safety(client_message=text, context=context)
     if decision.p0_required:
         decision_codes = {str(item or "").strip() for item in (decision.risk_codes or ()) if str(item or "").strip()}
         if (
             (decision.primary_risk == "refund" or decision_codes == {"refund"})
-            and _has_only_benign_refund_latch(context)
+            and _has_only_benign_refund_latch(context, current_text=text)
             and not hard_codes_from_text(text)
         ):
             trace_event(
@@ -2694,7 +2789,9 @@ def run_pipeline(
     toggles = toggles or Toggles()
     client_words = str(conversation[-1].get("text") or "") if conversation else ""
     previous_bot_texts = [str(item.get("text") or "") for item in conversation if str(item.get("role") or "") == "bot"]
-    had_hard_p0_claim = _dialogue_had_hard_p0_claim(context)
+    p0_context = _context_with_conversation_messages(context, conversation)
+    had_hard_p0_claim = _dialogue_had_hard_p0_claim(p0_context)
+    active_hard_p0_latch_reason = _active_hard_p0_latch_reason(p0_context, current_text=client_words)
     with trace_span(context, "understand", {"client_message": client_words, "active_brand": active_brand}) as trace:
         contract = understand(
             conversation=conversation,
@@ -2725,7 +2822,7 @@ def run_pipeline(
         if _asks_refund_policy(contract) and not _current_refund_dispute_signal(
             client_words=client_words,
             contract=contract,
-        ) and not had_hard_p0_claim:
+        ) and not had_hard_p0_claim and not active_hard_p0_latch_reason:
             contract = replace(contract, is_p0=False, p0_reason="", p0_source="", answerability="answer_self")
         else:
             text = _p0_handoff_text(contract, conversation=conversation)

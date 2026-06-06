@@ -1520,6 +1520,48 @@ def test_benign_refund_latch_does_not_stick_to_next_harmless_followup() -> None:
     assert "29 750" in result.draft_text
 
 
+def test_active_refund_latch_without_presale_evidence_keeps_followup_manager_only() -> None:
+    store = _refund_store()
+    context = {
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+                "had_hard_p0_claim": False,
+            },
+            "risk_flags": ["refund"],
+        }
+    }
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "деньги списали, вопрос не решён"},
+            {"role": "bot", "text": "Передам вопрос ответственному сотруднику."},
+            {"role": "client", "text": "срочно, деньги списали"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        context=context,
+        understand_fn=_understanding(
+            {
+                "current_question": "срочно, деньги списали",
+                "needed_fact_keys": ["refund_policy.current"],
+                "answerability": "answer_self",
+                "is_p0": False,
+            }
+        ),
+        draft_fn=lambda _prompt: "При досрочном отказе возвращается остаток неистраченных средств.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        toggles=Toggles(warmth_mode="all_eligible"),
+    )
+
+    assert result.route == "manager_only"
+    assert result.manager_only
+    assert result.contract.is_p0
+    assert result.fallback_reason == "p0"
+    assert "остаток неистраченных средств" not in result.draft_text.casefold()
+
+
 def test_presale_refund_thread_escalates_on_real_refund_claim_turn() -> None:
     conversation = (
         {"role": "client", "text": "если передумаю до начала занятий, деньги вернут?"},
@@ -6505,6 +6547,19 @@ def test_p0_pre_gate_keeps_explicit_presale_refund_followup_non_p0_with_refund_l
 
     assert p0_pre_gate("В целом, без договора, просто спрашиваю: если передумаем, вернут остаток?", context=context) is None
     assert p0_pre_gate("Я оплатил информатику, занятий нет, верните деньги.", context=context) is not None
+
+    active_refund_context = {
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+                "had_hard_p0_claim": False,
+            },
+            "risk_flags": ["refund"],
+        },
+    }
+    assert p0_pre_gate("срочно, деньги списали", context=active_refund_context) == "refund"
 
 
 def test_memory_topic_augment_recovers_elliptic_online_question_fact() -> None:

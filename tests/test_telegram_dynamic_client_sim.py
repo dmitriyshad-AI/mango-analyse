@@ -139,6 +139,9 @@ def test_judge_prompt_marks_metadata_as_internal():
     assert "fact:format" in prompt
     assert "verified_safe_template: Фотон" not in prompt
     assert "Клиент видел ответ бота" in prompt
+    assert "violated_gates ОБЯЗАТЕЛЬНО" in prompt
+    assert "fabrication, brand_leak, p0_mishandled, made_a_promise, internal_leak, revealed_ai" in prompt
+    assert "human_tone_score_0_100 не оценивай" in prompt
 
 
 def test_v2_retrieved_facts_are_preferred_for_judge():
@@ -231,6 +234,7 @@ def test_normalize_judge_result_does_not_count_empty_violations_as_hard_gate():
     assert result["hard_gates_passed"] is True
     assert result["violated_gates"] == []
     assert result["verdict"] == "PASS_WITH_NOTES"
+    assert "human_tone_score_0_100" not in result
 
 
 def test_normalize_judge_result_violated_gate_forces_fail():
@@ -248,6 +252,7 @@ def test_normalize_judge_result_violated_gate_forces_fail():
     assert result["hard_gates_passed"] is False
     assert result["violated_gates"] == ["fabrication"]
     assert result["verdict"] == "FAIL"
+    assert "human_tone_score_0_100" not in result
 
 
 def test_normalize_judge_result_fail_hard_class_fills_consistency_fields():
@@ -268,6 +273,41 @@ def test_normalize_judge_result_fail_hard_class_fills_consistency_fields():
     assert result["hard_gates_passed"] is False
     assert result["violated_gates"] == ["fabrication"]
     assert result["first_failing_turn"] == 1
+    assert "human_tone_score_0_100" not in result
+
+
+def test_normalize_judge_result_infers_named_gate_from_rationale_without_verdict_change():
+    result = sim.normalize_judge_result(
+        {
+            "verdict": "FAIL",
+            "hard_gates_passed": True,
+            "violated_gates": ["judge_fail_unspecified"],
+            "rationale": "Бот выдумал цену: такой суммы нет в базе подтверждённых фактов.",
+            "first_failing_turn": None,
+        },
+        dialog_id="old_run_unspecified",
+        brand="foton",
+    )
+
+    assert result["verdict"] == "FAIL"
+    assert result["hard_gates_passed"] is False
+    assert result["violated_gates"] == ["fabrication"]
+    assert result["first_failing_turn"] == 1
+
+
+def test_normalize_judge_result_normalizes_known_gate_aliases():
+    result = sim.normalize_judge_result(
+        {
+            "verdict": "FAIL",
+            "violated_gates": ["p0_not_to_manager", "brand_mix"],
+            "first_failing_turn": 2,
+        },
+        dialog_id="aliases",
+        brand="unpk",
+    )
+
+    assert result["violated_gates"] == ["p0_mishandled", "brand_leak"]
+    assert result["verdict"] == "FAIL"
 
 
 def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch):
@@ -1014,7 +1054,9 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
     assert summary["soft_flags"]["ignored_question"] == 1
     assert summary["metrics_intervals"]["dialog_pass_rate"]["level"] == "dialog"
     assert summary["metrics_intervals"]["send_unedited_rate"]["level"] == "turn"
-    assert summary["metrics_intervals"]["human_tone_score"]["mean"] == 72.0
+    assert "human_tone_score" not in summary["metrics_intervals"]
+    assert "avg_human_tone_score" not in summary["totals"]
+    assert summary["tone_metric"]["turns_count"] == 2
     assert "needs_second_run" in summary
 
 

@@ -24,6 +24,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     build_conversation as build_dialogue_contract_conversation,
     build_fact_store as build_dialogue_contract_fact_store,
     check_claim_faithfulness as check_dialogue_contract_faithfulness,
+    _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
     concrete_anchors as dialogue_contract_concrete_anchors,
     _established_topic_from_context as dialogue_contract_established_topic_from_context,
     new_concrete_anchors as dialogue_contract_new_concrete_anchors,
@@ -90,8 +91,15 @@ PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 SEMANTIC_DIAGNOSIS_GUARD_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD"
 SEMANTIC_DIAGNOSIS_MODEL_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_MODEL"
 SEMANTIC_DIAGNOSIS_REASONING_ENV = "TELEGRAM_SEMANTIC_DIAGNOSIS_REASONING"
+SEMANTIC_OUTPUT_VERIFIER_ENV = "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"
+SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV = "TELEGRAM_SEMANTIC_VERIFIER_MODEL"
+SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV = "TELEGRAM_SEMANTIC_VERIFIER_REASONING"
+SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV = "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC"
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
+SEMANTIC_OUTPUT_VERIFIER_SCHEMA_VERSION = "semantic_output_verifier_v1_2026_06_06"
+SEMANTIC_VERIFIER_DOWNGRADE_REASON = "semantic_verifier_downgrade"
+SEMANTIC_VERIFIER_UNAVAILABLE_REASON = "semantic_verifier_unavailable"
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 CONCRETE_FACT_RE = re.compile(
@@ -516,6 +524,9 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "proactive_pii_echo": "block",
     "proactive_too_many_questions": "downgrade",
     "proactive_emoji_overuse": "downgrade",
+    "derived_product_claim": "downgrade_keep_text",
+    "individual_diagnosis": "downgrade_keep_text",
+    "invented_generalization": "annotate",
 }
 ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for_more", "manager_only"}
 BASE_SAFETY_FLAGS = ("manager_approval_required", "no_auto_send")
@@ -1959,15 +1970,23 @@ class SubscriptionLlmDraftProvider:
             )
             toned = apply_phase2_tone_layer(rewritten, client_message=client_message, context=context)
             proactive = apply_a2_proactive_layer(toned, client_message=client_message, context=context)
-            diagnosed = apply_semantic_diagnosis_guard(
+            semantic_checked = apply_semantic_output_verifier(
                 proactive,
                 client_message=client_message,
                 context=context,
-                classifier_fn=self._semantic_diagnosis_guard_runner
-                if _semantic_diagnosis_guard_enabled(context)
-                else None,
+                verifier_fn=self._semantic_output_verifier_runner,
+                regen_fn=self._semantic_output_regen_runner,
             )
-            return apply_authoritative_output_gate(diagnosed, client_message=client_message, context=context)
+            if not _semantic_output_verifier_enabled(context):
+                semantic_checked = apply_semantic_diagnosis_guard(
+                    semantic_checked,
+                    client_message=client_message,
+                    context=context,
+                    classifier_fn=self._semantic_diagnosis_guard_runner
+                    if _semantic_diagnosis_guard_enabled(context)
+                    else None,
+                )
+            return apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
         else:
             prompt = build_draft_prompt(client_message, context=context)
             result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
@@ -2011,14 +2030,22 @@ class SubscriptionLlmDraftProvider:
         )
         result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
-        result = apply_semantic_diagnosis_guard(
+        result = apply_semantic_output_verifier(
             result,
             client_message=client_message,
             context=context,
-            classifier_fn=self._semantic_diagnosis_guard_runner
-            if _semantic_diagnosis_guard_enabled(context)
-            else None,
+            verifier_fn=self._semantic_output_verifier_runner,
+            regen_fn=self._semantic_output_regen_runner,
         )
+        if not _semantic_output_verifier_enabled(context):
+            result = apply_semantic_diagnosis_guard(
+                result,
+                client_message=client_message,
+                context=context,
+                classifier_fn=self._semantic_diagnosis_guard_runner
+                if _semantic_diagnosis_guard_enabled(context)
+                else None,
+            )
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
     def _build_dialogue_contract_pipeline_draft(
@@ -2192,6 +2219,30 @@ class SubscriptionLlmDraftProvider:
             return extract_json_object(raw)
         except Exception:
             return raw
+
+    def _semantic_output_verifier_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        raw = self._run_prompt_text(
+            prompt,
+            prefix="mango_semantic_output_verifier_",
+            suffix=".json",
+            model=os.getenv(SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV) or self.model,
+            reasoning_effort=os.getenv(SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV) or "medium",
+            timeout_sec=_semantic_output_verifier_timeout_sec(),
+        )
+        try:
+            return extract_json_object(raw)
+        except Exception:
+            return raw
+
+    def _semantic_output_regen_runner(self, prompt: str) -> str:
+        return self._run_prompt_text(
+            prompt,
+            prefix="mango_semantic_output_regen_",
+            suffix=".txt",
+            model=os.getenv(SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV) or self.model,
+            reasoning_effort=os.getenv(SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV) or "medium",
+            timeout_sec=_semantic_output_verifier_timeout_sec(),
+        )
 
     def _dialogue_contract_repair_runner(self, prompt: str) -> str:
         return self._run_prompt_text(
@@ -2512,6 +2563,7 @@ class SubscriptionLlmDraftProvider:
         suffix: str,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        timeout_sec: int | None = None,
     ) -> str:
         with tempfile.NamedTemporaryFile(prefix=prefix, suffix=suffix) as out_file:
             output_path = Path(out_file.name)
@@ -2528,7 +2580,7 @@ class SubscriptionLlmDraftProvider:
                     capture_output=True,
                     text=True,
                     check=False,
-                    timeout=self.timeout_sec,
+                    timeout=max(1, int(timeout_sec or self.timeout_sec)),
                     env=build_codex_exec_env(self.base_env),
                 )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
@@ -3125,16 +3177,30 @@ def apply_authoritative_output_gate(
     result = apply_output_sanitizer(result, context=context)
     findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
     actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
-    actionable = [finding for finding, action in zip(findings, actions) if action in {"block", "downgrade"}]
+    actionable = [finding for finding, action in zip(findings, actions) if action in {"block", "downgrade", "downgrade_keep_text"}]
+    gate_action = (
+        "block"
+        if "block" in actions
+        else "downgrade"
+        if "downgrade" in actions
+        else "downgrade_keep_text"
+        if "downgrade_keep_text" in actions
+        else "annotate"
+        if "annotate" in actions
+        else "pass"
+    )
     metadata = dict(result.metadata)
     metadata["authoritative_output_gate"] = {
         "schema_version": AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION,
         "checked": True,
-        "action": "block" if "block" in actions else ("downgrade" if "downgrade" in actions else "pass"),
+        "action": gate_action,
         "findings": findings,
         "route_before": result.route,
         "route_after": result.route,
     }
+    if gate_action == "annotate":
+        checklist = tuple(dict.fromkeys([*result.manager_checklist, _semantic_output_manager_note(findings)]))
+        return replace(result, manager_checklist=checklist, metadata=metadata)
     if not actionable:
         return replace(result, metadata=metadata)
 
@@ -3152,15 +3218,33 @@ def apply_authoritative_output_gate(
             ]
         )
     )
+    semantic_note = _semantic_output_manager_note(actionable)
+    checklist_items = [
+        *result.manager_checklist,
+        "Финальный safety gate заблокировал клиентский текст: не отправлять без ручной проверки.",
+    ]
+    if "downgrade_keep_text" in actions:
+        checklist_items.append(semantic_note)
     checklist = tuple(
         dict.fromkeys(
-            [
-                *result.manager_checklist,
-                "Финальный safety gate заблокировал клиентский текст: не отправлять без ручной проверки.",
-            ]
+            checklist_items
         )
     )
     forbidden = tuple(dict.fromkeys([*result.forbidden_promises_detected, *codes]))
+    keep_text_only = "block" not in actions and "downgrade" not in actions and "downgrade_keep_text" in actions
+    if keep_text_only:
+        semantic_meta = dict(metadata.get("semantic_output_verifier") or {})
+        semantic_meta["fallback_reason"] = semantic_meta.get("fallback_reason") or SEMANTIC_VERIFIER_DOWNGRADE_REASON
+        metadata["semantic_output_verifier"] = semantic_meta
+        return replace(
+            result,
+            route=route,
+            safety_flags=flags,
+            manager_checklist=checklist,
+            forbidden_promises_detected=forbidden,
+            metadata=metadata,
+            error=result.error,
+        )
     return replace(
         result,
         route=route,
@@ -3347,13 +3431,18 @@ def _authoritative_gate_downgraded_route(route: str, actions: Sequence[str]) -> 
     return current
 
 
-def _authoritative_gate_finding(code: str, *, detail: str = "", source: str = "") -> dict[str, str]:
-    return {
+def _authoritative_gate_finding(code: str, *, detail: str = "", source: str = "", **extra: str) -> dict[str, str]:
+    finding = {
         "code": str(code or "").strip(),
         "detail": " ".join(str(detail or "").split())[:240],
         "source": str(source or "authoritative_output_gate").strip(),
         "policy": _authoritative_gate_action(code),
     }
+    for key, value in extra.items():
+        normalized = " ".join(str(value or "").split())[:240]
+        if normalized:
+            finding[str(key)] = normalized
+    return finding
 
 
 def _authoritative_gate_findings(
@@ -3367,6 +3456,7 @@ def _authoritative_gate_findings(
 
     findings.extend(_authoritative_gate_text_guard_findings(result))
     findings.extend(_authoritative_gate_a2_findings(result, client_message=client_message, context=context))
+    findings.extend(_authoritative_gate_semantic_output_findings(result))
     if text_only:
         return _dedupe_gate_findings(findings)
 
@@ -3466,6 +3556,65 @@ def _authoritative_gate_a2_findings(
         if cleaned != text:
             findings.append(_authoritative_gate_finding("proactive_emoji_overuse", detail="emoji_guard_not_applied", source="a2_rich_format_gate"))
     return findings
+
+
+def _authoritative_gate_semantic_output_findings(result: SubscriptionDraftResult) -> list[dict[str, str]]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    verifier = metadata.get("semantic_output_verifier") if isinstance(metadata.get("semantic_output_verifier"), Mapping) else {}
+    raw_findings = verifier.get("findings") if isinstance(verifier, Mapping) else ()
+    if not isinstance(raw_findings, Sequence) or isinstance(raw_findings, (str, bytes, bytearray)):
+        return []
+    findings: list[dict[str, str]] = []
+    for raw in raw_findings:
+        if not isinstance(raw, Mapping):
+            continue
+        code = str(raw.get("code") or "").strip()
+        if code not in _SEMANTIC_OUTPUT_VERIFIER_CODES:
+            continue
+        detail = _semantic_output_finding_detail(raw)
+        findings.append(
+            _authoritative_gate_finding(
+                code,
+                detail=detail,
+                source="semantic_output_verifier",
+                relation_to_base=str(raw.get("relation_to_base") or ""),
+                nearest_fact_key=str(raw.get("nearest_fact_key") or ""),
+                evidence=str(raw.get("evidence") or ""),
+                missing_fact=str(raw.get("missing_fact") or ""),
+            )
+        )
+    return findings
+
+
+def _semantic_output_finding_detail(item: Mapping[str, Any]) -> str:
+    parts = [
+        str(item.get("span") or "").strip(),
+        str(item.get("relation_to_base") or "").strip(),
+        str(item.get("nearest_fact_key") or "").strip(),
+        str(item.get("missing_fact") or "").strip(),
+        str(item.get("evidence") or "").strip(),
+    ]
+    return " | ".join(part for part in parts if part)[:240]
+
+
+def _semantic_output_manager_note(findings: Sequence[Mapping[str, Any]]) -> str:
+    semantic = [item for item in findings if str(item.get("source") or "") == "semantic_output_verifier" or str(item.get("code") or "") in _SEMANTIC_OUTPUT_VERIFIER_CODES]
+    if not semantic:
+        return "Смысловой верификатор: проверить черновик перед отправкой."
+    samples: list[str] = []
+    for item in semantic[:2]:
+        code = str(item.get("code") or "")
+        relation = str(item.get("relation_to_base") or "")
+        nearest = str(item.get("nearest_fact_key") or "")
+        span = str(item.get("span") or item.get("detail") or "").strip()
+        if relation == "contradicts" and nearest:
+            samples.append(f"{code}: противоречит факту {nearest} ({span})")
+        elif relation == "adjacent" and nearest:
+            samples.append(f"{code}: рядом с фактом {nearest}, но не подтверждено ({span})")
+        else:
+            samples.append(f"{code}: в базе нет подтверждения ({span})")
+    suffix = f"; и ещё {len(semantic) - 2}" if len(semantic) > 2 else ""
+    return "Смысловой верификатор: " + "; ".join(samples)[:200] + suffix
 
 
 def _a2_is_proactive_result(result: SubscriptionDraftResult) -> bool:
@@ -3673,14 +3822,17 @@ def _dedupe_gate_findings(findings: Sequence[Mapping[str, str]]) -> list[dict[st
         if key in seen:
             continue
         seen.add(key)
-        result.append(
-            {
-                "code": code,
-                "detail": detail,
-                "source": source,
-                "policy": _authoritative_gate_action(code),
-            }
-        )
+        compact = {
+            "code": code,
+            "detail": detail,
+            "source": source,
+            "policy": _authoritative_gate_action(code),
+        }
+        for extra_key in ("relation_to_base", "nearest_fact_key", "evidence", "missing_fact"):
+            extra_value = str(item.get(extra_key) or "").strip()
+            if extra_value:
+                compact[extra_key] = extra_value
+        result.append(compact)
     return result
 
 
@@ -4849,6 +5001,303 @@ def apply_phase2_tone_layer(
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, "phase2_tone_rewritten"])),
         metadata=metadata,
     )
+
+
+_SEMANTIC_OUTPUT_VERIFIER_CODES = frozenset({"derived_product_claim", "invented_generalization", "individual_diagnosis"})
+
+
+def build_semantic_output_verifier_prompt(
+    *,
+    bot_text: str,
+    client_message: str = "",
+    facts: Mapping[str, str] | None = None,
+    active_brand: str = "",
+    route: str = "",
+) -> str:
+    facts_block = "\n".join(f"- {key}: {value}" for key, value in (facts or {}).items()) or "(фактов нет)"
+    return (
+        "Ты — смысловой верификатор финального текста бота учебного центра. "
+        "Проверяй только смысловые производные, которые плохо ловятся регулярными правилами. "
+        "Не проверяй цены/проценты/бренд/P0/мета: это делает отдельный детерминированный gate.\n\n"
+        "Верни СТРОГО JSON:\n"
+        '{"findings":[{"code":"derived_product_claim|invented_generalization|individual_diagnosis",'
+        '"span":"цитата из ответа","evidence":"почему это риск","missing_fact":"какого факта не хватает",'
+        '"relation_to_base":"contradicts|absent|adjacent","nearest_fact_key":"fact.key или пусто"}]}\n'
+        'Если нарушений нет: {"findings":[]}.\n\n'
+        "КЛАССЫ:\n"
+        "- derived_product_claim: продукту/курсу/процессу приписано то, чего нет в фактах: назначение группы, "
+        "уровень курса, порядок записи/оплаты, состав программы, материалы, размер группы, что у нас принято.\n"
+        "- invented_generalization: обобщение или соцдоказательство как опора рекомендации клиенту: "
+        "«обычно», «большинство», «за год-два», если это не дано в фактах.\n"
+        "- individual_diagnosis: бот оценивает конкретного ребёнка: справится/потянет/подойдёт/сможет влиться, "
+        "«слишком тяжело быть не должно», «посильный ритм», «подберут под ребёнка» — без хеджа и передачи "
+        "менеджеру/преподавателю.\n\n"
+        "НЕ ФЛАГАЙ:\n"
+        "- дословный или смысловой пересказ факта;\n"
+        "- склейку двух реальных фактов без новой приписки;\n"
+        "- каноничную фразу разделения брендов;\n"
+        "- общий житейский совет с хеджем, если он не делает продуктовый вывод;\n"
+        "- хеджированный ответ по ребёнку с передачей преподавателю/менеджеру.\n\n"
+        "relation_to_base: contradicts = противоречит факту; absent = в базе нет такого факта; "
+        "adjacent = похожий факт есть, но он не подтверждает этот вывод. Для adjacent укажи nearest_fact_key.\n\n"
+        f"active_brand: {active_brand}\n"
+        f"route: {route}\n"
+        f"Факты:\n{facts_block}\n\n"
+        f"Вопрос клиента:\n{str(client_message or '').strip()}\n\n"
+        f"Финальный текст бота:\n{str(bot_text or '').strip()}\n"
+    )
+
+
+def build_semantic_output_regen_prompt(
+    *,
+    bot_text: str,
+    client_message: str,
+    facts: Mapping[str, str],
+    findings: Sequence[Mapping[str, Any]],
+) -> str:
+    findings_block = "\n".join(
+        f"- {item.get('code')}: {item.get('span') or item.get('evidence') or item.get('missing_fact')}"
+        for item in findings
+        if isinstance(item, Mapping)
+    )
+    facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(фактов нет)"
+    return (
+        "Перепиши текст бота для менеджерского черновика: убери или захеджируй только указанные смысловые риски. "
+        "Не добавляй новых фактов, чисел, брендов, обещаний и внутренних комментариев. Верни только текст ответа.\n\n"
+        f"Вопрос клиента:\n{client_message}\n\n"
+        f"Факты:\n{facts_block}\n\n"
+        f"Риски:\n{findings_block}\n\n"
+        f"Исходный текст:\n{bot_text}\n"
+    )
+
+
+def apply_semantic_output_verifier(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+    verifier_fn: Optional[Callable[[str], object]] = None,
+    regen_fn: Optional[Callable[[str], object]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_output_verifier_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    verifier_meta: dict[str, Any] = {
+        "schema_version": SEMANTIC_OUTPUT_VERIFIER_SCHEMA_VERSION,
+        "enabled": True,
+        "checked": False,
+        "skipped": False,
+        "findings": [],
+        "route_before": result.route,
+        "route_after": result.route,
+        "regen_attempted": False,
+        "fallback_reason": "",
+    }
+    metadata["semantic_output_verifier"] = verifier_meta
+
+    if _semantic_diagnosis_locked_deferral(result, client_message=client_message):
+        verifier_meta["skipped"] = True
+        verifier_meta["skip_reason"] = "locked_p0_or_high_risk_deferral"
+        return replace(result, metadata=metadata)
+    if dialogue_contract_is_pure_handoff_text(result.draft_text):
+        verifier_meta["skipped"] = True
+        verifier_meta["skip_reason"] = "pure_handoff"
+        return replace(result, metadata=metadata)
+
+    gate_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    facts = _authoritative_gate_fact_texts(result, gate_context)
+    verifier = _semantic_output_verifier_override(context) or verifier_fn
+    if verifier is None:
+        verifier_meta.update({"unavailable": True, "fallback_reason": SEMANTIC_VERIFIER_UNAVAILABLE_REASON})
+        return replace(
+            result,
+            manager_checklist=tuple(dict.fromkeys([*result.manager_checklist, "Смысловой верификатор недоступен: проверить черновик вручную."])),
+            metadata=metadata,
+        )
+
+    findings, unavailable_reason = _run_semantic_output_verifier_once(
+        verifier,
+        result.draft_text,
+        client_message=client_message,
+        facts=facts,
+        active_brand=_active_brand(gate_context),
+        route=result.route,
+    )
+    if unavailable_reason:
+        verifier_meta["retry_attempted"] = True
+        findings, unavailable_reason = _run_semantic_output_verifier_once(
+            verifier,
+            result.draft_text,
+            client_message=client_message,
+            facts=facts,
+            active_brand=_active_brand(gate_context),
+            route=result.route,
+        )
+    verifier_meta["checked"] = unavailable_reason == ""
+    if unavailable_reason:
+        verifier_meta.update({"unavailable": True, "fallback_reason": SEMANTIC_VERIFIER_UNAVAILABLE_REASON, "error": unavailable_reason})
+        return replace(
+            result,
+            manager_checklist=tuple(dict.fromkeys([*result.manager_checklist, "Смысловой верификатор недоступен: проверить черновик вручную."])),
+            metadata=metadata,
+        )
+
+    findings = _semantic_output_filter_findings(findings, result.draft_text)
+    verifier_meta["findings"] = list(findings)
+    verifier_meta["finding_codes"] = [str(item.get("code") or "") for item in findings]
+    verifier_meta["action"] = _semantic_output_verifier_highest_action(findings)
+    if not findings:
+        verifier_meta["fallback_reason"] = "ok"
+        return replace(result, metadata=metadata)
+
+    needs_regen = any(str(item.get("action") or "") == "downgrade_keep_text" for item in findings)
+    if result.route not in AUTONOMOUS_ROUTES and needs_regen and regen_fn is not None:
+        verifier_meta["regen_attempted"] = True
+        try:
+            regen_text = str(
+                regen_fn(
+                    build_semantic_output_regen_prompt(
+                        bot_text=result.draft_text,
+                        client_message=client_message,
+                        facts=facts,
+                        findings=findings,
+                    )
+                )
+                or ""
+            ).strip()
+        except Exception as exc:  # noqa: BLE001
+            verifier_meta["regen_error"] = str(exc)[:200]
+            return replace(result, metadata=metadata)
+        if regen_text:
+            regen_findings, regen_unavailable = _run_semantic_output_verifier_once(
+                verifier,
+                regen_text,
+                client_message=client_message,
+                facts=facts,
+                active_brand=_active_brand(gate_context),
+                route=result.route,
+            )
+            verifier_meta["regen_checked"] = regen_unavailable == ""
+            verifier_meta["regen_findings"] = list(_semantic_output_filter_findings(regen_findings, regen_text))
+            if not regen_unavailable and not verifier_meta["regen_findings"]:
+                verifier_meta["regen_accepted"] = True
+                verifier_meta["findings_before_regen"] = list(findings)
+                verifier_meta["findings"] = []
+                verifier_meta["finding_codes"] = []
+                verifier_meta["action"] = "pass_after_regen"
+                verifier_meta["fallback_reason"] = "regenerated"
+                return replace(result, draft_text=regen_text, metadata=metadata)
+
+    if needs_regen:
+        verifier_meta["fallback_reason"] = SEMANTIC_VERIFIER_DOWNGRADE_REASON
+    return replace(result, metadata=metadata)
+
+
+def _run_semantic_output_verifier_once(
+    verifier: Callable[[str], object],
+    bot_text: str,
+    *,
+    client_message: str,
+    facts: Mapping[str, str],
+    active_brand: str,
+    route: str,
+) -> tuple[tuple[Mapping[str, Any], ...], str]:
+    prompt = build_semantic_output_verifier_prompt(
+        bot_text=bot_text,
+        client_message=client_message,
+        facts=facts,
+        active_brand=active_brand,
+        route=route,
+    )
+    try:
+        raw_payload = verifier(prompt)
+        payload = extract_json_object(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    except subprocess.TimeoutExpired:
+        return (), "timeout"
+    except Exception as exc:  # noqa: BLE001
+        return (), str(exc)[:200] or "verifier_error"
+    return _semantic_output_findings_from_payload(payload), ""
+
+
+def _semantic_output_findings_from_payload(payload: object) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(payload, Mapping):
+        return ()
+    raw_findings = payload.get("findings")
+    if raw_findings is None and _truthy_value(payload.get("individual_diagnosis")):
+        raw_findings = [
+            {
+                "code": "individual_diagnosis",
+                "span": payload.get("span") or "",
+                "evidence": payload.get("reason") or "",
+            }
+        ]
+    if not isinstance(raw_findings, Sequence) or isinstance(raw_findings, (str, bytes, bytearray)):
+        return ()
+    findings: list[Mapping[str, Any]] = []
+    for raw in raw_findings:
+        if not isinstance(raw, Mapping):
+            continue
+        code = str(raw.get("code") or "").strip()
+        if code == "ok" or code not in _SEMANTIC_OUTPUT_VERIFIER_CODES:
+            continue
+        action = _authoritative_gate_action(code)
+        if action not in {"annotate", "downgrade_keep_text"}:
+            continue
+        findings.append(
+            {
+                "code": code,
+                "action": action,
+                "span": " ".join(str(raw.get("span") or "").split())[:240],
+                "evidence": " ".join(str(raw.get("evidence") or raw.get("reason") or "").split())[:240],
+                "missing_fact": " ".join(str(raw.get("missing_fact") or "").split())[:240],
+                "relation_to_base": _normalize_semantic_relation(raw.get("relation_to_base")),
+                "nearest_fact_key": " ".join(str(raw.get("nearest_fact_key") or raw.get("fact_key") or "").split())[:160],
+            }
+        )
+    return tuple(findings)
+
+
+def _semantic_output_filter_findings(
+    findings: Sequence[Mapping[str, Any]],
+    bot_text: str,
+) -> tuple[Mapping[str, Any], ...]:
+    result: list[Mapping[str, Any]] = []
+    for item in findings:
+        code = str(item.get("code") or "")
+        if code == "individual_diagnosis" and _has_diagnosis_hedge_and_transfer(bot_text):
+            continue
+        result.append(dict(item))
+    return tuple(result)
+
+
+def _semantic_output_verifier_highest_action(findings: Sequence[Mapping[str, Any]]) -> str:
+    actions = {str(item.get("action") or "") for item in findings if isinstance(item, Mapping)}
+    if "downgrade_keep_text" in actions:
+        return "downgrade_keep_text"
+    if "annotate" in actions:
+        return "annotate"
+    return "pass"
+
+
+def _normalize_semantic_relation(value: object) -> str:
+    normalized = str(value or "").strip().casefold()
+    if normalized in {"contradicts", "absent", "adjacent"}:
+        return normalized
+    return "absent"
+
+
+def _semantic_output_verifier_override(context: Optional[Mapping[str, Any]]) -> Optional[Callable[[str], object]]:
+    if not isinstance(context, Mapping):
+        return None
+    value = context.get("semantic_output_verifier_fn")
+    return value if callable(value) else None
+
+
+def _semantic_output_verifier_timeout_sec() -> int:
+    try:
+        return max(1, int(float(os.getenv(SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV) or "30")))
+    except Exception:
+        return 30
 
 
 def build_semantic_diagnosis_prompt(
@@ -9616,6 +10065,16 @@ def _semantic_diagnosis_guard_enabled(context: Optional[Mapping[str, Any]] = Non
             if key in context:
                 return _truthy_value(context.get(key))
     return _truthy_value(os.getenv(SEMANTIC_DIAGNOSIS_GUARD_ENV))
+
+
+def _semantic_output_verifier_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (SEMANTIC_OUTPUT_VERIFIER_ENV, "semantic_output_verifier_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    # In a future autonomous send mode Дмитрий may choose fail-closed when this
+    # verifier is unavailable; today it is advisory in draft-only mode.
+    return _truthy_value(os.getenv(SEMANTIC_OUTPUT_VERIFIER_ENV))
 
 
 def _answer_quality_llm_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

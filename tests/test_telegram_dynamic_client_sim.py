@@ -647,6 +647,84 @@ def test_semantic_diagnosis_guard_runner_counts_llm_role(monkeypatch, tmp_path: 
     assert counter.snapshot()["bot_diagnosis_guard"] == 1
 
 
+def test_semantic_output_verifier_runner_counts_llm_role(monkeypatch, tmp_path: Path) -> None:
+    counter = sim.LlmCallCounter()
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text('{"findings": []}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        runner=sim.subprocess.run,
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    assert provider._semantic_output_verifier_runner("Верни JSON")["findings"] == []
+    assert counter.snapshot()["bot_semantic_output_verifier"] == 1
+
+
+def test_semantic_output_verifier_summary_dedupes_deterministic_same_class() -> None:
+    transcripts = [
+        {
+            "turns": [
+                {
+                    "bot_semantic_output_verifier": {
+                        "checked": True,
+                        "findings": [
+                            {"code": "individual_diagnosis", "action": "downgrade_keep_text"},
+                            {"code": "invented_generalization", "action": "annotate"},
+                        ],
+                    },
+                    "bot_authoritative_output_gate": {
+                        "action": "downgrade_keep_text",
+                        "findings": [
+                            {"code": "estimate_individual_child_advice", "source": "verify_output"},
+                            {"code": "individual_diagnosis", "source": "semantic_output_verifier"},
+                        ],
+                    },
+                },
+                {
+                    "bot_semantic_output_verifier": {
+                        "checked": True,
+                        "findings": [{"code": "derived_product_claim", "action": "downgrade_keep_text"}],
+                    },
+                    "bot_authoritative_output_gate": {
+                        "action": "downgrade_keep_text",
+                        "findings": [{"code": "derived_product_claim", "source": "semantic_output_verifier"}],
+                    },
+                },
+            ]
+        }
+    ]
+
+    summary = sim._semantic_output_verifier_summary(transcripts)
+
+    assert summary["finding_counts"] == {
+        "individual_diagnosis": 1,
+        "invented_generalization": 1,
+        "derived_product_claim": 1,
+    }
+    assert summary["downgraded_turns"] == 2
+    assert summary["downgrade_budget_turns"] == 1
+    assert summary["action_counts"]["annotate"] == 1
+
+
+def test_llm_call_summary_exposes_semantic_output_roles() -> None:
+    summary = sim._llm_call_summary(
+        {"bot_semantic_output_verifier": 3, "bot_semantic_output_regen": 1, "client": 2},
+        dialogs=1,
+        turns=2,
+    )
+
+    assert summary["bot_semantic_output_verifier"] == 3
+    assert summary["bot_semantic_output_regen"] == 1
+    assert summary["total"] == 6
+
+
 def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
     calls = []
 
@@ -974,6 +1052,8 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         "bot_draft": 3,
         "bot_critic": 1,
         "bot_selling_compose": 1,
+        "bot_semantic_output_verifier": 0,
+        "bot_semantic_output_regen": 0,
         "memory": 2,
         "judge": 0,
         "dialogs": 1,

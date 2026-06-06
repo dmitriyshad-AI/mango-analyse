@@ -522,9 +522,9 @@ def _pipeline_reason_class(
         return "terminal"
     if reason in {"no_fact_or_unverified", "empty_facts_no_fabrication", "estimate_guard_failed"}:
         return "no_fact_or_unverified"
-    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn"}:
+    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn", "semantic_verifier_unavailable"}:
         return "provider_runtime"
-    if reason in {"hard_verification_failed", "authoritative_output_gate_blocked"} or findings or unsupported_claims:
+    if reason in {"hard_verification_failed", "authoritative_output_gate_blocked", "semantic_verifier_downgrade"} or findings or unsupported_claims:
         return "output_safety"
     if reason in {"contract_manager_only", "policy_permission"}:
         return "policy_permission"

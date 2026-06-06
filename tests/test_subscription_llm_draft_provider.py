@@ -5,6 +5,8 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     FactStore,
@@ -54,8 +56,12 @@ from mango_mvp.channels.subscription_llm import (
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
     apply_phase2_tone_layer,
+    apply_semantic_output_verifier,
     apply_semantic_diagnosis_guard,
+    build_semantic_output_verifier_prompt,
     build_semantic_diagnosis_prompt,
+    SEMANTIC_OUTPUT_VERIFIER_ENV,
+    SEMANTIC_VERIFIER_DOWNGRADE_REASON,
     apply_unstated_subject_guard,
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
@@ -8584,6 +8590,301 @@ def test_phase2_anxiety_never_precedes_p0() -> None:
     assert routed.route == "manager_only"
     assert not any(flag.startswith("rules_engine_phase2_anxiety") for flag in routed.safety_flags)
     assert "фрагмент занятия" not in routed.draft_text.casefold()
+
+
+def _semantic_verifier_base_result(text: str, *, route: str = "bot_answer_self_for_pilot") -> SubscriptionDraftResult:
+    return SubscriptionDraftResult(
+        route=route,
+        draft_text=text,
+        topic_id="theme:024_advice",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "program.basic": "Фотон: есть базовый и продвинутый уровень.",
+                    "enrollment.remote": "Фотон: оформление проходит дистанционно, менеджер помогает с договором.",
+                },
+                "retrieved_fact_keys": ["program.basic", "enrollment.remote"],
+            }
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "finding", "expected_action"),
+    [
+        (
+            "Курс ОГЭ здесь базовый, он подойдёт для выравнивания пробелов.",
+            {"code": "derived_product_claim", "span": "подойдёт для выравнивания пробелов", "relation_to_base": "absent"},
+            "downgrade_keep_text",
+        ),
+        (
+            "После оплаты по оферте запись считается подтверждённой.",
+            {
+                "code": "derived_product_claim",
+                "span": "оплата по оферте = подтверждение записи",
+                "relation_to_base": "adjacent",
+                "nearest_fact_key": "enrollment.remote",
+            },
+            "downgrade_keep_text",
+        ),
+        (
+            "Обычная группа — это базовый уровень для тех, кто начинает с азов.",
+            {"code": "derived_product_claim", "span": "обычная группа — базовый уровень", "relation_to_base": "absent"},
+            "downgrade_keep_text",
+        ),
+        (
+            "Обычно за год-два большинство ребят закрывают пробелы.",
+            {"code": "invented_generalization", "span": "за год-два большинство ребят", "relation_to_base": "absent"},
+            "annotate",
+        ),
+        (
+            "Обычно в очном курсе такие темы разбирают на практике.",
+            {"code": "derived_product_claim", "span": "обычно в очном курсе", "relation_to_base": "absent"},
+            "downgrade_keep_text",
+        ),
+    ],
+)
+def test_semantic_output_verifier_flags_regrade_cases_with_expected_actions(text, finding, expected_action) -> None:
+    base = _semantic_verifier_base_result(text)
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Подскажите по курсу",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": [finding]},
+    )
+    gated = apply_authoritative_output_gate(
+        checked,
+        client_message="Подскажите по курсу",
+        context={"active_brand": "foton"},
+    )
+
+    assert checked.metadata["semantic_output_verifier"]["checked"] is True
+    assert checked.metadata["semantic_output_verifier"]["findings"][0]["code"] == finding["code"]
+    assert gated.metadata["authoritative_output_gate"]["action"] == expected_action
+    assert gated.draft_text == text
+    if expected_action == "downgrade_keep_text":
+        assert gated.route == "draft_for_manager"
+        assert "authoritative_output_gate_blocked" in gated.safety_flags
+        assert f"authoritative_gate:{finding['code']}" in gated.safety_flags
+        assert gated.error is None
+        assert gated.metadata["semantic_output_verifier"]["fallback_reason"] == SEMANTIC_VERIFIER_DOWNGRADE_REASON
+    else:
+        assert gated.route == base.route
+        assert "authoritative_output_gate_blocked" not in gated.safety_flags
+    assert any("Смысловой верификатор" in item for item in gated.manager_checklist)
+
+
+def test_semantic_output_verifier_keeps_false_cases_and_prompt_controls() -> None:
+    prompt = build_semantic_output_verifier_prompt(
+        bot_text="Есть базовый и продвинутый уровень.",
+        client_message="Есть уровень попроще?",
+        facts={"program.basic": "Фотон: есть базовый и продвинутый уровень."},
+        active_brand="foton",
+        route="bot_answer_self_for_pilot",
+    )
+    assert "relation_to_base" in prompt
+    assert "каноничную фразу разделения брендов" in prompt
+
+    base = _semantic_verifier_base_result("Есть базовый и продвинутый уровень.")
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Есть уровень попроще?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": []},
+    )
+    gated = apply_authoritative_output_gate(checked, client_message="Есть уровень попроще?", context={"active_brand": "foton"})
+
+    assert gated.draft_text == base.draft_text
+    assert gated.route == base.route
+    assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_semantic_output_verifier_never_unblocks_deterministic_brand_gate() -> None:
+    base = _semantic_verifier_base_result("У Фотона и УНПК одинаковые условия.")
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Сравните Фотон и УНПК",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": []},
+    )
+    gated = apply_authoritative_output_gate(checked, client_message="Сравните Фотон и УНПК", context={"active_brand": "foton"})
+
+    assert gated.route == "manager_only"
+    assert gated.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert "brand_leak" in {item["code"] for item in gated.metadata["authoritative_output_gate"]["findings"]}
+
+
+def test_semantic_output_verifier_fail_soft_retries_once_on_timeout() -> None:
+    base = _semantic_verifier_base_result("Да, дочка справится.")
+    calls = 0
+
+    def timeout(_prompt: str):
+        nonlocal calls
+        calls += 1
+        raise subprocess.TimeoutExpired(cmd=["semantic"], timeout=30)
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Дочка справится?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=timeout,
+    )
+
+    meta = checked.metadata["semantic_output_verifier"]
+    assert calls == 2
+    assert meta["unavailable"] is True
+    assert meta["retry_attempted"] is True
+    assert meta["fallback_reason"] == "semantic_verifier_unavailable"
+    assert checked.route == base.route
+    assert checked.draft_text == base.draft_text
+    assert any("недоступен" in item for item in checked.manager_checklist)
+
+
+def test_semantic_output_verifier_absorbs_diagnosis_cases_any_route_and_hedged_false_case() -> None:
+    substantive = _semantic_verifier_base_result(
+        "По таким вводным слишком тяжело быть не должно: ритм посильный.",
+        route="manager_only",
+    )
+    checked = apply_semantic_output_verifier(
+        substantive,
+        client_message="Дочке не будет тяжело?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {
+            "findings": [
+                {
+                    "code": "individual_diagnosis",
+                    "span": "слишком тяжело быть не должно",
+                    "relation_to_base": "absent",
+                }
+            ]
+        },
+    )
+    gated = apply_authoritative_output_gate(checked, client_message="Дочке не будет тяжело?", context={"active_brand": "foton"})
+    assert checked.metadata["semantic_output_verifier"]["checked"] is True
+    assert gated.route == "manager_only"
+    assert gated.draft_text == substantive.draft_text
+    assert gated.metadata["authoritative_output_gate"]["action"] == "downgrade_keep_text"
+
+    hedged = _semantic_verifier_base_result(
+        "Заочно не буду обещать: уровень лучше сверить с преподавателем, менеджер поможет подобрать группу."
+    )
+    hedged_checked = apply_semantic_output_verifier(
+        hedged,
+        client_message="Дочка справится?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": [{"code": "individual_diagnosis", "span": "уровень лучше сверить"}]},
+    )
+    assert hedged_checked.metadata["semantic_output_verifier"]["findings"] == []
+
+
+def test_semantic_output_verifier_skips_only_locked_or_pure_handoff_texts() -> None:
+    pure = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        safety_flags=("high_risk_manager_only",),
+    )
+    calls = 0
+
+    def verifier(_prompt: str):
+        nonlocal calls
+        calls += 1
+        return {"findings": [{"code": "individual_diagnosis"}]}
+
+    checked = apply_semantic_output_verifier(
+        pure,
+        client_message="Верните деньги, ребёнок не справится",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=verifier,
+    )
+
+    assert calls == 0
+    assert checked.metadata["semantic_output_verifier"]["skipped"] is True
+
+
+def test_semantic_output_verifier_regen_once_then_full_gate_runs_with_context() -> None:
+    base = _semantic_verifier_base_result("Обычная группа — это базовый уровень.", route="draft_for_manager")
+    verifier_calls = 0
+
+    def verifier(_prompt: str):
+        nonlocal verifier_calls
+        verifier_calls += 1
+        if verifier_calls == 1:
+            return {"findings": [{"code": "derived_product_claim", "span": "базовый уровень"}]}
+        return {"findings": []}
+
+    regen_calls = 0
+
+    def regen(_prompt: str) -> str:
+        nonlocal regen_calls
+        regen_calls += 1
+        return "УНПК: есть базовый уровень."
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Есть уровень попроще?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=verifier,
+        regen_fn=regen,
+    )
+    gated = apply_authoritative_output_gate(checked, client_message="Есть уровень попроще?", context={"active_brand": "foton"})
+
+    assert verifier_calls == 2
+    assert regen_calls == 1
+    assert checked.metadata["semantic_output_verifier"]["regen_attempted"] is True
+    assert checked.metadata["semantic_output_verifier"]["regen_accepted"] is True
+    assert gated.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert "brand_leak" in {item["code"] for item in gated.metadata["authoritative_output_gate"]["findings"]}
+
+
+def test_semantic_output_verifier_does_not_regen_autonomous_route() -> None:
+    base = _semantic_verifier_base_result("Обычная группа — это базовый уровень.", route="bot_answer_self_for_pilot")
+    regen_called = False
+
+    def regen(_prompt: str) -> str:
+        nonlocal regen_called
+        regen_called = True
+        return "Исправлено."
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Есть уровень попроще?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": [{"code": "derived_product_claim", "span": "базовый уровень"}]},
+        regen_fn=regen,
+    )
+    gated = apply_authoritative_output_gate(checked, client_message="Есть уровень попроще?", context={"active_brand": "foton"})
+
+    assert regen_called is False
+    assert gated.route == "draft_for_manager"
+    assert gated.draft_text == base.draft_text
+
+
+def test_semantic_output_verifier_cross_model_replay_fixture_is_consistent() -> None:
+    base = _semantic_verifier_base_result("После оплаты по оферте запись считается подтверждённой.")
+    payload = {
+        "findings": [
+            {
+                "code": "derived_product_claim",
+                "span": "запись считается подтверждённой",
+                "relation_to_base": "adjacent",
+                "nearest_fact_key": "enrollment.remote",
+            }
+        ]
+    }
+    results = []
+    for fake_model in (lambda _prompt: payload, lambda _prompt: json.dumps(payload, ensure_ascii=False)):
+        checked = apply_semantic_output_verifier(
+            base,
+            client_message="Как записаться?",
+            context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+            verifier_fn=fake_model,
+        )
+        results.append(apply_authoritative_output_gate(checked, client_message="Как записаться?", context={"active_brand": "foton"}))
+
+    assert [item.route for item in results] == ["draft_for_manager", "draft_for_manager"]
+    assert [item.metadata["authoritative_output_gate"]["action"] for item in results] == ["downgrade_keep_text", "downgrade_keep_text"]
 
 
 def test_semantic_diagnosis_guard_rewrites_claude_paraphrase_real_text() -> None:

@@ -107,6 +107,11 @@ class FakeSemanticMatchModel:
         return {"covers": True, "same_product": True, "reason": "fake semantic match"}
 
 
+class FakeSemanticOutputVerifierModel:
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        return {"findings": []}
+
+
 class FakeSellingComposeModel:
     def generate(self, prompt: str) -> Mapping[str, Any]:
         return {"text": "Понимаю, сумма важная. Опираюсь только на подтверждённые условия; менеджер поможет выбрать удобный шаг."}
@@ -200,6 +205,14 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
     def _semantic_diagnosis_guard_runner(self, prompt: str) -> Mapping[str, Any] | str:
         self._count_llm_call("bot_diagnosis_guard")
         return super()._semantic_diagnosis_guard_runner(prompt)
+
+    def _semantic_output_verifier_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        self._count_llm_call("bot_semantic_output_verifier")
+        return super()._semantic_output_verifier_runner(prompt)
+
+    def _semantic_output_regen_runner(self, prompt: str) -> str:
+        self._count_llm_call("bot_semantic_output_regen")
+        return super()._semantic_output_regen_runner(prompt)
 
     def _answer_quality_llm_rewrite_runner(
         self,
@@ -582,6 +595,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--semantic-mode", choices=("codex", "fake", "off"), default="codex")
     parser.add_argument("--semantic-model", default="gpt-5.5")
     parser.add_argument("--semantic-reasoning", default="medium")
+    parser.add_argument("--semantic-verifier-mode", choices=("codex", "fake", "off"), default="codex")
+    parser.add_argument("--semantic-verifier-model", default=os.getenv("TELEGRAM_SEMANTIC_VERIFIER_MODEL", "gpt-5.5"))
+    parser.add_argument("--semantic-verifier-reasoning", default=os.getenv("TELEGRAM_SEMANTIC_VERIFIER_REASONING", "medium"))
     parser.add_argument("--selling-mode", choices=("gen", "det"), default=os.getenv("TELEGRAM_A_SELLING_MODE", "gen"))
     parser.add_argument("--selling-model", default="gpt-5.5")
     parser.add_argument("--selling-reasoning", default="medium")
@@ -688,6 +704,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bot_provider = build_bot_provider(args)
             memory_model = build_memory_model(args)
             selling_compose_model = build_selling_compose_model(args)
+            semantic_output_verifier_model = build_semantic_output_verifier_model(args)
             for persona in pending_personas:
                 dialog_id = str(persona.get("dialog_id") or "")
                 print(f"run_dialog={dialog_id}", flush=True)
@@ -702,6 +719,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         bot_provider=bot_provider,
                         memory_model=memory_model,
                         selling_compose_model=selling_compose_model,
+                        semantic_output_verifier_model=semantic_output_verifier_model,
                         snapshot_path=args.snapshot,
                         max_turns_override=args.max_turns,
                         debug_trace_run_dir=args.out_dir,
@@ -942,6 +960,28 @@ def build_semantic_match_model(args: argparse.Namespace) -> Any:
     )
 
 
+def build_semantic_output_verifier_model(args: argparse.Namespace) -> Any:
+    if args.semantic_verifier_mode == "off":
+        return None
+    if args.semantic_verifier_mode == "fake":
+        return maybe_counting_model(
+            FakeSemanticOutputVerifierModel(),
+            role="bot_semantic_output_verifier",
+            counter=getattr(args, "llm_call_counter", None),
+        )
+    return maybe_counting_model(
+        CodexJsonModel(
+            model=args.semantic_verifier_model,
+            reasoning_effort=args.semantic_verifier_reasoning,
+            timeout_sec=min(int(args.timeout_sec), 30),
+            codex_bin=getattr(args, "codex_bin", "codex"),
+            isolated=bool(getattr(args, "codex_isolated", False)),
+        ),
+        role="bot_semantic_output_verifier",
+        counter=getattr(args, "llm_call_counter", None),
+    )
+
+
 def build_selling_compose_model(args: argparse.Namespace) -> Any:
     if str(getattr(args, "selling_mode", "gen") or "gen") == "det":
         return None
@@ -1022,6 +1062,7 @@ def run_one_dialog_isolated(
         bot_provider=build_bot_provider(args, dialog_id=dialog_id),
         memory_model=build_memory_model(args),
         selling_compose_model=build_selling_compose_model(args),
+        semantic_output_verifier_model=build_semantic_output_verifier_model(args),
         snapshot_path=snapshot_path,
         max_turns_override=max_turns_override,
         debug_trace_run_dir=args.out_dir,
@@ -1146,6 +1187,11 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "bot_semantic_output_verifier": json.dumps(
+                        turn.get("bot_semantic_output_verifier") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_claude_cli_error_count": int(turn.get("bot_claude_cli_error_count") or 0),
                     "bot_claude_cli_errors": json.dumps(
                         turn.get("bot_claude_cli_errors") or [],
@@ -1240,6 +1286,7 @@ def run_one_dialog(
     snapshot_path: Path,
     memory_model: Any = None,
     selling_compose_model: Any = None,
+    semantic_output_verifier_model: Any = None,
     max_turns_override: int = 0,
     debug_trace_run_dir: Path | None = None,
 ) -> Mapping[str, Any]:
@@ -1279,11 +1326,15 @@ def run_one_dialog(
             context = dict(context)
             context["selling_compose_fn"] = selling_compose_model.generate
             context["selling_mode"] = "gen"
+        if semantic_output_verifier_model is not None:
+            context = dict(context)
+            context["semantic_output_verifier_fn"] = semantic_output_verifier_model.generate
         result = bot_provider.build_draft(client_message, context=context)
         claude_cli_events = _consume_claude_cli_events(bot_provider)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
         dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)
         authoritative_gate_metadata = _authoritative_output_gate_metadata_from_result(result)
+        semantic_output_verifier_metadata = _semantic_output_verifier_metadata_from_result(result)
         bot_fallback_reason = str(dialogue_contract_metadata.get("fallback_reason") or "")
         bot_provider_error = str(getattr(result, "error", "") or "")
         deferral_metadata = _manager_deferral_metadata_from_result(
@@ -1351,6 +1402,7 @@ def run_one_dialog(
             "bot_reason_class": str(deferral_metadata.get("reason_class") or ""),
             "bot_reason_evidence": dict(deferral_metadata.get("reason_evidence") or {}),
             "bot_authoritative_output_gate": authoritative_gate_metadata,
+            "bot_semantic_output_verifier": semantic_output_verifier_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
             "bot_humanity_x2": humanity_x2_metadata,
@@ -1851,7 +1903,7 @@ def _turn_authoritative_gate_reason(turn: Mapping[str, Any]) -> str:
     if not isinstance(gate, Mapping):
         return ""
     action = str(gate.get("action") or "").strip()
-    if action not in {"block", "downgrade"}:
+    if action not in {"block", "downgrade", "downgrade_keep_text"}:
         return ""
     codes = _authoritative_gate_finding_codes(gate)
     if codes:
@@ -1935,6 +1987,7 @@ def build_summary(
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
     manager_deferrals = _manager_deferral_summary(transcripts)
+    semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     include_handoff_trace = _handoff_trace_enabled() or any(
         isinstance(turn, Mapping) and isinstance(turn.get("handoff_trace"), Mapping) and bool(turn.get("handoff_trace"))
         for dialog in transcripts
@@ -2040,6 +2093,7 @@ def build_summary(
         "branch_metrics": _branch_count_metrics(transcripts),
         "tone_metric": tone_metric,
         "llm_calls": llm_call_summary,
+        "semantic_output_verifier": semantic_output_verifier,
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "claude_cli_errors": claude_cli_errors,
@@ -2062,6 +2116,105 @@ def _scenario_metadata(judge_spec: Mapping[str, Any] | None) -> Mapping[str, Any
     }
 
 
+_SEMANTIC_VERIFIER_CODES = {"derived_product_claim", "invented_generalization", "individual_diagnosis"}
+_SEMANTIC_VERIFIER_DEDUP_CLASSES = {
+    "individual_diagnosis": {"estimate_individual_child_advice", "estimate_general_advice_risk"},
+    "derived_product_claim": {
+        "unsupported_product_claim",
+        "unsupported_product_number",
+        "brand_leak",
+        "cross_brand",
+        "fact_grounding",
+        "wrong_scope",
+        "unsupported_entity",
+        "unsupported_promise",
+    },
+    "invented_generalization": set(),
+}
+
+
+def _semantic_output_verifier_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    finding_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    checked_turns = 0
+    skipped_turns = 0
+    unavailable_turns = 0
+    downgraded_turns = 0
+    annotated_turns = 0
+    regen_attempts = 0
+    budget_turns = 0
+    total_turns = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            total_turns += 1
+            meta = turn.get("bot_semantic_output_verifier")
+            if not isinstance(meta, Mapping) or not meta:
+                continue
+            if meta.get("checked"):
+                checked_turns += 1
+            if meta.get("skipped"):
+                skipped_turns += 1
+            if meta.get("unavailable"):
+                unavailable_turns += 1
+            if meta.get("regen_attempted"):
+                regen_attempts += 1
+            findings = meta.get("findings") if isinstance(meta.get("findings"), Sequence) else ()
+            turn_has_budgeted_downgrade = False
+            for item in findings:
+                if not isinstance(item, Mapping):
+                    continue
+                code = str(item.get("code") or "").strip()
+                action = str(item.get("action") or "").strip()
+                if not code:
+                    continue
+                finding_counts[code] += 1
+                if action:
+                    action_counts[action] += 1
+                if action == "downgrade_keep_text":
+                    turn_has_budgeted_downgrade = True
+            gate = turn.get("bot_authoritative_output_gate") if isinstance(turn.get("bot_authoritative_output_gate"), Mapping) else {}
+            if str(gate.get("action") or "") == "downgrade_keep_text":
+                downgraded_turns += 1
+            if str(gate.get("action") or "") == "annotate":
+                annotated_turns += 1
+            if turn_has_budgeted_downgrade and not _semantic_verifier_deduped_by_deterministic_gate(turn):
+                budget_turns += 1
+    return {
+        "checked_turns": checked_turns,
+        "skipped_turns": skipped_turns,
+        "unavailable_turns": unavailable_turns,
+        "downgraded_turns": downgraded_turns,
+        "annotated_turns": annotated_turns,
+        "regen_attempts": regen_attempts,
+        "finding_counts": dict(finding_counts),
+        "action_counts": dict(action_counts),
+        "downgrade_budget_turns": budget_turns,
+        "downgrade_rate": round(budget_turns / total_turns, 4) if total_turns else 0.0,
+        "turns": total_turns,
+    }
+
+
+def _semantic_verifier_deduped_by_deterministic_gate(turn: Mapping[str, Any]) -> bool:
+    meta = turn.get("bot_semantic_output_verifier") if isinstance(turn.get("bot_semantic_output_verifier"), Mapping) else {}
+    gate = turn.get("bot_authoritative_output_gate") if isinstance(turn.get("bot_authoritative_output_gate"), Mapping) else {}
+    gate_findings = gate.get("findings") if isinstance(gate.get("findings"), Sequence) else ()
+    deterministic_codes = {
+        str(item.get("code") or "")
+        for item in gate_findings
+        if isinstance(item, Mapping) and str(item.get("source") or "") != "semantic_output_verifier"
+    }
+    findings = meta.get("findings") if isinstance(meta.get("findings"), Sequence) else ()
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        code = str(item.get("code") or "")
+        if deterministic_codes.intersection(_SEMANTIC_VERIFIER_DEDUP_CLASSES.get(code, set())):
+            return True
+    return False
+
+
 def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) -> Mapping[str, Any]:
     role_counts = {str(role): int(value or 0) for role, value in (counts or {}).items()}
     total = sum(role_counts.values())
@@ -2071,6 +2224,8 @@ def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) ->
         "bot_draft": role_counts.get("bot_draft", 0),
         "bot_critic": role_counts.get("bot_critic", 0),
         "bot_selling_compose": role_counts.get("bot_selling_compose", 0),
+        "bot_semantic_output_verifier": role_counts.get("bot_semantic_output_verifier", 0),
+        "bot_semantic_output_regen": role_counts.get("bot_semantic_output_regen", 0),
         "memory": role_counts.get("memory", 0),
         "judge": role_counts.get("judge", 0),
         "dialogs": int(dialogs),
@@ -2623,15 +2778,21 @@ def _manager_deferral_metadata_from_result(
 
     provider_error = str(getattr(result, "error", "") or "").strip()
     gate_codes = _authoritative_gate_finding_codes(authoritative_gate_metadata)
+    metadata = getattr(result, "metadata", None)
+    semantic_meta = metadata.get("semantic_output_verifier") if isinstance(metadata, Mapping) and isinstance(metadata.get("semantic_output_verifier"), Mapping) else {}
+    semantic_fallback = str(semantic_meta.get("fallback_reason") or "").strip()
+    fallback_reason = str(dialogue_contract_metadata.get("fallback_reason") or "").strip()
+    if not fallback_reason and semantic_fallback in {"semantic_verifier_downgrade", "semantic_verifier_unavailable"}:
+        fallback_reason = semantic_fallback
     reason_class = _reason_class_from_runtime_channels(
-        fallback_reason=str(dialogue_contract_metadata.get("fallback_reason") or "").strip(),
+        fallback_reason=fallback_reason,
         provider_error=provider_error,
         gate_codes=gate_codes,
         safety_flags=tuple(str(flag) for flag in (getattr(result, "safety_flags", ()) or ())),
     )
     evidence: dict[str, Any] = {}
-    if dialogue_contract_metadata.get("fallback_reason"):
-        evidence["fallback_reason"] = str(dialogue_contract_metadata.get("fallback_reason") or "")
+    if fallback_reason:
+        evidence["fallback_reason"] = fallback_reason
     if gate_codes:
         evidence["gate_findings"] = list(gate_codes)
     if provider_error:
@@ -2663,9 +2824,9 @@ def _reason_class_from_runtime_channels(
         return "high_risk"
     if reason in {"low_confidence", "no_fact_or_unverified", "policy_permission", "payment", "terminal"}:
         return reason
-    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn"}:
+    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn", "semantic_verifier_unavailable"}:
         return "provider_runtime"
-    if reason in {"hard_verification_failed", "authoritative_output_gate_blocked"}:
+    if reason in {"hard_verification_failed", "authoritative_output_gate_blocked", "semantic_verifier_downgrade"}:
         return "output_safety"
     if reason in {"empty_facts_no_fabrication", "estimate_guard_failed"}:
         return "no_fact_or_unverified"
@@ -2695,6 +2856,8 @@ def _authoritative_output_gate_metadata_from_result(result: Any) -> Mapping[str,
                     "code": code,
                     "policy": str(item.get("policy") or "").strip(),
                     "source": str(item.get("source") or "").strip(),
+                    "relation_to_base": str(item.get("relation_to_base") or "").strip(),
+                    "nearest_fact_key": str(item.get("nearest_fact_key") or "").strip(),
                 }
             )
     return {
@@ -2703,6 +2866,49 @@ def _authoritative_output_gate_metadata_from_result(result: Any) -> Mapping[str,
         "route_before": str(gate.get("route_before") or "").strip(),
         "route_after": str(gate.get("route_after") or "").strip(),
         "findings": compact_findings,
+    }
+
+
+def _semantic_output_verifier_metadata_from_result(result: Any) -> Mapping[str, Any]:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    verifier = metadata.get("semantic_output_verifier")
+    if not isinstance(verifier, Mapping):
+        return {}
+    raw_findings = verifier.get("findings")
+    findings: list[Mapping[str, str]] = []
+    if isinstance(raw_findings, Sequence) and not isinstance(raw_findings, (str, bytes, bytearray)):
+        for item in raw_findings:
+            if not isinstance(item, Mapping):
+                continue
+            code = str(item.get("code") or "").strip()
+            if not code:
+                continue
+            findings.append(
+                {
+                    "code": code,
+                    "action": str(item.get("action") or "").strip(),
+                    "span": str(item.get("span") or "").strip()[:240],
+                    "evidence": str(item.get("evidence") or "").strip()[:240],
+                    "missing_fact": str(item.get("missing_fact") or "").strip()[:240],
+                    "relation_to_base": str(item.get("relation_to_base") or "").strip(),
+                    "nearest_fact_key": str(item.get("nearest_fact_key") or "").strip(),
+                }
+            )
+    return {
+        "schema_version": str(verifier.get("schema_version") or "").strip(),
+        "enabled": bool(verifier.get("enabled")),
+        "checked": bool(verifier.get("checked")),
+        "skipped": bool(verifier.get("skipped")),
+        "skip_reason": str(verifier.get("skip_reason") or "").strip(),
+        "unavailable": bool(verifier.get("unavailable")),
+        "fallback_reason": str(verifier.get("fallback_reason") or "").strip(),
+        "action": str(verifier.get("action") or "").strip(),
+        "findings": findings,
+        "regen_attempted": bool(verifier.get("regen_attempted")),
+        "regen_accepted": bool(verifier.get("regen_accepted")),
+        "retry_attempted": bool(verifier.get("retry_attempted")),
     }
 
 

@@ -2588,6 +2588,8 @@ def _handoff_trace_layer_guard(
         return "dialogue_contract_pipeline", fallback_reason
     if gate_findings:
         return "authoritative_output_gate", ",".join(gate_findings[:5])
+    if str(provider_error or "").strip().casefold() in _OUTPUT_SAFETY_PROVIDER_ERRORS:
+        return "guard_chain", "output_safety"
     if provider_error:
         return "provider_runtime", provider_error[:80]
     if re.search(r"cross_brand|brand_separation", joined_flags, re.I):
@@ -2887,6 +2889,11 @@ def _dialogue_contract_metadata_from_result(result: Any) -> Mapping[str, Any]:
 
 _BOT_SELF_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
 _VISIBLE_ADVICE_REASON_CODES = {"estimate_individual_child_advice", "estimate_general_advice_risk"}
+_OUTPUT_SAFETY_PROVIDER_ERRORS = {
+    "authoritative_output_gate_blocked",
+    "identity_disclosure_guarded",
+    "output_sanitizer_fallback",
+}
 
 
 def _manager_deferral_metadata_from_result(
@@ -2944,6 +2951,9 @@ def _reason_class_from_runtime_channels(
     gate_codes: Sequence[str],
     safety_flags: Sequence[str],
 ) -> str:
+    provider_error_key = str(provider_error or "").strip().casefold()
+    if provider_error_key in _OUTPUT_SAFETY_PROVIDER_ERRORS:
+        return "output_safety"
     if provider_error:
         return "provider_runtime"
     for code in gate_codes:

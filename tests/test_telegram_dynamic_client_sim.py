@@ -555,6 +555,41 @@ def test_handoff_trace_uses_provider_error_when_pipeline_reason_missing(monkeypa
     assert sim._turn_fallback_reason_summary([{"turns": [turn]}]) == {"timeout": 1}
 
 
+def test_identity_disclosure_guarded_is_output_safety_not_provider_runtime(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+
+    turn = {
+        "turn": 1,
+        "client_message": "срочно, деньги списали",
+        "bot_text": "Передам менеджеру.",
+        "bot_route": "manager_only",
+        "bot_safety_flags": ["identity_disclosure_guarded", "bot_identity_disclosure", "manager_approval_required"],
+        "bot_provider_error": "identity_disclosure_guarded",
+        "bot_dialogue_contract_pipeline": {},
+        "number_audit": {"items": []},
+    }
+
+    trace = sim._handoff_trace_for_turn(turn)
+    meta = sim._manager_deferral_metadata_from_result(
+        type(
+            "Result",
+            (),
+            {
+                "route": "manager_only",
+                "error": "identity_disclosure_guarded",
+                "safety_flags": ("identity_disclosure_guarded",),
+                "metadata": {},
+            },
+        )(),
+        dialogue_contract_metadata={},
+        authoritative_gate_metadata={},
+    )
+
+    assert trace["layer"] == "guard_chain"
+    assert trace["guard"] == "output_safety"
+    assert meta["reason_class"] == "output_safety"
+
+
 def test_handoff_trace_uses_authoritative_gate_findings_when_reason_missing(monkeypatch):
     monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
 

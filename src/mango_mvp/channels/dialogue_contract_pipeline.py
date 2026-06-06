@@ -1467,7 +1467,15 @@ def _active_hard_p0_latch_reason(context: Mapping[str, Any] | None, *, current_t
         if isinstance(latch, MappingABC) and _latch_is_active(latch):
             codes = {str(item or "").strip() for item in (latch.get("codes") or ()) if str(item or "").strip()}
             primary = str(latch.get("primary_risk") or "").strip()
+            suppress_refund_latch = _presale_refund_latch_can_release(
+                codes,
+                primary=primary,
+                presale_evidence=presale_evidence,
+                current_text=current_text,
+            )
             if bool(latch.get("had_hard_p0_claim")):
+                if suppress_refund_latch:
+                    continue
                 return primary or _first_p0_latch_reason(codes)
             hard = codes.intersection(_ACTIVE_HARD_P0_LATCH_CODES)
             if hard:
@@ -1483,6 +1491,18 @@ def _active_hard_p0_latch_reason(context: Mapping[str, Any] | None, *, current_t
         if "refund" in risk_flags and not presale_evidence:
             return "refund"
     return ""
+
+
+def _presale_refund_latch_can_release(
+    codes: set[str],
+    *,
+    primary: str,
+    presale_evidence: bool,
+    current_text: str = "",
+) -> bool:
+    if not presale_evidence or hard_codes_from_text(current_text):
+        return False
+    return codes.issubset({"refund"}) and primary in {"", "refund"}
 
 
 def _has_only_benign_refund_latch(context: Mapping[str, Any] | None, *, current_text: str = "") -> bool:

@@ -4699,6 +4699,82 @@ def test_output_sanitizer_removes_semantic_regen_edit_comment() -> None:
     assert "internal_metadata_removed_from_draft" in gated.safety_flags
 
 
+def test_authoritative_gate_does_not_turn_presale_refund_followup_into_p0() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Посмотрите программу и расписание, а если появится вопрос по группе — я помогу сориентироваться.",
+        topic_id="theme:013_schedule",
+    )
+    context = {
+        "active_brand": "unpk",
+        "recent_messages": [
+            "Клиент: А если не подойдёт, можно будет вернуть деньги?",
+            "Ответ: Да, при досрочном отказе возвращается остаток неистраченных средств.",
+        ],
+        "conversation_intent_plan": {
+            "primary_intent": "schedule",
+            "risk_signals": [],
+            "route_bias": "bot_answer_self_for_pilot",
+        },
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+                "had_hard_p0_claim": True,
+            }
+        },
+    }
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Понял, спасибо. Посмотрю программу и расписание",
+        context=context,
+    )
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    findings = gated.metadata["authoritative_output_gate"]["findings"]
+    assert all(item["code"] not in {"hard_p0", "zero_collect_required"} for item in findings)
+
+
+def test_authoritative_gate_keeps_payment_dispute_latch_p0_on_followup() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Расписание можно посмотреть в карточке группы.",
+        topic_id="theme:013_schedule",
+    )
+    context = {
+        "active_brand": "unpk",
+        "recent_messages": [
+            "Клиент: Я оплатил, но в системе нет моего платежа, деньги списали!",
+            "Ответ: Приняли вопрос по оплате. Передам его менеджеру.",
+        ],
+        "conversation_intent_plan": {
+            "primary_intent": "schedule",
+            "risk_signals": [],
+            "route_bias": "bot_answer_self_for_pilot",
+        },
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["payment_dispute"],
+                "primary_risk": "payment_dispute",
+                "had_hard_p0_claim": True,
+            }
+        },
+    }
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Понял, спасибо. Посмотрю программу и расписание",
+        context=context,
+    )
+
+    assert gated.route == "manager_only"
+    findings = gated.metadata["authoritative_output_gate"]["findings"]
+    assert any(item["code"] == "hard_p0" for item in findings)
+
+
 def test_output_sanitizer_keeps_clean_detail_handoff_unchanged() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

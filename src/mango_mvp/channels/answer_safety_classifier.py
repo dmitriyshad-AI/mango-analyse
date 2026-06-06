@@ -152,7 +152,7 @@ def classify_answer_safety(
         evidence.pop("topic_id", None)
         evidence.pop("safety_flags", None)
 
-    latch_codes = _p0_latch_codes(context)
+    latch_codes = _p0_latch_codes(context, current_text=current_norm)
     if current_benign_refund and not current_codes:
         latch_codes = tuple(code for code in latch_codes if code != "refund")
     if latch_codes:
@@ -193,7 +193,7 @@ def _conversation_plan(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return plan if isinstance(plan, Mapping) else {}
 
 
-def _p0_latch_codes(context: Mapping[str, Any] | None) -> tuple[str, ...]:
+def _p0_latch_codes(context: Mapping[str, Any] | None, *, current_text: str = "") -> tuple[str, ...]:
     if not isinstance(context, Mapping):
         return ()
     latch = None
@@ -215,16 +215,54 @@ def _p0_latch_codes(context: Mapping[str, Any] | None) -> tuple[str, ...]:
         "payment_dispute": "payment_dispute",
         "p0": "payment_dispute",
     }
+    suppress_presale_refund_latch = _suppress_presale_refund_latch(context, latch, current_text=current_text)
     had_hard_p0_claim = bool(latch.get("had_hard_p0_claim"))
     result = [
         mapping.get(str(code), str(code))
         for code in _text_list(latch.get("codes"))
-        if str(code) != "refund" or had_hard_p0_claim
+        if not (mapping.get(str(code), str(code)) == "refund" and suppress_presale_refund_latch)
+        and (str(code) != "refund" or had_hard_p0_claim)
     ]
     primary = mapping.get(str(latch.get("primary_risk") or ""), "")
-    if primary and (primary != "refund" or had_hard_p0_claim):
+    if primary and not (primary == "refund" and suppress_presale_refund_latch) and (primary != "refund" or had_hard_p0_claim):
         result.insert(0, primary)
     return tuple(dict.fromkeys(code for code in result if code))
+
+
+def _suppress_presale_refund_latch(
+    context: Mapping[str, Any],
+    latch: Mapping[str, Any],
+    *,
+    current_text: str = "",
+) -> bool:
+    if codes_from_current_message(current_text):
+        return False
+    if not _has_presale_refund_evidence(context, current_text=current_text):
+        return False
+    codes = {str(item or "").strip() for item in (latch.get("codes") or ()) if str(item or "").strip()}
+    primary = str(latch.get("primary_risk") or "").strip()
+    # Only a refund-only latch can be released by presale evidence. Payment disputes,
+    # legal threats and complaints stay hard P0 even if an earlier turn discussed refund policy.
+    return codes.issubset({"refund"}) and primary in {"", "refund"}
+
+
+def _has_presale_refund_evidence(context: Mapping[str, Any] | None, *, current_text: str = "") -> bool:
+    if is_benign_hypothetical_refund(current_text):
+        return True
+    if not isinstance(context, Mapping):
+        return False
+    plan = _conversation_plan(context)
+    if str(plan.get("refund_frame") or "") == "presale_policy":
+        return True
+    for key in ("dialogue_memory_view", "dialogue_memory"):
+        source = context.get(key)
+        if isinstance(source, Mapping):
+            if str(source.get("refund_frame") or "") == "presale_policy" or bool(source.get("semantic_non_p0")):
+                return True
+    recent = context.get("recent_messages")
+    if isinstance(recent, Sequence) and not isinstance(recent, (str, bytes, bytearray)):
+        return any(is_benign_hypothetical_refund(str(item or "")) for item in recent)
+    return False
 
 
 def _semantic_non_p0_by_plan(plan: Mapping[str, Any], *, current_norm: str) -> bool:

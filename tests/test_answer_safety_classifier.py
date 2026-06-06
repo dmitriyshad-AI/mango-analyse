@@ -97,6 +97,64 @@ def test_answer_safety_presale_refund_followup_overrides_stale_refund_context_an
     assert decision.semantic_non_p0 is True
 
 
+def test_answer_safety_presale_refund_latch_does_not_leak_to_neutral_followup() -> None:
+    decision = classify_answer_safety(
+        client_message="Понял, спасибо. Посмотрю программу и расписание",
+        context={
+            "recent_messages": [
+                "Клиент: А если не подойдёт, можно будет вернуть деньги?",
+                "Ответ: Да, при досрочном отказе возвращается остаток неистраченных средств.",
+            ],
+            "conversation_intent_plan": {
+                "primary_intent": "schedule",
+                "risk_signals": [],
+                "route_bias": "bot_answer_self_for_pilot",
+            },
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["refund"],
+                    "primary_risk": "refund",
+                    "had_hard_p0_claim": True,
+                }
+            },
+        },
+    )
+
+    assert decision.p0_required is False
+    assert decision.zero_collect_required is False
+    assert decision.risk_codes == ()
+
+
+def test_answer_safety_presale_context_does_not_release_payment_dispute_latch() -> None:
+    decision = classify_answer_safety(
+        client_message="Понял, спасибо. Посмотрю программу и расписание",
+        context={
+            "recent_messages": [
+                "Клиент: А если не подойдёт, можно будет вернуть деньги?",
+                "Ответ: Да, при досрочном отказе возвращается остаток неистраченных средств.",
+            ],
+            "conversation_intent_plan": {
+                "primary_intent": "schedule",
+                "risk_signals": [],
+                "route_bias": "bot_answer_self_for_pilot",
+            },
+            "dialogue_memory_view": {
+                "p0_latch": {
+                    "active": True,
+                    "codes": ["payment_dispute"],
+                    "primary_risk": "payment_dispute",
+                    "had_hard_p0_claim": True,
+                }
+            },
+        },
+    )
+
+    assert decision.p0_required is True
+    assert decision.primary_risk == "payment_dispute"
+    assert "payment_dispute" in decision.risk_codes
+
+
 def test_answer_safety_presale_refund_repairs_wrong_refund_topic() -> None:
     decision = classify_answer_safety(
         client_message="До оплаты хочу понять условия возврата.",

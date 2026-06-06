@@ -6548,6 +6548,22 @@ def test_p0_pre_gate_keeps_explicit_presale_refund_followup_non_p0_with_refund_l
     assert p0_pre_gate("В целом, без договора, просто спрашиваю: если передумаем, вернут остаток?", context=context) is None
     assert p0_pre_gate("Я оплатил информатику, занятий нет, верните деньги.", context=context) is not None
 
+    neutral_followup_context = {
+        "recent_messages": [
+            "Клиент: А если не подойдёт, можно будет вернуть деньги?",
+            "Бот: возвращается остаток неистраченных средств.",
+        ],
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+                "had_hard_p0_claim": True,
+            }
+        },
+    }
+    assert p0_pre_gate("Понял, спасибо. Посмотрю программу и расписание", context=neutral_followup_context) is None
+
     active_refund_context = {
         "dialogue_memory_view": {
             "p0_latch": {

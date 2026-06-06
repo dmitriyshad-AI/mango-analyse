@@ -25,25 +25,92 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
+from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
-from mango_mvp.channels.p0_recall_spec import codes_from_text
+from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, soft_codes_from_text
 from mango_mvp.insights.sanitizers import sanitize_answer
 
 
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
+ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
-    "product_data/knowledge_base/kb_release_20260520_v6_3_team_answers/kb_release_v3_snapshot.json"
+    "product_data/knowledge_base/kb_release_20260602_v6_4_schedule/kb_release_v3_snapshot.json"
 )
 MAX_CATALOG_KEYS = 240
 MAX_REPAIR_ATTEMPTS = 2
+PLANNER_INTENT_VALUES: tuple[str, ...] = (
+    "teacher",
+    "recording",
+    "address",
+    "document",
+    "matkap",
+    "tax",
+    "olympiad",
+    "platform_access",
+    "installment",
+    "payment_method",
+    "discount",
+    "pricing",
+    "format",
+    "trial",
+    "camp_lvsh",
+    "enrollment_process",
+    "schedule",
+    "refund_policy",
+    "general_consultation",
+)
 
 _MONEY_OR_VALUE_RE = re.compile(
     r"(?:₽|руб(?:\.|лей|ля|ль)?|%)|\b\d[\d\s\u00a0]{2,}\s*(?:р\.|руб|₽)\b",
     re.I,
 )
 _NUMBER_RE = re.compile(r"\d+")
+_ESTIMATE_DOMAINS = ("travel_time", "route_logistics", "general_advice")
+_ESTIMATE_NUMBER_TOKEN_RE = re.compile(
+    r"\d[\d\s\u00a0]*(?:[.,]\d+)?\s*"
+    r"(?:₽|%|руб(?:\.|лей|ля|ль)?|р\.|месяц(?:ев|а)?|дн(?:ей|я)?|"
+    r"раз(?:а)?|балл(?:ов|а)?|минут(?:ы|у)?|час(?:а|ов)?|км|километр(?:а|ов)?)?",
+    re.I,
+)
+_PRODUCT_QUESTION_RE = re.compile(
+    r"цена|стоит|стоимост|сколько\s+стоит|скидк|рассрочк|долями|тариф|расписан|"
+    r"во\s+сколько|какие\s+дни|время\s+занят|дат[аеуы]|смен[аеуы]|лагер|формат|"
+    r"сколько\s+длится|длительност|документ|справк|возврат|вернут|оплат|мест[ао]|"
+    r"записать|запис[ьи]|₽|%",
+    re.I,
+)
+_PRODUCT_NUMBER_CTX_RE = re.compile(
+    r"₽|руб|р\.|%|скидк|рассрочк|долями|\b\d{1,2}:\d{2}\b|семестр|за\s+год|"
+    r"стоит|цена|тариф|сколько\s+длится|длительност|урок|занят|январ|феврал|март|"
+    r"апрел|ма[яй]|июн|июл|август|сентяб|октяб|ноябр|декабр|смен[аеуы]",
+    re.I,
+)
+_INDIVIDUAL_CHILD_RE = re.compile(
+    r"мой\s+(?:реб[её]нок|сын|дочь)|у\s+моего|потянет\s+ли|справится\s+ли|"
+    r"отста[её]т|не\s+тянет|что\s+с\s+ним|что\s+с\s+ней|подойд[её]т\s+ли\s+(?:моему|нам)|"
+    r"уровень\s+моего",
+    re.I,
+)
+_UNCERTAINTY_MARKERS = (
+    "ориентировочно",
+    "примерно",
+    "навскидку",
+    "точно подскажет менеджер",
+    "не возьмусь утверждать точно",
+    "точную информацию уточнит менеджер",
+)
+_ESTIMATE_PRESSURE_RE = re.compile(
+    r"срочно\s+записыва\w+|мест\s+почти\s+нет|надо\s+успеть|иначе\s+не\s+попад[её]те|"
+    r"лучше\s+не\s+тянуть",
+    re.I,
+)
+_ESTIMATE_GUARANTEE_RE = re.compile(
+    r"гарантир|100\s*%|обязательно\s+(?:поступ|сдад|сдаст|получ)|точно\s+(?:поступ|сдад|сдаст|получ)|"
+    r"исправим\s+на\s+(?:5|пят)|подтянем\s+на\s+(?:5|пят)|точно\s+станет",
+    re.I,
+)
 _AI_SELF_DISCLOSURE_RE = re.compile(
     r"\bя\s+(?:бот|gpt|нейросеть|искусственн\w+\s+интеллект)\b",
     re.I,
@@ -80,6 +147,22 @@ _DRY_P0_TEXTS: tuple[str, ...] = (
     "Обращение принято. Передам ответственному сотруднику, он вернётся с ответом.",
     "Приняли. Передам обращение ответственному сотруднику, он вернётся с ответом.",
     "Зафиксировали обращение. Передам его ответственному сотруднику, он вернётся с ответом.",
+)
+_GENERIC_HANDOFF_TEXTS: tuple[str, ...] = (
+    "Чтобы не ошибиться, передам вопрос менеджеру — он сверит детали и вернётся с ответом.",
+    "Не хочу гадать по неподтверждённому пункту: менеджер проверит его и вернётся с ответом.",
+    "Здесь лучше сверить условия: передам вопрос менеджеру, он ответит по точным данным.",
+    "Передам этот пункт менеджеру, чтобы он проверил его по актуальным данным и ответил вам.",
+)
+_DETAIL_HANDOFF_TEXTS: tuple[str, ...] = (
+    "Чтобы не ошибиться, менеджер уточнит именно про {detail} и вернётся с ответом.",
+    "Не хочу гадать по неподтверждённому пункту: менеджер проверит именно {detail} и ответит вам.",
+    "По пункту «{detail}» нужна точная сверка — передам его менеджеру.",
+    "Передам менеджеру именно вопрос про {detail}, чтобы он проверил актуальные условия.",
+)
+_HANDOFF_EXHAUSTED_TEXTS: tuple[str, ...] = (
+    "Вижу, это важно — отдельно отмечу менеджеру, чтобы он ответил именно по этому пункту.",
+    "Зафиксирую этот пункт отдельно для менеджера, чтобы он вернулся не общим ответом, а по сути вопроса.",
 )
 
 
@@ -121,6 +204,22 @@ class AnswerContract:
     denied_topics: tuple[str, ...] = ()
     switched_topics: tuple[str, ...] = ()
     known_slots: Mapping[str, Slot] = field(default_factory=dict)
+    planner_intent: str = ""
+    planner_subvariant: str = ""
+    planner_slots: Mapping[str, str] = field(default_factory=dict)
+    planner_confidence: float = 0.0
+    answer_mode: str = "confirmed_only"
+    estimate_domain: str = "none"
+    estimate_confidence: float = 0.0
+    selling: Mapping[str, Any] = field(
+        default_factory=lambda: {
+            "objection": "none",
+            "exit_signal": False,
+            "anxiety": False,
+            "unmet_need": "",
+            "readiness": "exploring",
+        }
+    )
     forbidden_substitutions: tuple[str, ...] = ()
     client_state: str = ""
     answerability: str = "manager_only"
@@ -164,6 +263,14 @@ class AnswerContract:
             "denied_topics": list(self.denied_topics),
             "switched_topics": list(self.switched_topics),
             "known_slots": {name: slot.to_json_dict() for name, slot in self.known_slots.items()},
+            "planner_intent": self.planner_intent,
+            "planner_subvariant": self.planner_subvariant,
+            "planner_slots": dict(self.planner_slots),
+            "planner_confidence": self.planner_confidence,
+            "answer_mode": self.answer_mode,
+            "estimate_domain": self.estimate_domain,
+            "estimate_confidence": self.estimate_confidence,
+            "selling": dict(self.selling),
             "assertable_slots": self.assertable_slots(),
             "unsourced_slots": list(self.unsourced_slots()),
             "needed_fact_keys": list(self.needed_fact_keys),
@@ -239,6 +346,9 @@ class DialogueContractPipelineResult:
     unsupported_claims: tuple[str, ...] = ()
     form_findings: tuple[FormFinding, ...] = ()
     fallback_reason: str = ""
+    semantic_match_attempted: bool = False
+    semantic_match_replaced: bool = False
+    semantic_match_reason: str = ""
     warmed: bool = False
     warmth_attempted: bool = False
     warmth_mode: str = ""
@@ -247,6 +357,10 @@ class DialogueContractPipelineResult:
     warmth_rejected_unsupported: tuple[str, ...] = ()
     warmth_semantic_available: bool = True
     repaired: bool = False
+    recovery_candidate: str = ""
+    is_estimate: bool = False
+    estimate_domain: str = "none"
+    estimate_answer_mode: str = "confirmed_only"
 
 
 @dataclass(frozen=True)
@@ -261,6 +375,12 @@ def pipeline_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(DIALOGUE_CONTRACT_PIPELINE_ENV) is not None:
         return _truthy(context.get(DIALOGUE_CONTRACT_PIPELINE_ENV))
     return _truthy(os.getenv(DIALOGUE_CONTRACT_PIPELINE_ENV))
+
+
+def estimate_mode_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(ESTIMATE_MODE_ENV) is not None:
+        return _truthy(context.get(ESTIMATE_MODE_ENV))
+    return _truthy(os.getenv(ESTIMATE_MODE_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -305,16 +425,23 @@ def build_understanding_prompt(
 ) -> str:
     hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
     catalog = ", ".join(str(item) for item in fact_key_catalog[:MAX_CATALOG_KEYS])
+    planner_values = ", ".join(PLANNER_INTENT_VALUES)
     known_slots: Mapping[str, Any] = {}
+    topic_focus: Mapping[str, Any] = {}
     if isinstance(context, MappingABC):
         memory = context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), MappingABC) else {}
         known_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), MappingABC) else {}
+        topic_focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), MappingABC) else {}
     return (
         "Ты разбираешь диалог с родителем о курсах учебного центра.\n"
         f"Активный бренд: {_normalize_brand(active_brand)}. Клиентский ответ потом будет только по этому бренду.\n"
         "Верни строго JSON без пояснений:\n"
         "{ current_question, client_state, continued_topics[], denied_topics[], switched_topics[], forbidden_substitutions[],\n"
         "  known_slots: { имя: {value, source} },\n"
+        "  planner_intent, planner_subvariant, planner_slots: {slot:value}, planner_confidence:0..1,\n"
+        "  answer_mode:'confirmed_only'|'estimate_allowed', "
+        "estimate_domain:'travel_time'|'route_logistics'|'general_advice'|'none', estimate_confidence:0..1,\n"
+        "  selling: {objection:'price'|'none', exit_signal:bool, anxiety:bool, unmet_need:str, readiness:'exploring'|'comparing'|'ready'},\n"
         "  subquestions: [ {text, answerable:'self'|'manager', question_type:'existence_yes_no'|'', existence_target, needed_fact_keys[], next_step} ],\n"
         "  answerability:'answer_self'|'manager_only', question_type:'existence_yes_no'|'', existence_target, is_p0:bool, p0_reason, confidence:0..1 }\n"
         "Правила:\n"
@@ -326,12 +453,52 @@ def build_understanding_prompt(
         "не подменяй его соседним способом оплаты; в current_question и subquestion.text сохрани именно спрошенный способ.\n"
         "- Гипотетический вопрос до оплаты «если передумаю / если не понравится, вернут ли деньги?» — это refund_policy, не P0; "
         "попроси ключ refund_policy.current и отвечай из факта. Реальная просьба «верните деньги», спор оплаты или жалоба — P0 manager_only.\n"
+        "- Если реплика — уточнение/эллипсис (короткий вопрос про класс/формат/цену/срок без названия предмета или продукта), "
+        "ВОССТАНОВИ тему из истории, known_slots и topic_focus: в current_question и needed_fact_keys укажи полную тему "
+        "(предмет+формат+класс+продукт), а не только новую деталь.\n"
+        "- product_family из topic_focus важен: если тема была 'camp' (лагерь/смена), уточнение остаётся про смену, "
+        "НЕ подменяй обычным курсом или олимпиадой.\n"
+        "- Если клиент ЯВНО назвал другой предмет/продукт, заполни switched_topics и НЕ склеивай новую тему со старой.\n"
         "- known_slots указывай ТОЛЬКО с источником: 'client_turn_N' или 'fact:<key>'. Без источника слот не указывай.\n"
         "- client_state — ситуация/тон клиента для выбора регистра; не нужно потом произносить эмоцию вслух.\n"
         "- needed_fact_keys: только ключи или смысловые ключи из каталога; значения, суммы, даты и проценты не пиши.\n"
         "- Если нужен спорный возврат, жалоба, юридическая угроза или спорная оплата: is_p0=true, answerability=manager_only.\n"
-        "- Если факта нет или уверенность низкая: answerability=manager_only, но current_question всё равно заполни.\n"
+        "- Жалобу/недовольство распознавай по смыслу, даже без слова «жалоба»: "
+        "«ребёнок ничего не понял», «зря заплатили», «толку нет», «не нравится как ведут» — "
+        "это is_p0=true, p0_reason='complaint', answerability=manager_only. "
+        "Если в той же реплике есть вопрос о курсе, приоритет у жалобы, не собирай данные ребёнка.\n"
+        "- Если прямого факта нет, но в каталоге есть ключ, ПО СМЫСЛУ покрывающий вопрос — поставь его в "
+        "needed_fact_keys и answerable='self'. Если вопрос неоднозначен — задай ОДИН уточняющий подвопрос, не "
+        "уходи к менеджеру. answerability=manager_only ТОЛЬКО при P0 или когда в каталоге реально нет покрывающего "
+        "ключа. current_question заполняй всегда.\n"
+        f"- planner_intent — главное намерение для выбора правила; выбери одно из: {planner_values}. "
+        "Если не уверен, ставь general_consultation и planner_confidence ниже 0.70.\n"
+        "- planner_subvariant — короткая разновидность внутри намерения, например online/offline/weekend/start_date/"
+        "license/how_to_login/second_subject/live_seats; если не нужно — пустая строка.\n"
+        "- planner_slots — только явно понятые или восстановленные из памяти слоты: grade, subject, format, product, "
+        "product_family, payment_method. Не добавляй active_brand: бренд задаётся каналом, а не текстом клиента.\n"
+        "- На эллипсисе используй topic_focus и known_slots для planner_intent/planner_slots так же, как для current_question: "
+        "«а очно?» после цены информатики остаётся pricing/format по той же теме, не general_consultation.\n"
+        "- answer_mode='estimate_allowed' ТОЛЬКО для низкорисковой оценки: дорога/логистика/география "
+        "(как добраться, сколько ехать, расстояние) или общий педагогический совет в общем виде. "
+        "Для дороги ставь estimate_domain='travel_time' или 'route_logistics'; для общего совета — 'general_advice'. "
+        "Для всего продуктового — цены, скидки, расписание, даты, смены, лагерь, формат-условия, длительность урока, "
+        "документы, возврат, оплата, места, запись — ставь answer_mode='confirmed_only', estimate_domain='none'. "
+        "Диагноз конкретного ребёнка, обещание результата/поступления или вопрос «потянет ли мой ребёнок» — "
+        "confirmed_only/none. Если сомневаешься — confirmed_only/none.\n"
+        "- selling — только для мягких коммерческих сигналов, НЕ для P0. objection='price', если клиент прямо или по смыслу "
+        "сомневается в цене/бюджете: «дорого», «серьёзная сумма для семьи», «не потянем», «есть дешевле?». "
+        "exit_signal=true, если клиент уходит подумать/сравнить/обсудить: «подумаю», «посоветуюсь с мужем/семьёй», "
+        "«посмотрю другие варианты». anxiety=true, если клиент боится ошибиться, недоверяет или прямо спрашивает, "
+        "нормальный ли центр; НЕ путай с юридической угрозой или претензией. unmet_need — короткий внутренний ярлык "
+        "невысказанной потребности без дословной цитаты клиента, например 'нужна мягкая поддержка по физике'; не ставь туда "
+        "ПДн и не обещай оценку. readiness='ready', если клиент явно готов записываться/платить/просит следующий шаг; "
+        "например «куда платить», «как записаться», «готовы оформить». "
+        "readiness='comparing', если сравнивает варианты; иначе 'exploring'. Для нейтрального «сколько стоит/расскажите» "
+        "ставь objection='none', exit_signal=false, anxiety=false, unmet_need='', readiness='exploring'. "
+        "Реальный возврат, жалоба или спор оплаты остаются is_p0=true и selling не должен менять маршрут.\n"
         f"Уже известные данные: {json.dumps(dict(known_slots), ensure_ascii=False)}\n"
+        f"Фокус темы из памяти: {json.dumps(dict(topic_focus), ensure_ascii=False)}\n"
         f"Каталог ключей фактов: {catalog}\n"
         f"Диалог:\n{hist}\n"
         "Только JSON."
@@ -393,6 +560,14 @@ def parse_contract(
         denied_topics=tuple(_seq(data.get("denied_topics"))),
         switched_topics=tuple(_seq(data.get("switched_topics"))),
         known_slots=_clean_slots(data.get("known_slots")),
+        planner_intent=_clean_planner_intent(data.get("planner_intent")),
+        planner_subvariant=str(data.get("planner_subvariant") or "").strip()[:80],
+        planner_slots=_clean_planner_slots(data.get("planner_slots")),
+        planner_confidence=_clamp_float(data.get("planner_confidence")),
+        answer_mode=_clean_answer_mode(data.get("answer_mode")),
+        estimate_domain=_clean_estimate_domain(data.get("estimate_domain")),
+        estimate_confidence=_clamp_float(data.get("estimate_confidence")),
+        selling=_clean_selling(data.get("selling")),
         forbidden_substitutions=tuple(_seq(data.get("forbidden_substitutions"))),
         client_state=str(data.get("client_state") or "").strip()[:180],
         answerability=answerability,
@@ -402,6 +577,61 @@ def parse_contract(
         p0_reason=str(data.get("p0_reason") or p0_reason_pregate or "").strip()[:200],
         confidence=_clamp_float(data.get("confidence")),
     )
+
+
+def _clean_planner_intent(value: object) -> str:
+    intent = str(value or "").strip().casefold()
+    return intent if intent in PLANNER_INTENT_VALUES else ""
+
+
+def _clean_answer_mode(value: object) -> str:
+    return "estimate_allowed" if str(value or "").strip().casefold() == "estimate_allowed" else "confirmed_only"
+
+
+def _clean_estimate_domain(value: object) -> str:
+    domain = str(value or "").strip().casefold()
+    return domain if domain in _ESTIMATE_DOMAINS else "none"
+
+
+def _clean_selling(value: object) -> Mapping[str, Any]:
+    default = {
+        "objection": "none",
+        "exit_signal": False,
+        "anxiety": False,
+        "unmet_need": "",
+        "readiness": "exploring",
+    }
+    if not isinstance(value, MappingABC):
+        return default
+    objection = str(value.get("objection") or "none").strip().casefold()
+    if objection != "price":
+        objection = "none"
+    readiness = str(value.get("readiness") or "exploring").strip().casefold()
+    if readiness not in {"exploring", "comparing", "ready"}:
+        readiness = "exploring"
+    unmet_need = " ".join(str(value.get("unmet_need") or "").split())[:120]
+    return {
+        "objection": objection,
+        "exit_signal": bool(value.get("exit_signal")),
+        "anxiety": bool(value.get("anxiety")),
+        "unmet_need": unmet_need,
+        "readiness": readiness,
+    }
+
+
+def _clean_planner_slots(raw: object) -> Mapping[str, str]:
+    if not isinstance(raw, MappingABC):
+        return {}
+    allowed = {"grade", "subject", "format", "product", "product_family", "payment_method"}
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key or "").strip().casefold()
+        if name not in allowed:
+            continue
+        text = str(value or "").strip()
+        if text:
+            result[name] = text[:120]
+    return result
 
 
 def understand(
@@ -439,13 +669,252 @@ def understand(
     )
 
 
+_MEMORY_TOPIC_MARKERS_RE = re.compile(
+    r"информат|физик|математ|хими|биолог|русск|англ|обществ|истори|литерат|географ|"
+    r"лвш|лагер|смен|олимпиад|физтех|выездн|camp|lvsh|olympiad|phystech",
+    re.I,
+)
+
+
+def _augment_contract_with_memory_topic(
+    contract: AnswerContract,
+    *,
+    context: Mapping[str, Any] | None,
+    fact_key_catalog: Sequence[str],
+) -> AnswerContract:
+    if contract.is_p0 or contract.switched_topics or not isinstance(context, MappingABC):
+        return contract
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, MappingABC):
+        return contract
+    focus = memory.get("topic_focus")
+    if not isinstance(focus, MappingABC):
+        return contract
+    subject = str(focus.get("subject") or "").strip()
+    if not subject or _contract_has_topic(contract):
+        return contract
+    topic_keys = _keys_for_topic(focus, fact_key_catalog=fact_key_catalog, contract=contract)
+    if not topic_keys:
+        return contract
+    current_question = _compose_topic_question(contract.current_question, focus)
+    return replace_contract_topic(contract, current_question=current_question, needed_fact_keys=topic_keys)
+
+
+def _contract_has_topic(contract: AnswerContract) -> bool:
+    return bool(_MEMORY_TOPIC_MARKERS_RE.search(_contract_intent_text(contract)))
+
+
+def _compose_topic_question(question: str, focus: Mapping[str, Any]) -> str:
+    base = str(question or "").strip() or "уточнение по текущей теме"
+    current_format = _format_from_text(base)
+    parts: list[str] = []
+    subject = str(focus.get("subject") or "").strip()
+    grade = _grade_from_text(base) or str(focus.get("grade") or "").strip()
+    format_value = current_format or str(focus.get("format") or "").strip()
+    product = str(focus.get("product") or "").strip()
+    product_family = str(focus.get("product_family") or "").strip()
+    if subject:
+        parts.append(f"предмет {subject}")
+    if grade:
+        parts.append(f"{grade} класс")
+    if format_value:
+        parts.append(f"формат {format_value}")
+    if product:
+        parts.append(f"продукт {product}")
+    if product_family:
+        family_text = "лагерь/смена" if product_family == "camp" else "регулярный курс" if product_family == "regular_course" else product_family
+        parts.append(f"тип продукта {family_text}")
+    if not parts:
+        return base
+    return f"{base}. Тема: {', '.join(parts)}."
+
+
+def replace_contract_topic(
+    contract: AnswerContract,
+    *,
+    current_question: str,
+    needed_fact_keys: Sequence[str],
+) -> AnswerContract:
+    keys = tuple(dict.fromkeys(str(item or "").strip() for item in needed_fact_keys if str(item or "").strip()))
+    if not keys:
+        return contract
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=(),
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    updated: list[Subquestion] = []
+    for item in subquestions:
+        if item.answerable == "self" or contract.answerability == "answer_self":
+            updated.append(
+                replace(
+                    item,
+                    text=current_question,
+                    answerable="self" if contract.answerability == "answer_self" else item.answerable,
+                    needed_fact_keys=tuple(dict.fromkeys((*item.needed_fact_keys, *keys))),
+                )
+            )
+        else:
+            updated.append(item)
+    return replace(contract, current_question=current_question, subquestions=tuple(updated))
+
+
+def _keys_for_topic(
+    focus: Mapping[str, Any],
+    *,
+    fact_key_catalog: Sequence[str],
+    contract: AnswerContract,
+) -> tuple[str, ...]:
+    subject_aliases = _focus_aliases("subject", focus.get("subject"))
+    if not subject_aliases:
+        return ()
+    grade_aliases = _focus_aliases("grade", focus.get("grade"))
+    format_aliases = _focus_aliases("format", _format_from_text(_contract_intent_text(contract)) or focus.get("format"))
+    product_aliases = _focus_aliases("product", focus.get("product"))
+    family = str(focus.get("product_family") or "").strip().casefold()
+    family_aliases = _focus_aliases("product_family", family)
+    intent_aliases = _contract_query_aliases(contract)
+
+    scored: list[tuple[int, str]] = []
+    for key in tuple(dict.fromkeys(str(item or "").strip() for item in fact_key_catalog if str(item or "").strip())):
+        has_subject = _key_has_any_topic_alias(key, subject_aliases)
+        has_family = _key_has_any_topic_alias(key, family_aliases)
+        if not has_subject and not (family == "camp" and has_family):
+            continue
+        if family == "camp" and family_aliases and not has_family:
+            continue
+        if family == "regular_course" and _key_has_any_topic_alias(key, _focus_aliases("product_family", "camp")):
+            continue
+        score = 40 if has_subject else 28
+        if grade_aliases and _key_has_any_topic_alias(key, grade_aliases):
+            score += 18
+        if format_aliases and _key_has_any_topic_alias(key, format_aliases):
+            score += 16
+        if product_aliases and _key_has_any_topic_alias(key, product_aliases):
+            score += 14
+        if family_aliases and has_family:
+            score += 12
+        if intent_aliases and _key_has_any_topic_alias(key, intent_aliases):
+            score += 10
+        scored.append((score, key))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return tuple(key for _, key in scored[:8])
+
+
+def _focus_aliases(field: str, value: object) -> tuple[str, ...]:
+    raw = str(value or "").strip().casefold().replace("ё", "е")
+    if not raw:
+        return ()
+    if field == "subject":
+        if "информ" in raw:
+            return ("информат", "informatics", "computer_science", "computer")
+        if "физ" in raw:
+            return ("физик", "physics")
+        if "мат" in raw:
+            return ("математ", "math")
+        if "хим" in raw:
+            return ("хим", "chem")
+        if "био" in raw:
+            return ("биолог", "bio")
+        if "рус" in raw:
+            return ("русск", "russian")
+        if "анг" in raw:
+            return ("англ", "english")
+        return tuple(part for part in re.split(r"[\s,;/]+", raw) if part)
+    if field == "grade":
+        match = re.search(r"\b([1-9]|1[01])\b", raw)
+        if not match:
+            return ()
+        grade = match.group(1)
+        return (f"grade{grade}", f"class{grade}", f"{grade}klass", f"klass{grade}", f"{grade}класс")
+    if field == "format":
+        if "онлайн" in raw or "online" in raw:
+            return ("online", "онлайн")
+        if "очно" in raw or "офлайн" in raw or "offline" in raw or "ochno" in raw:
+            return ("offline", "ochno", "очно", "офлайн")
+        return ()
+    if field == "product_family":
+        if raw == "camp" or "лагер" in raw or "смен" in raw or "лвш" in raw:
+            return ("camp", "lvsh", "лвш", "лагер", "смен", "mendeleevo", "менделеев")
+        if raw == "regular_course":
+            return ("regular", "regular_course", "course", "курс")
+        return ()
+    if field == "product":
+        aliases = [part for part in re.split(r"[\s,;/]+", raw) if len(part) >= 3]
+        if "лвш" in raw:
+            aliases.extend(["lvsh", "camp", "лагер", "смен"])
+        return tuple(dict.fromkeys(aliases))
+    return ()
+
+
+def _contract_query_aliases(contract: AnswerContract) -> tuple[str, ...]:
+    text = _contract_intent_text(contract)
+    aliases: list[str] = []
+    if re.search(r"цен|стоим|сколько|оплат", text, re.I):
+        aliases.extend(("price", "prices", "cost", "tuition", "стоим", "цен"))
+    if re.search(r"онлайн|online", text, re.I):
+        aliases.extend(("online", "онлайн"))
+    if re.search(r"очно|офлайн|offline|ochno", text, re.I):
+        aliases.extend(("offline", "ochno", "очно", "офлайн"))
+    if re.search(r"распис|дни|когда|выходн|будн", text, re.I):
+        aliases.extend(("schedule", "days", "weekly", "распис", "дни", "weekend"))
+    if re.search(r"запис|материал|кабинет", text, re.I):
+        aliases.extend(("recording", "materials", "cabinet", "запис"))
+    return tuple(dict.fromkeys(aliases))
+
+
+def _format_from_text(text: str) -> str:
+    low = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"онлайн|online", low, re.I):
+        return "онлайн"
+    if re.search(r"очно|офлайн|offline|ochno", low, re.I):
+        return "очно"
+    return ""
+
+
+def _grade_from_text(text: str) -> str:
+    match = re.search(r"\b([1-9]|1[01])\s*(?:класс|кл\.?|grade)?\b", str(text or "").casefold().replace("ё", "е"))
+    return match.group(1) if match else ""
+
+
+def _key_has_any_topic_alias(key: str, aliases: Sequence[str]) -> bool:
+    if not aliases:
+        return False
+    raw = str(key or "").casefold().replace("ё", "е")
+    norm = _normalize_lookup(raw)
+    for alias in aliases:
+        alias_raw = str(alias or "").casefold().replace("ё", "е")
+        alias_norm = _normalize_lookup(alias_raw)
+        if alias_raw and alias_raw in raw:
+            return True
+        if alias_norm and alias_norm in norm:
+            return True
+    return False
+
+
 def p0_pre_gate(text: str, *, context: Mapping[str, Any] | None = None) -> str | None:
-    codes = codes_from_text(text)
+    codes = hard_codes_from_text(text)
     if codes:
-        return ",".join(codes)
+        result = ",".join(codes)
+        trace_event(context, "p0_pre_gate", {"source": "regex", "codes": list(codes), "result": result})
+        return result
+    soft_codes = soft_codes_from_text(text)
+    if soft_codes:
+        trace_event(context, "p0_pre_gate", {"source": "regex_soft", "codes": list(soft_codes), "result": ""})
     decision = classify_answer_safety(client_message=text, context=context)
     if decision.p0_required:
-        return ",".join(decision.risk_codes or (decision.primary_risk or "p0",))
+        result = ",".join(decision.risk_codes or (decision.primary_risk or "p0",))
+        trace_event(
+            context,
+            "p0_pre_gate",
+            {"source": "classifier", "codes": list(decision.risk_codes or ()), "primary_risk": decision.primary_risk, "result": result},
+        )
+        return result
+    trace_event(context, "p0_pre_gate", {"source": "classifier", "codes": [], "result": ""})
     return None
 
 
@@ -508,6 +977,92 @@ def retrieve_facts(
     return RetrievalResult(facts=facts, missing=tuple(missing), matched_keys=matched)
 
 
+def _resolve_answer_mode(
+    *,
+    contract: AnswerContract,
+    question_text: str,
+    has_p0: bool,
+    has_kb_fact: bool,
+) -> tuple[str, str]:
+    if has_p0:
+        return "confirmed_only", "none"
+    if _is_product_question(
+        question_text,
+        planner_intent=contract.planner_intent,
+        needed_fact_keys=contract.all_needed_fact_keys(),
+    ):
+        return "confirmed_only", "none"
+    if has_kb_fact:
+        return "confirmed_only", "none"
+    if contract.answer_mode == "estimate_allowed" and contract.estimate_domain in _ESTIMATE_DOMAINS:
+        return "estimate_allowed", contract.estimate_domain
+    return "confirmed_only", "none"
+
+
+def _is_product_question(
+    text: str,
+    *,
+    planner_intent: str = "",
+    needed_fact_keys: Sequence[str] = (),
+) -> bool:
+    combined = " ".join(str(item or "") for item in (text, planner_intent, *needed_fact_keys))
+    if _PRODUCT_QUESTION_RE.search(combined):
+        return True
+    if _INDIVIDUAL_CHILD_RE.search(str(text or "")):
+        return True
+    normalized_intent = str(planner_intent or "").casefold()
+    if any(
+        marker in normalized_intent
+        for marker in (
+            "price",
+            "pricing",
+            "discount",
+            "schedule",
+            "enroll",
+            "format",
+            "camp",
+            "refund",
+            "payment",
+            "docs",
+            "document",
+            "trial",
+            "installment",
+        )
+    ):
+        return True
+    return bool(tuple(item for item in needed_fact_keys if str(item or "").strip()))
+
+
+def _estimate_policy_context(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    enabled: bool,
+    question_text: str,
+) -> Mapping[str, Any]:
+    resolved_mode, resolved_domain = _resolve_answer_mode(
+        contract=contract,
+        question_text=question_text,
+        has_p0=contract.is_p0,
+        has_kb_fact=bool(retrieval.facts),
+    )
+    return {
+        "enabled": enabled,
+        "planner_answer_mode": contract.answer_mode,
+        "planner_estimate_domain": contract.estimate_domain,
+        "planner_estimate_confidence": contract.estimate_confidence,
+        "answer_mode": resolved_mode,
+        "estimate_domain": resolved_domain,
+        "has_kb_fact": bool(retrieval.facts),
+        "individual_child_question": bool(_INDIVIDUAL_CHILD_RE.search(str(question_text or ""))),
+        "product_question": _is_product_question(
+            question_text,
+            planner_intent=contract.planner_intent,
+            needed_fact_keys=contract.all_needed_fact_keys(),
+        ),
+    }
+
+
 def build_draft_prompt(
     *,
     conversation: Sequence[Mapping[str, str]],
@@ -517,10 +1072,12 @@ def build_draft_prompt(
     tone_guide: str = "",
     style_examples: Sequence[str] = (),
     toggles: Toggles | None = None,
+    dialogue_memory_view: Mapping[str, Any] | None = None,
 ) -> str:
     toggles = toggles or Toggles()
     hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
     facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(нет подтверждённых фактов под этот вопрос)"
+    memory_block = _format_memory_block(dialogue_memory_view)
     subquestions = "\n".join(
         f"- {item.text or contract.current_question} [{item.answerable}]"
         + (f"; тип: {item.question_type}" if item.question_type else "")
@@ -546,7 +1103,13 @@ def build_draft_prompt(
         + (f"Запрещённые подстановки: {', '.join(contract.forbidden_substitutions)}\n" if contract.forbidden_substitutions else "")
         + (f"Стиль, только манера и структура, НЕ источник фактов:\n{examples}\n" if examples else "")
         + "Правила ответа: сначала прямой ответ на заданный вопрос, потом 1-2 коротких пояснения и один следующий шаг. "
-        "Если это вопрос «есть ли X», отвечай именно про X: не пиши «да/можно/доступно», если подтверждён только соседний факт Y. "
+        "Если в фактах есть ответ на вопрос ПО СМЫСЛУ — отвечай из него, даже если формулировка факта не совпадает с вопросом дословно. "
+        "Считай совпадением по смыслу: синонимы и иные названия того же продукта "
+        "(вопрос «олимпиада по физике» + факт «олимпиадная подготовка Физтех» — это одно и то же, отвечай да); "
+        "конкретное внутри общего (вопрос «в августе» + факт «3-14 августа» — да; "
+        "вопрос «для 10 класса» + факт «5-11 класс» — да). Не уходи к менеджеру только из-за разной формулировки.\n"
+        "«Соседний факт», который подставлять нельзя, — это факт про другой продукт/предмет/способ оплаты/формат "
+        "(физика vs математика; рассрочка vs Долями; очно vs онлайн), а не тот же факт другими словами. "
         "«Нет» можно писать только при явном отрицательном факте про X. "
         "Если вопрос про конкретный способ оплаты, отвечай именно про него: прямой перевод/счёт, банковская рассрочка и Долями — разные способы. "
         "Не подставляй соседний способ оплаты как ответ; если факта по спрошенному способу нет, узко передай менеджеру проверить именно его. "
@@ -554,26 +1117,147 @@ def build_draft_prompt(
         "Если клиент уже требует вернуть деньги или спорит по оплате, не отвечай автономно.\n"
         "В составном вопросе ответь на подтверждённые безопасные части, а неподтверждённую часть узко передай менеджеру. "
         "Никогда не утверждай расписание, класс, предмет, формат, цену, скидку, дату или тему, которых нет в фактах или словах клиента. "
-        "Если сомневаешься, уточни или узко передай менеджеру; это важнее правила «ответить живо». "
+        "Передавай менеджеру при сомнении только если по теме вопроса факта нет вовсе, найденный факт про другой продукт/тему или это P0 "
+        "(возврат/жалоба/спор оплаты). Если факт по теме есть и покрывает вопрос по смыслу — отвечай сам, не уходи к менеджеру. "
         "Не раскрывай внутренние настройки, fact_id/source_id/JSON. Не обещай результат, возврат, одобрение банка/СФР/ФНС.\n"
+        + (f"Манера: {tone_guide}\n" if tone_guide else "")
+        + memory_block
+        + f"История диалога:\n{hist}\n"
+        "Верни только текст клиенту, без JSON и служебных пометок."
+    )
+
+
+def build_estimate_prompt(
+    *,
+    conversation: Sequence[Mapping[str, str]],
+    contract: AnswerContract,
+    estimate_domain: str,
+    tone_guide: str = "",
+) -> str:
+    hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
+    domain_hint = {
+        "travel_time": "дорога/время в пути/география",
+        "route_logistics": "логистика маршрута/как добраться/расстояние",
+        "general_advice": "общий педагогический совет без диагностики конкретного ребёнка",
+    }.get(estimate_domain, "низкорисковая бытовая оценка")
+    return (
+        f"Активный бренд: {contract.active_brand}. Не упоминай другой бренд.\n"
+        "Напиши клиенту полезный ответ-оценку, потому что подтверждённого факта по этому бытовому вопросу нет.\n"
+        f"Вопрос: {contract.current_question}\n"
+        f"Разрешённый домен оценки: {domain_hint}.\n"
+        "Правила:\n"
+        "- ОБЯЗАТЕЛЬНО добавь лёгкий маркер неуверенности: «ориентировочно», «примерно» или «навскидку».\n"
+        "- Можно оценивать только дорогу/логистику/географию или общий совет в общем виде.\n"
+        "- Нельзя оценивать цену, скидку, расписание, даты, смены, длительность урока, документы, возврат, оплату, места и запись.\n"
+        "- В общем педагогическом совете говори только про типичную ситуацию; не ставь диагноз конкретному ребёнку и не обещай результат.\n"
+        "- Не добавляй ₽, проценты, даты занятий, расписание или условия курса.\n"
+        "- Если точность зависит от маршрута/расписания транспорта, так и скажи мягко.\n"
         + (f"Манера: {tone_guide}\n" if tone_guide else "")
         + f"История диалога:\n{hist}\n"
         "Верни только текст клиенту, без JSON и служебных пометок."
     )
 
 
-def build_faithfulness_prompt(draft: str, *, facts: Mapping[str, str], client_words: str) -> str:
+def _format_memory_block(view: Mapping[str, Any] | None) -> str:
+    if not view:
+        return ""
+    open_question = view.get("open_question") or {}
+    open_question_text = str(open_question.get("text") or "") if isinstance(open_question, MappingABC) else str(open_question or "")
+    known_slots = view.get("known_slots") or {}
+    do_not_ask_again = view.get("do_not_ask_again") or ()
+    commitments = view.get("last_bot_commitments") or ()
+    topic_focus = view.get("topic_focus") or {}
+    summary = str(view.get("conversation_summary_short") or "")
+    lines = ["Рабочая память переписки (используй, но P0/бренд/факт-гарды важнее памяти):"]
+    if summary:
+        lines.append(f"- кратко: {summary}")
+    if topic_focus:
+        lines.append(f"- фокус темы: {json.dumps(topic_focus, ensure_ascii=False)}")
+    if open_question_text:
+        lines.append(f"- открытый вопрос клиента (закрой первым, если безопасно): {open_question_text}")
+    if known_slots:
+        lines.append(f"- уже известно (НЕ переспрашивай): {json.dumps(known_slots, ensure_ascii=False)}")
+    if do_not_ask_again:
+        lines.append(f"- не спрашивай заново: {', '.join(str(item) for item in do_not_ask_again)}")
+    if commitments:
+        lines.append(f"- бот уже обещал (не меняй без факта): {'; '.join(str(item) for item in commitments)}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _format_established_topic_block(topic: Mapping[str, Any] | None) -> str:
+    if not topic:
+        return ""
+    compact = {str(key): str(value) for key, value in topic.items() if str(value or "").strip()}
+    if not compact:
+        return ""
+    return (
+        f"Установленная тема диалога: {json.dumps(compact, ensure_ascii=False)}.\n"
+        "Если клиент уточняет класс или формат уже установленной темы (тот же предмет/продукт), "
+        "не ставь wrong_scope только из-за смены класса/формата; проверяй утверждение по факту той же темы. "
+        "Это НЕ разрешает подменять продукт, предмет или семью продукта: лагерь/смена, обычный курс и олимпиада "
+        "остаются разными scope, а противоречие факту остаётся contradicted.\n"
+    )
+
+
+def _established_topic_from_context(context: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(context, MappingABC):
+        return None
+    memory = context.get("dialogue_memory_view")
+    if not isinstance(memory, MappingABC):
+        return None
+    topic: dict[str, Any] = {}
+    focus = memory.get("topic_focus")
+    if isinstance(focus, MappingABC):
+        for key in ("subject", "grade", "format", "product", "product_family"):
+            value = focus.get(key)
+            if str(value or "").strip():
+                topic[key] = value
+    known_slots = memory.get("known_slots")
+    if isinstance(known_slots, MappingABC):
+        for key in ("subject", "grade", "format", "product"):
+            value = known_slots.get(key)
+            if key not in topic and str(value or "").strip():
+                topic[key] = value
+    return topic or None
+
+
+def build_faithfulness_prompt(
+    draft: str,
+    *,
+    facts: Mapping[str, str],
+    client_words: str,
+    established_topic: Mapping[str, Any] | None = None,
+) -> str:
     facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(фактов нет)"
+    established_topic_block = _format_established_topic_block(established_topic)
     return (
         "Проверь черновик ответа на верность. Верни строго JSON: "
-        "{\"claims\": [{\"claim\": \"...\", \"evidence_fact_key\": \"...\", \"verdict\": \"supported|unsupported|glued\", \"reason\": \"...\"}], "
+        "{\"claims\": [{\"claim\": \"...\", \"evidence_fact_key\": \"...\", "
+        "\"verdict\": \"supported|unsupported|glued|wrong_scope|contradicted\", \"reason\": \"...\"}], "
         "\"unsupported\": [<конкретные утверждения, которых нет ни в фактах, ни в словах клиента>]}.\n"
-        "Конкретное утверждение = расписание/дни, формат, наличие пробного/мест/записи, сроки, условия, цены, действия.\n"
-        "Каждое атомарное утверждение должно подтверждаться ОДНИМ fact_key из списка фактов. "
-        "Если утверждение собрано из двух разных фактов, это glued/unsupported: например, если в одном факте есть личный кабинет, "
-        "а в другом МТС Линк, нельзя писать «личный кабинет на МТС Линк», пока это не сказано одним фактом.\n"
-        "Для supported обязательно укажи evidence_fact_key ровно из списка ниже. Не используй fact_key из памяти или всей базы.\n"
-        "Не считай нарушением общую вежливость и предложение помочь.\n"
+        "Конкретное утверждение = расписание/дни, формат (онлайн/очно), тема и направление "
+        "(обычный курс / лагерь / смена / олимпиада / интенсив), класс, наличие пробного/мест/записи, "
+        "сроки, условия, цены, действия.\n"
+        "Каждое атомарное утверждение должно подтверждаться ОДНИМ fact_key из списка фактов.\n"
+        "ТЕМА И ФОРМАТ — строго: утверждение о формате/теме/направлении/классе подтверждено ТОЛЬКО "
+        "фактом про ТОТ ЖЕ продукт и тему, что в вопросе клиента. Лагерь/смена ≠ обычный курс ≠ "
+        "олимпиадная подготовка: если клиент спрашивает про летнюю смену или лагерь, а факт/ответ про "
+        "обычный курс или олимпиаду — verdict = wrong_scope, даже если предмет/класс совпали.\n"
+        "ВЫБОР ФОРМАТА: если клиент спросил «онлайн или очно» (или не указал формат), а черновик "
+        "утверждает конкретный формат, для которого в фактах нет однозначного подтверждения именно "
+        "по спрошенному продукту/классу — verdict = unsupported (нельзя выбирать формат за клиента).\n"
+        "РАСПИСАНИЕ/ДНИ/ВРЕМЯ: дни недели, «в будни», «по вторникам», «вечером», частота — unsupported, "
+        "если нет факта-расписания именно для этого продукта/класса.\n"
+        "ОТРИЦАНИЕ И СПЕЦИФИКА: утверждение об отсутствии/полноте («других форматов нет», «только это», "
+        "«это всё, что есть») или о специфике курса («фокус на ОГЭ/ЕГЭ», «экзаменационный курс», "
+        "«подготовка к олимпиаде») — unsupported, если нет прямого подтверждающего факта; отсутствие "
+        "других вариантов нельзя выводить из того, что их нет в списке.\n"
+        "ПРОТИВОРЕЧИЕ: если утверждение противоречит факту (черновик: онлайн, а факт: очно; черновик: "
+        "9 класс, а факт: 10) — verdict = contradicted.\n"
+        "Если утверждение собрано из двух разных фактов — glued.\n"
+        "Для supported обязательно укажи evidence_fact_key ровно из списка ниже.\n"
+        + established_topic_block
+        + "Не считай нарушением общую вежливость и предложение помочь.\n"
         f"Факты:\n{facts_block}\n"
         f"Слова клиента:\n{client_words}\n"
         f"Черновик:\n{draft}\n"
@@ -587,10 +1271,11 @@ def check_claim_faithfulness(
     facts: Mapping[str, str],
     client_words: str,
     faithfulness_fn: Callable[[str], object] | None,
+    established_topic: Mapping[str, Any] | None = None,
 ) -> FaithfulnessResult:
     if faithfulness_fn is None:
         return FaithfulnessResult(unsupported=(), available=True)
-    prompt = build_faithfulness_prompt(draft, facts=facts, client_words=client_words)
+    prompt = build_faithfulness_prompt(draft, facts=facts, client_words=client_words, established_topic=established_topic)
     try:
         raw = faithfulness_fn(prompt)
     except Exception:
@@ -623,7 +1308,7 @@ def check_claim_faithfulness(
                 reason=reason,
             )
             claims.append(parsed)
-            if verdict in {"unsupported", "glued", "not_supported", "false"}:
+            if verdict in {"unsupported", "glued", "not_supported", "false", "wrong_scope", "contradicted"}:
                 unsupported.append(claim)
                 continue
             if verdict != "supported":
@@ -654,6 +1339,193 @@ def check_claim_faithfulness(
     return FaithfulnessResult(
         unsupported=tuple(str(item).strip() for item in items if str(item).strip()),
         available=True,
+    )
+
+
+def build_semantic_match_prompt(*, question: str, facts: Mapping[str, str], draft: str) -> str:
+    facts_block = "\n".join(f"- {value}" for value in facts.values()) or "(фактов нет)"
+    return (
+        f"Клиент спросил: {question}\n"
+        f"У нас есть подтверждённые факты:\n{facts_block}\n"
+        f"Черновик ответа бота: {draft}\n"
+        "Вопрос: отвечают ли эти факты на вопрос клиента ПО СМЫСЛУ, и про ТОТ ЖЕ продукт/тему?\n"
+        "Правила: «олимпиадная подготовка Физтех» = ответ на «олимпиада по физике» (covers=true). "
+        "«в августе» покрывается фактом «3-14 августа» (covers=true). "
+        "Но летняя СМЕНА/ЛАГЕРЬ ≠ обычный регулярный курс: если спросили про смену, а факт про "
+        "регулярный курс — same_product=false. Другой предмет/способ оплаты/формат — same_product=false.\n"
+        "Верни строго JSON: {\"covers\": true|false, \"same_product\": true|false}."
+    )
+
+
+def _semantic_match(
+    semantic_match_fn: Callable[[str], object],
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    draft: str,
+) -> Mapping[str, Any]:
+    prompt = build_semantic_match_prompt(
+        question=_semantic_match_question_text(contract, client_words=client_words),
+        facts=retrieval.facts,
+        draft=draft,
+    )
+    try:
+        raw = semantic_match_fn(prompt)
+    except Exception:
+        return {}
+    data: object = raw
+    if isinstance(raw, str):
+        try:
+            data = _extract_json_object(raw)
+        except Exception:
+            return {}
+    if not isinstance(data, MappingABC):
+        return {}
+    return {
+        "covers": data.get("covers"),
+        "same_product": data.get("same_product"),
+        "reason": str(data.get("reason") or ""),
+    }
+
+
+def _semantic_match_question_text(contract: AnswerContract, *, client_words: str) -> str:
+    return " ".join(
+        part
+        for part in (
+            client_words,
+            contract.current_question,
+            contract.existence_target,
+            " ".join(item.text for item in contract.subquestions),
+            " ".join(item.existence_target for item in contract.subquestions),
+        )
+        if part
+    )
+
+
+def _semantic_recover_or_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    draft: str,
+    semantic_match_fn: Callable[[str], object] | None,
+    faithfulness_fn: Callable[[str], object] | None,
+    client_words: str,
+    conversation: Sequence[Mapping[str, str]],
+    context: Mapping[str, Any] | None,
+    toggles: Toggles,
+    previous_bot_texts: Sequence[str] = (),
+) -> DialogueContractPipelineResult | None:
+    if (
+        semantic_match_fn is None
+        or not retrieval.facts
+        or contract.answerability != "answer_self"
+        or contract.is_p0
+    ):
+        return None
+    verdict = _semantic_match(
+        semantic_match_fn,
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        draft=draft,
+    )
+    covers = _truthy(verdict.get("covers"))
+    same_product = _truthy(verdict.get("same_product"))
+    if not (covers and same_product):
+        trace_event(
+            context,
+            "semantic_recover",
+            {"replaced": False, "covers": covers, "same_product": same_product},
+        )
+        return None
+    replacement = _verified_empty_handoff_replacement(
+        draft,
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        allow_key_coverage=True,
+    )
+    if not replacement:
+        trace_event(
+            context,
+            "semantic_recover",
+            {"replaced": False, "covers": covers, "same_product": same_product, "composer_empty": True},
+        )
+        return None
+    trace_event(context, "semantic_recover", {"replaced": True, "covers": covers, "same_product": same_product})
+    return DialogueContractPipelineResult(
+        draft_text=_avoid_repeating_text(
+            replacement,
+            conversation=conversation,
+            contract=contract,
+            facts=retrieval.facts,
+        ),
+        route="bot_answer_self",
+        manager_only=False,
+        contract=contract,
+        facts=retrieval.facts,
+        missing=retrieval.missing,
+        fallback_reason="semantic_recover",
+        semantic_match_attempted=True,
+        semantic_match_replaced=True,
+        semantic_match_reason=str(verdict.get("reason") or "").strip(),
+        repaired=True,
+        recovery_candidate=replacement,
+    )
+
+
+def _cite_only_recover_result_before_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    draft: str,
+    client_words: str,
+    conversation: Sequence[Mapping[str, str]],
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
+    fallback_reason: str = "cite_only_recover",
+    allow_key_coverage: bool = False,
+    original_findings: Sequence[VerificationFinding] = (),
+    original_unsupported: Sequence[str] = (),
+) -> DialogueContractPipelineResult | None:
+    recovered = _cite_only_recover_before_handoff(
+        contract=contract,
+        retrieval=retrieval,
+        draft=draft,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        allow_key_coverage=allow_key_coverage,
+        original_findings=original_findings,
+        original_unsupported=original_unsupported,
+    )
+    if not recovered:
+        return None
+    trace_event(context, "cite_only_recover", {"replaced": True, "fallback_reason": fallback_reason})
+    return DialogueContractPipelineResult(
+        draft_text=_avoid_repeating_text(
+            recovered,
+            conversation=conversation,
+            contract=contract,
+            facts=retrieval.facts,
+        ),
+        route="bot_answer_self",
+        manager_only=False,
+        contract=contract,
+        facts=retrieval.facts,
+        missing=retrieval.missing,
+        fallback_reason=fallback_reason,
+        repaired=True,
+        recovery_candidate=recovered,
     )
 
 
@@ -897,56 +1769,201 @@ def run_pipeline(
     style_examples: Sequence[str] = (),
     repair_fn: Callable[[str], str] | None = None,
     faithfulness_fn: Callable[[str], object] | None = None,
+    semantic_match_fn: Callable[[str], object] | None = None,
     warmth_fn: Callable[[str], str] | None = None,
     toggles: Toggles | None = None,
 ) -> DialogueContractPipelineResult:
     toggles = toggles or Toggles()
     client_words = str(conversation[-1].get("text") or "") if conversation else ""
-    contract = understand(
-        conversation=conversation,
-        active_brand=active_brand,
-        fact_key_catalog=fact_store.catalog,
-        understand_fn=understand_fn,
-        context=context,
-    )
+    previous_bot_texts = [str(item.get("text") or "") for item in conversation if str(item.get("role") or "") == "bot"]
+    had_hard_p0_claim = _dialogue_had_hard_p0_claim(context)
+    with trace_span(context, "understand", {"client_message": client_words, "active_brand": active_brand}) as trace:
+        contract = understand(
+            conversation=conversation,
+            active_brand=active_brand,
+            fact_key_catalog=fact_store.catalog,
+            understand_fn=understand_fn,
+            context=context,
+        )
+        contract = _augment_contract_with_memory_topic(
+            contract,
+            context=context,
+            fact_key_catalog=fact_store.catalog,
+        )
+        trace.update(
+            {
+                "answerability": contract.answerability,
+                "is_p0": contract.is_p0,
+                "p0_reason": contract.p0_reason,
+                "needed_fact_keys": list(contract.all_needed_fact_keys()),
+                "subquestions": [item.to_json_dict() for item in contract.subquestions],
+                "planner_intent": contract.planner_intent,
+                "planner_subvariant": contract.planner_subvariant,
+                "planner_confidence": contract.planner_confidence,
+                "selling": dict(contract.selling),
+            }
+        )
     if contract.is_p0:
         if _asks_refund_policy(contract) and not _current_refund_dispute_signal(
             client_words=client_words,
             contract=contract,
-        ):
+        ) and not had_hard_p0_claim:
             contract = replace(contract, is_p0=False, p0_reason="", answerability="answer_self")
         else:
+            text = _p0_handoff_text(contract, conversation=conversation)
+            text = _avoid_repeating_text(text, conversation=conversation, contract=contract, facts={})
+            trace_event(context, "build_draft", {"route": "manager_only", "fallback_reason": "p0", "draft": text})
             return DialogueContractPipelineResult(
-                draft_text=_dry_p0_text(conversation=conversation),
+                draft_text=text,
                 route="manager_only",
                 manager_only=True,
                 contract=contract,
                 fallback_reason="p0",
             )
 
-    retrieval = retrieve_facts(
-        needed_fact_keys=contract.all_needed_fact_keys(),
-        active_brand=active_brand,
-        fact_store=fact_store,
-    )
-    retrieval = _augment_with_soft_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
-    retrieval = _augment_with_format_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
-    retrieval = _augment_with_known_absence(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
-    retrieval = _augment_with_presale_refund_policy(
-        retrieval,
+    with trace_span(context, "retrieve_facts", {"needed_fact_keys": list(contract.all_needed_fact_keys())}) as trace:
+        retrieval = retrieve_facts(
+            needed_fact_keys=contract.all_needed_fact_keys(),
+            active_brand=active_brand,
+            fact_store=fact_store,
+        )
+        retrieval = _augment_with_soft_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
+        retrieval = _augment_with_format_guidance(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
+        retrieval = _augment_with_known_absence(retrieval, contract=contract, active_brand=active_brand, fact_store=fact_store)
+        retrieval = _augment_with_presale_refund_policy(
+            retrieval,
+            contract=contract,
+            active_brand=active_brand,
+            fact_store=fact_store,
+            context=context,
+        )
+        trace.update(
+            {
+                "fact_keys": list(retrieval.facts.keys()),
+                "missing": list(retrieval.missing),
+                "matched_keys": {key: list(value) for key, value in retrieval.matched_keys.items()},
+            }
+        )
+    estimate_policy = _estimate_policy_context(
         contract=contract,
-        active_brand=active_brand,
-        fact_store=fact_store,
+        retrieval=retrieval,
+        enabled=estimate_mode_enabled(context),
+        question_text=client_words or contract.current_question,
     )
-    if _asks_refund_policy(contract) and not _presale_refund_policy_text(retrieval.facts):
+    contract = replace(
+        contract,
+        answer_mode=str(estimate_policy["answer_mode"]),
+        estimate_domain=str(estimate_policy["estimate_domain"]),
+    )
+    if estimate_policy["enabled"] and estimate_policy["individual_child_question"] and not retrieval.facts:
+        contract = replace(contract, answerability="manager_only")
+    trace_event(context, "estimate_answer_mode", estimate_policy)
+    if _asks_refund_policy(contract) and had_hard_p0_claim:
+        guarded_contract = replace(contract, is_p0=True, p0_reason=contract.p0_reason or "prior_hard_p0_refund_claim")
+        fallback = _safe_fallback_text(guarded_contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
-            draft_text=_safe_fallback_text(contract, facts=retrieval.facts),
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=guarded_contract, facts=retrieval.facts),
+            route="manager_only",
+            manager_only=True,
+            contract=guarded_contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="prior_hard_p0_refund_claim",
+        )
+    if _asks_refund_policy(contract) and not _presale_refund_policy_text(retrieval.facts):
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
             manager_only=False,
             contract=contract,
             facts=retrieval.facts,
             missing=retrieval.missing,
             fallback_reason="refund_policy_manager_only",
+        )
+    if (
+        estimate_policy["enabled"]
+        and contract.answer_mode == "estimate_allowed"
+        and contract.estimate_domain in _ESTIMATE_DOMAINS
+        and draft_fn is not None
+    ):
+        estimate_prompt = build_estimate_prompt(
+            conversation=conversation,
+            contract=contract,
+            estimate_domain=contract.estimate_domain,
+            tone_guide=tone_guide,
+        )
+        try:
+            estimate_draft = str(draft_fn(estimate_prompt) or "").strip()
+        except Exception:
+            estimate_draft = ""
+        trace_event(
+            context,
+            "estimate_compose",
+            {
+                "attempted": True,
+                "domain": contract.estimate_domain,
+                "draft": estimate_draft,
+            },
+        )
+        if estimate_draft:
+            findings, unsupported, semantic_available = _hard_check(
+                estimate_draft,
+                facts=retrieval.facts,
+                contract=contract,
+                client_words=client_words,
+                faithfulness_fn=faithfulness_fn,
+                toggles=toggles,
+                context=context,
+                previous_bot_texts=previous_bot_texts,
+            )
+            if semantic_available and not findings and not unsupported:
+                final_estimate = _avoid_repeating_text(
+                    estimate_draft,
+                    conversation=conversation,
+                    contract=contract,
+                    facts=retrieval.facts,
+                )
+                trace_event(
+                    context,
+                    "estimate_gate",
+                    {"passed": True, "domain": contract.estimate_domain, "draft": final_estimate},
+                )
+                return DialogueContractPipelineResult(
+                    draft_text=final_estimate,
+                    route="bot_answer_self",
+                    manager_only=False,
+                    contract=contract,
+                    facts=retrieval.facts,
+                    missing=retrieval.missing,
+                    fallback_reason="",
+                    is_estimate=True,
+                    estimate_domain=contract.estimate_domain,
+                    estimate_answer_mode=contract.answer_mode,
+                )
+            trace_event(
+                context,
+                "estimate_gate",
+                {
+                    "passed": False,
+                    "domain": contract.estimate_domain,
+                    "findings": [{"code": item.code, "detail": item.detail} for item in findings],
+                    "unsupported": list(unsupported),
+                    "semantic_available": semantic_available,
+                },
+            )
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
+            route="draft_for_manager",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="estimate_guard_failed",
+            is_estimate=False,
+            estimate_domain=contract.estimate_domain,
+            estimate_answer_mode=contract.answer_mode,
         )
     slot_question = _single_missing_slot_question(contract, retrieval)
     if slot_question:
@@ -962,7 +1979,7 @@ def run_pipeline(
     exact_answer_available = _has_exact_retrieved_answer_part(contract, retrieval)
     soft_weekend = _soft_weekend_guidance_text(retrieval.facts)
     if soft_weekend and _asks_weekend_or_slot(contract):
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="bot_answer_self",
@@ -985,27 +2002,76 @@ def run_pipeline(
         )
     direct_answer = _direct_exact_fact_answer(contract, retrieval)
     if direct_answer:
+        direct_draft = _avoid_repeating_text(direct_answer, conversation=conversation, contract=contract, facts=retrieval.facts)
         return DialogueContractPipelineResult(
-            draft_text=_avoid_repeating_text(direct_answer, conversation=conversation, contract=contract, facts=retrieval.facts),
+            draft_text=direct_draft,
             route="bot_answer_self",
             manager_only=False,
             contract=contract,
             facts=retrieval.facts,
             missing=retrieval.missing,
             fallback_reason="direct_exact_fact_answer",
+            recovery_candidate=_stashed_recovery_candidate(
+                direct_draft,
+                contract=contract,
+                retrieval=retrieval,
+                client_words=client_words,
+                context=context,
+            ),
         )
     force_draft_for_manager = (
         contract.answerability != "answer_self"
         and not exact_answer_available
         and not _has_retrieved_self_answer_part(contract, retrieval)
-        and not (_asks_refund_policy(contract) and _presale_refund_policy_text(retrieval.facts))
+        and not (_asks_refund_policy(contract) and _presale_refund_policy_text(retrieval.facts) and not had_hard_p0_claim)
     )
+    needs_facts = bool(contract.all_needed_fact_keys())
+    empty_factual_answer_self = (
+        contract.answerability == "answer_self"
+        and needs_facts
+        and not retrieval.facts
+        and not exact_answer_available
+        and not _has_retrieved_self_answer_part(contract, retrieval)
+    )
+    if empty_factual_answer_self:
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        trace_event(
+            context,
+            "build_draft",
+            {
+                "route": "bot_answer_self",
+                "fallback_reason": "empty_facts_no_fabrication",
+                "draft": fallback,
+            },
+        )
+        return DialogueContractPipelineResult(
+            draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
+            route="bot_answer_self",
+            manager_only=False,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            fallback_reason="empty_facts_no_fabrication",
+        )
     if force_draft_for_manager and (
         _asks_refund_policy(contract)
         or not retrieval.facts
         or (_soft_weekend_guidance_text(retrieval.facts) and not _has_self_answerable_subquestion(contract))
     ):
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _cite_only_recover_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            client_words=client_words,
+            conversation=conversation,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1016,7 +2082,20 @@ def run_pipeline(
             fallback_reason="contract_manager_only",
         )
     if draft_fn is None:
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _cite_only_recover_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            client_words=client_words,
+            conversation=conversation,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1026,21 +2105,42 @@ def run_pipeline(
             missing=retrieval.missing,
             fallback_reason="no_draft_fn",
         )
-    prompt = build_draft_prompt(
-        conversation=conversation,
-        contract=contract,
-        facts=retrieval.facts,
-        missing=retrieval.missing,
-        tone_guide=tone_guide,
-        style_examples=style_examples,
-        toggles=toggles,
-    )
-    try:
-        draft = str(draft_fn(prompt) or "").strip()
-    except Exception:
-        draft = ""
+    with trace_span(
+        context,
+        "build_draft",
+        {"answerability": contract.answerability, "fact_keys": list(retrieval.facts.keys()), "missing": list(retrieval.missing)},
+    ) as trace:
+        prompt = build_draft_prompt(
+            conversation=conversation,
+            contract=contract,
+            facts=retrieval.facts,
+            missing=retrieval.missing,
+            tone_guide=tone_guide,
+            style_examples=style_examples,
+            toggles=toggles,
+            dialogue_memory_view=(context or {}).get("dialogue_memory_view"),
+        )
+        trace["prompt_chars"] = len(prompt)
+        try:
+            draft = str(draft_fn(prompt) or "").strip()
+        except Exception:
+            draft = ""
+        trace["draft"] = draft
     if not draft:
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _cite_only_recover_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            client_words=client_words,
+            conversation=conversation,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1051,8 +2151,76 @@ def run_pipeline(
             fallback_reason="draft_error",
         )
 
-    draft = _specialize_grade_range_answer(draft, contract=contract, facts=retrieval.facts)
     repaired = False
+    semantic_match_attempted = False
+    semantic_match_replaced = False
+    semantic_match_reason = ""
+    semantic_match_blocked_replacement = False
+    if (
+        _is_pure_handoff_text(draft)
+        and contract.answerability == "answer_self"
+        and not contract.is_p0
+        and _key_coverage_ok(contract, retrieval)
+    ):
+        replacement = _verified_empty_handoff_replacement(
+            draft,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+            allow_key_coverage=True,
+        )
+        if replacement:
+            trace_event(context, "key_coverage_gate", {"replaced": True})
+            draft = replacement
+            repaired = True
+
+    if (
+        semantic_match_fn is not None
+        and _looks_like_handoff(draft)
+        and contract.answerability == "answer_self"
+        and not contract.is_p0
+        and retrieval.facts
+    ):
+        semantic_match_attempted = True
+        semantic_verdict = _semantic_match(
+            semantic_match_fn,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            draft=draft,
+        )
+        covers = _truthy(semantic_verdict.get("covers"))
+        same_product = _truthy(semantic_verdict.get("same_product"))
+        semantic_match_reason = str(semantic_verdict.get("reason") or "").strip()
+        if covers and same_product:
+            replacement = _verified_empty_handoff_replacement(
+                draft,
+                contract=contract,
+                retrieval=retrieval,
+                client_words=client_words,
+                faithfulness_fn=faithfulness_fn,
+                toggles=toggles,
+                context=context,
+                previous_bot_texts=previous_bot_texts,
+                allow_key_coverage=True,
+            )
+            if replacement:
+                trace_event(
+                    context,
+                    "semantic_match_gate",
+                    {"replaced": True, "covers": covers, "same_product": same_product},
+                )
+                draft = replacement
+                repaired = True
+                semantic_match_replaced = True
+        else:
+            semantic_match_blocked_replacement = True
+
+    draft = _specialize_grade_range_answer(draft, contract=contract, facts=retrieval.facts)
     findings, unsupported, semantic_available = _hard_check(
         draft,
         facts=retrieval.facts,
@@ -1061,9 +2229,26 @@ def run_pipeline(
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
         context=context,
+        previous_bot_texts=previous_bot_texts,
     )
     if not semantic_available:
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _cite_only_recover_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            faithfulness_fn=None,
+            client_words=client_words,
+            conversation=conversation,
+            context=context,
+            toggles=toggles,
+            previous_bot_texts=previous_bot_texts,
+            original_findings=findings,
+            original_unsupported=unsupported,
+            allow_key_coverage=True,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1097,9 +2282,26 @@ def run_pipeline(
             faithfulness_fn=faithfulness_fn,
             toggles=toggles,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
         if not semantic_available:
-            fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+            fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+            recovered = _cite_only_recover_result_before_handoff(
+                contract=contract,
+                retrieval=retrieval,
+                draft=fallback,
+                faithfulness_fn=None,
+                client_words=client_words,
+                conversation=conversation,
+                context=context,
+                toggles=toggles,
+                previous_bot_texts=previous_bot_texts,
+                original_findings=findings,
+                original_unsupported=unsupported,
+                allow_key_coverage=True,
+            )
+            if recovered:
+                return recovered
             return DialogueContractPipelineResult(
                 draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
                 route="draft_for_manager",
@@ -1122,15 +2324,17 @@ def run_pipeline(
                 faithfulness_fn=faithfulness_fn,
                 toggles=toggles,
                 context=context,
+                previous_bot_texts=previous_bot_texts,
             )
             if fallback_semantic_available and not fallback_findings and not fallback_unsupported:
+                verified_draft = _avoid_repeating_text(
+                    verified_fallback,
+                    conversation=conversation,
+                    contract=contract,
+                    facts=retrieval.facts,
+                )
                 return DialogueContractPipelineResult(
-                    draft_text=_avoid_repeating_text(
-                        verified_fallback,
-                        conversation=conversation,
-                        contract=contract,
-                        facts=retrieval.facts,
-                    ),
+                    draft_text=verified_draft,
                     route="bot_answer_self",
                     manager_only=False,
                     contract=contract,
@@ -1140,8 +2344,31 @@ def run_pipeline(
                     unsupported_claims=tuple(unsupported),
                     repaired=repaired,
                     fallback_reason="verified_fact_fallback_after_hard_check",
+                    recovery_candidate=_stashed_recovery_candidate(
+                        verified_draft,
+                        contract=contract,
+                        retrieval=retrieval,
+                        client_words=client_words,
+                        context=context,
+                    ),
                 )
-        fallback = _safe_fallback_text(contract, facts=retrieval.facts)
+        fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+        recovered = _cite_only_recover_result_before_handoff(
+            contract=contract,
+            retrieval=retrieval,
+            draft=fallback,
+            faithfulness_fn=faithfulness_fn,
+            client_words=client_words,
+            conversation=conversation,
+            context=context,
+            toggles=toggles,
+            previous_bot_texts=previous_bot_texts,
+            original_findings=findings,
+            original_unsupported=unsupported,
+            allow_key_coverage=True,
+        )
+        if recovered:
+            return recovered
         return DialogueContractPipelineResult(
             draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
             route="draft_for_manager",
@@ -1154,6 +2381,137 @@ def run_pipeline(
             repaired=repaired,
             fallback_reason="hard_verification_failed",
         )
+
+    composition = "" if semantic_match_blocked_replacement else _composition_answer(contract, retrieval, current_draft=draft)
+    if composition and composition != draft:
+        composition_facts = _facts_with_derived_answer(retrieval.facts, composition)
+        comp_findings, comp_unsupported, comp_semantic_available = _hard_check(
+            composition,
+            facts=composition_facts,
+            contract=contract,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if comp_semantic_available and not comp_findings and not comp_unsupported:
+            draft = composition
+            repaired = True
+
+    coverage_findings = (
+        ()
+        if semantic_match_blocked_replacement
+        else _coverage_findings(
+            draft,
+            contract=contract,
+            retrieval=retrieval,
+            force_draft_for_manager=force_draft_for_manager,
+            context=context,
+        )
+    )
+    coverage_attempts = 0
+    while coverage_findings and repair_fn is not None and coverage_attempts < MAX_REPAIR_ATTEMPTS:
+        coverage_attempts += 1
+        try:
+            candidate = str(
+                repair_fn(_coverage_repair_prompt(draft, coverage_findings, retrieval.facts))
+                or ""
+            ).strip()
+        except Exception:
+            break
+        if not candidate:
+            break
+        candidate = _specialize_grade_range_answer(candidate, contract=contract, facts=retrieval.facts)
+        candidate_findings, candidate_unsupported, candidate_semantic_available = _hard_check(
+            candidate,
+            facts=retrieval.facts,
+            contract=contract,
+            client_words=client_words,
+            faithfulness_fn=faithfulness_fn,
+            toggles=toggles,
+            context=context,
+            previous_bot_texts=previous_bot_texts,
+        )
+        if not candidate_semantic_available:
+            fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+            recovered = _cite_only_recover_result_before_handoff(
+                contract=contract,
+                retrieval=retrieval,
+                draft=fallback,
+                faithfulness_fn=None,
+                client_words=client_words,
+                conversation=conversation,
+                context=context,
+                toggles=toggles,
+                previous_bot_texts=previous_bot_texts,
+                original_findings=candidate_findings,
+                original_unsupported=candidate_unsupported,
+                allow_key_coverage=True,
+            )
+            if recovered:
+                return recovered
+            return DialogueContractPipelineResult(
+                draft_text=_avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts=retrieval.facts),
+                route="draft_for_manager",
+                manager_only=False,
+                contract=contract,
+                facts=retrieval.facts,
+                missing=retrieval.missing,
+                repaired=repaired,
+                fallback_reason="semantic_check_unavailable",
+            )
+        if candidate_findings or candidate_unsupported:
+            break
+        candidate_coverage = _coverage_findings(
+            candidate,
+            contract=contract,
+            retrieval=retrieval,
+            force_draft_for_manager=force_draft_for_manager,
+            context=context,
+        )
+        draft = candidate
+        repaired = True
+        coverage_findings = candidate_coverage
+
+    if coverage_findings:
+        cite_only = _composition_answer(contract, retrieval, current_draft=draft) or _coverage_cite_only_answer(contract, retrieval)
+        if cite_only:
+            cite_facts = _facts_with_derived_answer(retrieval.facts, cite_only)
+            cite_findings, cite_unsupported, cite_semantic_available = _hard_check(
+                cite_only,
+                facts=cite_facts,
+                contract=contract,
+                client_words=client_words,
+                faithfulness_fn=faithfulness_fn,
+                toggles=toggles,
+                context=context,
+                previous_bot_texts=previous_bot_texts,
+            )
+            cite_coverage = _coverage_findings(
+                cite_only,
+                contract=contract,
+                retrieval=retrieval,
+                force_draft_for_manager=force_draft_for_manager,
+                context=context,
+            )
+            if cite_semantic_available and not cite_findings and not cite_unsupported and not cite_coverage:
+                draft = cite_only
+                repaired = True
+
+    replacement = "" if semantic_match_blocked_replacement else _verified_empty_handoff_replacement(
+        draft,
+        contract=contract,
+        retrieval=retrieval,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+    if replacement:
+        draft = replacement
+        repaired = True
 
     form_findings: tuple[FormFinding, ...] = ()
     warmed = False
@@ -1191,6 +2549,7 @@ def run_pipeline(
                     faithfulness_fn=faithfulness_fn,
                     toggles=toggles,
                     context=context,
+                    previous_bot_texts=previous_bot_texts,
                 )
                 added_warm_anchors = new_concrete_anchors(warm_candidate, original=draft, facts=retrieval.facts)
                 if warm_semantic_available and not warm_findings and (not warm_unsupported or not added_warm_anchors):
@@ -1210,8 +2569,9 @@ def run_pipeline(
                     else:
                         warmth_rejected_reason = "unknown_rejection"
 
+    final_draft = _avoid_repeating_text(draft, conversation=conversation, contract=contract, facts=retrieval.facts)
     return DialogueContractPipelineResult(
-        draft_text=_avoid_repeating_text(draft, conversation=conversation, contract=contract, facts=retrieval.facts),
+        draft_text=final_draft,
         route="draft_for_manager" if force_draft_for_manager else "bot_answer_self",
         manager_only=False,
         contract=contract,
@@ -1225,7 +2585,17 @@ def run_pipeline(
         warmth_rejected_findings=warmth_rejected_findings,
         warmth_rejected_unsupported=warmth_rejected_unsupported,
         warmth_semantic_available=warmth_semantic_available,
+        semantic_match_attempted=semantic_match_attempted,
+        semantic_match_replaced=semantic_match_replaced,
+        semantic_match_reason=semantic_match_reason,
         repaired=repaired,
+        recovery_candidate=_stashed_recovery_candidate(
+            final_draft,
+            contract=contract,
+            retrieval=retrieval,
+            client_words=client_words,
+            context=context,
+        ),
     )
 
 
@@ -1239,6 +2609,10 @@ def verify_output(
     forbidden_substitutions: Sequence[str] = (),
     client_message: str = "",
     context: Mapping[str, Any] | None = None,
+    previous_bot_texts: Sequence[str] = (),
+    answer_mode: str | None = None,
+    estimate_domain: str | None = None,
+    is_estimate: bool | None = None,
 ) -> list[VerificationFinding]:
     text = str(draft_text or "")
     low = text.casefold()
@@ -1248,12 +2622,19 @@ def verify_output(
         if _brand_token_present(low, token):
             findings.append(VerificationFinding("brand_leak", f"чужой бренд/токен: {token}"))
             break
-    backed_numbers = _numbers(" ".join(str(value) for value in facts.values()))
-    client_numbers = _numbers(client_message)
-    introduced = _numbers(text) - backed_numbers
-    introduced = {num for num in introduced if not _is_allowed_ungrounded_number(num, client_numbers=client_numbers)}
-    if introduced:
-        findings.append(VerificationFinding("fact_grounding", f"числа вне подтверждённых фактов: {sorted(introduced)}"))
+    gate_answer_mode = _gate_answer_mode(contract=contract, context=context, explicit=answer_mode)
+    gate_estimate_domain = _gate_estimate_domain(contract=contract, context=context, explicit=estimate_domain)
+    gate_is_estimate = _gate_is_estimate(contract=contract, context=context, explicit=is_estimate)
+    findings.extend(
+        _answer_mode_number_findings(
+            text,
+            facts=facts,
+            client_message=client_message,
+            contract=contract,
+            answer_mode=gate_answer_mode,
+            estimate_domain=gate_estimate_domain,
+        )
+    )
     unsupported_entities = unsupported_named_entities(
         text,
         facts=facts,
@@ -1264,6 +2645,19 @@ def verify_output(
         findings.append(VerificationFinding("unsupported_entity", f"сущность вне фактов хода: {unsupported_entities}"))
     if contract is not None:
         findings.extend(_wrong_intent_fact_findings(text, contract=contract, facts=facts))
+        if _preemptive_format_choice_finding(low, contract=contract):
+            findings.append(
+                VerificationFinding(
+                    "preemptive_format",
+                    "клиент спросил выбор формата, а ответ навязывает один формат без альтернативы",
+                )
+            )
+    unconfirmed_schedule = _unconfirmed_schedule_finding(low, facts=facts, client_message=client_message)
+    if unconfirmed_schedule is not None:
+        findings.append(unconfirmed_schedule)
+    self_contradiction = _self_contradiction_finding(text, low, previous_bot_texts=previous_bot_texts)
+    if self_contradiction is not None:
+        findings.append(self_contradiction)
     for topic in tuple(denied_topics) + tuple(forbidden_substitutions):
         normalized = str(topic or "").strip().casefold()
         if normalized and normalized in low:
@@ -1275,10 +2669,288 @@ def verify_output(
         findings.append(VerificationFinding("ai_disclosure", "самораскрытие без прямого вопроса клиента"))
     if _P0_PROMISE_RE.search(text):
         findings.append(VerificationFinding("p0_promise", "обещание возврата/результата/поступления"))
+    if gate_answer_mode == "estimate_allowed" and gate_is_estimate and not _has_uncertainty_marker(text):
+        findings.append(VerificationFinding("estimate_without_uncertainty_marker", "оценка без явного маркера неуверенности"))
+    if gate_answer_mode == "estimate_allowed" and gate_estimate_domain == "general_advice":
+        findings.extend(_general_advice_estimate_findings(text, client_message=client_message))
     safety = classify_answer_safety(client_message=client_message, context=context, route="bot_answer_self")
     if safety.p0_required and not p0_pre_gate(client_message, context=context):
         findings.append(VerificationFinding("p0_semantic_risk", "семантический P0 требует менеджера"))
     return findings
+
+
+def _answer_mode_number_findings(
+    text: str,
+    *,
+    facts: Mapping[str, str],
+    client_message: str,
+    contract: AnswerContract | None,
+    answer_mode: str,
+    estimate_domain: str = "none",
+) -> list[VerificationFinding]:
+    backed_numbers = _numbers(" ".join(str(value) for value in facts.values()))
+    client_numbers = _numbers(client_message)
+    introduced: set[str] = set()
+    product_introduced: set[str] = set()
+    token_map = _number_token_map(text)
+    for num in _numbers(text) - backed_numbers:
+        tokens = token_map.get(num, ())
+        is_product = any(
+            _is_product_number_context(text, token)
+            and not _is_route_estimate_number_context(text, token, estimate_domain=estimate_domain)
+            for token in tokens
+        )
+        if _is_allowed_ungrounded_number(num, client_numbers=client_numbers) and not is_product:
+            continue
+        if answer_mode == "estimate_allowed" and is_product:
+            product_introduced.add(num)
+            continue
+        if answer_mode != "estimate_allowed":
+            introduced.add(num)
+    findings: list[VerificationFinding] = []
+    if product_introduced:
+        findings.append(
+            VerificationFinding(
+                "unsupported_product_claim",
+                f"продуктовые числа вне подтверждённых фактов: {sorted(product_introduced)}",
+            )
+        )
+    if introduced:
+        findings.append(VerificationFinding("fact_grounding", f"числа вне подтверждённых фактов: {sorted(introduced)}"))
+    return findings
+
+
+def _number_token_map(text: str) -> Mapping[str, tuple[str, ...]]:
+    result: dict[str, list[str]] = {}
+    for match in _ESTIMATE_NUMBER_TOKEN_RE.finditer(str(text or "")):
+        token = match.group(0).strip()
+        if not token:
+            continue
+        for number in _numbers(token):
+            result.setdefault(number, []).append(token)
+    return {key: tuple(value) for key, value in result.items()}
+
+
+def _is_product_number_context(text: str, token: str) -> bool:
+    raw = str(text or "")
+    item = str(token or "").strip()
+    if not item:
+        return bool(_PRODUCT_NUMBER_CTX_RE.search(raw))
+    index = raw.find(item)
+    if index < 0:
+        return bool(_PRODUCT_NUMBER_CTX_RE.search(raw))
+    window = raw[max(0, index - 25) : index + len(item) + 25]
+    return bool(_PRODUCT_NUMBER_CTX_RE.search(window))
+
+
+def _is_route_estimate_number_context(text: str, token: str, *, estimate_domain: str) -> bool:
+    if estimate_domain not in {"travel_time", "route_logistics"}:
+        return False
+    raw = str(text or "")
+    item = str(token or "").strip()
+    if not item:
+        return False
+    index = raw.find(item)
+    if index < 0:
+        return False
+    window = raw[max(0, index - 45) : index + len(item) + 45].casefold().replace("ё", "е")
+    if not re.search(r"минут|час|км|километр", item.casefold(), re.I):
+        return False
+    return bool(re.search(r"ехать|дорог|пешком|электрич|метро|автобус|маршрут|такси|станци", window, re.I))
+
+
+def _has_uncertainty_marker(text: str) -> bool:
+    low = str(text or "").casefold()
+    return any(marker in low for marker in _UNCERTAINTY_MARKERS)
+
+
+def _general_advice_estimate_findings(text: str, *, client_message: str) -> list[VerificationFinding]:
+    combined = " ".join([str(client_message or ""), str(text or "")])
+    findings: list[VerificationFinding] = []
+    if _INDIVIDUAL_CHILD_RE.search(combined):
+        findings.append(VerificationFinding("estimate_individual_child_advice", "оценка похожа на диагноз конкретного ребёнка"))
+    if _ESTIMATE_PRESSURE_RE.search(text) or _ESTIMATE_GUARANTEE_RE.search(text):
+        findings.append(VerificationFinding("estimate_general_advice_risk", "совет содержит давление или обещание результата"))
+    return findings
+
+
+def _estimate_gate_payload_from_context(context: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(context, MappingABC):
+        return {}
+    direct = context.get("estimate_mode")
+    if isinstance(direct, MappingABC):
+        return direct
+    pipeline = context.get("dialogue_contract_pipeline")
+    if isinstance(pipeline, MappingABC):
+        estimate = pipeline.get("estimate")
+        if isinstance(estimate, MappingABC):
+            return estimate
+    return {}
+
+
+def _gate_answer_mode(
+    *,
+    contract: AnswerContract | None,
+    context: Mapping[str, Any] | None,
+    explicit: str | None,
+) -> str:
+    if explicit is not None:
+        return _clean_answer_mode(explicit)
+    payload = _estimate_gate_payload_from_context(context)
+    if payload.get("answer_mode") is not None:
+        return _clean_answer_mode(payload.get("answer_mode"))
+    if contract is not None:
+        return _clean_answer_mode(contract.answer_mode)
+    return "confirmed_only"
+
+
+def _gate_estimate_domain(
+    *,
+    contract: AnswerContract | None,
+    context: Mapping[str, Any] | None,
+    explicit: str | None,
+) -> str:
+    if explicit is not None:
+        return _clean_estimate_domain(explicit)
+    payload = _estimate_gate_payload_from_context(context)
+    if payload.get("estimate_domain") is not None:
+        return _clean_estimate_domain(payload.get("estimate_domain"))
+    if contract is not None:
+        return _clean_estimate_domain(contract.estimate_domain)
+    return "none"
+
+
+def _gate_is_estimate(
+    *,
+    contract: AnswerContract | None,
+    context: Mapping[str, Any] | None,
+    explicit: bool | None,
+) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    payload = _estimate_gate_payload_from_context(context)
+    if payload.get("is_estimate") is not None:
+        return _truthy(payload.get("is_estimate"))
+    return bool(contract is not None and contract.answer_mode == "estimate_allowed")
+
+
+def _preemptive_format_choice_finding(answer_low: str, *, contract: AnswerContract) -> bool:
+    if not _asks_training_format_choice(contract) or _contract_mentions_camp_or_lvsh(contract):
+        return False
+    normalized = str(answer_low or "").casefold().replace("ё", "е")
+    asserts_single = bool(
+        re.search(r"\bэто\s+онлайн\b|\bтолько\s+онлайн\b|\bэто\s+очно\b|\bтолько\s+очно\b", normalized, re.I)
+    )
+    mentions_both = "онлайн" in normalized and "очно" in normalized
+    return asserts_single and not mentions_both
+
+
+_SCHEDULE_SPECIFICITY_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "weekday": ("по будням", "в будни", "будни", "будний", "будням"),
+    "weekend": ("по выходным", "выходные", "выходным", "суббот", "воскрес"),
+    "monday": ("по понедельникам", "понедельник", "понедельникам"),
+    "tuesday": ("по вторникам", "вторник", "вторникам"),
+    "wednesday": ("по средам", "среда", "средам"),
+    "thursday": ("по четвергам", "четверг", "четвергам"),
+    "friday": ("по пятницам", "пятница", "пятницам"),
+    "evening": ("вечерам", "вечером", "вечерн"),
+    "morning": ("утрам", "по утрам", "утром", "утренн"),
+}
+
+
+def _unconfirmed_schedule_finding(
+    answer_low: str,
+    *,
+    facts: Mapping[str, str],
+    client_message: str,
+) -> VerificationFinding | None:
+    answer_anchors = _schedule_specificity_anchors(answer_low)
+    if not answer_anchors:
+        return None
+    if _schedule_specificity_is_declined(answer_low):
+        return None
+    fact_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
+    client_text = str(client_message or "").casefold().replace("ё", "е")
+    backed = _schedule_specificity_anchors(fact_text) | _schedule_specificity_anchors(client_text)
+    unconfirmed = tuple(sorted(answer_anchors - backed))
+    if not unconfirmed:
+        return None
+    return VerificationFinding(
+        "unconfirmed_schedule",
+        f"ответ называет дни/время без факта-расписания: {list(unconfirmed)}",
+    )
+
+
+def _schedule_specificity_anchors(text: str) -> set[str]:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    return {
+        anchor
+        for anchor, aliases in _SCHEDULE_SPECIFICITY_ALIASES.items()
+        if any(_schedule_alias_present(normalized, alias) for alias in aliases)
+    }
+
+
+def _schedule_alias_present(normalized_text: str, alias: str) -> bool:
+    normalized_alias = str(alias or "").casefold().replace("ё", "е")
+    if not normalized_alias:
+        return False
+    return bool(re.search(rf"(?<![а-яa-z]){re.escape(normalized_alias)}", normalized_text, re.I))
+
+
+def _schedule_specificity_is_declined(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(
+            r"не\s+буду\s+называть|не\s+называю|не\s+подтверждаю|без\s+подтверждени[яй]|точн\w*\s+дн\w*\s+.*\bнет\b",
+            normalized,
+            re.I,
+        )
+    )
+
+
+def _self_contradiction_finding(
+    text: str,
+    answer_low: str,
+    *,
+    previous_bot_texts: Sequence[str],
+) -> VerificationFinding | None:
+    cur_pcts = set(re.findall(r"(\d{1,2})\s*%", text))
+    if not cur_pcts or "скидк" not in answer_low:
+        return None
+    cur_scopes = _discount_scope_anchors(answer_low)
+    for previous in previous_bot_texts:
+        prev_text = str(previous or "")
+        prev_low = prev_text.casefold().replace("ё", "е")
+        if "скидк" not in prev_low:
+            continue
+        prev_pcts = set(re.findall(r"(\d{1,2})\s*%", prev_text))
+        if not prev_pcts or not prev_pcts.isdisjoint(cur_pcts):
+            continue
+        prev_scopes = _discount_scope_anchors(prev_low)
+        if cur_scopes and prev_scopes and cur_scopes.isdisjoint(prev_scopes):
+            continue
+        return VerificationFinding(
+            "self_contradiction",
+            f"процент скидки противоречит ранее названному ботом: было {sorted(prev_pcts)}, стало {sorted(cur_pcts)}",
+        )
+    return None
+
+
+_DISCOUNT_SCOPE_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "second_subject": ("второй предмет", "2-й предмет", "вторым предмет", "второго предмет"),
+    "third_subject": ("третий предмет", "3-й предмет", "третьим предмет", "третьего предмет", "последующ"),
+    "multichild": ("многодет", "двое детей", "2 детей", "несколько детей"),
+    "sibling": ("брат", "сестр", "ребенок", "ребёнок", "детей"),
+}
+
+
+def _discount_scope_anchors(text: str) -> set[str]:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    return {
+        anchor
+        for anchor, aliases in _DISCOUNT_SCOPE_ALIASES.items()
+        if any(alias in normalized for alias in aliases)
+    }
 
 
 def _hard_check(
@@ -1290,6 +2962,7 @@ def _hard_check(
     faithfulness_fn: Callable[[str], object] | None,
     toggles: Toggles,
     context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
 ) -> tuple[tuple[VerificationFinding, ...], tuple[str, ...], bool]:
     verification_text = _handoff_factual_claim_text(draft)
     pure_handoff = _is_pure_handoff_text(draft) and verification_text is None
@@ -1304,26 +2977,713 @@ def _hard_check(
             forbidden_substitutions=contract.forbidden_substitutions,
             client_message=client_words,
             context=context,
+            previous_bot_texts=previous_bot_texts,
         )
     )
     findings.extend(_existence_yes_no_findings(text_to_check, contract=contract, facts=facts))
     findings.extend(_payment_method_findings(text_to_check, contract=contract, facts=facts))
     unsupported: tuple[str, ...] = ()
     semantic_available = True
-    if toggles.semantic_faithfulness and not pure_handoff:
+    if toggles.semantic_faithfulness and contract.answer_mode != "estimate_allowed":
         result = check_claim_faithfulness(
             text_to_check,
             facts=facts,
             client_words=client_words,
             faithfulness_fn=faithfulness_fn,
-        )
-        unsupported = _unsupported_claims_without_current_fact_support(
-            result.unsupported,
-            facts=facts,
-            contract=contract,
+            established_topic=_established_topic_from_context(context),
         )
         semantic_available = result.available
+        if not pure_handoff:
+            unsupported = _unsupported_claims_without_current_fact_support(
+                result.unsupported,
+                facts=facts,
+                contract=contract,
+            )
+    trace_event(
+        context,
+        "_hard_check",
+        {
+            "draft": draft,
+            "pure_handoff": pure_handoff,
+            "verification_text": text_to_check,
+            "findings": [{"code": finding.code, "detail": finding.detail} for finding in findings],
+            "unsupported": list(unsupported),
+            "semantic_available": semantic_available,
+        },
+    )
     return tuple(findings), unsupported, semantic_available
+
+
+@dataclass(frozen=True)
+class _CoverageFinding:
+    subquestion: str
+    required_key: str
+    fact_key: str
+    fact_text: str
+
+
+def _coverage_findings(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    force_draft_for_manager: bool,
+    context: Mapping[str, Any] | None = None,
+) -> tuple[_CoverageFinding, ...]:
+    if force_draft_for_manager or contract.is_p0 or contract.answerability != "answer_self":
+        return ()
+    if _is_handoff_text(draft) and not _handoff_factual_claim_text(draft):
+        return ()
+    findings: list[_CoverageFinding] = []
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        if subquestion.answerable != "self":
+            continue
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys:
+            continue
+        if not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            continue
+        for required_key in keys:
+            matched = [key for key in retrieval.matched_keys.get(required_key, ()) if key in retrieval.facts]
+            if not matched:
+                continue
+            if any(_answer_cites_fact(draft, retrieval.facts[key]) for key in matched):
+                continue
+            first_key = matched[0]
+            findings.append(
+                _CoverageFinding(
+                    subquestion=subquestion.text or contract.current_question,
+                    required_key=required_key,
+                    fact_key=first_key,
+                    fact_text=str(retrieval.facts[first_key]),
+                )
+            )
+    trace_event(
+        context,
+        "coverage_check",
+        {
+            "findings": [
+                {"required_key": item.required_key, "fact_key": item.fact_key}
+                for item in findings
+            ]
+        },
+    )
+    return tuple(findings)
+
+
+def _answer_cites_fact(answer: str, fact_text: str) -> bool:
+    answer_text = str(answer or "")
+    fact = str(fact_text or "")
+    if not answer_text.strip() or not fact.strip():
+        return False
+    fact_value_anchors = _coverage_value_anchors(fact)
+    if fact_value_anchors:
+        return bool(fact_value_anchors & _coverage_value_anchors(answer_text))
+    answer_anchors = concrete_anchors(answer_text)
+    fact_anchors = concrete_anchors(fact)
+    if fact_anchors:
+        return bool(answer_anchors & fact_anchors)
+    if _semantic_topic_anchors(answer_text) & _semantic_topic_anchors(fact):
+        return True
+    answer_low = answer_text.casefold().replace("ё", "е")
+    return any(token in answer_low for token in _coverage_terms(fact))
+
+
+def _coverage_value_anchors(text: str) -> set[str]:
+    source = str(text or "")
+    low = source.casefold().replace("ё", "е")
+    anchors: set[str] = set()
+    for match in re.finditer(r"\d[\d\s\u00a0]{2,}\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.)", source, re.I):
+        digits = re.sub(r"\D", "", match.group(0))
+        if digits:
+            anchors.add(f"money:{digits}")
+    for match in re.finditer(r"\b(\d{1,3})\s*%", source, re.I):
+        anchors.add(f"percent:{match.group(1)}")
+    for match in _DATE_ANCHOR_RE.finditer(source):
+        normalized = _normalize_date_anchor(match)
+        if normalized:
+            anchors.add(f"date:{normalized}")
+    if re.search(r"январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр", low, re.I):
+        for number in _numbers(source):
+            anchors.add(f"date_number:{number}")
+    return anchors
+
+
+def _coverage_terms(text: str) -> tuple[str, ...]:
+    low = str(text or "").casefold().replace("ё", "е")
+    tokens = re.findall(r"[а-яa-z][а-яa-z0-9-]{4,}", low, re.I)
+    stop = {
+        "фотон",
+        "унпк",
+        "клиент",
+        "клиента",
+        "можно",
+        "действует",
+        "подтвердит",
+        "менеджер",
+        "учебный",
+        "учебного",
+        "курса",
+        "курсы",
+    }
+    return tuple(dict.fromkeys(token for token in tokens if token not in stop))[:8]
+
+
+def _coverage_repair_prompt(
+    draft: str,
+    findings: Sequence[_CoverageFinding],
+    facts: Mapping[str, str],
+) -> str:
+    required = "\n".join(
+        f"- {item.fact_key}: {_short_fact_sentence(item.fact_text, max_chars=220)}"
+        for item in findings
+    )
+    facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(нет фактов)"
+    return (
+        "Исправь ответ: он обязан прямо использовать подтверждённые факты ниже. "
+        "Не добавляй новых чисел, дат, адресов или условий.\n"
+        f"Факты, которые обязательно надо назвать:\n{required}\n"
+        f"Все факты хода:\n{facts_block}\n"
+        f"Черновик:\n{draft}\n"
+        "Верни только клиентский ответ."
+    )
+
+
+def _coverage_cite_only_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    return _coverage_cite_only_answer_from_findings(
+        _coverage_findings(
+            "",
+            contract=contract,
+            retrieval=retrieval,
+            force_draft_for_manager=False,
+        )
+    )
+
+
+def _key_coverage_cite_only_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    return _coverage_cite_only_answer_from_findings(_key_coverage_findings(contract, retrieval))
+
+
+def _coverage_cite_only_answer_from_findings(findings: Sequence[_CoverageFinding]) -> str:
+    if not findings:
+        return ""
+    snippets: list[str] = []
+    seen: set[str] = set()
+    for item in findings:
+        snippet = _short_fact_sentence(item.fact_text, max_chars=220)
+        if not snippet or snippet in seen:
+            continue
+        seen.add(snippet)
+        snippets.append(snippet)
+    if not snippets:
+        return ""
+    if len(snippets) == 1:
+        return f"По подтверждённым данным: {snippets[0]}"
+    return "По подтверждённым данным: " + " ".join(snippets[:3])
+
+
+def _key_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult) -> tuple[_CoverageFinding, ...]:
+    if contract.is_p0 or contract.answerability != "answer_self":
+        return ()
+    findings: list[_CoverageFinding] = []
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        if subquestion.answerable != "self":
+            continue
+        for required_key in tuple(key for key in subquestion.needed_fact_keys if key):
+            for fact_key in retrieval.matched_keys.get(required_key, ()):
+                if fact_key not in retrieval.facts:
+                    continue
+                findings.append(
+                    _CoverageFinding(
+                        subquestion=subquestion.text or contract.current_question,
+                        required_key=required_key,
+                        fact_key=fact_key,
+                        fact_text=str(retrieval.facts[fact_key]),
+                    )
+                )
+    return tuple(findings)
+
+
+def _key_coverage_ok(contract: AnswerContract, retrieval: RetrievalResult) -> bool:
+    needed = contract.all_needed_fact_keys()
+    if not needed:
+        return False
+    return any(
+        any(matched_key in retrieval.facts for matched_key in retrieval.matched_keys.get(required_key, ()))
+        for required_key in needed
+    )
+
+
+def _composition_answer(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    for builder in (
+        _compose_n_subjects_discount,
+        _compose_nearest_camp_shift,
+        _compose_price_plus_format,
+        _compose_installment_summary,
+    ):
+        answer = builder(contract, retrieval, current_draft=current_draft)
+        if answer:
+            return answer
+    return ""
+
+
+def _verified_empty_handoff_replacement(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
+    allow_key_coverage: bool = False,
+) -> str:
+    if not _should_replace_empty_handoff(
+        draft,
+        contract=contract,
+        retrieval=retrieval,
+        allow_key_coverage=allow_key_coverage,
+    ):
+        return ""
+    return _cite_only_recover_before_handoff(
+        contract=contract,
+        retrieval=retrieval,
+        draft=draft,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+        allow_key_coverage=allow_key_coverage,
+    )
+
+
+def _cite_only_recover_before_handoff(
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    draft: str,
+    client_words: str,
+    faithfulness_fn: Callable[[str], object] | None,
+    toggles: Toggles,
+    context: Mapping[str, Any] | None,
+    previous_bot_texts: Sequence[str] = (),
+    allow_key_coverage: bool = False,
+    original_findings: Sequence[VerificationFinding] = (),
+    original_unsupported: Sequence[str] = (),
+) -> str:
+    if _cite_only_recover_blocked(contract, client_words=client_words, context=context):
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "blocked_risk"})
+        return ""
+    if not _original_failure_allows_cite_only_recover(original_findings, original_unsupported):
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "unsafe_original_failure"})
+        return ""
+    has_scope = _key_coverage_ok(contract, retrieval) if allow_key_coverage else _has_exact_retrieved_answer_part(contract, retrieval)
+    if not has_scope:
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "no_exact_scope"})
+        return ""
+    if allow_key_coverage and _asks_class_schedule_days(contract):
+        matched = _matched_fact_text_for_required_keys(retrieval, contract.all_needed_fact_keys())
+        if matched and all(_is_contact_hours_fact(key, value) for key, value in matched.items()):
+            trace_event(context, "cite_only_recover", {"replaced": False, "reason": "contact_hours_not_class_schedule"})
+            return ""
+    replacement = (
+        _composition_answer(contract, retrieval, current_draft=draft)
+        or _hard_failure_exact_fact_fallback(contract, retrieval)
+        or (
+            _key_coverage_cite_only_answer(contract, retrieval)
+            if allow_key_coverage
+            else _exact_scope_cite_only_answer(contract, retrieval)
+        )
+    )
+    if not replacement:
+        trace_event(context, "cite_only_recover", {"replaced": False, "reason": "empty_candidate"})
+        return ""
+    replacement_facts = _facts_with_derived_answer(retrieval.facts, replacement)
+    findings, unsupported, semantic_available = _hard_check(
+        replacement,
+        facts=replacement_facts,
+        contract=contract,
+        client_words=client_words,
+        faithfulness_fn=faithfulness_fn,
+        toggles=toggles,
+        context=context,
+        previous_bot_texts=previous_bot_texts,
+    )
+    if findings or unsupported:
+        trace_event(
+            context,
+            "cite_only_recover",
+            {
+                "replaced": False,
+                "reason": "hard_check_failed",
+                "findings": [finding.code for finding in findings],
+                "unsupported": list(unsupported),
+            },
+        )
+        return ""
+    if semantic_available or not new_concrete_anchors(replacement, original="", facts=retrieval.facts):
+        return replacement
+    trace_event(context, "cite_only_recover", {"replaced": False, "reason": "semantic_unavailable_new_anchor"})
+    return ""
+
+
+def _stashed_recovery_candidate(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+) -> str:
+    text = str(draft or "").strip()
+    if (
+        not text
+        or not retrieval.facts
+        or contract.answerability != "answer_self"
+        or _looks_like_handoff(text)
+        or _cite_only_recover_blocked(contract, client_words=client_words, context=context)
+    ):
+        return ""
+    return text
+
+
+_CITE_ONLY_RECOVERABLE_FINDING_CODES = {
+    "fact_grounding",
+    "unsupported_named_entity",
+    "wrong_intent_fact",
+}
+
+
+def _original_failure_allows_cite_only_recover(
+    findings: Sequence[VerificationFinding],
+    unsupported: Sequence[str],
+) -> bool:
+    if any(finding.code not in _CITE_ONLY_RECOVERABLE_FINDING_CODES for finding in findings):
+        return False
+    return all(_unsupported_item_is_missing_answer(item) for item in unsupported)
+
+
+def _unsupported_item_is_missing_answer(item: str) -> bool:
+    text = str(item or "").casefold().replace("ё", "е")
+    return bool(re.search(r"нет\s+ответ|не\s+ответ|не\s+использ|handoff|передам|менеджер|уточн", text, re.I))
+
+
+def _cite_only_recover_blocked(
+    contract: AnswerContract,
+    *,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+) -> bool:
+    if contract.is_p0 or _asks_refund_policy(contract):
+        return True
+    safety = classify_answer_safety(
+        client_message=" ".join(part for part in (client_words, contract.current_question, contract.client_state) if part),
+        context=context,
+        route="manager_only",
+    )
+    return bool(safety.zero_collect_required or safety.primary_risk in {"complaint", "refund", "payment_dispute", "legal"})
+
+
+def _exact_scope_cite_only_answer(contract: AnswerContract, retrieval: RetrievalResult) -> str:
+    return _coverage_cite_only_answer_from_findings(_exact_scope_coverage_findings(contract, retrieval))
+
+
+def _exact_scope_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult) -> tuple[_CoverageFinding, ...]:
+    findings: list[_CoverageFinding] = []
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable=contract.answerability,
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys or any(key in retrieval.missing or not retrieval.matched_keys.get(key) for key in keys):
+            continue
+        if not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            continue
+        for required_key in keys:
+            for fact_key in retrieval.matched_keys.get(required_key, ()):
+                if fact_key not in retrieval.facts:
+                    continue
+                findings.append(
+                    _CoverageFinding(
+                        subquestion=subquestion.text or contract.current_question,
+                        required_key=required_key,
+                        fact_key=fact_key,
+                        fact_text=str(retrieval.facts[fact_key]),
+                    )
+                )
+                break
+    return tuple(findings)
+
+
+def _should_replace_empty_handoff(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    allow_key_coverage: bool = False,
+) -> bool:
+    if contract.is_p0 or contract.answerability != "answer_self":
+        return False
+    has_coverage = (
+        _key_coverage_ok(contract, retrieval)
+        if allow_key_coverage
+        else _has_exact_retrieved_answer_part(contract, retrieval)
+    )
+    if not has_coverage:
+        return False
+    if _draft_cites_any_retrieved_self_fact(draft, contract=contract, retrieval=retrieval):
+        return False
+    handoff_like = _is_handoff_text(draft) or (allow_key_coverage and _looks_like_handoff(draft))
+    return handoff_like and _handoff_factual_claim_text(draft) is None
+
+
+def _draft_cites_any_retrieved_self_fact(
+    draft: str,
+    *,
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+) -> bool:
+    subquestions = contract.subquestions or (
+        Subquestion(
+            text=contract.current_question,
+            answerable="self" if contract.answerability == "answer_self" else "manager",
+            needed_fact_keys=contract.needed_fact_keys,
+            question_type=contract.question_type,
+            existence_target=contract.existence_target,
+        ),
+    )
+    for subquestion in subquestions:
+        if subquestion.answerable != "self":
+            continue
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys or not _retrieved_keys_match_question_scope(contract, subquestion, retrieval, keys):
+            continue
+        for required_key in keys:
+            for fact_key in retrieval.matched_keys.get(required_key, ()):
+                if fact_key in retrieval.facts and _answer_cites_fact(draft, retrieval.facts[fact_key]):
+                    return True
+    return False
+
+
+def _facts_with_derived_answer(facts: Mapping[str, str], answer: str) -> Mapping[str, str]:
+    merged = dict(facts)
+    if answer:
+        merged["__derived.phase1_composition"] = answer
+    return merged
+
+
+def _compose_n_subjects_discount(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    text = _contract_intent_text(contract)
+    subject_count = _requested_subject_count(text)
+    if subject_count < 2:
+        return ""
+    base = _price_for_composition(contract, retrieval.facts)
+    pct = _second_subject_discount_pct(contract, retrieval.facts)
+    if base is None or pct is None:
+        return ""
+    discounted = [round(base * (100 - pct) / 100) for _ in range(subject_count - 1)]
+    total = base + sum(discounted)
+    total_text = _format_rub(total)
+    if total_text in str(current_draft or ""):
+        return ""
+    parts = [f"первый предмет — {_format_rub(base)}"]
+    for index, amount in enumerate(discounted, start=2):
+        parts.append(f"{index}-й предмет со скидкой {pct}% — {_format_rub(amount)}")
+    return (
+        f"Если брать {subject_count} предмета, по подтверждённым фактам: "
+        f"{', '.join(parts)}. Итого — {total_text}. "
+        "Скидки не суммируются; менеджер подтвердит группу и оформление."
+    )
+
+
+def _compose_nearest_camp_shift(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    if not _contract_mentions_camp_or_lvsh(contract):
+        return ""
+    text = _contract_intent_text(contract)
+    if not re.search(r"ближайш|даты|когда|смен", text, re.I):
+        return ""
+    date_fact = ""
+    price_fact = ""
+    included_fact = ""
+    for key, value in retrieval.facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not _is_camp_or_lvsh_fact(key, str(value or "")):
+            continue
+        sentence = _short_fact_sentence(str(value or ""), max_chars=220)
+        if not date_fact and re.search(r"\d{1,2}\s*[–-]\s*\d{1,2}|январ|феврал|март|апрел|ма[йя]|июн|июл|август", combined, re.I):
+            date_fact = sentence
+        elif not price_fact and re.search(r"₽|руб|цен|стоим", combined, re.I):
+            price_fact = sentence
+        elif not included_fact and re.search(r"входит|включ", combined, re.I):
+            included_fact = sentence
+    if not date_fact:
+        return ""
+    parts = [date_fact]
+    if price_fact:
+        parts.append(price_fact)
+    if included_fact:
+        parts.append(included_fact)
+    return " ".join(parts) + " По наличию мест менеджер сверит актуальную группу."
+
+
+def _compose_price_plus_format(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    if not (_asks_price(contract) or _asks_training_format_choice(contract)):
+        return ""
+    if _contract_mentions_camp_or_lvsh(contract):
+        camp_facts = _camp_or_lvsh_facts(retrieval.facts)
+        if not camp_facts:
+            return ""
+        price = _direct_price_answer_from_facts(contract, camp_facts)
+        format_answer = _direct_camp_format_answer_from_facts(contract, camp_facts)
+        if price and format_answer:
+            return f"{price} {format_answer}"
+        return price or format_answer
+    price = _direct_price_answer_from_facts(contract, retrieval.facts)
+    if not price:
+        return ""
+    if _answer_cites_fact(current_draft, " ".join(retrieval.facts.values())):
+        return ""
+    format_answer = _direct_format_answer_from_facts(contract, retrieval.facts)
+    if format_answer:
+        return f"{price} {format_answer}"
+    return price
+
+
+def _compose_installment_summary(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+    targets = _payment_method_target_anchors(contract)
+    text = _contract_intent_text(contract)
+    if not targets and not re.search(r"рассроч|частями|оплат", text, re.I):
+        return ""
+    if _is_existence_yes_no_contract(contract) and _answer_cites_fact(current_draft, " ".join(retrieval.facts.values())):
+        return ""
+    payment = _direct_payment_answer_from_facts(contract, retrieval.facts)
+    if payment:
+        return payment
+    installment_facts: list[str] = []
+    for key, value in retrieval.facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if re.search(r"рассроч|частями|долями|т-банк|t-банк", combined, re.I):
+            installment_facts.append(_short_fact_sentence(str(value or ""), max_chars=220))
+    if not installment_facts:
+        return ""
+    return "По подтверждённым вариантам оплаты: " + " ".join(dict.fromkeys(installment_facts[:2]))
+
+
+def _requested_subject_count(text: str) -> int:
+    low = str(text or "").casefold().replace("ё", "е")
+    if not re.search(r"предмет", low, re.I):
+        return 0
+    number_words = {"два": 2, "две": 2, "три": 3, "четыре": 4}
+    for word, value in number_words.items():
+        if re.search(rf"\b{word}\b", low, re.I):
+            return value
+    ordinal_stems = {"втор": 2, "трет": 3, "четверт": 4}
+    for stem, value in ordinal_stems.items():
+        if re.search(rf"\b{stem}\w*\s+предмет", low, re.I):
+            return value
+    ordinal_match = re.search(r"\b([2-4])\s*[-–]?\s*(?:й|ии|ий|ой|го|му|м)?\s+предмет", low, re.I)
+    if ordinal_match:
+        return int(ordinal_match.group(1))
+    match = re.search(r"\b([2-4])\s*(?:предмет|курс)", low, re.I)
+    if match:
+        return int(match.group(1))
+    if re.search(r"втор\w+\s+предмет|2-?й\s+предмет", low, re.I):
+        return 2
+    return 0
+
+
+def _price_for_composition(contract: AnswerContract, facts: Mapping[str, str]) -> int | None:
+    preferred_period = "year" if re.search(r"\bгод\b|year", _contract_intent_text(contract), re.I) else ""
+    preferred_format = "online" if re.search(r"онлайн|online", _contract_intent_text(contract), re.I) else ""
+    if not preferred_format and re.search(r"очно|очная|очный|offline", _contract_intent_text(contract), re.I):
+        preferred_format = "offline"
+    candidates: list[tuple[int, int]] = []
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if "₽" not in combined and "руб" not in combined:
+            continue
+        if "discount" in combined or "скидк" in combined:
+            continue
+        score = 0
+        if preferred_period and (preferred_period in combined or "год" in combined):
+            score += 3
+        if preferred_format == "online" and re.search(r"онлайн|online", combined, re.I):
+            score += 2
+        if preferred_format == "offline" and re.search(r"очно|очная|очный|offline", combined, re.I):
+            score += 2
+        amount = _first_money_amount(value)
+        if amount:
+            candidates.append((score, amount))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _second_subject_discount_pct(contract: AnswerContract, facts: Mapping[str, str]) -> int | None:
+    preferred_format = "online" if re.search(r"онлайн|online", _contract_intent_text(contract), re.I) else ""
+    if not preferred_format and re.search(r"очно|очная|очный|offline", _contract_intent_text(contract), re.I):
+        preferred_format = "offline"
+    candidates: list[tuple[int, int]] = []
+    for key, value in facts.items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not re.search(
+            r"втор\w+\s+предмет|последующ\w+\s+предмет|2-?й\s+предмет|second[_\s-]?subject",
+            combined,
+            re.I,
+        ):
+            continue
+        match = re.search(r"\b(\d{1,2})\s*%", combined)
+        if not match:
+            continue
+        score = 0
+        if preferred_format == "online" and re.search(r"онлайн|online", combined, re.I):
+            score += 2
+        if preferred_format == "offline" and re.search(r"очно|очная|очный|offline", combined, re.I):
+            score += 2
+        candidates.append((score, int(match.group(1))))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _first_money_amount(text: str) -> int | None:
+    match = re.search(r"\d[\d\s\u00a0]{2,}\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.)", str(text or ""), re.I)
+    if not match:
+        return None
+    digits = re.sub(r"\D", "", match.group(0))
+    return int(digits) if digits else None
+
+
+def _format_rub(value: int) -> str:
+    return f"{int(value):,}".replace(",", " ") + " ₽"
 
 
 def _unsupported_claims_without_current_fact_support(
@@ -1495,6 +3855,17 @@ def _dry_p0_text(*, conversation: Sequence[Mapping[str, str]] | None = None) -> 
     return _DRY_P0_TEXTS[bot_turns % len(_DRY_P0_TEXTS)]
 
 
+def _p0_handoff_text(
+    contract: AnswerContract,
+    *,
+    conversation: Sequence[Mapping[str, str]] | None = None,
+) -> str:
+    reason = f"{contract.p0_reason} {contract.client_state}".casefold().replace("ё", "е")
+    if "complaint" in reason or "жалоб" in reason:
+        return _complaint_handoff_text(conversation=conversation)
+    return _dry_p0_text(conversation=conversation)
+
+
 _REFUND_POLICY_TEXTS: tuple[str, ...] = (
     "Порядок возврата или отмены до начала занятий подтвердит менеджер по договору. Не буду подменять это общими правилами курса — передам вопрос именно про возврат.",
     "По возврату и отмене лучше не отвечать общими правилами курса. Передам менеджеру именно этот вопрос, он сверит условия по договору.",
@@ -1509,36 +3880,88 @@ def _refund_policy_handoff_text(*, conversation: Sequence[Mapping[str, str]] | N
     return _REFUND_POLICY_TEXTS[bot_turns % len(_REFUND_POLICY_TEXTS)]
 
 
-def _safe_fallback_text(contract: AnswerContract, *, facts: Mapping[str, str] | None = None) -> str:
+_COMPLAINT_HANDOFF_TEXTS: tuple[str, ...] = (
+    "Понимаю, что ситуация неприятная, и хочу, чтобы её разобрали внимательно. "
+    "Передам менеджеру — он свяжется с вами и поможет.",
+    "Спасибо, что написали. Такую ситуацию правильнее разобрать с менеджером — "
+    "передам ему, он свяжется и во всём разберётся.",
+    "Понимаю вас. Чтобы решить вопрос по существу, передам менеджеру — "
+    "он свяжется с вами напрямую.",
+)
+
+
+def _complaint_handoff_text(*, conversation: Sequence[Mapping[str, str]] | None = None) -> str:
+    bot_turns = 0
+    if conversation:
+        bot_turns = sum(1 for item in conversation if str(item.get("role") or "") == "bot")
+    return _COMPLAINT_HANDOFF_TEXTS[bot_turns % len(_COMPLAINT_HANDOFF_TEXTS)]
+
+
+def _safe_fallback_text(
+    contract: AnswerContract,
+    *,
+    facts: Mapping[str, str] | None = None,
+    context: Mapping[str, Any] | None = None,
+) -> str:
+    def traced(text: str, reason: str) -> str:
+        trace_event(
+            context,
+            "_safe_fallback_text",
+            {
+                "reason": reason,
+                "current_question": contract.current_question,
+                "answerability": contract.answerability,
+                "fact_keys": list((facts or {}).keys()),
+                "text": text,
+            },
+        )
+        return text
+
+    safety = classify_answer_safety(
+        client_message=contract.current_question or "",
+        context=context,
+        route="manager_only",
+    )
+    if safety.zero_collect_required:
+        if safety.primary_risk == "complaint":
+            return traced(_complaint_handoff_text(), "complaint_zero_collect")
+        if safety.primary_risk == "refund":
+            return traced(_refund_policy_handoff_text(), "refund_zero_collect")
+        return traced(
+            "Сейчас точно ответить не могу. Передам вопрос менеджеру — он свяжется с вами.",
+            "p0_zero_collect",
+        )
+
     known_absence = _known_absence_text(contract, facts or {})
     if known_absence:
-        return known_absence
+        return traced(known_absence, "known_absence")
     presale_refund = _presale_refund_policy_text(facts or {})
-    if presale_refund and _asks_refund_policy(contract):
-        return presale_refund
+    if presale_refund and _asks_refund_policy(contract) and not _dialogue_had_hard_p0_claim(context):
+        return traced(presale_refund, "presale_refund")
     soft_weekend = _soft_weekend_guidance_text(facts or {})
     if soft_weekend and _asks_weekend_or_slot(contract):
-        return (
+        return traced(
             "По общему ориентиру бывают разные варианты слотов, в том числе по выходным. "
-            "Но точное расписание конкретной группы без проверки не подтверждаю — менеджер сверит ваш класс, предмет и площадку."
+            "Но точное расписание конкретной группы без проверки не подтверждаю — менеджер сверит ваш класс, предмет и площадку.",
+            "soft_weekend",
         )
     schedule_publication = _class_schedule_publication_answer(contract, facts or {})
     if schedule_publication:
-        return schedule_publication
+        return traced(schedule_publication, "schedule_publication")
     if _asks_refund_policy(contract):
-        return _refund_policy_handoff_text()
+        return traced(_refund_policy_handoff_text(), "refund_policy_handoff")
     detail = _client_safe_question_detail(contract.current_question)
-    secondary = _secondary_fact_text(contract, facts or {})
+    secondary = _partial_orientation_text(contract, facts or {})
     if secondary:
         detail_part = f": {detail}" if detail else ""
-        return (
-            f"По спрошенному пункту точного подтверждения нет — менеджер уточнит точную деталь{detail_part}. "
-            f"Из подтверждённого, как отдельная справка: {secondary} "
-            "Если хотите, передам менеджеру именно ваш способ или условие."
+        return traced(
+            f"Из подтверждённого: {secondary} "
+            f"По спрошенной детали менеджер сверит точный ответ{detail_part} и вернётся к вам.",
+            "secondary_fact",
         )
     if detail:
-        return f"Сейчас точно ответить не могу. Передам менеджеру уточнить точную деталь: {detail}. Он свяжется с вами."
-    return "Сейчас точно ответить не могу. Передам вопрос менеджеру — он уточнит и свяжется с вами."
+        return traced(_detail_handoff_text(detail), "question_detail")
+    return traced(_generic_handoff_text(), "generic")
 
 
 def _client_safe_question_detail(value: str, *, max_chars: int = 120) -> str:
@@ -1567,9 +3990,76 @@ def _secondary_fact_text(contract: AnswerContract, facts: Mapping[str, str]) -> 
             if _is_camp_or_lvsh_fact(key, str(text or "")) and not _contract_mentions_camp_or_lvsh(contract):
                 continue
             fact_anchors = _payment_method_anchors_from_text(str(text or ""))
-            if fact_anchors and not payment_targets.issubset(fact_anchors):
+            if fact_anchors and payment_targets.issubset(fact_anchors):
                 return _short_fact_sentence(str(text or ""))
     return ""
+
+
+def _partial_orientation_text(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    secondary = _secondary_fact_text(contract, facts)
+    if secondary:
+        return secondary
+    if not facts:
+        return ""
+    if _payment_method_target_anchors(contract):
+        return ""
+    if contract.is_p0 or _asks_refund_policy(contract):
+        return ""
+    active_brand = str(contract.active_brand or "").casefold()
+    for key, text in facts.items():
+        value = str(text or "").strip()
+        if not value:
+            continue
+        if not _fact_is_safe_partial_orientation(contract, str(key), value, active_brand=active_brand):
+            continue
+        return _short_fact_sentence(value)
+    return ""
+
+
+def _fact_is_safe_partial_orientation(
+    contract: AnswerContract,
+    key: str,
+    text: str,
+    *,
+    active_brand: str,
+) -> bool:
+    combined = f"{key} {text}".casefold().replace("ё", "е")
+    if active_brand:
+        for token in _BRAND_TOKENS.get(active_brand, ()):
+            if token and token in combined:
+                return False
+    asks_camp = _contract_mentions_camp_or_lvsh(contract)
+    is_camp_fact = _is_camp_or_lvsh_fact(key, text)
+    if asks_camp and not is_camp_fact:
+        return False
+    if is_camp_fact and not asks_camp:
+        return False
+    if _asks_class_schedule_days(contract) and _is_contact_hours_fact(key, text):
+        return False
+    if _is_address_fact(key, text) and not _asks_address(contract):
+        return False
+    return True
+
+
+def _is_contact_hours_fact(key: str, text: str) -> bool:
+    combined = f"{key} {text}".casefold().replace("ё", "е")
+    return bool(
+        re.search(r"contact|contacts|режим|график|на\s+связи|10[:.]?00|18[:.]?00|пн\s*[–-]\s*вс|ежедневн", combined, re.I)
+    )
+
+
+def _is_address_fact(key: str, text: str) -> bool:
+    combined = f"{key} {text}".casefold().replace("ё", "е")
+    return bool(re.search(r"address|addresses|metro|location|адрес|метро|сретенк|скорняжн|москва|чистые\s+пруды", combined, re.I))
+
+
+def _generic_handoff_text() -> str:
+    return _GENERIC_HANDOFF_TEXTS[0]
+
+
+def _detail_handoff_text(detail: str) -> str:
+    clean = _client_safe_question_detail(detail) or "эту деталь"
+    return _DETAIL_HANDOFF_TEXTS[0].format(detail=clean)
 
 
 def _short_fact_sentence(text: str, *, max_chars: int = 170) -> str:
@@ -1594,21 +4084,68 @@ def _avoid_repeating_text(
     prior_bot_texts = [str(item.get("text") or "") for item in (conversation or ()) if str(item.get("role") or "") == "bot"]
     if not any(_near_repeat(source, prior) for prior in prior_bot_texts[-4:]):
         return source
+    if contract.is_p0:
+        return _select_unused_handoff_variant(_DRY_P0_TEXTS, prior_bot_texts, fallback=source)
+    if _is_complaint_handoff_text(source):
+        return _select_unused_handoff_variant(_COMPLAINT_HANDOFF_TEXTS, prior_bot_texts, fallback=source)
     if _asks_refund_policy(contract) and _presale_refund_policy_text(facts or {}):
         fact = _presale_refund_policy_text(facts or {})
         return (
             f"По возврату ориентир тот же: {_short_fact_sentence(fact)} "
             "Точные пункты договора менеджер подтвердит по выбранному курсу."
         )
-    return (
-        "Не буду повторять общий ответ: точную деталь по этому вопросу подтвердит менеджер. "
-        "Передам ему именно этот пункт."
+    if _is_refund_handoff_text(source) or _asks_refund_policy(contract):
+        return _select_unused_handoff_variant(_REFUND_POLICY_TEXTS, prior_bot_texts, fallback=source)
+    detail = _client_safe_question_detail(contract.current_question) or "эту деталь"
+    rendered = tuple(item.format(detail=detail) for item in (*_DETAIL_HANDOFF_TEXTS, *_GENERIC_HANDOFF_TEXTS))
+    exhausted = _select_unused_handoff_variant(
+        _HANDOFF_EXHAUSTED_TEXTS,
+        prior_bot_texts,
+        fallback=_HANDOFF_EXHAUSTED_TEXTS[-1],
     )
+    return _select_unused_handoff_variant(rendered, prior_bot_texts, fallback=exhausted)
+
+
+def _select_unused_handoff_variant(
+    variants: Sequence[str],
+    prior_bot_texts: Sequence[str],
+    *,
+    fallback: str,
+) -> str:
+    for candidate in variants:
+        text = str(candidate or "").strip()
+        if text and not any(_near_repeat(text, prior) for prior in prior_bot_texts):
+            return text
+    return fallback
+
+
+def _is_refund_handoff_text(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    return "возврат" in low or "отмен" in low
+
+
+def _is_complaint_handoff_text(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    return "ситуац" in low and ("неприят" in low or "разбер" in low)
 
 
 def _is_handoff_text(text: str) -> bool:
     low = str(text or "").casefold()
     return bool(re.search(r"менеджер|передам|уточнит|подтвердит|сверит", low, re.I))
+
+
+def _looks_like_handoff(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    if _is_handoff_text(low):
+        return True
+    return bool(
+        re.search(
+            r"спасибо\s+за\s+сообщение|не\s+могу\s+точно\s+ответить|нет\s+точн(?:ой|ых)\s+(?:информации|данных)|"
+            r"верн[её]тся\s+с\s+проверенн|свяжется\s+с\s+проверенн|уточн[ию]\s+и\s+верн",
+            low,
+            re.I,
+        )
+    )
 
 
 def _near_repeat(left: str, right: str) -> bool:
@@ -1722,6 +4259,8 @@ def _augment_with_format_guidance(
 ) -> RetrievalResult:
     if not _asks_training_format_choice(contract):
         return retrieval
+    if _contract_mentions_camp_or_lvsh(contract):
+        return retrieval
     brand = _normalize_brand(active_brand)
     store = fact_store.store.get(brand, {})
     extra: dict[str, str] = {}
@@ -1776,8 +4315,11 @@ def _augment_with_presale_refund_policy(
     contract: AnswerContract,
     active_brand: str,
     fact_store: FactStore,
+    context: Mapping[str, Any] | None = None,
 ) -> RetrievalResult:
     if not _asks_refund_policy(contract):
+        return retrieval
+    if _dialogue_had_hard_p0_claim(context):
         return retrieval
     if _presale_refund_policy_text(retrieval.facts):
         return retrieval
@@ -1961,6 +4503,14 @@ def _draft_uses_camp_or_lvsh_fact(draft: str, facts: Mapping[str, str]) -> bool:
     return any(_is_camp_or_lvsh_fact(key, str(value or "")) for key, value in facts.items())
 
 
+def _camp_or_lvsh_facts(facts: Mapping[str, str]) -> dict[str, str]:
+    return {
+        str(key): str(value or "")
+        for key, value in facts.items()
+        if _is_camp_or_lvsh_fact(str(key), str(value or ""))
+    }
+
+
 def _is_camp_or_lvsh_fact(key: str, text: str) -> bool:
     combined = f"{key} {text}".casefold().replace("ё", "е")
     return bool(re.search(r"лвш|lvsh|менделеев|лагер|camp", combined, re.I))
@@ -2064,6 +4614,10 @@ def _can_autonomously_replace_failed_draft(findings: Sequence[VerificationFindin
 def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
     if not _asks_price(contract):
         return ""
+    if _contract_mentions_camp_or_lvsh(contract):
+        facts = _camp_or_lvsh_facts(facts)
+        if not facts:
+            return ""
     items: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     facts_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
@@ -2107,6 +4661,8 @@ def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str
 def _direct_format_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
     if not _asks_training_format_choice(contract):
         return ""
+    if _contract_mentions_camp_or_lvsh(contract):
+        return _direct_camp_format_answer_from_facts(contract, facts)
     online_fact = ""
     offline_fact = ""
     for key, text in facts.items():
@@ -2123,6 +4679,22 @@ def _direct_format_answer_from_facts(contract: AnswerContract, facts: Mapping[st
     if not parts:
         return ""
     return " ".join(parts) + " Конкретную группу по предмету и классу менеджер подтвердит."
+
+
+def _direct_camp_format_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+    if not _contract_mentions_camp_or_lvsh(contract):
+        return ""
+    text = _contract_intent_text(contract)
+    if not re.search(r"формат|очно|онлайн|прожив|дневн|ночев", text, re.I):
+        return ""
+    for key, value in _camp_or_lvsh_facts(facts).items():
+        combined = f"{key} {value}".casefold().replace("ё", "е")
+        if not re.search(r"без\s+прожив|дневн|очная\s+городск|городск\w+\s+школ|городск\w+\s+лагер", combined, re.I):
+            continue
+        fact = _short_fact_sentence(str(value or ""), max_chars=220)
+        if fact:
+            return f"По лагерной смене подтверждено: {fact}"
+    return ""
 
 
 def _direct_recording_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
@@ -2152,7 +4724,7 @@ def _asks_address(contract: AnswerContract) -> bool:
             " ".join(item.text for item in contract.subquestions),
         ]
     ).casefold().replace("ё", "е")
-    return bool(re.search(r"адрес|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I))
+    return bool(re.search(r"адрес|площадк|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I))
 
 
 def _asks_price(contract: AnswerContract) -> bool:
@@ -2229,6 +4801,11 @@ def _retrieved_keys_match_question_scope(
         payment_targets = set(payment_targets) - {"monthly_no_bank"}
     if payment_targets:
         return any(_fact_supports_payment_target(text, target_anchors=payment_targets) for text in matched_text.values())
+    has_camp_fact = any(_is_camp_or_lvsh_fact(key, value) for key, value in matched_text.items())
+    if _contract_mentions_camp_or_lvsh(contract):
+        return has_camp_fact
+    if has_camp_fact:
+        return False
     question_text = _subquestion_scope_text(contract, subquestion)
     question_low = question_text.casefold().replace("ё", "е")
     if re.search(r"помесячн\w*.*сумм|сумм\w*\s+в\s+месяц|сколько\s+.*(?:в|за)\s+месяц|месячн\w*\s+сумм", question_low, re.I):
@@ -2323,6 +4900,32 @@ def _client_presale_refund_text(text: str) -> str:
             "Конкретный порядок оформления менеджер подтвердит по выбранному курсу и договору."
         )
     return _short_fact_sentence(text, max_chars=220)
+
+
+def _dialogue_had_hard_p0_claim(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    sources: list[Any] = []
+    for key in ("dialogue_memory_view", "dialogue_memory"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            sources.append(value)
+    p0_latch = context.get("p0_latch")
+    if isinstance(p0_latch, Mapping):
+        sources.append({"p0_latch": p0_latch})
+    hard_codes = {"refund", "payment_dispute", "legal", "legal_threat", "complaint"}
+    for source in sources:
+        latch = source.get("p0_latch") if isinstance(source, Mapping) else None
+        if isinstance(latch, Mapping):
+            if bool(latch.get("had_hard_p0_claim")):
+                return True
+            codes = {str(item or "").strip() for item in (latch.get("codes") or ())}
+            if codes.intersection(hard_codes):
+                return True
+        risk_flags = {str(item or "").strip() for item in (source.get("risk_flags") or ())} if isinstance(source, Mapping) else set()
+        if risk_flags.intersection(hard_codes):
+            return True
+    return False
 
 
 def _current_refund_dispute_signal(*, client_words: str, contract: AnswerContract) -> bool:

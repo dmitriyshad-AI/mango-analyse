@@ -121,6 +121,10 @@ def extract_semantic_fact_claims(text: str) -> list[Mapping[str, Any]]:
     )
     result: list[Mapping[str, Any]] = []
     for claim_type, terms, triggers in patterns:
+        if claim_type == "annual_discount" and not _discount_term_near_number(text, percent="14", term="год"):
+            continue
+        if claim_type == "semester_discount" and not _discount_term_near_number(text, percent="10", term="семестр"):
+            continue
         if not all(trigger in normalized for trigger in triggers):
             continue
         if claim_type == "bank_transfer_invoice" and re.search(r"(можно\s+ли|уточн|подтверд|передам)", normalized, re.I):
@@ -133,6 +137,16 @@ def extract_semantic_fact_claims(text: str) -> list[Mapping[str, Any]]:
             }
         )
     return result
+
+
+def _discount_term_near_number(text: str, *, percent: str, term: str) -> bool:
+    source = str(text or "").casefold().replace("ё", "е")
+    pct = re.escape(str(percent))
+    term_re = re.escape(str(term).casefold())
+    return bool(
+        re.search(rf"{pct}\s*%?[^.!?\n]{{0,30}}{term_re}", source, re.I)
+        or re.search(rf"{term_re}[^.!?\n]{{0,30}}{pct}\s*%?", source, re.I)
+    )
 
 
 def fact_text_supports_terms(text: str, terms: Sequence[Any]) -> bool:
@@ -187,7 +201,7 @@ def _wrong_scope_fact_findings(
     findings: list[dict[str, Any]] = []
     bot = normalize_fact_text(text)
     client = normalize_fact_text(client_message)
-    if _asks_class_schedule_days(client) and _mentions_contact_hours(bot):
+    if _asks_class_schedule_days(client) and _mentions_contact_hours(bot) and not _separates_contact_hours_from_schedule(bot):
         findings.append(
             {
                 "claim_type": "contact_hours_as_class_schedule",
@@ -240,8 +254,20 @@ def _mentions_contact_hours(text: str) -> bool:
     )
 
 
+def _separates_contact_hours_from_schedule(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(не\s+дни\s+занят|не\s+расписан|а\s+не\s+дни|а\s+не\s+расписан|"
+            r"это\s+(?:время|часы)\s+(?:работы\s+)?(?:контакт|связи)|"
+            r"часы\s+(?:работы\s+)?(?:контакт|связи)[^.!?\n]{0,80}(?:не\s+дни|не\s+расписан))",
+            text,
+            re.I,
+        )
+    )
+
+
 def _mentions_address(text: str) -> bool:
-    return bool(re.search(r"(сретенк|лялин|менделеево|адрес)", text, re.I))
+    return bool(re.search(r"(сретенк|лялин|адрес)", text, re.I))
 
 
 def _asks_address(text: str) -> bool:

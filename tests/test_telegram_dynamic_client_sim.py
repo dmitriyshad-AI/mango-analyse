@@ -129,6 +129,10 @@ def test_judge_prompt_marks_metadata_as_internal():
     assert "цифровой помощник Фотона/УНПК МФТИ/центра" in prompt
     assert "GPT/Claude/Codex/OpenAI" in prompt
     assert "Не ставь fabrication за факт" in prompt
+    assert "5-11 класс" in prompt
+    assert "НЕ является fabrication" in prompt
+    assert "класс вне диапазона" in prompt
+    assert "риск fabrication сохраняется" in prompt
     assert sim.JUDGE_FACT_AUDIT_VERSION in prompt
     assert "fact:format" in prompt
     assert "verified_safe_template: Фотон" not in prompt
@@ -329,6 +333,53 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     assert "answer_quality_reference" in context
     assert "conversation_intent_plan" in context
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
+
+
+def test_run_one_dialog_injects_debug_trace_context_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIALOGUE_CONTRACT_DEBUG_TRACE", "1")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    class CapturingBotProvider:
+        def __init__(self):
+            self.contexts = []
+
+        def build_draft(self, client_message, *, context=None):
+            self.contexts.append(dict(context or {}))
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "service:S5_general_consultation",
+                    "route": "draft_for_manager",
+                    "draft_text": "Передам менеджеру, он уточнит.",
+                    "safety_flags": ["manager_approval_required", "no_auto_send"],
+                }
+            )
+
+    provider = CapturingBotProvider()
+    dialog = sim.run_one_dialog(
+        {
+            "dialog_id": "trace_dynamic",
+            "brand": "unpk",
+            "persona": "родитель",
+            "goal": "проверить trace",
+            "max_turns": 1,
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.FakeClientModel(),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=provider,
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+        debug_trace_run_dir=tmp_path,
+    )
+
+    assert dialog["dialog_id"] == "trace_dynamic"
+    trace_cfg = provider.contexts[0]["dialogue_contract_debug_trace"]
+    assert trace_cfg["enabled"] is True
+    assert trace_cfg["run_dir"] == str(tmp_path)
+    assert trace_cfg["dialog_id"] == "trace_dynamic"
+    assert trace_cfg["turn"] == 1
 
 
 def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_findings(tmp_path):
@@ -605,6 +656,12 @@ def test_judge_fact_audit_matches_full_brand_client_safe_facts(tmp_path):
                 "allowed_for_client_answer": True,
                 "client_safe_text": "УНПК: адрес площадки — Сретенка, 20.",
             },
+            {
+                "brand": "unpk",
+                "fact_key": "lvsh_mendeleevo_2026.location.name",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: выездная ЛВШ проходит в Менделеево.",
+            },
         ]
     }
     snapshot_path = tmp_path / "snapshot.json"
@@ -668,6 +725,18 @@ def test_judge_fact_audit_separates_wrong_scope_from_fabrication(tmp_path):
     assert schedule_audit["has_wrong_scope"] is True
     assert schedule_audit["has_unverified_claim"] is False
 
+    schedule_disclaimer_audit = sim.audit_fact_claims_for_judge(
+        "Фотон на связи Пн-Вс с 10:00 до 18:00 — это время работы контактов, а не дни занятий. "
+        "Расписание группы уточнит менеджер.",
+        client_message="По каким дням занятия?",
+        active_brand="foton",
+        retrieved_facts={"contacts.office_hours": "Фотон: контактный центр работает Пн-Вс 10:00-18:00."},
+        snapshot_path=snapshot_path,
+    )
+    disclaimer_levels = {item["claim_type"]: item["level"] for item in schedule_disclaimer_audit["items"]}
+    assert "contact_hours_as_class_schedule" not in disclaimer_levels
+    assert disclaimer_levels["office_hours"] == "retrieved_match"
+
     address_audit = sim.audit_fact_claims_for_judge(
         "Занятия проходят на Сретенке, 20.",
         client_message="Интересует 9 класс информатика очно, помесячно без банка?",
@@ -689,6 +758,17 @@ def test_judge_fact_audit_separates_wrong_scope_from_fabrication(tmp_path):
     assert "address_on_non_address_question" not in legit_levels
     assert legit_levels["address_sretenka"] == "retrieved_match"
 
+    lvsh_location_audit = sim.audit_fact_claims_for_judge(
+        "Подтверждена выездная ЛВШ в Менделеево. Другие форматы менеджер проверит отдельно.",
+        client_message="А выездных форматов больше нет?",
+        active_brand="unpk",
+        retrieved_facts={"lvsh_mendeleevo_2026.location.name": "УНПК: выездная ЛВШ проходит в Менделеево."},
+        snapshot_path=snapshot_path,
+    )
+    lvsh_levels = {item["claim_type"]: item["level"] for item in lvsh_location_audit["items"]}
+    assert "address_on_non_address_question" not in lvsh_levels
+    assert lvsh_levels["address_mendeleevo"] == "retrieved_match"
+
 
 def test_judge_fact_audit_flags_unmatched_business_claim(tmp_path):
     snapshot_path = tmp_path / "snapshot.json"
@@ -705,6 +785,61 @@ def test_judge_fact_audit_flags_unmatched_business_claim(tmp_path):
     assert audit["items"][0]["claim_type"] == "bank_transfer_invoice"
     assert audit["items"][0]["level"] == "no_match"
     assert audit["has_unverified_claim"] is True
+
+
+def test_judge_fact_audit_discount_claims_require_local_percent_context(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "unpk",
+                "fact_key": "payment_options.semester_discount",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: при оплате за семестр действует скидка 10%.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "payment_options.annual_discount",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "УНПК: при оплате за год действует скидка 14%.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    listed_foton_discounts = sim.audit_fact_claims_for_judge(
+        "У Фотона есть скидка 10% для многодетных, скидка 30% на второй предмет. "
+        "После семестра возможен кэшбэк, скидки не суммируются.",
+        client_message="Какие скидки есть?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    claim_types = [item["claim_type"] for item in listed_foton_discounts["items"]]
+    assert "semester_discount" not in claim_types
+    assert listed_foton_discounts["has_unverified_claim"] is False
+
+    wrong_brand_semester_claim = sim.audit_fact_claims_for_judge(
+        "За семестр действует скидка 10%.",
+        client_message="Какая скидка за семестр?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    levels = {item["claim_type"]: item["level"] for item in wrong_brand_semester_claim["items"]}
+    assert levels["semester_discount"] == "other_brand_match"
+    assert wrong_brand_semester_claim["has_unverified_claim"] is True
+
+    wrong_brand_annual_claim = sim.audit_fact_claims_for_judge(
+        "При оплате за год действует скидка 14%.",
+        client_message="Какая скидка за год?",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+    annual_levels = {item["claim_type"]: item["level"] for item in wrong_brand_annual_claim["items"]}
+    assert annual_levels["annual_discount"] == "other_brand_match"
+    assert wrong_brand_annual_claim["has_unverified_claim"] is True
 
 
 def test_summary_includes_judge_fact_audit_counts(tmp_path):

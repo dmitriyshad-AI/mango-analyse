@@ -56,6 +56,7 @@ class ConversationIntentPlan:
     route_bias: str = "draft_for_manager"
     next_step_hint: str = ""
     fact_query_text: str = ""
+    selling: Mapping[str, Any] = field(default_factory=dict)
     decision_notes: tuple[str, ...] = ()
 
     def to_prompt_view(self) -> Mapping[str, Any]:
@@ -93,6 +94,7 @@ class ConversationIntentPlan:
             "route_bias": self.route_bias,
             "next_step_hint": self.next_step_hint,
             "fact_query_text": self.fact_query_text,
+            "selling": dict(self.selling),
             "decision_notes": list(self.decision_notes),
         }
 
@@ -207,6 +209,12 @@ def build_conversation_intent_plan(
         slots=slots,
         required_fact_keys=required_fact_keys,
     )
+    selling = _selling_signals(
+        normalized,
+        primary_intent=primary_intent,
+        keyword_signals=keyword_signals,
+        risk_signals=risk_signals,
+    )
     return ConversationIntentPlan(
         active_brand=brand,
         primary_intent=primary_intent,
@@ -240,7 +248,53 @@ def build_conversation_intent_plan(
         route_bias=route_bias,
         next_step_hint=_next_step_hint(primary_intent, slots=slots, risk_signals=risk_signals),
         fact_query_text=fact_query,
+        selling=selling,
         decision_notes=notes,
+    )
+
+
+def _selling_signals(
+    text: str,
+    *,
+    primary_intent: str,
+    keyword_signals: Sequence[str],
+    risk_signals: Sequence[str],
+) -> Mapping[str, Any]:
+    objection = "none"
+    exit_signal = False
+    if not risk_signals:
+        if _has_price_objection_signal(text):
+            objection = "price"
+        exit_signal = _has_exit_signal(text)
+    return {
+        "objection": objection,
+        "exit_signal": exit_signal,
+        "anxiety": False,
+        "unmet_need": "",
+        "readiness": "exploring",
+    }
+
+
+def _has_price_objection_signal(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    if re.search(r"\b(?:не|совсем\s+не)\s+дорог", value):
+        return False
+    return bool(
+        re.search(r"\bдорог(?:о|овато|ая|ие|ой)?\b", value)
+        or re.search(r"\bслишком\s+(?:много|дорог)", value)
+        or re.search(r"\b(?:цена|стоимость)\s+(?:высок|кусает)", value)
+        or re.search(r"\b(?:не\s+потян|не\s+тянем|не\s+по\s+бюджет|по\s+бюджету\s+не)", value)
+        or _has_any_marker(value, ("подешевле", "дешевле", "накладно", "дороже, чем", "много платить"))
+    )
+
+
+def _has_exit_signal(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(r"\b(?:подумаю|подумаем|подумать\s+надо|надо\s+подумать)\b", value)
+        or re.search(r"\b(?:поищу|посмотрю|посмотрим|сравню|сравним)\b[^.!?\n]{0,60}\b(?:друг|вариант)", value)
+        or re.search(r"\b(?:у\s+других|другие\s+варианты|не\s+сейчас|пока\s+не\s+готов)", value)
+        or re.search(r"\b(?:обсуд(?:ю|им|ить)|посоветуюсь)\b[^.!?\n]{0,60}\b(?:дома|муж|жен|семь)", value)
     )
 
 
@@ -295,6 +349,8 @@ def _primary_intent(
         return "tax"
     if "matkap" in keyword_signals:
         return "matkap"
+    if "platform" in keyword_signals:
+        return "platform_access"
     if "document" in keyword_signals:
         return "document"
     if previous_question_kind == "trial" and _has_any_marker(text, ("как", "получ", "ссыл", "запис", "регист", "отправ")):
@@ -308,6 +364,8 @@ def _primary_intent(
         ("format", "format"),
         ("camp", "camp"),
         ("address", "address"),
+        ("teacher", "teacher"),
+        ("platform", "platform_access"),
         ("identity", "identity"),
         ("off_topic", "off_topic"),
     )
@@ -365,6 +423,8 @@ def _keyword_signals(text: str) -> tuple[str, ...]:
         ("schedule", ("распис", "когда", "во сколько", "дни", "дням", "время", "заняти", "суббот", "воскрес", "выходн")),
         ("format", ("онлайн", "очно", "офлайн", "дистанц", "формат")),
         ("address", ("адрес", "где", "площадк", "метро", "пацаева", "сретен", "красносель")),
+        ("teacher", ("преподав", "педагог", "учитель", "кто вед", "кто работает")),
+        ("platform", ("личный кабинет", "кабинет", "платформ", "логин", "парол", "электрон", "документооборот", "скан-коп")),
         ("document", ("справк", "документ", "договор", "сертификат", "чек", "квитанц")),
         ("matkap", ("маткап", "материн")),
         ("tax", ("налог", "вычет", "фнс")),
@@ -492,6 +552,8 @@ def _topic_for_intent(intent: str) -> str:
         "olympiad_online": "theme:016_program",
         "format": "theme:014_format",
         "address": "theme:015_address",
+        "teacher": "theme:017_teachers",
+        "platform_access": "theme:024_account_access",
         "document": "theme:012_certificates",
         "matkap": "theme:007_matkap_payment",
         "tax": "theme:008_tax_deduction",
@@ -567,6 +629,13 @@ def _required_fact_keys(
         keys.append("olympiad_online.current")
     if intent == "address":
         keys.append("locations.current")
+    if intent == "teacher":
+        keys.append("teachers.current")
+    if intent == "platform_access":
+        if _has_any_marker(text, ("электрон", "документооборот", "скан-коп")):
+            keys.append("platform_documents.current")
+        else:
+            keys.append("platform.current")
     if intent == "document":
         keys.append("documents.current")
     if intent == "matkap":
@@ -677,7 +746,7 @@ def _answer_policy(intent: str, *, risk_signals: Sequence[str]) -> tuple[str, st
         return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     if intent == "live_availability":
         return "answer_safe_parts_then_manager_live_check", "draft_for_manager"
-    if intent in {"pricing", "price_fix", "installment", "payment_method", "payment_by_invoice_monthly", "discount", "trial", "camp", "schedule", "format", "address", "document", "matkap", "tax"}:
+    if intent in {"pricing", "price_fix", "installment", "payment_method", "payment_by_invoice_monthly", "discount", "trial", "camp", "schedule", "format", "address", "teacher", "platform_access", "document", "matkap", "tax"}:
         return "answer_directly_if_fact_verified", "bot_answer_self_for_pilot"
     return "help_then_one_question", "draft_for_manager"
 

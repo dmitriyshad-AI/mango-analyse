@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.new_lead_funnel import (
     extract_format,
@@ -16,6 +17,7 @@ from mango_mvp.channels.new_lead_funnel import (
     normalize_text,
 )
 from mango_mvp.channels.held_state import HeldState, held_state_from_mapping, update_held
+from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.p0_recall_spec import memory_risk_flags_from_text
 from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
@@ -87,6 +89,29 @@ CURRENT_TERMS_FORBIDDEN_PROMISES_RU = (
 AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS = 5
 AUTONOMOUS_P0_LATCH_RELEASE_EVENT = "autonomous_neutral_p0_latch_release_5_turns"
 HARD_P0_LATCH_CODES = {"legal", "legal_threat", "payment_dispute"}
+HARD_P0_HISTORY_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
+MEMORY_LLM_RECOMMENDED_REASONING = "low"
+MEMORY_LLM_RECOMMENDED_MODEL_CLASS = "small_fast_memory_model"
+_MEMORY_LLM_SLOT_KEYS = ("grade", "subject", "format", "goal", "product", "city", "location")
+_MEMORY_LLM_TOPIC_KEYS = (
+    "grade",
+    "subject",
+    "format",
+    "goal",
+    "product",
+    "city",
+    "location",
+    "product_family",
+    "question_kind",
+)
+_MEMORY_LLM_QUESTION_KINDS = {kind for kind, _ in QUESTION_KIND_MARKERS} | {"other", "price_fix"}
+_MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE = re.compile(
+    r"(?:₽|руб(?:\.|лей|ля|ль)?|%|\b\d{1,2}\s+"
+    r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)"
+    r"(?:\s+\d{4})?\b)",
+    re.I,
+)
+_MEMORY_LLM_OVERRIDABLE_SLOT_SOURCES = {"dialogue_memory", "memory_llm", "bot_inferred", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -126,6 +151,7 @@ class DialogueP0Latch:
     started_at: str = ""
     trigger_turn_id: str = ""
     release_event_id: str = ""
+    had_hard_p0_claim: bool = False
 
     def to_json_dict(self) -> Mapping[str, Any]:
         return {
@@ -135,6 +161,7 @@ class DialogueP0Latch:
             "started_at": self.started_at,
             "trigger_turn_id": self.trigger_turn_id,
             "release_event_id": self.release_event_id,
+            "had_hard_p0_claim": self.had_hard_p0_claim,
         }
 
 
@@ -267,18 +294,23 @@ def build_dialogue_memory(
     current_risk_flags = _detect_risk_flags(current_text)
     held_p0_required = bool(previous_held.p0_latched or current_risk_flags or current_roles.refund_frame == "dispute")
     held_state = update_held(previous_held, current_text, current_roles, p0_required=held_p0_required)
+    previous_latch = previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch()
     p0_latch = _next_p0_latch(
-        previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(),
+        previous_latch,
         current_message=current_text,
         current_risk_flags=current_risk_flags,
         context=context,
         session_id=session_id,
         turns=turns,
     )
-    latch_released = _p0_latch_released(previous.p0_latch if isinstance(previous, DialogueMemory) else DialogueP0Latch(), p0_latch)
+    latch_released = _p0_latch_released(previous_latch, p0_latch)
     if latch_released:
         held_state = replace(held_state, p0_latched=False, p0_codes=())
-    risks = current_risk_flags if latch_released else _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
+    risks = (
+        current_risk_flags
+        if latch_released or _previous_autonomous_p0_latch_released(previous_latch)
+        else _detect_risk_flags("\n".join(turn.text for turn in turns if turn.role == "client"))
+    )
     if p0_latch.active:
         risks = tuple(dict.fromkeys([*risks, *p0_latch.codes, "p0"]))
     commitments = _detect_commitments(turns)
@@ -326,6 +358,7 @@ def update_dialogue_memory_after_answer(
     route: str = "",
     fact_refs: Sequence[str] = (),
     safety_flags: Sequence[str] = (),
+    memory_llm_fn: Callable[[str], object] | None = None,
 ) -> DialogueMemory:
     current = memory if isinstance(memory, DialogueMemory) else dialogue_memory_from_mapping(memory)
     answer = _clean(answer_text)
@@ -356,7 +389,7 @@ def update_dialogue_memory_after_answer(
     handoff = "required" if p0_latch.active or risks or route == "manager_only" else current.handoff_state
     safe_parts = tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
     pending_actions = _pending_manager_actions(commitments)
-    return DialogueMemory(
+    updated = DialogueMemory(
         session_id=current.session_id,
         active_brand=current.active_brand,
         turns=turns,
@@ -383,6 +416,288 @@ def update_dialogue_memory_after_answer(
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
+    if memory_llm_fn is None:
+        return updated
+    try:
+        payload = update_memory_llm(updated.turns[-8:], updated, memory_llm_fn=memory_llm_fn)
+    except Exception:
+        return updated
+    return _apply_memory_llm_update(updated, payload)
+
+
+def update_memory_llm(
+    recent_turns: Sequence[DialogueTurn | Mapping[str, Any]],
+    prev_memory: DialogueMemory | Mapping[str, Any],
+    *,
+    memory_llm_fn: Callable[[str], object] | None,
+) -> Mapping[str, Any]:
+    """Optional post-answer memory enrichment. Callers should use a low-effort small model."""
+
+    if memory_llm_fn is None:
+        return {}
+    memory = prev_memory if isinstance(prev_memory, DialogueMemory) else dialogue_memory_from_mapping(prev_memory)
+    coerced_turns: list[DialogueTurn] = []
+    for item in recent_turns:
+        turn = _coerce_turn(item)
+        if turn.text:
+            coerced_turns.append(turn)
+    turns = tuple(coerced_turns[-8:])
+    prompt = build_memory_llm_prompt(turns, memory)
+    raw = memory_llm_fn(prompt)
+    if isinstance(raw, Mapping):
+        return raw
+    return _extract_json_object(raw)
+
+
+def build_memory_llm_prompt(recent_turns: Sequence[DialogueTurn], prev_memory: DialogueMemory) -> str:
+    turns_payload = [turn.to_json_dict() for turn in recent_turns[-8:]]
+    memory_payload = prev_memory.to_prompt_view()
+    return (
+        "Ты обновляешь краткую рабочую память Telegram-диалога ПОСЛЕ ответа бота.\n"
+        f"Режим вызова: {MEMORY_LLM_RECOMMENDED_REASONING} reasoning; использовать отдельную мелкую/быструю модель "
+        f"класса {MEMORY_LLM_RECOMMENDED_MODEL_CLASS}, не основную модель ответа.\n"
+        "Задача: извлеки только явно сказанное в последних репликах и в прошлой памяти. Не выдумывай.\n"
+        "Бренд задаёт канал: active_brand менять нельзя, даже если клиент назвал другой бренд.\n"
+        "Верни строгий JSON без markdown:\n"
+        "{\n"
+        '  "slots": {"grade": "", "subject": "", "format": "", "goal": "", "product": "", "city": "", "location": ""},\n'
+        '  "topic": {"grade": "", "subject": "", "format": "", "goal": "", "product": "", "product_family": "", "question_kind": ""},\n'
+        '  "open_question": {"text": "", "kind": "", "answered": false},\n'
+        '  "commitments": [],\n'
+        '  "summary": ""\n'
+        "}\n"
+        "Правила:\n"
+        "- slots/topic заполняй предметом, классом, форматом, продуктом, городом/площадкой только если это явно следует из диалога.\n"
+        "- open_question — последний незакрытый вопрос клиента, если он есть.\n"
+        "- commitments — только обещания бота: передать менеджеру, проверить наличие, прислать материал.\n"
+        "- summary — 1-2 смысловые фразы: кто клиент, что обсуждали, на чём остановились; "
+        "включи безопасное обещание бота, если оно уже было. Без цен/дат/обещаний, если они не звучали явно.\n\n"
+        "ПРЕДЫДУЩАЯ ПАМЯТЬ JSON:\n"
+        f"{json.dumps(memory_payload, ensure_ascii=False, sort_keys=True)}\n\n"
+        "ПОСЛЕДНИЕ РЕПЛИКИ JSON:\n"
+        f"{json.dumps(turns_payload, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+def _apply_memory_llm_update(memory: DialogueMemory, payload: Mapping[str, Any]) -> DialogueMemory:
+    if not isinstance(payload, Mapping) or not payload:
+        return memory
+
+    slots = dict(memory.known_slots)
+    llm_slots = _memory_llm_slots(payload.get("slots"))
+    _merge_memory_llm_slots(slots, llm_slots, memory=memory)
+
+    open_question = _memory_llm_open_question(payload.get("open_question"), fallback=memory.open_question)
+    topic_focus = _memory_llm_topic(payload.get("topic"), slots=slots, open_question=open_question, memory=memory)
+    commitments = _memory_llm_commitments(payload.get("commitments"), previous=memory.last_bot_commitments)
+    summary = _memory_llm_summary(payload.get("summary")) or memory.conversation_summary_short
+
+    client_confirmed = _slots_by_source(slots, {"dialogue_memory"})
+    bot_inferred = {
+        **dict(memory.bot_inferred_slots),
+        **_slots_by_source(slots, {"memory_llm"}),
+    }
+    return replace(
+        memory,
+        known_slots=slots,
+        open_question=open_question,
+        last_bot_commitments=commitments,
+        sales_stage=_sales_stage(slots, open_question=open_question, risk_flags=memory.risk_flags, handoff_state=memory.handoff_state),
+        topic_focus=topic_focus,
+        client_confirmed_slots=client_confirmed,
+        bot_inferred_slots=bot_inferred,
+        do_not_reask_slots=_do_not_reask_slots(slots),
+        pending_manager_actions=_pending_manager_actions(commitments),
+        conversation_summary_short=summary[:500],
+        open_loop_summary=_open_loop_summary(
+            open_question=open_question,
+            risk_flags=memory.risk_flags,
+            pending_actions=_pending_manager_actions(commitments),
+        ),
+    )
+
+
+def _memory_llm_slots(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for key in _MEMORY_LLM_SLOT_KEYS:
+        raw = value.get(key)
+        text = _clean(raw)
+        if text:
+            result[key] = text
+    return result
+
+
+def _merge_memory_llm_slots(
+    target: dict[str, DialogueSlot],
+    source_map: Mapping[str, Any],
+    *,
+    memory: DialogueMemory,
+) -> None:
+    latest_client_text = _latest_client_text(memory.turns)
+    for key, raw in source_map.items():
+        if key not in _MEMORY_LLM_SLOT_KEYS:
+            continue
+        value = _clean(raw)
+        if key == "format":
+            value = _normalize_format(value)
+        if not value:
+            continue
+        existing = target.get(key)
+        if existing and not _memory_llm_can_override_slot(key, value, existing, latest_client_text=latest_client_text):
+            continue
+        target[key] = DialogueSlot(value=value[:160], source="memory_llm", confidence=0.74)
+
+
+def _memory_llm_can_override_slot(
+    key: str,
+    value: str,
+    existing: DialogueSlot,
+    *,
+    latest_client_text: str,
+) -> bool:
+    if not existing.value:
+        return True
+    if existing.source not in _MEMORY_LLM_OVERRIDABLE_SLOT_SOURCES:
+        return False
+    if existing.source == "dialogue_memory":
+        return _memory_llm_slot_supported_by_latest_client(key, value, latest_client_text=latest_client_text)
+    return True
+
+
+def _memory_llm_slot_supported_by_latest_client(key: str, value: str, *, latest_client_text: str) -> bool:
+    normalized = normalize_text(latest_client_text)
+    candidate = normalize_text(value)
+    if not normalized or not candidate:
+        return False
+    if key == "grade":
+        digits = re.findall(r"\d{1,2}", candidate)
+        if digits:
+            grade = digits[0]
+            ordinal_stems = {
+                "1": ("перв",),
+                "2": ("втор",),
+                "3": ("трет",),
+                "4": ("четвер",),
+                "5": ("пят",),
+                "6": ("шест",),
+                "7": ("седьм", "седм"),
+                "8": ("восьм",),
+                "9": ("девят",),
+                "10": ("десят",),
+                "11": ("одиннадцат",),
+            }.get(grade, ())
+            return bool(
+                re.search(rf"\b{re.escape(grade)}\s*(?:класс|кл\.?)?\b", normalized, re.I)
+                or any(stem in normalized for stem in ordinal_stems)
+            )
+    if key == "subject":
+        aliases = {
+            "информатика": ("информат", "айти", "it", "программ"),
+            "математика": ("математ", "матем"),
+            "физика": ("физик",),
+            "химия": ("хими",),
+            "биология": ("биолог",),
+            "русский": ("русск",),
+            "английский": ("англ",),
+        }
+        return any(alias in normalized for alias in aliases.get(candidate, (candidate,)))
+    if key == "format":
+        if candidate == "онлайн":
+            return has_any_marker(normalized, ("онлайн", "online", "дистанц", "удален", "удалён"))
+        if candidate == "очно":
+            return has_any_marker(normalized, ("очно", "офлайн", "offline", "площадк", "адрес"))
+    if candidate in normalized:
+        return True
+    return False
+
+
+def _latest_client_text(turns: Sequence[DialogueTurn]) -> str:
+    for turn in reversed(turns):
+        if turn.role == "client" and turn.text:
+            return turn.text
+    return ""
+
+
+def _memory_llm_topic(
+    value: Any,
+    *,
+    slots: Mapping[str, DialogueSlot],
+    open_question: DialogueQuestion,
+    memory: DialogueMemory,
+) -> Mapping[str, str]:
+    topic = dict(_topic_focus(slots, open_question=open_question, active_brand=memory.active_brand))
+    if isinstance(value, Mapping):
+        for key in _MEMORY_LLM_TOPIC_KEYS:
+            raw = _clean(value.get(key))
+            if raw and not topic.get(key):
+                topic[key] = raw[:160]
+    topic["brand"] = memory.active_brand
+    return topic
+
+
+def _memory_llm_open_question(value: Any, *, fallback: DialogueQuestion) -> DialogueQuestion:
+    if not isinstance(value, Mapping):
+        return fallback
+    text = _clean(value.get("text"))[:260]
+    if not text:
+        return fallback
+    kind = _clean(value.get("kind"))
+    if kind not in _MEMORY_LLM_QUESTION_KINDS:
+        kind = fallback.kind or "other"
+    answered = bool(value.get("answered"))
+    if fallback.text and fallback.answered and text == fallback.text:
+        return fallback
+    return DialogueQuestion(text=text, kind=kind, answered=answered)
+
+
+def _memory_llm_commitments(value: Any, *, previous: Sequence[str]) -> tuple[str, ...]:
+    items = list(previous)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for raw in value:
+            text = _clean(raw)
+            if text:
+                items.append(text[:120])
+    return tuple(dict.fromkeys(items))[-8:]
+
+
+def _memory_llm_summary(value: Any) -> str:
+    text = _clean(value)
+    if not text:
+        return ""
+    if _MEMORY_LLM_UNSAFE_SUMMARY_FACT_RE.search(text):
+        return ""
+    return text[:500]
+
+
+def _coerce_turn(raw: DialogueTurn | Mapping[str, Any]) -> DialogueTurn:
+    if isinstance(raw, DialogueTurn):
+        return raw
+    if isinstance(raw, Mapping):
+        return DialogueTurn(str(raw.get("role") or raw.get("speaker") or ""), _clean(raw.get("text")))
+    return DialogueTurn("", _clean(raw))
+
+
+def _extract_json_object(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    raw = str(value or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            payload = json.loads(raw[start : end + 1])
+        except Exception:
+            return {}
+    return payload if isinstance(payload, Mapping) else {}
 
 
 def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueMemory:
@@ -724,6 +1039,7 @@ def _p0_latch_from_mapping(value: Any) -> DialogueP0Latch:
         started_at=str(value.get("started_at") or ""),
         trigger_turn_id=str(value.get("trigger_turn_id") or ""),
         release_event_id=str(value.get("release_event_id") or ""),
+        had_hard_p0_claim=bool(value.get("had_hard_p0_claim")),
     )
 
 
@@ -736,9 +1052,30 @@ def _next_p0_latch(
     session_id: str,
     turns: Sequence[DialogueTurn] = (),
 ) -> DialogueP0Latch:
+    previous_had_hard_p0_claim = bool(previous.had_hard_p0_claim)
+    current_had_hard_p0_claim = _has_hard_p0_history_code(current_risk_flags)
     release_event = _p0_latch_release_event(context)
     if release_event:
-        return DialogueP0Latch(release_event_id=release_event)
+        result = DialogueP0Latch(
+            release_event_id=release_event,
+            had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim,
+        )
+        trace_event(
+            context,
+            "_next_p0_latch",
+            {
+                "previous_active": previous.active,
+                "previous_codes": list(previous.codes),
+                "current_risk_flags": list(current_risk_flags),
+                "release_event": release_event,
+                "autonomous_release": False,
+                "next_active": result.active,
+                "next_codes": list(result.codes),
+                "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                "next_had_hard_p0_claim": result.had_hard_p0_claim,
+            },
+        )
+        return result
     if previous.active:
         autonomous_release = _autonomous_p0_latch_release_event(
             previous,
@@ -746,21 +1083,88 @@ def _next_p0_latch(
             current_risk_flags=current_risk_flags,
         )
         if autonomous_release:
-            return DialogueP0Latch(release_event_id=autonomous_release)
+            result = DialogueP0Latch(
+                release_event_id=autonomous_release,
+                had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim,
+            )
+            trace_event(
+                context,
+                "_next_p0_latch",
+                {
+                    "previous_active": previous.active,
+                    "previous_codes": list(previous.codes),
+                    "current_risk_flags": list(current_risk_flags),
+                    "release_event": autonomous_release,
+                    "autonomous_release": True,
+                    "next_active": result.active,
+                    "next_codes": list(result.codes),
+                    "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                    "next_had_hard_p0_claim": result.had_hard_p0_claim,
+                },
+            )
+            return result
+        trace_event(
+            context,
+            "_next_p0_latch",
+            {
+                "previous_active": previous.active,
+                "previous_codes": list(previous.codes),
+                "current_risk_flags": list(current_risk_flags),
+                "release_event": "",
+                "autonomous_release": False,
+                "next_active": previous.active,
+                "next_codes": list(previous.codes),
+                "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                "next_had_hard_p0_claim": previous.had_hard_p0_claim,
+            },
+        )
         return previous
     codes = tuple(dict.fromkeys(_latchable_p0_codes(current_risk_flags)))
     if not codes:
-        return DialogueP0Latch()
+        result = DialogueP0Latch(had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim)
+        trace_event(
+            context,
+            "_next_p0_latch",
+            {
+                "previous_active": previous.active,
+                "previous_codes": list(previous.codes),
+                "current_risk_flags": list(current_risk_flags),
+                "release_event": "",
+                "autonomous_release": False,
+                "next_active": result.active,
+                "next_codes": list(result.codes),
+                "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+                "next_had_hard_p0_claim": result.had_hard_p0_claim,
+            },
+        )
+        return result
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     trigger_seed = f"{session_id}|{current_message[:160]}|{','.join(codes)}"
     trigger_id = hashlib.sha256(trigger_seed.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return DialogueP0Latch(
+    result = DialogueP0Latch(
         active=True,
         codes=codes,
         primary_risk=_primary_p0_risk(codes),
         started_at=now,
         trigger_turn_id=trigger_id,
+        had_hard_p0_claim=previous_had_hard_p0_claim or current_had_hard_p0_claim or _has_hard_p0_history_code(codes),
     )
+    trace_event(
+        context,
+        "_next_p0_latch",
+        {
+            "previous_active": previous.active,
+            "previous_codes": list(previous.codes),
+            "current_risk_flags": list(current_risk_flags),
+            "release_event": "",
+            "autonomous_release": False,
+            "next_active": result.active,
+            "next_codes": list(result.codes),
+            "previous_had_hard_p0_claim": previous_had_hard_p0_claim,
+            "next_had_hard_p0_claim": result.had_hard_p0_claim,
+        },
+    )
+    return result
 
 
 def _latchable_p0_codes(flags: Sequence[str]) -> tuple[str, ...]:
@@ -815,8 +1219,16 @@ def _has_hard_p0_latch_code(codes: Sequence[str]) -> bool:
     return any(str(code or "").strip() in HARD_P0_LATCH_CODES for code in codes)
 
 
+def _has_hard_p0_history_code(codes: Sequence[str]) -> bool:
+    return any(str(code or "").strip() in HARD_P0_HISTORY_CODES for code in codes)
+
+
 def _p0_latch_released(previous: DialogueP0Latch, current: DialogueP0Latch) -> bool:
     return bool(previous.active and not current.active and current.release_event_id)
+
+
+def _previous_autonomous_p0_latch_released(previous: DialogueP0Latch) -> bool:
+    return bool(not previous.active and previous.release_event_id == AUTONOMOUS_P0_LATCH_RELEASE_EVENT)
 
 
 def _slots_by_source(slots: Mapping[str, DialogueSlot], source_names: set[str]) -> Mapping[str, str]:

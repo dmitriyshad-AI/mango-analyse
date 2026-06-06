@@ -66,8 +66,8 @@ EXPECTED_NUMERIC_FACTS: tuple[dict[str, Any], ...] = (
     {"amount": 23000, "brand": "foton", "tokens": ("individual", "lesson")},
     {"amount": 49000, "brand": "unpk", "tokens": ("offline", "5", "11")},
     {"amount": 82000, "brand": "unpk", "tokens": ("offline", "5", "11")},
-    {"amount": 41800, "brand": "unpk", "tokens": ("online", "olympiad", "phystech")},
-    {"amount": 69900, "brand": "unpk", "tokens": ("online", "olympiad", "phystech")},
+    {"amount": 41800, "brand": "unpk", "tokens": ("online", "5", "11")},
+    {"amount": 69900, "brand": "unpk", "tokens": ("online", "5", "11")},
     {"amount": 114000, "brand": "unpk", "tokens": ("lvsh", "mendeleevo")},
     {"amount": 33000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
     {"amount": 50000, "brand": "unpk", "tokens": ("fiztech", "olympiad")},
@@ -291,11 +291,23 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
         assert not _is_true(fact.get("usable_for_precise_answer")), fact
         assert _is_true(fact.get("internal_only")) or "stale_previous_year_not_current" in _fact_blob(fact), fact
         q15_scope = _fact_scope_blob(fact)
-        assert _has_any(q15_scope, ("прошлого учебного года", "previous_year", "stale_previous_year")), fact
+        assert _has_any(q15_scope, ("старая ветка", "previous_year", "stale_previous_year")), fact
         assert _has_class_scope(q15_scope, first="9", last="11"), fact
         assert not _has_any(q15_scope, ("5-11", "5_11", "1-4", "1_4")), fact
 
-    other_unpk_online_precise_prices = [
+    by_key = {str(fact.get("fact_key") or ""): fact for fact in kb_v3.facts if fact.get("brand") == "unpk"}
+    online_regular_semester = by_key["prices_regular_2026_27.online_5_11_class_regular.semester"]
+    online_regular_year = by_key["prices_regular_2026_27.online_5_11_class_regular.year"]
+    for fact in (online_regular_semester, online_regular_year):
+        assert _is_true(fact.get("allowed_for_client_answer")), fact
+        assert _is_true(fact.get("usable_for_precise_answer")), fact
+        blob = _fact_scope_blob(fact)
+        assert _has_class_scope(blob, first="5", last="11"), fact
+        assert "2 раза" in blob, fact
+        structured = _jsonish(fact.get("structured_value"))
+        assert (structured.get("applies_to") or {}).get("frequency") == "2 раза в неделю"
+
+    unexpected_unpk_online_precise_prices = [
         fact
         for fact in kb_v3.facts
         if fact.get("brand") == "unpk"
@@ -304,10 +316,11 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
         and _has_money_amount(fact)
         and _is_true(fact.get("allowed_for_client_answer"))
         and _is_true(fact.get("usable_for_precise_answer"))
+        and not str(fact.get("fact_key") or "").startswith("prices_regular_2026_27.online_5_11_class_regular.")
     ]
-    assert not other_unpk_online_precise_prices, (
-        "UNPK online precise prices outside q15 must stay manager-handoff only: "
-        f"{_fact_ids(other_unpk_online_precise_prices[:20])}"
+    assert not unexpected_unpk_online_precise_prices, (
+        "UNPK online precise prices outside confirmed 2x/week regular online scope must stay manager-handoff only: "
+        f"{_fact_ids(unexpected_unpk_online_precise_prices[:20])}"
     )
 
 
@@ -411,6 +424,55 @@ def test_v3_rc2a_client_safe_discount_and_olympiad_facts(kb_v3: KbReleaseV3) -> 
     assert "Олимпиадная подготовка Физтех онлайн" in olymp_text
     assert "9 и 11 классов" in olymp_text
     assert olymp.get("usable_for_precise_answer") is True
+    applies_to = (_jsonish(olymp.get("structured_value")).get("applies_to") or {})
+    assert applies_to.get("grades") == [9, 11]
+    assert applies_to.get("formats") == ["online"]
+
+
+def test_v3_refund_post_payment_is_client_safe_but_limited(kb_v3: KbReleaseV3) -> None:
+    allowed = list(_allowed_client_facts(kb_v3.facts))
+    by_key_brand = {
+        (str(fact.get("brand") or ""), str(fact.get("fact_key") or "")): fact
+        for fact in allowed
+    }
+
+    expected_text = (
+        "По возврату средств после оплаты — здесь нужен расчёт от менеджера: он посмотрит, "
+        "какая часть курса уже пройдена, и пришлёт точную сумму к возврату. Я уже передал "
+        "ему ваш запрос — он свяжется с вами в рабочее время."
+    )
+    for brand in ("foton", "unpk"):
+        fact = by_key_brand[
+            (brand, "presentation_format_facts_2026_05_21.client_safe_facts.refund_post_payment.client_safe_text")
+            if brand == "foton"
+            else (brand, "tg_unpk_verified_2026_05_21.client_safe_facts.refund_post_payment.client_safe_text")
+        ]
+        text = str(fact.get("client_safe_text") or "")
+        assert text == expected_text
+        assert "все деньги" not in text.casefold()
+        assert "полный возврат" not in text.casefold()
+        assert fact.get("usable_for_precise_answer") is True
+
+
+def test_v3_confirmed_manager_only_candidates_move_to_client_safe(kb_v3: KbReleaseV3) -> None:
+    allowed = list(_allowed_client_facts(kb_v3.facts))
+    by_key_brand = {
+        (str(fact.get("brand") or ""), str(fact.get("fact_key") or "")): fact
+        for fact in allowed
+    }
+
+    installment = by_key_brand[("foton", "installment.client_confirmed_terms.client_safe_text")]
+    installment_text = str(installment.get("client_safe_text") or "")
+    assert "6, 10 или 12 месяцев" in installment_text
+    assert "Долями" in installment_text
+    assert "УНПК" not in installment_text
+    assert installment.get("usable_for_precise_answer") is True
+
+    q15_handoff = by_key_brand[("unpk", "team_answers.q15.unpk_online_other_classes.manager_handoff")]
+    q15_text = str(q15_handoff.get("client_safe_text") or "")
+    assert "вне подтверждённого формата 2 раза в неделю" in q15_text
+    assert "точные условия должен проверить менеджер" in q15_text
+    assert "41 800" not in q15_text and "69 900" not in q15_text
 
 
 def test_v3_weekly_lessons_do_not_parse_academic_year_as_frequency(kb_v3: KbReleaseV3) -> None:
@@ -744,6 +806,15 @@ def test_v3_forbidden_brand_relationship_phrase_is_not_client_allowed(kb_v3: KbR
         if "раньше сотрудничали" in str(fact.get("client_safe_text") or "").casefold()
     ]
     assert not bad, _fact_ids(bad)
+
+
+def test_v3_safe_key_unification_removes_known_duplicate_sources(kb_v3: KbReleaseV3) -> None:
+    fact_keys = {str(fact.get("fact_key") or "") for fact in kb_v3.facts}
+    assert "discounts.stacking_rule" not in fact_keys
+    assert "objection_responses.brand_link_question.approved_response" not in fact_keys
+    assert "brand_rules.approved_brand_relationship_answer.foton" in fact_keys
+    assert "brand_rules.approved_brand_relationship_answer.unpk" in fact_keys
+    assert "objection_responses.too_expensive_course.3" in fact_keys
 
 
 def test_v3_certificate_phrase_does_not_collect_unconfirmed_fields(kb_v3: KbReleaseV3) -> None:

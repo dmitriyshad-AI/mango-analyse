@@ -6,6 +6,7 @@ from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import (
     COMPLAINT_RE,
+    HARD_P0_CODES,
     LEGAL_RE,
     PAYMENT_DISPUTE_RE,
     REFUND_RE,
@@ -77,10 +78,16 @@ def classify_answer_safety(
     haystack = "\n".join(texts)
     normalized = _normalize(haystack)
     current_norm = _normalize(current)
+    current_benign_refund = is_benign_hypothetical_refund(current_norm)
     evidence: dict[str, str] = {}
     codes: list[str] = []
 
-    if REFUND_RE.search(haystack) and not is_benign_hypothetical_refund(haystack) and not is_negated_refund_topic(current):
+    if (
+        REFUND_RE.search(haystack)
+        and not (current_benign_refund and not current_codes)
+        and not is_benign_hypothetical_refund(haystack)
+        and not is_negated_refund_topic(current)
+    ):
         codes.append("refund")
         evidence["refund"] = _first_match(REFUND_RE, haystack)
     if LEGAL_RE.search(haystack):
@@ -134,6 +141,11 @@ def classify_answer_safety(
         evidence.setdefault("topic_id", topic)
 
     semantic_non_p0 = _semantic_non_p0_by_plan(plan, current_norm=current_norm)
+    if current_benign_refund and not current_codes:
+        codes = [code for code in codes if code != "refund"]
+        evidence.pop("refund", None)
+        evidence["refund_presale_current"] = "benign_hypothetical_refund"
+        semantic_non_p0 = True
     if semantic_non_p0 and not codes_from_current_message(current):
         # Let a clean current-message plan repair stale model topics/flags.
         codes = [code for code in codes if evidence.get("topic_id") != topic and evidence.get("safety_flags") not in {code}]
@@ -141,14 +153,17 @@ def classify_answer_safety(
         evidence.pop("safety_flags", None)
 
     latch_codes = _p0_latch_codes(context)
+    if current_benign_refund and not current_codes:
+        latch_codes = tuple(code for code in latch_codes if code != "refund")
     if latch_codes:
         codes.extend(latch_codes)
         evidence["p0_latch"] = ",".join(latch_codes)
         semantic_non_p0 = False
 
     codes = tuple(dict.fromkeys(code for code in codes if code))
+    hard_codes = tuple(code for code in codes if code in HARD_P0_CODES)
     primary = _primary_risk(codes, current_codes=current_codes)
-    p0 = bool(codes) or plan_route_bias == "manager_only" and plan_primary in {"refund", "legal_threat", "complaint", "payment_dispute"}
+    p0 = bool(hard_codes) or plan_route_bias == "manager_only" and plan_primary in {"refund", "legal_threat", "complaint", "payment_dispute"}
     if semantic_non_p0 and not codes_from_current_message(current):
         p0 = False
         primary = ""

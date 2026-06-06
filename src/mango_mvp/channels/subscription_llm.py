@@ -801,6 +801,14 @@ class SubscriptionDraftResult:
         if message_type not in ALLOWED_MESSAGE_TYPES:
             message_type = "manager_only"
         extra_flags = ["internal_metadata_removed_from_draft"] if text != raw_text and raw_text else []
+        metadata = dict(self.metadata)
+        if extra_flags:
+            metadata.setdefault("guarded_original_text", " ".join(raw_text.split())[:500])
+            metadata.setdefault("guarded_original_text_guard", "strip_internal_service_markers")
+            guards = [str(item) for item in (metadata.get("guarded_original_text_guards") or []) if str(item).strip()]
+            if "strip_internal_service_markers" not in guards:
+                guards.append("strip_internal_service_markers")
+            metadata["guarded_original_text_guards"] = guards[:8]
         flags = tuple(
             dict.fromkeys(
                 [
@@ -831,7 +839,7 @@ class SubscriptionDraftResult:
         object.__setattr__(self, "safety_flags", flags)
         object.__setattr__(self, "context_used", tuple(_clean_list(self.context_used, max_items=12, max_chars=100)))
         object.__setattr__(self, "context_warnings", tuple(_clean_list(self.context_warnings, max_items=12, max_chars=120)))
-        object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "metadata", metadata)
 
     def to_json_dict(self, *, include_raw_response: bool = False) -> Mapping[str, Any]:
         payload = {
@@ -1076,6 +1084,8 @@ def _apply_safe_template_spec(
     if not clean_text:
         return result
     metadata = dict(result.metadata)
+    if clean_text != str(result.draft_text or ""):
+        metadata = _metadata_with_guarded_original_text(metadata, result.draft_text, guard=f"safe_template:{spec.name}")
     metadata[spec.flag] = True
     metadata["dialogue_contract_v2_template_dispatcher"] = {
         "applied": spec.name,
@@ -1695,6 +1705,26 @@ def _metadata_with_self_route_deferral_cleared(metadata: Mapping[str, Any]) -> d
         merged["dialogue_contract_pipeline"] = pipeline
     merged["is_manager_deferral"] = False
     merged["reason_class"] = ""
+    return merged
+
+
+def _metadata_with_guarded_original_text(
+    metadata: Mapping[str, Any],
+    text: str,
+    *,
+    guard: str,
+) -> dict[str, Any]:
+    merged = dict(metadata)
+    original = " ".join(str(text or "").split())[:500]
+    if not original:
+        return merged
+    merged.setdefault("guarded_original_text", original)
+    if guard:
+        merged.setdefault("guarded_original_text_guard", str(guard)[:80])
+        guards = [str(item) for item in (merged.get("guarded_original_text_guards") or []) if str(item).strip()]
+        if guard not in guards:
+            guards.append(str(guard)[:80])
+        merged["guarded_original_text_guards"] = guards[:8]
     return merged
 
 
@@ -3287,6 +3317,7 @@ def apply_output_sanitizer(
         flags.extend(["manager_approval_required", "no_auto_send"])
         checklist.append("Output sanitizer удалил внутренний текст целиком: не отправлять без ручной проверки.")
     metadata = dict(result.metadata)
+    metadata = _metadata_with_guarded_original_text(metadata, result.draft_text, guard="output_sanitizer")
     metadata["output_sanitizer"] = {
         "enabled": True,
         "applied": True,
@@ -3943,12 +3974,14 @@ def guard_identity_disclosure(result: SubscriptionDraftResult) -> SubscriptionDr
     phrases = find_identity_disclosure_phrases(result.draft_text)
     if not phrases:
         return result
+    metadata = _metadata_with_guarded_original_text(result.metadata, result.draft_text, guard="identity_disclosure")
     return replace(
         result,
         route="manager_only",
         draft_text=SAFE_FALLBACK_DRAFT_TEXT,
         forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *phrases])),
         safety_flags=tuple(dict.fromkeys([*result.safety_flags, "identity_disclosure_guarded", "bot_identity_disclosure", "llm_fallback"])),
+        metadata=metadata,
         error=result.error or "identity_disclosure_guarded",
     )
 
@@ -5049,12 +5082,24 @@ def build_semantic_output_verifier_prompt(
         "- склейку двух реальных фактов без новой приписки;\n"
         "- каноничную фразу разделения брендов;\n"
         "- общий житейский совет с хеджем, если он не делает продуктовый вывод;\n"
-        "- хеджированный ответ по ребёнку с передачей преподавателю/менеджеру.\n\n"
+        "- хеджированный ответ по ребёнку с передачей преподавателю/менеджеру;\n"
+        "- сервисное предложение или следующий шаг без новой продуктовой приписки: «Помогу с оформлением», "
+        "«помогу записаться к старту», «менеджер сверит/свяжется/проверит наличие мест», "
+        "«подберём подходящий вариант/группу»;\n"
+        "- «подберём подходящий вариант/группу» без оценки конкретного ребёнка — это НЕ individual_diagnosis.\n"
+        "ФЛАГАЙ сервисный шаг только если он обещает конкретный неподтверждённый процесс: сроки, условия, документы, "
+        "зачисление/бронь/место, или гарантию результата.\n\n"
         "FEW-SHOT КАЛИБРОВКА:\n"
         "- Факт: «Фотон: курс физики есть онлайн и очно». Ответ: «Очный курс физики есть». "
         'Вердикт: {"findings":[]} — это смысловой пересказ подтверждённого факта, НЕ derived_product_claim.\n'
         "- Факт: «УНПК: олимпиадная физика доступна онлайн и очно». Ответ: «Олимпиадная физика есть онлайн и очно». "
         'Вердикт: {"findings":[]} — это перефраз факта без новой приписки.\n'
+        "- Ответ: «Помогу с оформлением» / «помогу записаться к старту» / "
+        "«менеджер сверит наличие мест» / «подберём подходящий вариант». "
+        'Вердикт: {"findings":[]} — это сервисный следующий шаг, не продуктовый claim и не diagnosis.\n'
+        "- Факт: «Фотон: очные цены 49 000 ₽ и 82 000 ₽; онлайн-цена не указана». "
+        "Вопрос: «а онлайн?». Ответ: «Стоимость курса — 49 000 ₽ или 82 000 ₽». "
+        "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
         "- Факт: «Фотон: оформление проходит дистанционно, менеджер помогает с договором». "
         "Ответ: «После оплаты по оферте запись считается подтверждённой». "
         "Вердикт: derived_product_claim, relation_to_base=adjacent — похожий факт есть, но порядок записи не подтверждён.\n"
@@ -6005,6 +6050,9 @@ def apply_high_risk_content_guards(
             flags.extend(("final_p0_text_override", "payment_dispute_manager_only", "high_risk_manager_only"))
             checklist.append("Финальный P0 override: спор по оплате, проверка только менеджером по системе.")
         metadata["final_p0_text_override"] = primary_risk or True
+
+    if draft_text != result.draft_text:
+        metadata = _metadata_with_guarded_original_text(metadata, result.draft_text, guard="high_risk_content_guards")
 
     if (
         route == result.route
@@ -9835,7 +9883,7 @@ def _brand_guarded_result(
             )
         ),
         metadata={
-            **dict(result.metadata),
+            **_metadata_with_guarded_original_text(result.metadata, result.draft_text, guard=reason),
             reason: True,
             "forbidden_brand_terms": list(leaked_terms),
             **({"unsupported_promises": list(precise_condition_claims)} if precise_condition_claims else {}),

@@ -2514,13 +2514,22 @@ def _handoff_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[
         "count": len(traces),
         "by_layer": dict(Counter(str(item.get("layer") or "") for item in traces)),
         "by_guard": dict(Counter(str(item.get("guard") or "") for item in traces)),
-        "by_fallback_reason": dict(Counter(str(item.get("fallback_reason") or "") for item in traces)),
+        "by_reason": dict(Counter(_handoff_trace_summary_reason(item) for item in traces)),
+        "by_fallback_reason": dict(Counter(_handoff_trace_summary_fallback_reason(item) for item in traces)),
         "by_provider_error": dict(Counter(str(item.get("provider_error") or "") for item in traces if item.get("provider_error"))),
         "by_gate_finding": dict(
             Counter(str(code) for item in traces for code in (item.get("gate_findings") or []) if str(code).strip())
         ),
         "examples": [dict(item) for item in traces[:20]],
     }
+
+
+def _handoff_trace_summary_reason(trace: Mapping[str, Any]) -> str:
+    return str(trace.get("reason") or trace.get("fallback_reason") or trace.get("reason_class") or "").strip()
+
+
+def _handoff_trace_summary_fallback_reason(trace: Mapping[str, Any]) -> str:
+    return str(trace.get("fallback_reason") or trace.get("reason_class") or trace.get("reason") or "").strip()
 
 
 def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -2531,6 +2540,7 @@ def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
     rules_engine = pipeline.get("rules_engine") if isinstance(pipeline.get("rules_engine"), Mapping) else {}
     flags = [str(flag) for flag in (turn.get("bot_safety_flags") or []) if str(flag).strip()]
     fallback_reason = str(pipeline.get("fallback_reason") or "")
+    reason_class = str(turn.get("bot_reason_class") or pipeline.get("reason_class") or "").strip()
     provider_error = str(turn.get("bot_provider_error") or "").strip()
     gate = turn.get("bot_authoritative_output_gate") if isinstance(turn.get("bot_authoritative_output_gate"), Mapping) else {}
     gate_findings = _authoritative_gate_finding_codes(gate)
@@ -2546,6 +2556,7 @@ def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
     )
     reason = _handoff_trace_reason(
         fallback_reason=fallback_reason,
+        reason_class=reason_class,
         provider_error=provider_error,
         gate_findings=gate_findings,
         flags=flags,
@@ -2556,6 +2567,7 @@ def _handoff_trace_for_turn(turn: Mapping[str, Any]) -> Mapping[str, Any]:
         "layer": layer,
         "guard": guard,
         "fallback_reason": fallback_reason,
+        "reason_class": reason_class,
         "provider_error": provider_error,
         "gate_findings": list(gate_findings),
         "reason": reason,
@@ -2614,9 +2626,12 @@ def _handoff_trace_reason(
     flags: Sequence[str],
     pipeline: Mapping[str, Any],
     fact_level: str,
+    reason_class: str = "",
 ) -> str:
     if fallback_reason:
         return fallback_reason
+    if reason_class:
+        return reason_class
     if gate_findings:
         return "authoritative_output_gate:" + ",".join(gate_findings[:5])
     if provider_error:

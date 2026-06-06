@@ -555,6 +555,35 @@ def test_handoff_trace_uses_provider_error_when_pipeline_reason_missing(monkeypa
     assert sim._turn_fallback_reason_summary([{"turns": [turn]}]) == {"timeout": 1}
 
 
+def test_handoff_trace_falls_back_to_reason_class_when_fallback_reason_empty(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
+
+    turn = {
+        "turn": 1,
+        "client_message": "Сколько стоит?",
+        "bot_text": "Передам менеджеру.",
+        "bot_route": "draft_for_manager",
+        "bot_safety_flags": ["manager_approval_required", "no_auto_send"],
+        "bot_reason_class": "no_fact_or_unverified",
+        "bot_dialogue_contract_pipeline": {
+            "fallback_reason": "",
+            "reason_class": "no_fact_or_unverified",
+            "retrieved_facts": {},
+            "missing_fact_keys": ["prices.current"],
+        },
+        "number_audit": {"items": []},
+    }
+
+    trace = sim._handoff_trace_for_turn(turn)
+    summary = sim._handoff_trace_summary([{"turns": [{**turn, "handoff_trace": trace}]}])
+
+    assert trace["fallback_reason"] == ""
+    assert trace["reason_class"] == "no_fact_or_unverified"
+    assert trace["reason"] == "no_fact_or_unverified"
+    assert summary["by_reason"] == {"no_fact_or_unverified": 1}
+    assert summary["by_fallback_reason"] == {"no_fact_or_unverified": 1}
+
+
 def test_identity_disclosure_guarded_is_output_safety_not_provider_runtime(monkeypatch):
     monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
 

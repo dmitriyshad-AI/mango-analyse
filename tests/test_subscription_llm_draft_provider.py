@@ -3539,6 +3539,8 @@ def test_v2_identity_output_guard_blocks_leaked_draft_without_identity_question(
     assert guarded.route == "manager_only"
     assert "identity_disclosure_guarded" in guarded.safety_flags
     assert "gpt" not in guarded.draft_text.casefold()
+    assert guarded.metadata["guarded_original_text"].startswith("Я GPT")
+    assert "identity_disclosure" in guarded.metadata["guarded_original_text_guards"]
 
 
 def test_volna_peresborki_safety_shield_blocks_core_autonomy_risks() -> None:
@@ -3556,6 +3558,8 @@ def test_volna_peresborki_safety_shield_blocks_core_autonomy_risks() -> None:
     assert cross_brand.route in {"draft_for_manager", "manager_only"}
     assert "cross_brand_safe_template_applied" in cross_brand.safety_flags
     assert "унпк" not in cross_brand.draft_text.casefold()
+    assert "guarded_original_text" in cross_brand.metadata
+    assert "cross_brand_client_text_blocked" in cross_brand.metadata["guarded_original_text_guards"]
 
     p0 = apply_high_risk_content_guards(
         parse_llm_json(
@@ -4567,13 +4571,14 @@ def test_authoritative_output_gate_blocks_core_safety_risks() -> None:
 
 
 def test_output_sanitizer_cuts_opus_meta_dump_before_gate() -> None:
+    original = (
+        "Проблема с данными: вход похож на внутренний кейс.\n"
+        "Инструкция шага требует оформить как замечание ревью в audits/_inbox.\n"
+        "Черновик клиенту: Да, пробное занятие есть — менеджер подберёт вариант и запишет."
+    )
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
-        draft_text=(
-            "Проблема с данными: вход похож на внутренний кейс.\n"
-            "Инструкция шага требует оформить как замечание ревью в audits/_inbox.\n"
-            "Черновик клиенту: Да, пробное занятие есть — менеджер подберёт вариант и запишет."
-        ),
+        draft_text=original,
         topic_id="theme:018_enrollment",
     )
 
@@ -4584,6 +4589,8 @@ def test_output_sanitizer_cuts_opus_meta_dump_before_gate() -> None:
     assert "Проблема с данными" not in gated.draft_text
     assert "audits/_inbox" not in gated.draft_text
     assert gated.metadata["output_sanitizer"]["applied"] is True
+    assert gated.metadata["guarded_original_text"] == " ".join(original.split())[:500]
+    assert "output_sanitizer" in gated.metadata["guarded_original_text_guards"]
     assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
 
 
@@ -4696,6 +4703,7 @@ def test_output_sanitizer_removes_semantic_regen_edit_comment() -> None:
     assert gated.draft_text == "Да, домашние задания всегда проверяются."
     assert "Заменяю" not in gated.draft_text
     assert "без изменений" not in gated.draft_text
+    assert gated.metadata["guarded_original_text"].startswith("Заменяю только этот абзац")
     assert "internal_metadata_removed_from_draft" in gated.safety_flags
 
 
@@ -8790,6 +8798,10 @@ def test_semantic_output_verifier_keeps_false_cases_and_prompt_controls() -> Non
     assert "Олимпиадная физика есть онлайн и очно" in prompt
     assert "Забронирую место на Сретенке" in prompt
     assert "порядок записи не подтверждён" in prompt
+    assert "Помогу с оформлением" in prompt
+    assert "подберём подходящий вариант" in prompt
+    assert "НЕ individual_diagnosis" in prompt
+    assert "цена очного формата не подтверждает онлайн-контекст" in prompt
 
     base = _semantic_verifier_base_result("Есть базовый и продвинутый уровень.")
     checked = apply_semantic_output_verifier(
@@ -8803,6 +8815,71 @@ def test_semantic_output_verifier_keeps_false_cases_and_prompt_controls() -> Non
     assert gated.draft_text == base.draft_text
     assert gated.route == base.route
     assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Помогу с оформлением.",
+        "Помогу записаться к старту.",
+        "Менеджер сверит наличие мест и свяжется с вами.",
+        "Подберём подходящий вариант группы.",
+    ],
+)
+def test_semantic_output_verifier_keeps_service_next_steps_cross_model_replay(text: str) -> None:
+    base = _semantic_verifier_base_result(text)
+    results = []
+    for fake_model in (lambda _prompt: {"findings": []}, lambda _prompt: '{"findings":[]}'):
+        checked = apply_semantic_output_verifier(
+            base,
+            client_message="Как записаться?",
+            context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+            verifier_fn=fake_model,
+        )
+        results.append(apply_authoritative_output_gate(checked, client_message="Как записаться?", context={"active_brand": "foton"}))
+
+    assert [item.route for item in results] == [base.route, base.route]
+    assert [item.metadata["authoritative_output_gate"]["action"] for item in results] == ["pass", "pass"]
+    assert all(item.draft_text == text for item in results)
+
+
+def test_semantic_output_verifier_keeps_online_price_context_real_finding_cross_model_replay() -> None:
+    base = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Стоимость курса — 49 000 ₽ или 82 000 ₽.",
+        topic_id="theme:001_pricing",
+        metadata={
+            "dialogue_contract_pipeline": {
+                "retrieved_facts": {
+                    "prices.offline": "Фотон: очные цены 49 000 ₽ и 82 000 ₽; онлайн-цена не указана."
+                },
+                "retrieved_fact_keys": ["prices.offline"],
+            }
+        },
+    )
+    payload = {
+        "findings": [
+            {
+                "code": "derived_product_claim",
+                "span": "49 000 ₽ или 82 000 ₽",
+                "relation_to_base": "adjacent",
+                "nearest_fact_key": "prices.offline",
+            }
+        ]
+    }
+    results = []
+    for fake_model in (lambda _prompt: payload, lambda _prompt: json.dumps(payload, ensure_ascii=False)):
+        checked = apply_semantic_output_verifier(
+            base,
+            client_message="А онлайн?",
+            context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+            verifier_fn=fake_model,
+        )
+        results.append(apply_authoritative_output_gate(checked, client_message="А онлайн?", context={"active_brand": "foton"}))
+
+    assert [item.route for item in results] == ["draft_for_manager", "draft_for_manager"]
+    assert [item.metadata["authoritative_output_gate"]["action"] for item in results] == ["downgrade_keep_text", "downgrade_keep_text"]
+    assert all(item.metadata["semantic_output_verifier"]["findings"][0]["relation_to_base"] == "adjacent" for item in results)
 
 
 def test_semantic_output_regen_prompt_forbids_edit_comments() -> None:

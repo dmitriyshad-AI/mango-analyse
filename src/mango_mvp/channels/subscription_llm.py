@@ -436,6 +436,13 @@ INTERNAL_CLIENT_SAFE_JARGON_RE = re.compile(
     r"(?:нет\s+)?client[-\s]?safe\s+факт[^\n.?!]*(?:[.?!]|$)|\bclient[-\s]?safe\b",
     re.I,
 )
+INTERNAL_REGEN_EDIT_COMMENT_RE = re.compile(
+    r"(?:^|(?<=\n)|(?<=[.?!]))\s*(?:заменяю|переписываю|исправляю|меняю)\s+(?:только\s+)?(?:этот\s+|данный\s+)?"
+    r"(?:абзац|фрагмент|текст|ответ)[^:\n]{0,160}:\s*"
+    r"|(?:^|(?<=\n)|(?<=[.?!]))\s*(?:остальн\w+\s+текст|остальные\s+абзацы|остальное)\s+"
+    r"(?:оставляю\s+|оставь\s+)?без\s+изменен\w+\s*[.?!:;]?\s*",
+    re.I,
+)
 INTERNAL_CLIENT_INSTRUCTION_RE = re.compile(
     r"(?:\bповторять\s+(?:их\s+)?не\s+нужно\b|\bне\s+упоминай\w*\b|"
     r"\bесли\b[^.?!\n]{0,140}\bуже\s+есть\s+в\s+диалоге\b[^.?!\n]{0,140})",
@@ -3325,6 +3332,9 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
     value, raw_detail_removed = _sanitize_raw_detail_handoff_text(value)
     if raw_detail_removed:
         reasons.append("raw_detail_handoff")
+    value, regen_edit_removed = INTERNAL_REGEN_EDIT_COMMENT_RE.subn(" ", value)
+    if regen_edit_removed:
+        reasons.append("regen_edit_comment")
 
     kept_lines: list[str] = []
     for line in value.splitlines() or [value]:
@@ -3882,6 +3892,7 @@ def strip_internal_service_markers(text: str) -> str:
         value = value.lstrip()
     if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
         return ""
+    value = INTERNAL_REGEN_EDIT_COMMENT_RE.sub(" ", value)
     value = INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.sub(" ", value)
     value = INTERNAL_CLIENT_SAFE_JARGON_RE.sub(" ", value)
     value = INTERNAL_SERVICE_MARKER_RE.sub("", value)
@@ -3901,6 +3912,7 @@ def draft_has_internal_service_markers(text: str) -> bool:
         or INTERNAL_SCAFFOLD_PREFIX_RE.search(value)
         or INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE.search(value)
         or INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.search(value)
+        or INTERNAL_REGEN_EDIT_COMMENT_RE.search(value)
         or INTERNAL_CLIENT_SAFE_JARGON_RE.search(value)
         or INTERNAL_CLIENT_INSTRUCTION_RE.search(value)
         or INTERNAL_MANAGER_DRAFT_RE.search(value)
@@ -5073,7 +5085,10 @@ def build_semantic_output_regen_prompt(
     facts_block = "\n".join(f"- {key}: {value}" for key, value in facts.items()) or "(фактов нет)"
     return (
         "Перепиши текст бота для менеджерского черновика: убери или захеджируй только указанные смысловые риски. "
-        "Не добавляй новых фактов, чисел, брендов, обещаний и внутренних комментариев. Верни только текст ответа.\n\n"
+        "Не добавляй новых фактов, чисел, брендов, обещаний и внутренних комментариев. "
+        "Верни ТОЛЬКО текст ответа клиенту, без Markdown, без пояснений и без комментариев о правках. "
+        "Не пиши фразы вроде «Заменяю только этот абзац», «Остальной текст без изменений», "
+        "«переписываю фрагмент».\n\n"
         f"Вопрос клиента:\n{client_message}\n\n"
         f"Факты:\n{facts_block}\n\n"
         f"Риски:\n{findings_block}\n\n"

@@ -58,6 +58,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_phase2_tone_layer,
     apply_semantic_output_verifier,
     apply_semantic_diagnosis_guard,
+    build_semantic_output_regen_prompt,
     build_semantic_output_verifier_prompt,
     build_semantic_diagnosis_prompt,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
@@ -863,6 +864,8 @@ def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() ->
         == "Текст. Факт."
     )
     assert strip_internal_service_markers("Ориентир без обещаний результата: Факт.") == "Ориентир Факт."
+    assert strip_internal_service_markers("Заменяю только этот абзац: Да, домашние задания проверяются.") == "Да, домашние задания проверяются."
+    assert strip_internal_service_markers("Остальной текст без изменений. Да, расписание уточняется по группе.") == "Да, расписание уточняется по группе."
 
     normal = "Если удобно, повторите класс и предмет — я сориентирую по подходящему варианту."
     assert strip_internal_service_markers(normal) == normal
@@ -4672,6 +4675,28 @@ def test_output_sanitizer_replaces_raw_question_detail_handoff() -> None:
     assert "передам вопрос менеджеру" in gated.draft_text.casefold()
     assert gated.metadata["output_sanitizer"]["applied"] is True
     assert "raw_detail_handoff" in gated.metadata["output_sanitizer"]["reasons"]
+
+
+def test_output_sanitizer_removes_semantic_regen_edit_comment() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text=(
+            "Заменяю только этот абзац: Да, домашние задания всегда проверяются. "
+            "Остальной текст без изменений."
+        ),
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Домашку проверяют?",
+        context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert gated.draft_text == "Да, домашние задания всегда проверяются."
+    assert "Заменяю" not in gated.draft_text
+    assert "без изменений" not in gated.draft_text
+    assert "internal_metadata_removed_from_draft" in gated.safety_flags
 
 
 def test_output_sanitizer_keeps_clean_detail_handoff_unchanged() -> None:
@@ -8702,6 +8727,19 @@ def test_semantic_output_verifier_keeps_false_cases_and_prompt_controls() -> Non
     assert gated.draft_text == base.draft_text
     assert gated.route == base.route
     assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_semantic_output_regen_prompt_forbids_edit_comments() -> None:
+    prompt = build_semantic_output_regen_prompt(
+        bot_text="Обычная группа — это базовый уровень.",
+        client_message="Есть уровень попроще?",
+        facts={"program.basic": "Фотон: есть базовый и продвинутый уровень."},
+        findings=[{"code": "derived_product_claim", "span": "базовый уровень"}],
+    )
+
+    assert "Верни ТОЛЬКО текст ответа клиенту" in prompt
+    assert "Заменяю только этот абзац" in prompt
+    assert "Остальной текст без изменений" in prompt
 
 
 def test_semantic_output_verifier_never_unblocks_deterministic_brand_gate() -> None:

@@ -424,6 +424,10 @@ INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE = re.compile(
     r"без\s+обещан\w+[^:\n]{0,120}:\s*",
     re.I,
 )
+INTERNAL_CLIENT_SAFE_JARGON_RE = re.compile(
+    r"(?:нет\s+)?client[-\s]?safe\s+факт[^\n.?!]*(?:[.?!]|$)|\bclient[-\s]?safe\b",
+    re.I,
+)
 INTERNAL_CLIENT_INSTRUCTION_RE = re.compile(
     r"(?:\bповторять\s+(?:их\s+)?не\s+нужно\b|\bне\s+упоминай\w*\b|"
     r"\bесли\b[^.?!\n]{0,140}\bуже\s+есть\s+в\s+диалоге\b[^.?!\n]{0,140})",
@@ -2125,12 +2129,19 @@ class SubscriptionLlmDraftProvider:
         return normalize_subscription_draft_payload(payload)
 
     def _dialogue_contract_understanding_runner(self, prompt: str) -> Mapping[str, Any]:
-        raw = self._run_prompt_text(
-            prompt,
-            prefix="mango_dialogue_contract_understanding_",
-            suffix=".json",
-            reasoning_effort=self.reasoning_effort,
-        )
+        try:
+            raw = self._run_prompt_text(
+                prompt,
+                prefix="mango_dialogue_contract_understanding_",
+                suffix=".json",
+                reasoning_effort=self.reasoning_effort,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "answerability": "manager_only",
+                "confidence": 0.0,
+                "runtime_error": "understanding_timeout",
+            }
         try:
             return extract_json_object(raw)
         except Exception:
@@ -3720,6 +3731,7 @@ def strip_internal_service_markers(text: str) -> str:
     if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
         return ""
     value = INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.sub(" ", value)
+    value = INTERNAL_CLIENT_SAFE_JARGON_RE.sub(" ", value)
     value = INTERNAL_SERVICE_MARKER_RE.sub("", value)
     value = INTERNAL_SERVICE_TOKEN_RE.sub("", value)
     if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
@@ -3737,6 +3749,7 @@ def draft_has_internal_service_markers(text: str) -> bool:
         or INTERNAL_SCAFFOLD_PREFIX_RE.search(value)
         or INTERNAL_PROMPT_DIRECTIVE_PREFIX_RE.search(value)
         or INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.search(value)
+        or INTERNAL_CLIENT_SAFE_JARGON_RE.search(value)
         or INTERNAL_CLIENT_INSTRUCTION_RE.search(value)
         or INTERNAL_MANAGER_DRAFT_RE.search(value)
     )
@@ -9325,12 +9338,20 @@ def _brand_guarded_result(
     if reason == "brand_unknown_precise_condition_blocked":
         precise_condition_flags = ("unsupported_promise_detected",)
         precise_condition_claims = _extract_numeric_promise_claims(result.draft_text)
+    draft_text = (
+        CROSS_BRAND_GENERIC_SAFE_TEXT
+        if reason == "cross_brand_client_text_blocked"
+        else SAFE_FALLBACK_DRAFT_TEXT
+    )
+    extra_flags = ("cross_brand_safe_template_applied",) if reason == "cross_brand_client_text_blocked" else ()
     return replace(
         result,
         route="manager_only",
-        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        draft_text=draft_text,
         forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *precise_condition_claims])),
-        safety_flags=tuple(dict.fromkeys([*result.safety_flags, reason, "brand_separation_guarded", *precise_condition_flags])),
+        safety_flags=tuple(
+            dict.fromkeys([*result.safety_flags, reason, "brand_separation_guarded", *extra_flags, *precise_condition_flags])
+        ),
         manager_checklist=tuple(
             dict.fromkeys(
                 [

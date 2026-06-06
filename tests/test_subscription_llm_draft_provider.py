@@ -305,6 +305,28 @@ def test_provider_timeout_returns_safe_fallback() -> None:
     assert "codex_exec_timeout" in result.safety_flags
 
 
+def test_dialogue_contract_understanding_timeout_returns_runtime_marker() -> None:
+    class _TimeoutUnderstandingProvider(CodexExecDraftProvider):
+        def _run_prompt_text(self, *args, **kwargs) -> str:  # type: ignore[override]
+            raise subprocess.TimeoutExpired(cmd="codex exec", timeout=1)
+
+    result = _TimeoutUnderstandingProvider()._dialogue_contract_understanding_runner("prompt")
+
+    assert result["answerability"] == "manager_only"
+    assert result["runtime_error"] == "understanding_timeout"
+
+
+def test_dialogue_contract_understanding_valid_json_still_parses() -> None:
+    class _ValidUnderstandingProvider(CodexExecDraftProvider):
+        def _run_prompt_text(self, *args, **kwargs) -> str:  # type: ignore[override]
+            return '{"answerability":"answer_self","current_question":"цена","confidence":0.9}'
+
+    result = _ValidUnderstandingProvider()._dialogue_contract_understanding_runner("prompt")
+
+    assert result["answerability"] == "answer_self"
+    assert result["current_question"] == "цена"
+
+
 def test_codex_provider_llm_rewriter_is_feature_flagged(monkeypatch, tmp_path: Path) -> None:
     calls = []
 
@@ -2921,6 +2943,27 @@ def test_v2_cross_brand_dispatcher_has_precedence_over_terminal_template() -> No
     assert "цифровой помощник" not in guarded.draft_text.casefold()
 
 
+def test_brand_separation_guard_uses_canonical_cross_brand_text_on_first_block() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="У Фотона и УНПК одинаковые условия по рассрочке.",
+        message_type="question",
+        topic_id="service:S5_general_consultation",
+    )
+
+    guarded = apply_brand_separation_guard(
+        result,
+        client_message="У Фотона такие же условия, как у УНПК?",
+        context={"active_brand": "unpk"},
+    )
+
+    assert guarded.route == "manager_only"
+    assert "отдельные организации" in guarded.draft_text.casefold()
+    assert "фотон" not in guarded.draft_text.casefold()
+    assert "унпк" not in guarded.draft_text.casefold()
+    assert "cross_brand_safe_template_applied" in guarded.safety_flags
+
+
 def test_v2_cross_brand_dispatcher_does_not_fire_on_brand_confirmation() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -4571,6 +4614,17 @@ def test_output_sanitizer_removes_placeholder_and_uses_safe_fallback_when_degene
     assert gated.draft_text == SAFE_FALLBACK_DRAFT_TEXT
     assert gated.metadata["output_sanitizer"]["fallback"] is True
     assert "manager_approval_required" in gated.safety_flags
+
+
+def test_strip_internal_service_markers_removes_client_safe_jargon_without_touching_clean_text() -> None:
+    leaked = "Нет client-safe факта с шагами записи; порядок подтверждает менеджер."
+    middle = "Проверю точный порядок. Нет client-safe факта с шагами записи."
+    clean = "Проверю точный порядок записи с менеджером."
+
+    assert "client-safe" not in strip_internal_service_markers(leaked).casefold()
+    assert "client-safe" not in strip_internal_service_markers(middle).casefold()
+    assert strip_internal_service_markers(clean) == clean
+    assert draft_has_internal_service_markers(leaked)
 
 
 def test_output_sanitizer_removes_manager_tag_and_tag_instruction() -> None:

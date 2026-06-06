@@ -215,9 +215,14 @@ def _p0_latch_codes(context: Mapping[str, Any] | None) -> tuple[str, ...]:
         "payment_dispute": "payment_dispute",
         "p0": "payment_dispute",
     }
-    result = [mapping.get(str(code), str(code)) for code in _text_list(latch.get("codes"))]
+    had_hard_p0_claim = bool(latch.get("had_hard_p0_claim"))
+    result = [
+        mapping.get(str(code), str(code))
+        for code in _text_list(latch.get("codes"))
+        if str(code) != "refund" or had_hard_p0_claim
+    ]
     primary = mapping.get(str(latch.get("primary_risk") or ""), "")
-    if primary:
+    if primary and (primary != "refund" or had_hard_p0_claim):
         result.insert(0, primary)
     return tuple(dict.fromkeys(code for code in result if code))
 

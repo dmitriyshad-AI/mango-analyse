@@ -1473,6 +1473,53 @@ def test_presale_refund_multiturn_followups_keep_answering_from_fact() -> None:
         conversation = (*current_conversation, {"role": "bot", "text": result.draft_text})
 
 
+def test_benign_refund_latch_does_not_stick_to_next_harmless_followup() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+    context = {
+        "dialogue_memory_view": {
+            "p0_latch": {
+                "active": True,
+                "codes": ["refund"],
+                "primary_risk": "refund",
+                "had_hard_p0_claim": False,
+            },
+            "risk_flags": ["refund"],
+        }
+    }
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "если передумаю до начала занятий, деньги вернут?"},
+            {
+                "role": "bot",
+                "text": (
+                    "Да, при досрочном отказе возвращается остаток неистраченных средств. "
+                    "Конкретный порядок оформления менеджер подтвердит по выбранному курсу и договору."
+                ),
+            },
+            {"role": "client", "text": "покажите варианты"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        context=context,
+        understand_fn=_understanding(
+            {
+                "current_question": "покажите варианты курса",
+                "needed_fact_keys": ["price.online"],
+                "answerability": "answer_self",
+                "is_p0": False,
+            }
+        ),
+        draft_fn=lambda _prompt: "По онлайну: семестр — 29 750 ₽. Можно дальше подобрать группу.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        toggles=Toggles(warmth_mode="all_eligible"),
+    )
+
+    assert result.route == "bot_answer_self"
+    assert not result.manager_only
+    assert result.fallback_reason == ""
+    assert "29 750" in result.draft_text
+
+
 def test_presale_refund_thread_escalates_on_real_refund_claim_turn() -> None:
     conversation = (
         {"role": "client", "text": "если передумаю до начала занятий, деньги вернут?"},
@@ -7530,6 +7577,31 @@ def test_p0_dry_text_rotates_by_previous_bot_turns() -> None:
     assert first.draft_text != second.draft_text
     assert "ответственному сотруднику" in first.draft_text
     assert "ответственному сотруднику" in second.draft_text
+
+
+def test_understanding_runtime_error_fails_soft_provider_runtime_without_draft_call() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
+
+    def _draft(_prompt: str) -> str:
+        raise AssertionError("understanding runtime failure should fail before draft model")
+
+    result = run_pipeline(
+        conversation=_conv("сколько онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=lambda _prompt: {
+            "answerability": "manager_only",
+            "runtime_error": "understanding_timeout",
+            "confidence": 0.0,
+        },
+        draft_fn=_draft,
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.manager_only
+    assert result.fallback_reason == "semantic_check_unavailable"
+    assert result.reason_class == "provider_runtime"
+    assert result.reason_evidence["runtime_error"] == "understanding_timeout"
 
 
 def test_non_refund_complaint_p0_does_not_use_refund_template() -> None:

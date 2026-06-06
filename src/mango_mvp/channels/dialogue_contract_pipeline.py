@@ -317,6 +317,7 @@ class AnswerContract:
     p0_reason: str = ""
     p0_source: str = ""
     confidence: float = 0.0
+    runtime_error: str = ""
 
     @property
     def composite_subquestions(self) -> tuple[str, ...]:
@@ -372,6 +373,7 @@ class AnswerContract:
             "p0_reason": self.p0_reason,
             "p0_source": self.p0_source,
             "confidence": self.confidence,
+            "runtime_error": self.runtime_error,
         }
 
 
@@ -821,6 +823,7 @@ def parse_contract(
         p0_reason=str(data.get("p0_reason") or p0_reason_pregate or "").strip()[:200],
         p0_source="floor" if p0_reason_pregate else ("model" if model_p0 else ""),
         confidence=_clamp_float(data.get("confidence")),
+        runtime_error=str(data.get("runtime_error") or data.get("provider_runtime_error") or "").strip()[:120],
     )
 
 
@@ -1384,6 +1387,35 @@ def _key_has_any_topic_alias(key: str, aliases: Sequence[str]) -> bool:
     return False
 
 
+def _has_only_benign_refund_latch(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, MappingABC):
+        return False
+    sources: list[Mapping[str, Any]] = []
+    for key in ("dialogue_memory_view", "dialogue_memory"):
+        value = context.get(key)
+        if isinstance(value, MappingABC):
+            sources.append(value)
+    p0_latch = context.get("p0_latch")
+    if isinstance(p0_latch, MappingABC):
+        sources.append({"p0_latch": p0_latch})
+    hard_codes = {"payment_dispute", "legal", "legal_threat", "complaint"}
+    saw_refund_latch = False
+    for source in sources:
+        latch = source.get("p0_latch")
+        if isinstance(latch, MappingABC):
+            if bool(latch.get("had_hard_p0_claim")):
+                return False
+            codes = {str(item or "").strip() for item in (latch.get("codes") or ()) if str(item or "").strip()}
+            if codes.intersection(hard_codes):
+                return False
+            if "refund" in codes or str(latch.get("primary_risk") or "").strip() == "refund":
+                saw_refund_latch = True
+        risk_flags = {str(item or "").strip() for item in (source.get("risk_flags") or ()) if str(item or "").strip()}
+        if risk_flags.intersection(hard_codes):
+            return False
+    return saw_refund_latch
+
+
 def p0_pre_gate(text: str, *, context: Mapping[str, Any] | None = None) -> str | None:
     codes = hard_codes_from_text(text)
     if codes:
@@ -1395,6 +1427,18 @@ def p0_pre_gate(text: str, *, context: Mapping[str, Any] | None = None) -> str |
         trace_event(context, "p0_pre_gate", {"source": "regex_soft", "codes": list(soft_codes), "result": ""})
     decision = classify_answer_safety(client_message=text, context=context)
     if decision.p0_required:
+        decision_codes = {str(item or "").strip() for item in (decision.risk_codes or ()) if str(item or "").strip()}
+        if (
+            (decision.primary_risk == "refund" or decision_codes == {"refund"})
+            and _has_only_benign_refund_latch(context)
+            and not hard_codes_from_text(text)
+        ):
+            trace_event(
+                context,
+                "p0_pre_gate",
+                {"source": "classifier_suppressed_benign_refund_latch", "codes": list(decision.risk_codes or ()), "result": ""},
+            )
+            return None
         result = ",".join(decision.risk_codes or (decision.primary_risk or "p0",))
         trace_event(
             context,
@@ -2694,6 +2738,30 @@ def run_pipeline(
                 contract=contract,
                 fallback_reason="p0",
             )
+    if contract.runtime_error:
+        fallback = _safe_fallback_text(contract, facts={}, context=context)
+        fallback = _avoid_repeating_text(fallback, conversation=conversation, contract=contract, facts={})
+        trace_event(
+            context,
+            "build_draft",
+            {
+                "route": "draft_for_manager",
+                "fallback_reason": "semantic_check_unavailable",
+                "runtime_error": contract.runtime_error,
+                "draft": fallback,
+            },
+        )
+        return DialogueContractPipelineResult(
+            draft_text=fallback,
+            route="draft_for_manager",
+            manager_only=True,
+            contract=contract,
+            facts={},
+            missing=(),
+            fallback_reason="semantic_check_unavailable",
+            reason_class="provider_runtime",
+            reason_evidence={"runtime_error": contract.runtime_error},
+        )
 
     with trace_span(context, "retrieve_facts", {"needed_fact_keys": list(contract.all_needed_fact_keys())}) as trace:
         retrieval = retrieve_facts(
@@ -6952,7 +7020,7 @@ def _dialogue_had_hard_p0_claim(context: Mapping[str, Any] | None) -> bool:
     p0_latch = context.get("p0_latch")
     if isinstance(p0_latch, Mapping):
         sources.append({"p0_latch": p0_latch})
-    hard_codes = {"refund", "payment_dispute", "legal", "legal_threat", "complaint"}
+    hard_codes = {"payment_dispute", "legal", "legal_threat", "complaint"}
     for source in sources:
         latch = source.get("p0_latch") if isinstance(source, Mapping) else None
         if isinstance(latch, Mapping):

@@ -274,7 +274,7 @@ def _selling_signal_fallback_outcome(
             subvariant="selling_readiness_no_fact",
             route="draft_for_manager",
             text="Менеджер подтвердит порядок записи по выбранному курсу.",
-            facts={"rules_engine.selling.readiness_no_fact": "Нет client-safe факта с шагами записи; порядок подтверждает менеджер."},
+            facts={"rules_engine.selling.readiness_no_fact": "Порядок записи подтверждает менеджер."},
             flags=("rules_engine_selling_readiness", "rules_engine_selling_readiness_no_fact_handoff"),
             checklist=("Rule engine: selling readiness — без enrollment-факта не расписывать шаги.",),
             metadata={"source": "rules_engine", "rule_id": rule.rule_id, "subvariant": "selling_readiness_no_fact"},
@@ -1659,7 +1659,7 @@ def _apply_enrollment_process_rule(
             subvariant="how_to_enroll_no_fact",
             route="draft_for_manager",
             text=text,
-            facts={key: "Нет client-safe факта с шагами записи; порядок подтверждает менеджер."},
+            facts={key: "Порядок записи подтверждает менеджер."},
             flags=("rules_engine_enrollment_process_no_fact_handoff",),
             checklist="Rule engine: enrollment_process — без client-safe факта о записи не расписывать шаги автономно.",
         )

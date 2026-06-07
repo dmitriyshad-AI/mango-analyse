@@ -8,6 +8,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     DialogueContractPipelineResult,
     FactStore,
+    FAITHFULNESS_SHADOW_ENV,
     Toggles,
     _DETAIL_HANDOFF_TEXTS,
     _GENERIC_HANDOFF_TEXTS,
@@ -22,6 +23,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     build_semantic_match_prompt,
     build_understanding_prompt,
     check_claim_faithfulness,
+    faithfulness_shadow_events,
     parse_contract,
     p0_pre_gate,
     pipeline_enabled,
@@ -7307,6 +7309,71 @@ def test_semantic_faithfulness_bad_json_fail_closed() -> None:
     assert "29 750" in result.draft_text
 
 
+def test_faithfulness_shadow_logs_unsupported_without_changing_answer() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн стоит 29 750 ₽."}})
+    common = {
+        "conversation": _conv("сколько онлайн?"),
+        "active_brand": "foton",
+        "fact_store": store,
+        "understand_fn": _understanding(
+            {"current_question": "цена", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}
+        ),
+        "draft_fn": lambda _prompt: "Онлайн стоит 29 750 ₽.",
+    }
+    baseline = run_pipeline(
+        **common,
+        faithfulness_fn=lambda _prompt: {
+            "claims": [{"claim": "Онлайн стоит 29 750 ₽", "evidence_fact_key": "price.online", "verdict": "supported"}],
+            "unsupported": [],
+        },
+    )
+    context = {FAITHFULNESS_SHADOW_ENV: "1"}
+
+    shadow = run_pipeline(
+        **common,
+        faithfulness_fn=lambda _prompt: {
+            "claims": [{"claim": "Онлайн стоит 29 750 ₽", "evidence_fact_key": "", "verdict": "unsupported"}],
+            "unsupported": [],
+        },
+        context=context,
+    )
+
+    assert shadow.route == baseline.route == "bot_answer_self"
+    assert shadow.draft_text == baseline.draft_text
+    assert shadow.unsupported_claims == ()
+    events = faithfulness_shadow_events(context)
+    assert events and events[0]["site"] == "main_draft"
+    assert events[0]["available"] is True
+    assert events[0]["unsupported"] == ["Онлайн стоит 29 750 ₽"]
+
+
+def test_faithfulness_shadow_logs_timeout_without_changing_answer() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн стоит 29 750 ₽."}})
+    common = {
+        "conversation": _conv("сколько онлайн?"),
+        "active_brand": "foton",
+        "fact_store": store,
+        "understand_fn": _understanding(
+            {"current_question": "цена", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}
+        ),
+        "draft_fn": lambda _prompt: "Онлайн стоит 29 750 ₽.",
+    }
+    baseline = run_pipeline(**common, faithfulness_fn=lambda _prompt: {"unsupported": []})
+    context = {FAITHFULNESS_SHADOW_ENV: "1"}
+
+    def _timeout(_prompt: str) -> Mapping[str, Any]:
+        raise TimeoutError("critic timeout")
+
+    shadow = run_pipeline(**common, faithfulness_fn=_timeout, context=context)
+
+    assert shadow.route == baseline.route == "bot_answer_self"
+    assert shadow.draft_text == baseline.draft_text
+    events = faithfulness_shadow_events(context)
+    assert events and events[0]["site"] == "main_draft"
+    assert events[0]["available"] is False
+    assert events[0]["unsupported"] == []
+
+
 def test_structured_faithfulness_requires_fact_key_from_current_turn() -> None:
     result = check_claim_faithfulness(
         "Онлайн стоит 29 750 ₽.",
@@ -7670,7 +7737,7 @@ def test_understanding_runtime_error_fails_soft_provider_runtime_without_draft_c
 
     assert result.route == "draft_for_manager"
     assert result.manager_only
-    assert result.fallback_reason == "semantic_check_unavailable"
+    assert result.fallback_reason == "understanding_runtime_error"
     assert result.reason_class == "provider_runtime"
     assert result.reason_evidence["runtime_error"] == "understanding_timeout"
 

@@ -10,6 +10,7 @@ import pytest
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     FactStore,
+    FAITHFULNESS_SHADOW_ENV,
     _safe_fallback_text,
     build_faithfulness_prompt,
     check_claim_faithfulness,
@@ -3165,6 +3166,52 @@ def test_v2_text_change_reverify_blocks_semantic_wrong_scope() -> None:
     assert "dialogue_contract_text_change_blocked" in guarded.safety_flags
     assert guarded.metadata["dialogue_contract_reverification_unsupported"] == ["Курс проходит онлайн."]
     assert guarded.metadata["dialogue_contract_reverification_semantic_available"] is True
+
+
+def test_v2_text_change_reverify_shadow_logs_unsupported_without_blocking() -> None:
+    provider = CodexExecDraftProvider(runner=lambda *args, **kwargs: None)
+    provider._dialogue_contract_faithfulness_runner = lambda _prompt: {  # type: ignore[method-assign]
+        "claims": [
+            {
+                "claim": "Курс проходит онлайн.",
+                "evidence_fact_key": "",
+                "verdict": "wrong_scope",
+                "reason": "over-strict critic in shadow",
+            }
+        ],
+        "unsupported": [],
+    }
+    metadata = {
+        "dialogue_contract_pipeline": {
+            "contract": _route_shield_contract(
+                question="Какой формат у курса?",
+                keys=("course.format",),
+            ),
+            "retrieved_facts": {"course.format": "Курс проходит онлайн."},
+        }
+    }
+    before = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Передам уточнение по формату менеджеру.",
+        metadata=metadata,
+    )
+    after = replace(before, draft_text="Курс проходит онлайн.")
+
+    guarded = provider._reverify_dialogue_contract_text_change(
+        before,
+        after,
+        client_message="Курс онлайн или очно?",
+        context={"active_brand": "unpk", FAITHFULNESS_SHADOW_ENV: "1"},
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == "Курс проходит онлайн."
+    assert "dialogue_contract_text_change_reverified" in guarded.safety_flags
+    assert "dialogue_contract_text_change_blocked" not in guarded.safety_flags
+    shadow = guarded.metadata["dialogue_contract_pipeline"]["faithfulness_shadow"]
+    assert shadow[0]["site"] == "text_change"
+    assert shadow[0]["available"] is True
+    assert shadow[0]["unsupported"] == ["Курс проходит онлайн."]
 
 
 def test_v2_text_change_reverify_accepts_supported_semantic_claim() -> None:

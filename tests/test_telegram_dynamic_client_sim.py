@@ -509,6 +509,56 @@ def test_handoff_trace_records_handoff_origin_and_summary_when_enabled(monkeypat
     assert "contract_manager_only" in sim.render_one_dialog_md(dialog)
 
 
+def test_turn_record_includes_faithfulness_shadow_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    class ShadowBotProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "theme:001_pricing",
+                    "route": "bot_answer_self_for_pilot",
+                    "draft_text": "Онлайн стоит 29 750 ₽.",
+                    "metadata": {
+                        "dialogue_contract_pipeline": {
+                            "contract": {"is_p0": False},
+                            "retrieved_facts": {"price.online": "Онлайн стоит 29 750 ₽."},
+                            "faithfulness_shadow": [
+                                {
+                                    "site": "main_draft",
+                                    "available": False,
+                                    "unsupported": [],
+                                    "verdicts": [],
+                                }
+                            ],
+                        }
+                    },
+                }
+            )
+
+    dialog = sim.run_one_dialog(
+        {
+            "dialog_id": "faithfulness_shadow_dynamic",
+            "brand": "unpk",
+            "persona": "родитель",
+            "goal": "проверить shadow",
+            "max_turns": 1,
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.FakeClientModel(),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=ShadowBotProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+    )
+
+    shadow = dialog["turns"][0]["bot_faithfulness_shadow"]
+    assert shadow[0]["site"] == "main_draft"
+    assert shadow[0]["available"] is False
+
+
 def test_dynamic_summary_includes_close_detect_counters(tmp_path):
     transcripts = [
         {
@@ -812,6 +862,27 @@ def test_semantic_output_verifier_runner_counts_llm_role(monkeypatch, tmp_path: 
 
     assert provider._semantic_output_verifier_runner("Верни JSON")["findings"] == []
     assert counter.snapshot()["bot_semantic_output_verifier"] == 1
+
+
+def test_dialogue_contract_faithfulness_runner_counts_separate_llm_role(monkeypatch, tmp_path: Path) -> None:
+    counter = sim.LlmCallCounter()
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        output_path.write_text('{"claims": [], "unsupported": []}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sim.subprocess, "run", fake_run)
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        runner=sim.subprocess.run,
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    assert provider._dialogue_contract_faithfulness_runner("Верни JSON")["unsupported"] == []
+    assert counter.snapshot()["bot_faithfulness"] == 1
+    assert counter.snapshot().get("bot_critic", 0) == 0
 
 
 def test_semantic_output_verifier_summary_dedupes_deterministic_same_class() -> None:
@@ -1192,14 +1263,22 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         scenario_path=tmp_path / "scenarios.jsonl",
         snapshot_path=tmp_path / "snapshot.json",
         parallel=1,
-        llm_calls={"client": 2, "bot_draft": 3, "bot_critic": 1, "bot_selling_compose": 1, "memory": 2},
+        llm_calls={
+            "client": 2,
+            "bot_draft": 3,
+            "bot_critic": 1,
+            "bot_faithfulness": 2,
+            "bot_selling_compose": 1,
+            "memory": 2,
+        },
     )
 
     assert summary["llm_calls"] == {
-        "total": 9,
+        "total": 11,
         "client": 2,
         "bot_draft": 3,
         "bot_critic": 1,
+        "bot_faithfulness": 2,
         "bot_selling_compose": 1,
         "bot_semantic_output_verifier": 0,
         "bot_semantic_output_regen": 0,
@@ -1207,7 +1286,7 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         "judge": 0,
         "dialogs": 1,
         "turns": 2,
-        "avg_calls_per_dialog": 9.0,
+        "avg_calls_per_dialog": 11.0,
     }
 
 

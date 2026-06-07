@@ -18,7 +18,7 @@ v2 shape:
 import json
 import os
 import re
-from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
+from collections.abc import Mapping as MappingABC, MutableMapping as MutableMappingABC, Sequence as SequenceABC
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
@@ -34,6 +34,7 @@ from mango_mvp.insights.sanitizers import sanitize_answer
 
 
 DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
+FAITHFULNESS_SHADOW_ENV = "TELEGRAM_FAITHFULNESS_SHADOW"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
 STEP4_NUMBER_GROUNDING_ENV = "TELEGRAM_STEP4_NUMBER_GROUNDING"
@@ -45,6 +46,7 @@ QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
 QUALITY_CLARIFY_SCOPE_ENV = "TELEGRAM_Q_CLARIFY_SCOPE"
 QUALITY_USEFUL_HANDOFF_ENV = "TELEGRAM_Q_USEFUL_HANDOFF"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
+_FAITHFULNESS_SHADOW_CONTEXT_KEY = "_faithfulness_shadow"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
     "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json"
 )
@@ -523,7 +525,13 @@ def _pipeline_reason_class(
         return "terminal"
     if reason in {"no_fact_or_unverified", "empty_facts_no_fabrication", "estimate_guard_failed"}:
         return "no_fact_or_unverified"
-    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn", "semantic_verifier_unavailable"}:
+    if reason in {
+        "semantic_check_unavailable",
+        "understanding_runtime_error",
+        "draft_error",
+        "no_draft_fn",
+        "semantic_verifier_unavailable",
+    }:
         return "provider_runtime"
     if reason in {"hard_verification_failed", "authoritative_output_gate_blocked", "semantic_verifier_downgrade"} or findings or unsupported_claims:
         return "output_safety"
@@ -566,6 +574,47 @@ def pipeline_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(DIALOGUE_CONTRACT_PIPELINE_ENV) is not None:
         return _truthy(context.get(DIALOGUE_CONTRACT_PIPELINE_ENV))
     return _truthy(os.getenv(DIALOGUE_CONTRACT_PIPELINE_ENV))
+
+
+def faithfulness_shadow_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(FAITHFULNESS_SHADOW_ENV) is not None:
+        return _truthy(context.get(FAITHFULNESS_SHADOW_ENV))
+    return _truthy(os.getenv(FAITHFULNESS_SHADOW_ENV))
+
+
+def faithfulness_shadow_record(site: str, result: FaithfulnessResult) -> Mapping[str, Any]:
+    return {
+        "site": str(site or "unknown"),
+        "available": bool(result.available),
+        "unsupported": list(result.unsupported),
+        "verdicts": [dict(claim.to_json_dict()) for claim in result.claims],
+    }
+
+
+def faithfulness_shadow_events(context: Mapping[str, Any] | None = None) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(context, MappingABC):
+        return ()
+    events = context.get(_FAITHFULNESS_SHADOW_CONTEXT_KEY)
+    if not isinstance(events, SequenceABC) or isinstance(events, (str, bytes, bytearray)):
+        return ()
+    return tuple(dict(event) for event in events if isinstance(event, MappingABC))
+
+
+def _record_faithfulness_shadow(
+    context: Mapping[str, Any] | None,
+    *,
+    site: str,
+    result: FaithfulnessResult,
+) -> None:
+    record = faithfulness_shadow_record(site, result)
+    trace_event(context, "faithfulness_shadow", record)
+    if not isinstance(context, MutableMappingABC):
+        return
+    events = context.get(_FAITHFULNESS_SHADOW_CONTEXT_KEY)
+    if not isinstance(events, list):
+        events = []
+        context[_FAITHFULNESS_SHADOW_CONTEXT_KEY] = events
+    events.append(record)
 
 
 def estimate_mode_enabled(context: Mapping[str, Any] | None = None) -> bool:
@@ -2376,6 +2425,7 @@ def _quality_estimate_result_before_handoff(
         toggles=toggles,
         context=gate_context,
         previous_bot_texts=previous_bot_texts,
+        site="estimate_recover",
     )
     if findings or unsupported or not semantic_available:
         trace_event(
@@ -2485,6 +2535,7 @@ def _quality_next_step_result(
         toggles=toggles,
         context=context,
         previous_bot_texts=previous_bot_texts,
+        site="quality_next_step",
     )
     if findings or unsupported or not semantic_available:
         trace_event(
@@ -2864,7 +2915,7 @@ def run_pipeline(
             "build_draft",
             {
                 "route": "draft_for_manager",
-                "fallback_reason": "semantic_check_unavailable",
+                "fallback_reason": "understanding_runtime_error",
                 "runtime_error": contract.runtime_error,
                 "draft": fallback,
             },
@@ -2876,7 +2927,7 @@ def run_pipeline(
             contract=contract,
             facts={},
             missing=(),
-            fallback_reason="semantic_check_unavailable",
+            fallback_reason="understanding_runtime_error",
             reason_class="provider_runtime",
             reason_evidence={"runtime_error": contract.runtime_error},
         )
@@ -3023,6 +3074,7 @@ def run_pipeline(
                 toggles=toggles,
                 context=context,
                 previous_bot_texts=previous_bot_texts,
+                site="estimate_compose",
             )
             if semantic_available and not findings and not unsupported:
                 final_estimate = _avoid_repeating_text(
@@ -3422,6 +3474,7 @@ def run_pipeline(
         toggles=toggles,
         context=context,
         previous_bot_texts=previous_bot_texts,
+        site="main_draft",
     )
     if not semantic_available:
         fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -3477,6 +3530,7 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            site="repair",
         )
         if not semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -3521,6 +3575,7 @@ def run_pipeline(
                 toggles=toggles,
                 context=context,
                 previous_bot_texts=previous_bot_texts,
+                site="verified_fact_fallback",
             )
             if fallback_semantic_available and not fallback_findings and not fallback_unsupported:
                 verified_draft = _avoid_repeating_text(
@@ -3601,6 +3656,7 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            site="composition",
         )
         if comp_semantic_available and not comp_findings and not comp_unsupported:
             draft = composition
@@ -3639,6 +3695,7 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            site="coverage_repair",
         )
         if not candidate_semantic_available:
             fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
@@ -3696,6 +3753,7 @@ def run_pipeline(
                 toggles=toggles,
                 context=context,
                 previous_bot_texts=previous_bot_texts,
+                site="coverage_cite_only",
             )
             cite_coverage = _coverage_findings(
                 cite_only,
@@ -3759,6 +3817,7 @@ def run_pipeline(
                     toggles=toggles,
                     context=context,
                     previous_bot_texts=previous_bot_texts,
+                    site="warmth",
                 )
                 added_warm_anchors = new_concrete_anchors(warm_candidate, original=draft, facts=retrieval.facts)
                 if warm_semantic_available and not warm_findings and (not warm_unsupported or not added_warm_anchors):
@@ -4553,6 +4612,7 @@ def _hard_check(
     toggles: Toggles,
     context: Mapping[str, Any] | None,
     previous_bot_texts: Sequence[str] = (),
+    site: str = "hard_check",
 ) -> tuple[tuple[VerificationFinding, ...], tuple[str, ...], bool]:
     verification_text = _handoff_factual_claim_text(draft)
     pure_handoff = _is_pure_handoff_text(draft) and verification_text is None
@@ -4582,8 +4642,13 @@ def _hard_check(
             faithfulness_fn=faithfulness_fn,
             established_topic=_established_topic_from_context(context, contract=contract),
         )
-        semantic_available = result.available
-        if not pure_handoff:
+        shadow = faithfulness_shadow_enabled(context)
+        if shadow:
+            _record_faithfulness_shadow(context, site=site, result=result)
+            semantic_available = True
+        else:
+            semantic_available = result.available
+        if not pure_handoff and not shadow:
             unsupported = _unsupported_claims_without_current_fact_support(
                 result.unsupported,
                 facts=facts,
@@ -4599,6 +4664,7 @@ def _hard_check(
             "findings": [{"code": finding.code, "detail": finding.detail} for finding in findings],
             "unsupported": list(unsupported),
             "semantic_available": semantic_available,
+            "site": site,
         },
     )
     return tuple(findings), unsupported, semantic_available
@@ -4865,6 +4931,7 @@ def _quality_composite_result_before_draft(
         toggles=toggles,
         context=context,
         previous_bot_texts=previous_bot_texts,
+        site="composite_answer",
     )
     if check_findings or unsupported or not semantic_available:
         trace_event(
@@ -4989,6 +5056,7 @@ def _partial_yield_result_before_handoff(
         toggles=toggles,
         context=context,
         previous_bot_texts=previous_bot_texts,
+        site="partial_yield",
     )
     if findings or unsupported or not semantic_available:
         trace_event(
@@ -5040,6 +5108,7 @@ def _partial_yield_full_check(
     toggles: Toggles,
     context: Mapping[str, Any] | None,
     previous_bot_texts: Sequence[str],
+    site: str = "partial_yield",
 ) -> tuple[tuple[VerificationFinding, ...], tuple[str, ...], bool]:
     findings = list(
         verify_output(
@@ -5066,12 +5135,16 @@ def _partial_yield_full_check(
             faithfulness_fn=faithfulness_fn,
             established_topic=_established_topic_from_context(context, contract=contract),
         )
-        semantic_available = result.available
-        unsupported = _unsupported_claims_without_current_fact_support(
-            result.unsupported,
-            facts=facts,
-            contract=contract,
-        )
+        if faithfulness_shadow_enabled(context):
+            _record_faithfulness_shadow(context, site=site, result=result)
+            semantic_available = True
+        else:
+            semantic_available = result.available
+            unsupported = _unsupported_claims_without_current_fact_support(
+                result.unsupported,
+                facts=facts,
+                contract=contract,
+            )
     return tuple(findings), unsupported, semantic_available
 
 
@@ -5251,6 +5324,7 @@ def _cite_only_recover_before_handoff(
         toggles=toggles,
         context=context,
         previous_bot_texts=previous_bot_texts,
+        site="cite_only_recover",
     )
     if findings or unsupported:
         trace_event(

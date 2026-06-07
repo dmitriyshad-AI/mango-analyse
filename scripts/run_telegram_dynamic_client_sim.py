@@ -192,7 +192,7 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
         return super()._dialogue_contract_warmth_runner(prompt)
 
     def _dialogue_contract_faithfulness_runner(self, prompt: str) -> Mapping[str, Any] | str:
-        self._count_llm_call("bot_critic")
+        self._count_llm_call("bot_faithfulness")
         return super()._dialogue_contract_faithfulness_runner(prompt)
 
     def _dialogue_contract_semantic_match_runner(self, prompt: str) -> Mapping[str, Any] | str:
@@ -1393,6 +1393,7 @@ def run_one_dialog(
             "bot_manager_checklist": list(result.manager_checklist),
             "bot_missing_facts": list(result.missing_facts),
             "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
+            "bot_faithfulness_shadow": list(dialogue_contract_metadata.get("faithfulness_shadow") or []),
             "bot_fallback_reason": bot_fallback_reason,
             "bot_provider_error": bot_provider_error,
             "bot_is_manager_deferral": bool(deferral_metadata.get("is_manager_deferral")),
@@ -2395,6 +2396,7 @@ def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) ->
         "client": role_counts.get("client", 0),
         "bot_draft": role_counts.get("bot_draft", 0),
         "bot_critic": role_counts.get("bot_critic", 0),
+        "bot_faithfulness": role_counts.get("bot_faithfulness", 0),
         "bot_selling_compose": role_counts.get("bot_selling_compose", 0),
         "bot_semantic_output_verifier": role_counts.get("bot_semantic_output_verifier", 0),
         "bot_semantic_output_regen": role_counts.get("bot_semantic_output_regen", 0),
@@ -2616,7 +2618,12 @@ def _handoff_trace_layer_guard(
     if contract.get("is_p0") or re.search(r"high_risk|p0|zero_collect|refund", joined_flags, re.I):
         return "safety", "p0_or_high_risk"
     if fallback_reason:
-        if fallback_reason in {"hard_verification_failed", "semantic_check_unavailable", "estimate_guard_failed"}:
+        if fallback_reason in {
+            "hard_verification_failed",
+            "semantic_check_unavailable",
+            "understanding_runtime_error",
+            "estimate_guard_failed",
+        }:
             return "dialogue_contract_pipeline", fallback_reason
         if fallback_reason.startswith("estimate_"):
             return "dialogue_contract_pipeline", "estimate"
@@ -3011,7 +3018,13 @@ def _reason_class_from_runtime_channels(
         return "high_risk"
     if reason in {"low_confidence", "no_fact_or_unverified", "policy_permission", "payment", "terminal"}:
         return reason
-    if reason in {"semantic_check_unavailable", "draft_error", "no_draft_fn", "semantic_verifier_unavailable"}:
+    if reason in {
+        "semantic_check_unavailable",
+        "understanding_runtime_error",
+        "draft_error",
+        "no_draft_fn",
+        "semantic_verifier_unavailable",
+    }:
         return "provider_runtime"
     if reason in {"hard_verification_failed", "authoritative_output_gate_blocked", "semantic_verifier_downgrade"}:
         return "output_safety"

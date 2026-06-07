@@ -24,6 +24,9 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     build_conversation as build_dialogue_contract_conversation,
     build_fact_store as build_dialogue_contract_fact_store,
     check_claim_faithfulness as check_dialogue_contract_faithfulness,
+    faithfulness_shadow_enabled as dialogue_contract_faithfulness_shadow_enabled,
+    faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
+    faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
     _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
     concrete_anchors as dialogue_contract_concrete_anchors,
     _established_topic_from_context as dialogue_contract_established_topic_from_context,
@@ -2164,6 +2167,7 @@ class SubscriptionLlmDraftProvider:
                     "findings": [{"code": f.code, "detail": f.detail} for f in pipeline_result.findings],
                     "unsupported_claims": list(pipeline_result.unsupported_claims),
                     "form_findings": [{"code": f.code, "detail": f.detail} for f in pipeline_result.form_findings],
+                    "faithfulness_shadow": list(dialogue_contract_faithfulness_shadow_events(context)),
                     "warmth_attempted": pipeline_result.warmth_attempted,
                     "warmth_mode": pipeline_result.warmth_mode,
                     "warmth_rejected_reason": pipeline_result.warmth_rejected_reason,
@@ -2457,6 +2461,7 @@ class SubscriptionLlmDraftProvider:
             return replace(after, safety_flags=flags)
         semantic_available = True
         unsupported_claims: tuple[str, ...] = ()
+        shadow_enabled = dialogue_contract_faithfulness_shadow_enabled(context)
         if facts:
             semantic_result = check_dialogue_contract_faithfulness(
                 after.draft_text,
@@ -2465,13 +2470,25 @@ class SubscriptionLlmDraftProvider:
                 faithfulness_fn=self._dialogue_contract_faithfulness_runner,
                 established_topic=dialogue_contract_established_topic_from_context(context),
             )
-            semantic_available = semantic_result.available
-            unsupported_claims = semantic_result.unsupported
+            if shadow_enabled:
+                record = dialogue_contract_faithfulness_shadow_record("text_change", semantic_result)
+                pipeline = dict(pipeline)
+                events = pipeline.get("faithfulness_shadow")
+                if not isinstance(events, list):
+                    events = []
+                events.append(record)
+                pipeline["faithfulness_shadow"] = events
+                metadata["dialogue_contract_pipeline"] = pipeline
+                semantic_available = True
+                unsupported_claims = ()
+            else:
+                semantic_available = semantic_result.available
+                unsupported_claims = semantic_result.unsupported
         if verified_safe_template:
             findings = [finding for finding in findings if finding.code not in {"fact_grounding", "p0_promise"}]
         if not findings and not unsupported_claims and semantic_available:
             flags = tuple(dict.fromkeys([*after.safety_flags, "dialogue_contract_text_change_reverified"]))
-            return replace(after, safety_flags=flags)
+            return replace(after, safety_flags=flags, metadata=metadata)
         flags = tuple(
             dict.fromkeys(
                 [

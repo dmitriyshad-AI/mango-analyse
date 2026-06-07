@@ -558,6 +558,17 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "individual_diagnosis": "downgrade_keep_text",
     "invented_generalization": "annotate",
 }
+DIRECT_PATH_REPLACE_TEXT_GATE_CODES = frozenset(
+    {
+        "hard_p0",
+        "zero_collect_required",
+        "p0_promise",
+        "p0_semantic_risk",
+        "brand_leak",
+        "cross_brand",
+        "unsupported_product_number",
+    }
+)
 ALLOWED_MESSAGE_TYPES = {"question", "non_question", "context_update", "wait_for_more", "manager_only"}
 BASE_SAFETY_FLAGS = ("manager_approval_required", "no_auto_send")
 AUTONOMY_MATRIX_SAFE_TOPIC_IDS = {
@@ -4090,8 +4101,12 @@ def apply_authoritative_output_gate(
     result = apply_output_sanitizer(result, context=context)
     findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
     actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
+    direct_path_keep_text = _authoritative_gate_direct_path_keep_text(result, findings)
     actionable = [finding for finding, action in zip(findings, actions) if action in {"block", "downgrade", "downgrade_keep_text"}]
     gate_action = (
+        "downgrade_keep_text"
+        if direct_path_keep_text
+        else
         "block"
         if "block" in actions
         else "downgrade"
@@ -4115,9 +4130,14 @@ def apply_authoritative_output_gate(
         checklist = tuple(dict.fromkeys([*result.manager_checklist, _semantic_output_manager_note(findings)]))
         return replace(result, manager_checklist=checklist, metadata=metadata)
     if not actionable:
+        if direct_path_keep_text:
+            actionable = list(findings)
+        else:
+            return replace(result, metadata=metadata)
+    if not actionable:
         return replace(result, metadata=metadata)
 
-    route = _authoritative_gate_downgraded_route(result.route, actions)
+    route = "draft_for_manager" if direct_path_keep_text else _authoritative_gate_downgraded_route(result.route, actions)
     metadata["authoritative_output_gate"]["route_after"] = route
     codes = tuple(dict.fromkeys(str(item["code"]) for item in actionable))
     flags = tuple(
@@ -4126,6 +4146,7 @@ def apply_authoritative_output_gate(
                 *result.safety_flags,
                 "authoritative_output_gate_blocked",
                 *[f"authoritative_gate:{code}" for code in codes],
+                *(("direct_path_gate_text_preserved",) if direct_path_keep_text else ()),
                 "manager_approval_required",
                 "no_auto_send",
             ]
@@ -4134,7 +4155,11 @@ def apply_authoritative_output_gate(
     semantic_note = _semantic_output_manager_note(actionable)
     checklist_items = [
         *result.manager_checklist,
-        "Финальный safety gate заблокировал клиентский текст: не отправлять без ручной проверки.",
+        (
+            "Финальный safety gate перевёл прямой путь в менеджерский черновик: проверить findings перед отправкой."
+            if direct_path_keep_text
+            else "Финальный safety gate заблокировал клиентский текст: не отправлять без ручной проверки."
+        ),
     ]
     if "downgrade_keep_text" in actions:
         checklist_items.append(semantic_note)
@@ -4144,11 +4169,14 @@ def apply_authoritative_output_gate(
         )
     )
     forbidden = tuple(dict.fromkeys([*result.forbidden_promises_detected, *codes]))
-    keep_text_only = "block" not in actions and "downgrade" not in actions and "downgrade_keep_text" in actions
+    keep_text_only = direct_path_keep_text or (
+        "block" not in actions and "downgrade" not in actions and "downgrade_keep_text" in actions
+    )
     if keep_text_only:
         semantic_meta = dict(metadata.get("semantic_output_verifier") or {})
-        semantic_meta["fallback_reason"] = semantic_meta.get("fallback_reason") or SEMANTIC_VERIFIER_DOWNGRADE_REASON
-        metadata["semantic_output_verifier"] = semantic_meta
+        if semantic_meta:
+            semantic_meta["fallback_reason"] = semantic_meta.get("fallback_reason") or SEMANTIC_VERIFIER_DOWNGRADE_REASON
+            metadata["semantic_output_verifier"] = semantic_meta
         return replace(
             result,
             route=route,
@@ -4168,6 +4196,20 @@ def apply_authoritative_output_gate(
         metadata=metadata,
         error=result.error or "authoritative_output_gate_blocked",
     )
+
+
+def _authoritative_gate_direct_path_keep_text(
+    result: SubscriptionDraftResult,
+    findings: Sequence[Mapping[str, Any]],
+) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    if not _truthy_value(direct.get("enabled") or direct.get("attempted") or direct.get("direct_path_attempted")):
+        return False
+    codes = {str(item.get("code") or "").strip() for item in findings if isinstance(item, Mapping)}
+    if not codes:
+        return False
+    return not bool(codes & DIRECT_PATH_REPLACE_TEXT_GATE_CODES)
 
 
 def apply_output_sanitizer(

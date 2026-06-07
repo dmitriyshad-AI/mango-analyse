@@ -770,6 +770,26 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
 
 
+def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:
+    snapshot = Path("product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json")
+    assert snapshot.exists()
+
+    context = sim.build_bot_prompt_context(
+        "Здравствуйте! Сколько стоит очно физика для 9 класса? Понял, спасибо.",
+        persona={"dialog_id": "ov_price_close", "brand": "unpk", "persona": "Цена+спасибо"},
+        recent_messages=[],
+        snapshot_path=snapshot,
+    )
+
+    direct = context.get("confirmed_facts") or {}
+    facts_text = "\n".join(str(value) for value in direct.values())
+    assert "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽." in facts_text
+    assert "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽." in facts_text
+    assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
+    assert context["conversation_intent_plan"]["known_slots"]["grade"] == "9"
+    assert context["conversation_intent_plan"]["known_slots"]["format"] == "очно"
+
+
 def test_run_one_dialog_injects_debug_trace_context_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("DIALOGUE_CONTRACT_DEBUG_TRACE", "1")
     monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())

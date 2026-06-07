@@ -10225,7 +10225,39 @@ def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
     gate = result.metadata["authoritative_output_gate"]
     assert result.route == "manager_only"
     assert gate["action"] == "block"
+    assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
     assert "unsupported_product_number" in {item["code"] for item in gate["findings"]}
+    assert result.metadata["direct_path"]["downgraded"] is True
+    assert result.metadata["direct_path"]["reason_class"] == "output_safety"
+
+
+def test_direct_path_soft_gate_finding_keeps_model_text_for_manager() -> None:
+    text = "Очная площадка на Сретенке."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=text,
+        )
+    )
+    result = provider.build_draft(
+        "Где вы находитесь?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {
+                "address.foton": "Фотон: очная площадка — Москва, Верхняя Красносельская ул., 30."
+            },
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    codes = {item["code"] for item in gate["findings"]}
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == text
+    assert gate["action"] == "downgrade_keep_text"
+    assert "unsupported_entity" in codes
+    assert "direct_path_gate_text_preserved" in result.safety_flags
     assert result.metadata["direct_path"]["downgraded"] is True
     assert result.metadata["direct_path"]["reason_class"] == "output_safety"
 
@@ -10249,5 +10281,6 @@ def test_direct_path_brand_leak_is_downgraded_by_gate() -> None:
     gate = result.metadata["authoritative_output_gate"]
     assert result.route == "manager_only"
     assert gate["action"] == "block"
+    assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
     assert "brand_leak" in {item["code"] for item in gate["findings"]}
     assert result.metadata["direct_path"]["downgraded"] is True

@@ -171,8 +171,9 @@ _COMPLAINT_SAFE_VARIANTS: tuple[str, ...] = (
 )
 _PAYMENT_DISPUTE_VARIANTS: tuple[str, ...] = (
     PAYMENT_DISPUTE_SAFE_TEXT,
-    "Спорный вопрос по оплате зафиксирован. Менеджер проверит данные в системе и вернется с ответом; пока ничего дополнительно присылать не нужно.",
-    "По оплате передам обращение менеджеру: он сверит данные в системе и ответит. Дополнительные данные пока не нужны.",
+    "Понимаю тревогу: по оплате нужно сверить данные в системе. Передам вопрос менеджеру, он проверит и вернется с точным ответом.",
+    "Вижу, что вопрос срочный. По платежу безопасно ответит менеджер после проверки в системе; передам ему это отдельно.",
+    "По оплате не буду подтверждать статус без сверки. Передам вопрос менеджеру, он проверит данные и вернется с ответом.",
 )
 _LEGAL_SAFE_VARIANTS: tuple[str, ...] = (
     LEGAL_THREAT_SAFE_TEXT,
@@ -180,7 +181,7 @@ _LEGAL_SAFE_VARIANTS: tuple[str, ...] = (
     "Передам обращение ответственному сотруднику, он вернется с ответом.",
 )
 SOFT_NEGATIVE_HANDOFF_SAFE_TEXT = (
-    "Понял, давайте не буду повторять общий ответ. Передам менеджеру контекст переписки, "
+    "Поняла, давайте не буду повторять общий ответ. Передам менеджеру контекст переписки, "
     "чтобы он ответил по вашему вопросу точнее."
 )
 RESULT_GUARANTEE_SAFE_TEXT = (
@@ -3054,6 +3055,33 @@ _TONE_SELL_PROMPT_STEP_RE = re.compile(
 )
 
 
+def _tone_sell_prompt_step_observation(text: str, close_meta: Mapping[str, Any]) -> Mapping[str, Any]:
+    match = _TONE_SELL_PROMPT_STEP_RE.search(str(text or ""))
+    if not match:
+        return {
+            "has_step": bool(close_meta),
+            "step_kind": "close_meta" if close_meta else "",
+            "step_match": "",
+        }
+    fragment = match.group(0).strip()
+    low = fragment.casefold().replace("ё", "е")
+    if re.search(r"телефон|номер|контакт|позвоним|свяжемся", low, re.I):
+        kind = "contact_cta"
+    elif re.search(r"пробн|как\s+записаться|запис", low, re.I):
+        kind = "enrollment_or_trial_step"
+    elif re.search(r"менеджер|передам", low, re.I):
+        kind = "manager_handoff"
+    elif re.search(r"подбер|давайте|можно\s+(?:начать|посмотреть)", low, re.I):
+        kind = "selection_step"
+    else:
+        kind = "generic_help"
+    return {
+        "has_step": True,
+        "step_kind": kind,
+        "step_match": fragment[:120],
+    }
+
+
 def apply_tone_sell_prompt_observer(
     result: SubscriptionDraftResult,
     *,
@@ -3067,13 +3095,16 @@ def apply_tone_sell_prompt_observer(
     active_self_route = result.route in {"bot_answer_self", "bot_answer_self_for_pilot"}
     serious = _a2_context_tag(result, client_message=client_message, context=context) in _A2_SERIOUS_TAGS
     close_meta = metadata.get("close_detect") if isinstance(metadata.get("close_detect"), Mapping) else {}
-    has_step = bool(_TONE_SELL_PROMPT_STEP_RE.search(str(result.draft_text or ""))) or bool(close_meta)
+    step_observation = _tone_sell_prompt_step_observation(str(result.draft_text or ""), close_meta)
+    has_step = bool(step_observation.get("has_step"))
     step_missing = bool(active_self_route and not serious and not has_step)
     metadata["tone_sell_prompt"] = {
         **existing,
         "enabled": True,
         "step_missing": step_missing,
         "has_visible_step": has_step,
+        "step_kind": str(step_observation.get("step_kind") or ""),
+        "step_match": str(step_observation.get("step_match") or ""),
         "route": result.route,
     }
     if step_missing:
@@ -3114,7 +3145,10 @@ _TONE_CLOSE_STEP_CTA_RE = re.compile(
     re.I,
 )
 _TONE_CLOSE_ADVERSATIVE_RE = re.compile(r"\b(?:но|однако|только)\b", re.I)
-_TONE_CLOSE_UNANSWERED_RE = re.compile(r"\b(?:не\s+ответил|не\s+ответили|не\s+отвеч|по\s+сути|без\s+ответа)\b", re.I)
+_TONE_CLOSE_UNANSWERED_RE = re.compile(
+    r"\b(?:не\s+ответил|не\s+ответили|не\s+отвеч|по\s+сути|без\s+ответа|не\s*понятн\w*|не\s+понял[аи]?)\b",
+    re.I,
+)
 _TONE_CLOSE_PROBLEM_MARKER_RE = re.compile(
     r"\b(?:деньг\w*|списал\w*|плат[её]ж\w*|оплат\w*|срочн\w*|заняти[еяй]\w*\s+нет|доступ\w*\s+нет)\b",
     re.I,
@@ -3169,10 +3203,11 @@ def apply_tone_close_detect_layer(
     status = "suppressed_handoff" if result.route in {"manager_only", "draft_for_manager"} else "fired"
     previous_bot_texts = _humanity_previous_bot_texts(context)
     refused_previous_step = _tone_close_refused_previous_step(client_message, previous_bot_texts)
+    old_p0_without_active_latch = _tone_close_old_p0_history(context)
     step, text = _tone_close_next_step_text(
         context,
         previous_bot_texts=previous_bot_texts,
-        no_cta=refused_previous_step,
+        no_cta=refused_previous_step or old_p0_without_active_latch,
     )
     close_flags = tuple(
         flag
@@ -3264,7 +3299,7 @@ def _tone_close_detect_is_p0(result: SubscriptionDraftResult, *, context: Option
     memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else None
     if isinstance(memory, Mapping):
         latch = memory.get("p0_latch") if isinstance(memory.get("p0_latch"), Mapping) else {}
-        if bool(latch.get("active")) or any(str(item) in _TONE_CLOSE_P0_FLAGS for item in (memory.get("risk_flags") or [])):
+        if bool(latch.get("active")):
             return True
     return False
 
@@ -3279,14 +3314,15 @@ def _tone_close_pending_manager(context: Optional[Mapping[str, Any]], *, client_
     pending = pending or bool(memory.get("pending_manager_actions"))
     if not pending:
         return False
-    if _tone_close_had_hard_p0_claim(memory):
-        return True
     return _tone_close_message_references_pending(client_message)
 
 
-def _tone_close_had_hard_p0_claim(memory: Mapping[str, Any]) -> bool:
+def _tone_close_old_p0_history(context: Optional[Mapping[str, Any]]) -> bool:
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else None
+    if not isinstance(memory, Mapping):
+        return False
     latch = memory.get("p0_latch") if isinstance(memory.get("p0_latch"), Mapping) else {}
-    return bool(latch.get("had_hard_p0_claim"))
+    return bool(latch.get("had_hard_p0_claim")) and not bool(latch.get("active"))
 
 
 _TONE_CLOSE_PENDING_REFERENCE_RE = re.compile(

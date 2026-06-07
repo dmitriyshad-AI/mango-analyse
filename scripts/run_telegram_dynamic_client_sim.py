@@ -2136,6 +2136,31 @@ def _close_detect_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
     }
 
 
+def _tone_sell_prompt_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    metas: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            meta = turn.get("bot_tone_sell_prompt")
+            if isinstance(meta, Mapping) and meta:
+                metas.append(meta)
+    return {
+        "turns": len(metas),
+        "step_missing": sum(1 for meta in metas if bool(meta.get("step_missing"))),
+        "has_visible_step": sum(1 for meta in metas if bool(meta.get("has_visible_step"))),
+        "by_step_kind": dict(Counter(str(meta.get("step_kind") or "") for meta in metas if str(meta.get("step_kind") or "").strip())),
+        "sample_matches": [
+            {
+                "kind": str(meta.get("step_kind") or ""),
+                "match": str(meta.get("step_match") or ""),
+            }
+            for meta in metas
+            if str(meta.get("step_match") or "").strip()
+        ][:12],
+    }
+
+
 def _non_p0_self_route_transcripts(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     filtered: list[Mapping[str, Any]] = []
     for dialog in transcripts:
@@ -2251,6 +2276,7 @@ def build_summary(
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
     manager_deferrals = _manager_deferral_summary(transcripts)
     close_detect = _close_detect_summary(transcripts)
+    tone_sell_prompt = _tone_sell_prompt_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     include_handoff_trace = _handoff_trace_enabled() or any(
         isinstance(turn, Mapping) and isinstance(turn.get("handoff_trace"), Mapping) and bool(turn.get("handoff_trace"))
@@ -2361,6 +2387,7 @@ def build_summary(
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "close_detect": close_detect,
+        "tone_sell_prompt": tone_sell_prompt,
         "claude_cli_errors": claude_cli_errors,
         "over_handoff": over_handoff,
         **({"handoff_trace": handoff_trace} if include_handoff_trace else {}),

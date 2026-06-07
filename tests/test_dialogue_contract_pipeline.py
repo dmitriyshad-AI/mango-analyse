@@ -9,12 +9,15 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     DialogueContractPipelineResult,
     FactStore,
     FAITHFULNESS_SHADOW_ENV,
+    RetrievalResult,
+    Subquestion,
     Toggles,
     _DETAIL_HANDOFF_TEXTS,
     _GENERIC_HANDOFF_TEXTS,
     _HANDOFF_EXHAUSTED_TEXTS,
     _avoid_repeating_text,
     _ensure_estimate_uncertainty_marker,
+    _scope_required_retrieval_for_contract,
     _safe_fallback_text,
     build_conversation,
     build_draft_prompt,
@@ -1389,7 +1392,10 @@ def test_pipeline_p0_pregate_overrides_llm_contract() -> None:
     )
     assert result.route == "manager_only"
     assert result.contract.is_p0
-    assert "Приняли обращение" in result.draft_text
+    assert "менеджер" in result.draft_text.casefold()
+    assert "проверит" in result.draft_text.casefold() or "свер" in result.draft_text.casefold()
+    assert "29 750" not in result.draft_text
+    assert "оплата прошла" not in result.draft_text.casefold()
 
 
 def test_refund_followup_uses_refund_handoff_not_dry_repeat() -> None:
@@ -5376,6 +5382,63 @@ def test_q_partial_yield_invariant_suite_with_quality_flags_on(monkeypatch) -> N
     assert "30 000" not in price.draft_text
 
 
+def test_tone_b1_scope_filter_moves_wrong_format_fuzzy_fact_to_missing(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_TONE_SELL_PROMPT", "1")
+    contract = AnswerContract(
+        active_brand="foton",
+        current_question="сколько стоит очная математика для 9 класса?",
+        answerability="answer_self",
+        subquestions=(
+            Subquestion(
+                text="очная математика 9 класс",
+                answerable="self",
+                needed_fact_keys=("price",),
+            ),
+        ),
+    )
+    retrieval = RetrievalResult(
+        facts={
+            "price.online": "Онлайн математика 9 класс — 29 750 ₽.",
+            "price.offline": "Очно математика 9 класс — 49 000 ₽.",
+        },
+        missing=(),
+        matched_keys={"price": ("price.online", "price.offline")},
+    )
+
+    filtered = _scope_required_retrieval_for_contract(retrieval, contract=contract, context={})
+
+    assert filtered.matched_keys == {"price": ("price.offline",)}
+    assert "price.online" not in filtered.facts
+    assert "price" not in filtered.missing
+
+
+def test_tone_b1_scope_filter_never_removes_exact_match_even_with_scope_conflict(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_TONE_SELL_PROMPT", "1")
+    contract = AnswerContract(
+        active_brand="foton",
+        current_question="сколько стоит очная математика для 9 класса?",
+        answerability="answer_self",
+        subquestions=(
+            Subquestion(
+                text="очная математика 9 класс",
+                answerable="self",
+                needed_fact_keys=("price.online",),
+            ),
+        ),
+    )
+    retrieval = RetrievalResult(
+        facts={"price.online": "Онлайн математика 9 класс — 29 750 ₽."},
+        missing=(),
+        matched_keys={"price.online": ("price.online",)},
+    )
+
+    filtered = _scope_required_retrieval_for_contract(retrieval, contract=contract, context={})
+
+    assert filtered.matched_keys == {"price.online": ("price.online",)}
+    assert filtered.facts == retrieval.facts
+    assert filtered.missing == ()
+
+
 def test_q_composite_flag_off_keeps_existing_behavior(monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_Q_COMPOSITE", raising=False)
     store = FactStore(
@@ -5452,6 +5515,88 @@ def test_q_composite_answers_all_grounded_parts_before_draft(monkeypatch) -> Non
     assert "29 750" in result.draft_text
     assert "малых группах" in result.draft_text
     assert "оставить телефон" in result.draft_text
+
+
+def test_tone_wave3_composite_alias_recovers_course_and_camp_parts_from_single_turn(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_COMPOSITE", raising=False)
+    monkeypatch.setenv("TELEGRAM_COMPOSITE_CONTRACT_FIX", "1")
+    store = FactStore(
+        catalog=(
+            "regular_course.math.grade9.online.price",
+            "regular_course.math.grade9.online.format",
+            "camp.city.format",
+        ),
+        store={
+            "foton": {
+                "regular_course.math.grade9.online.price": "Онлайн математика 9 класс — семестр 29 750 ₽.",
+                "regular_course.math.grade9.online.format": "Онлайн-занятия проходят в малых группах.",
+                "camp.city.format": "Городская летняя школа Фотон — очно, без проживания.",
+            }
+        },
+    )
+    draft_calls: list[str] = []
+
+    result = run_pipeline(
+        conversation=_conv("Интересует онлайн математика для 9 класса на учебный год, а в летнем лагере что есть?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "летний лагерь",
+                "subquestions": [
+                    {"text": "летний лагерь", "answerable": "self", "needed_fact_keys": ["camp.city.format"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda prompt: draft_calls.append(prompt) or "Не должен вызываться.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert draft_calls == []
+    assert result.route == "bot_answer_self"
+    assert result.composite_applied is True
+    assert result.fallback_reason == "composite_grounded_answer"
+    assert set(result.composite_fact_keys) == {
+        "regular_course.math.grade9.online.price",
+        "regular_course.math.grade9.online.format",
+        "camp.city.format",
+    }
+    assert "29 750" in result.draft_text
+    assert "малых группах" in result.draft_text
+    assert "без проживания" in result.draft_text
+
+
+def test_tone_wave3_payment_dispute_p0_handoff_rotates_without_product_promise() -> None:
+    store = FactStore(catalog=(), store={"foton": {}})
+    first = run_pipeline(
+        conversation=_conv("срочно, деньги списали, занятие не отменится?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding({"current_question": "спор по оплате", "is_p0": True, "p0_reason": "payment_dispute"}),
+        draft_fn=lambda _prompt: "Не должен вызываться.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+    second = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "срочно, деньги списали, занятие не отменится?"},
+            {"role": "bot", "text": first.draft_text},
+            {"role": "client", "text": "ну ответьте, платеж прошёл?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding({"current_question": "спор по оплате", "is_p0": True, "p0_reason": "payment_dispute"}),
+        draft_fn=lambda _prompt: "Не должен вызываться.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert first.route == "manager_only"
+    assert second.route == "manager_only"
+    assert first.draft_text != second.draft_text
+    combined = f"{first.draft_text} {second.draft_text}".casefold()
+    assert "оплата прошла" not in combined
+    assert "занятие не отмен" not in combined
+    assert "место сохран" not in combined
 
 
 def test_q_composite_runs_under_faithfulness_shadow(monkeypatch) -> None:

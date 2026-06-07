@@ -1203,6 +1203,13 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
                     "bot_answer_quality_findings": [],
                     "bot_answer_quality_rewritten": True,
                     "context_parity_checked": True,
+                    "bot_tone_sell_prompt": {
+                        "enabled": True,
+                        "step_missing": False,
+                        "has_visible_step": True,
+                        "step_kind": "generic_help",
+                        "step_match": "Подскажу",
+                    },
                 },
             ],
         }
@@ -1240,6 +1247,9 @@ def test_dynamic_summary_counts_answer_first_known_multitopic_and_price_fix_find
     assert "human_tone_score" not in summary["metrics_intervals"]
     assert "avg_human_tone_score" not in summary["totals"]
     assert summary["tone_metric"]["turns_count"] == 2
+    assert summary["tone_sell_prompt"]["turns"] == 1
+    assert summary["tone_sell_prompt"]["by_step_kind"] == {"generic_help": 1}
+    assert summary["tone_sell_prompt"]["sample_matches"] == [{"kind": "generic_help", "match": "Подскажу"}]
     assert "needs_second_run" in summary
 
 

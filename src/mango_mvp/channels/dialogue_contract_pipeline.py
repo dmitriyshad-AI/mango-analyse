@@ -29,7 +29,7 @@ from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
 from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, is_benign_hypothetical_refund, soft_codes_from_text
-from mango_mvp.channels.tone_block import apply_warm_frame
+from mango_mvp.channels.tone_block import apply_warm_frame, sell_prompt_enabled
 from mango_mvp.insights.sanitizers import sanitize_answer
 
 
@@ -42,6 +42,7 @@ TRAVEL_COMPOSE_ENV = "TELEGRAM_A_TRAVEL_COMPOSE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
 QUALITY_THREAD_MEMORY_ENV = "TELEGRAM_Q_THREAD_MEMORY"
 QUALITY_COMPOSITE_ENV = "TELEGRAM_Q_COMPOSITE"
+QUALITY_COMPOSITE_ALIAS_ENV = "TELEGRAM_COMPOSITE_CONTRACT_FIX"
 QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
 QUALITY_CLARIFY_SCOPE_ENV = "TELEGRAM_Q_CLARIFY_SCOPE"
 QUALITY_USEFUL_HANDOFF_ENV = "TELEGRAM_Q_USEFUL_HANDOFF"
@@ -234,6 +235,11 @@ _DRY_P0_TEXTS: tuple[str, ...] = (
     "Обращение принято. Передам ответственному сотруднику, он вернётся с ответом.",
     "Приняли. Передам обращение ответственному сотруднику, он вернётся с ответом.",
     "Зафиксировали обращение. Передам его ответственному сотруднику, он вернётся с ответом.",
+)
+_PAYMENT_DISPUTE_P0_TEXTS: tuple[str, ...] = (
+    "Понимаю тревогу: по оплате нужно сверить данные в системе. Передам вопрос менеджеру, он проверит и вернётся с точным ответом.",
+    "Вижу, что вопрос срочный. По платежу безопасно ответит менеджер после проверки в системе; передам ему это отдельно.",
+    "По оплате не буду подтверждать статус без сверки. Передам вопрос менеджеру, он проверит данные и вернётся с ответом.",
 )
 _GENERIC_HANDOFF_TEXTS: tuple[str, ...] = (
     "Чтобы не ошибиться, передам вопрос менеджеру — он сверит детали и вернётся с ответом.",
@@ -665,6 +671,10 @@ def quality_thread_memory_enabled(context: Mapping[str, Any] | None = None) -> b
 def quality_composite_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(QUALITY_COMPOSITE_ENV) is not None:
         return _truthy(context.get(QUALITY_COMPOSITE_ENV))
+    if isinstance(context, MappingABC) and context.get(QUALITY_COMPOSITE_ALIAS_ENV) is not None:
+        return _truthy(context.get(QUALITY_COMPOSITE_ALIAS_ENV))
+    if _truthy(os.getenv(QUALITY_COMPOSITE_ALIAS_ENV)):
+        return True
     return _truthy(os.getenv(QUALITY_COMPOSITE_ENV))
 
 
@@ -1045,6 +1055,138 @@ def _augment_contract_with_memory_topic(
         needed_fact_keys=topic_keys,
         memory_focus=focus if thread_memory else None,
     )
+
+
+def _augment_contract_with_composite_course_camp(
+    contract: AnswerContract,
+    *,
+    client_words: str,
+    context: Mapping[str, Any] | None,
+    fact_key_catalog: Sequence[str],
+) -> AnswerContract:
+    if contract.is_p0 or not quality_composite_enabled(context):
+        return contract
+    text = " ".join(part for part in (client_words, contract.current_question) if part)
+    if not (_mentions_regular_course_topic(text) and _mentions_camp_topic(text)):
+        return contract
+
+    subquestions = list(contract.subquestions)
+    if not subquestions and (contract.current_question or contract.all_needed_fact_keys()):
+        subquestions.append(
+            Subquestion(
+                text=contract.current_question or client_words,
+                answerable="self" if contract.answerability == "answer_self" else contract.answerability,
+                needed_fact_keys=contract.all_needed_fact_keys(),
+                question_type=contract.question_type,
+                existence_target=contract.existence_target,
+            )
+        )
+
+    added: list[str] = []
+    if not any(_mentions_regular_course_topic(item.text) for item in subquestions):
+        regular_text = _regular_course_composite_detail(text)
+        regular_keys = _regular_course_composite_keys(
+            regular_text,
+            contract=contract,
+            fact_key_catalog=fact_key_catalog,
+        )
+        if regular_keys:
+            subquestions.insert(
+                0,
+                Subquestion(
+                    text=regular_text,
+                    answerable="self",
+                    needed_fact_keys=regular_keys,
+                    question_type="fact_lookup",
+                ),
+            )
+            added.append("regular_course")
+
+    if not any(_mentions_camp_topic(item.text) for item in subquestions):
+        camp_keys = _camp_composite_keys(text, fact_key_catalog=fact_key_catalog)
+        if camp_keys:
+            subquestions.append(
+                Subquestion(
+                    text="летний лагерь",
+                    answerable="self",
+                    needed_fact_keys=camp_keys,
+                    question_type="fact_lookup",
+                )
+            )
+            added.append("camp")
+
+    if len(subquestions) < 2 or not added:
+        return contract
+    trace_event(
+        context,
+        "composite_contract_augment",
+        {
+            "applied": True,
+            "added": added,
+            "client_message": client_words,
+            "subquestions": [item.to_json_dict() for item in subquestions],
+        },
+    )
+    return replace(
+        contract,
+        current_question=client_words or contract.current_question,
+        subquestions=tuple(subquestions),
+        answerability="answer_self",
+    )
+
+
+def _mentions_regular_course_topic(text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(r"онлайн|очно|курс|учебн\w+\s+год|занят", low, re.I)
+        and re.search(r"математ|физик|информат|хим|биолог|русск|англ|класс", low, re.I)
+    )
+
+
+def _mentions_camp_topic(text: str) -> bool:
+    return bool(re.search(r"лагер|лвш|летн\w+\s+(?:школ|лагер)|смен", str(text or "").casefold().replace("ё", "е"), re.I))
+
+
+def _regular_course_composite_detail(text: str) -> str:
+    subject = _explicit_subject_from_text(text)
+    grade = _grade_from_text(text)
+    fmt = _format_from_text(text)
+    parts = [part for part in (fmt, subject, f"{grade} класс" if grade else "", "на учебный год") if part]
+    return " ".join(parts) if parts else "регулярный курс"
+
+
+def _regular_course_composite_keys(
+    text: str,
+    *,
+    contract: AnswerContract,
+    fact_key_catalog: Sequence[str],
+) -> tuple[str, ...]:
+    focus = {
+        "subject": _explicit_subject_from_text(text),
+        "grade": _grade_from_text(text),
+        "format": _format_from_text(text),
+        "product_family": "regular_course",
+    }
+    return _keys_for_topic(focus, fact_key_catalog=fact_key_catalog, contract=replace(contract, current_question=text))
+
+
+def _camp_composite_keys(text: str, *, fact_key_catalog: Sequence[str]) -> tuple[str, ...]:
+    low = str(text or "").casefold().replace("ё", "е")
+    city = bool(re.search(r"городск|без\s+прожив|без\s+ночев", low, re.I))
+    residential = bool(re.search(r"лвш|менделеев|выездн|прожив|трансфер", low, re.I))
+    scored: list[tuple[int, str]] = []
+    for key in tuple(dict.fromkeys(str(item or "").strip() for item in fact_key_catalog if str(item or "").strip())):
+        key_low = key.casefold().replace("ё", "е")
+        if not re.search(r"camp|lvsh|лвш|лагер|смен|ls_city|summer", key_low, re.I):
+            continue
+        score = 20
+        if city and re.search(r"city|город|moscow|москв|ls_city", key_low, re.I):
+            score += 10
+        if residential and re.search(r"lvsh|mendeleevo|менделеев|residential", key_low, re.I):
+            score += 10
+        scored.append((score, key))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return tuple(key for _, key in scored[:8])
 
 
 def _memory_focus_for_contract(memory: Mapping[str, Any], *, include_known_slots: bool) -> Mapping[str, str]:
@@ -2886,6 +3028,12 @@ def run_pipeline(
             context=context,
             fact_key_catalog=fact_store.catalog,
         )
+        contract = _augment_contract_with_composite_course_camp(
+            contract,
+            client_words=client_words,
+            context=context,
+            fact_key_catalog=fact_store.catalog,
+        )
         trace.update(
             {
                 "answerability": contract.answerability,
@@ -2958,6 +3106,7 @@ def run_pipeline(
             context=context,
         )
         retrieval = _scope_camp_retrieval_for_contract(retrieval, contract=contract, context=context)
+        retrieval = _scope_required_retrieval_for_contract(retrieval, contract=contract, context=context)
         trace.update(
             {
                 "fact_keys": list(retrieval.facts.keys()),
@@ -5867,6 +6016,8 @@ def _p0_handoff_text(
     conversation: Sequence[Mapping[str, str]] | None = None,
 ) -> str:
     reason = f"{contract.p0_reason} {contract.client_state}".casefold().replace("ё", "е")
+    if "payment" in reason or "оплат" in reason or "платеж" in reason or "спис" in reason:
+        return _payment_dispute_handoff_text(conversation=conversation)
     if "complaint" in reason or "жалоб" in reason:
         return _complaint_handoff_text(conversation=conversation)
     return _dry_p0_text(conversation=conversation)
@@ -5884,6 +6035,13 @@ def _refund_policy_handoff_text(*, conversation: Sequence[Mapping[str, str]] | N
     if conversation:
         bot_turns = sum(1 for item in conversation if str(item.get("role") or "") == "bot")
     return _REFUND_POLICY_TEXTS[bot_turns % len(_REFUND_POLICY_TEXTS)]
+
+
+def _payment_dispute_handoff_text(*, conversation: Sequence[Mapping[str, str]] | None = None) -> str:
+    bot_turns = 0
+    if conversation:
+        bot_turns = sum(1 for item in conversation if str(item.get("role") or "") == "bot")
+    return _PAYMENT_DISPUTE_P0_TEXTS[bot_turns % len(_PAYMENT_DISPUTE_P0_TEXTS)]
 
 
 _COMPLAINT_HANDOFF_TEXTS: tuple[str, ...] = (
@@ -6489,6 +6647,69 @@ def _scope_camp_retrieval_for_contract(
     return RetrievalResult(facts=facts, missing=tuple(dict.fromkeys(missing)), matched_keys=matched)
 
 
+def _scope_required_retrieval_for_contract(
+    retrieval: RetrievalResult,
+    *,
+    contract: AnswerContract,
+    context: Mapping[str, Any] | None,
+) -> RetrievalResult:
+    if not (sell_prompt_enabled(context) or quality_composite_enabled(context)):
+        return retrieval
+    if not retrieval.facts or not retrieval.matched_keys:
+        return retrieval
+    subquestions = _contract_subquestions(contract)
+    subquestions_by_required: dict[str, list[Subquestion]] = {}
+    for subquestion in subquestions:
+        for required in tuple(key for key in subquestion.needed_fact_keys if key):
+            subquestions_by_required.setdefault(str(required), []).append(subquestion)
+    fallback_subquestion = Subquestion(
+        text=contract.current_question,
+        answerable="self" if contract.answerability == "answer_self" else contract.answerability,
+        needed_fact_keys=(),
+        question_type=contract.question_type,
+        existence_target=contract.existence_target,
+    )
+    matched: dict[str, tuple[str, ...]] = {}
+    removed: dict[str, list[str]] = {}
+    missing = list(retrieval.missing)
+
+    for required, keys in retrieval.matched_keys.items():
+        required_key = str(required)
+        candidate_subquestions = tuple(subquestions_by_required.get(required_key) or (fallback_subquestion,))
+        kept: list[str] = []
+        for key in tuple(keys):
+            fact_key = str(key)
+            if fact_key not in retrieval.facts:
+                continue
+            if fact_key == required_key:
+                kept.append(fact_key)
+                continue
+            fact_text = str(retrieval.facts[fact_key])
+            if any(_fact_scope_matches_question(contract, subquestion, fact_key, fact_text) for subquestion in candidate_subquestions):
+                kept.append(fact_key)
+                continue
+            removed.setdefault(required_key, []).append(fact_key)
+        if kept:
+            matched[required_key] = tuple(dict.fromkeys(kept))
+        elif required_key not in missing:
+            missing.append(required_key)
+
+    if not removed:
+        return retrieval
+    kept_fact_keys = {key for keys in matched.values() for key in keys}
+    facts = {key: value for key, value in retrieval.facts.items() if key in kept_fact_keys}
+    trace_event(
+        context,
+        "scope_required_retrieval_filter",
+        {
+            "removed": {key: list(value) for key, value in removed.items()},
+            "missing_added": [key for key in missing if key not in retrieval.missing],
+            "exact_keys_preserved": [key for key, value in matched.items() if key in value],
+        },
+    )
+    return RetrievalResult(facts=facts, missing=tuple(dict.fromkeys(missing)), matched_keys=matched)
+
+
 def _asks_weekend_or_slot(contract: AnswerContract) -> bool:
     text = " ".join(
         [
@@ -6987,13 +7208,14 @@ def _retrieved_keys_match_question_scope(
         payment_targets = set(payment_targets) - {"monthly_no_bank"}
     if payment_targets:
         return any(_fact_supports_payment_target(text, target_anchors=payment_targets) for text in matched_text.values())
+    question_text = _subquestion_scope_text(contract, subquestion)
+    question_low = question_text.casefold().replace("ё", "е")
     has_camp_fact = any(_is_camp_or_lvsh_fact(key, value) for key, value in matched_text.items())
-    if _contract_mentions_camp_or_lvsh(contract):
+    question_mentions_camp = bool(re.search(r"лвш|менделеев|лагер|camp|летн", question_low, re.I))
+    if question_mentions_camp:
         return has_camp_fact
     if has_camp_fact:
         return False
-    question_text = _subquestion_scope_text(contract, subquestion)
-    question_low = question_text.casefold().replace("ё", "е")
     if re.search(r"помесячн\w*.*сумм|сумм\w*\s+в\s+месяц|сколько\s+.*(?:в|за)\s+месяц|месячн\w*\s+сумм", question_low, re.I):
         return any(
             re.search(r"сумм\w*\s+в\s+месяц|ежемесячн\w*\s+сумм|помесячн\w*\s+сумм|руб\w*\s+в\s+месяц|₽\s*/\s*мес", value.casefold(), re.I)
@@ -7149,6 +7371,8 @@ def _matched_fact_mapping_for_required_keys(retrieval: RetrievalResult, keys: Se
 
 
 def _subquestion_scope_text(contract: AnswerContract, subquestion: Subquestion) -> str:
+    if len(contract.subquestions) > 1 and subquestion.text:
+        return " ".join(part for part in (subquestion.text, subquestion.existence_target) if part)
     return " ".join(
         part
         for part in (

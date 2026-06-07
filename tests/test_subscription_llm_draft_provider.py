@@ -79,6 +79,7 @@ from mango_mvp.channels.subscription_llm import (
     _context_with_selling_thread_slots,
     _fresh_fact_texts,
     _keep_answer_supported,
+    _p0_text_with_antirepeat,
     _validated_guardchain_recovery_candidate,
     _verified_informational_answer,
     contains_bot_identity_disclosure,
@@ -616,7 +617,7 @@ def test_soft_negative_feedback_is_not_treated_as_complaint_p0() -> None:
     assert result.route == "draft_for_manager"
     assert "complaint_apology_guarded" not in result.safety_flags
     assert "high_risk_manager_only" not in result.safety_flags
-    assert result.draft_text.startswith("Понял, давайте не буду повторять общий ответ")
+    assert result.draft_text.startswith("Поняла, давайте не буду повторять общий ответ")
 
 
 def test_presale_refund_policy_draft_is_not_demoted_to_full_p0_by_autonomy() -> None:
@@ -1817,7 +1818,7 @@ def test_negative_feedback_non_question_is_not_off_topic_fallback() -> None:
     )
 
     assert result.route == "draft_for_manager"
-    assert result.draft_text == "Понял, давайте не буду повторять общий ответ. Передам менеджеру контекст переписки, чтобы он ответил по вашему вопросу точнее."
+    assert result.draft_text == "Поняла, давайте не буду повторять общий ответ. Передам менеджеру контекст переписки, чтобы он ответил по вашему вопросу точнее."
     assert "complaint_apology_guarded" not in result.safety_flags
     assert "По другим темам" not in result.draft_text
 
@@ -4983,6 +4984,7 @@ def test_tone_close_detect_does_not_capture_adversative_unanswered_or_payment_pr
     context = {"active_brand": "unpk", TONE_CLOSE_DETECT_ENV: "1"}
 
     unanswered = apply_tone_close_detect_layer(result, client_message="Поняла, но пока вы не ответили по сути", context=context)
+    unclear_value = apply_tone_close_detect_layer(result, client_message="Поняла. Но мне всё равно непонятно, за что платим…", context=context)
     plural_exit = apply_tone_close_detect_layer(result, client_message="Спасибо, подумаем", context=context)
     payment_problem = apply_tone_close_detect_layer(
         result,
@@ -4991,6 +4993,7 @@ def test_tone_close_detect_does_not_capture_adversative_unanswered_or_payment_pr
     )
 
     assert "close_detect" not in unanswered.metadata
+    assert "close_detect" not in unclear_value.metadata
     assert "close_detect" not in plural_exit.metadata
     assert "close_detect" not in payment_problem.metadata
 
@@ -5048,8 +5051,26 @@ def test_tone_close_detect_suppresses_p0_and_pending_manager_without_cta() -> No
     }
     hard_p0_pending = apply_tone_close_detect_layer(pending, client_message="Спасибо", context=hard_p0_pending_context)
 
-    assert hard_p0_pending.metadata["close_detect"]["status"] == "suppressed_pending"
+    assert hard_p0_pending.metadata["close_detect"]["status"] == "fired"
+    assert hard_p0_pending.metadata["close_detect"]["step"] == "return"
     assert "телефон" not in hard_p0_pending.draft_text.casefold()
+
+    hard_p0_pending_next = apply_tone_close_detect_layer(pending, client_message="Спасибо", context=hard_p0_pending_context)
+
+    assert hard_p0_pending_next.metadata["close_detect"]["status"] == "fired"
+    assert hard_p0_pending_next.metadata["close_detect"]["step"] == "return"
+
+    classifier_only_p0 = apply_tone_close_detect_layer(
+        replace(pending, safety_flags=("payment_dispute",)),
+        client_message="Спасибо",
+        context={
+            "active_brand": "unpk",
+            TONE_CLOSE_DETECT_ENV: "1",
+            "dialogue_memory_view": {"p0_latch": {"active": False, "had_hard_p0_claim": False}},
+        },
+    )
+
+    assert classifier_only_p0.metadata["close_detect"]["status"] == "suppressed_p0"
 
 
 def test_tone_close_detect_uses_contact_requested_memory_before_foton_trial_step() -> None:
@@ -5080,6 +5101,27 @@ def test_tone_close_detect_uses_contact_requested_memory_before_foton_trial_step
     assert "телефон" not in closed.draft_text.casefold()
 
 
+def test_payment_dispute_handoff_antirepeat_rotates_without_product_promises() -> None:
+    second = _p0_text_with_antirepeat(
+        "payment_dispute",
+        PAYMENT_DISPUTE_SAFE_TEXT,
+        context={"recent_messages": [f"Бот: {PAYMENT_DISPUTE_SAFE_TEXT}"]},
+    )
+    third = _p0_text_with_antirepeat(
+        "payment_dispute",
+        PAYMENT_DISPUTE_SAFE_TEXT,
+        context={"recent_messages": [f"Бот: {PAYMENT_DISPUTE_SAFE_TEXT}", f"Бот: {second}"]},
+    )
+
+    assert second != PAYMENT_DISPUTE_SAFE_TEXT
+    assert third not in {PAYMENT_DISPUTE_SAFE_TEXT, second}
+    combined = f"{second} {third}".casefold()
+    assert "проверит" in combined or "сверит" in combined
+    assert "занятие не отмен" not in combined
+    assert "оплата прошла" not in combined
+    assert "место сохран" not in combined
+
+
 def test_tone_wave2_prompt_blocks_are_gated_and_preserve_brand_boundaries() -> None:
     context = {
         "active_brand": "unpk",
@@ -5107,6 +5149,10 @@ def test_tone_wave2_prompt_blocks_are_gated_and_preserve_brand_boundaries() -> N
 
     assert "Продающий тон TELEGRAM_TONE_SELL_PROMPT" in prompt
     assert "Форматирование TELEGRAM_TONE_RICH_FORMAT" in prompt
+    assert "максимум пользы сразу" in prompt
+    assert "бренду, формату, классу, предмету и продукту" in prompt
+    assert "за что платим" in prompt
+    assert "не обещай результат" in prompt
     assert "максимум один на ход" in prompt
     assert "Не задавай список вопросов" in prompt
     assert "recent_ignored >= 2" in prompt
@@ -5151,8 +5197,11 @@ def test_tone_sell_prompt_observer_logs_missing_step_without_changing_text() -> 
     assert observed.metadata["tone_sell_prompt"]["step_missing"] is True
     assert observed.metadata["sell_prompt_step_missing"] is True
     assert with_step.metadata["tone_sell_prompt"]["step_missing"] is False
+    assert with_step.metadata["tone_sell_prompt"]["step_kind"] == "generic_help"
+    assert with_step.metadata["tone_sell_prompt"]["step_match"]
     assert "sell_prompt_step_missing" not in with_step.metadata
     assert with_new_step_words.metadata["tone_sell_prompt"]["step_missing"] is False
+    assert with_new_step_words.metadata["tone_sell_prompt"]["step_kind"] == "generic_help"
     assert "sell_prompt_step_missing" not in with_new_step_words.metadata
 
 
@@ -7008,7 +7057,7 @@ def test_presale_refund_process_question_answers_where_to_write_without_p0() -> 
     provider = FakeDraftProvider(
         {
             "route": "manager_only",
-            "draft_text": "Понял, давайте не буду повторять общий ответ. Передам менеджеру контекст.",
+            "draft_text": "Поняла, давайте не буду повторять общий ответ. Передам менеджеру контекст.",
             "message_type": "question",
             "topic_id": "theme:013_schedule",
             "confidence_theme": 0.8,

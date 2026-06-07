@@ -978,6 +978,57 @@ def test_dynamic_summary_includes_close_detect_counters(tmp_path):
     assert summary["close_detect"]["by_step"] == {"return": 1}
 
 
+def test_dynamic_summary_counts_model_vs_deterministic_text_sources(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "composition_sources",
+            "brand": "foton",
+            "turns": [
+                {
+                    "turn": 1,
+                    "context_parity_checked": True,
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_dialogue_contract_pipeline": {"text_composition_source": "model_composite"},
+                },
+                {
+                    "turn": 2,
+                    "context_parity_checked": True,
+                    "bot_route": "manager_only",
+                    "bot_dialogue_contract_pipeline": {"text_composition_source": "deterministic_p0_handoff"},
+                },
+                {
+                    "turn": 3,
+                    "context_parity_checked": True,
+                    "bot_route": "draft_for_manager",
+                    "bot_dialogue_contract_pipeline": {},
+                },
+            ],
+        }
+    ]
+    judge_results = [
+        {
+            "dialog_id": "composition_sources",
+            "brand": "foton",
+            "hard_gates_passed": True,
+            "verdict": "PASS",
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    source = summary["text_composition_source"]
+    assert source["total_pipeline_turns"] == 2
+    assert source["model_composed"] == 1
+    assert source["deterministic_composed"] == 1
+    assert source["by_source"] == {"model_composite": 1, "deterministic_p0_handoff": 1}
+
+
 def test_handoff_trace_empty_for_autonomous_answer(monkeypatch):
     monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
 

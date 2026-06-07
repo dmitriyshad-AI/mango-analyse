@@ -4627,6 +4627,33 @@ def test_authoritative_output_gate_blocks_core_safety_risks() -> None:
         assert gated.draft_text in {SAFE_FALLBACK_DRAFT_TEXT, result.draft_text} or "передам" in gated.draft_text.casefold()
 
 
+def test_authoritative_output_gate_allows_only_source_marked_payment_dispute_pool_text() -> None:
+    marked = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Понимаю тревогу: по оплате нужно сверить данные в системе. Передам вопрос менеджеру, он проверит и вернется с точным ответом.",
+        safety_flags=("payment_dispute_manager_only",),
+        metadata={"dialogue_contract_pipeline": {"reason_evidence": {"p0_handoff_kind": "payment_dispute"}}},
+    )
+    unmarked = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Я сама проверю оплату и скажу, всё ли прошло.",
+        safety_flags=(),
+        metadata={"dialogue_contract_pipeline": {}},
+    )
+
+    context = {"active_brand": "foton"}
+    hard_p0_message = "Я оплатил, занятий нет, верните деньги."
+    marked_gated = apply_authoritative_output_gate(marked, client_message=hard_p0_message, context=context)
+    unmarked_gated = apply_authoritative_output_gate(unmarked, client_message=hard_p0_message, context=context)
+
+    assert marked_gated.draft_text == marked.draft_text
+    assert marked_gated.metadata["authoritative_output_gate"]["action"] == "pass"
+    assert unmarked_gated.route == "manager_only"
+    assert unmarked_gated.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert unmarked_gated.metadata["authoritative_output_gate"]["action"] == "block"
+    assert "hard_p0" in {item["code"] for item in unmarked_gated.metadata["authoritative_output_gate"]["findings"]}
+
+
 def test_output_sanitizer_cuts_opus_meta_dump_before_gate() -> None:
     original = (
         "Проблема с данными: вход похож на внутренний кейс.\n"
@@ -5033,6 +5060,16 @@ def test_tone_close_detect_suppresses_p0_and_pending_manager_without_cta() -> No
     assert pending_closed.metadata["close_detect"]["status"] == "suppressed_pending"
     assert "телефон" not in pending_closed.draft_text.casefold()
     assert pending_closed.draft_text == "Спасибо! Менеджер уже занимается вашим вопросом и скоро вернётся с ответом."
+
+    manager_reference = apply_tone_close_detect_layer(
+        pending,
+        client_message="Спасибо, пусть менеджер уточнит",
+        context=pending_context,
+    )
+
+    assert manager_reference.metadata["close_detect"]["status"] == "suppressed_pending"
+    assert manager_reference.metadata["close_detect"]["step"] == "pending"
+    assert "телефон" not in manager_reference.draft_text.casefold()
 
     plain_thanks = apply_tone_close_detect_layer(pending, client_message="Спасибо", context=pending_context)
 

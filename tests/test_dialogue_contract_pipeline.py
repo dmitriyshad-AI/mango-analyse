@@ -5487,6 +5487,14 @@ def test_q_composite_answers_all_grounded_parts_before_draft(monkeypatch) -> Non
     )
     draft_calls: list[str] = []
 
+    def draft_fn(prompt: str) -> str:
+        draft_calls.append(prompt)
+        return (
+            "Онлайн стоит 29 750 ₽ за семестр.\n\n"
+            "Занятия проходят в малых группах.\n\n"
+            "Для записи нужно оставить телефон и удобное время связи."
+        )
+
     result = run_pipeline(
         conversation=_conv("сколько стоит онлайн, какой формат и как записаться?"),
         active_brand="foton",
@@ -5502,16 +5510,17 @@ def test_q_composite_answers_all_grounded_parts_before_draft(monkeypatch) -> Non
                 "answerability": "answer_self",
             }
         ),
-        draft_fn=lambda prompt: draft_calls.append(prompt) or "Не должен вызываться.",
+        draft_fn=draft_fn,
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert draft_calls == []
+    assert len(draft_calls) == 1
     assert result.route == "bot_answer_self"
     assert result.fallback_reason == "composite_grounded_answer"
     assert result.composite_applied is True
     assert result.composite_fact_keys == ("price.online", "format.online", "enrollment.steps")
     assert result.composite_missing == ()
+    assert result.text_composition_source == "model_composite"
     assert "29 750" in result.draft_text
     assert "малых группах" in result.draft_text
     assert "оставить телефон" in result.draft_text
@@ -5536,6 +5545,13 @@ def test_tone_wave3_composite_alias_recovers_course_and_camp_parts_from_single_t
     )
     draft_calls: list[str] = []
 
+    def draft_fn(prompt: str) -> str:
+        draft_calls.append(prompt)
+        return (
+            "По онлайн-математике для 9 класса: семестр стоит 29 750 ₽, занятия идут в малых группах.\n\n"
+            "По летнему лагерю: городская летняя школа проходит очно, без проживания."
+        )
+
     result = run_pipeline(
         conversation=_conv("Интересует онлайн математика для 9 класса на учебный год, а в летнем лагере что есть?"),
         active_brand="foton",
@@ -5549,14 +5565,15 @@ def test_tone_wave3_composite_alias_recovers_course_and_camp_parts_from_single_t
                 "answerability": "answer_self",
             }
         ),
-        draft_fn=lambda prompt: draft_calls.append(prompt) or "Не должен вызываться.",
+        draft_fn=draft_fn,
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 
-    assert draft_calls == []
+    assert len(draft_calls) == 1
     assert result.route == "bot_answer_self"
     assert result.composite_applied is True
     assert result.fallback_reason == "composite_grounded_answer"
+    assert result.text_composition_source == "model_composite"
     assert set(result.composite_fact_keys) == {
         "regular_course.math.grade9.online.price",
         "regular_course.math.grade9.online.format",
@@ -5592,11 +5609,92 @@ def test_tone_wave3_payment_dispute_p0_handoff_rotates_without_product_promise()
 
     assert first.route == "manager_only"
     assert second.route == "manager_only"
+    assert first.reason_evidence["p0_handoff_kind"] == "payment_dispute"
+    assert second.reason_evidence["p0_handoff_kind"] == "payment_dispute"
+    assert first.text_composition_source == "deterministic_p0_handoff"
     assert first.draft_text != second.draft_text
     combined = f"{first.draft_text} {second.draft_text}".casefold()
     assert "оплата прошла" not in combined
     assert "занятие не отмен" not in combined
     assert "место сохран" not in combined
+
+
+def test_tone_wave3_composite_uses_cite_only_only_when_model_unavailable(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_COMPOSITE", "1")
+    store = FactStore(
+        catalog=("price.online", "format.online"),
+        store={
+            "foton": {
+                "price.online": "Онлайн: семестр — 29 750 ₽.",
+                "format.online": "Онлайн-занятия проходят в малых группах.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и какой формат?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и формат",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "формат онлайн", "answerable": "self", "needed_fact_keys": ["format.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.composite_applied is True
+    assert result.text_composition_source == "deterministic_composite"
+    assert "29 750" in result.draft_text
+    assert "малых группах" in result.draft_text
+
+
+def test_tone_wave3_composite_model_prompt_excludes_unrelated_camp_payment_deadline(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_COMPOSITE", "1")
+    store = FactStore(
+        catalog=("online.recordings", "online.enrollment", "camp.payment_deadline"),
+        store={
+            "foton": {
+                "online.recordings": "Онлайн-записи занятий доступны в личном кабинете.",
+                "online.enrollment": "Для онлайн-записи нужно оставить телефон и удобное время связи.",
+                "camp.payment_deadline": "ЛВШ: срок оплаты места — 3 дня после регистрации.",
+            }
+        },
+    )
+    prompts: list[str] = []
+
+    result = run_pipeline(
+        conversation=_conv("как записаться на онлайн и будут ли записи занятий?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "онлайн-запись и записи занятий",
+                "subquestions": [
+                    {"text": "как записаться на онлайн", "answerable": "self", "needed_fact_keys": ["online.enrollment"]},
+                    {"text": "будут ли записи занятий", "answerable": "self", "needed_fact_keys": ["online.recordings"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda prompt: prompts.append(prompt) or (
+            "Онлайн-записи занятий доступны в личном кабинете. "
+            "Для онлайн-записи нужно оставить телефон и удобное время связи."
+        ),
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert len(prompts) == 1
+    assert "срок оплаты" not in prompts[0].casefold()
+    assert "3 дня" not in result.draft_text
 
 
 def test_q_composite_runs_under_faithfulness_shadow(monkeypatch) -> None:
@@ -5626,7 +5724,7 @@ def test_q_composite_runs_under_faithfulness_shadow(monkeypatch) -> None:
                 "answerability": "answer_self",
             }
         ),
-        draft_fn=lambda _prompt: "Не должен вызываться.",
+        draft_fn=lambda _prompt: "Онлайн стоит 29 750 ₽ за семестр. Занятия проходят в малых группах.",
         faithfulness_fn=lambda _prompt: {"unsupported": ["строгий критик против композита"]},
         context=context,
     )
@@ -5659,7 +5757,9 @@ def test_q_composite_answers_grounded_parts_and_defers_missing_tail(monkeypatch)
                 "answerability": "manager_only",
             }
         ),
-        draft_fn=lambda _prompt: "Не должен вызываться.",
+        draft_fn=lambda _prompt: (
+            "Онлайн стоит 29 750 ₽ за семестр. Точный день группы менеджер сверит отдельно."
+        ),
         faithfulness_fn=lambda _prompt: {"unsupported": []},
     )
 

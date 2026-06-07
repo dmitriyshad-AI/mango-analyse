@@ -2201,6 +2201,7 @@ class SubscriptionLlmDraftProvider:
                     "composite_missing": list(getattr(pipeline_result, "composite_missing", ())),
                     "next_step_applied": bool(getattr(pipeline_result, "next_step_applied", False)),
                     "next_step_text": str(getattr(pipeline_result, "next_step_text", "") or ""),
+                    "text_composition_source": str(getattr(pipeline_result, "text_composition_source", "") or ""),
                     "estimate": {
                         "is_estimate": bool(pipeline_result.is_estimate),
                         "estimate_applied": bool(getattr(pipeline_result, "estimate_applied", False) or pipeline_result.is_estimate),
@@ -3327,7 +3328,8 @@ def _tone_close_old_p0_history(context: Optional[Mapping[str, Any]]) -> bool:
 
 _TONE_CLOSE_PENDING_REFERENCE_RE = re.compile(
     r"\b(?:жд\w*|ожида\w*)[^.!?\n]{0,40}\b(?:ответ|менеджер|связ|звон|верн|уточн|провер)"
-    r"|\b(?:ответ|менеджер|связ|звон|верн|уточн|провер)[^.!?\n]{0,40}\b(?:жд\w*|ожида\w*)",
+    r"|\b(?:ответ|менеджер|связ|звон|верн|уточн|провер)[^.!?\n]{0,40}\b(?:жд\w*|ожида\w*)"
+    r"|\b(?:пусть|пускай|давайте)?[^.!?\n]{0,25}\bменеджер\b[^.!?\n]{0,50}\b(?:уточн|провер|свер|ответ|связ|верн)",
     re.I,
 )
 
@@ -10207,6 +10209,9 @@ def _dialogue_contract_safety_flags(pipeline_result: Any) -> list[str]:
     flags = ["dialogue_contract_pipeline", "manager_approval_required", "no_auto_send"]
     if getattr(pipeline_result.contract, "is_p0", False):
         flags.append("dialogue_contract_p0_pregate")
+        evidence = getattr(pipeline_result, "reason_evidence", {}) or {}
+        if isinstance(evidence, Mapping) and str(evidence.get("p0_handoff_kind") or "") == "payment_dispute":
+            flags.append("payment_dispute_manager_only")
     flags.append(
         "dialogue_contract_verified"
         if not pipeline_result.findings and not getattr(pipeline_result, "fallback_reason", "")

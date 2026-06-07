@@ -483,6 +483,7 @@ class DialogueContractPipelineResult:
     composite_missing: tuple[str, ...] = ()
     next_step_applied: bool = False
     next_step_text: str = ""
+    text_composition_source: str = ""
 
     def __post_init__(self) -> None:
         route = str(self.route or "").strip()
@@ -3054,15 +3055,27 @@ def run_pipeline(
         ) and not had_hard_p0_claim and not active_hard_p0_latch_reason:
             contract = replace(contract, is_p0=False, p0_reason="", p0_source="", answerability="answer_self")
         else:
+            p0_handoff_kind = _p0_handoff_kind(contract)
             text = _p0_handoff_text(contract, conversation=conversation)
             text = _avoid_repeating_text(text, conversation=conversation, contract=contract, facts={})
-            trace_event(context, "build_draft", {"route": "manager_only", "fallback_reason": "p0", "draft": text})
+            trace_event(
+                context,
+                "build_draft",
+                {
+                    "route": "manager_only",
+                    "fallback_reason": "p0",
+                    "p0_handoff_kind": p0_handoff_kind,
+                    "draft": text,
+                },
+            )
             return DialogueContractPipelineResult(
                 draft_text=text,
                 route="manager_only",
                 manager_only=True,
                 contract=contract,
                 fallback_reason="p0",
+                reason_evidence={"source": "p0_handoff_text", "p0_handoff_kind": p0_handoff_kind},
+                text_composition_source="deterministic_p0_handoff",
             )
     if contract.runtime_error:
         fallback = _safe_fallback_text(contract, facts={}, context=context)
@@ -3306,10 +3319,13 @@ def run_pipeline(
         retrieval=retrieval,
         client_words=client_words,
         conversation=conversation,
+        draft_fn=draft_fn,
         faithfulness_fn=faithfulness_fn,
         toggles=toggles,
         context=context,
         previous_bot_texts=previous_bot_texts,
+        tone_guide=tone_guide,
+        style_examples=style_examples,
     )
     if composite:
         return _quality_next_step_result(
@@ -4025,6 +4041,7 @@ def run_pipeline(
         fallback_reason=force_manager_reason_class if force_draft_for_manager else "",
         reason_class=force_manager_reason_class if force_draft_for_manager else "",
         reason_evidence={"source": "force_draft_for_manager_final"} if force_draft_for_manager else {},
+        text_composition_source="model_draft",
     )
     return _quality_next_step_result(
         result,
@@ -5052,10 +5069,13 @@ def _quality_composite_result_before_draft(
     retrieval: RetrievalResult,
     client_words: str,
     conversation: Sequence[Mapping[str, str]],
+    draft_fn: Callable[[str], str] | None,
     faithfulness_fn: Callable[[str], object] | None,
     toggles: Toggles,
     context: Mapping[str, Any] | None,
     previous_bot_texts: Sequence[str],
+    tone_guide: str = "",
+    style_examples: Sequence[str] = (),
 ) -> DialogueContractPipelineResult | None:
     if not quality_composite_enabled(context):
         return None
@@ -5076,10 +5096,28 @@ def _quality_composite_result_before_draft(
     if not findings:
         trace_event(context, "composite_answer", {"applied": False, "reason": "no_grounded_parts"})
         return None
-    candidate = _composite_candidate_from_parts(findings, missing_details)
+    candidate_source = "deterministic_composite"
+    candidate = _model_composite_candidate(
+        contract=contract,
+        findings=findings,
+        missing_details=missing_details,
+        conversation=conversation,
+        draft_fn=draft_fn,
+        tone_guide=tone_guide,
+        style_examples=style_examples,
+        context=context,
+    )
+    if candidate:
+        candidate_source = "model_composite"
+    else:
+        candidate = _composite_candidate_from_parts(findings, missing_details)
     if not candidate:
         return None
-    candidate_facts = _facts_with_derived_answer(retrieval.facts, candidate)
+    candidate_facts = (
+        retrieval.facts
+        if candidate_source == "model_composite"
+        else _facts_with_derived_answer(retrieval.facts, candidate)
+    )
     check_findings, unsupported, semantic_available = _partial_yield_full_check(
         candidate,
         facts=candidate_facts,
@@ -5098,10 +5136,32 @@ def _quality_composite_result_before_draft(
             {
                 "applied": False,
                 "reason": "hard_check_failed" if semantic_available else "semantic_unavailable",
+                "candidate_source": candidate_source,
                 "findings": [finding.code for finding in check_findings],
                 "unsupported": list(unsupported),
             },
         )
+        if candidate_source == "model_composite":
+            fallback = _safe_fallback_text(contract, facts=retrieval.facts, context=context)
+            return DialogueContractPipelineResult(
+                draft_text=_avoid_repeating_text(
+                    fallback,
+                    conversation=conversation,
+                    contract=contract,
+                    facts=retrieval.facts,
+                ),
+                route="draft_for_manager",
+                manager_only=False,
+                contract=contract,
+                facts=retrieval.facts,
+                missing=retrieval.missing,
+                findings=tuple(check_findings),
+                unsupported_claims=tuple(unsupported),
+                fallback_reason="composite_model_hard_check_failed"
+                if semantic_available
+                else "semantic_check_unavailable",
+                text_composition_source="deterministic_safe_fallback",
+            )
         return None
     final = _avoid_repeating_text(candidate, conversation=conversation, contract=contract, facts=retrieval.facts)
     fact_keys = tuple(dict.fromkeys(item.fact_key for item in findings if item.fact_key))
@@ -5112,6 +5172,7 @@ def _quality_composite_result_before_draft(
             "applied": True,
             "fact_keys": list(fact_keys),
             "missing": list(missing_details),
+            "candidate_source": candidate_source,
         },
     )
     return DialogueContractPipelineResult(
@@ -5127,6 +5188,7 @@ def _quality_composite_result_before_draft(
         composite_applied=True,
         composite_fact_keys=fact_keys,
         composite_missing=tuple(missing_details),
+        text_composition_source=candidate_source,
     )
 
 
@@ -5152,6 +5214,70 @@ def _composite_has_hard_p0_part(
         if str(text or "").strip() and p0_pre_gate(str(text), context=context):
             return True
     return False
+
+
+def _model_composite_candidate(
+    *,
+    contract: AnswerContract,
+    findings: Sequence[_CoverageFinding],
+    missing_details: Sequence[str],
+    conversation: Sequence[Mapping[str, str]],
+    draft_fn: Callable[[str], str] | None,
+    tone_guide: str = "",
+    style_examples: Sequence[str] = (),
+    context: Mapping[str, Any] | None = None,
+) -> str:
+    if draft_fn is None:
+        trace_event(context, "composite_answer_model", {"attempted": False, "reason": "draft_fn_missing"})
+        return ""
+    relevant_facts: dict[str, str] = {}
+    for item in findings:
+        if item.fact_key and item.fact_key not in relevant_facts:
+            relevant_facts[item.fact_key] = item.fact_text
+    if not relevant_facts:
+        trace_event(context, "composite_answer_model", {"attempted": False, "reason": "no_relevant_facts"})
+        return ""
+    facts_block = "\n".join(f"- {key}: {value}" for key, value in relevant_facts.items())
+    missing_block = "\n".join(f"- {item}" for item in missing_details if str(item).strip()) or "(нет)"
+    subquestions = "\n".join(
+        f"- {item.text or contract.current_question}"
+        for item in _contract_subquestions(contract)
+        if item.answerable == "self"
+    ) or f"- {contract.current_question}"
+    hist = "\n".join(f"{item.get('role', '?')}: {item.get('text', '')}" for item in conversation)
+    examples = "\n".join(f"  • {item}" for item in style_examples if str(item).strip())
+    prompt = (
+        f"Активный бренд: {contract.active_brand}. Не упоминай другой бренд.\n"
+        "Нужно написать клиентский ответ на составной вопрос живой прозой, без fact-dump.\n"
+        f"Вопрос клиента: {contract.current_question}\n"
+        f"Подтверждённые части вопроса:\n{subquestions}\n"
+        f"Факты, которые можно использовать. Это ЕДИНСТВЕННЫЙ источник чисел, дат, сроков, цен, форматов и условий:\n{facts_block}\n"
+        f"Части без факта, по ним нужен короткий честный хвост менеджеру:\n{missing_block}\n"
+        "Правила: ответь только по фактам выше; не добавляй соседние факты из памяти; "
+        "если факта нет в блоке, не называй его. Не пиши source_id/fact_id/JSON. "
+        "Если есть несколько подтверждённых частей, раздели их короткими абзацами. "
+        "Если есть неподтверждённая часть, в конце узко скажи, что менеджер уточнит именно её.\n"
+        + (f"Манера: {tone_guide}\n" if tone_guide else "")
+        + (f"Примеры манеры, НЕ источник фактов:\n{examples}\n" if examples else "")
+        + f"История диалога:\n{hist}\n"
+        "Верни только текст клиенту."
+    )
+    try:
+        candidate = str(draft_fn(prompt) or "").strip()
+    except Exception:
+        trace_event(context, "composite_answer_model", {"attempted": True, "reason": "draft_fn_error"})
+        return ""
+    trace_event(
+        context,
+        "composite_answer_model",
+        {
+            "attempted": True,
+            "reason": "ok" if candidate else "empty",
+            "fact_keys": list(relevant_facts.keys()),
+            "prompt_chars": len(prompt),
+        },
+    )
+    return candidate
 
 
 def _composite_candidate_from_parts(
@@ -6015,12 +6141,21 @@ def _p0_handoff_text(
     *,
     conversation: Sequence[Mapping[str, str]] | None = None,
 ) -> str:
-    reason = f"{contract.p0_reason} {contract.client_state}".casefold().replace("ё", "е")
-    if "payment" in reason or "оплат" in reason or "платеж" in reason or "спис" in reason:
+    kind = _p0_handoff_kind(contract)
+    if kind == "payment_dispute":
         return _payment_dispute_handoff_text(conversation=conversation)
-    if "complaint" in reason or "жалоб" in reason:
+    if kind == "complaint":
         return _complaint_handoff_text(conversation=conversation)
     return _dry_p0_text(conversation=conversation)
+
+
+def _p0_handoff_kind(contract: AnswerContract) -> str:
+    reason = f"{contract.p0_reason} {contract.client_state}".casefold().replace("ё", "е")
+    if "payment" in reason or "оплат" in reason or "платеж" in reason or "спис" in reason:
+        return "payment_dispute"
+    if "complaint" in reason or "жалоб" in reason:
+        return "complaint"
+    return "generic_p0"
 
 
 _REFUND_POLICY_TEXTS: tuple[str, ...] = (

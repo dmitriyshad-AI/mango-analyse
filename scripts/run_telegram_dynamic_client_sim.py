@@ -2458,6 +2458,46 @@ def _turn_fact_keys(turn: Mapping[str, Any]) -> set[str]:
     return keys
 
 
+def _text_composition_source_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    sources: Counter[str] = Counter()
+    examples: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        if not isinstance(dialog, Mapping):
+            continue
+        dialog_id = str(dialog.get("dialog_id") or "")
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            pipeline = turn.get("bot_dialogue_contract_pipeline")
+            if not isinstance(pipeline, Mapping) or not pipeline:
+                continue
+            source = str(pipeline.get("text_composition_source") or "").strip() or "unknown"
+            sources[source] += 1
+            if len(examples) < 20:
+                examples.append(
+                    {
+                        "dialog_id": dialog_id,
+                        "turn": turn.get("turn"),
+                        "source": source,
+                        "route": turn.get("bot_route"),
+                    }
+                )
+    total = sum(sources.values())
+    model = sum(count for source, count in sources.items() if source.startswith("model"))
+    deterministic = sum(count for source, count in sources.items() if source.startswith("deterministic"))
+    return {
+        "schema_version": "text_composition_source_v1_2026_06_08",
+        "total_pipeline_turns": total,
+        "model_composed": model,
+        "deterministic_composed": deterministic,
+        "unknown": total - model - deterministic,
+        "model_share": round(model / total, 3) if total else None,
+        "deterministic_share": round(deterministic / total, 3) if total else None,
+        "by_source": dict(sources),
+        "examples": examples,
+    }
+
+
 def build_summary(
     transcripts: Sequence[Mapping[str, Any]],
     judge_results: Sequence[Mapping[str, Any]],
@@ -2497,6 +2537,7 @@ def build_summary(
     tone_metric = summarize_tone_scores(transcripts)
     tone_metric_non_p0_self = summarize_tone_scores(_non_p0_self_route_transcripts(transcripts))
     rich_format = _rich_format_summary(transcripts)
+    text_composition = _text_composition_source_summary(transcripts)
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
     manager_deferrals = _manager_deferral_summary(transcripts)
@@ -2613,6 +2654,7 @@ def build_summary(
         "tone_metric": tone_metric,
         "tone_metric_non_p0_self": tone_metric_non_p0_self,
         "rich_format": rich_format,
+        "text_composition_source": text_composition,
         "llm_calls": llm_call_summary,
         "semantic_output_verifier": semantic_output_verifier,
         "turn_fallback_reasons": fallback_reasons,

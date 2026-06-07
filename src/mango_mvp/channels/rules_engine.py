@@ -11,7 +11,8 @@ from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
 from mango_mvp.channels.tone_block import apply_warm_frame, sell_prompt_enabled, tone_rich_format_enabled
 
 
-DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
+DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().with_name("rules_registry.yaml")
+LEGACY_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
 SELLING_MODE_ENV = "TELEGRAM_A_SELLING_MODE"
 SELLING_SIGNALS_FULL_ENV = "TELEGRAM_A_SELLING_SIGNALS_FULL"
 COVERAGE_ENV = "TELEGRAM_A_COVERAGE"
@@ -63,8 +64,16 @@ class RuleOutcome:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+def _resolve_rules_registry_path(path: str | Path | None = None) -> Path:
+    if path is not None:
+        return Path(path).expanduser().resolve(strict=False)
+    if DEFAULT_RULES_REGISTRY_PATH.exists():
+        return DEFAULT_RULES_REGISTRY_PATH.resolve(strict=False)
+    return LEGACY_RULES_REGISTRY_PATH.resolve(strict=False)
+
+
 def load_rules_registry(path: str | Path | None = None) -> dict[str, Rule]:
-    resolved = Path(path or DEFAULT_RULES_REGISTRY_PATH).expanduser().resolve(strict=False)
+    resolved = _resolve_rules_registry_path(path)
     return dict(_load_rules_registry_cached(str(resolved)))
 
 

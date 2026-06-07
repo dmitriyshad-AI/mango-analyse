@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import re
 
-from mango_mvp.channels.rules_engine import MIGRATED, apply_rule, load_rules_registry, select_rule
+from mango_mvp.channels import rules_engine
+from mango_mvp.channels.rules_engine import (
+    DEFAULT_RULES_REGISTRY_PATH,
+    LEGACY_RULES_REGISTRY_PATH,
+    MIGRATED,
+    apply_rule,
+    load_rules_registry,
+    select_rule,
+)
 from mango_mvp.channels.tone_block import TONE_SELL_PROMPT_ENV
 
 
@@ -52,6 +60,17 @@ def test_rules_registry_loads_approved_migrated_rules() -> None:
     assert select_rule("live_availability", registry).rule_id == "camp_lvsh"  # type: ignore[union-attr]
     assert select_rule("enrollment_process", registry).rule_id == "enrollment_process"  # type: ignore[union-attr]
     assert select_rule("schedule", registry).rule_id == "schedule"  # type: ignore[union-attr]
+
+
+def test_rules_registry_uses_bundled_config_with_legacy_fallback(monkeypatch, tmp_path) -> None:
+    assert DEFAULT_RULES_REGISTRY_PATH.exists()
+    assert DEFAULT_RULES_REGISTRY_PATH.parts[-4:] == ("src", "mango_mvp", "channels", "rules_registry.yaml")
+    assert LEGACY_RULES_REGISTRY_PATH.exists()
+    assert rules_engine._resolve_rules_registry_path() == DEFAULT_RULES_REGISTRY_PATH.resolve(strict=False)
+
+    missing_primary = tmp_path / "missing_rules_registry.yaml"
+    monkeypatch.setattr(rules_engine, "DEFAULT_RULES_REGISTRY_PATH", missing_primary)
+    assert rules_engine._resolve_rules_registry_path() == LEGACY_RULES_REGISTRY_PATH.resolve(strict=False)
 
 
 def test_rules_engine_teacher_uses_fact_and_does_not_invent_specific_name() -> None:

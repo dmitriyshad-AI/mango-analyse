@@ -503,7 +503,7 @@ def test_dialogue_memory_does_not_extract_slots_from_bot_answers() -> None:
 
 def test_dialogue_memory_latches_payment_dispute_until_manager_event() -> None:
     memory = build_dialogue_memory(
-        current_message="С меня дважды списали деньги за оплату, верните одну.",
+        current_message="Деньги списали, а платежа в системе нет.",
         active_brand="foton",
         recent_messages=["Клиент: 8 класс, физика"],
         session_id="s-p0-latch",
@@ -686,7 +686,7 @@ def test_dialogue_memory_does_not_autonomously_release_legal_latch() -> None:
 def test_dialogue_memory_does_not_autonomously_release_payment_dispute_latch() -> None:
     memory = _build_memory_sequence(
         [
-            "С меня двойное списание за оплату.",
+            "Деньги списали, а платежа в системе нет.",
             "А по каким дням занятия?",
             "Сколько длится урок?",
             "Можно онлайн?",

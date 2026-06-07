@@ -34,6 +34,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     new_concrete_anchors as dialogue_contract_new_concrete_anchors,
     parse_contract as parse_dialogue_contract,
     pipeline_enabled as dialogue_contract_pipeline_enabled,
+    p0_pre_gate as dialogue_contract_p0_pre_gate,
     run_pipeline as run_dialogue_contract_pipeline,
     verify_output as verify_dialogue_contract_output,
 )
@@ -109,6 +110,8 @@ SEMANTIC_OUTPUT_VERIFIER_ENV = "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"
 SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV = "TELEGRAM_SEMANTIC_VERIFIER_MODEL"
 SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV = "TELEGRAM_SEMANTIC_VERIFIER_REASONING"
 SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV = "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC"
+DIRECT_PATH_ENV = "TELEGRAM_DIRECT_PATH"
+DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 SEMANTIC_OUTPUT_VERIFIER_SCHEMA_VERSION = "semantic_output_verifier_v1_2026_06_06"
@@ -1961,6 +1964,346 @@ def apply_dialogue_contract_v2_template_dispatcher(
     return result
 
 
+DIRECT_PATH_MISSION_TEMPLATE = (
+    "Ты — менеджер-консультант учебного центра {brand}. Тебе пишет родитель с задачей\n"
+    "про ребёнка. Твоя цель — реально помочь разобраться и довести до записи на\n"
+    "подходящий курс. Продажа — это помощь: польза с первого ответа, предугадывай\n"
+    "следующий вопрос, веди к понятному шагу. Не дави: честность важнее сделки.\n"
+    "Числа, даты и условия — только из фактов; чего нет в фактах — скажи честно\n"
+    "и предложи шаг. Если правило безопасности или передача менеджеру противоречат\n"
+    "записи — правило важнее."
+)
+
+
+def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (DIRECT_PATH_ENV, "direct_path_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(DIRECT_PATH_ENV))
+
+
+def _direct_path_brand_label(active_brand: str) -> str:
+    brand = str(active_brand or "").strip().casefold()
+    if brand == "foton":
+        return "Фотон"
+    if brand == "unpk":
+        return "УНПК МФТИ"
+    return "текущего учебного центра"
+
+
+def _direct_path_fact_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _client_clean_fact_text(value)
+    if isinstance(value, Mapping):
+        for key in ("client_safe_text", "fact_text", "manager_display_text", "text", "answer", "draft_text"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return _client_clean_fact_text(text)
+        return ""
+    return _client_clean_fact_text(str(value))
+
+
+def _direct_path_add_fact(items: dict[str, str], key: str, value: Any) -> None:
+    fact_key = str(key or "").strip()
+    text = _direct_path_fact_text(value)
+    if fact_key and text:
+        items.setdefault(fact_key, text)
+
+
+def _direct_path_context_fact_items(context: Optional[Mapping[str, Any]], *, limit: int = 18) -> dict[str, str]:
+    items: dict[str, str] = {}
+    if not isinstance(context, Mapping):
+        return items
+    confirmed = context.get("confirmed_facts")
+    if isinstance(confirmed, Mapping):
+        for key, value in confirmed.items():
+            _direct_path_add_fact(items, str(key), value)
+    facts_context = context.get("facts_context")
+    if isinstance(facts_context, Mapping):
+        confirmed_context = facts_context.get("confirmed_facts")
+        if isinstance(confirmed_context, Mapping):
+            for key, value in confirmed_context.items():
+                _direct_path_add_fact(items, str(key), value)
+    pipeline = context.get("dialogue_contract_pipeline")
+    if isinstance(pipeline, Mapping) and isinstance(pipeline.get("retrieved_facts"), Mapping):
+        for key, value in pipeline["retrieved_facts"].items():
+            _direct_path_add_fact(items, str(key), value)
+    snippets = context.get("knowledge_snippets")
+    if isinstance(snippets, Mapping):
+        for key, value in snippets.items():
+            _direct_path_add_fact(items, f"snippet:{key}", value)
+    elif isinstance(snippets, Sequence) and not isinstance(snippets, (str, bytes, bytearray)):
+        for idx, value in enumerate(snippets, 1):
+            _direct_path_add_fact(items, f"snippet:{idx}", value)
+    return dict(list(items.items())[:limit])
+
+
+def _direct_path_recent_messages(context: Optional[Mapping[str, Any]], *, limit: int = 8) -> tuple[str, ...]:
+    if not isinstance(context, Mapping):
+        return ()
+    value = context.get("recent_messages")
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(str(item or "").strip() for item in value[-limit:] if str(item or "").strip())
+
+
+def _direct_path_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    if not isinstance(context, Mapping):
+        return result
+    for key in ("known_slots", "known_dialog_fields"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            result.update({str(k): v for k, v in value.items() if str(k).strip() and str(v).strip()})
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        slots = memory.get("known_slots")
+        if isinstance(slots, Mapping):
+            result.update({str(k): v for k, v in slots.items() if str(k).strip() and str(v).strip()})
+    plan = context.get("conversation_intent_plan")
+    if isinstance(plan, Mapping):
+        slots = plan.get("slots")
+        if isinstance(slots, Mapping):
+            result.update({str(k): v for k, v in slots.items() if str(k).strip() and str(v).strip()})
+    return result
+
+
+def _build_direct_path_prompt(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    facts: Optional[Mapping[str, str]] = None,
+) -> str:
+    active_brand = _active_brand(context)
+    brand_label = _direct_path_brand_label(active_brand)
+    fact_items = dict(facts or _direct_path_context_fact_items(context))
+    facts_block = "\n".join(f"- {key}: {text}" for key, text in fact_items.items()) or "(нет подтверждённых фактов)"
+    recent_block = "\n".join(_direct_path_recent_messages(context)) or "(диалог только начался)"
+    slots = _direct_path_known_slots(context)
+    slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) and isinstance(context.get("dialogue_memory_view"), Mapping) else {}
+    memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
+    return (
+        f"{DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)}\n\n"
+        f"Активный бренд: {brand_label} ({active_brand}).\n"
+        f"Текущее сообщение клиента:\n{client_message}\n\n"
+        "Подтверждённые клиентские факты текущего хода:\n"
+        f"{facts_block}\n\n"
+        "Память диалога:\n"
+        f"{memory_block}\n\n"
+        "Известные слоты:\n"
+        f"{slots_block}\n\n"
+        "Последние реплики:\n"
+        f"{recent_block}\n\n"
+        "Верни только JSON без Markdown и без комментариев:\n"
+        "{\n"
+        '  "route": "bot_answer_self_for_pilot" | "draft_for_manager",\n'
+        '  "draft_text": "текст для клиента",\n'
+        '  "manager_checklist": [],\n'
+        '  "missing_facts": [],\n'
+        '  "context_used": []\n'
+        "}\n"
+    )
+
+
+def _direct_path_p0_text(reason: str, context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
+    lowered = str(reason or "").casefold()
+    if "payment" in lowered or "спис" in lowered or "оплат" in lowered:
+        return _p0_text_with_antirepeat("payment_dispute", PAYMENT_DISPUTE_SAFE_TEXT, context), "payment_dispute"
+    if "refund" in lowered or "возврат" in lowered:
+        return _p0_text_with_antirepeat("refund", REFUND_ZERO_COLLECT_SAFE_TEXT, context), "refund"
+    if "complaint" in lowered or "жалоб" in lowered or "претенз" in lowered:
+        return _p0_text_with_antirepeat("complaint", COMPLAINT_SAFE_TEXT, context), "complaint"
+    return _p0_text_with_antirepeat("legal", LEGAL_THREAT_SAFE_TEXT, context), "legal"
+
+
+def _direct_path_metadata(
+    *,
+    attempted: bool,
+    model_called: bool,
+    facts: Mapping[str, str],
+    preblocked: bool = False,
+    preblock_reason: str = "",
+    reason_class: str = "",
+    reason_evidence: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": DIRECT_PATH_SCHEMA_VERSION,
+        "enabled": True,
+        "attempted": bool(attempted),
+        "model_called": bool(model_called),
+        "preblocked": bool(preblocked),
+        "preblock_reason": str(preblock_reason or ""),
+        "retrieved_fact_keys": list(facts.keys()),
+        "retrieved_facts": dict(facts),
+        "text_composition_source": "direct_path_model" if model_called else "deterministic_preblock",
+        "direct_path_attempted": bool(attempted),
+        "direct_path_downgraded": False,
+        "direct_path_regenerated": False,
+        "reason_class": str(reason_class or ""),
+        "reason_evidence": dict(reason_evidence or {}),
+        "is_manager_deferral": bool(reason_class),
+    }
+
+
+def _direct_path_preblocked_result(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+) -> Optional[SubscriptionDraftResult]:
+    p0_reason = dialogue_contract_p0_pre_gate(client_message, context=context)
+    if p0_reason:
+        text, kind = _direct_path_p0_text(p0_reason, context)
+        p0_guard_key = {
+            "payment_dispute": "payment_dispute_manager_only",
+            "refund": "zero_collect_refund_guarded",
+            "complaint": "complaint_apology_guarded",
+            "legal": "zero_collect_legal_guarded",
+        }.get(kind, "zero_collect_legal_guarded")
+        meta = _direct_path_metadata(
+            attempted=True,
+            model_called=False,
+            facts=facts,
+            preblocked=True,
+            preblock_reason="p0_pre_gate",
+            reason_class="p0_deferral",
+            reason_evidence={"p0_reason": p0_reason, "p0_kind": kind},
+        )
+        return SubscriptionDraftResult(
+            message_type="manager_only",
+            broad_group="direct_path",
+            route="manager_only",
+            draft_text=text,
+            risk_level="high",
+            safety_flags=(*BASE_SAFETY_FLAGS, "direct_path_preblocked_p0", p0_guard_key, "manager_approval_required", "no_auto_send"),
+            manager_checklist=("P0/high-risk: прямой путь не вызывался, отвечает менеджер.",),
+            metadata={"direct_path": meta, "reason_class": "p0_deferral", "is_manager_deferral": True, p0_guard_key: True},
+        )
+    high_risk = detect_high_risk_input_markers(client_message, context=context)
+    if high_risk:
+        meta = _direct_path_metadata(
+            attempted=True,
+            model_called=False,
+            facts=facts,
+            preblocked=True,
+            preblock_reason="high_risk",
+            reason_class="high_risk",
+            reason_evidence={"risk_codes": list(high_risk)},
+        )
+        return SubscriptionDraftResult(
+            message_type="manager_only",
+            broad_group="direct_path",
+            route="manager_only",
+            draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+            risk_level="high",
+            safety_flags=(*BASE_SAFETY_FLAGS, "direct_path_preblocked_high_risk", "manager_approval_required", "no_auto_send"),
+            manager_checklist=("High-risk: прямой путь не вызывался, отвечает менеджер.",),
+            metadata={"direct_path": meta, "reason_class": "high_risk", "is_manager_deferral": True},
+        )
+    if should_force_manager_only(context):
+        meta = _direct_path_metadata(
+            attempted=True,
+            model_called=False,
+            facts=facts,
+            preblocked=True,
+            preblock_reason="force_manager_only",
+            reason_class="policy_permission",
+            reason_evidence={"source": "rop_policy"},
+        )
+        return SubscriptionDraftResult(
+            message_type="manager_only",
+            broad_group="direct_path",
+            route="manager_only",
+            draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+            safety_flags=(*BASE_SAFETY_FLAGS, "direct_path_preblocked_policy", "manager_approval_required", "no_auto_send"),
+            manager_checklist=("Политика ROP требует менеджера: прямой путь не вызывался.",),
+            metadata={"direct_path": meta, "reason_class": "policy_permission", "is_manager_deferral": True},
+        )
+    if _active_brand(context) == "unknown":
+        meta = _direct_path_metadata(
+            attempted=True,
+            model_called=False,
+            facts=facts,
+            preblocked=True,
+            preblock_reason="unknown_brand",
+            reason_class="policy_permission",
+            reason_evidence={"active_brand": "unknown"},
+        )
+        return SubscriptionDraftResult(
+            message_type="manager_only",
+            broad_group="direct_path",
+            route="draft_for_manager",
+            draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+            safety_flags=(*BASE_SAFETY_FLAGS, "direct_path_preblocked_unknown_brand", "manager_approval_required", "no_auto_send"),
+            manager_checklist=("Активный бренд не определён: прямой путь не вызывался.",),
+            metadata={"direct_path": meta, "reason_class": "policy_permission", "is_manager_deferral": True},
+        )
+    return None
+
+
+def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Mapping[str, Any]) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    metadata["direct_path"] = dict(direct_meta)
+    metadata["text_composition_source"] = direct_meta.get("text_composition_source") or "direct_path_model"
+    if direct_meta.get("reason_class"):
+        metadata["reason_class"] = str(direct_meta.get("reason_class") or "")
+        metadata["is_manager_deferral"] = bool(direct_meta.get("is_manager_deferral"))
+    return replace(result, metadata=metadata)
+
+
+def _direct_path_finalize_metadata(
+    result: SubscriptionDraftResult,
+    *,
+    before_gate_route: str,
+) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
+    verifier = metadata.get("semantic_output_verifier") if isinstance(metadata.get("semantic_output_verifier"), Mapping) else {}
+    gate_action = str(gate.get("action") or "").strip()
+    downgraded = gate_action in {"block", "downgrade", "downgrade_keep_text"} or (
+        before_gate_route in AUTONOMOUS_ROUTES and result.route not in AUTONOMOUS_ROUTES
+    )
+    regenerated = bool(verifier.get("regen_attempted") or verifier.get("regen_accepted"))
+    reason_class = ""
+    reason_evidence: dict[str, Any] = {}
+    if result.route not in AUTONOMOUS_ROUTES:
+        if downgraded:
+            reason_class = "output_safety"
+            findings = gate.get("findings") if isinstance(gate.get("findings"), Sequence) else ()
+            reason_evidence["gate_findings"] = [
+                str(item.get("code") or "")
+                for item in findings
+                if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+            ]
+        else:
+            reason_class = str(direct.get("reason_class") or "policy_permission")
+            reason_evidence = dict(direct.get("reason_evidence") or {})
+    direct.update(
+        {
+            "route_before_gate": before_gate_route,
+            "route_after": result.route,
+            "authoritative_gate_action": gate_action,
+            "direct_path_downgraded": downgraded,
+            "downgraded": downgraded,
+            "direct_path_regenerated": regenerated,
+            "regenerated": regenerated,
+            "is_manager_deferral": result.route not in AUTONOMOUS_ROUTES,
+            "reason_class": reason_class,
+            "reason_evidence": reason_evidence,
+        }
+    )
+    metadata["direct_path"] = direct
+    metadata["text_composition_source"] = direct.get("text_composition_source") or metadata.get("text_composition_source")
+    metadata["is_manager_deferral"] = bool(direct["is_manager_deferral"])
+    metadata["reason_class"] = reason_class
+    return replace(result, metadata=metadata)
+
+
 class SubscriptionLlmDraftProvider:
     def __init__(
         self,
@@ -2014,6 +2357,8 @@ class SubscriptionLlmDraftProvider:
         *,
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
+        if _direct_path_enabled(context):
+            return self._build_direct_path_draft(client_message, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -2108,6 +2453,72 @@ class SubscriptionLlmDraftProvider:
                 else None,
             )
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
+
+    def _build_direct_path_draft(
+        self,
+        client_message: str,
+        *,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> SubscriptionDraftResult:
+        facts = _direct_path_context_fact_items(context)
+        preblocked = _direct_path_preblocked_result(client_message, context=context, facts=facts)
+        if preblocked is not None:
+            before_gate_route = preblocked.route
+            gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
+            return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
+
+        prompt = _build_direct_path_prompt(client_message, context=context, facts=facts)
+        direct_meta = _direct_path_metadata(attempted=True, model_called=True, facts=facts)
+        try:
+            result = self._direct_path_draft_runner(prompt)
+        except subprocess.TimeoutExpired:
+            direct_meta.update(
+                {
+                    "text_composition_source": "provider_runtime_fallback",
+                    "reason_class": "provider_runtime",
+                    "reason_evidence": {"provider_error": "timeout"},
+                    "is_manager_deferral": True,
+                }
+            )
+            result = safe_fallback_draft(reason="timeout", metadata={"direct_path": direct_meta})
+        except FileNotFoundError:
+            direct_meta.update(
+                {
+                    "text_composition_source": "provider_runtime_fallback",
+                    "reason_class": "provider_runtime",
+                    "reason_evidence": {"provider_error": "codex_binary_not_found"},
+                    "is_manager_deferral": True,
+                }
+            )
+            result = safe_fallback_draft(reason="codex_binary_not_found", metadata={"direct_path": direct_meta, "codex_bin": self.codex_bin})
+        except Exception as exc:  # noqa: BLE001
+            direct_meta.update(
+                {
+                    "text_composition_source": "provider_runtime_fallback",
+                    "reason_class": "provider_runtime",
+                    "reason_evidence": {"provider_error": str(exc)[:300]},
+                    "is_manager_deferral": True,
+                }
+            )
+            result = safe_fallback_draft(reason="direct_path_error", metadata={"direct_path": direct_meta, "last_error": str(exc)[:400]})
+        else:
+            result = replace(
+                result,
+                context_used=tuple(dict.fromkeys([*result.context_used, "direct_path", "client_safe_facts"])),
+                safety_flags=tuple(dict.fromkeys([*result.safety_flags, "direct_path_model", "draft_only"])),
+            )
+            result = _direct_path_merge_metadata(result, direct_meta)
+
+        semantic_checked = apply_semantic_output_verifier(
+            result,
+            client_message=client_message,
+            context=context,
+            verifier_fn=self._semantic_output_verifier_runner,
+            regen_fn=self._semantic_output_regen_runner,
+        )
+        before_gate_route = semantic_checked.route
+        gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
+        return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
 
     def _build_dialogue_contract_pipeline_draft(
         self,
@@ -2806,6 +3217,36 @@ class SubscriptionLlmDraftProvider:
             )
         return apply_authoritative_output_gate(guard_identity_disclosure(result))
 
+    def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
+        prompt_text = str(prompt or "").strip()
+        if not prompt_text:
+            raise RuntimeError("empty direct path prompt")
+        with tempfile.NamedTemporaryFile(prefix="mango_direct_path_codex_", suffix=".json") as out_file:
+            output_path = Path(out_file.name)
+            with codex_isolation_cwd(self.codex_isolated) as isolated_cwd:
+                cmd = self._build_codex_command(output_path=output_path, isolated_cwd=isolated_cwd)
+                proc = self.runner(
+                    cmd,
+                    input=prompt_text,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=self.timeout_sec,
+                    env=build_codex_exec_env(self.base_env),
+                )
+            raw = output_path.read_text(encoding="utf-8", errors="ignore")
+
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            message = f"codex exec failed rc={proc.returncode}: {' '.join(stderr.splitlines()[-2:])[:400]}"
+            if _is_retryable(stderr):
+                raise _CodexRetryableError(message)
+            raise RuntimeError(message)
+
+        payload = extract_json_object(raw or proc.stdout or proc.stderr or "")
+        result = _normalize_direct_path_payload(payload, raw_response=raw)
+        return replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
+
     def _cache_get(self, cache_key: str) -> Optional[SubscriptionDraftResult]:
         if self.cache_dir is None:
             return None
@@ -3015,6 +3456,36 @@ def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = 
         safety_flags=(*BASE_SAFETY_FLAGS, "llm_fallback", "draft_only", *extra_flags),
         error=reason,
         metadata=dict(metadata or {}),
+    )
+
+
+def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: Optional[str] = None) -> SubscriptionDraftResult:
+    if not isinstance(payload, Mapping):
+        raise RuntimeError("direct path response JSON root must be an object")
+    route = str(payload.get("route") or "bot_answer_self_for_pilot").strip()
+    if route == "bot_answer_self":
+        route = "bot_answer_self_for_pilot"
+    return SubscriptionDraftResult(
+        message_type=str(payload.get("message_type") or "question"),
+        broad_group=str(payload.get("broad_group") or "direct_path"),
+        topic_id=str(payload.get("topic_id") or UNKNOWN_TOPIC_FALLBACK_ID),
+        topic_confidence=_clamp_float(payload.get("confidence_theme", payload.get("topic_confidence", 0.8))),
+        confidence_group=_clamp_float(payload.get("confidence_group", 0.8)),
+        alternative_themes=tuple(_clean_list(payload.get("alternative_themes"), max_items=5, max_chars=120)),
+        risk_level=str(payload.get("risk_level") or "low"),
+        route=route,
+        draft_text=str(payload.get("draft_text") or SAFE_FALLBACK_DRAFT_TEXT),
+        manager_checklist=tuple(_clean_list(payload.get("manager_checklist"), max_items=12, max_chars=240)),
+        missing_facts=tuple(_clean_list(payload.get("missing_facts"), max_items=12, max_chars=160)),
+        forbidden_promises_detected=tuple(_clean_list(payload.get("forbidden_promises_detected"), max_items=12, max_chars=160)),
+        crm_recommendations=tuple(_clean_crm_recommendations(payload.get("crm_recommendations"))),
+        safety_flags=tuple(_clean_list(payload.get("safety_flags"), max_items=16, max_chars=80)),
+        context_used=tuple(_clean_list(payload.get("context_used"), max_items=12, max_chars=100)),
+        context_warnings=tuple(_clean_list(payload.get("context_warnings"), max_items=12, max_chars=120)),
+        manager_followup_required=bool(payload.get("manager_followup_required")),
+        manager_followup_deadline=_optional_text(payload.get("manager_followup_deadline")),
+        raw_response=raw_response,
+        metadata=dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {},
     )
 
 
@@ -4228,7 +4699,7 @@ def _authoritative_gate_verified_content_flag(result: SubscriptionDraftResult) -
 
 def _authoritative_gate_has_pipeline(result: SubscriptionDraftResult) -> bool:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
-    return isinstance(metadata.get("dialogue_contract_pipeline"), Mapping)
+    return isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) or isinstance(metadata.get("direct_path"), Mapping)
 
 
 def _authoritative_gate_slot_text(key: str, value: Any) -> str:
@@ -4492,9 +4963,15 @@ def _context_with_dialogue_contract_retrieved_facts(
 ) -> Optional[Mapping[str, Any]]:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
-    retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    retrieved_sources = []
+    if isinstance(pipeline.get("retrieved_facts"), Mapping):
+        retrieved_sources.append(pipeline.get("retrieved_facts"))
+    if isinstance(direct.get("retrieved_facts"), Mapping):
+        retrieved_sources.append(direct.get("retrieved_facts"))
     facts = {
         str(key): str(value)
+        for retrieved in retrieved_sources
         for key, value in retrieved.items()
         if str(key).strip() and str(value).strip()
     }
@@ -4572,7 +5049,12 @@ _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS = {
 def _pipeline_fact_texts(result: SubscriptionDraftResult) -> dict[str, str]:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
-    facts = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
+    facts: dict[str, Any] = {}
+    if isinstance(pipeline.get("retrieved_facts"), Mapping):
+        facts.update(dict(pipeline.get("retrieved_facts") or {}))
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    if isinstance(direct.get("retrieved_facts"), Mapping):
+        facts.update(dict(direct.get("retrieved_facts") or {}))
     return {
         str(key): str(value)
         for key, value in facts.items()

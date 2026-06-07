@@ -26,6 +26,7 @@ from mango_mvp.channels.subscription_llm import (
     CodexExecDraftProvider,
     COMPLAINT_SAFE_TEXT,
     CONTACT_FOTON_SAFE_TEXT,
+    DIRECT_PATH_ENV,
     DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY,
     DraftGenerationResult,
     FakeDraftProvider,
@@ -10142,3 +10143,111 @@ def test_step4_phase2_demolition_safety_templates_survive_domain_demolition() ->
     assert admission_guarantee.route in {"draft_for_manager", "manager_only"}
     assert p0.route == "manager_only"
     assert "high_risk_manager_only" in p0.safety_flags
+
+
+class _DirectPathProvider(SubscriptionLlmDraftProvider):
+    def __init__(self, result: SubscriptionDraftResult) -> None:
+        super().__init__()
+        self.result = result
+        self.calls = 0
+        self.last_prompt = ""
+
+    def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
+        self.calls += 1
+        self.last_prompt = prompt
+        return self.result
+
+
+def test_direct_path_preblocks_p0_without_model_call() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+    result = provider.build_draft(
+        "С карты списали дважды, верните деньги",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    direct = result.metadata["direct_path"]
+    assert direct["preblocked"] is True
+    assert direct["model_called"] is False
+    assert direct["reason_class"] == "p0_deferral"
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_direct_path_overrides_pipeline_and_keeps_clean_close() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Рада была помочь! Возвращайтесь, если появятся вопросы.",
+        )
+    )
+    result = provider.build_draft(
+        "Спасибо!",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+            "confirmed_facts": {"trial.foton": "Фотон: пробное занятие есть."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert "Ты — менеджер-консультант учебного центра Фотон" in provider.last_prompt
+    assert "Фотон: пробное занятие есть." in provider.last_prompt
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Рада была помочь! Возвращайтесь, если появятся вопросы."
+    assert "dialogue_contract_pipeline" not in result.metadata
+    assert "close_detect" not in result.metadata
+    assert result.metadata["direct_path"]["text_composition_source"] == "direct_path_model"
+
+
+def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Можно оплатить за 2-3 месяца, так будет удобнее.",
+        )
+    )
+    result = provider.build_draft(
+        "Можно оплатить помесячно?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "confirmed_facts": {
+                "payment.foton.installment": "Фотон: рассрочка доступна на 6, 10 или 12 месяцев."
+            },
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    assert result.route == "manager_only"
+    assert gate["action"] == "block"
+    assert "unsupported_product_number" in {item["code"] for item in gate["findings"]}
+    assert result.metadata["direct_path"]["downgraded"] is True
+    assert result.metadata["direct_path"]["reason_class"] == "output_safety"
+
+
+def test_direct_path_brand_leak_is_downgraded_by_gate() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="В Фотоне есть пробное, а в УНПК условия похожие.",
+        )
+    )
+    result = provider.build_draft(
+        "Есть пробное?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"trial.foton": "Фотон: пробное занятие есть."},
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    assert result.route == "manager_only"
+    assert gate["action"] == "block"
+    assert "brand_leak" in {item["code"] for item in gate["findings"]}
+    assert result.metadata["direct_path"]["downgraded"] is True

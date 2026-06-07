@@ -238,6 +238,10 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
         self._count_llm_call("bot_draft")
         return super()._run_once(prompt, force_manager_only=force_manager_only)
 
+    def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
+        self._count_llm_call("bot_direct_draft")
+        return super()._direct_path_draft_runner(prompt)
+
 
 class CodexJsonModel:
     def __init__(
@@ -1363,6 +1367,7 @@ def run_one_dialog(
         claude_cli_events = _consume_claude_cli_events(bot_provider)
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
         dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)
+        direct_path_metadata = _direct_path_metadata_from_result(result)
         authoritative_gate_metadata = _authoritative_output_gate_metadata_from_result(result)
         semantic_output_verifier_metadata = _semantic_output_verifier_metadata_from_result(result)
         bot_fallback_reason = str(dialogue_contract_metadata.get("fallback_reason") or "")
@@ -1370,6 +1375,7 @@ def run_one_dialog(
         deferral_metadata = _manager_deferral_metadata_from_result(
             result,
             dialogue_contract_metadata=dialogue_contract_metadata,
+            direct_path_metadata=direct_path_metadata,
             authoritative_gate_metadata=authoritative_gate_metadata,
         )
         updated_memory = update_dialogue_memory_after_answer(
@@ -1381,23 +1387,30 @@ def run_one_dialog(
             memory_llm_fn=(memory_model.generate if memory_model is not None else None),
         )
         dialogue_memory = updated_memory.to_json_dict()
-        confirmed_facts_for_judge = facts_for_judge(context, dialogue_contract_metadata=dialogue_contract_metadata)
+        confirmed_facts_for_judge = facts_for_judge(
+            context,
+            dialogue_contract_metadata=dialogue_contract_metadata,
+            direct_path_metadata=direct_path_metadata,
+        )
+        retrieved_facts_for_audit = (
+            dialogue_contract_metadata.get("retrieved_facts")
+            if isinstance(dialogue_contract_metadata.get("retrieved_facts"), Mapping)
+            else direct_path_metadata.get("retrieved_facts")
+            if isinstance(direct_path_metadata.get("retrieved_facts"), Mapping)
+            else {}
+        )
         number_audit = audit_number_claims(
             bot_text,
             client_message=client_message,
             active_brand=brand,
-            retrieved_facts=dialogue_contract_metadata.get("retrieved_facts")
-            if isinstance(dialogue_contract_metadata.get("retrieved_facts"), Mapping)
-            else {},
+            retrieved_facts=retrieved_facts_for_audit,
             snapshot_path=snapshot_path,
         )
         judge_fact_audit = audit_fact_claims_for_judge(
             bot_text,
             client_message=client_message,
             active_brand=brand,
-            retrieved_facts=dialogue_contract_metadata.get("retrieved_facts")
-            if isinstance(dialogue_contract_metadata.get("retrieved_facts"), Mapping)
-            else {},
+            retrieved_facts=retrieved_facts_for_audit,
             snapshot_path=snapshot_path,
             include_judge_generic_claims=_is_judge_prompt_v9(judge_prompt_version),
         )
@@ -1429,6 +1442,7 @@ def run_one_dialog(
             "bot_manager_checklist": list(result.manager_checklist),
             "bot_missing_facts": list(result.missing_facts),
             "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
+            "bot_direct_path": direct_path_metadata,
             "bot_faithfulness_shadow": list(dialogue_contract_metadata.get("faithfulness_shadow") or []),
             "bot_fallback_reason": bot_fallback_reason,
             "bot_provider_error": bot_provider_error,
@@ -2470,8 +2484,12 @@ def _text_composition_source_summary(transcripts: Sequence[Mapping[str, Any]]) -
                 continue
             pipeline = turn.get("bot_dialogue_contract_pipeline")
             if not isinstance(pipeline, Mapping) or not pipeline:
-                continue
-            source = str(pipeline.get("text_composition_source") or "").strip() or "unknown"
+                direct = turn.get("bot_direct_path")
+                if not isinstance(direct, Mapping) or not direct:
+                    continue
+                source = str(direct.get("text_composition_source") or "").strip() or "unknown"
+            else:
+                source = str(pipeline.get("text_composition_source") or "").strip() or "unknown"
             sources[source] += 1
             if len(examples) < 20:
                 examples.append(
@@ -2787,6 +2805,7 @@ def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) ->
         "total": total,
         "client": role_counts.get("client", 0),
         "bot_draft": role_counts.get("bot_draft", 0),
+        "bot_direct_draft": role_counts.get("bot_direct_draft", 0),
         "bot_critic": role_counts.get("bot_critic", 0),
         "bot_faithfulness": role_counts.get("bot_faithfulness", 0),
         "bot_selling_compose": role_counts.get("bot_selling_compose", 0),
@@ -3326,6 +3345,14 @@ def _dialogue_contract_metadata_from_result(result: Any) -> Mapping[str, Any]:
     return dict(pipeline) if isinstance(pipeline, Mapping) else {}
 
 
+def _direct_path_metadata_from_result(result: Any) -> Mapping[str, Any]:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    direct = metadata.get("direct_path")
+    return dict(direct) if isinstance(direct, Mapping) else {}
+
+
 _BOT_SELF_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
 _VISIBLE_ADVICE_REASON_CODES = {"estimate_individual_child_advice", "estimate_general_advice_risk"}
 _OUTPUT_SAFETY_PROVIDER_ERRORS = {
@@ -3339,6 +3366,7 @@ def _manager_deferral_metadata_from_result(
     result: Any,
     *,
     dialogue_contract_metadata: Mapping[str, Any],
+    direct_path_metadata: Mapping[str, Any] | None = None,
     authoritative_gate_metadata: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     route = str(getattr(result, "route", "") or "")
@@ -3357,6 +3385,17 @@ def _manager_deferral_metadata_from_result(
             "is_manager_deferral": bool(pipeline_deferral),
             "reason_class": pipeline_reason_class,
             "reason_evidence": pipeline_evidence,
+        }
+    direct_meta = direct_path_metadata if isinstance(direct_path_metadata, Mapping) else {}
+    direct_deferral = direct_meta.get("is_manager_deferral")
+    direct_reason_class = str(direct_meta.get("reason_class") or "").strip()
+    if direct_deferral is not None and direct_reason_class:
+        return {
+            "is_manager_deferral": bool(direct_deferral),
+            "reason_class": direct_reason_class,
+            "reason_evidence": dict(direct_meta.get("reason_evidence") or {})
+            if isinstance(direct_meta.get("reason_evidence"), Mapping)
+            else {},
         }
 
     provider_error = str(getattr(result, "error", "") or "").strip()
@@ -3522,6 +3561,7 @@ def facts_for_judge(
     context: Mapping[str, Any],
     *,
     dialogue_contract_metadata: Mapping[str, Any] | None = None,
+    direct_path_metadata: Mapping[str, Any] | None = None,
     limit: int = 20,
     max_chars: int = 320,
 ) -> list[str]:
@@ -3536,6 +3576,13 @@ def facts_for_judge(
     pipeline = dialogue_contract_metadata if isinstance(dialogue_contract_metadata, Mapping) else {}
     retrieved = pipeline.get("retrieved_facts") if isinstance(pipeline.get("retrieved_facts"), Mapping) else {}
     for key, value in retrieved.items():
+        text = _compact_fact_for_judge(key, value, max_chars=max_chars)
+        if text and text not in seen:
+            result.append(text)
+            seen.add(text)
+    direct = direct_path_metadata if isinstance(direct_path_metadata, Mapping) else {}
+    direct_retrieved = direct.get("retrieved_facts") if isinstance(direct.get("retrieved_facts"), Mapping) else {}
+    for key, value in direct_retrieved.items():
         text = _compact_fact_for_judge(key, value, max_chars=max_chars)
         if text and text not in seen:
             result.append(text)

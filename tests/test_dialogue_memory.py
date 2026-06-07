@@ -486,6 +486,25 @@ def test_dialogue_memory_exposes_memory_2_fields_and_open_loop() -> None:
     assert "check_availability" in updated_view["pending_manager_actions"]
 
 
+def test_dialogue_memory_detects_standard_manager_reply_commitment_phrases() -> None:
+    memory = build_dialogue_memory(
+        current_message="Есть ли места в группе?",
+        active_brand="foton",
+        session_id="s-manager-phrases",
+    )
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Спасибо! Менеджер уже занимается вашим вопросом и скоро вернётся с ответом. Отмечу менеджеру, чтобы он ответил.",
+        route="bot_answer_self_for_pilot",
+        safety_flags=(),
+    )
+
+    view = updated.to_prompt_view()
+    assert "manager_handoff" in updated.last_bot_commitments
+    assert "manager_handoff" in view["pending_manager_actions"]
+
+
 def test_dialogue_memory_does_not_extract_slots_from_bot_answers() -> None:
     memory = build_dialogue_memory(
         current_message="Здравствуйте, что есть для 6 класса?",

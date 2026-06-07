@@ -3147,7 +3147,7 @@ def apply_tone_close_detect_layer(
         return result
     if _tone_close_detect_is_p0(result, context=context):
         return _tone_close_metadata(result, status="suppressed_p0", step="", context=context)
-    if _tone_close_pending_manager(context):
+    if _tone_close_pending_manager(context, client_message=client_message):
         return _tone_close_metadata(
             replace(
                 result,
@@ -3251,13 +3251,35 @@ def _tone_close_detect_is_p0(result: SubscriptionDraftResult, *, context: Option
     return False
 
 
-def _tone_close_pending_manager(context: Optional[Mapping[str, Any]]) -> bool:
+def _tone_close_pending_manager(context: Optional[Mapping[str, Any]], *, client_message: str = "") -> bool:
     memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else None
     if not isinstance(memory, Mapping):
         return False
+    pending = False
     if str(memory.get("handoff_state") or "").strip() in {"required", "suggested"}:
+        pending = True
+    pending = pending or bool(memory.get("pending_manager_actions"))
+    if not pending:
+        return False
+    if _tone_close_had_hard_p0_claim(memory):
         return True
-    return bool(memory.get("pending_manager_actions"))
+    return _tone_close_message_references_pending(client_message)
+
+
+def _tone_close_had_hard_p0_claim(memory: Mapping[str, Any]) -> bool:
+    latch = memory.get("p0_latch") if isinstance(memory.get("p0_latch"), Mapping) else {}
+    return bool(latch.get("had_hard_p0_claim"))
+
+
+_TONE_CLOSE_PENDING_REFERENCE_RE = re.compile(
+    r"\b(?:жд\w*|ожида\w*)[^.!?\n]{0,40}\b(?:ответ|менеджер|связ|звон|верн|уточн|провер)"
+    r"|\b(?:ответ|менеджер|связ|звон|верн|уточн|провер)[^.!?\n]{0,40}\b(?:жд\w*|ожида\w*)",
+    re.I,
+)
+
+
+def _tone_close_message_references_pending(client_message: str) -> bool:
+    return bool(_TONE_CLOSE_PENDING_REFERENCE_RE.search(str(client_message or "")))
 
 
 def _tone_close_next_step_text(

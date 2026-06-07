@@ -4967,12 +4967,32 @@ def test_tone_close_detect_suppresses_p0_and_pending_manager_without_cta() -> No
         TONE_CLOSE_DETECT_ENV: "1",
         "dialogue_memory_view": {"handoff_state": "suggested", "pending_manager_actions": ["manager_handoff"]},
     }
-    pending_closed = apply_tone_close_detect_layer(pending, client_message="Спасибо", context=pending_context)
+    pending_closed = apply_tone_close_detect_layer(pending, client_message="Спасибо, жду ответа менеджера", context=pending_context)
 
     assert pending_closed.route == "bot_answer_self_for_pilot"
     assert pending_closed.metadata["close_detect"]["status"] == "suppressed_pending"
     assert "телефон" not in pending_closed.draft_text.casefold()
     assert pending_closed.draft_text == "Спасибо! Менеджер уже занимается вашим вопросом и скоро вернётся с ответом."
+
+    plain_thanks = apply_tone_close_detect_layer(pending, client_message="Спасибо", context=pending_context)
+
+    assert plain_thanks.metadata["close_detect"]["status"] == "fired"
+    assert plain_thanks.metadata["close_detect"]["step"] == "contact"
+    assert "телефон" in plain_thanks.draft_text.casefold()
+
+    hard_p0_pending_context = {
+        "active_brand": "unpk",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "dialogue_memory_view": {
+            "handoff_state": "suggested",
+            "pending_manager_actions": ["manager_handoff"],
+            "p0_latch": {"active": False, "codes": ["payment_dispute"], "had_hard_p0_claim": True},
+        },
+    }
+    hard_p0_pending = apply_tone_close_detect_layer(pending, client_message="Спасибо", context=hard_p0_pending_context)
+
+    assert hard_p0_pending.metadata["close_detect"]["status"] == "suppressed_pending"
+    assert "телефон" not in hard_p0_pending.draft_text.casefold()
 
 
 def test_tone_close_detect_uses_contact_requested_memory_before_foton_trial_step() -> None:

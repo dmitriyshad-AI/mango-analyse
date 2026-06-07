@@ -682,18 +682,22 @@ def test_rules_engine_selling_price_objection_foton_installment_uses_fact_number
     assert "УНПК" not in outcome.text
 
 
-def test_tone_sell_prompt_suppresses_rules_engine_selling_suffix() -> None:
-    rule = load_rules_registry()["installment"]
-    facts = {"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."}
+def test_tone_sell_prompt_uses_det_step_when_domain_answer_has_no_step() -> None:
+    rule = load_rules_registry()["price"]
+    facts = {
+        "prices_regular_2026_27.online_5_11.semester": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+        "prices_regular_2026_27.online_5_11.year": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+        "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+    }
     plan = {
-        "primary_intent": "installment",
-        "direct_question": "Дороговато, можно частями?",
+        "primary_intent": "pricing",
+        "direct_question": "Дороговато, сколько стоит онлайн для 10 класса?",
         "active_brand": "foton",
         "selling": {"objection": "price", "exit_signal": False},
     }
 
     baseline = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "selling_mode": "det"})
-    suppressed = apply_rule(
+    restored = apply_rule(
         rule,
         plan=plan,
         facts=facts,
@@ -702,13 +706,47 @@ def test_tone_sell_prompt_suppresses_rules_engine_selling_suffix() -> None:
 
     assert baseline is not None
     assert "rules_engine_selling_price_objection" in baseline.flags
-    assert "Подобрать удобный вариант" in baseline.text
-    assert suppressed is not None
-    assert suppressed.route == "bot_answer_self_for_pilot"
-    assert "rules_engine_selling_price_objection" not in suppressed.flags
-    assert "Подобрать удобный вариант" not in suppressed.text
-    assert "6, 10 или 12" in suppressed.text
-    assert suppressed.metadata["selling"]["suppressed_by_tone_sell_prompt"] is True
+    assert "Подсказать удобный вариант" in baseline.text
+    assert restored is not None
+    assert restored.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_price_objection" in restored.flags
+    assert "rules_engine_selling_det_step_fallback" in restored.flags
+    assert "Подсказать удобный вариант" in restored.text
+    assert "6, 10 или 12" in restored.text
+    assert restored.metadata["selling"]["tone_sell_prompt_det_fallback"] is True
+
+
+def test_tone_sell_prompt_does_not_duplicate_existing_soft_cta() -> None:
+    rule = load_rules_registry()["price"]
+    outcome = rules_engine.RuleOutcome(
+        rule_id="price",
+        subvariant="price_fact",
+        route="bot_answer_self_for_pilot",
+        text="Стоимость на год — 47 250 ₽. Менеджер подберёт группу под ваше расписание.",
+        facts={"price.year": "Фотон: год — 47 250 ₽."},
+    )
+
+    checked = rules_engine._apply_selling_variants(
+        outcome,
+        rule=rule,
+        plan={
+            "primary_intent": "pricing",
+            "direct_question": "Дороговато, сколько стоит?",
+            "active_brand": "foton",
+            "selling": {"objection": "price", "exit_signal": False},
+        },
+        facts={
+            "price.year": "Фотон: год — 47 250 ₽.",
+            "installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями.",
+        },
+        context={"active_brand": "foton", "selling_mode": "det", TONE_SELL_PROMPT_ENV: "1"},
+    )
+
+    assert checked is not None
+    assert checked.text.count("Менеджер подберёт") == 1
+    assert "Подобрать удобный вариант" not in checked.text
+    assert checked.metadata["selling"]["suppressed_by_tone_sell_prompt"] is True
+    assert "rules_engine_selling_det_step_fallback" not in checked.flags
 
 
 def test_rules_engine_selling_gen_accepts_grounded_composition() -> None:

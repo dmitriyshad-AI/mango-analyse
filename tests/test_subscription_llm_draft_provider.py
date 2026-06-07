@@ -5103,6 +5103,11 @@ def test_tone_sell_prompt_observer_logs_missing_step_without_changing_text() -> 
         client_message="Спасибо",
         context={"active_brand": "foton", TONE_SELL_PROMPT_ENV: "1"},
     )
+    with_new_step_words = apply_tone_sell_prompt_observer(
+        replace(result, draft_text="Стоимость онлайн-курса — 49 000 ₽. Обращайтесь, расскажу, как подобрать группу."),
+        client_message="Спасибо",
+        context={"active_brand": "foton", TONE_SELL_PROMPT_ENV: "1"},
+    )
 
     assert observed.draft_text == result.draft_text
     assert observed.route == result.route
@@ -5111,6 +5116,8 @@ def test_tone_sell_prompt_observer_logs_missing_step_without_changing_text() -> 
     assert observed.metadata["sell_prompt_step_missing"] is True
     assert with_step.metadata["tone_sell_prompt"]["step_missing"] is False
     assert "sell_prompt_step_missing" not in with_step.metadata
+    assert with_new_step_words.metadata["tone_sell_prompt"]["step_missing"] is False
+    assert "sell_prompt_step_missing" not in with_new_step_words.metadata
 
 
 def test_tone_sell_prompt_allows_contact_capture_without_a2_proactive_offer() -> None:

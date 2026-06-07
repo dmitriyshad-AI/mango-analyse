@@ -1835,9 +1835,11 @@ def _apply_selling_variants(
     selling = _selling_view(plan, context)
     if not selling:
         return outcome
-    if sell_prompt_enabled(context):
-        return _mark_selling_prompt_suppressed(outcome, selling=selling)
     det_outcome = _apply_selling_det_variants(outcome, rule=rule, plan=plan, facts=facts, context=context, selling=selling)
+    if sell_prompt_enabled(context):
+        if det_outcome is not outcome and not _selling_text_has_visible_step(outcome.text):
+            return _mark_selling_det_step_fallback(det_outcome)
+        return _mark_selling_prompt_suppressed(outcome, selling=selling)
     if det_outcome is outcome:
         return outcome
     if _selling_mode(context) == "det":
@@ -2030,6 +2032,31 @@ def _mark_selling_prompt_suppressed(outcome: RuleOutcome, *, selling: Mapping[st
         },
     }
     return replace(outcome, metadata=metadata)
+
+
+_SELLING_VISIBLE_STEP_RE = re.compile(
+    r"\b(?:подобрать|подсказать\s+удобн\w*\s+вариант|оставьте\s+(?:телефон|номер|контакт)|"
+    r"позвоним|свяжемся|как\s+записаться|записаться|менеджер\s+подбер[её]т|"
+    r"спокойно\s+подумайте|обращайтесь|расскажу)\b",
+    re.I,
+)
+
+
+def _selling_text_has_visible_step(text: str) -> bool:
+    return bool(_SELLING_VISIBLE_STEP_RE.search(str(text or "")))
+
+
+def _mark_selling_det_step_fallback(outcome: RuleOutcome) -> RuleOutcome:
+    selling_meta = dict(outcome.metadata.get("selling") or {}) if isinstance(outcome.metadata.get("selling"), Mapping) else {}
+    metadata = {
+        **dict(outcome.metadata),
+        "selling": {
+            **selling_meta,
+            "tone_sell_prompt_det_fallback": True,
+        },
+    }
+    flags = tuple(dict.fromkeys([*outcome.flags, "rules_engine_selling_det_step_fallback"]))
+    return replace(outcome, flags=flags, metadata=metadata)
 
 
 def _selling_signals_full_enabled(context: Mapping[str, Any] | None) -> bool:

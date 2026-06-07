@@ -509,6 +509,49 @@ def test_handoff_trace_records_handoff_origin_and_summary_when_enabled(monkeypat
     assert "contract_manager_only" in sim.render_one_dialog_md(dialog)
 
 
+def test_dynamic_summary_includes_close_detect_counters(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "close_detect_case",
+            "brand": "foton",
+            "turns": [
+                {
+                    "turn": 1,
+                    "context_parity_checked": True,
+                    "bot_close_detect": {"status": "suppressed_handoff", "step": "contact", "contact_requested": False},
+                },
+                {
+                    "turn": 2,
+                    "context_parity_checked": True,
+                    "bot_close_detect": {"status": "suppressed_pending", "step": "pending", "contact_requested": True},
+                },
+            ],
+        }
+    ]
+    judge_results = [
+        {
+            "dialog_id": "close_detect_case",
+            "brand": "foton",
+            "hard_gates_passed": True,
+            "verdict": "PASS",
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    assert summary["close_detect"]["turns"] == 2
+    assert summary["close_detect"]["suppressed_handoff"] == 1
+    assert summary["close_detect"]["suppressed_pending"] == 1
+    assert summary["close_detect"]["contact_requested"] == 1
+    assert summary["close_detect"]["by_step"] == {"contact": 1, "pending": 1}
+
+
 def test_handoff_trace_empty_for_autonomous_answer(monkeypatch):
     monkeypatch.setenv("TELEGRAM_HANDOFF_TRACE", "1")
 

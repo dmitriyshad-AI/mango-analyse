@@ -47,6 +47,8 @@ from mango_mvp.channels.subscription_llm import (
     TAX_FNS_REVIEW_SAFE_TEXT,
     TAX_LICENSE_SAFE_TEXT,
     TAX_ONLINE_FORM_SAFE_TEXT,
+    TONE_CLOSE_DETECT_ENV,
+    TONE_WARM_FRAME_ENV,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
     apply_payment_confirmation_guard,
     apply_a2_proactive_layer,
@@ -56,6 +58,8 @@ from mango_mvp.channels.subscription_llm import (
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
     apply_phase2_tone_layer,
+    apply_tone_close_detect_layer,
+    apply_warm_frame,
     apply_semantic_output_verifier,
     apply_semantic_diagnosis_guard,
     build_semantic_output_regen_prompt,
@@ -85,6 +89,7 @@ from mango_mvp.channels.subscription_llm import (
     known_context_fields,
 )
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
+from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
 def _trace_rows(path: Path):
@@ -4705,6 +4710,161 @@ def test_output_sanitizer_removes_semantic_regen_edit_comment() -> None:
     assert "без изменений" not in gated.draft_text
     assert gated.metadata["guarded_original_text"].startswith("Заменяю только этот абзац")
     assert "internal_metadata_removed_from_draft" in gated.safety_flags
+
+
+def test_output_sanitizer_removes_tone_noise_phrases_and_separators() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="---\nЗдравствующий момент: Да, домашние задания всегда проверяются. Никакого спешки.",
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Домашку проверяют?",
+        context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert "---" not in gated.draft_text
+    assert "Здравствующий" not in gated.draft_text
+    assert "Никакого спешки" not in gated.draft_text
+    assert "Да, домашние задания всегда проверяются." in gated.draft_text
+    assert {"tone_separator", "bad_tone_phrase"}.issubset(set(gated.metadata["output_sanitizer"]["reasons"]))
+
+
+def test_tone_warm_frame_rewrites_robotic_fact_prefix_only_when_enabled() -> None:
+    text = "По подтверждённым данным: домашние задания всегда проверяются."
+
+    assert apply_warm_frame(text, context={}) == text
+
+    warmed = apply_warm_frame(text, context={TONE_WARM_FRAME_ENV: "1"})
+
+    assert warmed != text
+    assert warmed.endswith("домашние задания всегда проверяются.")
+    assert "По подтверждённым данным" not in warmed
+    assert warmed.startswith(
+        (
+            "Конечно! Вот как это устроено у нас:",
+            "Да, подскажу:",
+            "Смотрите, что есть для вас:",
+        )
+    )
+    frame = warmed.split("домашние задания", 1)[0].casefold()
+    assert not any(marker in frame for marker in ("данн", "баз", "подтвержд", "провер"))
+
+    schedule = apply_warm_frame("Нашёл такую группу: занятия по вторникам.", context={TONE_WARM_FRAME_ENV: "1"})
+    assert schedule.startswith(("Подобрала для вас вариант:", "Есть такая группа:"))
+
+
+def test_tone_close_detect_replaces_handoff_on_clean_thanks_without_repeating_numbers() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        topic_id="service:S2_unclear",
+        metadata={"reason_class": "no_fact_or_unverified"},
+    )
+    context = {
+        "active_brand": "unpk",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "dialogue_memory_view": {
+            "recent_turns": [
+                {"role": "bot", "text": "Стоимость курса — 49 000 ₽."},
+            ],
+            "proactive_state": {},
+        },
+    }
+
+    closed = apply_tone_close_detect_layer(result, client_message="Спасибо, всё понятно", context=context)
+
+    assert closed.route == "bot_answer_self_for_pilot"
+    assert closed.metadata["close_detect"]["status"] == "suppressed_handoff"
+    assert closed.metadata["close_detect"]["step"] == "contact"
+    assert closed.metadata["is_manager_deferral"] is False
+    assert closed.metadata["reason_class"] == ""
+    assert "телефон" in closed.draft_text.casefold()
+    assert closed.draft_text.startswith("Рада была помочь!")
+    assert "позвоним" in closed.draft_text.casefold()
+    assert "49 000" not in closed.draft_text
+
+
+def test_tone_close_detect_does_not_capture_exit_signal_or_new_question() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Возвращайтесь, если появится вопрос.",
+        topic_id="service:S2_unclear",
+    )
+    context = {"active_brand": "foton", TONE_CLOSE_DETECT_ENV: "1"}
+
+    exit_turn = apply_tone_close_detect_layer(result, client_message="Спасибо, подумаю и вернусь", context=context)
+    question_turn = apply_tone_close_detect_layer(result, client_message="Спасибо! А когда старт?", context=context)
+
+    assert "close_detect" not in exit_turn.metadata
+    assert "close_detect" not in question_turn.metadata
+
+
+def test_tone_close_detect_suppresses_p0_and_pending_manager_without_cta() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=PAYMENT_DISPUTE_SAFE_TEXT,
+        topic_id="theme:p0_payment",
+        safety_flags=("payment_dispute", "p0"),
+    )
+    p0_context = {
+        "active_brand": "foton",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "dialogue_memory_view": {"p0_latch": {"active": True, "codes": ["payment_dispute"]}},
+    }
+
+    p0_closed = apply_tone_close_detect_layer(result, client_message="Спасибо", context=p0_context)
+
+    assert p0_closed.route == "manager_only"
+    assert p0_closed.draft_text == PAYMENT_DISPUTE_SAFE_TEXT
+    assert p0_closed.metadata["close_detect"]["status"] == "suppressed_p0"
+
+    pending = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Передам вопрос менеджеру.",
+        topic_id="service:S2_unclear",
+    )
+    pending_context = {
+        "active_brand": "unpk",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "dialogue_memory_view": {"handoff_state": "suggested", "pending_manager_actions": ["manager_handoff"]},
+    }
+    pending_closed = apply_tone_close_detect_layer(pending, client_message="Спасибо", context=pending_context)
+
+    assert pending_closed.route == "bot_answer_self_for_pilot"
+    assert pending_closed.metadata["close_detect"]["status"] == "suppressed_pending"
+    assert "телефон" not in pending_closed.draft_text.casefold()
+    assert pending_closed.draft_text == "Спасибо! Менеджер уже занимается вашим вопросом и скоро вернётся с ответом."
+
+
+def test_tone_close_detect_uses_contact_requested_memory_before_foton_trial_step() -> None:
+    memory = build_dialogue_memory(current_message="Есть пробное?", active_brand="foton")
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Спасибо, оставьте телефон и время для связи — передам менеджеру.",
+        route="bot_answer_self_for_pilot",
+    )
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Рада была помочь.",
+        topic_id="service:S2_unclear",
+    )
+
+    memory_view = {**dict(updated.to_prompt_view()), "handoff_state": "none", "pending_manager_actions": []}
+    closed = apply_tone_close_detect_layer(
+        result,
+        client_message="Спасибо",
+        context={"active_brand": "foton", TONE_CLOSE_DETECT_ENV: "1", "dialogue_memory_view": memory_view},
+    )
+
+    assert updated.to_prompt_view()["proactive_state"]["contact_requested"] is True
+    assert closed.metadata["close_detect"]["status"] == "fired"
+    assert closed.metadata["close_detect"]["step"] == "trial"
+    assert "пробн" in closed.draft_text.casefold()
+    assert closed.draft_text.startswith("Обращайтесь в любое время!")
+    assert "телефон" not in closed.draft_text.casefold()
 
 
 def test_authoritative_gate_does_not_turn_presale_refund_followup_into_p0() -> None:

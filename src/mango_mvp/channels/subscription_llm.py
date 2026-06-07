@@ -51,6 +51,12 @@ from mango_mvp.channels.rules_engine import (
 )
 from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
+from mango_mvp.channels.tone_block import (
+    TONE_CLOSE_DETECT_ENV,
+    TONE_WARM_FRAME_ENV,
+    apply_warm_frame,
+    close_detect_enabled,
+)
 from mango_mvp.channels.draft_prompt_builder import (
     IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES,
     build_draft_prompt,
@@ -484,6 +490,11 @@ OUTPUT_SANITIZER_RAW_DETAIL_HANDOFF_RE = re.compile(
 OUTPUT_SANITIZER_MANAGER_TAG_RE = re.compile(r"\[/?manager\]\s*", re.I)
 OUTPUT_SANITIZER_MANAGER_TAG_INSTRUCTION_RE = re.compile(
     r"^(?=.*\[/?manager\])(?=.*(?:интерпретир\w+|служебн\w+\s+тег|тег\s+\[/?manager\])).*$",
+    re.I,
+)
+OUTPUT_SANITIZER_SEPARATOR_LINE_RE = re.compile(r"^\s*[-–—_*]{3,}\s*$")
+OUTPUT_SANITIZER_BAD_TONE_PHRASE_RE = re.compile(
+    r"\bздравствующ\w*(?:\s+момент)?[,.!:;—-]*\s*|\bникакого\s+спешки\b",
     re.I,
 )
 PROMOCODE_DRAFT_RE = re.compile(r"\b(?:LVSH-VEB20|LVSH-KF-10|ABRAMOV|VAGIN)\b", re.I)
@@ -2007,8 +2018,9 @@ class SubscriptionLlmDraftProvider:
             )
             toned = apply_phase2_tone_layer(rewritten, client_message=client_message, context=context)
             proactive = apply_a2_proactive_layer(toned, client_message=client_message, context=context)
+            closed = apply_tone_close_detect_layer(proactive, client_message=client_message, context=context)
             semantic_checked = apply_semantic_output_verifier(
-                proactive,
+                closed,
                 client_message=client_message,
                 context=context,
                 verifier_fn=self._semantic_output_verifier_runner,
@@ -2067,6 +2079,7 @@ class SubscriptionLlmDraftProvider:
         )
         result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
+        result = apply_tone_close_detect_layer(result, client_message=client_message, context=context)
         result = apply_semantic_output_verifier(
             result,
             client_message=client_message,
@@ -3008,6 +3021,176 @@ def apply_a2_proactive_layer(
     return updated
 
 
+_TONE_CLOSE_GRATITUDE_RE = re.compile(
+    r"\b(?:спасибо|благодарю|понял[аи]?|ок(?:ей)?|хорошо|до\s+свидания|всего\s+доброго|всего\s+хорошего)\b",
+    re.I,
+)
+_TONE_CLOSE_EXIT_SIGNAL_RE = re.compile(
+    r"\b(?:подумаю|посмотрю|вернусь|вернемся|вернёмся|пока\s+посмотр|посоветуюсь|обсужу|решу|сравню)\b",
+    re.I,
+)
+_TONE_CLOSE_QUESTION_RE = re.compile(
+    r"\?|"
+    r"\b(?:подскажите|скажите|сколько|когда|как|где|куда|можно|есть\s+ли|будет\s+ли|"
+    r"получится\s+ли|подойдет\s+ли|подойд[её]т\s+ли|какой|какая|какие|почему|зачем|что\s+нужно)\b",
+    re.I,
+)
+_TONE_CLOSE_P0_FLAGS = {
+    "p0",
+    "refund",
+    "refund_claim",
+    "payment_dispute",
+    "complaint",
+    "legal",
+    "legal_threat",
+    "high_risk",
+    "p0_deferral",
+}
+
+
+def apply_tone_close_detect_layer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not close_detect_enabled(context) or not _tone_close_detect_is_close_message(client_message, context=context):
+        return result
+    if _tone_close_detect_is_p0(result, context=context):
+        return _tone_close_metadata(result, status="suppressed_p0", step="", context=context)
+    if _tone_close_pending_manager(context):
+        return _tone_close_metadata(
+            replace(
+                result,
+                route="bot_answer_self_for_pilot",
+                draft_text=_tone_close_pending_text(),
+                safety_flags=tuple(dict.fromkeys([*result.safety_flags, "tone_close_detect_pending"])),
+            ),
+            status="suppressed_pending",
+            step="pending",
+            context=context,
+        )
+    status = "suppressed_handoff" if result.route in {"manager_only", "draft_for_manager"} else "fired"
+    step, text = _tone_close_next_step_text(context)
+    close_flags = tuple(
+        flag
+        for flag in result.safety_flags
+        if str(flag or "").strip() not in {"manager_approval_required", "no_auto_send", "llm_fallback"}
+    )
+    flags = tuple(
+        dict.fromkeys(
+            [
+                *close_flags,
+                "tone_close_detect",
+            ]
+        )
+    )
+    return _tone_close_metadata(
+        replace(
+            result,
+            route="bot_answer_self_for_pilot",
+            message_type="other",
+            draft_text=text,
+            safety_flags=flags,
+            manager_checklist=tuple(dict.fromkeys([*result.manager_checklist, "Tone close-detect: проверить тёплое закрытие без новых фактов."])),
+            error=None if status == "fired" else result.error,
+        ),
+        status=status,
+        step=step,
+        context=context,
+    )
+
+
+def _tone_close_metadata(
+    result: SubscriptionDraftResult,
+    *,
+    status: str,
+    step: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    if result.route == "bot_answer_self_for_pilot":
+        metadata = _metadata_with_self_route_deferral_cleared(metadata)
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else {}
+    payload = {
+        "enabled": True,
+        "status": status,
+        "step": step,
+        "contact_requested": _tone_close_contact_requested_from_memory(memory),
+    }
+    metadata["close_detect"] = payload
+    return replace(result, metadata=metadata)
+
+
+def _tone_close_detect_is_close_message(client_message: str, *, context: Optional[Mapping[str, Any]]) -> bool:
+    text = str(client_message or "").strip()
+    if not text:
+        return False
+    if _TONE_CLOSE_EXIT_SIGNAL_RE.search(text):
+        return False
+    if _TONE_CLOSE_QUESTION_RE.search(text):
+        return False
+    contract = context.get("answer_contract") if isinstance(context, Mapping) else None
+    if isinstance(contract, Mapping) and str(contract.get("message_type") or "").strip() == "question":
+        return False
+    if isinstance(context, Mapping) and str(context.get("message_type") or "").strip() == "question":
+        return False
+    return bool(_TONE_CLOSE_GRATITUDE_RE.search(text))
+
+
+def _tone_close_detect_is_p0(result: SubscriptionDraftResult, *, context: Optional[Mapping[str, Any]]) -> bool:
+    flags = {str(flag).strip() for flag in result.safety_flags if str(flag).strip()}
+    if flags.intersection(_TONE_CLOSE_P0_FLAGS):
+        return True
+    if result.route == "manager_only" and any(flag in flags for flag in ("refund_policy_manager_only", "zero_collect_required")):
+        return True
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else None
+    if isinstance(memory, Mapping):
+        latch = memory.get("p0_latch") if isinstance(memory.get("p0_latch"), Mapping) else {}
+        if bool(latch.get("active")) or any(str(item) in _TONE_CLOSE_P0_FLAGS for item in (memory.get("risk_flags") or [])):
+            return True
+    return False
+
+
+def _tone_close_pending_manager(context: Optional[Mapping[str, Any]]) -> bool:
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else None
+    if not isinstance(memory, Mapping):
+        return False
+    if str(memory.get("handoff_state") or "").strip() in {"required", "suggested"}:
+        return True
+    return bool(memory.get("pending_manager_actions"))
+
+
+def _tone_close_next_step_text(context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else {}
+    contact_requested = _tone_close_contact_requested_from_memory(memory if isinstance(memory, Mapping) else {})
+    if not contact_requested:
+        return (
+            "contact",
+            "Рада была помочь! Хотите, менеджер подберёт группу под ваше расписание? Оставьте телефон — позвоним, когда удобно.",
+        )
+    if _active_brand(context) == "foton":
+        return (
+            "trial",
+            "Обращайтесь в любое время! Кстати, можно прийти на бесплатное пробное занятие — посмотрите, как всё устроено. Подсказать, как записаться?",
+        )
+    return (
+        "return",
+        "Спасибо вам! Будем рады видеть вас на занятиях — возвращайтесь, если появятся вопросы.",
+    )
+
+
+def _tone_close_contact_requested_from_memory(memory: Any) -> bool:
+    if not isinstance(memory, Mapping):
+        return False
+    state = memory.get("proactive_state") if isinstance(memory.get("proactive_state"), Mapping) else {}
+    return bool(state.get("contact_requested"))
+
+
+def _tone_close_pending_text() -> str:
+    return "Спасибо! Менеджер уже занимается вашим вопросом и скоро вернётся с ответом."
+
+
 def _a2_contact_capture_handoff(
     result: SubscriptionDraftResult,
     *,
@@ -3372,6 +3555,9 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
         stripped = line.strip()
         if not stripped:
             continue
+        if OUTPUT_SANITIZER_SEPARATOR_LINE_RE.fullmatch(stripped):
+            reasons.append("tone_separator")
+            continue
         if OUTPUT_SANITIZER_MANAGER_TAG_INSTRUCTION_RE.search(stripped):
             reasons.append("manager_tag_instruction")
             continue
@@ -3383,6 +3569,10 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
             continue
         kept_lines.append(stripped)
     value = "\n".join(kept_lines)
+
+    value, bad_tone_removed = OUTPUT_SANITIZER_BAD_TONE_PHRASE_RE.subn("", value)
+    if bad_tone_removed:
+        reasons.append("bad_tone_phrase")
 
     value, tag_removed = OUTPUT_SANITIZER_MANAGER_TAG_RE.subn("", value)
     if tag_removed:
@@ -4412,6 +4602,7 @@ def _validated_guardchain_recovery_candidate(
             contract=contract,
             fact_texts=fact_texts,
             client_message=client_message,
+            context=context,
         )
     elif pipeline.get("recovery_candidate_validated") is not True:
         return ""
@@ -4455,6 +4646,7 @@ def _recovery_candidate_from_informational_facts(
     contract: Any,
     fact_texts: Mapping[str, str],
     client_message: str,
+    context: Optional[Mapping[str, Any]] = None,
 ) -> str:
     if not fact_texts or getattr(contract, "is_p0", False) or getattr(contract, "answerability", "") != "answer_self":
         return ""
@@ -4474,8 +4666,12 @@ def _recovery_candidate_from_informational_facts(
         return ""
     unique = list(dict.fromkeys(selected))
     if len(unique) == 1:
-        return f"По подтверждённым данным: {unique[0]}"
-    return "По подтверждённым данным: " + " ".join(unique[:3])
+        return apply_warm_frame(f"По подтверждённым данным: {unique[0]}", context=context, kind="informational_recovery")
+    return apply_warm_frame(
+        "По подтверждённым данным: " + " ".join(unique[:3]),
+        context=context,
+        kind="informational_recovery",
+    )
 
 
 def _informational_fact_matches_question(

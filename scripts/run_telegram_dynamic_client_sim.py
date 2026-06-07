@@ -1367,6 +1367,7 @@ def run_one_dialog(
             snapshot_path=snapshot_path,
         )
         humanity_x2_metadata = dict(result.metadata.get("humanity_x2") or {}) if isinstance(result.metadata.get("humanity_x2"), Mapping) else {}
+        close_detect_metadata = dict(result.metadata.get("close_detect") or {}) if isinstance(result.metadata.get("close_detect"), Mapping) else {}
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))
@@ -1399,6 +1400,7 @@ def run_one_dialog(
             "bot_reason_evidence": dict(deferral_metadata.get("reason_evidence") or {}),
             "bot_authoritative_output_gate": authoritative_gate_metadata,
             "bot_semantic_output_verifier": semantic_output_verifier_metadata,
+            "bot_close_detect": close_detect_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
             "bot_humanity_x2": humanity_x2_metadata,
@@ -2104,6 +2106,27 @@ def _manager_deferral_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mappi
     }
 
 
+def _close_detect_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    metas: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            meta = turn.get("bot_close_detect")
+            if isinstance(meta, Mapping) and meta:
+                metas.append(meta)
+    return {
+        "turns": len(metas),
+        "by_status": dict(Counter(str(meta.get("status") or "") for meta in metas if str(meta.get("status") or "").strip())),
+        "by_step": dict(Counter(str(meta.get("step") or "") for meta in metas if str(meta.get("step") or "").strip())),
+        "fired": sum(1 for meta in metas if str(meta.get("status") or "") == "fired"),
+        "suppressed_handoff": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_handoff"),
+        "suppressed_p0": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_p0"),
+        "suppressed_pending": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_pending"),
+        "contact_requested": sum(1 for meta in metas if bool(meta.get("contact_requested"))),
+    }
+
+
 def build_summary(
     transcripts: Sequence[Mapping[str, Any]],
     judge_results: Sequence[Mapping[str, Any]],
@@ -2136,6 +2159,7 @@ def build_summary(
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
     manager_deferrals = _manager_deferral_summary(transcripts)
+    close_detect = _close_detect_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     include_handoff_trace = _handoff_trace_enabled() or any(
         isinstance(turn, Mapping) and isinstance(turn.get("handoff_trace"), Mapping) and bool(turn.get("handoff_trace"))
@@ -2243,6 +2267,7 @@ def build_summary(
         "semantic_output_verifier": semantic_output_verifier,
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
+        "close_detect": close_detect,
         "claude_cli_errors": claude_cli_errors,
         "over_handoff": over_handoff,
         **({"handoff_trace": handoff_trace} if include_handoff_trace else {}),
@@ -3440,6 +3465,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Branch metrics: `{summary.get('branch_metrics')}`",
             f"- LLM calls: `{llm_calls}`",
             f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",
+            f"- Close detect: `{summary.get('close_detect')}`",
             f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             f"- Over-handoff: `{over_handoff}`",

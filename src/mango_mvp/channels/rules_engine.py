@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
+from mango_mvp.channels.tone_block import apply_warm_frame
 
 
 DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
@@ -1344,12 +1345,20 @@ def _apply_format_choice_rule(
         if not online_fact:
             return None
         source[online_key or "rules_engine.format.online"] = online_fact
-        text = f"Онлайн-формат подтверждён: {_short_sentence(online_fact)}"
+        text = apply_warm_frame(
+            f"Онлайн-формат подтверждён: {_short_sentence(online_fact)}",
+            context=context,
+            kind="format_choice",
+        )
     elif _requested_training_format(question, plan, context) == "offline":
         if not offline_fact:
             return None
         source[offline_key or "rules_engine.format.offline"] = offline_fact
-        text = f"Очный формат подтверждён: {_short_sentence(offline_fact)}"
+        text = apply_warm_frame(
+            f"Очный формат подтверждён: {_short_sentence(offline_fact)}",
+            context=context,
+            kind="format_choice",
+        )
     else:
         if has_online and has_offline:
             source[online_key or "rules_engine.format.online"] = online_fact
@@ -1357,10 +1366,18 @@ def _apply_format_choice_rule(
             text = "Подтверждены онлайн-формат и очный формат; формат за вас не выбираю."
         elif has_online:
             source[online_key or "rules_engine.format.online"] = online_fact
-            text = f"Онлайн-формат подтверждён: {_short_sentence(online_fact)}"
+            text = apply_warm_frame(
+                f"Онлайн-формат подтверждён: {_short_sentence(online_fact)}",
+                context=context,
+                kind="format_choice",
+            )
         elif has_offline:
             source[offline_key or "rules_engine.format.offline"] = offline_fact
-            text = f"Очный формат подтверждён: {_short_sentence(offline_fact)}"
+            text = apply_warm_frame(
+                f"Очный формат подтверждён: {_short_sentence(offline_fact)}",
+                context=context,
+                kind="format_choice",
+            )
         else:
             return None
     if asks_days and has_weekend:
@@ -1758,7 +1775,11 @@ def _apply_schedule_rule(
                 rule,
                 subvariant="class_days_time",
                 route="bot_answer_self_for_pilot",
-                text=f"Нашёл такую группу: {_short_sentence(fact, max_chars=300)} Если нужна финальная сверка по конкретной группе, менеджер подтвердит актуальность.",
+                text=apply_warm_frame(
+                    f"Нашёл такую группу: {_short_sentence(fact, max_chars=300)} Если нужна финальная сверка по конкретной группе, менеджер подтвердит актуальность.",
+                    context=context,
+                    kind="schedule",
+                ),
                 facts={key or "rules_engine.schedule.group": fact},
                 flags=("rules_engine_schedule_group_fact",),
                 checklist="Rule engine: schedule — дни/время только из v6.4-факта, контакт-часы не использовать.",

@@ -29,6 +29,7 @@ from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
 from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, is_benign_hypothetical_refund, soft_codes_from_text
+from mango_mvp.channels.tone_block import apply_warm_frame
 from mango_mvp.insights.sanitizers import sanitize_answer
 
 
@@ -4776,8 +4777,8 @@ def _coverage_cite_only_answer_from_findings(findings: Sequence[_CoverageFinding
     if not snippets:
         return ""
     if len(snippets) == 1:
-        return f"По подтверждённым данным: {snippets[0]}"
-    return "По подтверждённым данным: " + " ".join(snippets[:3])
+        return apply_warm_frame(f"По подтверждённым данным: {snippets[0]}", kind="coverage_cite_only")
+    return apply_warm_frame("По подтверждённым данным: " + " ".join(snippets[:3]), kind="coverage_cite_only")
 
 
 def _key_coverage_findings(contract: AnswerContract, retrieval: RetrievalResult) -> tuple[_CoverageFinding, ...]:

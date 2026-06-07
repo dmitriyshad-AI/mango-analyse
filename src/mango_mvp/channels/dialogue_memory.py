@@ -190,6 +190,7 @@ class DialogueMemory:
     do_not_reask_slots: tuple[str, ...] = ()
     held_state: HeldState = field(default_factory=HeldState)
     current_message_roles: Mapping[str, Any] = field(default_factory=dict)
+    proactive_state: Mapping[str, Any] = field(default_factory=dict)
     conversation_summary_short: str = ""
     open_loop_summary: str = ""
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -221,6 +222,7 @@ class DialogueMemory:
             "do_not_reask_slots": list(self.do_not_reask_slots),
             "held_state": self.held_state.to_json_dict(),
             "current_message_roles": dict(self.current_message_roles),
+            "proactive_state": dict(self.proactive_state),
             "conversation_summary_short": self.conversation_summary_short,
             "open_loop_summary": self.open_loop_summary,
             "updated_at": self.updated_at,
@@ -254,6 +256,7 @@ class DialogueMemory:
             "do_not_ask_again": list(self.do_not_reask_slots) or sorted(known_values),
             "held_state": self.held_state.to_prompt_view(),
             "current_message_roles": dict(self.current_message_roles),
+            "proactive_state": dict(self.proactive_state),
             "conversation_summary_short": self.conversation_summary_short,
             "open_loop_summary": self.open_loop_summary,
             "safe_next_action": safe_next_action(self),
@@ -346,6 +349,7 @@ def build_dialogue_memory(
         do_not_reask_slots=_do_not_reask_slots(slot_map),
         held_state=held_state,
         current_message_roles=current_roles.to_prompt_view(),
+        proactive_state=dict(previous.proactive_state) if isinstance(previous, DialogueMemory) else {},
         conversation_summary_short=_conversation_summary_short(slot_map, topic_focus=topic_focus, open_question=open_question),
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=_pending_manager_actions(commitments)),
     )
@@ -389,6 +393,7 @@ def update_dialogue_memory_after_answer(
     handoff = "required" if p0_latch.active or risks or route == "manager_only" else current.handoff_state
     safe_parts = tuple(dict.fromkeys([*current.safe_answered_parts, *_safe_answered_parts(answer, current.open_question.kind)]))[-12:]
     pending_actions = _pending_manager_actions(commitments)
+    proactive_state = _proactive_state_after_answer(current.proactive_state, answer)
     updated = DialogueMemory(
         session_id=current.session_id,
         active_brand=current.active_brand,
@@ -413,6 +418,7 @@ def update_dialogue_memory_after_answer(
         do_not_reask_slots=tuple(current.do_not_reask_slots),
         held_state=current.held_state,
         current_message_roles=dict(current.current_message_roles),
+        proactive_state=proactive_state,
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
@@ -423,6 +429,21 @@ def update_dialogue_memory_after_answer(
     except Exception:
         return updated
     return _apply_memory_llm_update(updated, payload)
+
+
+_CONTACT_REQUEST_ANSWER_RE = re.compile(
+    r"(?:оставьте|подскажите|пришлите|напишите)[^.?!\n]{0,80}\b(?:телефон|номер|контакт)\b"
+    r"|\b(?:когда|во\s+сколько|в\s+какое\s+время)[^.?!\n]{0,120}\b(?:связаться|позвонить|удобно)\b",
+    re.I,
+)
+
+
+def _proactive_state_after_answer(previous: Mapping[str, Any], answer_text: str) -> Mapping[str, Any]:
+    state = dict(previous or {})
+    answer = str(answer_text or "")
+    if _CONTACT_REQUEST_ANSWER_RE.search(answer):
+        state["contact_requested"] = True
+    return state
 
 
 def update_memory_llm(
@@ -741,6 +762,7 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         do_not_reask_slots=tuple(str(item) for item in (data.get("do_not_reask_slots") or ()) if str(item).strip()),
         held_state=held_state_from_mapping(data.get("held_state") if isinstance(data.get("held_state"), Mapping) else {}),
         current_message_roles=dict(data.get("current_message_roles") or {}) if isinstance(data.get("current_message_roles"), Mapping) else {},
+        proactive_state=dict(data.get("proactive_state") or {}) if isinstance(data.get("proactive_state"), Mapping) else {},
         conversation_summary_short=str(data.get("conversation_summary_short") or "")[:500],
         open_loop_summary=str(data.get("open_loop_summary") or "")[:500],
     )

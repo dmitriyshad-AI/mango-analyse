@@ -1,0 +1,205 @@
+schema_version: kb_release_manifest_v1
+release_id: kb_release_20260608_v6_6_staging
+builder_version: kb_release_v6_1_builder_2026_05_20
+freshness_check_date: '2026-06-08'
+source_mutation_policy: read_only_yaml_sources_no_business_patches_in_python
+client_safe_path_markers:
+- refund_presale_policy
+- refund_post_payment
+manual_decision_fact_overrides:
+- fact_key: team_answers.q15.unpk_online_other_classes.manager_handoff
+  fact_type: program
+  brand: unpk
+  product: regular_online_courses_2026_27
+  fact_text: Вне двух подтверждённых онлайн-тарифов УНПК точные условия проверяет менеджер.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: q15_closed
+  structured_value:
+    scope_exception: other_unpk_online_classes_require_manager
+structured_metadata_rules:
+- brand: unpk
+  fact_key_prefix: kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.
+  applies_to:
+    grades:
+    - 9
+    - 11
+    formats:
+    - online
+    products:
+    - regular_online_courses_weekday_2x2
+  is_positive_statement: true
+control_numbers:
+  remove:
+  - '11900'
+  - '56500'
+  - '94000'
+  - '16900'
+  - '27720'
+  - '89900'
+  - '75000'
+  - '83800'
+  - '3900'
+  - '6900'
+  - '23000'
+  add:
+  - '93100'
+  - '114000'
+  - '120000'
+  - '98000'
+  - 37 000
+  - '59000'
+  - 41 800
+  - 69 900
+source_files:
+  gold_answers_v3:
+    filename: gold_answers_v3.yaml
+    source_id: dmitry_approved:gold_answers_v3_2026_05_22
+    kind: yaml
+    brand: brand_neutral
+    description: Эталонные ответы и правила живого тона для Telegram-бота.
+required_source_files:
+- UPDATE_REPORT_2026-05-19.md
+- facts/facts_for_bot_FOTON.yaml
+- facts/facts_for_bot_UNPK.yaml
+- facts/brand_rules.yaml
+- facts/bot_policy.yaml
+- facts/facts_internal_only.yaml
+- facts/gold_answers_v3.yaml
+required_yaml_paths:
+- file: facts/facts_for_bot_FOTON.yaml
+  path: contacts_foton.vk
+  reason: Foton VK must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: lvsh_mendeleevo_2026.pricing_2026.current_price
+  reason: Foton LVSH current price must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: lvsh_mendeleevo_2026.transfer_from_moscow
+  reason: Foton LVSH transfer facts must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: contacts_unpk.email
+  reason: UNPK email must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: lvsh_mendeleevo_2026.pricing_2026.current_price
+  reason: UNPK LVSH current price must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: lvsh_mendeleevo_2026.transfer_from_moscow
+  reason: UNPK LVSH transfer facts must come from YAML.
+- file: facts/brand_rules.yaml
+  path: forbidden_client_mentions.when_active_brand_is_foton.blocked_terms
+  reason: Brand-specific forbidden terms must come from YAML.
+- file: facts/brand_rules.yaml
+  path: forbidden_client_mentions.when_active_brand_is_unpk.blocked_terms
+  reason: Brand-specific forbidden terms must come from YAML.
+- file: facts/bot_policy.yaml
+  path: theme_routes.installment
+  reason: Installment policy must come from YAML.
+- file: facts/gold_answers_v3.yaml
+  path: topics
+  reason: Gold answers must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: schedule_2026_27.groups
+  reason: Foton 2026/27 schedule facts must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: schedule_2026_27.groups
+  reason: UNPK 2026/27 schedule facts must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.lesson_format.client_safe_text
+  reason: Foton v6.5 lesson format fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text
+  reason: Foton v6.5 summer school fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_tariffs.client_safe_text
+  reason: Foton v6.5 summer tariffs fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text
+  reason: Foton v6.5 summer discounts fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.lesson_format.client_safe_text
+  reason: UNPK v6.5 lesson format fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text
+  reason: UNPK v6.5 Dolgoprudny summer school fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_primary_patsayeva.client_safe_text
+  reason: UNPK v6.5 Patsayeva prerecord fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny_tariffs.client_safe_text
+  reason: UNPK v6.5 Dolgoprudny tariffs fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text
+  reason: UNPK v6.5 Moscow summer school fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text
+  reason: UNPK v6.5 summer discounts fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_mfti_discount.client_safe_text
+  reason: UNPK v6.5 MFTI employee discount fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.homework_check_always_checked.client_safe_text
+  reason: Foton v6.6 client-safe fact homework_check_always_checked must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.schedule_level_split_parallel_groups.client_safe_text
+  reason: Foton v6.6 client-safe fact schedule_level_split_parallel_groups must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_groups_levels.client_safe_text
+  reason: Foton v6.6 client-safe fact offline_groups_levels must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_online_instead_offline_exception_2026_27.client_safe_text
+  reason: Foton v6.6 client-safe fact attendance_online_instead_offline_exception_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_makeup_other_group.client_safe_text
+  reason: Foton v6.6 client-safe fact attendance_makeup_other_group must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text
+  reason: Foton v6.6 client-safe fact materials_handouts_default must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.study_pause_flexible_schedule_personal.client_safe_text
+  reason: Foton v6.6 client-safe fact study_pause_flexible_schedule_personal must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.trial_other_group_free_trial.client_safe_text
+  reason: Foton v6.6 client-safe fact trial_other_group_free_trial must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_phys_tech_no_separate_groups_foton_2026_27.client_safe_text
+  reason: Foton v6.6 client-safe fact offline_phys_tech_no_separate_groups_foton_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.entrance_test_results_delivery.client_safe_text
+  reason: Foton v6.6 client-safe fact entrance_test_results_delivery must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_first_lesson_diagnostic_check.client_safe_text
+  reason: Foton v6.6 client-safe fact offline_first_lesson_diagnostic_check must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.homework_check_always_checked.client_safe_text
+  reason: UNPK v6.6 client-safe fact homework_check_always_checked must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.schedule_level_split_parallel_groups.client_safe_text
+  reason: UNPK v6.6 client-safe fact schedule_level_split_parallel_groups must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_groups_levels.client_safe_text
+  reason: UNPK v6.6 client-safe fact offline_groups_levels must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_phys_tech_level_default.client_safe_text
+  reason: UNPK v6.6 client-safe fact offline_phys_tech_level_default must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_online_instead_offline_exception_2026_27.client_safe_text
+  reason: UNPK v6.6 client-safe fact attendance_online_instead_offline_exception_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_makeup_other_group.client_safe_text
+  reason: UNPK v6.6 client-safe fact attendance_makeup_other_group must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text
+  reason: UNPK v6.6 client-safe fact materials_handouts_default must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.study_pause_flexible_schedule_personal.client_safe_text
+  reason: UNPK v6.6 client-safe fact study_pause_flexible_schedule_personal must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text
+  reason: UNPK v6.6 client-safe fact annual_online_courses_math_physics_5_11_weekend_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text
+  reason: UNPK v6.6 client-safe fact annual_online_courses_math_physics_informatics_9_11_weekday_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_courses_seminar_format.client_safe_text
+  reason: UNPK v6.6 client-safe fact offline_courses_seminar_format must come from supervised staging.

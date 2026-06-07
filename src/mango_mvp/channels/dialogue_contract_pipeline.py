@@ -204,6 +204,15 @@ _FACTUAL_CLAIM_RE = re.compile(
     r"(?:\s+\d{4})?\b|\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b)",
     re.I,
 )
+_HANDOFF_FACTUAL_CLAIM_RE = re.compile(
+    r"\b(?:обычно|как\s+правило|в\s+основном|чаще\s+всего)\b"
+    r"|(?:\bвход(?:ит|ят)\b(?!\s+ли\b)|\bвключа(?:ет|ют|ется|ются)\b)"
+    r"|\bдела(?:ем|ют)\s+упор\b|\bупор\s+(?:ид[её]т|дела(?:ем|ют))\b"
+    r"|\bзаняти[яе]\s+(?:проход(?:ит|ят)|ид(?:е[тё]|ут)|дл(?:ит|ятся))\b"
+    r"|\bкурс\s+(?:рассчитан|ид[её]т|подходит|включа(?:ет|ется))\b"
+    r"|\bгрупп[аы]\s+(?:дел(?:ится|ятся)|есть|ид(?:е[тё]|ут))\b",
+    re.I,
+)
 _BRAND_TOKENS: dict[str, tuple[str, ...]] = {
     "foton": ("унпк", "унпк мфти", "мфти", "kmipt", "@unpk", "ноу унпк", "ано дпо"),
     "unpk": ("фотон", "цдпо", "црдо", "cdpofoton", "foton", "долями", "т-банк"),
@@ -5820,17 +5829,18 @@ def _handoff_factual_claim_text(text: str) -> str | None:
         return None
     parts = [
         part.strip(" \t\n\r-—:;,.")
-        for part in re.split(r"[.;]\s+|\s+[—-]\s+", source)
+        for part in re.split(r"[.;!?]\s+|\s+[—-]\s+", source)
         if part.strip(" \t\n\r-—:;,.")
     ]
     claim_parts = [
         part
         for part in parts
-        if _FACTUAL_CLAIM_RE.search(part) and not _is_handoff_text(part)
+        if (_FACTUAL_CLAIM_RE.search(part) or _HANDOFF_FACTUAL_CLAIM_RE.search(part))
+        and not _is_handoff_text(part)
     ]
     if claim_parts:
         return ". ".join(claim_parts)
-    if _FACTUAL_CLAIM_RE.search(source) and not _is_pure_handoff_text(source):
+    if (_FACTUAL_CLAIM_RE.search(source) or _HANDOFF_FACTUAL_CLAIM_RE.search(source)) and not _is_pure_handoff_text(source):
         return source
     return None
 

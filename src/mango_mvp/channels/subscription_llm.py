@@ -27,6 +27,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     faithfulness_shadow_enabled as dialogue_contract_faithfulness_shadow_enabled,
     faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
     faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
+    _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
     _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
     concrete_anchors as dialogue_contract_concrete_anchors,
     _established_topic_from_context as dialogue_contract_established_topic_from_context,
@@ -5548,7 +5549,8 @@ def apply_semantic_output_verifier(
         verifier_meta["skipped"] = True
         verifier_meta["skip_reason"] = "locked_p0_or_high_risk_deferral"
         return replace(result, metadata=metadata)
-    if dialogue_contract_is_pure_handoff_text(result.draft_text):
+    handoff_claim_text = dialogue_contract_handoff_factual_claim_text(result.draft_text)
+    if dialogue_contract_is_pure_handoff_text(result.draft_text) and not handoff_claim_text:
         verifier_meta["skipped"] = True
         verifier_meta["skip_reason"] = "pure_handoff"
         return replace(result, metadata=metadata)
@@ -5600,7 +5602,7 @@ def apply_semantic_output_verifier(
         return replace(result, metadata=metadata)
 
     needs_regen = any(str(item.get("action") or "") == "downgrade_keep_text" for item in findings)
-    if result.route not in AUTONOMOUS_ROUTES and needs_regen and regen_fn is not None:
+    if needs_regen and regen_fn is not None:
         verifier_meta["regen_attempted"] = True
         try:
             regen_text = str(
@@ -5635,7 +5637,16 @@ def apply_semantic_output_verifier(
                 verifier_meta["finding_codes"] = []
                 verifier_meta["action"] = "pass_after_regen"
                 verifier_meta["fallback_reason"] = "regenerated"
-                return replace(result, draft_text=regen_text, metadata=metadata)
+                route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
+                verifier_meta["route_after"] = route
+                flags = result.safety_flags
+                checklist = result.manager_checklist
+                if route != result.route:
+                    flags = tuple(dict.fromkeys([*flags, "semantic_output_verifier_regenerated_for_manager"]))
+                    checklist = tuple(
+                        dict.fromkeys([*checklist, "Смысловой верификатор смягчил текст: оставить как менеджерский черновик."])
+                    )
+                return replace(result, route=route, draft_text=regen_text, safety_flags=flags, manager_checklist=checklist, metadata=metadata)
 
     if needs_regen:
         verifier_meta["fallback_reason"] = SEMANTIC_VERIFIER_DOWNGRADE_REASON

@@ -9471,6 +9471,60 @@ def test_semantic_output_verifier_skips_only_locked_or_pure_handoff_texts() -> N
     assert checked.metadata["semantic_output_verifier"]["skipped"] is True
 
 
+def test_semantic_output_verifier_skips_service_handoff_without_factual_claim() -> None:
+    base = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Помогу с оформлением: менеджер сверит детали и свяжется.",
+        topic_id="theme:020_enrollment",
+    )
+
+    def verifier(_prompt: str):
+        raise AssertionError("service-only handoff must not call semantic verifier")
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Как оформить?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=verifier,
+    )
+
+    assert checked.metadata["semantic_output_verifier"]["skipped"] is True
+    assert checked.metadata["semantic_output_verifier"]["skip_reason"] == "pure_handoff"
+
+
+def test_semantic_output_verifier_checks_handoff_with_factual_claim_sentence() -> None:
+    base = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру, он сверит детали. Обычно в очном курсе такие темы разбирают на практике.",
+        topic_id="theme:016_program",
+    )
+    calls = 0
+
+    def verifier(_prompt: str):
+        nonlocal calls
+        calls += 1
+        return {
+            "findings": [
+                {
+                    "code": "derived_product_claim",
+                    "span": "обычно в очном курсе",
+                    "relation_to_base": "absent",
+                }
+            ]
+        }
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Как идут занятия?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
+        verifier_fn=verifier,
+    )
+
+    assert calls == 1
+    assert checked.metadata["semantic_output_verifier"]["checked"] is True
+    assert checked.metadata["semantic_output_verifier"]["findings"][0]["code"] == "derived_product_claim"
+
+
 def test_semantic_output_verifier_regen_once_then_full_gate_runs_with_context() -> None:
     base = _semantic_verifier_base_result("Обычная группа — это базовый уровень.", route="draft_for_manager")
     verifier_calls = 0
@@ -9506,27 +9560,35 @@ def test_semantic_output_verifier_regen_once_then_full_gate_runs_with_context() 
     assert "brand_leak" in {item["code"] for item in gated.metadata["authoritative_output_gate"]["findings"]}
 
 
-def test_semantic_output_verifier_does_not_regen_autonomous_route() -> None:
+def test_semantic_output_verifier_regens_autonomous_text_but_keeps_manager_route() -> None:
     base = _semantic_verifier_base_result("Обычная группа — это базовый уровень.", route="bot_answer_self_for_pilot")
-    regen_called = False
+    verifier_calls = 0
+
+    def verifier(_prompt: str):
+        nonlocal verifier_calls
+        verifier_calls += 1
+        if verifier_calls == 1:
+            return {"findings": [{"code": "derived_product_claim", "span": "базовый уровень"}]}
+        return {"findings": []}
 
     def regen(_prompt: str) -> str:
-        nonlocal regen_called
-        regen_called = True
-        return "Исправлено."
+        return "Заочно не буду обещать уровень: менеджер поможет подобрать подходящую группу."
 
     checked = apply_semantic_output_verifier(
         base,
         client_message="Есть уровень попроще?",
         context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, "active_brand": "foton"},
-        verifier_fn=lambda _prompt: {"findings": [{"code": "derived_product_claim", "span": "базовый уровень"}]},
+        verifier_fn=verifier,
         regen_fn=regen,
     )
     gated = apply_authoritative_output_gate(checked, client_message="Есть уровень попроще?", context={"active_brand": "foton"})
 
-    assert regen_called is False
+    assert verifier_calls == 2
+    assert checked.metadata["semantic_output_verifier"]["regen_attempted"] is True
+    assert checked.metadata["semantic_output_verifier"]["regen_accepted"] is True
+    assert checked.route == "draft_for_manager"
     assert gated.route == "draft_for_manager"
-    assert gated.draft_text == base.draft_text
+    assert gated.draft_text == "Заочно не буду обещать уровень: менеджер поможет подобрать подходящую группу."
 
 
 def test_semantic_output_verifier_cross_model_replay_fixture_is_consistent() -> None:

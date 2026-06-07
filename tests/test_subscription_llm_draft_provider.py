@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
@@ -26,7 +27,9 @@ from mango_mvp.channels.subscription_llm import (
     CodexExecDraftProvider,
     COMPLAINT_SAFE_TEXT,
     CONTACT_FOTON_SAFE_TEXT,
+    BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
+    DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH,
     DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY,
     DraftGenerationResult,
     FakeDraftProvider,
@@ -10284,3 +10287,75 @@ def test_direct_path_brand_leak_is_downgraded_by_gate() -> None:
     assert result.draft_text == SAFE_FALLBACK_DRAFT_TEXT
     assert "brand_leak" in {item["code"] for item in gate["findings"]}
     assert result.metadata["direct_path"]["downgraded"] is True
+
+
+def test_direct_path_real_manager_gold_pack_lints_examples() -> None:
+    payload = yaml.safe_load(DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH.read_text(encoding="utf-8"))
+    examples = payload["examples"]
+
+    assert len(examples) == 12
+    assert payload["source"] == "real_manager_tg"
+    for item in examples:
+        assert item["mission_gold"] is True
+        assert item["brand"] in {"foton", "unpk"}
+        manager_text = item["manager_response_masked"]
+        prompt_example = item["prompt_example"]
+        assert "₽" not in manager_text
+        assert "+7" not in manager_text
+        assert "8 (" not in manager_text
+        assert "[" in manager_text and "]" in manager_text or item["topic"] in {"close", "docs", "enrollment", "join_mid", "payment_flex", "value"}
+        assert "[" not in prompt_example and "]" not in prompt_example
+        if item["brand"] == "foton":
+            assert "УНПК" not in manager_text
+        if item["brand"] == "unpk":
+            assert "Фотон" not in manager_text
+
+
+def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по рассрочке.")
+    )
+    provider.build_draft(
+        "Рассрочка есть?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
+        },
+    )
+
+    assert "Живые образцы менеджерского стиля" not in provider.last_prompt
+
+    provider_with_gold = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по рассрочке.")
+    )
+    result = provider_with_gold.build_draft(
+        "Рассрочка есть?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            BOT_GOLD_REAL_ENV: "1",
+            "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
+        },
+    )
+
+    assert "Живые образцы менеджерского стиля" in provider_with_gold.last_prompt
+    assert "Стоимость за один предмет" in provider_with_gold.last_prompt
+    assert result.metadata["direct_path"]["gold_real_enabled"] is True
+    assert "foton_price_installment_01" in result.metadata["direct_path"]["gold_real_example_ids"]
+
+
+def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+    result = provider.build_draft(
+        "Списали дважды, верните деньги",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", BOT_GOLD_REAL_ENV: "1"},
+    )
+
+    assert provider.calls == 0
+    assert provider.last_prompt == ""
+    assert result.route == "manager_only"
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert result.metadata["direct_path"]["gold_real_enabled"] is False

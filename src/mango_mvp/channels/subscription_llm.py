@@ -11,6 +11,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+import yaml
+
 from mango_mvp.channels.answer_quality_rewriter import (
     AnswerQualityAssessment,
     build_answer_quality_llm_rewrite_prompt,
@@ -111,7 +113,16 @@ SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV = "TELEGRAM_SEMANTIC_VERIFIER_MODEL"
 SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV = "TELEGRAM_SEMANTIC_VERIFIER_REASONING"
 SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV = "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC"
 DIRECT_PATH_ENV = "TELEGRAM_DIRECT_PATH"
+BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
+BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
 DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
+DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "product_data"
+    / "bot_improvement_candidates_20260523"
+    / "01_gold_and_few_shot"
+    / "real_manager_gold_2026-06-08.yaml"
+)
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 SEMANTIC_OUTPUT_VERIFIER_SCHEMA_VERSION = "semantic_output_verifier_v1_2026_06_06"
@@ -2082,16 +2093,142 @@ def _direct_path_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, 
     return result
 
 
+DIRECT_PATH_GOLD_TOPIC_KEYWORDS: Mapping[str, tuple[str, ...]] = {
+    "camp": ("лагер", "лш", "лвш", "смен", "летн"),
+    "close": ("спасибо", "подума", "понятно", "вернем", "вернём"),
+    "course_pick": ("курс", "заняти", "групп", "подготов", "услов"),
+    "docs": ("договор", "документ", "справк"),
+    "enrollment": ("запис", "брон", "оформ"),
+    "format": ("онлайн", "очно", "формат", "платформ", "программирован"),
+    "join_mid": ("присоедин", "войти", "середин", "идет", "идёт"),
+    "payment_flex": ("част", "доплат", "внес", "остаток", "сегодня"),
+    "price": ("стоим", "цен", "рассроч", "оплат", "дорог"),
+    "value": ("школ", "институт", "ценност", "уров", "польз"),
+}
+
+
+def _direct_path_gold_real_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (BOT_GOLD_REAL_ENV, "bot_gold_real", "direct_path_gold_real"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(BOT_GOLD_REAL_ENV))
+
+
+def _direct_path_gold_pack_path() -> Path:
+    override = os.getenv(BOT_GOLD_REAL_PACK_ENV)
+    if override:
+        return Path(override).expanduser()
+    return DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH
+
+
+def _load_direct_path_gold_real_examples(path: Optional[Path] = None) -> tuple[Mapping[str, Any], ...]:
+    pack_path = path or _direct_path_gold_pack_path()
+    if not pack_path.exists():
+        return ()
+    payload = yaml.safe_load(pack_path.read_text(encoding="utf-8")) or {}
+    examples = payload.get("examples") if isinstance(payload, Mapping) else None
+    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes, bytearray)):
+        return ()
+    result: list[Mapping[str, Any]] = []
+    for item in examples:
+        if not isinstance(item, Mapping):
+            continue
+        if not _truthy_value(item.get("mission_gold")):
+            continue
+        result.append(dict(item))
+    return tuple(result)
+
+
+def _direct_path_topic_hints(client_message: str, context: Optional[Mapping[str, Any]]) -> set[str]:
+    hints: set[str] = set()
+    if isinstance(context, Mapping):
+        for container_key in ("conversation_intent_plan", "planner_intent", "dialogue_contract_pipeline"):
+            container = context.get(container_key)
+            if not isinstance(container, Mapping):
+                continue
+            for key in ("primary_intent", "planner_intent", "intent", "topic", "subvariant"):
+                value = str(container.get(key) or "").strip().casefold()
+                if value:
+                    hints.add(value)
+            required = container.get("required_fact_keys")
+            if isinstance(required, Sequence) and not isinstance(required, (str, bytes, bytearray)):
+                hints.update(str(item or "").casefold() for item in required if str(item or "").strip())
+    lowered = str(client_message or "").casefold()
+    for topic, markers in DIRECT_PATH_GOLD_TOPIC_KEYWORDS.items():
+        if any(marker in lowered for marker in markers):
+            hints.add(topic)
+    return hints
+
+
+def _direct_path_select_gold_real_examples(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]],
+    active_brand: str,
+    limit: int = 4,
+) -> tuple[Mapping[str, Any], ...]:
+    if not _direct_path_gold_real_enabled(context):
+        return ()
+    brand = str(active_brand or "").strip().casefold()
+    examples = [item for item in _load_direct_path_gold_real_examples() if str(item.get("brand") or "").casefold() == brand]
+    if not examples:
+        return ()
+    hints = _direct_path_topic_hints(client_message, context)
+    scored: list[tuple[int, str, Mapping[str, Any]]] = []
+    for item in examples:
+        topic = str(item.get("topic") or "").strip().casefold()
+        score = 2 if topic and topic in hints else 0
+        if topic == "course_pick" and any(hint in {"pricing", "schedule", "teacher"} for hint in hints):
+            score = max(score, 1)
+        scored.append((score, str(item.get("id") or ""), item))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    selected = [item for score, _, item in scored if score > 0][:limit]
+    if not selected:
+        selected = [item for _, _, item in scored[:2]]
+    elif len(selected) < min(2, limit):
+        selected_ids = {str(item.get("id") or "") for item in selected}
+        for _, _, item in scored:
+            if str(item.get("id") or "") in selected_ids:
+                continue
+            selected.append(item)
+            if len(selected) >= min(2, limit):
+                break
+    return tuple(selected)
+
+
+def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str:
+    if not examples:
+        return ""
+    lines = [
+        "Живые образцы менеджерского стиля. Это НЕ источник фактов: маски в квадратных скобках заменяй только подтверждёнными фактами текущего хода или опускай.",
+    ]
+    for idx, item in enumerate(examples, 1):
+        client = str(item.get("client") or "").strip()
+        answer = str(item.get("manager_response_masked") or "").strip()
+        note = str(item.get("prompt_example") or "").strip()
+        if not client or not answer:
+            continue
+        lines.append(f"{idx}. Тема: {item.get('topic')}.")
+        lines.append(f"   Клиент: {client}")
+        lines.append(f"   Хороший стиль: {answer}")
+        if note:
+            lines.append(f"   Принцип: {note}")
+    return "\n".join(lines)
+
+
 def _build_direct_path_prompt(
     client_message: str,
     *,
     context: Optional[Mapping[str, Any]] = None,
     facts: Optional[Mapping[str, str]] = None,
+    gold_examples: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     active_brand = _active_brand(context)
     brand_label = _direct_path_brand_label(active_brand)
     fact_items = dict(facts or _direct_path_context_fact_items(context))
     facts_block = "\n".join(f"- {key}: {text}" for key, text in fact_items.items()) or "(нет подтверждённых фактов)"
+    gold_block = _direct_path_gold_prompt_block(gold_examples)
     recent_block = "\n".join(_direct_path_recent_messages(context)) or "(диалог только начался)"
     slots = _direct_path_known_slots(context)
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
@@ -2101,6 +2238,8 @@ def _build_direct_path_prompt(
         f"{DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)}\n\n"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{client_message}\n\n"
+        + (f"{gold_block}\n\n" if gold_block else "")
+        +
         "Подтверждённые клиентские факты текущего хода:\n"
         f"{facts_block}\n\n"
         "Память диалога:\n"
@@ -2136,11 +2275,13 @@ def _direct_path_metadata(
     attempted: bool,
     model_called: bool,
     facts: Mapping[str, str],
+    gold_examples: Sequence[Mapping[str, Any]] = (),
     preblocked: bool = False,
     preblock_reason: str = "",
     reason_class: str = "",
     reason_evidence: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
+    gold_ids = [str(item.get("id") or "").strip() for item in gold_examples if str(item.get("id") or "").strip()]
     return {
         "schema_version": DIRECT_PATH_SCHEMA_VERSION,
         "enabled": True,
@@ -2150,6 +2291,8 @@ def _direct_path_metadata(
         "preblock_reason": str(preblock_reason or ""),
         "retrieved_fact_keys": list(facts.keys()),
         "retrieved_facts": dict(facts),
+        "gold_real_enabled": bool(gold_ids),
+        "gold_real_example_ids": gold_ids,
         "text_composition_source": "direct_path_model" if model_called else "deterministic_preblock",
         "direct_path_attempted": bool(attempted),
         "direct_path_downgraded": False,
@@ -2478,8 +2621,15 @@ class SubscriptionLlmDraftProvider:
             gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
             return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
 
-        prompt = _build_direct_path_prompt(client_message, context=context, facts=facts)
-        direct_meta = _direct_path_metadata(attempted=True, model_called=True, facts=facts)
+        active_brand = _active_brand(context)
+        gold_examples = _direct_path_select_gold_real_examples(client_message, context=context, active_brand=active_brand)
+        prompt = _build_direct_path_prompt(client_message, context=context, facts=facts, gold_examples=gold_examples)
+        direct_meta = _direct_path_metadata(
+            attempted=True,
+            model_called=True,
+            facts=facts,
+            gold_examples=gold_examples,
+        )
         try:
             result = self._direct_path_draft_runner(prompt)
         except subprocess.TimeoutExpired:

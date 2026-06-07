@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from scripts import m1_watcher as watcher
@@ -13,6 +14,8 @@ def _sha(path: Path) -> str:
 def _make_bundle(root: Path, bundle_id: str = "mango_clean_12345678") -> Path:
     bundle = root / bundle_id
     (bundle / "scripts").mkdir(parents=True)
+    (bundle / "src" / "mango_mvp").mkdir(parents=True)
+    (bundle / "src" / "mango_mvp" / "__init__.py").write_text("", encoding="utf-8")
     (bundle / "scripts" / "run_telegram_dynamic_client_sim.py").write_text("print('ok')\n", encoding="utf-8")
     (bundle / "BUNDLE_INFO.txt").write_text(
         "\n".join(
@@ -71,13 +74,26 @@ def _fake_runner(spec, deploy_dir, out_dir, command, env):
     return watcher.RunOutcome(0, True, False, command=tuple(command))
 
 
+def _fake_probe(args, cwd, env, timeout):
+    args = tuple(args)
+    if args[:2] in {("codex", "--version"), ("claude", "--version")}:
+        return 0, f"{args[0]} test-version\n", ""
+    if args[:3] == ("claude", "auth", "status"):
+        return 0, '{"authenticated":true}\n', ""
+    if len(args) >= 3 and args[1] == "-c" and args[2] == "import mango_mvp":
+        return 0, "", ""
+    return 0, "", ""
+
+
 def _new_watcher(tmp_path: Path, **kwargs) -> watcher.M1Watcher:
     return watcher.M1Watcher(
         tmp_path,
         tmp_path / "work",
         tmp_path / "state",
         bundle_wait_seconds=kwargs.pop("bundle_wait_seconds", 0),
+        min_free_bytes=kwargs.pop("min_free_bytes", 0),
         runner=kwargs.pop("runner", _fake_runner),
+        command_probe=kwargs.pop("command_probe", _fake_probe),
         **kwargs,
     )
 
@@ -99,6 +115,94 @@ def test_watcher_creates_failed_dir_and_executes_valid_task(tmp_path):
     assert (tmp_path / "tasks" / "_failed").is_dir()
     assert (tmp_path / "tasks" / "_done" / "task1.report.md").exists()
     assert (tmp_path / "runs" / "task1" / "dynamic_summary.json").exists()
+
+
+def test_success_report_includes_readiness_cli_versions_and_heartbeat(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+    _write_task(tmp_path, "2026-06-07_valid.task.yaml", set_rel=set_rel, set_sha=set_sha)
+
+    assert _run_ready_cycle(_new_watcher(tmp_path)) == "success"
+
+    report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
+    assert "codex_cli_version: codex test-version" in report
+    assert "claude_cli_version: claude test-version" in report
+    assert "readiness:" in report
+    assert "import_mango_mvp" in report
+    assert "disk_free_bytes" in report
+    heartbeat = json.loads((tmp_path / "tasks" / "_done" / "task1.heartbeat").read_text(encoding="utf-8"))
+    assert heartbeat["task_id"] == "task1"
+    assert heartbeat["counter"] >= 4
+    assert heartbeat["stage"] == "success"
+    assert heartbeat["transcript_exists"] is True
+    assert heartbeat["stall"] is False
+
+
+def test_status_writes_date_rotated_log_tail(tmp_path):
+    w = _new_watcher(tmp_path)
+    assert w.process_once() == "idle"
+
+    logs = sorted((tmp_path / "state" / "logs").glob("*.log"))
+    assert len(logs) == 1
+    assert logs[0].name.endswith(".log")
+    status = (tmp_path / "tasks" / "watcher_status.txt").read_text(encoding="utf-8")
+    assert f"log_path: {logs[0]}" in status
+    assert "log_tail:" in status
+    assert '"event": "status"' in status
+
+
+def test_heartbeat_marks_stale_transcript_as_stalled(tmp_path):
+    w = _new_watcher(tmp_path, stall_seconds=1)
+    (tmp_path / "tasks" / "_running").mkdir(parents=True)
+    out_dir = tmp_path / "work" / "mango_clean_12345678" / "runs" / "task1"
+    out_dir.mkdir(parents=True)
+    transcript = out_dir / "dynamic_dialog_transcripts.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    old = transcript.stat().st_mtime - 10
+    os.utime(transcript, (old, old))
+
+    w._write_heartbeat("task1", "running", out_dir)
+
+    heartbeat = json.loads((tmp_path / "tasks" / "_running" / "task1.heartbeat").read_text(encoding="utf-8"))
+    assert heartbeat["counter"] == 1
+    assert heartbeat["stage"] == "running"
+    assert heartbeat["transcript_exists"] is True
+    assert heartbeat["transcript_mtime_age_seconds"] >= 1
+    assert heartbeat["stall"] is True
+
+
+def test_readiness_rejects_import_failure_disk_shortage_and_claude_auth_failure(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+
+    def import_fail_probe(args, cwd, env, timeout):
+        if len(args) >= 3 and args[1] == "-c" and args[2] == "import mango_mvp":
+            return 1, "", "missing mango_mvp"
+        return _fake_probe(args, cwd, env, timeout)
+
+    _write_task(tmp_path, "2026-06-07_import.task.yaml", task_id="import_bad", set_rel=set_rel, set_sha=set_sha)
+    assert _run_ready_cycle(_new_watcher(tmp_path, command_probe=import_fail_probe)) == "readiness_failed"
+    assert "missing mango_mvp" in (tmp_path / "tasks" / "_failed" / "import_bad.report.md").read_text(encoding="utf-8")
+
+    case_disk = tmp_path / "disk"
+    _make_bundle(case_disk)
+    disk_set_rel, disk_set_sha = _make_set(case_disk)
+    _write_task(case_disk, "2026-06-07_disk.task.yaml", task_id="disk_bad", set_rel=disk_set_rel, set_sha=disk_set_sha)
+    assert _run_ready_cycle(_new_watcher(case_disk, min_free_bytes=10**30)) == "readiness_failed"
+    assert "free disk below threshold" in (case_disk / "tasks" / "_failed" / "disk_bad.report.md").read_text(encoding="utf-8")
+
+    case_claude = tmp_path / "claude"
+    _make_bundle(case_claude)
+    claude_set_rel, claude_set_sha = _make_set(case_claude)
+    _write_task(case_claude, "2026-06-07_claude.task.yaml", task_id="claude_bad", brain="claude", set_rel=claude_set_rel, set_sha=claude_set_sha)
+
+    def claude_fail_probe(args, cwd, env, timeout):
+        if tuple(args[:3]) == ("claude", "auth", "status"):
+            return 1, "", "not logged in"
+        return _fake_probe(args, cwd, env, timeout)
+
+    assert _run_ready_cycle(_new_watcher(case_claude, command_probe=claude_fail_probe)) == "readiness_failed"
+    assert "claude auth status failed" in (case_claude / "tasks" / "_failed" / "claude_bad.report.md").read_text(encoding="utf-8")
 
 
 def test_parallel_env_and_set_path_are_rejected(tmp_path):
@@ -186,6 +290,55 @@ def test_ready_marker_required_before_task_is_taken(tmp_path):
     assert not (tmp_path / "tasks" / "_done" / "task1.report.md").exists()
     path.with_suffix(path.suffix + ".ready").write_text(_sha(path), encoding="utf-8")
     assert _run_ready_cycle(w) == "success"
+
+
+def test_fresh_yaml_parse_error_waits_three_cycles_before_failed(tmp_path):
+    inbox = tmp_path / "tasks" / "_inbox_m1"
+    inbox.mkdir(parents=True)
+    path = inbox / "2026-06-07_bad_yaml.task.yaml"
+    path.write_text("id task1\n", encoding="utf-8")
+    path.with_suffix(path.suffix + ".ready").write_text(_sha(path), encoding="utf-8")
+
+    w = _new_watcher(tmp_path)
+    assert w.process_once() == "idle"  # first stable-file cycle
+    assert w.process_once() == "task_parse_waiting"
+    assert w.process_once() == "task_parse_waiting"
+    assert w.process_once() == "task_parse_waiting"
+    assert path.exists()
+    assert w.process_once() == "task_schema_mismatch"
+    assert not path.exists()
+    assert (tmp_path / "tasks" / "_failed" / "2026-06-07_bad_yaml.report.md").exists()
+
+    case_fixed = tmp_path / "fixed"
+    _make_bundle(case_fixed)
+    set_rel, set_sha = _make_set(case_fixed)
+    fixed_path = _write_task(case_fixed, "2026-06-07_later_fixed.task.yaml", set_rel=set_rel, set_sha=set_sha)
+    fixed_path.write_text("id task1\n", encoding="utf-8")
+    fixed_path.with_suffix(fixed_path.suffix + ".ready").write_text(_sha(fixed_path), encoding="utf-8")
+
+    w_fixed = _new_watcher(case_fixed)
+    assert w_fixed.process_once() == "idle"
+    assert w_fixed.process_once() == "task_parse_waiting"
+    fixed_path.write_text(
+        "\n".join(
+            [
+                "id: task1",
+                "requires_bundle: mango_clean_12345678",
+                f"set: {set_rel}",
+                f"set_sha256: {set_sha}",
+                "brain: codex",
+                "parallel: 4",
+                "max_hours: 1",
+                "env:",
+                '  TELEGRAM_TEST_FLAG: "1"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fixed_path.with_suffix(fixed_path.suffix + ".ready").write_text(_sha(fixed_path), encoding="utf-8")
+    assert w_fixed.process_once() == "idle"
+    assert w_fixed.process_once() == "success"
 
 
 def test_duplicate_id_rejected(tmp_path):

@@ -22,16 +22,20 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Optional, Sequence
 
 
-WATCHER_VERSION = "m1_watcher_v1_2026_06_07"
+WATCHER_VERSION = "m1_watcher_v1_1_2026_06_07"
 
 DEFAULT_TESTS_ROOT = Path.home() / "Yandex.Disk.localized" / "OpenClaw" / "Actual Mango Tests"
 DEFAULT_WORK_ROOT = Path.home() / "mango_m1_work"
 DEFAULT_STATE_DIR = Path.home() / "m1_watcher"
 DEFAULT_BUNDLE_WAIT_SECONDS = 2 * 60 * 60
 DEFAULT_POLL_SECONDS = 180
+DEFAULT_HEARTBEAT_SECONDS = 5 * 60
+DEFAULT_STALL_SECONDS = 30 * 60
+DEFAULT_MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024
+DEFAULT_READINESS_TIMEOUT_SECONDS = 20
 
 TASK_NAME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[A-Za-z0-9_.-]+\.task\.yaml$")
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{3,96}$")
@@ -43,10 +47,11 @@ SET_SUFFIXES = (".jsonl", ".yaml")
 
 
 class WatcherError(Exception):
-    def __init__(self, code: str, detail: str = "") -> None:
+    def __init__(self, code: str, detail: str = "", payload: Mapping[str, object] | None = None) -> None:
         super().__init__(detail or code)
         self.code = code
         self.detail = detail
+        self.payload = dict(payload or {})
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,7 @@ class RunOutcome:
 
 
 Runner = Callable[[TaskSpec, Path, Path, tuple[str, ...], Mapping[str, str]], RunOutcome]
+CommandProbe = Callable[[Sequence[str], Optional[Path], Optional[Mapping[str, str]], float], tuple[int, str, str]]
 
 
 def utc_now() -> str:
@@ -95,6 +101,32 @@ def write_text_atomic(path: Path, text: str) -> None:
 
 def write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
+def _tail_text(text: str, limit: int = 500) -> str:
+    text = str(text or "").strip()
+    return text[-limit:] if len(text) > limit else text
+
+
+def run_command_probe(args: Sequence[str], cwd: Path | None, env: Mapping[str, str] | None, timeout: float) -> tuple[int, str, str]:
+    try:
+        completed = subprocess.run(
+            list(args),
+            cwd=cwd,
+            env=dict(env) if env is not None else None,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+        return completed.returncode, completed.stdout or "", completed.stderr or ""
+    except FileNotFoundError as exc:
+        return 127, "", str(exc)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        return 124, stdout, stderr or f"timeout after {timeout}s"
 
 
 def _strip_quotes(value: str) -> str:
@@ -283,7 +315,12 @@ class M1Watcher:
         state_dir: Path = DEFAULT_STATE_DIR,
         *,
         bundle_wait_seconds: int = DEFAULT_BUNDLE_WAIT_SECONDS,
+        heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
+        stall_seconds: int = DEFAULT_STALL_SECONDS,
+        min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+        readiness_timeout_seconds: int = DEFAULT_READINESS_TIMEOUT_SECONDS,
         runner: Runner | None = None,
+        command_probe: CommandProbe | None = None,
         process_alive: Callable[[int], bool] | None = None,
     ) -> None:
         self.tests_root = tests_root
@@ -292,7 +329,12 @@ class M1Watcher:
         self.state_dir = state_dir
         self.state_path = state_dir / "state.json"
         self.bundle_wait_seconds = bundle_wait_seconds
+        self.heartbeat_seconds = max(1, int(heartbeat_seconds))
+        self.stall_seconds = max(1, int(stall_seconds))
+        self.min_free_bytes = max(0, int(min_free_bytes))
+        self.readiness_timeout_seconds = max(1, int(readiness_timeout_seconds))
         self.runner = runner
+        self.command_probe = command_probe or run_command_probe
         self.process_alive = process_alive or self._process_alive
 
     @property
@@ -315,8 +357,21 @@ class M1Watcher:
     def status_path(self) -> Path:
         return self.tasks_root / "watcher_status.txt"
 
+    @property
+    def logs_dir(self) -> Path:
+        return self.state_dir / "logs"
+
     def ensure_layout(self) -> None:
-        for path in (self.inbox, self.running, self.done, self.failed, self.tests_root / "runs", self.work_root, self.state_dir):
+        for path in (
+            self.inbox,
+            self.running,
+            self.done,
+            self.failed,
+            self.tests_root / "runs",
+            self.work_root,
+            self.state_dir,
+            self.logs_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
     def load_state(self) -> dict[str, object]:
@@ -326,21 +381,134 @@ class M1Watcher:
     def save_state(self, state: Mapping[str, object]) -> None:
         write_json_atomic(self.state_path, state)
 
+    def _today_log_path(self) -> Path:
+        return self.logs_dir / f"{datetime.now(timezone.utc).astimezone().date().isoformat()}.log"
+
+    def _log_event(self, event: str, **fields: object) -> None:
+        path = self._today_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "time": utc_now(),
+            "watcher_version": WATCHER_VERSION,
+            "event": event,
+            **fields,
+        }
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _log_tail(self, lines: int = 5) -> list[str]:
+        path = self._today_log_path()
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+
     def write_status(self, status: str, detail: str = "", current_task: str = "") -> None:
+        self._log_event("status", status=status, detail=detail, current_task=current_task)
+        log_tail = self._log_tail()
+        status_lines = [
+            f"status: {status}",
+            f"detail: {detail}",
+            f"current_task: {current_task}",
+            f"watcher_version: {WATCHER_VERSION}",
+            f"host: {socket.gethostname()}",
+            f"updated_at: {utc_now()}",
+            f"log_path: {self._today_log_path()}",
+            "log_tail:",
+        ]
+        status_lines.extend(f"  {line}" for line in log_tail)
+        status_lines.append("")
         write_text_atomic(
             self.status_path,
-            "\n".join(
-                [
-                    f"status: {status}",
-                    f"detail: {detail}",
-                    f"current_task: {current_task}",
-                    f"watcher_version: {WATCHER_VERSION}",
-                    f"host: {socket.gethostname()}",
-                    f"updated_at: {utc_now()}",
-                    "",
-                ]
-            ),
+            "\n".join(status_lines),
         )
+
+    def _heartbeat_path(self, task_id: str) -> Path:
+        return self.running / f"{task_id}.heartbeat"
+
+    def _heartbeat_counter(self, task_id: str) -> int:
+        current = load_json(self._heartbeat_path(task_id), {})
+        if isinstance(current, Mapping):
+            try:
+                return int(current.get("counter") or 0) + 1
+            except (TypeError, ValueError):
+                return 1
+        return 1
+
+    def _write_heartbeat(self, task_id: str, stage: str, out_dir: Path | None = None) -> None:
+        transcript_path = out_dir / "dynamic_dialog_transcripts.jsonl" if out_dir else None
+        transcript_exists = bool(transcript_path and transcript_path.exists())
+        age_seconds: float | None = None
+        stall = False
+        if transcript_path and transcript_exists:
+            age_seconds = max(0.0, time.time() - transcript_path.stat().st_mtime)
+            stall = age_seconds >= self.stall_seconds
+        payload = {
+            "task_id": task_id,
+            "counter": self._heartbeat_counter(task_id),
+            "stage": stage,
+            "updated_at": utc_now(),
+            "transcript_path": str(transcript_path) if transcript_path else "",
+            "transcript_exists": transcript_exists,
+            "transcript_mtime_age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+            "stall": stall,
+        }
+        write_json_atomic(self._heartbeat_path(task_id), payload)
+        self._log_event("heartbeat", task_id=task_id, stage=stage, counter=payload["counter"], stall=stall)
+
+    def _cli_versions(self) -> dict[str, str]:
+        versions: dict[str, str] = {}
+        for name, args in {
+            "codex": ("codex", "--version"),
+            "claude": ("claude", "--version"),
+        }.items():
+            code, stdout, stderr = self.command_probe(args, None, None, self.readiness_timeout_seconds)
+            text = _tail_text(stdout or stderr, 200)
+            versions[name] = text if code == 0 and text else f"unavailable(returncode={code}): {_tail_text(stderr or stdout, 160)}"
+        return versions
+
+    def _base_run_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+        env = os.environ.copy()
+        env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src"})
+        if extra:
+            env.update(extra)
+        return env
+
+    def _readiness_checks(self, spec: TaskSpec, deploy_dir: Path, env: Mapping[str, str]) -> dict[str, object]:
+        readiness: dict[str, object] = {}
+
+        code, stdout, stderr = self.command_probe(
+            (sys.executable, "-c", "import mango_mvp"),
+            deploy_dir,
+            env,
+            self.readiness_timeout_seconds,
+        )
+        readiness["import_mango_mvp"] = {"ok": code == 0, "returncode": code, "stderr_tail": _tail_text(stderr, 300)}
+        if code != 0:
+            raise WatcherError("readiness_failed", f"import mango_mvp failed: {_tail_text(stderr or stdout, 200)}", payload=readiness)
+
+        usage = shutil.disk_usage(self.work_root)
+        readiness["disk_free_bytes"] = usage.free
+        readiness["disk_min_free_bytes"] = self.min_free_bytes
+        readiness["disk_ok"] = usage.free >= self.min_free_bytes
+        if usage.free < self.min_free_bytes:
+            raise WatcherError("readiness_failed", f"free disk below threshold: {usage.free} < {self.min_free_bytes}", payload=readiness)
+
+        if spec.brain == "claude":
+            code, stdout, stderr = self.command_probe(
+                ("claude", "auth", "status", "--json"),
+                deploy_dir,
+                None,
+                self.readiness_timeout_seconds,
+            )
+            readiness["claude_auth_status"] = {
+                "ok": code == 0,
+                "returncode": code,
+                "stdout_tail": _tail_text(stdout, 300),
+                "stderr_tail": _tail_text(stderr, 300),
+            }
+            if code != 0:
+                raise WatcherError("readiness_failed", f"claude auth status failed: {_tail_text(stderr or stdout, 200)}", payload=readiness)
+        return readiness
 
     def unacked_executed_count(self) -> int:
         ack_files = sorted(self.tasks_root.glob("ACK_*.md"), key=lambda p: p.stat().st_mtime)
@@ -405,6 +573,39 @@ class M1Watcher:
         if expected != sha256_file(task_path):
             raise WatcherError("ready_sha_mismatch", "ready marker sha256 does not match yaml")
         return True
+
+    def _parse_wait_or_fail(self, task_path: Path, exc: WatcherError) -> bool:
+        state = self.load_state()
+        waits = state.setdefault("parse_error_waits", {})
+        assert isinstance(waits, dict)
+        sha = sha256_file(task_path)
+        record = waits.get(task_path.name)
+        if isinstance(record, Mapping) and record.get("sha256") == sha:
+            count = int(record.get("count", 0)) + 1
+        else:
+            count = 1
+        waits[task_path.name] = {"sha256": sha, "count": count, "detail": exc.detail}
+        self.save_state(state)
+        if count <= 3:
+            self.write_status("task_parse_waiting", f"{task_path.name}: {exc.detail} ({count}/3)")
+            return True
+        waits.pop(task_path.name, None)
+        self.save_state(state)
+        return False
+
+    def _parse_task_spec_or_wait(self, task_path: Path) -> TaskSpec | None:
+        try:
+            data = parse_task_yaml(task_path)
+        except WatcherError as exc:
+            if self._parse_wait_or_fail(task_path, exc):
+                return None
+            self._fail_inbox_task(task_path, exc.code, exc.detail)
+            return None
+        try:
+            return validate_task_dict(data)
+        except WatcherError as exc:
+            self._fail_inbox_task(task_path, exc.code, exc.detail)
+            return None
 
     def _next_task_path(self) -> Path | None:
         state = self.load_state()
@@ -480,6 +681,8 @@ class M1Watcher:
         summary: Mapping[str, object] | None = None,
         command: tuple[str, ...] = (),
         bundle_info: Mapping[str, str] | None = None,
+        cli_versions: Mapping[str, str] | None = None,
+        readiness: Mapping[str, object] | None = None,
         results_path: Path | None = None,
     ) -> None:
         lines = [
@@ -494,6 +697,17 @@ class M1Watcher:
         ]
         if bundle_info:
             lines.extend([f"bundle_head: {bundle_info.get('head', '')}", f"kb_snapshot: {bundle_info.get('kb_snapshot', '')}"])
+        if cli_versions:
+            lines.extend(
+                [
+                    f"codex_cli_version: {cli_versions.get('codex', '')}",
+                    f"claude_cli_version: {cli_versions.get('claude', '')}",
+                ]
+            )
+        if readiness:
+            lines.append("readiness:")
+            for key, value in readiness.items():
+                lines.append(f"  {key}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
         if command:
             lines.append("command: " + " ".join(command))
         if results_path:
@@ -566,6 +780,7 @@ class M1Watcher:
         )
 
     def _run_subprocess(self, spec: TaskSpec, deploy_dir: Path, out_dir: Path, command: tuple[str, ...], env: Mapping[str, str]) -> RunOutcome:
+        self._write_heartbeat(spec.id, "running_start", out_dir)
         proc = subprocess.Popen(
             command,
             cwd=deploy_dir,
@@ -581,9 +796,18 @@ class M1Watcher:
             claimed = {}
         claimed.update({"run_pid": proc.pid, "pgid": os.getpgid(proc.pid), "run_started_at": utc_now(), "command": list(command)})
         write_json_atomic(claimed_path, claimed)
+        deadline = time.monotonic() + spec.max_hours * 3600
         try:
-            stdout, stderr = proc.communicate(timeout=spec.max_hours * 3600)
-            return RunOutcome(proc.returncode, True, False, stdout, stderr, command)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, spec.max_hours * 3600)
+                try:
+                    stdout, stderr = proc.communicate(timeout=min(float(self.heartbeat_seconds), remaining))
+                    self._write_heartbeat(spec.id, "running_finished", out_dir)
+                    return RunOutcome(proc.returncode, True, False, stdout, stderr, command)
+                except subprocess.TimeoutExpired:
+                    self._write_heartbeat(spec.id, "running", out_dir)
         except subprocess.TimeoutExpired:
             pgid = os.getpgid(proc.pid)
             os.killpg(pgid, signal.SIGTERM)
@@ -592,9 +816,11 @@ class M1Watcher:
             except subprocess.TimeoutExpired:
                 os.killpg(pgid, signal.SIGKILL)
                 stdout, stderr = proc.communicate(timeout=15)
+            self._write_heartbeat(spec.id, "timeout", out_dir)
             return RunOutcome(proc.returncode if proc.returncode is not None else -signal.SIGTERM, True, True, stdout, stderr, command)
 
     def _execute(self, task_path: Path, spec: TaskSpec) -> str:
+        cli_versions = self._cli_versions()
         if self.terminal_report_exists(spec.id):
             self._fail_inbox_task(task_path, "duplicate_id", "task id already has terminal report")
             return "duplicate_id"
@@ -604,26 +830,61 @@ class M1Watcher:
             self._fail_inbox_task(task_path, exc.code, exc.detail)
             return exc.code
         running_task, _ = self._claim(task_path, spec)
+        self._write_heartbeat(spec.id, "claimed")
         self.write_status("running", current_task=spec.id)
         try:
+            self._write_heartbeat(spec.id, "deploying")
             deploy_dir, bundle_info = self._deploy_bundle(spec.requires_bundle)
         except WatcherError as exc:
             terminal = exc.code == "bundle_incomplete"
             if terminal:
-                self._finish_running_task(spec.id, exc.code, exc.detail, executed=False)
+                self._write_report(
+                    self.failed / f"{spec.id}.report.md",
+                    spec.id,
+                    exc.code,
+                    exc.detail,
+                    executed=False,
+                    cli_versions=cli_versions,
+                )
+                for path in self.running.glob(f"{spec.id}*"):
+                    path.replace(self.failed / path.name)
+                self.write_status(exc.code, exc.detail, current_task=spec.id)
             return exc.code
 
         set_path = (self.tests_root / spec.set).resolve()
         work_out_dir = deploy_dir / "runs" / spec.id
         command = self._build_command(spec, deploy_dir, set_path, work_out_dir, bundle_info["kb_snapshot"])
-        env = os.environ.copy()
-        env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src"})
-        env.update(spec.env)
+        env = self._base_run_env(spec.env)
+
+        try:
+            self._write_heartbeat(spec.id, "readiness")
+            readiness = self._readiness_checks(spec, deploy_dir, env)
+        except WatcherError as exc:
+            readiness = exc.payload
+            self._write_heartbeat(spec.id, "readiness_failed", work_out_dir)
+            self._write_report(
+                self.failed / f"{spec.id}.report.md",
+                spec.id,
+                exc.code,
+                exc.detail,
+                executed=False,
+                command=command,
+                bundle_info=bundle_info,
+                cli_versions=cli_versions,
+                readiness=readiness,
+            )
+            for path in self.running.glob(f"{spec.id}*"):
+                path.replace(self.failed / path.name)
+            self.write_status(exc.code, exc.detail, current_task=spec.id)
+            return exc.code
 
         runner = self.runner or self._run_subprocess
+        self._write_heartbeat(spec.id, "running", work_out_dir)
+        self._log_event("run_start", task_id=spec.id, brain=spec.brain, command=" ".join(command))
         outcome = runner(spec, deploy_dir, work_out_dir, command, env)
         status = "timeout" if outcome.timed_out else ("success" if outcome.returncode == 0 else "run_failed")
         yandex_results = self.tests_root / "runs" / spec.id
+        self._write_heartbeat(spec.id, "copy_results", work_out_dir)
         if work_out_dir.exists() and not yandex_results.exists():
             shutil.copytree(work_out_dir, yandex_results, symlinks=False)
         summary = load_json(work_out_dir / "dynamic_summary.json", {})
@@ -640,10 +901,14 @@ class M1Watcher:
             summary=summary,
             command=outcome.command or command,
             bundle_info=bundle_info,
+            cli_versions=cli_versions,
+            readiness=readiness,
             results_path=yandex_results,
         )
+        self._write_heartbeat(spec.id, status, work_out_dir)
         for path in self.running.glob(f"{spec.id}*"):
             path.replace(terminal_dir / path.name)
+        self._log_event("run_finish", task_id=spec.id, status=status, returncode=outcome.returncode, timed_out=outcome.timed_out)
         self.write_status(status, current_task=spec.id)
         return status
 
@@ -661,11 +926,9 @@ class M1Watcher:
         if task_path is None:
             self.write_status("idle")
             return "idle"
-        try:
-            spec = validate_task_dict(parse_task_yaml(task_path))
-        except WatcherError as exc:
-            self._fail_inbox_task(task_path, exc.code, exc.detail)
-            return exc.code
+        spec = self._parse_task_spec_or_wait(task_path)
+        if spec is None:
+            return "task_parse_waiting" if task_path.exists() else "task_schema_mismatch"
         return self._execute(task_path, spec)
 
     def loop(self, poll_seconds: int = DEFAULT_POLL_SECONDS) -> None:

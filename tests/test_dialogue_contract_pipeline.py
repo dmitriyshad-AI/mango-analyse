@@ -24,6 +24,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     build_understanding_prompt,
     check_claim_faithfulness,
     faithfulness_shadow_events,
+    new_concrete_anchors,
     parse_contract,
     p0_pre_gate,
     pipeline_enabled,
@@ -703,6 +704,31 @@ def test_level_a_free_number_gate_marker_does_not_save_product_numbers() -> None
             context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
         )
         assert "unsupported_product_number" in {finding.code for finding in findings}, text
+
+
+def test_product_number_gate_does_not_need_faithfulness_critic() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "примерная цена онлайн",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Ориентировочно онлайн стоит 50 000 ₽.",
+        facts={"price.online": "Онлайн: семестр — 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько примерно стоит онлайн?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in findings}
+    assert any("50 000" in finding.detail for finding in findings)
 
 
 def test_step4_number_grounding_blocks_ungrounded_installment_months_even_with_marker() -> None:
@@ -4592,6 +4618,45 @@ def test_q_partial_yield_answers_grounded_part_and_defers_missing(monkeypatch) -
     assert "менеджер" in result.draft_text.casefold()
 
 
+def test_q_partial_yield_runs_under_faithfulness_shadow_without_missing_trace(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
+    trace_path = tmp_path / "trace.jsonl"
+    context = {
+        FAITHFULNESS_SHADOW_ENV: "1",
+        "dialogue_contract_debug_trace": {"enabled": True, "path": str(trace_path)},
+    }
+    store = FactStore(
+        catalog=("price.online", "schedule.exact_day"),
+        store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и в какой день группа?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и точный день группы",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "точный день группы", "answerable": "manager", "needed_fact_keys": ["schedule.exact_day"]},
+                ],
+                "answerability": "manager_only",
+            }
+        ),
+        draft_fn=lambda _prompt: "",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["слишком строгий критик"]},
+        context=context,
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.partial_yield_applied is True
+    events = faithfulness_shadow_events(context)
+    assert events and events[0]["site"] == "partial_yield"
+    assert events[0]["unsupported"] == ["слишком строгий критик"]
+    assert "faithfulness_fn_missing" not in trace_path.read_text(encoding="utf-8")
+
+
 def test_q_partial_yield_does_not_override_p0_even_when_fact_exists(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_Q_PARTIAL_YIELD", "1")
     store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽."}})
@@ -5387,6 +5452,45 @@ def test_q_composite_answers_all_grounded_parts_before_draft(monkeypatch) -> Non
     assert "29 750" in result.draft_text
     assert "малых группах" in result.draft_text
     assert "оставить телефон" in result.draft_text
+
+
+def test_q_composite_runs_under_faithfulness_shadow(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_Q_COMPOSITE", "1")
+    context = {FAITHFULNESS_SHADOW_ENV: "1"}
+    store = FactStore(
+        catalog=("price.online", "format.online"),
+        store={
+            "foton": {
+                "price.online": "Онлайн: семестр — 29 750 ₽.",
+                "format.online": "Онлайн-занятия проходят в малых группах.",
+            }
+        },
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн и какой формат?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "цена онлайн и формат занятий",
+                "subquestions": [
+                    {"text": "цена онлайн", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "формат онлайн", "answerable": "self", "needed_fact_keys": ["format.online"]},
+                ],
+                "answerability": "answer_self",
+            }
+        ),
+        draft_fn=lambda _prompt: "Не должен вызываться.",
+        faithfulness_fn=lambda _prompt: {"unsupported": ["строгий критик против композита"]},
+        context=context,
+    )
+
+    assert result.route == "bot_answer_self"
+    assert result.composite_applied is True
+    assert result.fallback_reason == "composite_grounded_answer"
+    assert "29 750" in result.draft_text
+    assert faithfulness_shadow_events(context)[0]["site"] == "composite_answer"
 
 
 def test_q_composite_answers_grounded_parts_and_defers_missing_tail(monkeypatch) -> None:
@@ -7374,6 +7478,56 @@ def test_faithfulness_shadow_logs_timeout_without_changing_answer() -> None:
     assert events[0]["unsupported"] == []
 
 
+def test_faithfulness_shadow_does_not_weaken_p0_floor() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн стоит 29 750 ₽."}})
+    common = {
+        "conversation": _conv("Оплатил, занятий нет, верните деньги. И сколько стоит онлайн?"),
+        "active_brand": "foton",
+        "fact_store": store,
+        "understand_fn": _understanding(
+            {"current_question": "цена онлайн", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}
+        ),
+        "draft_fn": lambda _prompt: "Онлайн стоит 29 750 ₽.",
+        "faithfulness_fn": lambda _prompt: {"unsupported": ["Онлайн стоит 29 750 ₽."]},
+    }
+
+    baseline = run_pipeline(**common)
+    context = {FAITHFULNESS_SHADOW_ENV: "1"}
+    shadow = run_pipeline(**common, context=context)
+
+    assert shadow.route == baseline.route == "manager_only"
+    assert shadow.fallback_reason == baseline.fallback_reason == "p0"
+    assert shadow.draft_text == baseline.draft_text
+    assert "29 750" not in shadow.draft_text
+
+
+def test_faithfulness_shadow_does_not_weaken_brand_guard() -> None:
+    store = FactStore(
+        catalog=("price.online",),
+        store={"foton": {"price.online": "Онлайн: семестр — 29 750 ₽, год — 47 250 ₽."}},
+    )
+    common = {
+        "conversation": _conv("сколько стоит онлайн?"),
+        "active_brand": "foton",
+        "fact_store": store,
+        "understand_fn": _understanding(
+            {"current_question": "цена онлайн", "needed_fact_keys": ["price.online"], "answerability": "answer_self"}
+        ),
+        "draft_fn": lambda _prompt: "У Фотона 29 750 ₽, а в УНПК бывает иначе.",
+        "faithfulness_fn": lambda _prompt: {"unsupported": []},
+    }
+
+    baseline = run_pipeline(**common)
+    context = {FAITHFULNESS_SHADOW_ENV: "1"}
+    shadow = run_pipeline(**common, context=context)
+
+    assert shadow.route == baseline.route == "draft_for_manager"
+    assert shadow.fallback_reason == baseline.fallback_reason == "hard_verification_failed"
+    assert shadow.draft_text == baseline.draft_text
+    assert any(finding.code == "brand_leak" for finding in shadow.findings)
+    assert faithfulness_shadow_events(context)[0]["site"] == "main_draft"
+
+
 def test_structured_faithfulness_requires_fact_key_from_current_turn() -> None:
     result = check_claim_faithfulness(
         "Онлайн стоит 29 750 ₽.",
@@ -7418,6 +7572,16 @@ def test_structured_faithfulness_checks_claim_anchors_against_one_fact() -> None
 
     assert result.available
     assert result.unsupported == ("Записи уроков доступны в личном кабинете на МТС Линк",)
+
+
+def test_recovery_candidate_with_foreign_deadline_anchor_is_rejected_by_anchor_delta() -> None:
+    original = "Курс стоит 29 750 ₽."
+    candidate = "Курс стоит 29 750 ₽, записаться можно до 1 августа."
+    facts = {"price.online": "Курс стоит 29 750 ₽."}
+
+    anchors = new_concrete_anchors(candidate, original=original, facts=facts)
+
+    assert "date:01.08" in anchors
 
 
 def test_structured_faithfulness_fixture_covers_gluing_regressions() -> None:

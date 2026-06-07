@@ -4834,6 +4834,91 @@ def test_tone_close_detect_replaces_handoff_on_clean_thanks_without_repeating_nu
     assert "49 000" not in closed.draft_text
 
 
+def test_tone_close_detect_contact_step_records_contact_requested() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Рада была помочь.",
+        topic_id="service:S2_unclear",
+    )
+    context = {
+        "active_brand": "unpk",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "dialogue_memory_view": {"recent_turns": [], "proactive_state": {}},
+    }
+
+    closed = apply_tone_close_detect_layer(result, client_message="Спасибо, всё понятно", context=context)
+    memory = build_dialogue_memory(current_message="Спасибо, всё понятно", active_brand="unpk")
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text=closed.draft_text,
+        route=closed.route,
+    )
+
+    assert closed.metadata["close_detect"]["status"] == "fired"
+    assert closed.metadata["close_detect"]["step"] == "contact"
+    assert closed.metadata["close_detect"]["contact_requested"] is True
+    assert updated.to_prompt_view()["proactive_state"]["contact_requested"] is True
+
+
+def test_tone_close_detect_deduplicates_previous_contact_cta() -> None:
+    previous_contact = (
+        "Рада была помочь! Хотите, менеджер подберёт группу под ваше расписание? "
+        "Оставьте телефон — позвоним, когда удобно."
+    )
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Рада была помочь.",
+        topic_id="service:S2_unclear",
+    )
+    context = {
+        "active_brand": "unpk",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "dialogue_memory_view": {
+            "recent_turns": [{"role": "bot", "text": previous_contact}],
+            "proactive_state": {},
+        },
+    }
+
+    closed = apply_tone_close_detect_layer(result, client_message="Спасибо", context=context)
+
+    assert closed.metadata["close_detect"]["status"] == "fired"
+    assert closed.metadata["close_detect"]["step"] == "return"
+    assert closed.draft_text != previous_contact
+    assert "телефон" not in closed.draft_text.casefold()
+    assert "позвоним" not in closed.draft_text.casefold()
+
+
+def test_tone_close_detect_refusal_after_previous_step_finishes_without_cta() -> None:
+    previous_contact = (
+        "Рада была помочь! Хотите, менеджер подберёт группу под ваше расписание? "
+        "Оставьте телефон — позвоним, когда удобно."
+    )
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Рада была помочь.",
+        topic_id="service:S2_unclear",
+    )
+    context = {
+        "active_brand": "foton",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "dialogue_memory_view": {
+            "recent_turns": [{"role": "bot", "text": previous_contact}],
+            "proactive_state": {},
+        },
+    }
+
+    closed = apply_tone_close_detect_layer(result, client_message="Нет, не нужно, спасибо", context=context)
+
+    assert closed.metadata["close_detect"]["status"] == "fired"
+    assert closed.metadata["close_detect"]["step"] == "return"
+    lowered = closed.draft_text.casefold()
+    assert "телефон" not in lowered
+    assert "позвоним" not in lowered
+    assert "пробн" not in lowered
+    assert "запис" not in lowered
+    assert "менеджер" not in lowered
+
+
 def test_tone_close_detect_does_not_capture_exit_signal_or_new_question() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

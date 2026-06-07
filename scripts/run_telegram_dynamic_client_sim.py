@@ -2119,7 +2119,13 @@ def _close_detect_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
     return {
         "turns": len(metas),
         "by_status": dict(Counter(str(meta.get("status") or "") for meta in metas if str(meta.get("status") or "").strip())),
-        "by_step": dict(Counter(str(meta.get("step") or "") for meta in metas if str(meta.get("step") or "").strip())),
+        "by_step": dict(
+            Counter(
+                str(meta.get("step") or "")
+                for meta in metas
+                if str(meta.get("status") or "") == "fired" and str(meta.get("step") or "").strip()
+            )
+        ),
         "fired": sum(1 for meta in metas if str(meta.get("status") or "") == "fired"),
         "suppressed_handoff": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_handoff"),
         "suppressed_p0": sum(1 for meta in metas if str(meta.get("status") or "") == "suppressed_p0"),

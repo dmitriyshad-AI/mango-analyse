@@ -575,6 +575,11 @@ def test_dynamic_summary_includes_close_detect_counters(tmp_path):
                     "context_parity_checked": True,
                     "bot_close_detect": {"status": "suppressed_pending", "step": "pending", "contact_requested": True},
                 },
+                {
+                    "turn": 3,
+                    "context_parity_checked": True,
+                    "bot_close_detect": {"status": "fired", "step": "return", "contact_requested": True},
+                },
             ],
         }
     ]
@@ -595,11 +600,11 @@ def test_dynamic_summary_includes_close_detect_counters(tmp_path):
         parallel=1,
     )
 
-    assert summary["close_detect"]["turns"] == 2
+    assert summary["close_detect"]["turns"] == 3
     assert summary["close_detect"]["suppressed_handoff"] == 1
     assert summary["close_detect"]["suppressed_pending"] == 1
-    assert summary["close_detect"]["contact_requested"] == 1
-    assert summary["close_detect"]["by_step"] == {"contact": 1, "pending": 1}
+    assert summary["close_detect"]["contact_requested"] == 2
+    assert summary["close_detect"]["by_step"] == {"return": 1}
 
 
 def test_handoff_trace_empty_for_autonomous_answer(monkeypatch):

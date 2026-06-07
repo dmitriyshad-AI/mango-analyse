@@ -3052,6 +3052,36 @@ _TONE_CLOSE_QUESTION_RE = re.compile(
     r"получится\s+ли|подойдет\s+ли|подойд[её]т\s+ли|какой|какая|какие|почему|зачем|что\s+нужно)\b",
     re.I,
 )
+_TONE_CLOSE_REFUSAL_RE = re.compile(
+    r"\b(?:нет|не\s+нужно|не\s+надо|не\s+требуется|не\s+стоит|не\s+хочу)\b",
+    re.I,
+)
+_TONE_CLOSE_CONTACT_CTA_RE = re.compile(
+    r"(?:оставьте|подскажите|пришлите|напишите)[^.?!\n]{0,100}\b(?:телефон|номер|контакт)\b"
+    r"|\b(?:позвоним|свяжемся)\b"
+    r"|\bменеджер\s+подбер[её]т\b",
+    re.I,
+)
+_TONE_CLOSE_TRIAL_CTA_RE = re.compile(
+    r"\b(?:бесплатн\w*\s+пробн\w*|подсказать,\s*как\s+записаться)\b",
+    re.I,
+)
+_TONE_CLOSE_STEP_CTA_RE = re.compile(
+    rf"(?:{_TONE_CLOSE_CONTACT_CTA_RE.pattern})|(?:{_TONE_CLOSE_TRIAL_CTA_RE.pattern})",
+    re.I,
+)
+_TONE_CLOSE_CONTACT_TEXTS = (
+    "Рада была помочь! Хотите, менеджер подберёт группу под ваше расписание? Оставьте телефон — позвоним, когда удобно.",
+    "Рада была помочь! Если захотите, менеджер подберёт группу под ваше расписание. Оставьте телефон — позвоним в удобное время.",
+)
+_TONE_CLOSE_TRIAL_TEXTS = (
+    "Обращайтесь в любое время! Кстати, можно прийти на бесплатное пробное занятие — посмотрите, как всё устроено. Подсказать, как записаться?",
+    "Обращайтесь! У Фотона можно прийти на бесплатное пробное занятие и спокойно посмотреть формат. Подсказать, как записаться?",
+)
+_TONE_CLOSE_RETURN_TEXTS = (
+    "Спасибо вам! Будем рады видеть вас на занятиях — возвращайтесь, если появятся вопросы.",
+    "Спасибо вам! Буду рада помочь, если появятся вопросы по занятиям.",
+)
 _TONE_CLOSE_P0_FLAGS = {
     "p0",
     "refund",
@@ -3088,7 +3118,13 @@ def apply_tone_close_detect_layer(
             context=context,
         )
     status = "suppressed_handoff" if result.route in {"manager_only", "draft_for_manager"} else "fired"
-    step, text = _tone_close_next_step_text(context)
+    previous_bot_texts = _humanity_previous_bot_texts(context)
+    refused_previous_step = _tone_close_refused_previous_step(client_message, previous_bot_texts)
+    step, text = _tone_close_next_step_text(
+        context,
+        previous_bot_texts=previous_bot_texts,
+        no_cta=refused_previous_step,
+    )
     close_flags = tuple(
         flag
         for flag in result.safety_flags
@@ -3114,6 +3150,7 @@ def apply_tone_close_detect_layer(
         ),
         status=status,
         step=step,
+        contact_requested=_tone_close_contact_requested_after_step(context, step=step, previous_bot_texts=previous_bot_texts),
         context=context,
     )
 
@@ -3124,16 +3161,19 @@ def _tone_close_metadata(
     status: str,
     step: str,
     context: Optional[Mapping[str, Any]],
+    contact_requested: Optional[bool] = None,
 ) -> SubscriptionDraftResult:
     metadata = dict(result.metadata)
     if result.route == "bot_answer_self_for_pilot":
         metadata = _metadata_with_self_route_deferral_cleared(metadata)
     memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else {}
+    if contact_requested is None:
+        contact_requested = _tone_close_contact_requested_from_memory(memory)
     payload = {
         "enabled": True,
         "status": status,
         "step": step,
-        "contact_requested": _tone_close_contact_requested_from_memory(memory),
+        "contact_requested": bool(contact_requested),
     }
     metadata["close_detect"] = payload
     return replace(result, metadata=metadata)
@@ -3178,22 +3218,34 @@ def _tone_close_pending_manager(context: Optional[Mapping[str, Any]]) -> bool:
     return bool(memory.get("pending_manager_actions"))
 
 
-def _tone_close_next_step_text(context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
+def _tone_close_next_step_text(
+    context: Optional[Mapping[str, Any]],
+    *,
+    previous_bot_texts: Sequence[str] = (),
+    no_cta: bool = False,
+) -> tuple[str, str]:
     memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else {}
-    contact_requested = _tone_close_contact_requested_from_memory(memory if isinstance(memory, Mapping) else {})
+    if no_cta:
+        return (
+            "return",
+            _select_nonrepeating_text(_TONE_CLOSE_RETURN_TEXTS, previous_bot_texts, fallback=_TONE_CLOSE_RETURN_TEXTS[0]),
+        )
+    contact_requested = _tone_close_contact_requested_from_memory(
+        memory if isinstance(memory, Mapping) else {}
+    ) or _tone_close_previous_contact_requested(previous_bot_texts)
     if not contact_requested:
         return (
             "contact",
-            "Рада была помочь! Хотите, менеджер подберёт группу под ваше расписание? Оставьте телефон — позвоним, когда удобно.",
+            _select_nonrepeating_text(_TONE_CLOSE_CONTACT_TEXTS, previous_bot_texts, fallback=_TONE_CLOSE_CONTACT_TEXTS[0]),
         )
-    if _active_brand(context) == "foton":
+    if _active_brand(context) == "foton" and not _tone_close_previous_trial_requested(previous_bot_texts):
         return (
             "trial",
-            "Обращайтесь в любое время! Кстати, можно прийти на бесплатное пробное занятие — посмотрите, как всё устроено. Подсказать, как записаться?",
+            _select_nonrepeating_text(_TONE_CLOSE_TRIAL_TEXTS, previous_bot_texts, fallback=_TONE_CLOSE_TRIAL_TEXTS[0]),
         )
     return (
         "return",
-        "Спасибо вам! Будем рады видеть вас на занятиях — возвращайтесь, если появятся вопросы.",
+        _select_nonrepeating_text(_TONE_CLOSE_RETURN_TEXTS, previous_bot_texts, fallback=_TONE_CLOSE_RETURN_TEXTS[0]),
     )
 
 
@@ -3202,6 +3254,35 @@ def _tone_close_contact_requested_from_memory(memory: Any) -> bool:
         return False
     state = memory.get("proactive_state") if isinstance(memory.get("proactive_state"), Mapping) else {}
     return bool(state.get("contact_requested"))
+
+
+def _tone_close_contact_requested_after_step(
+    context: Optional[Mapping[str, Any]],
+    *,
+    step: str,
+    previous_bot_texts: Sequence[str],
+) -> bool:
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) else {}
+    return bool(
+        step == "contact"
+        or _tone_close_contact_requested_from_memory(memory)
+        or _tone_close_previous_contact_requested(previous_bot_texts)
+    )
+
+
+def _tone_close_previous_contact_requested(previous_bot_texts: Sequence[str]) -> bool:
+    return any(_TONE_CLOSE_CONTACT_CTA_RE.search(str(item or "")) for item in previous_bot_texts)
+
+
+def _tone_close_previous_trial_requested(previous_bot_texts: Sequence[str]) -> bool:
+    return any(_TONE_CLOSE_TRIAL_CTA_RE.search(str(item or "")) for item in previous_bot_texts)
+
+
+def _tone_close_refused_previous_step(client_message: str, previous_bot_texts: Sequence[str]) -> bool:
+    text = str(client_message or "")
+    if not (_TONE_CLOSE_REFUSAL_RE.search(text) and _TONE_CLOSE_GRATITUDE_RE.search(text)):
+        return False
+    return any(_TONE_CLOSE_STEP_CTA_RE.search(str(item or "")) for item in previous_bot_texts[-3:])
 
 
 def _tone_close_pending_text() -> str:

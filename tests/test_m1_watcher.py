@@ -138,6 +138,72 @@ def test_success_report_includes_readiness_cli_versions_and_heartbeat(tmp_path):
     assert heartbeat["stall"] is False
 
 
+def test_empty_task_env_uses_production_stack_and_reports_llm_breakdown(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+    _write_task(tmp_path, "2026-06-07_empty_env.task.yaml", set_rel=set_rel, set_sha=set_sha, env="")
+    seen_env: dict[str, str] = {}
+
+    def runner(spec, deploy_dir, out_dir, command, env):
+        seen_env.update(dict(env))
+        assert env["TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"] == "1"
+        assert env["TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"] == "1"
+        assert env["TELEGRAM_TONE_SELL_PROMPT"] == "1"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "dynamic_summary.json").write_text(
+            json.dumps(
+                {
+                    "overall_verdict": "PASS",
+                    "hard_gates_passed": True,
+                    "total_turns": 2,
+                    "llm_calls": {
+                        "bot_faithfulness": 3,
+                        "bot_semantic_output_verifier": 2,
+                        "total": 5,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (out_dir / "dynamic_dialog_transcripts.jsonl").write_text("{}\n", encoding="utf-8")
+        return watcher.RunOutcome(0, True, False, command=tuple(command))
+
+    assert _run_ready_cycle(_new_watcher(tmp_path, runner=runner)) == "success"
+
+    report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
+    assert "task_delta: {}" in report
+    assert '"TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1"' in report
+    assert '"TELEGRAM_SEMANTIC_OUTPUT_VERIFIER": "1"' in report
+    assert '"bot_faithfulness": 3' in report
+    assert seen_env["PYTHONPATH"] == "src"
+
+
+def test_task_env_delta_overrides_default_production_stack(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+    _write_task(
+        tmp_path,
+        "2026-06-07_env_override.task.yaml",
+        set_rel=set_rel,
+        set_sha=set_sha,
+        env='  TELEGRAM_TONE_SELL_PROMPT: "0"\n',
+    )
+
+    def runner(spec, deploy_dir, out_dir, command, env):
+        assert env["TELEGRAM_TONE_SELL_PROMPT"] == "0"
+        assert env["TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"] == "1"
+        assert env["TELEGRAM_STEP4_KEEP_ANSWER"] == "1"
+        return _fake_runner(spec, deploy_dir, out_dir, command, env)
+
+    assert _run_ready_cycle(_new_watcher(tmp_path, runner=runner)) == "success"
+
+    report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
+    assert 'task_delta: {"TELEGRAM_TONE_SELL_PROMPT": "0"}' in report
+    assert '"TELEGRAM_TONE_SELL_PROMPT": "0"' in report
+    assert '"TELEGRAM_STEP4_KEEP_ANSWER": "1"' in report
+
+
 def test_status_writes_date_rotated_log_tail(tmp_path):
     w = _new_watcher(tmp_path)
     assert w.process_once() == "idle"

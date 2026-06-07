@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
 
-WATCHER_VERSION = "m1_watcher_v1_1_2026_06_07"
+WATCHER_VERSION = "m1_watcher_v1_2_2026_06_07"
 
 DEFAULT_TESTS_ROOT = Path.home() / "Yandex.Disk.localized" / "OpenClaw" / "Actual Mango Tests"
 DEFAULT_WORK_ROOT = Path.home() / "mango_m1_work"
@@ -44,6 +44,34 @@ ENV_NAME_RE = re.compile(r"^(TELEGRAM_[A-Z0-9_]+|DIALOGUE_CONTRACT_DEBUG_TRACE)$
 ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/\-]{0,64}$")
 CONFLICT_COPY_RE = re.compile(r"\s\(\d+\)\.task\.yaml$")
 SET_SUFFIXES = (".jsonl", ".yaml")
+
+# Standard production-like measurement stack. Task files provide only a delta
+# over this mapping, so an empty env block still exercises the full bot path.
+PRODUCTION_ENV_STACK: dict[str, str] = {
+    "TELEGRAM_HANDOFF_TRACE": "1",
+    "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD": "1",
+    "TELEGRAM_PH2_TONE": "1",
+    "TELEGRAM_PH2_OBJECTION": "1",
+    "TELEGRAM_PH2_ANXIETY": "1",
+    "TELEGRAM_A_TRAVEL_COMPOSE": "1",
+    "TELEGRAM_OUTPUT_SANITIZER": "1",
+    "TELEGRAM_A_ESTIMATE_MODE": "1",
+    "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+    "TELEGRAM_Q_PARTIAL_YIELD": "1",
+    "TELEGRAM_Q_CLARIFY_SCOPE": "1",
+    "TELEGRAM_Q_USEFUL_HANDOFF": "1",
+    "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE": "1",
+    "TELEGRAM_RULES_ENGINE_PLANNER_INTENT": "1",
+    "TELEGRAM_STEP4_KEEP_ANSWER": "1",
+    "TELEGRAM_STEP4_NUMBER_GROUNDING": "1",
+    "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER": "1",
+    "TELEGRAM_TONE_WARM_FRAME": "1",
+    "TELEGRAM_TONE_CLOSE_DETECT": "1",
+    "TELEGRAM_TONE_SELL_PROMPT": "1",
+    "TELEGRAM_TONE_RICH_FORMAT": "1",
+    "TELEGRAM_COMPOSITE_CONTRACT_FIX": "1",
+    "DIALOGUE_CONTRACT_DEBUG_TRACE": "1",
+}
 
 
 class WatcherError(Exception):
@@ -225,6 +253,13 @@ def validate_task_dict(data: Mapping[str, object]) -> TaskSpec:
         max_hours=max_hours,
         env=env,
     )
+
+
+def effective_task_env(delta: Mapping[str, str] | None = None) -> dict[str, str]:
+    env = dict(PRODUCTION_ENV_STACK)
+    if delta:
+        env.update(delta)
+    return env
 
 
 def validate_set_path(tests_root: Path, rel_path: str, expected_sha256: str) -> Path:
@@ -469,8 +504,7 @@ class M1Watcher:
     def _base_run_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
         env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src"})
-        if extra:
-            env.update(extra)
+        env.update(effective_task_env(extra))
         return env
 
     def _readiness_checks(self, spec: TaskSpec, deploy_dir: Path, env: Mapping[str, str]) -> dict[str, object]:
@@ -684,6 +718,8 @@ class M1Watcher:
         cli_versions: Mapping[str, str] | None = None,
         readiness: Mapping[str, object] | None = None,
         results_path: Path | None = None,
+        task_env_delta: Mapping[str, str] | None = None,
+        effective_env: Mapping[str, str] | None = None,
     ) -> None:
         lines = [
             f"# M1 watcher report: {task_id}",
@@ -710,6 +746,11 @@ class M1Watcher:
                 lines.append(f"  {key}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
         if command:
             lines.append("command: " + " ".join(command))
+        if effective_env is not None:
+            lines.append("env:")
+            lines.append("  production_stack: true")
+            lines.append(f"  task_delta: {json.dumps(dict(task_env_delta or {}), ensure_ascii=False, sort_keys=True)}")
+            lines.append(f"  effective_task_env: {json.dumps(dict(effective_env), ensure_ascii=False, sort_keys=True)}")
         if results_path:
             lines.append(f"results_path: {results_path}")
         if summary:
@@ -854,6 +895,7 @@ class M1Watcher:
         set_path = (self.tests_root / spec.set).resolve()
         work_out_dir = deploy_dir / "runs" / spec.id
         command = self._build_command(spec, deploy_dir, set_path, work_out_dir, bundle_info["kb_snapshot"])
+        task_env = effective_task_env(spec.env)
         env = self._base_run_env(spec.env)
 
         try:
@@ -872,6 +914,8 @@ class M1Watcher:
                 bundle_info=bundle_info,
                 cli_versions=cli_versions,
                 readiness=readiness,
+                task_env_delta=spec.env,
+                effective_env=task_env,
             )
             for path in self.running.glob(f"{spec.id}*"):
                 path.replace(self.failed / path.name)
@@ -904,6 +948,8 @@ class M1Watcher:
             cli_versions=cli_versions,
             readiness=readiness,
             results_path=yandex_results,
+            task_env_delta=spec.env,
+            effective_env=task_env,
         )
         self._write_heartbeat(spec.id, status, work_out_dir)
         for path in self.running.glob(f"{spec.id}*"):

@@ -1,0 +1,694 @@
+#!/usr/bin/env python3
+"""Deterministic M1 task watcher.
+
+The watcher intentionally accepts only one fixed job shape: deploy a checked
+``mango_clean_<sha>`` bundle and run ``run_telegram_dynamic_client_sim.py``.
+It does not use LLMs and does not accept arbitrary scripts from task files.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Mapping
+
+
+WATCHER_VERSION = "m1_watcher_v1_2026_06_07"
+
+DEFAULT_TESTS_ROOT = Path.home() / "Yandex.Disk.localized" / "OpenClaw" / "Actual Mango Tests"
+DEFAULT_WORK_ROOT = Path.home() / "mango_m1_work"
+DEFAULT_STATE_DIR = Path.home() / "m1_watcher"
+DEFAULT_BUNDLE_WAIT_SECONDS = 2 * 60 * 60
+DEFAULT_POLL_SECONDS = 180
+
+TASK_NAME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[A-Za-z0-9_.-]+\.task\.yaml$")
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{3,96}$")
+BUNDLE_RE = re.compile(r"^mango_clean_[0-9a-f]{8}$")
+ENV_NAME_RE = re.compile(r"^(TELEGRAM_[A-Z0-9_]+|DIALOGUE_CONTRACT_DEBUG_TRACE)$")
+ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/\-]{0,64}$")
+CONFLICT_COPY_RE = re.compile(r"\s\(\d+\)\.task\.yaml$")
+SET_SUFFIXES = (".jsonl", ".yaml")
+
+
+class WatcherError(Exception):
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(detail or code)
+        self.code = code
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class TaskSpec:
+    id: str
+    requires_bundle: str
+    set: str
+    set_sha256: str
+    brain: str
+    parallel: int
+    max_hours: float
+    env: dict[str, str]
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    returncode: int
+    started: bool = True
+    timed_out: bool = False
+    stdout: str = ""
+    stderr: str = ""
+    command: tuple[str, ...] = ()
+
+
+Runner = Callable[[TaskSpec, Path, Path, tuple[str, ...], Mapping[str, str]], RunOutcome]
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    if " #" in value:
+        value = value.split(" #", 1)[0].rstrip()
+    return value
+
+
+def parse_task_yaml(path: Path) -> dict[str, object]:
+    data: dict[str, object] = {}
+    env: dict[str, str] | None = None
+    for lineno, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        if raw_line.startswith((" ", "\t")):
+            if env is None:
+                raise WatcherError("task_schema_mismatch", f"unexpected indentation at line {lineno}")
+            key, sep, value = raw_line.strip().partition(":")
+            if not sep:
+                raise WatcherError("task_schema_mismatch", f"bad env entry at line {lineno}")
+            env[key.strip()] = _strip_quotes(value)
+            continue
+        key, sep, value = raw_line.partition(":")
+        if not sep:
+            raise WatcherError("task_schema_mismatch", f"bad key at line {lineno}")
+        key = key.strip()
+        value = value.strip()
+        if key == "env":
+            env = {}
+            data["env"] = env
+            if value:
+                raise WatcherError("task_schema_mismatch", "env must be a mapping")
+            continue
+        env = None
+        data[key] = _strip_quotes(value)
+    return data
+
+
+def validate_task_dict(data: Mapping[str, object]) -> TaskSpec:
+    forbidden = {"script", "output"}
+    if forbidden & set(data):
+        raise WatcherError("task_schema_mismatch", "script/output fields are forbidden")
+    required = {"id", "requires_bundle", "set", "set_sha256", "brain", "parallel", "max_hours"}
+    missing = sorted(required - set(data))
+    if missing:
+        raise WatcherError("task_schema_mismatch", f"missing fields: {', '.join(missing)}")
+    extra = sorted(set(data) - required - {"env"})
+    if extra:
+        raise WatcherError("task_schema_mismatch", f"unknown fields: {', '.join(extra)}")
+
+    task_id = str(data["id"])
+    if not TASK_ID_RE.fullmatch(task_id):
+        raise WatcherError("task_schema_mismatch", "bad id")
+
+    bundle = str(data["requires_bundle"])
+    if not BUNDLE_RE.fullmatch(bundle):
+        raise WatcherError("task_schema_mismatch", "bad requires_bundle")
+
+    brain = str(data["brain"])
+    if brain not in {"codex", "claude"}:
+        raise WatcherError("task_schema_mismatch", "brain must be codex|claude")
+
+    try:
+        parallel = int(str(data["parallel"]))
+        max_hours = float(str(data["max_hours"]))
+    except ValueError as exc:
+        raise WatcherError("task_schema_mismatch", "parallel/max_hours must be numeric") from exc
+    if parallel < 1 or parallel > 4:
+        raise WatcherError("task_schema_mismatch", "parallel must be 1..4")
+    if max_hours <= 0 or max_hours > 8:
+        raise WatcherError("task_schema_mismatch", "max_hours must be >0 and <=8")
+
+    env_raw = data.get("env") or {}
+    if not isinstance(env_raw, Mapping):
+        raise WatcherError("task_schema_mismatch", "env must be a mapping")
+    env: dict[str, str] = {}
+    for key, value in env_raw.items():
+        key_s = str(key)
+        value_s = str(value)
+        if not ENV_NAME_RE.fullmatch(key_s):
+            raise WatcherError("task_schema_mismatch", f"env key not allowed: {key_s}")
+        if not ENV_VALUE_RE.fullmatch(value_s):
+            raise WatcherError("task_schema_mismatch", f"env value not allowed: {key_s}")
+        env[key_s] = value_s
+
+    return TaskSpec(
+        id=task_id,
+        requires_bundle=bundle,
+        set=str(data["set"]),
+        set_sha256=str(data["set_sha256"]).strip(),
+        brain=brain,
+        parallel=parallel,
+        max_hours=max_hours,
+        env=env,
+    )
+
+
+def validate_set_path(tests_root: Path, rel_path: str, expected_sha256: str) -> Path:
+    candidate = Path(rel_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise WatcherError("task_schema_mismatch", "set path must be relative and stay inside tests root")
+    if candidate.suffix not in SET_SUFFIXES:
+        raise WatcherError("task_schema_mismatch", "set must be .jsonl or .yaml")
+    full_path = tests_root / candidate
+    if full_path.is_symlink():
+        raise WatcherError("task_schema_mismatch", "set symlink is forbidden")
+    try:
+        resolved = full_path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise WatcherError("task_schema_mismatch", "set file missing") from exc
+    root_resolved = tests_root.resolve()
+    if root_resolved not in (resolved, *resolved.parents):
+        raise WatcherError("task_schema_mismatch", "set path escapes tests root")
+    if sha256_file(resolved) != expected_sha256:
+        raise WatcherError("task_schema_mismatch", "set sha256 mismatch")
+    return resolved
+
+
+def load_json(path: Path, default: object) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def verify_bundle_manifest(bundle_dir: Path) -> dict[str, object]:
+    manifest_path = bundle_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise WatcherError("bundle_waiting", "manifest.json is missing")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WatcherError("bundle_waiting", "manifest.json is not valid JSON") from exc
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise WatcherError("bundle_waiting", "manifest files must be a list")
+
+    listed: dict[str, tuple[int, str]] = {}
+    for item in files:
+        if not isinstance(item, Mapping):
+            raise WatcherError("bundle_waiting", "manifest file entry must be an object")
+        rel = str(item.get("path", ""))
+        if not rel or rel.startswith("/") or ".." in Path(rel).parts or rel == "manifest.json":
+            raise WatcherError("bundle_waiting", f"bad manifest path: {rel}")
+        listed[rel] = (int(item.get("size", -1)), str(item.get("sha256", "")))
+
+    actual: dict[str, Path] = {}
+    for path in bundle_dir.rglob("*"):
+        if not path.is_file() or path.name == "manifest.json":
+            continue
+        rel = path.relative_to(bundle_dir).as_posix()
+        actual[rel] = path
+    if int(manifest.get("file_count", -1)) != len(listed) or set(actual) != set(listed):
+        raise WatcherError("bundle_waiting", "manifest file set mismatch")
+    for rel, path in actual.items():
+        size, expected_hash = listed[rel]
+        if path.stat().st_size != size:
+            raise WatcherError("bundle_waiting", f"size mismatch: {rel}")
+        if sha256_file(path) != expected_hash:
+            raise WatcherError("bundle_waiting", f"sha256 mismatch: {rel}")
+    return manifest
+
+
+def parse_bundle_info(bundle_dir: Path) -> dict[str, str]:
+    info_path = bundle_dir / "BUNDLE_INFO.txt"
+    if not info_path.exists():
+        raise WatcherError("bundle_info_missing", "BUNDLE_INFO.txt is missing")
+    info: dict[str, str] = {}
+    for line in info_path.read_text(encoding="utf-8").splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            info[key.strip()] = value.strip()
+    if not info.get("kb_snapshot"):
+        raise WatcherError("bundle_info_missing", "kb_snapshot missing in BUNDLE_INFO.txt")
+    return info
+
+
+class M1Watcher:
+    def __init__(
+        self,
+        tests_root: Path = DEFAULT_TESTS_ROOT,
+        work_root: Path = DEFAULT_WORK_ROOT,
+        state_dir: Path = DEFAULT_STATE_DIR,
+        *,
+        bundle_wait_seconds: int = DEFAULT_BUNDLE_WAIT_SECONDS,
+        runner: Runner | None = None,
+        process_alive: Callable[[int], bool] | None = None,
+    ) -> None:
+        self.tests_root = tests_root
+        self.tasks_root = tests_root / "tasks"
+        self.work_root = work_root
+        self.state_dir = state_dir
+        self.state_path = state_dir / "state.json"
+        self.bundle_wait_seconds = bundle_wait_seconds
+        self.runner = runner
+        self.process_alive = process_alive or self._process_alive
+
+    @property
+    def inbox(self) -> Path:
+        return self.tasks_root / "_inbox_m1"
+
+    @property
+    def running(self) -> Path:
+        return self.tasks_root / "_running"
+
+    @property
+    def done(self) -> Path:
+        return self.tasks_root / "_done"
+
+    @property
+    def failed(self) -> Path:
+        return self.tasks_root / "_failed"
+
+    @property
+    def status_path(self) -> Path:
+        return self.tasks_root / "watcher_status.txt"
+
+    def ensure_layout(self) -> None:
+        for path in (self.inbox, self.running, self.done, self.failed, self.tests_root / "runs", self.work_root, self.state_dir):
+            path.mkdir(parents=True, exist_ok=True)
+
+    def load_state(self) -> dict[str, object]:
+        state = load_json(self.state_path, {})
+        return state if isinstance(state, dict) else {}
+
+    def save_state(self, state: Mapping[str, object]) -> None:
+        write_json_atomic(self.state_path, state)
+
+    def write_status(self, status: str, detail: str = "", current_task: str = "") -> None:
+        write_text_atomic(
+            self.status_path,
+            "\n".join(
+                [
+                    f"status: {status}",
+                    f"detail: {detail}",
+                    f"current_task: {current_task}",
+                    f"watcher_version: {WATCHER_VERSION}",
+                    f"host: {socket.gethostname()}",
+                    f"updated_at: {utc_now()}",
+                    "",
+                ]
+            ),
+        )
+
+    def unacked_executed_count(self) -> int:
+        ack_files = sorted(self.tasks_root.glob("ACK_*.md"), key=lambda p: p.stat().st_mtime)
+        ack_mtime = ack_files[-1].stat().st_mtime if ack_files else 0.0
+        count = 0
+        for folder in (self.done, self.failed):
+            for report in folder.glob("*.report.md"):
+                if report.stat().st_mtime <= ack_mtime:
+                    continue
+                text = report.read_text(encoding="utf-8", errors="replace")
+                if re.search(r"^executed:\s*true\s*$", text, re.MULTILINE):
+                    count += 1
+        return count
+
+    def terminal_report_exists(self, task_id: str) -> bool:
+        return (self.done / f"{task_id}.report.md").exists() or (self.failed / f"{task_id}.report.md").exists()
+
+    def running_tasks(self) -> list[Path]:
+        return sorted(self.running.glob("*.task.yaml"))
+
+    def _process_alive(self, pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    def _handle_existing_running(self) -> bool:
+        tasks = self.running_tasks()
+        if not tasks:
+            return False
+        task_path = tasks[0]
+        task_id = task_path.name.removesuffix(".task.yaml")
+        claimed = load_json(self.running / f"{task_id}.claimed", {})
+        pgid = int(claimed.get("pgid") or claimed.get("pid") or 0) if isinstance(claimed, Mapping) else 0
+        if pgid and self.process_alive(pgid):
+            self.write_status("orphan_run_alive", current_task=task_id)
+            return True
+        self._finish_running_task(task_id, "interrupted", "watcher restarted and run process is dead", executed=False)
+        return True
+
+    def _task_signature_stable(self, task_path: Path, state: dict[str, object]) -> bool:
+        sigs = state.setdefault("file_signatures", {})
+        assert isinstance(sigs, dict)
+        stat = task_path.stat()
+        current = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+        record = sigs.get(task_path.name)
+        if isinstance(record, Mapping) and record.get("size") == current["size"] and record.get("mtime_ns") == current["mtime_ns"]:
+            sigs[task_path.name] = {**current, "stable_count": int(record.get("stable_count", 0)) + 1}
+            return int(record.get("stable_count", 0)) + 1 >= 1
+        sigs[task_path.name] = {**current, "stable_count": 0}
+        return False
+
+    def _ready_marker_ok(self, task_path: Path) -> bool:
+        ready_path = task_path.with_suffix(task_path.suffix + ".ready")
+        if not ready_path.exists():
+            return False
+        expected = ready_path.read_text(encoding="utf-8", errors="replace").strip()
+        expected = expected.removeprefix("sha256:").strip()
+        if expected != sha256_file(task_path):
+            raise WatcherError("ready_sha_mismatch", "ready marker sha256 does not match yaml")
+        return True
+
+    def _next_task_path(self) -> Path | None:
+        state = self.load_state()
+        chosen: Path | None = None
+        for task_path in sorted(self.inbox.glob("*.task.yaml")):
+            if CONFLICT_COPY_RE.search(task_path.name):
+                self.write_status("idle", f"ignored conflict copy: {task_path.name}")
+                continue
+            if not TASK_NAME_RE.fullmatch(task_path.name):
+                self._fail_inbox_task(task_path, "task_schema_mismatch", "bad task filename")
+                continue
+            ready_path = task_path.with_suffix(task_path.suffix + ".ready")
+            if not ready_path.exists():
+                continue
+            if not self._task_signature_stable(task_path, state):
+                continue
+            try:
+                self._ready_marker_ok(task_path)
+            except WatcherError as exc:
+                self._fail_inbox_task(task_path, exc.code, exc.detail)
+                continue
+            chosen = task_path
+            break
+        self.save_state(state)
+        return chosen
+
+    def _claim(self, task_path: Path, spec: TaskSpec) -> tuple[Path, Path]:
+        ready_path = task_path.with_suffix(task_path.suffix + ".ready")
+        running_task = self.running / f"{spec.id}.task.yaml"
+        running_ready = self.running / f"{spec.id}.task.yaml.ready"
+        task_path.replace(running_task)
+        ready_path.replace(running_ready)
+        write_json_atomic(
+            self.running / f"{spec.id}.claimed",
+            {
+                "task_id": spec.id,
+                "watcher_pid": os.getpid(),
+                "host": socket.gethostname(),
+                "claimed_at": utc_now(),
+                "watcher_version": WATCHER_VERSION,
+            },
+        )
+        return running_task, running_ready
+
+    def _fail_inbox_task(self, task_path: Path, status: str, detail: str) -> None:
+        try:
+            data = parse_task_yaml(task_path)
+            task_id = str(data.get("id") or task_path.stem.removesuffix(".task"))
+        except Exception:
+            task_id = task_path.stem.removesuffix(".task")
+        report_path = self.failed / f"{task_id}.report.md"
+        self._write_report(report_path, task_id, status, detail, executed=False)
+        failed_task = self.failed / task_path.name
+        task_path.replace(failed_task)
+        ready = task_path.with_suffix(task_path.suffix + ".ready")
+        if ready.exists():
+            ready.replace(self.failed / ready.name)
+
+    def _finish_running_task(self, task_id: str, status: str, detail: str, *, executed: bool, summary: Mapping[str, object] | None = None) -> None:
+        self._write_report(self.failed / f"{task_id}.report.md", task_id, status, detail, executed=executed, summary=summary)
+        for path in self.running.glob(f"{task_id}*"):
+            path.replace(self.failed / path.name)
+        self.write_status(status, detail, current_task=task_id)
+
+    def _write_report(
+        self,
+        path: Path,
+        task_id: str,
+        status: str,
+        detail: str,
+        *,
+        executed: bool,
+        summary: Mapping[str, object] | None = None,
+        command: tuple[str, ...] = (),
+        bundle_info: Mapping[str, str] | None = None,
+        results_path: Path | None = None,
+    ) -> None:
+        lines = [
+            f"# M1 watcher report: {task_id}",
+            "",
+            f"status: {status}",
+            f"detail: {detail}",
+            f"executed: {'true' if executed else 'false'}",
+            f"watcher_version: {WATCHER_VERSION}",
+            f"host: {socket.gethostname()}",
+            f"created_at: {utc_now()}",
+        ]
+        if bundle_info:
+            lines.extend([f"bundle_head: {bundle_info.get('head', '')}", f"kb_snapshot: {bundle_info.get('kb_snapshot', '')}"])
+        if command:
+            lines.append("command: " + " ".join(command))
+        if results_path:
+            lines.append(f"results_path: {results_path}")
+        if summary:
+            lines.append("summary:")
+            for key in ("overall_verdict", "hard_gates_passed", "total_turns", "llm_calls"):
+                if key in summary:
+                    value = summary[key]
+                    lines.append(f"  {key}: {json.dumps(value, ensure_ascii=False)}")
+        lines.append("")
+        write_text_atomic(path, "\n".join(lines))
+
+    def _wait_or_fail_bundle(self, bundle_id: str, detail: str) -> bool:
+        state = self.load_state()
+        waits = state.setdefault("bundle_waits", {})
+        assert isinstance(waits, dict)
+        now = time.time()
+        first_seen = float(waits.get(bundle_id, now))
+        waits[bundle_id] = first_seen
+        self.save_state(state)
+        if now - first_seen < self.bundle_wait_seconds:
+            self.write_status("bundle_waiting", detail)
+            return True
+        return False
+
+    def _deploy_bundle(self, bundle_id: str) -> tuple[Path, dict[str, str]]:
+        source = self.tests_root / bundle_id
+        if not source.exists():
+            raise WatcherError("bundle_waiting", "bundle directory is missing")
+        try:
+            verify_bundle_manifest(source)
+        except WatcherError as exc:
+            if exc.code == "bundle_waiting" and self._wait_or_fail_bundle(bundle_id, exc.detail):
+                raise
+            raise WatcherError("bundle_incomplete", exc.detail) from exc
+        info = parse_bundle_info(source)
+        target = self.work_root / bundle_id
+        marker = target / ".deployed_ok"
+        if marker.exists():
+            return target, info
+        if target.exists():
+            raise WatcherError("deploy_incomplete", "bundle target exists without .deployed_ok")
+        shutil.copytree(source, target, symlinks=False)
+        write_text_atomic(marker, f"deployed_at: {utc_now()}\nsource: {source}\n")
+        return target, info
+
+    def _build_command(self, spec: TaskSpec, deploy_dir: Path, set_path: Path, out_dir: Path, snapshot_rel: str) -> tuple[str, ...]:
+        return (
+            sys.executable,
+            "scripts/run_telegram_dynamic_client_sim.py",
+            "--scenarios",
+            str(set_path),
+            "--snapshot",
+            snapshot_rel,
+            "--bot-mode",
+            spec.brain,
+            "--memory-mode",
+            "codex",
+            "--memory-reasoning",
+            "low",
+            "--semantic-mode",
+            "codex",
+            "--semantic-reasoning",
+            "medium",
+            "--parallel",
+            str(spec.parallel),
+            "--out-dir",
+            str(out_dir),
+        )
+
+    def _run_subprocess(self, spec: TaskSpec, deploy_dir: Path, out_dir: Path, command: tuple[str, ...], env: Mapping[str, str]) -> RunOutcome:
+        proc = subprocess.Popen(
+            command,
+            cwd=deploy_dir,
+            env=dict(env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        claimed_path = self.running / f"{spec.id}.claimed"
+        claimed = load_json(claimed_path, {})
+        if not isinstance(claimed, dict):
+            claimed = {}
+        claimed.update({"run_pid": proc.pid, "pgid": os.getpgid(proc.pid), "run_started_at": utc_now(), "command": list(command)})
+        write_json_atomic(claimed_path, claimed)
+        try:
+            stdout, stderr = proc.communicate(timeout=spec.max_hours * 3600)
+            return RunOutcome(proc.returncode, True, False, stdout, stderr, command)
+        except subprocess.TimeoutExpired:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                stdout, stderr = proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                os.killpg(pgid, signal.SIGKILL)
+                stdout, stderr = proc.communicate(timeout=15)
+            return RunOutcome(proc.returncode if proc.returncode is not None else -signal.SIGTERM, True, True, stdout, stderr, command)
+
+    def _execute(self, task_path: Path, spec: TaskSpec) -> str:
+        if self.terminal_report_exists(spec.id):
+            self._fail_inbox_task(task_path, "duplicate_id", "task id already has terminal report")
+            return "duplicate_id"
+        try:
+            validate_set_path(self.tests_root, spec.set, spec.set_sha256)
+        except WatcherError as exc:
+            self._fail_inbox_task(task_path, exc.code, exc.detail)
+            return exc.code
+        running_task, _ = self._claim(task_path, spec)
+        self.write_status("running", current_task=spec.id)
+        try:
+            deploy_dir, bundle_info = self._deploy_bundle(spec.requires_bundle)
+        except WatcherError as exc:
+            terminal = exc.code == "bundle_incomplete"
+            if terminal:
+                self._finish_running_task(spec.id, exc.code, exc.detail, executed=False)
+            return exc.code
+
+        set_path = (self.tests_root / spec.set).resolve()
+        work_out_dir = deploy_dir / "runs" / spec.id
+        command = self._build_command(spec, deploy_dir, set_path, work_out_dir, bundle_info["kb_snapshot"])
+        env = os.environ.copy()
+        env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src"})
+        env.update(spec.env)
+
+        runner = self.runner or self._run_subprocess
+        outcome = runner(spec, deploy_dir, work_out_dir, command, env)
+        status = "timeout" if outcome.timed_out else ("success" if outcome.returncode == 0 else "run_failed")
+        yandex_results = self.tests_root / "runs" / spec.id
+        if work_out_dir.exists() and not yandex_results.exists():
+            shutil.copytree(work_out_dir, yandex_results, symlinks=False)
+        summary = load_json(work_out_dir / "dynamic_summary.json", {})
+        if not isinstance(summary, Mapping):
+            summary = {}
+
+        terminal_dir = self.done if status == "success" else self.failed
+        self._write_report(
+            terminal_dir / f"{spec.id}.report.md",
+            spec.id,
+            status,
+            "",
+            executed=outcome.started,
+            summary=summary,
+            command=outcome.command or command,
+            bundle_info=bundle_info,
+            results_path=yandex_results,
+        )
+        for path in self.running.glob(f"{spec.id}*"):
+            path.replace(terminal_dir / path.name)
+        self.write_status(status, current_task=spec.id)
+        return status
+
+    def process_once(self) -> str:
+        self.ensure_layout()
+        if (self.tasks_root / "STOP").exists():
+            self.write_status("stopped")
+            return "stopped"
+        if self.unacked_executed_count() >= 3:
+            self.write_status("awaiting_ack", "3 unconfirmed executed tasks")
+            return "awaiting_ack"
+        if self._handle_existing_running():
+            return "running_present"
+        task_path = self._next_task_path()
+        if task_path is None:
+            self.write_status("idle")
+            return "idle"
+        try:
+            spec = validate_task_dict(parse_task_yaml(task_path))
+        except WatcherError as exc:
+            self._fail_inbox_task(task_path, exc.code, exc.detail)
+            return exc.code
+        return self._execute(task_path, spec)
+
+    def loop(self, poll_seconds: int = DEFAULT_POLL_SECONDS) -> None:
+        while True:
+            self.process_once()
+            time.sleep(poll_seconds)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run deterministic M1 task watcher.")
+    parser.add_argument("--tests-root", type=Path, default=DEFAULT_TESTS_ROOT)
+    parser.add_argument("--work-root", type=Path, default=DEFAULT_WORK_ROOT)
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    parser.add_argument("--poll-seconds", type=int, default=DEFAULT_POLL_SECONDS)
+    parser.add_argument("--once", action="store_true", help="Process one polling cycle and exit.")
+    args = parser.parse_args(argv)
+    watcher = M1Watcher(args.tests_root, args.work_root, args.state_dir)
+    if args.once:
+        print(watcher.process_once())
+        return 0
+    watcher.loop(args.poll_seconds)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

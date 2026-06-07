@@ -18,6 +18,7 @@ def audit_fact_claims(
     active_brand: str,
     retrieved_facts: Mapping[str, Any] | None,
     snapshot_path: Path,
+    include_judge_generic_claims: bool = False,
 ) -> Mapping[str, Any]:
     """Classify support for business claims in a client-facing draft.
 
@@ -40,7 +41,10 @@ def audit_fact_claims(
             items.append(finding)
             seen_claims.add(signature)
 
-    for claim in extract_semantic_fact_claims(text):
+    claims = list(extract_semantic_fact_claims(text))
+    if include_judge_generic_claims:
+        claims.extend(extract_judge_generic_fact_claims(text))
+    for claim in claims:
         signature = (str(claim.get("claim_type") or ""), str(claim.get("claim_text") or ""))
         if signature in seen_claims:
             continue
@@ -137,6 +141,135 @@ def extract_semantic_fact_claims(text: str) -> list[Mapping[str, Any]]:
             }
         )
     return result
+
+
+_JUDGE_GENERIC_BUSINESS_TRIGGERS = (
+    "курс",
+    "занят",
+    "урок",
+    "групп",
+    "запис",
+    "оформ",
+    "распис",
+    "домаш",
+    "задан",
+    "провер",
+    "платформ",
+    "пробн",
+    "скид",
+    "рассроч",
+    "маткап",
+    "вычет",
+    "лагер",
+    "лвш",
+    "трансфер",
+    "прожив",
+    "питан",
+    "адрес",
+    "формат",
+    "онлайн",
+    "очно",
+)
+_JUDGE_GENERIC_STOPWORDS = frozenset(
+    {
+        "это",
+        "есть",
+        "можно",
+        "если",
+        "там",
+        "тут",
+        "для",
+        "или",
+        "при",
+        "как",
+        "что",
+        "все",
+        "вам",
+        "вас",
+        "мы",
+        "нас",
+        "они",
+        "она",
+        "оно",
+        "его",
+        "еще",
+        "ещё",
+        "уже",
+        "только",
+        "обычно",
+        "подскажу",
+        "помогу",
+        "менеджер",
+        "сверит",
+        "уточнит",
+        "проверит",
+        "свяжется",
+        "ответит",
+        "вариант",
+        "подходящий",
+        "центр",
+        "фотон",
+        "унпк",
+        "мфти",
+    }
+)
+
+
+def extract_judge_generic_fact_claims(text: str) -> list[Mapping[str, Any]]:
+    """Judge-only broad claim extractor.
+
+    Runtime gates intentionally keep the narrower extractor. The dynamic judge
+    needs a wider parser-side signal so it can distinguish "fact exists in the
+    brand snapshot, but not in this turn" from an actual fabrication.
+    """
+
+    result: list[Mapping[str, Any]] = []
+    for sentence in _fact_claim_sentences(text):
+        normalized = normalize_fact_text(sentence)
+        if not normalized:
+            continue
+        if not any(trigger in normalized for trigger in _JUDGE_GENERIC_BUSINESS_TRIGGERS):
+            continue
+        terms = _judge_generic_terms(normalized)
+        if len(terms) < 2:
+            continue
+        result.append(
+            {
+                "claim_type": "generic_judge_fact_claim",
+                "claim_text": shorten_claim_text(sentence, terms),
+                "terms": tuple(terms[:5]),
+                "reason": "judge_generic_term_overlap",
+            }
+        )
+    return result
+
+
+def _fact_claim_sentences(text: str) -> list[str]:
+    source = str(text or "").strip()
+    if not source:
+        return []
+    return [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|[\n;]+", source)
+        if 12 <= len(part.strip()) <= 260
+    ]
+
+
+def _judge_generic_terms(normalized_sentence: str) -> list[str]:
+    tokens = [
+        token
+        for token in re.findall(r"[a-zа-яё0-9]{2,}", normalized_sentence.casefold())
+        if token not in _JUDGE_GENERIC_STOPWORDS
+        and not token.isdigit()
+        and not re.fullmatch(r"\d{1,2}", token)
+    ]
+    preferred: list[str] = []
+    for token in tokens:
+        if any(trigger in token for trigger in _JUDGE_GENERIC_BUSINESS_TRIGGERS):
+            preferred.append(token)
+    if len(preferred) >= 2:
+        return list(dict.fromkeys(preferred))
+    return list(dict.fromkeys(tokens))
 
 
 def _discount_term_near_number(text: str, *, percent: str, term: str) -> bool:

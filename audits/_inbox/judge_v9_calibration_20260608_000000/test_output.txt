@@ -1,0 +1,45 @@
+# Test output
+
+Commands run:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile scripts/run_telegram_dynamic_client_sim.py scripts/rejudge_dynamic_transcripts_v9.py src/mango_mvp/channels/fact_claim_audit.py
+```
+
+Result: exit 0.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_telegram_dynamic_client_sim.py -k 'judge_v9 or judge_fact_audit_generic or derived_claim_draft or rejudge_v9 or parse_issue_summary'
+```
+
+Result after one test correction: `11 passed, 66 deselected`.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_telegram_dynamic_client_sim.py
+```
+
+Result: `78 passed in 0.67s`.
+
+Fake smoke:
+
+- A temporary one-dialog fake dynamic run completed and wrote outputs.
+- `scripts/rejudge_dynamic_transcripts_v9.py --judge-mode fake` wrote adjacent `judge_results_v9.jsonl`.
+- Sidecar row contained `judge_prompt_version=judge_v9_verifier_aware`.
+
+Full test suite:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/
+```
+
+Result: `2777 passed, 2 skipped, 1 warning in 37.43s`.
+
+Warning: existing urllib3 `NotOpenSSLWarning` for LibreSSL environment.
+
+Diff check:
+
+```bash
+git diff --check -- CLAUDE.md scripts/run_telegram_dynamic_client_sim.py src/mango_mvp/channels/fact_claim_audit.py tests/test_telegram_dynamic_client_sim.py
+```
+
+Result: exit 0.

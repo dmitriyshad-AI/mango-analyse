@@ -1,0 +1,11 @@
+CLAUDE.md
+scripts/run_telegram_dynamic_client_sim.py
+scripts/rejudge_dynamic_transcripts_v9.py
+src/mango_mvp/channels/fact_claim_audit.py
+tests/test_telegram_dynamic_client_sim.py
+audits/_inbox/judge_v9_calibration_20260608_000000/implementation_notes.md
+audits/_inbox/judge_v9_calibration_20260608_000000/changed_files.txt
+audits/_inbox/judge_v9_calibration_20260608_000000/test_output.txt
+audits/_inbox/judge_v9_calibration_20260608_000000/risk_review.md
+audits/_inbox/judge_v9_calibration_20260608_000000/backward_compatibility.md
+audits/_inbox/judge_v9_calibration_20260608_000000/semantic_review.md

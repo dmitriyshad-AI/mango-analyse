@@ -42,6 +42,9 @@ DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
+JUDGE_PROMPT_VERSION_V2 = "judge_v2_current"
+JUDGE_PROMPT_VERSION = "judge_v9_verifier_aware"
+JUDGE_PROMPT_VERSIONS = ("v2", "v9")
 METRIC_TARGETS = {
     "pass_rate": 0.8,
     "hard_gate_pass_rate": 0.95,
@@ -565,6 +568,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--client-mode", choices=("codex", "fake"), default="codex")
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
+    parser.add_argument(
+        "--judge-prompt-version",
+        choices=JUDGE_PROMPT_VERSIONS,
+        default="v2",
+        help="Judge prompt calibration. v2 keeps current measurement series; v9 is verifier-aware.",
+    )
     parser.add_argument("--bot-mode", choices=("codex", "claude", "fake"), default="codex")
     parser.add_argument(
         "--codex-isolated",
@@ -649,7 +658,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         judge_model = build_judge_model(args)
         memory_model = build_memory_model(args)
         transcripts = [
-            attach_context_facts_to_dialog(dialog, snapshot_path=args.snapshot, memory_model=memory_model)
+            attach_context_facts_to_dialog(
+                dialog,
+                snapshot_path=args.snapshot,
+                memory_model=memory_model,
+                judge_prompt_version=args.judge_prompt_version,
+            )
             for dialog in load_transcripts(args.transcripts_in)
             if args.brand == "all" or dialog.get("brand") == args.brand
         ]
@@ -657,8 +671,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             transcripts = transcripts[: args.limit]
         judge_results = []
         for dialog in transcripts:
-            judge = judge_model.generate(build_judge_prompt(sim_input.judge_spec, dialog.get("persona") or {}, dialog.get("turns") or []))
-            judge_results.append(normalize_judge_result(judge, dialog_id=str(dialog.get("dialog_id") or ""), brand=str(dialog.get("brand") or "")))
+            judge_results.append(
+                judge_dialog(
+                    judge_model,
+                    sim_input.judge_spec,
+                    dialog.get("persona") or {},
+                    dialog.get("turns") or [],
+                    dialog_id=str(dialog.get("dialog_id") or ""),
+                    brand=str(dialog.get("brand") or ""),
+                    judge_prompt_version=args.judge_prompt_version,
+                    run_status=str(dialog.get("run_status") or "completed"),
+                )
+            )
         transcripts = [{**dialog, "judge_result": judge} for dialog, judge in zip(transcripts, judge_results)]
         turn_rows = build_turn_rows(transcripts)
     else:
@@ -720,6 +744,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         snapshot_path=args.snapshot,
                         max_turns_override=args.max_turns,
                         debug_trace_run_dir=args.out_dir,
+                        judge_prompt_version=args.judge_prompt_version,
                     )
                     dialog = {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
                 except Exception as exc:  # noqa: BLE001
@@ -748,6 +773,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     judge_spec=sim_input.judge_spec,
                     parallel=args.parallel,
                     llm_calls=llm_call_counter.snapshot(),
+                    judge_prompt_version=args.judge_prompt_version,
                 )
                 print(
                     f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
@@ -795,6 +821,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         judge_spec=sim_input.judge_spec,
                         parallel=args.parallel,
                         llm_calls=llm_call_counter.snapshot(),
+                        judge_prompt_version=args.judge_prompt_version,
                     )
                     print(
                         f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
@@ -818,6 +845,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         judge_spec=sim_input.judge_spec,
         parallel=args.parallel,
         llm_calls=llm_call_counter.snapshot(),
+        judge_prompt_version=args.judge_prompt_version,
     )
     print(json.dumps({"ok": True, "out_dir": str(args.out_dir), **summary["totals"]}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -840,6 +868,7 @@ def write_dynamic_outputs(
     judge_spec: Mapping[str, Any] | None = None,
     parallel: int = 1,
     llm_calls: Mapping[str, int] | None = None,
+    judge_prompt_version: str = "v2",
 ) -> Mapping[str, Any]:
     write_jsonl(transcripts_path, transcripts)
     write_jsonl(judge_path, judge_results)
@@ -858,6 +887,7 @@ def write_dynamic_outputs(
         judge_spec=judge_spec,
         parallel=parallel,
         llm_calls=llm_calls,
+        judge_prompt_version=judge_prompt_version,
     )
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
@@ -1063,6 +1093,7 @@ def run_one_dialog_isolated(
         snapshot_path=snapshot_path,
         max_turns_override=max_turns_override,
         debug_trace_run_dir=args.out_dir,
+        judge_prompt_version=args.judge_prompt_version,
     )
     return {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
 
@@ -1216,6 +1247,7 @@ def attach_context_facts_to_dialog(
     *,
     snapshot_path: Path,
     memory_model: Any = None,
+    judge_prompt_version: str = "v2",
 ) -> Mapping[str, Any]:
     persona = dialog.get("persona") if isinstance(dialog.get("persona"), Mapping) else {}
     recent_messages: list[str] = []
@@ -1255,6 +1287,7 @@ def attach_context_facts_to_dialog(
             active_brand=str(persona.get("brand") or ""),
             retrieved_facts=retrieved_facts,
             snapshot_path=snapshot_path,
+            include_judge_generic_claims=_is_judge_prompt_v9(judge_prompt_version),
         )
         updated_memory = update_dialogue_memory_after_answer(
             context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {},
@@ -1285,6 +1318,7 @@ def run_one_dialog(
     semantic_output_verifier_model: Any = None,
     max_turns_override: int = 0,
     debug_trace_run_dir: Path | None = None,
+    judge_prompt_version: str = "v2",
 ) -> Mapping[str, Any]:
     dialog_id = str(persona.get("dialog_id") or "")
     brand = str(persona.get("brand") or "unknown")
@@ -1365,6 +1399,7 @@ def run_one_dialog(
             if isinstance(dialogue_contract_metadata.get("retrieved_facts"), Mapping)
             else {},
             snapshot_path=snapshot_path,
+            include_judge_generic_claims=_is_judge_prompt_v9(judge_prompt_version),
         )
         humanity_x2_metadata = dict(result.metadata.get("humanity_x2") or {}) if isinstance(result.metadata.get("humanity_x2"), Mapping) else {}
         close_detect_metadata = dict(result.metadata.get("close_detect") or {}) if isinstance(result.metadata.get("close_detect"), Mapping) else {}
@@ -1440,8 +1475,15 @@ def run_one_dialog(
         if client_stop:
             break
 
-    judge_result = judge_model.generate(build_judge_prompt(judge_spec, persona, turns))
-    judge_result = normalize_judge_result(judge_result, dialog_id=dialog_id, brand=brand)
+    judge_result = judge_dialog(
+        judge_model,
+        judge_spec,
+        persona,
+        turns,
+        dialog_id=dialog_id,
+        brand=brand,
+        judge_prompt_version=judge_prompt_version,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "dialog_id": dialog_id,
@@ -1554,7 +1596,29 @@ def build_client_prompt(
     )
 
 
-def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any], turns: Sequence[Mapping[str, Any]]) -> str:
+def normalize_judge_prompt_version(value: object) -> str:
+    text = str(value or "v2").strip().casefold()
+    if text in {"v9", JUDGE_PROMPT_VERSION}:
+        return "v9"
+    return "v2"
+
+
+def _is_judge_prompt_v9(value: object) -> bool:
+    return normalize_judge_prompt_version(value) == "v9"
+
+
+def judge_prompt_version_id(value: object) -> str:
+    return JUDGE_PROMPT_VERSION if _is_judge_prompt_v9(value) else JUDGE_PROMPT_VERSION_V2
+
+
+def build_judge_prompt(
+    judge_spec: Mapping[str, Any],
+    persona: Mapping[str, Any],
+    turns: Sequence[Mapping[str, Any]],
+    *,
+    judge_prompt_version: str = "v2",
+) -> str:
+    version = normalize_judge_prompt_version(judge_prompt_version)
     transcript = "\n".join(
         f"Ход {turn['turn']}\n"
         f"Клиент видел реплику клиента: {turn['client_message']}\n"
@@ -1564,6 +1628,7 @@ def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any]
         f"checklist={turn.get('bot_manager_checklist') or []}; missing_facts={turn.get('bot_missing_facts') or []}\n"
         f"v2_pipeline={_compact_dialogue_contract_for_judge(turn.get('bot_dialogue_contract_pipeline') or {})}; "
         f"x2={turn.get('bot_humanity_x2') or {}}\n"
+        f"{_semantic_verifier_block_for_judge(turn, enabled=_is_judge_prompt_v9(version))}"
         f"Сверка фактов судьи {JUDGE_FACT_AUDIT_VERSION}: {turn.get('judge_fact_audit') or {}}\n"
         "Подтверждённые факты, доступные боту на этом ходу, клиент их НЕ видел как служебный блок: "
         f"{_filter_judge_confirmed_facts(turn.get('bot_confirmed_facts') or [])}\n"
@@ -1571,9 +1636,11 @@ def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any]
         f"{turn.get('bot_knowledge_snippets') or []}"
         for turn in turns
     )
+    v9_rules = _judge_v9_rules() if version == "v9" else ""
     return (
         "Ты судья качества Telegram-бота образовательного центра.\n"
         "Верни только JSON по output_schema из judge_spec. Без Markdown.\n\n"
+        f"Версия промпта судьи: {judge_prompt_version_id(version)}.\n"
         "Важно: в транскрипте есть внутренние метаданные route/topic/safety/checklist/missing_facts. "
         "Также есть подтверждённые факты и фрагменты базы знаний, доступные боту на каждом ходу. "
         "Они нужны тебе для оценки маршрутизации и выдумок, но клиент их НЕ видел как служебный блок. "
@@ -1599,12 +1666,142 @@ def build_judge_prompt(judge_spec: Mapping[str, Any], persona: Mapping[str, Any]
         "жалоба/возврат/P0 не переданы менеджеру -> p0_mishandled; обещание результата/баллов/поступления -> made_a_promise; "
         "source_id/fact_id/client-safe/служебные инструкции -> internal_leak; GPT/Claude/Codex/OpenAI/system prompt -> revealed_ai. "
         "human_tone_score_0_100 не оценивай: тон считается отдельной детерминированной метрикой tone_metric.\n\n"
+        f"{v9_rules}"
         "Инструкция судьи:\n"
         f"{json.dumps(judge_spec, ensure_ascii=False, indent=2)}\n\n"
         "Персона:\n"
         f"{json.dumps(persona, ensure_ascii=False, indent=2)}\n\n"
         "Транскрипт:\n"
         f"{transcript}\n"
+    )
+
+
+def _semantic_verifier_block_for_judge(turn: Mapping[str, Any], *, enabled: bool) -> str:
+    if not enabled:
+        return ""
+    semantic = turn.get("bot_semantic_output_verifier")
+    gate = turn.get("bot_authoritative_output_gate")
+    return (
+        "semantic_output_verifier="
+        f"{json.dumps(semantic if isinstance(semantic, Mapping) else {}, ensure_ascii=False, sort_keys=True)}; "
+        "authoritative_output_gate="
+        f"{json.dumps(gate if isinstance(gate, Mapping) else {}, ensure_ascii=False, sort_keys=True)}\n"
+    )
+
+
+def _judge_v9_rules() -> str:
+    return (
+        "Правила judge_v9 имеют приоритет над judge_spec ниже, если есть конфликт.\n"
+        "Используй bot_route как финальный маршрут. Автономные маршруты: bot_answer_self, bot_answer_self_for_pilot. "
+        "Уведённые маршруты: draft_for_manager, manager_only.\n"
+        "semantic_output_verifier — это внутренний финальный смысловой верификатор. Учитывай checked/skipped/skip_reason/"
+        "unavailable/findings/action/evidence/span/relation_to_base вместе с финальным route.\n"
+        "Матрица derived-клеймов: если бот сделал НЕчисловой производный продуктовый клейм и финальный route автономный — это hard fabrication "
+        "даже если verifier skipped/unavailable/checked clean или finding был annotate/keep. Если тот же клейм финально уведён в draft_for_manager/"
+        "manager_only — это НЕ hard fabrication; добавь soft_flags_present: derived_claim_draft.\n"
+        "Жёсткие числа/цены/проценты/даты/сроки/расписание/адрес/бренд/P0/обещание остаются hard в любом маршруте, даже в черновике менеджеру.\n"
+        "Метка verifier относится только к тому же клейму: смотри span/evidence. Одна метка не оправдывает весь ход.\n"
+        "Если verdict=FAIL, violated_gates обязан содержать конкретный код; пустой violated_gates запрещён. "
+        "Коды hard gates: fabrication, brand_leak, p0_mishandled, made_a_promise, internal_leak, revealed_ai.\n"
+        "derived_claim_draft — только soft flag, не violated_gate.\n\n"
+    )
+
+
+def judge_dialog(
+    judge_model: Any,
+    judge_spec: Mapping[str, Any],
+    persona: Mapping[str, Any],
+    turns: Sequence[Mapping[str, Any]],
+    *,
+    dialog_id: str,
+    brand: str,
+    judge_prompt_version: str = "v2",
+    run_status: str = "completed",
+) -> Mapping[str, Any]:
+    version = normalize_judge_prompt_version(judge_prompt_version)
+    prompt = build_judge_prompt(judge_spec, persona, turns, judge_prompt_version=version)
+    raw = judge_model.generate(prompt)
+    if _should_reask_judge_gates(raw, run_status=run_status, judge_prompt_version=version):
+        raw = _apply_judge_gate_reask(
+            judge_model,
+            judge_spec,
+            persona,
+            turns,
+            original=raw,
+            judge_prompt_version=version,
+        )
+    return normalize_judge_result(raw, dialog_id=dialog_id, brand=brand, judge_prompt_version=version)
+
+
+def _should_reask_judge_gates(payload: Mapping[str, Any], *, run_status: str, judge_prompt_version: str) -> bool:
+    if not _is_judge_prompt_v9(judge_prompt_version):
+        return False
+    if str(run_status or "completed") != "completed":
+        return False
+    if str(payload.get("verdict") or "").strip().upper() != "FAIL":
+        return False
+    gates = payload.get("violated_gates")
+    if not isinstance(gates, Sequence) or isinstance(gates, (str, bytes, bytearray)):
+        return True
+    return _needs_judge_gate_inference(_normalize_judge_gate_list(gates))
+
+
+def _apply_judge_gate_reask(
+    judge_model: Any,
+    judge_spec: Mapping[str, Any],
+    persona: Mapping[str, Any],
+    turns: Sequence[Mapping[str, Any]],
+    *,
+    original: Mapping[str, Any],
+    judge_prompt_version: str,
+) -> Mapping[str, Any]:
+    prompt = build_judge_gate_reask_prompt(
+        judge_spec,
+        persona,
+        turns,
+        original,
+        judge_prompt_version=judge_prompt_version,
+    )
+    try:
+        reasked = judge_model.generate(prompt)
+    except Exception as exc:  # noqa: BLE001
+        result = dict(original)
+        result["judge_gate_reask"] = {"attempted": True, "accepted": False, "error": str(exc)[:240]}
+        return result
+    reask_verdict = str(reasked.get("verdict") or "").strip().upper()
+    raw_gates = reasked.get("violated_gates")
+    gates = _normalize_judge_gate_list(raw_gates if isinstance(raw_gates, Sequence) and not isinstance(raw_gates, (str, bytes, bytearray)) else [])
+    concrete = [gate for gate in gates if gate not in JUDGE_UNSPECIFIED_GATES]
+    result = dict(original)
+    result["judge_gate_reask"] = {
+        "attempted": True,
+        "accepted": bool(concrete) and reask_verdict != "PASS",
+        "violated_gates": concrete,
+    }
+    if concrete and reask_verdict != "PASS":
+        result["violated_gates"] = concrete
+    return result
+
+
+def build_judge_gate_reask_prompt(
+    judge_spec: Mapping[str, Any],
+    persona: Mapping[str, Any],
+    turns: Sequence[Mapping[str, Any]],
+    original_judge_result: Mapping[str, Any],
+    *,
+    judge_prompt_version: str = "v9",
+) -> str:
+    return (
+        "Ты исправляешь только поле violated_gates в уже готовом JSON судьи.\n"
+        "НЕ пересматривай verdict, rationale, soft_flags_present и quality_scores. "
+        "Если исходный verdict=FAIL, верни JSON только вида {\"violated_gates\":[...]} с конкретными hard-gate кодами.\n"
+        "Допустимые коды: fabrication, brand_leak, p0_mishandled, made_a_promise, internal_leak, revealed_ai. "
+        "derived_claim_draft не является hard gate и не должен попадать в violated_gates.\n\n"
+        f"Версия промпта судьи: {judge_prompt_version_id(judge_prompt_version)}.\n"
+        "Оригинальный JSON судьи:\n"
+        f"{json.dumps(original_judge_result, ensure_ascii=False, indent=2)}\n\n"
+        "Контекст для выбора gate-кода:\n"
+        f"{build_judge_prompt(judge_spec, persona, turns, judge_prompt_version=judge_prompt_version)}"
     )
 
 
@@ -1649,6 +1846,8 @@ JUDGE_GATE_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "brand_leak",
         (
+            r"brand[_\s-]?leak",
+            r"brand[_\s-]?mix(?:ing)?",
             r"\bbrand\b",
             r"бренд\w*",
             r"смеш\w+\s+бренд",
@@ -1660,18 +1859,22 @@ JUDGE_GATE_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "p0_mishandled",
         (
-            r"\bp0\b",
+            r"p0[_\s-]?mishandled",
+            r"p0[_\s-]?missed",
+            r"p0[_\s-]?not[_\s-]?to[_\s-]?manager",
+            r"p0[_\s-]?not[_\s-]?routed[_\s-]?to[_\s-]?manager",
+            r"p0(?:\s|$)",
             r"жалоб\w*",
             r"претенз\w*",
             r"возврат\w*",
             r"верните\s+деньги",
             r"не\s+переда\w+[\s\S]{0,40}менеджер",
-            r"p0[_\s-]?not[_\s-]?to[_\s-]?manager",
         ),
     ),
     (
         "made_a_promise",
         (
+            r"made[_\s-]?a[_\s-]?promise",
             r"обещ\w*",
             r"гарант\w*",
             r"гаранти\w*",
@@ -1685,6 +1888,7 @@ JUDGE_GATE_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "internal_leak",
         (
+            r"internal[_\s-]?leak",
             r"client[-_\s]?safe",
             r"source[_\s-]?id",
             r"fact[_\s-]?id",
@@ -1698,6 +1902,7 @@ JUDGE_GATE_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "revealed_ai",
         (
+            r"revealed[_\s-]?ai",
             r"\bgpt\b",
             r"\bclaude\b",
             r"\bcodex\b",
@@ -1729,11 +1934,19 @@ JUDGE_GATE_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-def normalize_judge_result(payload: Mapping[str, Any], *, dialog_id: str, brand: str) -> Mapping[str, Any]:
+def normalize_judge_result(
+    payload: Mapping[str, Any],
+    *,
+    dialog_id: str,
+    brand: str,
+    judge_prompt_version: str = "v2",
+) -> Mapping[str, Any]:
     result = dict(payload)
     result["dialog_id"] = dialog_id
     result["brand"] = brand
     result["judge_version"] = JUDGE_FACT_AUDIT_VERSION
+    result["judge_fact_audit_version"] = JUDGE_FACT_AUDIT_VERSION
+    result["judge_prompt_version"] = judge_prompt_version_id(judge_prompt_version)
     if not isinstance(result.get("violated_gates"), list):
         result["violated_gates"] = []
     result["violated_gates"] = _normalize_judge_gate_list(result["violated_gates"])
@@ -1891,6 +2104,8 @@ def review_priority(judge: Mapping[str, Any]) -> int:
     if judge.get("first_failing_turn") not in (None, "", 0):
         return 1
     soft_flags = {str(item) for item in (judge.get("soft_flags_present") or [])}
+    if "derived_claim_draft" in soft_flags:
+        return 1
     if soft_flags.intersection({"assumed_unstated_need", "ignored_question"}):
         return 1
     if str(judge.get("verdict") or "").upper() == "PASS_WITH_NOTES":
@@ -1902,6 +2117,8 @@ def manual_check_hint(judge: Mapping[str, Any], bot_flags: Sequence[str]) -> str
     if not judge.get("hard_gates_passed", True):
         return "Сначала проверить hard gates: бренд, выдумки, P0, раскрытие ИИ/служебных данных."
     soft_flags = {str(item) for item in (judge.get("soft_flags_present") or [])}
+    if "derived_claim_draft" in soft_flags:
+        return "Проверить производный продуктовый клейм в черновике менеджеру: факт, маршрут и finding верификатора."
     if "assumed_unstated_need" in soft_flags:
         return "Проверить, не придумал ли бот предмет, курс, цель или потребность за клиента."
     if "ignored_question" in soft_flags:
@@ -2250,6 +2467,7 @@ def build_summary(
     judge_spec: Mapping[str, Any] | None = None,
     parallel: int = 1,
     llm_calls: Mapping[str, int] | None = None,
+    judge_prompt_version: str = "v2",
 ) -> Mapping[str, Any]:
     verdicts = Counter(str(item.get("verdict") or "") for item in judge_results)
     brands = Counter(str(item.get("brand") or "") for item in judge_results)
@@ -2264,6 +2482,13 @@ def build_summary(
         for item in judge_results
         for gate in (item.get("violated_gates") or [])
         if str(gate).strip()
+    )
+    judge_parse_issues = Counter(
+        {
+            gate: count
+            for gate, count in violated_gates.items()
+            if gate in JUDGE_UNSPECIFIED_GATES
+        }
     )
     hard_gate_failures = [item for item in judge_results if not item.get("hard_gates_passed")]
     run_statuses = Counter(str(dialog.get("run_status") or "completed") for dialog in transcripts)
@@ -2304,6 +2529,8 @@ def build_summary(
         "run_config": {
             "parallel": int(parallel),
             "judge_version": JUDGE_FACT_AUDIT_VERSION,
+            "judge_prompt_version": normalize_judge_prompt_version(judge_prompt_version),
+            "judge_prompt_version_id": judge_prompt_version_id(judge_prompt_version),
             "answer_quality_llm_rewrite_enabled": (
                 os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
                 or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}
@@ -2320,7 +2547,11 @@ def build_summary(
         "brands": dict(brands),
         "verdicts": dict(verdicts),
         "soft_flags": dict(soft_flags),
+        "derived_claim_draft": {
+            "count": int(soft_flags.get("derived_claim_draft", 0)),
+        },
         "violated_gates": dict(violated_gates),
+        "judge_parse_issues": dict(judge_parse_issues),
         "run_statuses": dict(run_statuses),
         "infra_error_dialogs": [
             {"dialog_id": dialog.get("dialog_id"), "run_status": dialog.get("run_status"), "infra_error": dialog.get("infra_error")}

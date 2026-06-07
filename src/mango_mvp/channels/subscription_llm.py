@@ -3737,6 +3737,8 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
     for line in value.splitlines() or [value]:
         stripped = line.strip()
         if not stripped:
+            if kept_lines and kept_lines[-1] != "":
+                kept_lines.append("")
             continue
         if OUTPUT_SANITIZER_SEPARATOR_LINE_RE.fullmatch(stripped):
             reasons.append("tone_separator")
@@ -3812,8 +3814,8 @@ def _raw_detail_handoff_looks_like_question(detail: str) -> bool:
 
 def _normalize_output_sanitizer_text(text: str) -> str:
     value = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    lines = [re.sub(r"\s+", " ", line).strip() for line in value.split("\n")]
-    value = "\n".join(line for line in lines if line)
+    lines = [re.sub(r"[ \t\f\v]+", " ", line).strip() for line in value.split("\n")]
+    value = "\n".join(lines)
     value = re.sub(r"\s+([,.;:!?])", r"\1", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
@@ -4283,7 +4285,7 @@ def strip_internal_service_markers(text: str) -> str:
         return ""
     safe_variant = INTERNAL_SAFE_VARIANT_RE.search(value)
     if safe_variant:
-        candidate = " ".join(str(safe_variant.group("text") or "").split())
+        candidate = _normalize_output_sanitizer_text(str(safe_variant.group("text") or ""))
         if candidate and not INTERNAL_MANAGER_DRAFT_RE.search(candidate):
             return candidate.strip()
     if INTERNAL_MANAGER_DRAFT_RE.search(value):
@@ -4303,9 +4305,7 @@ def strip_internal_service_markers(text: str) -> str:
     value = INTERNAL_SERVICE_TOKEN_RE.sub("", value)
     if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
         return ""
-    value = re.sub(r"\s+([,.;:!?])", r"\1", value)
-    value = re.sub(r"\s{2,}", " ", value)
-    return value.strip()
+    return _normalize_output_sanitizer_text(value)
 
 
 def draft_has_internal_service_markers(text: str) -> bool:

@@ -4763,6 +4763,42 @@ def test_output_sanitizer_removes_semantic_regen_edit_comment() -> None:
     assert "internal_metadata_removed_from_draft" in gated.safety_flags
 
 
+def test_output_sanitizer_preserves_client_paragraphs() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "Ответ клиенту:\n"
+            "Да, домашние задания всегда проверяются.   \n\n"
+            "Материалы и задания идут в чате с преподавателем."
+        ),
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Домашку проверяют?",
+        context={"active_brand": "foton", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert gated.draft_text == (
+        "Да, домашние задания всегда проверяются.\n\n"
+        "Материалы и задания идут в чате с преподавателем."
+    )
+    assert gated.metadata["output_sanitizer"]["applied"] is True
+
+
+def test_strip_internal_service_markers_preserves_safe_variant_paragraphs() -> None:
+    text = (
+        "служебная заметка: безопасный вариант: "
+        '"Да, домашние задания всегда проверяются.\n\nМатериалы идут в чате."'
+    )
+
+    assert strip_internal_service_markers(text) == (
+        "Да, домашние задания всегда проверяются.\n\n"
+        "Материалы идут в чате."
+    )
+
+
 def test_output_sanitizer_removes_tone_noise_phrases_and_separators() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

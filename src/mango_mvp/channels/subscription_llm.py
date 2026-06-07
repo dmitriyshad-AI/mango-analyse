@@ -56,9 +56,13 @@ from mango_mvp.channels.semantic_roles import tag_message_roles
 from mango_mvp.channels.text_signals import has_any_marker, has_marker
 from mango_mvp.channels.tone_block import (
     TONE_CLOSE_DETECT_ENV,
+    TONE_RICH_FORMAT_ENV,
+    TONE_SELL_PROMPT_ENV,
     TONE_WARM_FRAME_ENV,
     apply_warm_frame,
     close_detect_enabled,
+    sell_prompt_enabled,
+    tone_rich_format_enabled,
 )
 from mango_mvp.channels.draft_prompt_builder import (
     IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES,
@@ -2022,8 +2026,9 @@ class SubscriptionLlmDraftProvider:
             toned = apply_phase2_tone_layer(rewritten, client_message=client_message, context=context)
             proactive = apply_a2_proactive_layer(toned, client_message=client_message, context=context)
             closed = apply_tone_close_detect_layer(proactive, client_message=client_message, context=context)
+            observed = apply_tone_sell_prompt_observer(closed, client_message=client_message, context=context)
             semantic_checked = apply_semantic_output_verifier(
-                closed,
+                observed,
                 client_message=client_message,
                 context=context,
                 verifier_fn=self._semantic_output_verifier_runner,
@@ -2083,6 +2088,7 @@ class SubscriptionLlmDraftProvider:
         result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
         result = apply_tone_close_detect_layer(result, client_message=client_message, context=context)
+        result = apply_tone_sell_prompt_observer(result, client_message=client_message, context=context)
         result = apply_semantic_output_verifier(
             result,
             client_message=client_message,
@@ -2857,6 +2863,7 @@ class FakeSubscriptionLlmDraftProvider:
         result = apply_humanity_x2_rewriter(result, client_message=client_message, context=context)
         result = apply_phase2_tone_layer(result, client_message=client_message, context=context)
         result = apply_a2_proactive_layer(result, client_message=client_message, context=context)
+        result = apply_tone_sell_prompt_observer(result, client_message=client_message, context=context)
         result = apply_semantic_diagnosis_guard(result, client_message=client_message, context=context)
         return apply_authoritative_output_gate(result, client_message=client_message, context=context)
 
@@ -3031,11 +3038,46 @@ def apply_a2_proactive_layer(
     """A2.1 callback/contact capture plus deterministic rich-format guard."""
 
     updated = result
-    if _a2_proactive_enabled(context):
+    if _a2_proactive_enabled(context) or sell_prompt_enabled(context):
         updated = _a2_contact_capture_handoff(updated, client_message=client_message, context=context)
     if _a2_rich_format_enabled(context):
         updated = _a2_apply_rich_format_guard(updated, client_message=client_message, context=context)
     return updated
+
+
+_TONE_SELL_PROMPT_STEP_RE = re.compile(
+    r"\b(?:подскаж(?:у|ите)|помогу|сориентирую|подбер[уеё]м?|давайте|можно\s+(?:начать|записаться|посмотреть)|"
+    r"оставьте\s+(?:телефон|номер|контакт)|позвоним|свяжемся|когда\s+удобн|как\s+записаться|запис[а-яё]*|"
+    r"передам\s+менеджеру|менеджер\s+(?:подбер[её]т|поможет|сверит|свяжется))\b",
+    re.I,
+)
+
+
+def apply_tone_sell_prompt_observer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not sell_prompt_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    existing = dict(metadata.get("tone_sell_prompt") or {}) if isinstance(metadata.get("tone_sell_prompt"), Mapping) else {}
+    active_self_route = result.route in {"bot_answer_self", "bot_answer_self_for_pilot"}
+    serious = _a2_context_tag(result, client_message=client_message, context=context) in _A2_SERIOUS_TAGS
+    close_meta = metadata.get("close_detect") if isinstance(metadata.get("close_detect"), Mapping) else {}
+    has_step = bool(_TONE_SELL_PROMPT_STEP_RE.search(str(result.draft_text or ""))) or bool(close_meta)
+    step_missing = bool(active_self_route and not serious and not has_step)
+    metadata["tone_sell_prompt"] = {
+        **existing,
+        "enabled": True,
+        "step_missing": step_missing,
+        "has_visible_step": has_step,
+        "route": result.route,
+    }
+    if step_missing:
+        metadata["sell_prompt_step_missing"] = True
+    return replace(result, metadata=metadata)
 
 
 _TONE_CLOSE_GRATITUDE_RE = re.compile(
@@ -3382,9 +3424,13 @@ def _a2_proactive_enabled(context: Optional[Mapping[str, Any]]) -> bool:
 
 def _a2_rich_format_enabled(context: Optional[Mapping[str, Any]]) -> bool:
     if isinstance(context, Mapping):
-        for key in ("a_rich_format_enabled", "rich_format_enabled", A_RICH_FORMAT_ENV):
+        for key in ("a_rich_format_enabled", "rich_format_enabled", A_RICH_FORMAT_ENV, TONE_RICH_FORMAT_ENV):
             if key in context:
                 return _truthy_value(context.get(key))
+        if tone_rich_format_enabled(context):
+            return True
+    if tone_rich_format_enabled(context):
+        return True
     return _truthy_value(os.getenv(A_RICH_FORMAT_ENV))
 
 

@@ -1368,6 +1368,7 @@ def run_one_dialog(
         )
         humanity_x2_metadata = dict(result.metadata.get("humanity_x2") or {}) if isinstance(result.metadata.get("humanity_x2"), Mapping) else {}
         close_detect_metadata = dict(result.metadata.get("close_detect") or {}) if isinstance(result.metadata.get("close_detect"), Mapping) else {}
+        tone_sell_prompt_metadata = dict(result.metadata.get("tone_sell_prompt") or {}) if isinstance(result.metadata.get("tone_sell_prompt"), Mapping) else {}
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))
@@ -1402,6 +1403,7 @@ def run_one_dialog(
             "bot_authoritative_output_gate": authoritative_gate_metadata,
             "bot_semantic_output_verifier": semantic_output_verifier_metadata,
             "bot_close_detect": close_detect_metadata,
+            "bot_tone_sell_prompt": tone_sell_prompt_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
             "bot_humanity_x2": humanity_x2_metadata,
@@ -2134,6 +2136,86 @@ def _close_detect_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
     }
 
 
+def _non_p0_self_route_transcripts(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    filtered: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        if not isinstance(dialog, Mapping):
+            continue
+        turns: list[Mapping[str, Any]] = []
+        for turn in dialog.get("turns") or []:
+            if isinstance(turn, Mapping) and _is_non_p0_self_tone_turn(turn):
+                turns.append(turn)
+        filtered.append({**dict(dialog), "turns": turns})
+    return filtered
+
+
+def _is_non_p0_self_tone_turn(turn: Mapping[str, Any]) -> bool:
+    route = str(turn.get("bot_route") or "").strip()
+    if route in {"manager_only", "draft_for_manager"}:
+        return False
+    risk = str(turn.get("bot_risk_level") or "").strip().casefold()
+    if risk in {"p0", "high", "critical", "high_risk"}:
+        return False
+    flags = " ".join(str(flag or "") for flag in (turn.get("bot_safety_flags") or ())).casefold()
+    if any(marker in flags for marker in ("p0", "refund", "payment_dispute", "complaint", "legal", "high_risk")):
+        return False
+    return True
+
+
+def _rich_format_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    eligible: list[Mapping[str, Any]] = []
+    with_paragraphs = 0
+    for dialog in transcripts:
+        dialog_id = dialog.get("dialog_id") if isinstance(dialog, Mapping) else ""
+        for turn in (dialog.get("turns") or []) if isinstance(dialog, Mapping) else ():
+            if not isinstance(turn, Mapping):
+                continue
+            text = str(turn.get("bot_text") or "")
+            fact_keys = _turn_fact_keys(turn)
+            is_eligible = len(fact_keys) >= 2 or len(text) >= 350
+            if not is_eligible:
+                continue
+            has_paragraphs = "\n\n" in text.strip()
+            if has_paragraphs:
+                with_paragraphs += 1
+            eligible.append(
+                {
+                    "dialog_id": dialog_id,
+                    "turn": turn.get("turn"),
+                    "chars": len(text),
+                    "fact_key_count": len(fact_keys),
+                    "has_paragraphs": has_paragraphs,
+                }
+            )
+    total = len(eligible)
+    return {
+        "schema_version": "rich_format_v1_2026_06_07",
+        "eligible_multifact_turns": total,
+        "with_paragraphs": with_paragraphs,
+        "share_with_paragraphs": round(with_paragraphs / total, 3) if total else None,
+        "missing_paragraph_examples": [item for item in eligible if not item["has_paragraphs"]][:20],
+    }
+
+
+def _turn_fact_keys(turn: Mapping[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    pipeline = turn.get("bot_dialogue_contract_pipeline")
+    if isinstance(pipeline, Mapping):
+        for item in pipeline.get("retrieved_fact_keys") or ():
+            if str(item).strip():
+                keys.add(str(item).strip())
+        retrieved = pipeline.get("retrieved_facts")
+        if isinstance(retrieved, Mapping):
+            keys.update(str(key).strip() for key in retrieved if str(key).strip())
+    for item in turn.get("bot_confirmed_facts") or ():
+        text = str(item or "").strip()
+        if ":" in text:
+            key = text.split(":", 1)[0].strip()
+            if key:
+                keys.add(key)
+    return keys
+
+
 def build_summary(
     transcripts: Sequence[Mapping[str, Any]],
     judge_results: Sequence[Mapping[str, Any]],
@@ -2163,6 +2245,8 @@ def build_summary(
     send_unedited = _send_unedited_proxy(transcripts, judge_results)
     over_handoff = _over_handoff_metrics(transcripts)
     tone_metric = summarize_tone_scores(transcripts)
+    tone_metric_non_p0_self = summarize_tone_scores(_non_p0_self_route_transcripts(transcripts))
+    rich_format = _rich_format_summary(transcripts)
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
     manager_deferrals = _manager_deferral_summary(transcripts)
@@ -2270,6 +2354,8 @@ def build_summary(
         },
         "branch_metrics": _branch_count_metrics(transcripts),
         "tone_metric": tone_metric,
+        "tone_metric_non_p0_self": tone_metric_non_p0_self,
+        "rich_format": rich_format,
         "llm_calls": llm_call_summary,
         "semantic_output_verifier": semantic_output_verifier,
         "turn_fallback_reasons": fallback_reasons,

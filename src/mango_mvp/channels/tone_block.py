@@ -7,6 +7,8 @@ from typing import Any, Mapping, Sequence
 
 TONE_WARM_FRAME_ENV = "TELEGRAM_TONE_WARM_FRAME"
 TONE_CLOSE_DETECT_ENV = "TELEGRAM_TONE_CLOSE_DETECT"
+TONE_SELL_PROMPT_ENV = "TELEGRAM_TONE_SELL_PROMPT"
+TONE_RICH_FORMAT_ENV = "TELEGRAM_TONE_RICH_FORMAT"
 
 _WARM_PREFIXES: tuple[str, ...] = (
     "Конечно! Вот как это устроено у нас: ",
@@ -49,6 +51,22 @@ def close_detect_enabled(context: Mapping[str, Any] | None = None) -> bool:
             if key in context:
                 return truthy_value(context.get(key))
     return truthy_value(os.getenv(TONE_CLOSE_DETECT_ENV))
+
+
+def sell_prompt_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (TONE_SELL_PROMPT_ENV, "tone_sell_prompt_enabled"):
+            if key in context:
+                return truthy_value(context.get(key))
+    return truthy_value(os.getenv(TONE_SELL_PROMPT_ENV))
+
+
+def tone_rich_format_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (TONE_RICH_FORMAT_ENV, "tone_rich_format_enabled"):
+            if key in context:
+                return truthy_value(context.get(key))
+    return truthy_value(os.getenv(TONE_RICH_FORMAT_ENV))
 
 
 def apply_warm_frame(text: str, *, context: Mapping[str, Any] | None = None, kind: str = "") -> str:

@@ -17,6 +17,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     run_pipeline,
     verify_output as verify_dialogue_contract_output,
 )
+from mango_mvp.channels.draft_prompt_builder import build_draft_prompt
 from mango_mvp.channels.subscription_llm import (
     ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
     ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
@@ -49,6 +50,8 @@ from mango_mvp.channels.subscription_llm import (
     TAX_LICENSE_SAFE_TEXT,
     TAX_ONLINE_FORM_SAFE_TEXT,
     TONE_CLOSE_DETECT_ENV,
+    TONE_RICH_FORMAT_ENV,
+    TONE_SELL_PROMPT_ENV,
     TONE_WARM_FRAME_ENV,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
     apply_payment_confirmation_guard,
@@ -60,6 +63,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_humanity_x2_rewriter,
     apply_phase2_tone_layer,
     apply_tone_close_detect_layer,
+    apply_tone_sell_prompt_observer,
     apply_warm_frame,
     apply_semantic_output_verifier,
     apply_semantic_diagnosis_guard,
@@ -4997,6 +5001,99 @@ def test_tone_close_detect_uses_contact_requested_memory_before_foton_trial_step
     assert "пробн" in closed.draft_text.casefold()
     assert closed.draft_text.startswith("Обращайтесь в любое время!")
     assert "телефон" not in closed.draft_text.casefold()
+
+
+def test_tone_wave2_prompt_blocks_are_gated_and_preserve_brand_boundaries() -> None:
+    context = {
+        "active_brand": "unpk",
+        TONE_SELL_PROMPT_ENV: "1",
+        TONE_RICH_FORMAT_ENV: "1",
+        "confirmed_facts": {
+            "payment_options.unpk": "УНПК: можно платить помесячно, за семестр или за год.",
+            "discounts.semester_payment": "УНПК: при оплате за семестр действует скидка 10%.",
+            "discounts.year_payment": "УНПК: при оплате за год действует скидка 14%.",
+        },
+        "conversation_intent_plan": {
+            "primary_intent": "payment_method",
+            "direct_question": "Серьёзная сумма для семьи, как записаться?",
+            "selling": {"objection": "price", "exit_signal": False, "readiness": "ready"},
+        },
+        "dialogue_memory_view": {
+            "proactive_state": {"contact_requested": True, "recent_ignored": 2},
+            "a2_proactive_state": {"recent_ignored": 2},
+        },
+        "next_best_question": "Для какого класса смотрите курс?",
+    }
+
+    prompt = build_draft_prompt("Серьёзная сумма для семьи, как записаться?", context=context)
+    off_prompt = build_draft_prompt("Сколько стоит?", context={"active_brand": "unpk"})
+
+    assert "Продающий тон TELEGRAM_TONE_SELL_PROMPT" in prompt
+    assert "Форматирование TELEGRAM_TONE_RICH_FORMAT" in prompt
+    assert "максимум один на ход" in prompt
+    assert "Не задавай список вопросов" in prompt
+    assert "recent_ignored >= 2" in prompt
+    assert "contact_requested=true" in prompt
+    assert "как записаться" in prompt
+    assert "скидки не придумывай" in prompt
+    assert "УНПК: не предлагай рассрочку, Долями" in prompt
+    assert "10%/14%" in prompt
+    assert "по подтверждённым данным" in prompt
+    assert "по проверенным ценам" in prompt
+    assert "пустая строка между блоками" in prompt
+    assert "TELEGRAM_TONE_SELL_PROMPT" not in off_prompt
+    assert "TELEGRAM_TONE_RICH_FORMAT" not in off_prompt
+
+
+def test_tone_sell_prompt_observer_logs_missing_step_without_changing_text() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Стоимость онлайн-курса — 49 000 ₽.",
+        topic_id="theme:001_pricing",
+    )
+
+    observed = apply_tone_sell_prompt_observer(
+        result,
+        client_message="Спасибо",
+        context={"active_brand": "foton", TONE_SELL_PROMPT_ENV: "1"},
+    )
+    with_step = apply_tone_sell_prompt_observer(
+        replace(result, draft_text="Стоимость онлайн-курса — 49 000 ₽. Подскажу, как записаться."),
+        client_message="Спасибо",
+        context={"active_brand": "foton", TONE_SELL_PROMPT_ENV: "1"},
+    )
+
+    assert observed.draft_text == result.draft_text
+    assert observed.route == result.route
+    assert observed.metadata["tone_sell_prompt"]["enabled"] is True
+    assert observed.metadata["tone_sell_prompt"]["step_missing"] is True
+    assert observed.metadata["sell_prompt_step_missing"] is True
+    assert with_step.metadata["tone_sell_prompt"]["step_missing"] is False
+    assert "sell_prompt_step_missing" not in with_step.metadata
+
+
+def test_tone_sell_prompt_allows_contact_capture_without_a2_proactive_offer() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, записаться можно. Оставьте телефон — менеджер подберёт группу.",
+        topic_id="theme:020_enrollment",
+        metadata={"tone_sell_prompt": {"enabled": True}},
+    )
+
+    captured = apply_a2_proactive_layer(
+        result,
+        client_message="Мой телефон +7 999 123-45-67, удобно завтра вечером",
+        context={"active_brand": "foton", TONE_SELL_PROMPT_ENV: "1"},
+    )
+
+    assert captured.route == "draft_for_manager"
+    assert captured.manager_followup_required is True
+    assert "a2_proactive_contact_captured" in captured.safety_flags
+    assert "+7" not in captured.draft_text
+    assert "999" not in captured.draft_text
+    assert "завтра вечером" not in captured.draft_text.casefold()
+    assert captured.metadata["a2_proactive"]["phone_masked"] == "[phone:***67]"
+    assert captured.metadata["a2_proactive"]["preferred_time"] == "[provided]"
 
 
 def test_authoritative_gate_does_not_turn_presale_refund_followup_into_p0() -> None:

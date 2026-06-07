@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Mapping, Optional, Sequence
 
+from mango_mvp.channels.tone_block import sell_prompt_enabled, tone_rich_format_enabled
 from mango_mvp.question_catalog.classifier import load_taxonomy
 
 
@@ -233,6 +234,8 @@ def build_draft_prompt(
         "- Если conversation_intent_plan.answer_policy=answer_directly_if_fact_verified, сначала дай проверенный факт по прямому вопросу, потом один следующий шаг.\n"
         "- Если conversation_intent_plan.answer_policy=answer_safe_parts_then_manager_live_check, ответь на безопасные части и передай менеджеру только live-проверку места/наличия/броней.\n\n"
         "- Если confirmed_facts/facts_context уже содержит подтверждённый факт по вопросу клиента, отвечай из этого факта прямо; не отправляй к менеджеру только из осторожности. Менеджеру оставляй действия и живые проверки, а не сам справочный факт.\n"
+        f"{_tone_sell_prompt_block(context or {})}"
+        f"{_tone_rich_format_block(context or {})}"
         "Детерминированная воронка нового лида:\n"
         "- Если в контексте есть funnel_state, known_slots, missing_slots, next_best_question или next_step_type, считай это более надёжной памятью диалога, чем собственные догадки.\n"
         "- Не спрашивай поля из known_slots повторно. Если known_slots содержит grade/subject/format/student_name/phone_known, не проси их снова.\n"
@@ -625,6 +628,8 @@ def _compact_dialogue_memory_view(value: Any) -> Mapping[str, Any]:
         "client_confirmed_slots",
         "crm_known_slots",
         "bot_inferred_slots",
+        "proactive_state",
+        "a2_proactive_state",
         "open_question",
         "p0_latch",
         "held_state",
@@ -664,6 +669,39 @@ def _compact_dialogue_memory_view(value: Any) -> Mapping[str, Any]:
         if items:
             result[key] = items
     return result
+
+
+def _tone_sell_prompt_block(context: Mapping[str, Any]) -> str:
+    if not sell_prompt_enabled(context):
+        return ""
+    return (
+        "\nПродающий тон TELEGRAM_TONE_SELL_PROMPT:\n"
+        "- Содержательный безопасный ответ заканчивай ОДНИМ естественным следующим шагом, если P0/high-risk не запрещает. "
+        "Шаг должен вытекать из ответа, а не быть отдельной анкетой.\n"
+        "- Квалифицирующий вопрос: максимум один на ход, только если он реально помогает подбору; используй next_best_question "
+        "или близкую живую формулировку. Не задавай список вопросов.\n"
+        "- Если recent_ignored >= 2 в dialogue_memory_view.proactive_state/a2_proactive_state, не предлагай новый шаг и не проси контакт.\n"
+        "- Если contact_requested=true или телефон уже известен, не проси телефон повторно; можно спросить только удобное время, если это уместно.\n"
+        "- Если клиент явно готов начать, спрашивает «как записаться» или «давайте начнём», дай конкретный шаг записи только из факта "
+        "enrollment/process; если такого факта нет, честно скажи, что менеджер подскажет порядок записи, без выдуманного процесса.\n"
+        "- Если клиенту дорого: сначала признай сомнение, затем дай проверенную ценность и варианты оплаты/скидок только из фактов текущего бренда; скидки не придумывай.\n"
+        "- Фотон: про рассрочку/Долями говори только при факте Фотона; допустимые числа — только 6, 10, 12 месяцев и Долями, если они есть в facts_context/confirmed_facts.\n"
+        "- УНПК: не предлагай рассрочку, Долями, банк или условия Фотона. Можно говорить помесячно/семестр/год и скидки 10%/14% только при фактах УНПК.\n"
+        "- Анти-выдумка важнее продающего тона: всё продуктовое только из confirmed_facts/facts_context; чего нет — честно скажи и предложи безопасный шаг.\n"
+        "- Не используй клиентские рамки семейства «по подтверждённым данным», «по проверенным данным», «по подтверждённым ценам», "
+        "«по проверенным ценам»: это внутренний язык. Начинай живо и сразу по сути.\n"
+        "- Явный отказ («нет», «не нужно», «не куплю») — красиво заверши без дожима и без нового CTA.\n\n"
+    )
+
+
+def _tone_rich_format_block(context: Mapping[str, Any]) -> str:
+    if not tone_rich_format_enabled(context):
+        return ""
+    return (
+        "\nФорматирование TELEGRAM_TONE_RICH_FORMAT:\n"
+        "- В многофактном ответе дели смысл на короткие абзацы: пустая строка между блоками, без Markdown и без жирного.\n"
+        "- Эмодзи можно использовать максимум один и только в лёгком позитивном контексте; в P0, жалобах, возвратах, гарантиях и юридических темах — без эмодзи.\n\n"
+    )
 
 
 def _clean_text(value: Any, *, max_chars: int) -> str:

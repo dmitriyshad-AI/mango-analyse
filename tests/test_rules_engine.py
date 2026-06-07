@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from mango_mvp.channels.rules_engine import MIGRATED, apply_rule, load_rules_registry, select_rule
+from mango_mvp.channels.tone_block import TONE_SELL_PROMPT_ENV
 
 
 def _number_tokens(text: str) -> set[str]:
@@ -660,6 +661,35 @@ def test_rules_engine_selling_price_objection_foton_installment_uses_fact_number
     assert "Подобрать удобный вариант" in outcome.text
     assert "24" not in outcome.text
     assert "УНПК" not in outcome.text
+
+
+def test_tone_sell_prompt_suppresses_rules_engine_selling_suffix() -> None:
+    rule = load_rules_registry()["installment"]
+    facts = {"installment.foton": "Фотон: доступны варианты оплаты частями на 6, 10 или 12 месяцев и сервис Долями."}
+    plan = {
+        "primary_intent": "installment",
+        "direct_question": "Дороговато, можно частями?",
+        "active_brand": "foton",
+        "selling": {"objection": "price", "exit_signal": False},
+    }
+
+    baseline = apply_rule(rule, plan=plan, facts=facts, context={"active_brand": "foton", "selling_mode": "det"})
+    suppressed = apply_rule(
+        rule,
+        plan=plan,
+        facts=facts,
+        context={"active_brand": "foton", "selling_mode": "det", TONE_SELL_PROMPT_ENV: "1"},
+    )
+
+    assert baseline is not None
+    assert "rules_engine_selling_price_objection" in baseline.flags
+    assert "Подобрать удобный вариант" in baseline.text
+    assert suppressed is not None
+    assert suppressed.route == "bot_answer_self_for_pilot"
+    assert "rules_engine_selling_price_objection" not in suppressed.flags
+    assert "Подобрать удобный вариант" not in suppressed.text
+    assert "6, 10 или 12" in suppressed.text
+    assert suppressed.metadata["selling"]["suppressed_by_tone_sell_prompt"] is True
 
 
 def test_rules_engine_selling_gen_accepts_grounded_composition() -> None:
@@ -1341,6 +1371,28 @@ def test_rules_engine_selling_exit_fallback_uses_trial_fact_or_neutral_step_with
     assert neutral.route == "bot_answer_self_for_pilot"
     assert "Спокойно подумайте" in neutral.text
     assert "менеджер" not in neutral.text.casefold()
+
+
+def test_tone_sell_prompt_suppresses_rules_engine_selling_fallback_cta() -> None:
+    rule = load_rules_registry()["format_choice"]
+    plan = {
+        "primary_intent": "format",
+        "direct_question": "Спасибо, гляну другие варианты.",
+        "active_brand": "foton",
+        "selling": {"objection": "none", "exit_signal": True},
+    }
+
+    baseline = apply_rule(rule, plan=plan, facts={}, context={"active_brand": "foton", "selling_mode": "det"})
+    suppressed = apply_rule(
+        rule,
+        plan=plan,
+        facts={},
+        context={"active_brand": "foton", "selling_mode": "det", TONE_SELL_PROMPT_ENV: "1"},
+    )
+
+    assert baseline is not None
+    assert "Спокойно подумайте" in baseline.text
+    assert suppressed is None
 
 
 def test_rules_engine_selling_det_suffix_omits_dirty_address_online_fact_and_dedupes_fragment() -> None:

@@ -1380,11 +1380,25 @@ def test_dynamic_summary_includes_deterministic_tone_metric(tmp_path):
                 {
                     "turn": 1,
                     "bot_text": "В рамках текущего учебного центра услуга предоставляется, менеджер уточнит ближайший шаг.",
+                    "bot_route": "manager_only",
+                    "bot_risk_level": "p0",
+                    "bot_safety_flags": ["p0"],
                     "context_parity_checked": True,
                 },
                 {
                     "turn": 2,
                     "bot_text": "Да, помогу сориентироваться по сути и подобрать следующий шаг.",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_risk_level": "normal",
+                    "bot_safety_flags": [],
+                    "context_parity_checked": True,
+                },
+                {
+                    "turn": 3,
+                    "bot_text": "Спасибо, передам менеджеру.",
+                    "bot_route": "draft_for_manager",
+                    "bot_risk_level": "normal",
+                    "bot_safety_flags": [],
                     "context_parity_checked": True,
                 },
             ],
@@ -1410,12 +1424,69 @@ def test_dynamic_summary_includes_deterministic_tone_metric(tmp_path):
     )
 
     tone = summary["tone_metric"]
-    assert tone["turns_count"] == 2
+    filtered = summary["tone_metric_non_p0_self"]
+    assert tone["turns_count"] == 3
+    assert filtered["turns_count"] == 1
     assert tone["tone_canc"] >= 3
     assert tone["tone_warm"] >= 3
     assert tone["tone_score"] is not None
     assert tone["turns"][0]["dialog_id"] == "tone_metric_case"
+    assert filtered["turns"][0]["turn"] == 2
     assert {"tone_canc", "tone_warm", "tone_score"} <= set(tone["turns"][0])
+
+
+def test_dynamic_summary_includes_rich_format_counter(tmp_path):
+    long_text = " ".join(["Подробный ответ"] * 30)
+    transcripts = [
+        {
+            "dialog_id": "rich_format_case",
+            "brand": "foton",
+            "turns": [
+                {
+                    "turn": 1,
+                    "bot_text": "Цена семестра — 29 750 ₽.\n\nЦена года — 47 250 ₽.",
+                    "bot_dialogue_contract_pipeline": {"retrieved_fact_keys": ["price.semester", "price.year"]},
+                    "context_parity_checked": True,
+                },
+                {
+                    "turn": 2,
+                    "bot_text": long_text,
+                    "bot_confirmed_facts": ["schedule.start: занятия стартуют в сентябре"],
+                    "context_parity_checked": True,
+                },
+                {
+                    "turn": 3,
+                    "bot_text": "Коротко: да.",
+                    "context_parity_checked": True,
+                },
+            ],
+        }
+    ]
+    judge_results = [
+        {
+            "dialog_id": "rich_format_case",
+            "brand": "foton",
+            "hard_gates_passed": True,
+            "soft_flags_present": [],
+            "verdict": "PASS",
+            "human_tone_score_0_100": 80,
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        judge_results,
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    rich = summary["rich_format"]
+    assert rich["eligible_multifact_turns"] == 2
+    assert rich["with_paragraphs"] == 1
+    assert rich["share_with_paragraphs"] == 0.5
+    assert rich["missing_paragraph_examples"][0]["dialog_id"] == "rich_format_case"
+    assert rich["missing_paragraph_examples"][0]["turn"] == 2
 
 
 def test_build_selling_compose_model_counts_dedicated_role() -> None:

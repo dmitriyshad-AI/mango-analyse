@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
-from mango_mvp.channels.tone_block import apply_warm_frame
+from mango_mvp.channels.tone_block import apply_warm_frame, sell_prompt_enabled, tone_rich_format_enabled
 
 
 DEFAULT_RULES_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "D1_audit_backlog" / "rules_registry.yaml"
@@ -208,7 +208,7 @@ def apply_rule(
         outcome = _apply_schedule_rule(rule, plan=plan, facts=facts, context=context)
     else:
         return None
-    if outcome is None:
+    if outcome is None and not sell_prompt_enabled(context):
         outcome = _selling_signal_fallback_outcome(rule, plan=plan, facts=facts, context=context)
     return _apply_selling_variants(outcome, rule=rule, plan=plan, facts=facts, context=context)
 
@@ -1826,6 +1826,8 @@ def _apply_selling_variants(
     selling = _selling_view(plan, context)
     if not selling:
         return outcome
+    if sell_prompt_enabled(context):
+        return _mark_selling_prompt_suppressed(outcome, selling=selling)
     det_outcome = _apply_selling_det_variants(outcome, rule=rule, plan=plan, facts=facts, context=context, selling=selling)
     if det_outcome is outcome:
         return outcome
@@ -2007,6 +2009,20 @@ def _selling_mode(context: Mapping[str, Any] | None) -> str:
     return value if value in {"gen", "det"} else "gen"
 
 
+def _mark_selling_prompt_suppressed(outcome: RuleOutcome, *, selling: Mapping[str, Any]) -> RuleOutcome:
+    metadata = {
+        **dict(outcome.metadata),
+        "selling": {
+            **(dict(outcome.metadata.get("selling") or {}) if isinstance(outcome.metadata.get("selling"), Mapping) else {}),
+            "suppressed_by_tone_sell_prompt": True,
+            "objection": str(selling.get("objection") or "none"),
+            "exit_signal": bool(selling.get("exit_signal")),
+            "readiness": str(selling.get("readiness") or "exploring"),
+        },
+    }
+    return replace(outcome, metadata=metadata)
+
+
 def _selling_signals_full_enabled(context: Mapping[str, Any] | None) -> bool:
     if isinstance(context, Mapping):
         for key in ("selling_signals_full", SELLING_SIGNALS_FULL_ENV):
@@ -2028,6 +2044,10 @@ def _rich_format_enabled(context: Mapping[str, Any] | None) -> bool:
         for key in ("a_rich_format_enabled", "rich_format_enabled", A_RICH_FORMAT_ENV):
             if key in context:
                 return _truthy(context.get(key))
+        if tone_rich_format_enabled(context):
+            return True
+    if tone_rich_format_enabled(context):
+        return True
     return _truthy(os.getenv(A_RICH_FORMAT_ENV))
 
 

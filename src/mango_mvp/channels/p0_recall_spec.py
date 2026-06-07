@@ -66,9 +66,18 @@ _PAYMENT_RESULT_MISSING_PATTERN = (
     rf"{_PAYMENT_RESULT_GAP}(?:{_PAYMENT_RESULT_TARGET_PATTERN}))"
 )
 _PAYMENT_BLOCK_GAP = r"[^.!?:;—–\-\n]{0,100}"
+_PAYMENT_DUPLICATE_CHARGE_PATTERN = (
+    r"(?:(?:с\s+карты\s+)?(?:списал[аи]?|списали|списалось|снял[аи]?|сняли)"
+    r"[^.!?\n]{0,30}\b(?:дважды|два\s+раза|повторн\w*|двойн\w*)\b"
+    r"|\b(?:деньги|оплат\w*|плат[её]ж\w*)[^.!?\n]{0,30}"
+    r"(?:списал\w*|снял\w*)[^.!?\n]{0,30}\b(?:дважды|два\s+раза|повторн\w*|двойн\w*)\b"
+    r"|\b(?:дважды|два\s+раза|повторн\w*|двойн\w*)\b[^.!?\n]{0,30}"
+    r"(?:списал[аи]?|списали|списалось|снял[аи]?|сняли|списан\w*|снят\w*))"
+)
 PAYMENT_DISPUTE_RE = re.compile(
     rf"(?:{_PAYMENT_MOVED_PATTERN}{_PAYMENT_BLOCK_GAP}{_PAYMENT_RESULT_MISSING_PATTERN}"
     rf"|{_PAYMENT_RESULT_MISSING_PATTERN}{_PAYMENT_BLOCK_GAP}{_PAYMENT_MOVED_PATTERN}"
+    rf"|{_PAYMENT_DUPLICATE_CHARGE_PATTERN}"
     r"|чарджб[еэ]к|chargeback"
     r"|оспор\w*\s+(?:операци\w*|плат[её]ж\w*|списан\w*)"
     r"|отмен\w*\s+плат[её]ж\w*\s+через\s+банк"
@@ -104,6 +113,9 @@ PAYMENT_DISPUTE_POSITIVE_CASES: tuple[str, ...] = (
     "Платёж не появился, хотя деньги ушли.",
     "Доступа не видно, деньги списали.",
     "Платёж прошёл, а кабинет пуст.",
+    "Списали дважды!",
+    "С карты списали два раза.",
+    "Деньги списали повторно.",
 )
 
 PAYMENT_DISPUTE_BENIGN_CASES: tuple[str, ...] = (
@@ -115,6 +127,7 @@ PAYMENT_DISPUTE_BENIGN_CASES: tuple[str, ...] = (
     "Если платёж не прошёл, как попробовать снова?",
     "Где будет видно оплату после платежа?",
     "Занятий в системе нет, это расписание ещё не открыли?",
+    "Оплатил два курса.",
 )
 
 P0_TRUE_POSITIVE_CASES: tuple[tuple[str, str], ...] = (

@@ -3085,7 +3085,7 @@ _TONE_CLOSE_GRATITUDE_RE = re.compile(
     re.I,
 )
 _TONE_CLOSE_EXIT_SIGNAL_RE = re.compile(
-    r"\b(?:подумаю|посмотрю|вернусь|вернемся|вернёмся|пока\s+посмотр|посоветуюсь|обсужу|решу|сравню)\b",
+    r"\b(?:подумаю|подумаем|посмотрю|посмотрим|вернусь|вернемся|вернёмся|пока\s+посмотр|посоветуюсь|обсужу|обсудим|решу|решим|сравню|сравним)\b",
     re.I,
 )
 _TONE_CLOSE_QUESTION_RE = re.compile(
@@ -3110,6 +3110,12 @@ _TONE_CLOSE_TRIAL_CTA_RE = re.compile(
 )
 _TONE_CLOSE_STEP_CTA_RE = re.compile(
     rf"(?:{_TONE_CLOSE_CONTACT_CTA_RE.pattern})|(?:{_TONE_CLOSE_TRIAL_CTA_RE.pattern})",
+    re.I,
+)
+_TONE_CLOSE_ADVERSATIVE_RE = re.compile(r"\b(?:но|однако|только)\b", re.I)
+_TONE_CLOSE_UNANSWERED_RE = re.compile(r"\b(?:не\s+ответил|не\s+ответили|не\s+отвеч|по\s+сути|без\s+ответа)\b", re.I)
+_TONE_CLOSE_PROBLEM_MARKER_RE = re.compile(
+    r"\b(?:деньг\w*|списал\w*|плат[её]ж\w*|оплат\w*|срочн\w*|заняти[еяй]\w*\s+нет|доступ\w*\s+нет)\b",
     re.I,
 )
 _TONE_CLOSE_CONTACT_TEXTS = (
@@ -3229,12 +3235,23 @@ def _tone_close_detect_is_close_message(client_message: str, *, context: Optiona
         return False
     if _TONE_CLOSE_QUESTION_RE.search(text):
         return False
+    if _tone_close_has_unanswered_or_problem_continuation(text):
+        return False
     contract = context.get("answer_contract") if isinstance(context, Mapping) else None
     if isinstance(contract, Mapping) and str(contract.get("message_type") or "").strip() == "question":
         return False
     if isinstance(context, Mapping) and str(context.get("message_type") or "").strip() == "question":
         return False
     return bool(_TONE_CLOSE_GRATITUDE_RE.search(text))
+
+
+def _tone_close_has_unanswered_or_problem_continuation(client_message: str) -> bool:
+    text = str(client_message or "")
+    if _TONE_CLOSE_ADVERSATIVE_RE.search(text) and (
+        _TONE_CLOSE_UNANSWERED_RE.search(text) or _TONE_CLOSE_PROBLEM_MARKER_RE.search(text)
+    ):
+        return True
+    return bool(re.search(r"\b(?:деньг\w*\s+списал\w*|списал\w*[^.!?\n]{0,40}деньг\w*|плат[её]ж\w*[^.!?\n]{0,25}нет)\b", text, re.I))
 
 
 def _tone_close_detect_is_p0(result: SubscriptionDraftResult, *, context: Optional[Mapping[str, Any]]) -> bool:

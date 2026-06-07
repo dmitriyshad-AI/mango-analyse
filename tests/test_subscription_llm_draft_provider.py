@@ -4938,6 +4938,27 @@ def test_tone_close_detect_does_not_capture_exit_signal_or_new_question() -> Non
     assert "close_detect" not in question_turn.metadata
 
 
+def test_tone_close_detect_does_not_capture_adversative_unanswered_or_payment_problem() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Возвращайтесь, если появится вопрос.",
+        topic_id="service:S2_unclear",
+    )
+    context = {"active_brand": "unpk", TONE_CLOSE_DETECT_ENV: "1"}
+
+    unanswered = apply_tone_close_detect_layer(result, client_message="Поняла, но пока вы не ответили по сути", context=context)
+    plural_exit = apply_tone_close_detect_layer(result, client_message="Спасибо, подумаем", context=context)
+    payment_problem = apply_tone_close_detect_layer(
+        result,
+        client_message="Хорошо, жду ответа. Только прошу СРОЧНО: деньги списали, платежа в системе нет.",
+        context=context,
+    )
+
+    assert "close_detect" not in unanswered.metadata
+    assert "close_detect" not in plural_exit.metadata
+    assert "close_detect" not in payment_problem.metadata
+
+
 def test_tone_close_detect_suppresses_p0_and_pending_manager_without_cta() -> None:
     result = SubscriptionDraftResult(
         route="manager_only",

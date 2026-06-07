@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety, codes_from_current_message
-from mango_mvp.channels.p0_recall_spec import P0_BENIGN_CASES, P0_TRUE_POSITIVE_CASES
+from mango_mvp.channels.p0_recall_spec import (
+    PAYMENT_DISPUTE_BENIGN_CASES,
+    PAYMENT_DISPUTE_POSITIVE_CASES,
+    PAYMENT_DISPUTE_RE,
+    P0_BENIGN_CASES,
+    P0_TRUE_POSITIVE_CASES,
+)
 
 
 @pytest.mark.parametrize(("message", "expected_code"), P0_TRUE_POSITIVE_CASES)
@@ -28,6 +34,24 @@ def test_answer_safety_benign_process_phrases_do_not_require_p0(message: str) ->
     assert decision.p0_required is False
     assert decision.manager_only is False
     assert decision.blocks_autonomy is False
+
+
+@pytest.mark.parametrize("message", PAYMENT_DISPUTE_POSITIVE_CASES)
+def test_payment_dispute_positive_corpus_matches_runtime_regex(message: str) -> None:
+    decision = classify_answer_safety(client_message=message)
+
+    assert PAYMENT_DISPUTE_RE.search(message)
+    assert "payment_dispute" in decision.risk_codes
+    assert decision.p0_required is True
+
+
+@pytest.mark.parametrize("message", PAYMENT_DISPUTE_BENIGN_CASES)
+def test_payment_dispute_benign_corpus_does_not_match_runtime_regex(message: str) -> None:
+    decision = classify_answer_safety(client_message=message)
+
+    assert PAYMENT_DISPUTE_RE.search(message) is None
+    assert "payment_dispute" not in decision.risk_codes
+    assert decision.p0_required is False
 
 
 def test_answer_safety_active_p0_latch_blocks_semantic_non_p0_repair() -> None:

@@ -887,6 +887,11 @@ def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() ->
     assert strip_internal_service_markers("Ориентир без обещаний результата: Факт.") == "Ориентир Факт."
     assert strip_internal_service_markers("Заменяю только этот абзац: Да, домашние задания проверяются.") == "Да, домашние задания проверяются."
     assert strip_internal_service_markers("Остальной текст без изменений. Да, расписание уточняется по группе.") == "Да, расписание уточняется по группе."
+    assert (
+        strip_internal_service_markers("Ответ клиенту. Лимиты Codex: осталось 12 сообщений в сессии.")
+        == "Ответ клиенту."
+    )
+    assert strip_internal_service_markers("Осталось 500 токенов контекста, поэтому отвечаю кратко. Да, пробное есть.") == "Да, пробное есть."
 
     normal = "Если удобно, повторите класс и предмет — я сориентирую по подходящему варианту."
     assert strip_internal_service_markers(normal) == normal
@@ -894,6 +899,9 @@ def test_scaffold_prefixes_are_stripped_and_client_instructions_are_blocked() ->
     normal_conditions = "По условиям курса можно опираться на подтверждённые факты из договора."
     assert strip_internal_service_markers(normal_conditions) == normal_conditions
     assert not draft_has_internal_service_markers(normal_conditions)
+    normal_refund = "При отказе возвращается остаток неистраченных средств."
+    assert strip_internal_service_markers(normal_refund) == normal_refund
+    assert not draft_has_internal_service_markers(normal_refund)
 
     leaked = "Менеджер подтвердит порядок записи. Если класс, предмет и формат уже есть в диалоге, повторять их не нужно."
     assert strip_internal_service_markers(leaked) == ""
@@ -10322,6 +10330,45 @@ def test_direct_path_preblocks_p0_without_model_call() -> None:
     assert direct["model_called"] is False
     assert direct["reason_class"] == "p0_deferral"
     assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_direct_path_p0_complaint_preblock_has_no_manager_deadline() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+    result = provider.build_draft(
+        "Жалоба: преподаватель оскорбил ребенка на занятии.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    lowered = result.draft_text.casefold()
+    assert "завтра" not in lowered
+    assert "утром" not in lowered
+    assert "в течение" not in lowered
+    assert result.metadata["direct_path"]["reason_class"] == "p0_deferral"
+
+
+def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_night_lead() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Менеджер свяжется и поможет подобрать группу.")
+    )
+    provider.build_draft(
+        "Сейчас ночь, менеджер завтра утром позвонит? Телефон у вас уже есть?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"trial.foton": "Фотон: пробное занятие есть."},
+            "recent_messages": ["Клиент: Сейчас ночь, можно записаться?"],
+        },
+    )
+
+    prompt = provider.last_prompt.casefold()
+    assert "не обещай действия и сроки от имени менеджера" in prompt
+    assert "«менеджер свяжется» без срока" in prompt
+    assert "нельзя «свяжется завтра/утром/в течение n»" in prompt
+    assert "не утверждай, что телефон или контакт уже есть" in prompt
 
 
 def test_direct_path_overrides_pipeline_and_keeps_clean_close() -> None:

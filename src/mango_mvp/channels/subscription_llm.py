@@ -473,6 +473,15 @@ INTERNAL_CLIENT_SAFE_JARGON_RE = re.compile(
     r"(?:нет\s+)?client[-\s]?safe\s+факт[^\n.?!]*(?:[.?!]|$)|\bclient[-\s]?safe\b",
     re.I,
 )
+INTERNAL_RUNTIME_LIMIT_JARGON_RE = re.compile(
+    r"(?:^|(?<=[.?!\n]))\s*(?:"
+    r"лимит(?:ы)?\s+(?:codex|кодекса|сессии|контекста)[^.?!\n]{0,180}|"
+    r"(?:осталось|остаток)\s+\d{1,5}\s+(?:сообщен\w+|запрос\w+|токен\w+|лимит\w+|контекст\w+)[^.?!\n]{0,180}|"
+    r"(?:сессия|контекст|лимит)\s+(?:заканчива\w+|исчерпан\w+|подход\w+\s+к\s+концу)[^.?!\n]{0,180}|"
+    r"(?:заканчива\w+|исчерпан\w+|подход\w+\s+к\s+концу)\s+(?:сессия|контекст|лимит)[^.?!\n]{0,180}"
+    r")(?:[.?!]|$)",
+    re.I,
+)
 INTERNAL_REGEN_EDIT_COMMENT_RE = re.compile(
     r"(?:^|(?<=\n)|(?<=[.?!]))\s*(?:заменяю|переписываю|исправляю|меняю)\s+(?:только\s+)?(?:этот\s+|данный\s+)?"
     r"(?:абзац|фрагмент|текст|ответ)[^:\n]{0,160}:\s*"
@@ -2001,7 +2010,10 @@ DIRECT_PATH_MISSION_TEMPLATE = (
     "следующий вопрос, веди к понятному шагу. Не дави: честность важнее сделки.\n"
     "Числа, даты и условия — только из фактов; чего нет в фактах — скажи честно\n"
     "и предложи шаг. Если правило безопасности или передача менеджеру противоречат\n"
-    "записи — правило важнее."
+    "записи — правило важнее. Не обещай действия и сроки от имени менеджера: можно\n"
+    "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»\n"
+    "или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,\n"
+    "если это не подтверждено в памяти или фактах."
 )
 
 
@@ -5488,6 +5500,7 @@ def strip_internal_service_markers(text: str) -> str:
     value = INTERNAL_REGEN_EDIT_COMMENT_RE.sub(" ", value)
     value = INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.sub(" ", value)
     value = INTERNAL_CLIENT_SAFE_JARGON_RE.sub(" ", value)
+    value = INTERNAL_RUNTIME_LIMIT_JARGON_RE.sub(" ", value)
     value = INTERNAL_SERVICE_MARKER_RE.sub("", value)
     value = INTERNAL_SERVICE_TOKEN_RE.sub("", value)
     if INTERNAL_CLIENT_INSTRUCTION_RE.search(value):
@@ -5505,6 +5518,7 @@ def draft_has_internal_service_markers(text: str) -> bool:
         or INTERNAL_PROMPT_DIRECTIVE_ANYWHERE_RE.search(value)
         or INTERNAL_REGEN_EDIT_COMMENT_RE.search(value)
         or INTERNAL_CLIENT_SAFE_JARGON_RE.search(value)
+        or INTERNAL_RUNTIME_LIMIT_JARGON_RE.search(value)
         or INTERNAL_CLIENT_INSTRUCTION_RE.search(value)
         or INTERNAL_MANAGER_DRAFT_RE.search(value)
     )

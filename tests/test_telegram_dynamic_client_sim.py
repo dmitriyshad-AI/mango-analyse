@@ -556,6 +556,36 @@ def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_
     assert summary["config_validity"]["invalid"] is False
 
 
+def test_direct_path_fail_fast_accepts_later_completed_model_called_dialog(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH", "1")
+    transcripts = [
+        {
+            "dialog_id": f"d{i}",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [{"bot_direct_path": {"attempted": True, "model_called": i == 4}}],
+        }
+        for i in range(5)
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": f"d{i}", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True} for i in range(5)],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert summary["config_validity"]["dialog_ids"] == ["d0", "d1", "d2", "d3"]
+    assert summary["config_validity"]["model_called_by_dialog"] == {
+        "d0": False,
+        "d1": False,
+        "d2": False,
+        "d3": False,
+    }
+    assert summary["config_validity"]["any_model_called_global"] is True
+    assert summary["config_validity"]["invalid"] is False
+
+
 def test_direct_path_fail_fast_uses_pilot_gold_config(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_DIRECT_PATH", raising=False)
     monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")

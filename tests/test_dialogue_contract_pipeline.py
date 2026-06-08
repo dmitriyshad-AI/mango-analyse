@@ -977,6 +977,104 @@ def test_level_a_free_number_gate_flag_off_keeps_legacy_number_policy() -> None:
     assert not free
 
 
+def test_wave1_number_scope_aware_flag_off_keeps_flat_fact_surfaces() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит очно физика 9 класс",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Очно для 9 класса стоит 29 750 ₽.",
+        facts={"price.online": "Онлайн для 9 класса стоит 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько стоит очно физика 9 класс?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "0"},
+    )
+
+    assert not findings
+
+
+def test_wave1_number_scope_aware_marks_wrong_scope_number() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит очно физика 9 класс",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Очно для 9 класса стоит 29 750 ₽.",
+        facts={"price.online": "Онлайн для 9 класса стоит 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько стоит очно физика 9 класс?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1"},
+    )
+
+    assert {finding.code for finding in findings} == {"wrong_scope"}
+    assert any("29 750" in finding.detail for finding in findings)
+
+
+def test_wave1_number_scope_aware_allows_same_scope_normalized_number() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит онлайн 9 класс",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Для онлайн-формата в 9 классе семестр стоит 29750 рублей.",
+        facts={"price.online": "Онлайн для 9 класса: семестр — 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько стоит онлайн 9 класс?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1"},
+    )
+
+    assert not findings
+
+
+def test_wave1_number_scope_aware_blocks_new_product_number_even_with_same_scope_fact() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит онлайн 9 класс",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Для онлайн-формата в 9 классе семестр стоит 31 000 ₽.",
+        facts={"price.online": "Онлайн для 9 класса: семестр — 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько стоит онлайн 9 класс?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1"},
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in findings}
+    assert any("31 000" in finding.detail for finding in findings)
+
+
 def test_level_a_general_advice_gate_blocks_pressure_or_result_promise() -> None:
     contract = parse_contract(
         {

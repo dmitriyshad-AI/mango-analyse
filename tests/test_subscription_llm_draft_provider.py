@@ -10369,6 +10369,58 @@ def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_n
     assert "«менеджер свяжется» без срока" in prompt
     assert "нельзя «свяжется завтра/утром/в течение n»" in prompt
     assert "не утверждай, что телефон или контакт уже есть" in prompt
+    assert "без дословного повтора этих данных" in prompt
+
+
+def test_direct_path_output_sanitizer_removes_client_phone_and_child_name_echo() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Приняла: Иванов Артём, телефон: +7 999 123-45-67. Передам менеджеру, он свяжется.",
+            topic_id="theme:020_enrollment",
+        )
+    )
+    client_message = "Добрый вечер. Ребёнок Иванов Артём, 9 класс. Телефон +7 999 123-45-67. Можно записаться?"
+
+    result = provider.build_draft(
+        client_message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Для записи менеджер помогает подобрать группу и оформить заявку."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
+    assert "Иванов" not in result.draft_text
+    assert "Артём" not in result.draft_text
+    assert "+7 999" not in result.draft_text
+    assert "123-45-67" not in result.draft_text
+    assert result.metadata["output_sanitizer"]["applied"] is True
+    assert result.metadata["output_sanitizer"]["enabled"] is False
+    assert {"client_phone_echo", "client_name_echo"}.issubset(set(result.metadata["output_sanitizer"]["reasons"]))
+    assert result.metadata["authoritative_output_gate"]["action"] == "pass"
+    assert result.metadata["direct_path"]["model_called"] is True
+    assert result.metadata["direct_path"]["downgraded"] is False
+
+
+def test_direct_path_p0_preblock_stays_manager_only_with_output_sanitizer() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+
+    result = provider.build_draft(
+        "С карты списали дважды, верните деньги. Телефон +7 999 123-45-67",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", OUTPUT_SANITIZER_ENV: "1"},
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert result.metadata["direct_path"]["reason_class"] == "p0_deferral"
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
 def test_direct_path_overrides_pipeline_and_keeps_clean_close() -> None:

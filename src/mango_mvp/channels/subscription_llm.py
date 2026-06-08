@@ -2013,7 +2013,8 @@ DIRECT_PATH_MISSION_TEMPLATE = (
     "записи — правило важнее. Не обещай действия и сроки от имени менеджера: можно\n"
     "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»\n"
     "или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,\n"
-    "если это не подтверждено в памяти или фактах."
+    "если это не подтверждено в памяти или фактах. Если клиент сам написал ФИО ребёнка,\n"
+    "телефон или другой контакт, подтверди получение без дословного повтора этих данных."
 )
 
 
@@ -4734,7 +4735,7 @@ def apply_authoritative_output_gate(
     invents replacement facts.
     """
 
-    result = apply_output_sanitizer(result, context=context)
+    result = apply_output_sanitizer(result, context=context, client_message=client_message)
     findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
     actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
     direct_path_keep_text = _authoritative_gate_direct_path_keep_text(result, findings)
@@ -4863,11 +4864,17 @@ def apply_output_sanitizer(
     result: SubscriptionDraftResult,
     *,
     context: Optional[Mapping[str, Any]] = None,
+    client_message: str = "",
 ) -> SubscriptionDraftResult:
-    if not _output_sanitizer_enabled(context):
-        return result
-
-    cleaned, reasons = _sanitize_output_client_text(result.draft_text)
+    sanitizer_enabled = _output_sanitizer_enabled(context)
+    client_pii_deecho_allowed = not _a2_is_proactive_result(result)
+    pii_client_message = client_message if client_pii_deecho_allowed else ""
+    if sanitizer_enabled:
+        cleaned, reasons = _sanitize_output_client_text(result.draft_text, client_message=pii_client_message)
+    else:
+        cleaned, reasons = _sanitize_client_pii_echo(result.draft_text, client_message=pii_client_message)
+        if cleaned != result.draft_text and "client_pii_echo" not in reasons:
+            reasons = (*reasons, "client_pii_echo")
     if not reasons and cleaned == result.draft_text:
         return result
 
@@ -4884,7 +4891,7 @@ def apply_output_sanitizer(
     metadata = dict(result.metadata)
     metadata = _metadata_with_guarded_original_text(metadata, result.draft_text, guard="output_sanitizer")
     metadata["output_sanitizer"] = {
-        "enabled": True,
+        "enabled": sanitizer_enabled,
         "applied": True,
         "fallback": fallback,
         "reasons": list(reasons),
@@ -4904,7 +4911,7 @@ def apply_output_sanitizer(
     )
 
 
-def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
+def _sanitize_output_client_text(text: str, *, client_message: str = "") -> tuple[str, tuple[str, ...]]:
     raw = str(text or "")
     if not raw:
         return "", ()
@@ -4967,6 +4974,9 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
         value = stripped
         reasons.append("internal_service_marker")
 
+    value, pii_reasons = _sanitize_client_pii_echo(value, client_message=client_message)
+    reasons.extend(pii_reasons)
+
     value = _normalize_output_sanitizer_text(value)
     if _output_sanitizer_degenerate(value):
         reasons.append("degenerate_output")
@@ -4974,6 +4984,109 @@ def _sanitize_output_client_text(text: str) -> tuple[str, tuple[str, ...]]:
     if value != raw and not reasons:
         reasons.append("normalized")
     return value, tuple(dict.fromkeys(reasons))
+
+
+_CLIENT_NAME_PAIR_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b")
+_CLIENT_NAME_MARKER_RE = re.compile(
+    r"(?:реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2})",
+    re.I,
+)
+_CLIENT_NAME_STOPWORDS = {
+    "добрый",
+    "добрая",
+    "вечер",
+    "день",
+    "утро",
+    "здравствуйте",
+    "привет",
+    "фотон",
+    "унпк",
+    "мфти",
+    "москва",
+    "менеджер",
+}
+_CLIENT_PII_CONFIRMATION_RE = re.compile(
+    r"\b(?:принял[аи]?|записал[аи]?|передам|менеджер|свяжется|контакт|телефон|номер|заявк[ауи])\b",
+    re.I,
+)
+
+
+def _sanitize_client_pii_echo(text: str, *, client_message: str = "") -> tuple[str, tuple[str, ...]]:
+    value = str(text or "")
+    client = str(client_message or "")
+    if not value or not client:
+        return value, ()
+    phone = _a2_extract_phone(client)
+    phone_echoed = bool(phone and _a2_phone_echoed(phone, value))
+    echoed_names = tuple(_client_name_echoes(client, value))
+    if not phone_echoed and not echoed_names:
+        return value, ()
+
+    reasons: list[str] = []
+    if phone_echoed:
+        reasons.append("client_phone_echo")
+    if echoed_names:
+        reasons.append("client_name_echo")
+
+    if _CLIENT_PII_CONFIRMATION_RE.search(value):
+        return "Записала, передам менеджеру — он свяжется с вами.", tuple(reasons)
+
+    if phone_echoed:
+        value = _replace_echoed_phone(value, phone)
+    for name in echoed_names:
+        value = re.sub(_flexible_name_pattern(name), "данные ребёнка", value, flags=re.I)
+    return value, tuple(reasons)
+
+
+def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    client = " ".join(str(client_message or "").split())
+    phone = _a2_extract_phone(client)
+    for match in _CLIENT_NAME_MARKER_RE.finditer(client):
+        candidates.append(match.group("name"))
+    if phone:
+        phone_pos = client.find(phone)
+        for match in _CLIENT_NAME_PAIR_RE.finditer(client):
+            if phone_pos >= 0 and abs(match.start() - phone_pos) > 140:
+                continue
+            candidates.append(match.group(0))
+    result: list[str] = []
+    for raw in candidates:
+        name = " ".join(str(raw or "").split()).strip(" ,.;:!?")
+        words = [word.casefold().replace("ё", "е") for word in name.split()]
+        if len(words) < 2 or any(word in _CLIENT_NAME_STOPWORDS for word in words):
+            continue
+        if _client_name_echoed(name, bot_text) and name not in result:
+            result.append(name)
+    return tuple(result)
+
+
+def _client_name_echoed(name: str, text: str) -> bool:
+    return bool(re.search(_flexible_name_pattern(name), str(text or ""), flags=re.I))
+
+
+def _flexible_name_pattern(name: str) -> str:
+    parts = [re.escape(part) for part in str(name or "").split() if part]
+    if not parts:
+        return r"(?!)"
+    return r"\b" + r"\s+".join(parts) + r"\b"
+
+
+def _replace_echoed_phone(text: str, phone: str) -> str:
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if len(digits) < 7:
+        return str(text or "")
+    chunks: list[str] = []
+    last = 0
+    for match in _A2_PHONE_RE.finditer(str(text or "")):
+        candidate_digits = re.sub(r"\D+", "", match.group(0))
+        if candidate_digits and (candidate_digits in digits or digits in candidate_digits):
+            chunks.append(str(text or "")[last : match.start()])
+            chunks.append("контакт")
+            last = match.end()
+    chunks.append(str(text or "")[last:])
+    return "".join(chunks)
 
 
 def _sanitize_raw_detail_handoff_text(text: str) -> tuple[str, bool]:

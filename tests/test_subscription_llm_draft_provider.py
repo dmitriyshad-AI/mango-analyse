@@ -10579,6 +10579,70 @@ def test_direct_path_output_sanitizer_masks_single_inflected_child_name_echo() -
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
+def test_direct_path_output_sanitizer_masks_client_names_from_recent_window() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Спасибо, Ирина! По сыну Артёму менеджер подберёт группу.",
+            topic_id="theme:020_enrollment",
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, жду.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Для записи менеджер помогает подобрать группу и оформить заявку."},
+            "recent_messages": [
+                "Клиент: Я Ирина, мама Артёма.",
+                "Ответ: Подскажу по записи.",
+            ],
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert "Ирина" not in result.draft_text
+    assert "Артём" not in result.draft_text
+    assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
+    assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_direct_path_output_sanitizer_masks_client_phone_from_recent_window() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Контакт +7 999 123-45-67 передам менеджеру.",
+            topic_id="theme:020_enrollment",
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, жду.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Для записи менеджер помогает подобрать группу и оформить заявку."},
+            "dialogue_memory_view": {
+                "recent_turns": [
+                    {"role": "client", "text": "Телефон +7 999 123-45-67, меня зовут Ирина."},
+                    {"role": "bot", "text": "Передам менеджеру."},
+                ]
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert "+7 999" not in result.draft_text
+    assert "123-45-67" not in result.draft_text
+    assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
+    assert "client_phone_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
 def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -10595,6 +10659,7 @@ def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None
             "active_brand": "foton",
             DIRECT_PATH_ENV: "1",
             "confirmed_facts": {"address.foton": "Занятия проходят в Москве."},
+            "recent_messages": ["Клиент: Я Москва использую как ориентир по дороге."],
         },
     )
 

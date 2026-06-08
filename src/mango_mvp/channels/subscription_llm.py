@@ -4871,7 +4871,7 @@ def apply_output_sanitizer(
 ) -> SubscriptionDraftResult:
     sanitizer_enabled = _output_sanitizer_enabled(context)
     client_pii_deecho_allowed = not _a2_is_proactive_result(result)
-    pii_client_message = client_message if client_pii_deecho_allowed else ""
+    pii_client_message = _client_pii_echo_context(client_message=client_message, context=context) if client_pii_deecho_allowed else ""
     if sanitizer_enabled:
         cleaned, reasons = _sanitize_output_client_text(result.draft_text, client_message=pii_client_message)
     else:
@@ -4996,6 +4996,11 @@ _CLIENT_NAME_MARKER_RE = re.compile(
     r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})",
     re.I,
 )
+_CLIENT_SELF_NAME_MARKER_RE = re.compile(
+    r"(?:\bя\b|меня|мама|папа|родител[ья])\s*[:—-]?\s*"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,1})",
+    re.I,
+)
 _CLIENT_NAME_STOPWORDS = {
     "добрый",
     "добрая",
@@ -5043,6 +5048,33 @@ def _sanitize_client_pii_echo(text: str, *, client_message: str = "") -> tuple[s
     return value, tuple(reasons)
 
 
+def _client_pii_echo_context(*, client_message: str = "", context: Optional[Mapping[str, Any]] = None) -> str:
+    items: list[str] = []
+    if isinstance(context, Mapping):
+        memory = context.get("dialogue_memory_view")
+        if isinstance(memory, Mapping):
+            turns = memory.get("recent_turns")
+            if isinstance(turns, Sequence) and not isinstance(turns, (str, bytes, bytearray)):
+                for item in turns:
+                    if isinstance(item, Mapping) and str(item.get("role") or "").casefold() in {"client", "user"}:
+                        text = str(item.get("text") or "").strip()
+                        if text:
+                            items.append(text)
+        recent = context.get("recent_messages")
+        if isinstance(recent, Sequence) and not isinstance(recent, (str, bytes, bytearray)):
+            for item in recent:
+                text = str(item or "").strip()
+                if text.casefold().startswith(("клиент:", "client:", "user:")):
+                    value = text.split(":", 1)[-1].strip()
+                    if value:
+                        items.append(value)
+    current = str(client_message or "").strip()
+    if current:
+        items.append(current)
+    deduped = tuple(dict.fromkeys(item for item in items if item))
+    return "\n".join(deduped[-8:])
+
+
 def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
     candidates: list[str] = []
     client = " ".join(str(client_message or "").split())
@@ -5053,6 +5085,8 @@ def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
         parts = [part for part in str(name or "").split() if part]
         if len(parts) >= 2:
             candidates.append(parts[-1])
+    for match in _CLIENT_SELF_NAME_MARKER_RE.finditer(client):
+        candidates.append(match.group("name"))
     if phone:
         phone_pos = client.find(phone)
         for match in _CLIENT_NAME_PAIR_RE.finditer(client):
@@ -5095,7 +5129,7 @@ def _name_word_pattern(word: str) -> str:
         return re.escape(text[:-1]).replace("ё", "[её]").replace("Ё", "[ЕЁ]") + r"(?:й|я|ю|ем|е)"
     if normalized.endswith(("а", "я")) and len(normalized) > 3:
         stem = re.escape(text[:-1]).replace("ё", "[её]").replace("Ё", "[ЕЁ]")
-        return stem + r"(?:а|я|ы|и|е|у|ю|ой|ей)"
+        return stem + r"(?:а|я|ы|и|е|у|ю|ой|ей)?"
     return escaped
 
 

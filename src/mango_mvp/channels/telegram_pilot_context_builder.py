@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any, Mapping, Sequence
 from mango_mvp.channels.contracts import ChannelMessage
 from mango_mvp.channels.answer_contract import build_answer_contract
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
-from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan
+from mango_mvp.channels.conversation_intent_plan import build_conversation_intent_plan, build_planner_fact_selection
 from mango_mvp.channels.dialogue_memory import DialogueMemory, build_dialogue_memory
 from mango_mvp.channels.fact_retrieval import key_matches, select_confirmed_facts as select_recall_confirmed_facts
 from mango_mvp.channels.fact_scope_spec import (
@@ -32,6 +33,8 @@ NO_KNOWLEDGE_SNAPSHOT_VERSION = "knowledge_snapshot_missing"
 MAX_KNOWLEDGE_SNIPPETS = 8
 MAX_KNOWLEDGE_SNIPPET_CHARS = 700
 MAX_KNOWLEDGE_CONTEXT_CHARS = 4500
+PLANNER_FACT_SELECT_ENV = "TELEGRAM_PLANNER_FACT_SELECT"
+PLANNER_FACT_SELECT_CONFIDENCE_THRESHOLD = 0.6
 AUTONOMY_MATRIX_SAFE_TOPIC_IDS = {
     "theme:001_pricing",
     "theme:005_discounts",
@@ -147,16 +150,47 @@ def build_telegram_pilot_context(
         dialogue_memory_view=memory_view,
         recent_messages=recent_messages,
     )
+    planner_fact_selection = _planner_fact_selection_from_policy(
+        current_message=current_message,
+        active_brand=active_brand,
+        policy=merged_policy,
+        memory_view=memory_view,
+        recent_messages=recent_messages,
+    )
+    planner_required = _text_list(planner_fact_selection.get("required_fact_keys")) if planner_fact_selection else []
+    planner_scope = _clean_text(planner_fact_selection.get("fact_scope")) if planner_fact_selection else ""
+    planner_blocked_scopes = (
+        _text_list(planner_fact_selection.get("blocked_neighbor_scopes")) if planner_fact_selection else []
+    )
+    effective_required = tuple(dict.fromkeys([*intent_plan.required_fact_keys, *planner_required]))
+    effective_fact_scope = intent_plan.fact_scope or planner_scope
     retrieval_topics = tuple(dict.fromkeys([*intent_plan.answer_topics, *intent_plan.topic_roles]))
     held_state = replace(
         memory.held_state,
-        active_fact_scope=intent_plan.fact_scope or memory.held_state.active_fact_scope,
+        active_fact_scope=effective_fact_scope or memory.held_state.active_fact_scope,
         active_topics=retrieval_topics or memory.held_state.active_topics,
-        required_fact_keys=tuple(intent_plan.required_fact_keys) or memory.held_state.required_fact_keys,
+        required_fact_keys=effective_required or memory.held_state.required_fact_keys,
     )
     memory = replace(memory, held_state=held_state)
     memory_view = memory.to_prompt_view()
     intent_view = intent_plan.to_prompt_view()
+    if planner_fact_selection:
+        intent_view = dict(intent_view)
+        intent_view["required_fact_keys"] = list(effective_required)
+        if effective_fact_scope:
+            intent_view["fact_scope"] = effective_fact_scope
+        if planner_blocked_scopes:
+            intent_view["blocked_neighbor_scopes"] = list(
+                dict.fromkeys([*intent_plan.blocked_neighbor_scopes, *planner_blocked_scopes])
+            )
+        intent_view["planner_fact_select"] = {
+            "enabled": True,
+            "planner_intent": planner_fact_selection.get("planner_intent") or "",
+            "planner_confidence": planner_fact_selection.get("planner_confidence") or 0.0,
+            "required_fact_keys": planner_required,
+            "fact_scope": planner_scope,
+            "scope_conflict": bool(intent_plan.fact_scope and planner_scope and intent_plan.fact_scope != planner_scope),
+        }
     safety_decision = classify_answer_safety(
         client_message=current_message,
         context={"conversation_intent_plan": intent_view, "dialogue_memory_view": memory_view, "recent_messages": recent_messages},
@@ -168,11 +202,11 @@ def build_telegram_pilot_context(
     held_retrieval = memory.held_state.retrieval_context()
     held_required = _text_list(held_retrieval.get("required_fact_keys"))
     policy_for_snapshot["required_fact_keys"] = list(
-        dict.fromkeys([*existing_required, *intent_plan.required_fact_keys, *held_required])
+        dict.fromkeys([*existing_required, *effective_required, *held_required])
     )
     held_scope = _clean_text(held_retrieval.get("active_fact_scope"))
-    if intent_plan.fact_scope:
-        policy_for_snapshot["fact_scope"] = intent_plan.fact_scope
+    if effective_fact_scope:
+        policy_for_snapshot["fact_scope"] = effective_fact_scope
     elif held_scope:
         policy_for_snapshot["fact_scope"] = held_scope
     active_topics = tuple(
@@ -186,9 +220,13 @@ def build_telegram_pilot_context(
     )
     if active_topics:
         policy_for_snapshot["active_topics"] = list(active_topics)
-    if intent_plan.blocked_neighbor_scopes:
-        policy_for_snapshot["blocked_neighbor_scopes"] = list(intent_plan.blocked_neighbor_scopes)
+    blocked_neighbor_scopes = tuple(dict.fromkeys([*intent_plan.blocked_neighbor_scopes, *planner_blocked_scopes]))
+    if blocked_neighbor_scopes:
+        policy_for_snapshot["blocked_neighbor_scopes"] = list(blocked_neighbor_scopes)
     knowledge_query = intent_plan.fact_query_text or _contextual_message_for_knowledge_lookup(current_message, known_slots=merged_known_slots)
+    planner_fact_query = _clean_text(planner_fact_selection.get("fact_query_text"), max_chars=700) if planner_fact_selection else ""
+    if planner_fact_query:
+        knowledge_query = f"{knowledge_query} {planner_fact_query}".strip()
     knowledge_query = _contextual_message_with_recent_product(knowledge_query, current_message=current_message, recent_messages=recent_messages)
     snapshot_context = build_knowledge_snapshot_context(
         message_text=knowledge_query,
@@ -1410,6 +1448,67 @@ def _records(value: Any) -> list[Mapping[str, Any]]:
     return []
 
 
+def _planner_fact_selection_from_policy(
+    *,
+    current_message: str,
+    active_brand: str,
+    policy: Mapping[str, Any],
+    memory_view: Mapping[str, Any],
+    recent_messages: Sequence[str],
+) -> Mapping[str, Any]:
+    if not _truthy(os.getenv(PLANNER_FACT_SELECT_ENV, "")):
+        return {}
+    signal = _planner_signal_from_policy(policy)
+    if not signal:
+        return {}
+    confidence = _float_value(signal.get("planner_confidence"))
+    if confidence < PLANNER_FACT_SELECT_CONFIDENCE_THRESHOLD:
+        return {}
+    slots = signal.get("planner_slots") if isinstance(signal.get("planner_slots"), Mapping) else {}
+    selection = dict(
+        build_planner_fact_selection(
+            current_message=current_message,
+            active_brand=active_brand,
+            planner_intent=str(signal.get("planner_intent") or ""),
+            planner_slots=slots,
+            dialogue_memory_view=memory_view,
+            recent_messages=recent_messages,
+        )
+    )
+    if not selection.get("required_fact_keys") and not selection.get("fact_scope"):
+        return {}
+    selection["planner_confidence"] = confidence
+    return selection
+
+
+def _planner_signal_from_policy(policy: Mapping[str, Any]) -> Mapping[str, Any]:
+    for container in _planner_signal_containers(policy):
+        intent = _clean_text(container.get("planner_intent") or container.get("intent"))
+        slots = container.get("planner_slots") if isinstance(container.get("planner_slots"), Mapping) else {}
+        confidence = container.get("planner_confidence")
+        if intent and (slots or confidence is not None):
+            return {"planner_intent": intent, "planner_slots": dict(slots), "planner_confidence": confidence}
+    return {}
+
+
+def _planner_signal_containers(value: Any, *, depth: int = 0) -> tuple[Mapping[str, Any], ...]:
+    if depth > 3 or not isinstance(value, Mapping):
+        return ()
+    result: list[Mapping[str, Any]] = [value]
+    for key in (
+        "dialogue_contract",
+        "answer_contract",
+        "contract",
+        "dialogue_contract_pipeline",
+        "understanding",
+        "planner_fact_select",
+    ):
+        child = value.get(key)
+        if isinstance(child, Mapping):
+            result.extend(_planner_signal_containers(child, depth=depth + 1))
+    return tuple(result)
+
+
 def _text_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -1461,6 +1560,13 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "истина", "есть"}
+
+
+def _float_value(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _normalize_active_brand(value: Any) -> str:

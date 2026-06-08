@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ from mango_mvp.channels.text_signals import has_any_marker, has_marker
 DIALOGUE_MEMORY_SCHEMA_VERSION = "dialogue_memory_v2_2026_05_23"
 MAX_TURNS = 20
 MAX_PROMPT_TURNS = 20
+MEMORY_LLM_SLOT_WINDOW_ENV = "TELEGRAM_MEMORY_LLM_SLOT_WINDOW"
 
 QUESTION_KIND_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("live_availability", ("мест", "налич", "брон", "заброни")),
@@ -591,6 +593,8 @@ def _merge_memory_llm_slots(
     memory: DialogueMemory,
 ) -> None:
     latest_client_text = _latest_client_text(memory.turns)
+    use_slot_window = _memory_llm_slot_window_enabled()
+    support_text = _recent_client_window_text(memory.turns, limit=8) if use_slot_window else latest_client_text
     for key, raw in source_map.items():
         if key not in _MEMORY_LLM_SLOT_KEYS:
             continue
@@ -599,8 +603,16 @@ def _merge_memory_llm_slots(
             value = _normalize_format(value)
         if not value:
             continue
+        if use_slot_window:
+            if not _memory_llm_slot_supported_by_client_text(key, value, client_text=support_text):
+                continue
+            if (
+                not _memory_llm_slot_supported_by_client_text(key, value, client_text=latest_client_text)
+                and _latest_client_has_conflicting_slot(key, value, latest_client_text=latest_client_text)
+            ):
+                continue
         existing = target.get(key)
-        if existing and not _memory_llm_can_override_slot(key, value, existing, latest_client_text=latest_client_text):
+        if existing and not _memory_llm_can_override_slot(key, value, existing, latest_client_text=support_text):
             continue
         target[key] = DialogueSlot(value=value[:160], source="memory_llm", confidence=0.74)
 
@@ -622,7 +634,11 @@ def _memory_llm_can_override_slot(
 
 
 def _memory_llm_slot_supported_by_latest_client(key: str, value: str, *, latest_client_text: str) -> bool:
-    normalized = normalize_text(latest_client_text)
+    return _memory_llm_slot_supported_by_client_text(key, value, client_text=latest_client_text)
+
+
+def _memory_llm_slot_supported_by_client_text(key: str, value: str, *, client_text: str) -> bool:
+    normalized = normalize_text(client_text)
     candidate = normalize_text(value)
     if not normalized or not candidate:
         return False
@@ -668,11 +684,48 @@ def _memory_llm_slot_supported_by_latest_client(key: str, value: str, *, latest_
     return False
 
 
+def _latest_client_has_conflicting_slot(key: str, value: str, *, latest_client_text: str) -> bool:
+    normalized = normalize_text(latest_client_text)
+    candidate = normalize_text(value)
+    if not normalized or not candidate:
+        return False
+    if key == "grade":
+        extracted = normalize_text(extract_grade(normalized))
+    elif key == "subject":
+        extracted = normalize_text(extract_subjects(normalized))
+    elif key == "format":
+        extracted = normalize_text(_normalize_format(extract_format(normalized)))
+    elif key == "product":
+        extracted = normalize_text(extract_product(normalized))
+    elif key == "goal":
+        extracted = normalize_text(extract_goal(normalized))
+    else:
+        extracted = ""
+    return bool(extracted and extracted != candidate)
+
+
 def _latest_client_text(turns: Sequence[DialogueTurn]) -> str:
     for turn in reversed(turns):
         if turn.role == "client" and turn.text:
             return turn.text
     return ""
+
+
+def _recent_client_window_text(turns: Sequence[DialogueTurn], *, limit: int) -> str:
+    recent = list(turns[-max(1, limit) :])
+    return " ".join(turn.text for turn in recent if turn.role == "client" and turn.text)
+
+
+def _memory_llm_slot_window_enabled() -> bool:
+    return str(os.getenv(MEMORY_LLM_SLOT_WINDOW_ENV, "")).strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "да",
+        "истина",
+        "есть",
+    }
 
 
 def _memory_llm_topic(

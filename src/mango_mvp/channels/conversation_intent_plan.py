@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.channels.answer_plan import build_answer_plan
@@ -251,6 +251,78 @@ def build_conversation_intent_plan(
         selling=selling,
         decision_notes=notes,
     )
+
+
+def build_planner_fact_selection(
+    *,
+    current_message: str,
+    active_brand: str = "unknown",
+    planner_intent: str = "",
+    planner_slots: Mapping[str, Any] | None = None,
+    dialogue_memory_view: Mapping[str, Any] | None = None,
+    recent_messages: Sequence[str] = (),
+) -> Mapping[str, Any]:
+    """Project already-computed planner understanding into retrieval hints."""
+
+    intent = _normalize_planner_intent(planner_intent)
+    if not intent:
+        return {}
+    text = str(current_message or "").strip()
+    normalized = normalize_text(text)
+    memory = dict(dialogue_memory_view or {})
+    roles = _roles_from_memory_view(memory) or tag_message_roles(normalized, context=_held_tagger_context(memory))
+    memory_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), Mapping) else {}
+    slots = _merge_slots(memory_slots, planner_slots or {})
+    roles = _roles_with_planner_slots(roles, slots)
+    previous_focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), Mapping) else {}
+    previous_product_family = str(previous_focus.get("product_family") or "")
+    previous_product = str(previous_focus.get("product") or "")
+    held_fact_scope = _held_active_fact_scope(memory)
+    held_active_topics = _held_active_topics(memory)
+    product_family, product_scope = _product_focus(
+        normalized,
+        slots=slots,
+        previous_product_family=previous_product_family,
+        previous_product=previous_product,
+        recent_messages=recent_messages,
+    )
+    if _is_camp_followup_from_held(normalized, held_fact_scope=held_fact_scope, held_active_topics=held_active_topics):
+        product_family = "camp"
+        product_scope = _camp_product_scope_from_fact_scope(held_fact_scope) or product_scope
+    required_fact_keys = _required_fact_keys(
+        intent,
+        normalized,
+        roles=roles,
+        slots=slots,
+        active_brand=active_brand,
+        held_fact_scope=held_fact_scope,
+    )
+    fact_scope, blocked_neighbor_scopes, scope_notes = _fact_scope_constraints(
+        normalized,
+        roles=roles,
+        primary_intent=intent,
+        product_family=product_family,
+        product_scope=product_scope,
+        slots=slots,
+        held_fact_scope=held_fact_scope,
+    )
+    fact_query = _fact_query_text(
+        text,
+        primary_intent=intent,
+        product_family=product_family,
+        product_scope=product_scope,
+        slots=slots,
+        required_fact_keys=required_fact_keys,
+    )
+    return {
+        "planner_intent": intent,
+        "planner_slots": dict(slots),
+        "required_fact_keys": list(required_fact_keys),
+        "fact_scope": fact_scope,
+        "blocked_neighbor_scopes": list(blocked_neighbor_scopes),
+        "fact_query_text": fact_query,
+        "decision_notes": list(scope_notes),
+    }
 
 
 def _selling_signals(
@@ -978,6 +1050,60 @@ def _slot_key(value: Any) -> str:
         "course_type": "product",
     }
     return aliases.get(key, key if key in {"grade", "subject", "format", "goal", "product", "city", "location"} else "")
+
+
+def _normalize_planner_intent(value: Any) -> str:
+    intent = str(value or "").strip().casefold()
+    aliases = {
+        "price": "pricing",
+        "payment": "payment_method",
+        "payment_methods": "payment_method",
+        "recordings": "recording",
+        "records": "recording",
+        "platform": "platform_access",
+        "documents": "document",
+        "matcapital": "matkap",
+        "maternal_capital": "matkap",
+        "tax_deduction": "tax",
+        "camp_lvsh": "camp",
+    }
+    intent = aliases.get(intent, intent)
+    allowed = {
+        "pricing",
+        "price_fix",
+        "installment",
+        "payment_method",
+        "payment_by_invoice_monthly",
+        "discount",
+        "trial",
+        "camp",
+        "live_availability",
+        "schedule",
+        "recording",
+        "olympiad_online",
+        "format",
+        "address",
+        "teacher",
+        "platform_access",
+        "document",
+        "matkap",
+        "tax",
+        "refund_policy",
+        "identity",
+        "off_topic",
+    }
+    return intent if intent in allowed else ""
+
+
+def _roles_with_planner_slots(roles: MessageRoles, slots: Mapping[str, str]) -> MessageRoles:
+    if roles.training_format:
+        return roles
+    known_format = str(slots.get("format") or "").casefold()
+    if known_format in {"online", "онлайн", "дистанционно"}:
+        return replace(roles, training_format="online", training_formats=("online",))
+    if known_format in {"offline", "очно", "очный", "офлайн"}:
+        return replace(roles, training_format="ochno", training_formats=("ochno",))
+    return roles
 
 
 def _slot_value(value: Any) -> str:

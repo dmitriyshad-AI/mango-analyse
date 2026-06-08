@@ -166,6 +166,127 @@ def test_builder_adds_conversation_intent_plan_to_prompt_context() -> None:
     assert "availability.current" in plan["required_fact_keys"]
 
 
+def _planner_fact_select_snapshot() -> dict:
+    return {
+        "schema_version": "kc_knowledge_snapshot_v1",
+        "run_id": "kb_planner_fact_select_test",
+        "facts": [
+            {
+                "fact_id": "fact:foton_installment",
+                "fact_key": "installment_terms.current",
+                "fact_type": "installment",
+                "client_safe_text": "Фотон: рассрочка доступна на 6, 10 или 12 месяцев.",
+                "brand": "foton",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:006_installment"],
+            },
+            {
+                "fact_id": "fact:unpk_installment",
+                "fact_key": "installment_terms.current",
+                "fact_type": "installment",
+                "client_safe_text": "УНПК: рассрочки нет, можно оплатить помесячно.",
+                "brand": "unpk",
+                "freshness_status": "document_verified",
+                "usable_for_precise_answer": True,
+                "allowed_for_client_answer": True,
+                "requires_manager_confirmation": False,
+                "forbidden_for_client": False,
+                "related_theme_ids": ["theme:006_installment"],
+            },
+        ],
+        "chunks": [],
+    }
+
+
+def test_planner_fact_select_off_ignores_planner_policy(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_PLANNER_FACT_SELECT", raising=False)
+    context = build_telegram_pilot_context(
+        "А это можно?",
+        active_brand="foton",
+        rop_policy={
+            "bot_permission": "allowed_after_fact_check",
+            "planner_intent": "installment",
+            "planner_confidence": 0.94,
+            "planner_slots": {"format": "онлайн"},
+        },
+        kc_snapshot=_planner_fact_select_snapshot(),
+    )
+    payload = context.to_prompt_context()
+
+    assert "planner_fact_select" not in payload["conversation_intent_plan"]
+    assert payload.get("confirmed_facts", {}) == {}
+    assert payload["facts_context"]["required_fact_keys"] == []
+
+
+def test_planner_fact_select_uses_high_confidence_planner_when_keyword_misses(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_PLANNER_FACT_SELECT", "1")
+    context = build_telegram_pilot_context(
+        "А это можно?",
+        active_brand="foton",
+        rop_policy={
+            "bot_permission": "allowed_after_fact_check",
+            "planner_intent": "installment",
+            "planner_confidence": 0.82,
+            "planner_slots": {"format": "онлайн"},
+        },
+        kc_snapshot=_planner_fact_select_snapshot(),
+    )
+    payload = context.to_prompt_context()
+
+    plan = payload["conversation_intent_plan"]
+    assert plan["planner_fact_select"]["enabled"] is True
+    assert "installment_terms.current" in plan["required_fact_keys"]
+    assert payload["confirmed_facts"] == {
+        "fact:foton_installment": "Фотон: рассрочка доступна на 6, 10 или 12 месяцев."
+    }
+    assert "УНПК" not in " ".join(payload["confirmed_facts"].values())
+
+
+def test_planner_fact_select_low_confidence_keeps_keyword_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_PLANNER_FACT_SELECT", "1")
+    context = build_telegram_pilot_context(
+        "А это можно?",
+        active_brand="foton",
+        rop_policy={
+            "bot_permission": "allowed_after_fact_check",
+            "planner_intent": "installment",
+            "planner_confidence": 0.59,
+            "planner_slots": {"format": "онлайн"},
+        },
+        kc_snapshot=_planner_fact_select_snapshot(),
+    )
+    payload = context.to_prompt_context()
+
+    assert "planner_fact_select" not in payload["conversation_intent_plan"]
+    assert payload.get("confirmed_facts", {}) == {}
+
+
+def test_planner_fact_select_does_not_bypass_active_brand_filter(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_PLANNER_FACT_SELECT", "1")
+    snapshot = _planner_fact_select_snapshot()
+    snapshot["facts"] = [fact for fact in snapshot["facts"] if fact["brand"] == "unpk"]
+    context = build_telegram_pilot_context(
+        "А это можно?",
+        active_brand="foton",
+        rop_policy={
+            "bot_permission": "allowed_after_fact_check",
+            "planner_intent": "installment",
+            "planner_confidence": 0.91,
+            "planner_slots": {"active_brand": "unpk", "format": "онлайн"},
+        },
+        kc_snapshot=snapshot,
+    )
+    payload = context.to_prompt_context()
+
+    assert "installment_terms.current" in payload["conversation_intent_plan"]["required_fact_keys"]
+    assert payload.get("confirmed_facts", {}) == {}
+    assert payload["facts_context"]["facts_missing"] is True
+
+
 def test_builder_uses_intent_plan_to_retrieve_foton_online_price_not_offline_or_camp() -> None:
     snapshot = {
         "schema_version": "kc_knowledge_snapshot_v1",

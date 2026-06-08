@@ -160,6 +160,110 @@ def test_dialogue_memory_llm_does_not_override_prior_client_slot_without_current
     assert updated.known_slots["grade"].source == "dialogue_memory"
 
 
+def test_dialogue_memory_llm_slot_window_accepts_recent_client_slot_on_ellipsis(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_MEMORY_LLM_SLOT_WINDOW", "1")
+    initial = build_dialogue_memory(
+        current_message="9 класс, физика, онлайн",
+        active_brand="foton",
+        session_id="s-memory-llm-window",
+    )
+    followup = build_dialogue_memory(
+        current_message="А сколько стоит?",
+        active_brand="foton",
+        previous_memory=initial,
+        session_id="s-memory-llm-window",
+    )
+
+    def memory_llm_fn(_prompt: str):
+        return {
+            "slots": {"grade": "9", "subject": "физика", "format": "онлайн"},
+            "topic": {"grade": "9", "subject": "физика", "format": "онлайн"},
+            "open_question": {"text": "А сколько стоит?", "kind": "price", "answered": False},
+            "commitments": [],
+            "summary": "Клиент уточняет цену по ранее названному курсу.",
+        }
+
+    updated = update_dialogue_memory_after_answer(
+        followup,
+        answer_text="Стоимость уточнит менеджер.",
+        route="bot_answer_self",
+        memory_llm_fn=memory_llm_fn,
+    )
+
+    assert updated.known_slots["grade"].value == "9"
+    assert updated.known_slots["subject"].value == "физика"
+    assert updated.known_slots["format"].value == "онлайн"
+    assert updated.known_slots["grade"].source == "memory_llm"
+
+
+def test_dialogue_memory_llm_slot_window_does_not_restore_old_grade_after_topic_change(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_MEMORY_LLM_SLOT_WINDOW", "1")
+    initial = build_dialogue_memory(
+        current_message="9 класс, физика, онлайн",
+        active_brand="foton",
+        session_id="s-memory-llm-window-change",
+    )
+    followup = build_dialogue_memory(
+        current_message="Теперь 10 класс, сколько стоит?",
+        active_brand="foton",
+        previous_memory=initial,
+        session_id="s-memory-llm-window-change",
+    )
+
+    def memory_llm_fn(_prompt: str):
+        return {
+            "slots": {"grade": "9", "subject": "физика", "format": "онлайн"},
+            "topic": {"grade": "9", "subject": "физика", "format": "онлайн"},
+            "open_question": {"text": "Теперь 10 класс, сколько стоит?", "kind": "price", "answered": False},
+            "commitments": [],
+            "summary": "Клиент уточняет цену.",
+        }
+
+    updated = update_dialogue_memory_after_answer(
+        followup,
+        answer_text="Стоимость уточнит менеджер.",
+        route="bot_answer_self",
+        memory_llm_fn=memory_llm_fn,
+    )
+
+    assert updated.known_slots["grade"].value == "10"
+    assert updated.known_slots["grade"].source == "dialogue_memory"
+
+
+def test_dialogue_memory_llm_slot_window_rejects_hallucinated_slot(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_MEMORY_LLM_SLOT_WINDOW", "1")
+    initial = build_dialogue_memory(
+        current_message="9 класс, физика, онлайн",
+        active_brand="foton",
+        session_id="s-memory-llm-window-hallucination",
+    )
+    followup = build_dialogue_memory(
+        current_message="А сколько стоит?",
+        active_brand="foton",
+        previous_memory=initial,
+        session_id="s-memory-llm-window-hallucination",
+    )
+
+    def memory_llm_fn(_prompt: str):
+        return {
+            "slots": {"subject": "информатика"},
+            "topic": {"subject": "информатика"},
+            "open_question": {"text": "А сколько стоит?", "kind": "price", "answered": False},
+            "commitments": [],
+            "summary": "Клиент уточняет цену.",
+        }
+
+    updated = update_dialogue_memory_after_answer(
+        followup,
+        answer_text="Стоимость уточнит менеджер.",
+        route="bot_answer_self",
+        memory_llm_fn=memory_llm_fn,
+    )
+
+    assert updated.known_slots["subject"].value == "физика"
+    assert updated.known_slots["subject"].source == "dialogue_memory"
+
+
 def test_dialogue_memory_llm_summary_keeps_multiturn_meaning_and_commitment() -> None:
     memory = build_dialogue_memory(
         current_message="8 класс, физика, онлайн, хотим понять места.",

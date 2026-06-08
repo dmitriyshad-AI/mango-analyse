@@ -10,7 +10,7 @@ Command:
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests
 
 Result:
-2805 passed, 2 skipped, 1 warning in 41.01s
+2806 passed, 2 skipped, 1 warning in 41.53s
 
 Command:
 

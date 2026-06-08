@@ -139,6 +139,17 @@ def test_success_report_includes_readiness_cli_versions_and_heartbeat(tmp_path):
     assert heartbeat["stall"] is False
 
 
+def test_claude_task_uses_longer_llm_timeout(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+    _write_task(tmp_path, "2026-06-07_claude_timeout.task.yaml", brain="claude", set_rel=set_rel, set_sha=set_sha)
+
+    assert _run_ready_cycle(_new_watcher(tmp_path)) == "success"
+
+    report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
+    assert "--timeout-sec 270" in report
+
+
 def test_empty_task_env_uses_production_stack_and_reports_llm_breakdown(tmp_path):
     _make_bundle(tmp_path)
     set_rel, set_sha = _make_set(tmp_path)

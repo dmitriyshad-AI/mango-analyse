@@ -803,7 +803,7 @@ class M1Watcher:
         return target, info
 
     def _build_command(self, spec: TaskSpec, deploy_dir: Path, set_path: Path, out_dir: Path, snapshot_rel: str) -> tuple[str, ...]:
-        return (
+        command = [
             sys.executable,
             "scripts/run_telegram_dynamic_client_sim.py",
             "--scenarios",
@@ -826,7 +826,10 @@ class M1Watcher:
             spec.judge_prompt_version,
             "--out-dir",
             str(out_dir),
-        )
+        ]
+        if spec.brain == "claude":
+            command.extend(["--timeout-sec", "270"])
+        return tuple(command)
 
     def _run_subprocess(self, spec: TaskSpec, deploy_dir: Path, out_dir: Path, command: tuple[str, ...], env: Mapping[str, str]) -> RunOutcome:
         self._write_heartbeat(spec.id, "running_start", out_dir)

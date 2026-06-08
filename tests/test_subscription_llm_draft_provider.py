@@ -10406,6 +10406,60 @@ def test_direct_path_output_sanitizer_removes_client_phone_and_child_name_echo()
     assert result.metadata["direct_path"]["downgraded"] is False
 
 
+def test_direct_path_output_sanitizer_masks_single_inflected_child_name_echo() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Поняла. Подскажите, какой предмет нужен Петру?",
+            topic_id="theme:020_enrollment",
+        )
+    )
+    client_message = "Записывайте: Иванов Пётр, 9 класс. Хотим подобрать курс."
+
+    result = provider.build_draft(
+        client_message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Для записи менеджер помогает подобрать группу и оформить заявку."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert "Петру" not in result.draft_text
+    assert "Пётр" not in result.draft_text
+    assert "данные ребёнка" in result.draft_text
+    assert result.metadata["output_sanitizer"]["applied"] is True
+    assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Да, Москва подходит как ориентир по площадке.",
+            topic_id="theme:015_address",
+        )
+    )
+    client_message = "Москва удобна, подскажите площадку."
+
+    result = provider.build_draft(
+        client_message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"address.foton": "Занятия проходят в Москве."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Да, Москва подходит как ориентир по площадке."
+    assert "output_sanitizer" not in result.metadata or result.metadata["output_sanitizer"].get("applied") is not True
+
+
 def test_direct_path_p0_preblock_stays_manager_only_with_output_sanitizer() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")

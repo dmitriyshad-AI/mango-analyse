@@ -4988,8 +4988,9 @@ def _sanitize_output_client_text(text: str, *, client_message: str = "") -> tupl
 
 _CLIENT_NAME_PAIR_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b")
 _CLIENT_NAME_MARKER_RE = re.compile(
-    r"(?:реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
-    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2})",
+    r"(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})",
     re.I,
 )
 _CLIENT_NAME_STOPWORDS = {
@@ -5044,7 +5045,11 @@ def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
     client = " ".join(str(client_message or "").split())
     phone = _a2_extract_phone(client)
     for match in _CLIENT_NAME_MARKER_RE.finditer(client):
-        candidates.append(match.group("name"))
+        name = match.group("name")
+        candidates.append(name)
+        parts = [part for part in str(name or "").split() if part]
+        if len(parts) >= 2:
+            candidates.append(parts[-1])
     if phone:
         phone_pos = client.find(phone)
         for match in _CLIENT_NAME_PAIR_RE.finditer(client):
@@ -5055,7 +5060,7 @@ def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
     for raw in candidates:
         name = " ".join(str(raw or "").split()).strip(" ,.;:!?")
         words = [word.casefold().replace("ё", "е") for word in name.split()]
-        if len(words) < 2 or any(word in _CLIENT_NAME_STOPWORDS for word in words):
+        if not words or any(word in _CLIENT_NAME_STOPWORDS for word in words):
             continue
         if _client_name_echoed(name, bot_text) and name not in result:
             result.append(name)
@@ -5067,10 +5072,28 @@ def _client_name_echoed(name: str, text: str) -> bool:
 
 
 def _flexible_name_pattern(name: str) -> str:
-    parts = [re.escape(part) for part in str(name or "").split() if part]
+    parts = [_name_word_pattern(part) for part in str(name or "").split() if part]
     if not parts:
         return r"(?!)"
     return r"\b" + r"\s+".join(parts) + r"\b"
+
+
+def _name_word_pattern(word: str) -> str:
+    text = str(word or "").strip()
+    if not text:
+        return r"(?!)"
+    normalized = text.casefold().replace("ё", "е")
+    if normalized == "петр":
+        return r"п[её]тр(?:а|у|ом|е)?"
+    escaped = re.escape(text).replace("ё", "[её]").replace("Ё", "[ЕЁ]")
+    if re.search(r"[бвгджзклмнпрстфхцчшщ]$", normalized, re.I):
+        return escaped + r"(?:а|у|ом|е)?"
+    if normalized.endswith("й"):
+        return re.escape(text[:-1]).replace("ё", "[её]").replace("Ё", "[ЕЁ]") + r"(?:й|я|ю|ем|е)"
+    if normalized.endswith(("а", "я")) and len(normalized) > 3:
+        stem = re.escape(text[:-1]).replace("ё", "[её]").replace("Ё", "[ЕЁ]")
+        return stem + r"(?:а|я|ы|и|е|у|ю|ой|ей)"
+    return escaped
 
 
 def _replace_echoed_phone(text: str, phone: str) -> str:

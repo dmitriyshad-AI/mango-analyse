@@ -586,6 +586,32 @@ def test_direct_path_fail_fast_accepts_later_completed_model_called_dialog(monke
     assert summary["config_validity"]["invalid"] is False
 
 
+def test_direct_path_fail_fast_waits_for_first_personas_by_scenario_order(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH", "1")
+    transcripts = [
+        {
+            "dialog_id": dialog_id,
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [{"bot_direct_path": {"attempted": True, "model_called": False}}],
+        }
+        for dialog_id in ("p0_payment_fast", "p0_legal_fast", "p0_refund_first")
+    ]
+
+    config_validity = sim._direct_path_config_invalid(
+        transcripts,
+        persona_order={
+            "p0_refund_first": 0,
+            "p0_complaint_first": 1,
+            "p0_payment_fast": 2,
+            "p0_legal_fast": 3,
+        },
+    )
+
+    assert config_validity["checked_dialogs"] == 3
+    assert config_validity["invalid"] is False
+
+
 def test_direct_path_fail_fast_uses_pilot_gold_config(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_DIRECT_PATH", raising=False)
     monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")

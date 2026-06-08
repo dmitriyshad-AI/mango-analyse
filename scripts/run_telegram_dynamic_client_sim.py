@@ -1212,26 +1212,25 @@ def _direct_path_config_invalid(
 ) -> Mapping[str, Any]:
     if not _direct_path_fail_fast_enabled() or window <= 0:
         return {"invalid": False}
-    completed = [
-        dialog
-        for dialog in sort_transcripts_by_persona_order(transcripts, persona_order)
+    completed_by_id = {
+        str(dialog.get("dialog_id") or ""): dialog
+        for dialog in transcripts
         if str(dialog.get("run_status") or "completed") == "completed"
-    ]
-    if len(completed) < window:
-        return {"invalid": False, "checked_dialogs": len(completed), "threshold": window}
-    first_window = completed[:window]
+    }
+    first_ids = [dialog_id for dialog_id, _ in sorted(persona_order.items(), key=lambda item: item[1])][:window]
+    if len(first_ids) < window or not all(dialog_id in completed_by_id for dialog_id in first_ids):
+        return {"invalid": False, "checked_dialogs": len(completed_by_id), "threshold": window}
+    first_window = [completed_by_id[dialog_id] for dialog_id in first_ids]
     called = [_dialog_direct_model_called(dialog) for dialog in first_window]
-    any_called_global = any(_dialog_direct_model_called(dialog) for dialog in completed)
+    any_called_global = any(_dialog_direct_model_called(dialog) for dialog in completed_by_id.values())
     invalid = not any(called) and not any_called_global
     return {
         "invalid": invalid,
         "reason": "config_invalid" if invalid else "",
         "checked_dialogs": len(first_window),
         "threshold": window,
-        "dialog_ids": [str(dialog.get("dialog_id") or "") for dialog in first_window],
-        "model_called_by_dialog": {
-            str(dialog.get("dialog_id") or ""): value for dialog, value in zip(first_window, called)
-        },
+        "dialog_ids": first_ids,
+        "model_called_by_dialog": {dialog_id: value for dialog_id, value in zip(first_ids, called)},
         "any_model_called_global": any_called_global,
     }
 

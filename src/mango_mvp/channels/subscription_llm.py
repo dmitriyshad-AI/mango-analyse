@@ -34,6 +34,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
     _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
     _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
+    _closed_world_negative_text as dialogue_contract_closed_world_negative_text,
     _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
     concrete_anchors as dialogue_contract_concrete_anchors,
     _established_topic_from_context as dialogue_contract_established_topic_from_context,
@@ -73,6 +74,10 @@ from mango_mvp.channels.tone_block import (
     tone_rich_format_enabled,
 )
 from mango_mvp.channels.wave3_flags import (
+    CALC_OVER_GROUNDED_ENV,
+    CLOSED_WORLD_NEGATIVE_ENV,
+    ELLIPSIS_RESOLVE_ENV,
+    PARTIAL_ANSWER_FLOOR_ENV,
     PILOT_CONFIG_ENV as WAVE3_PILOT_CONFIG_ENV,
     PILOT_CONFIG_VERSION as WAVE3_PILOT_CONFIG_VERSION,
     PROMISE_VS_FACT_ENV,
@@ -2746,6 +2751,8 @@ def _direct_path_metadata(
     facts: Mapping[str, str],
     fact_pack: Optional[Mapping[str, Any]] = None,
     gold_examples: Sequence[Mapping[str, Any]] = (),
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
     preblocked: bool = False,
     preblock_reason: str = "",
     reason_class: str = "",
@@ -2774,6 +2781,13 @@ def _direct_path_metadata(
         "wide_fact_exact_keys": exact_keys,
         "wide_fact_adjacent_keys": adjacent_keys,
         "wide_fact_metadata": {str(key): dict(value) for key, value in fact_meta.items() if str(key).strip() and isinstance(value, Mapping)},
+        "contract": _direct_path_contract_payload(
+            client_message,
+            facts=facts,
+            fact_pack=fact_pack,
+            context=context,
+        ),
+        "ellipsis_resolve": _direct_path_ellipsis_resolve_metadata(context),
         "gold_real_enabled": bool(gold_ids),
         "gold_pack_version": DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION if gold_ids else "",
         "gold_real_example_ids": gold_ids,
@@ -2784,6 +2798,40 @@ def _direct_path_metadata(
         "reason_class": str(reason_class or ""),
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),
+    }
+
+
+def _direct_path_contract_payload(
+    client_message: str,
+    *,
+    facts: Mapping[str, str],
+    fact_pack: Optional[Mapping[str, Any]],
+    context: Optional[Mapping[str, Any]],
+) -> dict[str, Any]:
+    slots = _direct_path_known_slots(context)
+    plan = context.get("conversation_intent_plan") if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping) else {}
+    exact_keys = [str(key) for key in ((fact_pack or {}).get("exact_keys") or facts.keys()) if str(key).strip()]
+    return {
+        "current_question": str(client_message or "").strip()[:300],
+        "answerability": "answer_self",
+        "needed_fact_keys": exact_keys or [str(key) for key in facts if str(key).strip()],
+        "known_slots": {str(key): {"value": str(value), "source": "direct_path_context"} for key, value in slots.items() if str(value or "").strip()},
+        "planner_intent": str(plan.get("primary_intent") or plan.get("planner_intent") or ""),
+        "planner_slots": dict(plan.get("planner_slots") or {}) if isinstance(plan.get("planner_slots"), Mapping) else {},
+        "planner_confidence": plan.get("confidence") or plan.get("planner_confidence") or 0.0,
+    }
+
+
+def _direct_path_ellipsis_resolve_metadata(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) and isinstance(context.get("dialogue_memory_view"), Mapping) else {}
+    topic_focus = memory.get("topic_focus") if isinstance(memory.get("topic_focus"), Mapping) else {}
+    memory_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), Mapping) else {}
+    return {
+        "enabled": wave3_flag_enabled(context, ELLIPSIS_RESOLVE_ENV),
+        "uses_existing_direct_memory": True,
+        "known_slots_present": bool(_direct_path_known_slots(context) or memory_slots),
+        "topic_focus_present": bool(topic_focus),
+        "recent_messages_present": bool(_direct_path_recent_messages(context)),
     }
 
 
@@ -2809,6 +2857,8 @@ def _direct_path_preblocked_result(
             model_called=False,
             facts=facts,
             fact_pack=fact_pack,
+            client_message=client_message,
+            context=context,
             preblocked=True,
             pilot_config=pilot_config,
             preblock_reason="p0_pre_gate",
@@ -2832,6 +2882,8 @@ def _direct_path_preblocked_result(
             model_called=False,
             facts=facts,
             fact_pack=fact_pack,
+            client_message=client_message,
+            context=context,
             preblocked=True,
             pilot_config=pilot_config,
             preblock_reason="high_risk",
@@ -2854,6 +2906,8 @@ def _direct_path_preblocked_result(
             model_called=False,
             facts=facts,
             fact_pack=fact_pack,
+            client_message=client_message,
+            context=context,
             preblocked=True,
             pilot_config=pilot_config,
             preblock_reason="force_manager_only",
@@ -2875,6 +2929,8 @@ def _direct_path_preblocked_result(
             model_called=False,
             facts=facts,
             fact_pack=fact_pack,
+            client_message=client_message,
+            context=context,
             preblocked=True,
             pilot_config=pilot_config,
             preblock_reason="unknown_brand",
@@ -2901,6 +2957,156 @@ def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Ma
         metadata["reason_class"] = str(direct_meta.get("reason_class") or "")
         metadata["is_manager_deferral"] = bool(direct_meta.get("is_manager_deferral"))
     return replace(result, metadata=metadata)
+
+
+def _direct_path_exact_facts(
+    facts: Mapping[str, str],
+    fact_pack: Optional[Mapping[str, Any]],
+) -> dict[str, str]:
+    pack = fact_pack if isinstance(fact_pack, Mapping) else {}
+    exact_keys = [str(key) for key in (pack.get("exact_keys") or ()) if str(key).strip()]
+    if not exact_keys:
+        return {}
+    return {key: str(facts.get(key) or "").strip() for key in exact_keys if str(facts.get(key) or "").strip()}
+
+
+def _direct_path_should_apply_fact_floor(result: SubscriptionDraftResult) -> bool:
+    if result.route not in AUTONOMOUS_ROUTES:
+        return True
+    return dialogue_contract_is_pure_handoff_text(result.draft_text)
+
+
+def _direct_path_first_uncited_exact_fact(result: SubscriptionDraftResult, exact_facts: Mapping[str, str]) -> tuple[str, str]:
+    text = str(result.draft_text or "")
+    for key, fact in exact_facts.items():
+        if fact and fact not in text:
+            return key, fact
+    return "", ""
+
+
+def _direct_path_apply_wave3_closed_world_negative(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+    fact_pack: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    if not wave3_flag_enabled(context, CLOSED_WORLD_NEGATIVE_ENV):
+        return result
+    if result.route in AUTONOMOUS_ROUTES and not dialogue_contract_is_pure_handoff_text(result.draft_text):
+        return result
+    exact_facts = _direct_path_exact_facts(facts, fact_pack)
+    if not exact_facts:
+        return result
+    contract = parse_dialogue_contract(
+        _direct_path_contract_payload(client_message, facts=exact_facts, fact_pack=fact_pack, context=context),
+        active_brand=_active_brand(context),
+        fact_key_catalog=tuple(exact_facts.keys()),
+    )
+    text = dialogue_contract_closed_world_negative_text(contract, exact_facts, context=context)
+    if not text:
+        return result
+    text = _direct_path_negative_text_with_exact_alternative(text, exact_facts)
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    direct.update(
+        {
+            "closed_world_negative_applied": True,
+            "closed_world_negative_fact_keys": list(exact_facts.keys()),
+        }
+    )
+    metadata["direct_path"] = direct
+    metadata["text_composition_source"] = "direct_path_closed_world_negative"
+    return replace(
+        result,
+        route="bot_answer_self_for_pilot",
+        draft_text=text,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "direct_path_closed_world_negative"])),
+        context_used=tuple(dict.fromkeys([*result.context_used, "direct_path_exact_negative_fact"])),
+        metadata=metadata,
+    )
+
+
+def _direct_path_negative_text_with_exact_alternative(negative_text: str, exact_facts: Mapping[str, str]) -> str:
+    text = str(negative_text or "").strip()
+    if not text or "Альтернатива по подтверждённым фактам" in text:
+        return text
+    alternatives: list[str] = []
+    negative_norm = text.casefold().replace("ё", "е")
+    for value in exact_facts.values():
+        fact = str(value or "").strip()
+        if not fact:
+            continue
+        fact_norm = fact.casefold().replace("ё", "е")
+        if fact_norm == negative_norm:
+            continue
+        if re.search(r"можно|доступ|альтернатив|помесячн|семестр|год|qr|квитанц|реквизит", fact_norm, re.I):
+            alternatives.append(fact)
+    if not alternatives:
+        return text
+    return f"{text.rstrip(' .')}. Альтернатива по подтверждённым фактам: {' '.join(dict.fromkeys(alternatives[:2]))}"
+
+
+def _direct_path_apply_wave3_partial_floor(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+    fact_pack: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    if not wave3_flag_enabled(context, PARTIAL_ANSWER_FLOOR_ENV):
+        return result
+    if not _direct_path_should_apply_fact_floor(result):
+        return result
+    exact_facts = _direct_path_exact_facts(facts, fact_pack)
+    if not exact_facts:
+        return result
+    fact_key, fact_text = _direct_path_first_uncited_exact_fact(result, exact_facts)
+    if not fact_text:
+        return result
+    existing = str(result.draft_text or "").strip()
+    draft_text = fact_text if not existing else f"{fact_text}\n\n{existing}"
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    direct.update(
+        {
+            "partial_answer_floor_applied": True,
+            "partial_answer_floor_fact_key": fact_key,
+        }
+    )
+    metadata["direct_path"] = direct
+    metadata["text_composition_source"] = "direct_path_exact_fact_floor"
+    return replace(
+        result,
+        draft_text=draft_text,
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "direct_path_partial_answer_floor"])),
+        context_used=tuple(dict.fromkeys([*result.context_used, "direct_path_exact_fact_floor"])),
+        metadata=metadata,
+    )
+
+
+def _direct_path_apply_wave3_grounded_fact_controls(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+    fact_pack: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    result = _direct_path_apply_wave3_closed_world_negative(
+        result,
+        client_message=client_message,
+        context=context,
+        facts=facts,
+        fact_pack=fact_pack,
+    )
+    return _direct_path_apply_wave3_partial_floor(
+        result,
+        context=context,
+        facts=facts,
+        fact_pack=fact_pack,
+    )
 
 
 def _direct_path_finalize_metadata(
@@ -3126,6 +3332,8 @@ class SubscriptionLlmDraftProvider:
             facts=facts,
             fact_pack=fact_pack,
             gold_examples=gold_examples,
+            client_message=client_message,
+            context=context,
             pilot_config=pilot_config,
         )
         try:
@@ -3167,6 +3375,13 @@ class SubscriptionLlmDraftProvider:
                 safety_flags=tuple(dict.fromkeys([*result.safety_flags, "direct_path_model", "draft_only"])),
             )
             result = _direct_path_merge_metadata(result, direct_meta)
+            result = _direct_path_apply_wave3_grounded_fact_controls(
+                result,
+                client_message=client_message,
+                context=context,
+                facts=facts,
+                fact_pack=fact_pack,
+            )
 
         semantic_checked = apply_semantic_output_verifier(
             result,
@@ -5320,6 +5535,7 @@ def _authoritative_gate_findings(
             result=result,
             client_message=client_message,
             facts=facts,
+            context=gate_context,
         ):
             continue
         findings.append(_authoritative_gate_finding(finding.code, detail=finding.detail, source="verify_output"))
@@ -5503,6 +5719,7 @@ def _authoritative_gate_existing_guard_findings(
                 result=result,
                 client_message=client_message,
                 facts=facts,
+                context=context,
             ):
                 continue
             findings.append(_authoritative_gate_finding(code, detail=detail, source=source))
@@ -5521,6 +5738,7 @@ def _authoritative_gate_existing_guard_findings(
                 result=result,
                 client_message=client_message,
                 facts=facts,
+                context=specificity_context,
             ):
                 continue
             findings.append(_authoritative_gate_finding(code, detail="; ".join(claims), source=fn.__name__))
@@ -5570,10 +5788,18 @@ def _authoritative_gate_skip_backed_finding(
     result: SubscriptionDraftResult,
     client_message: str,
     facts: Mapping[str, str],
+    context: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     code_text = str(code or "")
     combined = " ".join([str(detail or ""), str(result.draft_text or ""), str(client_message or "")]).casefold().replace("ё", "е")
     fact_text = " ".join(str(value or "") for value in facts.values()).casefold().replace("ё", "е")
+    if code_text == "unsupported_promise" and _direct_path_calc_over_grounded_supported_by_output_gate(
+        result,
+        client_message=client_message,
+        facts=facts,
+        context=context,
+    ):
+        return True
     if code_text in {
         "unconfirmed_operational_specificity",
         "unsupported_schedule_assumption",
@@ -5587,6 +5813,37 @@ def _authoritative_gate_skip_backed_finding(
         has_address_fact = has_any_marker(fact_text, ("адрес", "сретенк", "скорняжн", "москва", "метро", "чистые пруды"))
         return asks_address and has_address_fact
     return False
+
+
+def _direct_path_calc_over_grounded_supported_by_output_gate(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    facts: Mapping[str, str],
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    if not _truthy_value(direct.get("enabled") or direct.get("attempted") or direct.get("direct_path_attempted")):
+        return False
+    if not wave3_flag_enabled(context, CALC_OVER_GROUNDED_ENV):
+        return False
+    if not re.search(r"₽|руб", str(result.draft_text or ""), re.I):
+        return False
+    if not re.search(r"предмет|курс", f"{client_message} {result.draft_text}", re.I):
+        return False
+    contract = _pipeline_contract(result, active_brand=_active_brand(context), fact_keys=tuple(facts.keys()))
+    findings = verify_dialogue_contract_output(
+        result.draft_text,
+        facts=facts,
+        active_brand=_active_brand(context),
+        contract=contract,
+        client_message=client_message,
+        context=context,
+        previous_bot_texts=_humanity_previous_bot_texts(context),
+    )
+    blocking = {"unsupported_product_number", "wrong_scope", "general_number_without_marker"}
+    return not any(finding.code in blocking for finding in findings)
 
 
 def _authoritative_gate_verified_content_flag(result: SubscriptionDraftResult) -> bool:
@@ -5987,8 +6244,10 @@ def _pipeline_contract(
 ):
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     pipeline = metadata.get("dialogue_contract_pipeline") if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    raw_contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else direct.get("contract")
     return parse_dialogue_contract(
-        pipeline.get("contract"),
+        raw_contract,
         active_brand=active_brand,
         fact_key_catalog=tuple(fact_keys),
     )

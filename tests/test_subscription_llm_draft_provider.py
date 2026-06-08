@@ -10550,6 +10550,193 @@ def test_direct_path_preblocks_p0_without_model_call() -> None:
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
+def test_wave3_direct_partial_floor_inserts_exact_fact_before_handoff() -> None:
+    fact = "Фотон: онлайн-занятия проходят на платформе МТС Линк."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру, он уточнит детали.")
+    )
+
+    result = provider.build_draft(
+        "На какой платформе онлайн?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"format.online": fact},
+            "TELEGRAM_PARTIAL_ANSWER_FLOOR": "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert result.draft_text.startswith(fact)
+    assert "Передам менеджеру" in result.draft_text
+    assert result.metadata["direct_path"]["partial_answer_floor_applied"] is True
+    assert result.metadata["direct_path"]["partial_answer_floor_fact_key"] == "format.online"
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_wave3_direct_partial_floor_off_keeps_direct_text_unchanged() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру, он уточнит детали.")
+    )
+
+    result = provider.build_draft(
+        "На какой платформе онлайн?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"format.online": "Фотон: онлайн-занятия проходят на платформе МТС Линк."},
+            "TELEGRAM_PARTIAL_ANSWER_FLOOR": "0",
+            "TELEGRAM_WAVE3": "1",
+        },
+    )
+
+    assert result.draft_text == "Передам менеджеру, он уточнит детали."
+    assert result.metadata["direct_path"].get("partial_answer_floor_applied") is not True
+
+
+def test_wave3_direct_partial_floor_p0_preblock_does_not_insert_fact() -> None:
+    fact = "Фотон: онлайн-занятия проходят на платформе МТС Линк."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+
+    result = provider.build_draft(
+        "Списали дважды, верните деньги. На какой платформе онлайн?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"format.online": fact},
+            "TELEGRAM_PARTIAL_ANSWER_FLOOR": "1",
+        },
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert fact not in result.draft_text
+    assert result.metadata["direct_path"].get("partial_answer_floor_applied") is not True
+    assert result.metadata["direct_path"]["preblocked"] is True
+
+
+def test_wave3_direct_partial_floor_no_exact_fact_keeps_handoff() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру, он уточнит детали.")
+    )
+
+    result = provider.build_draft(
+        "На какой платформе онлайн?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", "TELEGRAM_PARTIAL_ANSWER_FLOOR": "1"},
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Передам менеджеру, он уточнит детали."
+    assert result.metadata["direct_path"].get("partial_answer_floor_applied") is not True
+
+
+def test_wave3_direct_closed_world_negative_answers_from_explicit_negative_exact_fact() -> None:
+    negative = "УНПК МФТИ: рассрочка не предусмотрена."
+    alternative = "УНПК МФТИ: можно оплатить помесячно, за семестр или за год."
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру, он уточнит условия.")
+    )
+
+    result = provider.build_draft(
+        "В УНПК есть рассрочка?",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {
+                "payment.no_installment": negative,
+                "payment.options": alternative,
+            },
+            "TELEGRAM_CLOSED_WORLD_NEGATIVE": "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert negative in result.draft_text
+    assert "Альтернатива по подтверждённым фактам" in result.draft_text
+    assert "помесячно" in result.draft_text
+    assert result.metadata["direct_path"]["closed_world_negative_applied"] is True
+    assert result.metadata["authoritative_output_gate"]["action"] == "pass"
+
+
+def test_wave3_direct_closed_world_negative_uncertain_fact_keeps_handoff() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру, он уточнит условия.")
+    )
+
+    result = provider.build_draft(
+        "В УНПК есть рассрочка?",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"payment.installment": "Условия рассрочки для УНПК уточняются менеджером."},
+            "TELEGRAM_CLOSED_WORLD_NEGATIVE": "1",
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Передам менеджеру, он уточнит условия."
+    assert result.metadata["direct_path"].get("closed_world_negative_applied") is not True
+
+
+def test_wave3_direct_calc_over_grounded_uses_minimal_direct_contract() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="За два предмета получится 18 000 ₽.")
+    )
+
+    result = provider.build_draft(
+        "Сколько будет за два предмета онлайн со скидкой?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {
+                "price.online": "Фотон: онлайн-курс стоит 10 000 ₽.",
+                "discount.second_subject": "Фотон: скидка на второй предмет онлайн — 20%.",
+            },
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+            "TELEGRAM_CALC_OVER_GROUNDED": "1",
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.metadata["authoritative_output_gate"]["action"] == "pass"
+    assert result.metadata["direct_path"]["contract"]["current_question"] == "Сколько будет за два предмета онлайн со скидкой?"
+    assert result.metadata["direct_path"]["downgraded"] is False
+
+
+def test_wave3_direct_ellipsis_resolve_records_existing_memory_path_without_new_layer() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по онлайн-формату.")
+    )
+
+    result = provider.build_draft(
+        "А онлайн?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_ELLIPSIS_RESOLVE": "1",
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "физика", "grade": "9"},
+                "topic_focus": {"subject": "физика", "grade": "9", "format": "очно"},
+            },
+            "recent_messages": ["Клиент: Нужна физика для 9 класса.", "Клиент: А онлайн?"],
+            "confirmed_facts": {"format.online": "Фотон: онлайн-занятия проходят на платформе МТС Линк."},
+        },
+    )
+
+    ellipsis_meta = result.metadata["direct_path"]["ellipsis_resolve"]
+    assert ellipsis_meta["enabled"] is True
+    assert ellipsis_meta["uses_existing_direct_memory"] is True
+    assert ellipsis_meta["known_slots_present"] is True
+    assert ellipsis_meta["topic_focus_present"] is True
+    assert ellipsis_meta["recent_messages_present"] is True
+
+
 def test_direct_path_p0_complaint_preblock_has_no_manager_deadline() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")

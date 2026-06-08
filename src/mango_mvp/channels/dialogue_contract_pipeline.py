@@ -31,6 +31,16 @@ from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
 from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, is_benign_hypothetical_refund, soft_codes_from_text
 from mango_mvp.channels.tone_block import apply_warm_frame, sell_prompt_enabled
+from mango_mvp.channels.wave3_flags import (
+    CALC_OVER_GROUNDED_ENV,
+    CLOSED_WORLD_NEGATIVE_ENV,
+    ELLIPSIS_RESOLVE_ENV,
+    PARTIAL_ANSWER_FLOOR_ENV,
+    PER_CLAUSE_GATE_ENV,
+    SCOPE_ADDRESSED_ENV,
+    pilot_gold_wave1_flag_enabled,
+    wave3_flag_enabled,
+)
 from mango_mvp.insights.sanitizers import sanitize_answer
 
 
@@ -654,9 +664,31 @@ def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
 
 
 def number_gate_scope_aware_enabled(context: Mapping[str, Any] | None = None) -> bool:
-    if isinstance(context, MappingABC) and context.get(NUMBER_GATE_SCOPE_AWARE_ENV) is not None:
-        return _truthy(context.get(NUMBER_GATE_SCOPE_AWARE_ENV))
-    return _truthy(os.getenv(NUMBER_GATE_SCOPE_AWARE_ENV))
+    return pilot_gold_wave1_flag_enabled(context, NUMBER_GATE_SCOPE_AWARE_ENV)
+
+
+def calc_over_grounded_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    return wave3_flag_enabled(context, CALC_OVER_GROUNDED_ENV)
+
+
+def scope_addressed_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    return wave3_flag_enabled(context, SCOPE_ADDRESSED_ENV)
+
+
+def partial_answer_floor_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    return wave3_flag_enabled(context, PARTIAL_ANSWER_FLOOR_ENV)
+
+
+def per_clause_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    return wave3_flag_enabled(context, PER_CLAUSE_GATE_ENV)
+
+
+def closed_world_negative_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    return wave3_flag_enabled(context, CLOSED_WORLD_NEGATIVE_ENV)
+
+
+def ellipsis_resolve_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    return wave3_flag_enabled(context, ELLIPSIS_RESOLVE_ENV)
 
 
 def travel_compose_enabled(context: Mapping[str, Any] | None = None) -> bool:
@@ -674,7 +706,7 @@ def quality_partial_yield_enabled(context: Mapping[str, Any] | None = None) -> b
 def quality_thread_memory_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(QUALITY_THREAD_MEMORY_ENV) is not None:
         return _truthy(context.get(QUALITY_THREAD_MEMORY_ENV))
-    return _truthy(os.getenv(QUALITY_THREAD_MEMORY_ENV))
+    return _truthy(os.getenv(QUALITY_THREAD_MEMORY_ENV)) or ellipsis_resolve_enabled(context)
 
 
 def quality_composite_enabled(context: Mapping[str, Any] | None = None) -> bool:
@@ -3492,6 +3524,7 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            allow_key_coverage=partial_answer_floor_enabled(context),
         )
         if recovered:
             return recovered
@@ -3518,6 +3551,7 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            allow_key_coverage=partial_answer_floor_enabled(context),
         )
         if recovered:
             return recovered
@@ -3564,6 +3598,7 @@ def run_pipeline(
             toggles=toggles,
             context=context,
             previous_bot_texts=previous_bot_texts,
+            allow_key_coverage=partial_answer_floor_enabled(context),
         )
         if recovered:
             return recovered
@@ -3826,7 +3861,7 @@ def run_pipeline(
             fallback_reason="hard_verification_failed",
         )
 
-    composition = "" if semantic_match_blocked_replacement else _composition_answer(contract, retrieval, current_draft=draft)
+    composition = "" if semantic_match_blocked_replacement else _composition_answer(contract, retrieval, current_draft=draft, context=context)
     if composition and composition != draft:
         composition_facts = _facts_with_derived_answer(retrieval.facts, composition)
         comp_findings, comp_unsupported, comp_semantic_available = _hard_check(
@@ -3923,7 +3958,7 @@ def run_pipeline(
         coverage_findings = candidate_coverage
 
     if coverage_findings:
-        cite_only = _composition_answer(contract, retrieval, current_draft=draft) or _coverage_cite_only_answer(contract, retrieval)
+        cite_only = _composition_answer(contract, retrieval, current_draft=draft, context=context) or _coverage_cite_only_answer(contract, retrieval)
         if cite_only:
             cite_facts = _facts_with_derived_answer(retrieval.facts, cite_only)
             cite_findings, cite_unsupported, cite_semantic_available = _hard_check(
@@ -4094,6 +4129,7 @@ def verify_output(
             _free_number_gate_findings(
                 text,
                 facts=facts,
+                contract=contract,
                 client_message=client_message,
                 context=context,
                 estimate_domain=gate_estimate_domain,
@@ -4208,6 +4244,7 @@ def _free_number_gate_findings(
     text: str,
     *,
     facts: Mapping[str, str],
+    contract: AnswerContract | None = None,
     client_message: str,
     context: Mapping[str, Any] | None,
     estimate_domain: str = "none",
@@ -4237,6 +4274,14 @@ def _free_number_gate_findings(
                 context=context,
             )
             if supported:
+                continue
+            if calc_over_grounded_enabled(context) and contract is not None and _calc_over_grounded_number_supported(
+                match_surfaces,
+                contract,
+                facts,
+                text=text,
+                client_message=client_message,
+            ):
                 continue
             scope_product_context = _scope_aware_product_number_context(text, token, surfaces, start=start, end=end)
             if wrong_scope_seen and scope_product_context:
@@ -5266,7 +5311,7 @@ def _quality_composite_result_before_draft(
     tone_guide: str = "",
     style_examples: Sequence[str] = (),
 ) -> DialogueContractPipelineResult | None:
-    if not quality_composite_enabled(context):
+    if not (quality_composite_enabled(context) or per_clause_gate_enabled(context)):
         return None
     if _cite_only_recover_blocked(contract, client_words=client_words, context=context) or _composite_has_hard_p0_part(
         contract,
@@ -5495,7 +5540,7 @@ def _partial_yield_result_before_handoff(
     previous_bot_texts: Sequence[str],
     source_reason: str,
 ) -> DialogueContractPipelineResult | None:
-    if not quality_partial_yield_enabled(context):
+    if not (quality_partial_yield_enabled(context) or partial_answer_floor_enabled(context)):
         return None
     if toggles.semantic_faithfulness and faithfulness_fn is None:
         trace_event(
@@ -5701,14 +5746,20 @@ def _partial_yield_missing_text(missing_details: Sequence[str]) -> str:
     return "По остальным частям вопроса"
 
 
-def _composition_answer(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+def _composition_answer(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    *,
+    current_draft: str = "",
+    context: Mapping[str, Any] | None = None,
+) -> str:
     for builder in (
         _compose_n_subjects_discount,
         _compose_nearest_camp_shift,
         _compose_price_plus_format,
         _compose_installment_summary,
     ):
-        answer = builder(contract, retrieval, current_draft=current_draft)
+        answer = builder(contract, retrieval, current_draft=current_draft, context=context)
         if answer:
             return answer
     return ""
@@ -5776,7 +5827,7 @@ def _cite_only_recover_before_handoff(
             trace_event(context, "cite_only_recover", {"replaced": False, "reason": "contact_hours_not_class_schedule"})
             return ""
     replacement = (
-        _composition_answer(contract, retrieval, current_draft=draft)
+        _composition_answer(contract, retrieval, current_draft=draft, context=context)
         or _hard_failure_exact_fact_fallback(contract, retrieval)
         or (
             _key_coverage_cite_only_answer(contract, retrieval)
@@ -5966,7 +6017,67 @@ def _facts_with_derived_answer(facts: Mapping[str, str], answer: str) -> Mapping
     return merged
 
 
-def _compose_n_subjects_discount(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+def _calc_over_grounded_number_supported(
+    surfaces: set[str],
+    contract: AnswerContract,
+    facts: Mapping[str, str],
+    *,
+    text: str,
+    client_message: str,
+) -> bool:
+    intent_text = " ".join([_contract_intent_text(contract), str(text or ""), str(client_message or "")])
+    if not re.search(r"предмет|курс", intent_text, re.I) or not re.search(r"скид|итого|сумм|вместе|два|две|2\b", intent_text, re.I):
+        return False
+    subject_count = _requested_subject_count(intent_text)
+    if subject_count < 2:
+        subject_count = 2 if re.search(r"\b(?:два|две|2)\b", intent_text, re.I) else 0
+    if subject_count < 2:
+        return False
+    scoped_facts = _calc_scope_matched_facts(contract, facts)
+    if not scoped_facts:
+        return False
+    base = _price_for_composition(contract, scoped_facts)
+    pct = _second_subject_discount_pct(contract, scoped_facts)
+    if base is None or pct is None:
+        return False
+    active_brand = _normalize_brand(contract.active_brand)
+    fact_blob = " ".join(str(value or "") for value in scoped_facts.values()).casefold().replace("ё", "е")
+    if any(token and token in fact_blob for token in _BRAND_TOKENS.get(active_brand, ())):
+        return False
+    if not (0 < pct < 100):
+        return False
+    discounted = [round(base * (100 - pct) / 100) for _ in range(subject_count - 1)]
+    total = base + sum(discounted)
+    values = [*discounted, total]
+    derived_surfaces: set[str] = set()
+    for value in values:
+        derived_surfaces.update(_free_number_surfaces(_format_rub(int(value))))
+        derived_surfaces.update(_free_number_surfaces(str(int(value))))
+    return bool(surfaces and derived_surfaces.intersection(surfaces))
+
+
+def _calc_scope_matched_facts(contract: AnswerContract, facts: Mapping[str, str]) -> Mapping[str, str]:
+    subquestions = tuple(subquestion for subquestion in _contract_subquestions(contract) if subquestion.answerable == "self")
+    if not subquestions and contract.answerability == "answer_self":
+        subquestions = _contract_subquestions(contract)
+    matched: dict[str, str] = {}
+    for key, value in facts.items():
+        fact_key = str(key)
+        if fact_key.startswith("__derived.") or fact_key.startswith("_known_slot"):
+            continue
+        fact_text = str(value)
+        if any(_fact_scope_matches_question(contract, subquestion, fact_key, fact_text) for subquestion in subquestions):
+            matched[fact_key] = fact_text
+    return matched
+
+
+def _compose_n_subjects_discount(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    *,
+    current_draft: str = "",
+    context: Mapping[str, Any] | None = None,
+) -> str:
     text = _contract_intent_text(contract)
     subject_count = _requested_subject_count(text)
     if subject_count < 2:
@@ -5990,7 +6101,13 @@ def _compose_n_subjects_discount(contract: AnswerContract, retrieval: RetrievalR
     )
 
 
-def _compose_nearest_camp_shift(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+def _compose_nearest_camp_shift(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    *,
+    current_draft: str = "",
+    context: Mapping[str, Any] | None = None,
+) -> str:
     if not _contract_mentions_camp_or_lvsh(contract):
         return ""
     text = _contract_intent_text(contract)
@@ -6020,20 +6137,26 @@ def _compose_nearest_camp_shift(contract: AnswerContract, retrieval: RetrievalRe
     return " ".join(parts) + " По наличию мест менеджер сверит актуальную группу."
 
 
-def _compose_price_plus_format(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+def _compose_price_plus_format(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    *,
+    current_draft: str = "",
+    context: Mapping[str, Any] | None = None,
+) -> str:
     if not (_asks_price(contract) or _asks_training_format_choice(contract)):
         return ""
     if _contract_mentions_camp_or_lvsh(contract):
         camp_facts = _camp_or_lvsh_facts(retrieval.facts, contract=contract)
         if not camp_facts:
             return ""
-        price = _direct_price_answer_from_facts(contract, camp_facts)
+        price = _direct_price_answer_from_facts(contract, camp_facts, context=context)
         format_answer = _direct_camp_format_answer_from_facts(contract, camp_facts)
         if price and format_answer:
             return f"{price} {format_answer}"
         return price or format_answer
     scoped_facts = _scope_matched_facts_for_contract(contract, retrieval)
-    price = _direct_price_answer_from_facts(contract, scoped_facts)
+    price = _direct_price_answer_from_facts(contract, scoped_facts, context=context)
     if not price:
         return ""
     if _answer_cites_fact(current_draft, " ".join(scoped_facts.values())):
@@ -6044,7 +6167,13 @@ def _compose_price_plus_format(contract: AnswerContract, retrieval: RetrievalRes
     return price
 
 
-def _compose_installment_summary(contract: AnswerContract, retrieval: RetrievalResult, *, current_draft: str = "") -> str:
+def _compose_installment_summary(
+    contract: AnswerContract,
+    retrieval: RetrievalResult,
+    *,
+    current_draft: str = "",
+    context: Mapping[str, Any] | None = None,
+) -> str:
     targets = _payment_method_target_anchors(contract)
     text = _contract_intent_text(contract)
     if not targets and not re.search(r"рассроч|частями|оплат", text, re.I):
@@ -6432,7 +6561,7 @@ def _safe_fallback_text_with_reason(
 
     known_absence = _known_absence_text(contract, facts or {})
     if known_absence:
-        return traced(known_absence, "known_absence")
+        return traced(_closed_world_negative_text(contract, facts or {}, context=context) or known_absence, "known_absence")
     presale_refund = _presale_refund_policy_text(facts or {})
     if presale_refund and _asks_refund_policy(contract) and not _dialogue_had_hard_p0_claim(context):
         return traced(presale_refund, "presale_refund")
@@ -7342,7 +7471,12 @@ def _can_autonomously_replace_failed_draft(findings: Sequence[VerificationFindin
     return all(finding.code == "fact_grounding" for finding in findings)
 
 
-def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str, str]) -> str:
+def _direct_price_answer_from_facts(
+    contract: AnswerContract,
+    facts: Mapping[str, str],
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> str:
     if not _asks_price(contract):
         return ""
     if _contract_mentions_camp_or_lvsh(contract):
@@ -7381,7 +7515,11 @@ def _direct_price_answer_from_facts(contract: AnswerContract, facts: Mapping[str
     scope_parts: list[str] = []
     if re.search(r"онлайн", facts_text, re.I):
         scope_parts.append("онлайн")
-    if re.search(r"5\s*[-–]\s*11\s+класс", facts_text, re.I):
+    requested_grade = _client_grade_from_contract(contract)
+    fact_grades = _grade_values_from_retrieved_facts(facts)
+    if scope_addressed_enabled(context) and requested_grade and requested_grade in fact_grades:
+        scope_parts.append(f"для {requested_grade} класса")
+    elif re.search(r"5\s*[-–]\s*11\s+класс", facts_text, re.I):
         scope_parts.append("5-11 классы")
     if re.search(r"2026\s*/\s*27", facts_text, re.I):
         scope_parts.append("2026/27 учебный год")
@@ -7947,6 +8085,32 @@ def _known_absence_text(contract: AnswerContract, facts: Mapping[str, str]) -> s
         if _is_negative_existence_fact_for_target(str(text or ""), target_anchors=target_anchors):
             return str(text or "")
     return ""
+
+
+def _closed_world_negative_text(
+    contract: AnswerContract,
+    facts: Mapping[str, str],
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> str:
+    if not closed_world_negative_enabled(context):
+        return ""
+    negative = _known_absence_text(contract, facts)
+    if not negative:
+        return ""
+    if not _payment_method_target_anchors(contract):
+        return negative
+    alternatives: list[str] = []
+    for key, value in facts.items():
+        text = str(value or "").strip()
+        if not text or text == negative:
+            continue
+        combined = f"{key} {text}".casefold().replace("ё", "е")
+        if re.search(r"помесячн|семестр|год|qr|квитанц|реквизит", combined, re.I):
+            alternatives.append(_short_fact_sentence(text, max_chars=180))
+    if not alternatives:
+        return negative
+    return f"{negative.rstrip(' .')}. Альтернатива по подтверждённым фактам: {' '.join(dict.fromkeys(alternatives[:2]))}"
 
 
 def _existence_yes_no_findings(

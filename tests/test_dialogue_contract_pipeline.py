@@ -1026,6 +1026,43 @@ def test_wave1_number_scope_aware_marks_wrong_scope_number() -> None:
     assert any("29 750" in finding.detail for finding in findings)
 
 
+def test_pilot_gold_v1_enables_wave1_number_scope_by_default() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько стоит очно физика 9 класс",
+            "answerability": "answer_self",
+            "answer_mode": "estimate_allowed",
+            "estimate_domain": "general_advice",
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online",),
+    )
+
+    findings = verify_output(
+        "Очно для 9 класса стоит 29 750 ₽.",
+        facts={"price.online": "Онлайн для 9 класса стоит 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько стоит очно физика 9 класс?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1", "TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1"},
+    )
+    overridden = verify_output(
+        "Очно для 9 класса стоит 29 750 ₽.",
+        facts={"price.online": "Онлайн для 9 класса стоит 29 750 ₽."},
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько стоит очно физика 9 класс?",
+        context={
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "0",
+        },
+    )
+
+    assert {finding.code for finding in findings} == {"wrong_scope"}
+    assert not overridden
+
+
 def test_wave1_number_scope_aware_allows_same_scope_normalized_number() -> None:
     contract = parse_contract(
         {
@@ -1073,6 +1110,149 @@ def test_wave1_number_scope_aware_blocks_new_product_number_even_with_same_scope
 
     assert "unsupported_product_number" in {finding.code for finding in findings}
     assert any("31 000" in finding.detail for finding in findings)
+
+
+def test_wave3_calc_over_grounded_allows_whitelisted_same_brand_total() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько будет за два предмета онлайн со скидкой?",
+            "answerability": "answer_self",
+            "needed_fact_keys": ["price.online", "discount.second_subject"],
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online", "discount.second_subject"),
+    )
+
+    off = verify_output(
+        "За два предмета получится 18 000 ₽.",
+        facts={
+            "price.online": "Онлайн-курс: год — 10 000 ₽.",
+            "discount.second_subject": "Скидка на второй предмет онлайн — 20%.",
+        },
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько будет за два предмета онлайн со скидкой?",
+        context={"TELEGRAM_A_FREE_NUMBER_GATE": "1", "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1"},
+    )
+    on = verify_output(
+        "За два предмета получится 18 000 ₽.",
+        facts={
+            "price.online": "Онлайн-курс: год — 10 000 ₽.",
+            "discount.second_subject": "Скидка на второй предмет онлайн — 20%.",
+        },
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько будет за два предмета онлайн со скидкой?",
+        context={
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+            "TELEGRAM_CALC_OVER_GROUNDED": "1",
+        },
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in off}
+    assert not on
+
+
+def test_wave3_package_flag_enables_calc_but_individual_zero_overrides() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько будет за два предмета онлайн со скидкой?",
+            "answerability": "answer_self",
+            "needed_fact_keys": ["price.online", "discount.second_subject"],
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online", "discount.second_subject"),
+    )
+    common = {
+        "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+        "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+        "TELEGRAM_WAVE3": "1",
+    }
+    facts = {
+        "price.online": "Онлайн-курс: год — 10 000 ₽.",
+        "discount.second_subject": "Скидка на второй предмет онлайн — 20%.",
+    }
+
+    enabled = verify_output(
+        "За два предмета получится 18 000 ₽.",
+        facts=facts,
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько будет за два предмета онлайн со скидкой?",
+        context=common,
+    )
+    disabled = verify_output(
+        "За два предмета получится 18 000 ₽.",
+        facts=facts,
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько будет за два предмета онлайн со скидкой?",
+        context={**common, "TELEGRAM_CALC_OVER_GROUNDED": "0"},
+    )
+
+    assert not enabled
+    assert "unsupported_product_number" in {finding.code for finding in disabled}
+
+
+def test_wave3_calc_over_grounded_does_not_allow_foreign_brand_or_free_number() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько будет за два предмета онлайн со скидкой?",
+            "answerability": "answer_self",
+            "needed_fact_keys": ["price.online", "discount.second_subject"],
+        },
+        active_brand="unpk",
+        fact_key_catalog=("price.online", "discount.second_subject"),
+    )
+
+    findings = verify_output(
+        "За два предмета получится 18 000 ₽.",
+        facts={
+            "price.online": "Фотон: онлайн-курс: год — 10 000 ₽.",
+            "discount.second_subject": "Фотон: скидка на второй предмет онлайн — 20%.",
+        },
+        active_brand="unpk",
+        contract=contract,
+        client_message="сколько будет за два предмета онлайн со скидкой?",
+        context={
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+            "TELEGRAM_CALC_OVER_GROUNDED": "1",
+        },
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in findings}
+
+
+def test_wave3_calc_over_grounded_does_not_allow_foreign_format() -> None:
+    contract = parse_contract(
+        {
+            "current_question": "сколько будет за два предмета очно со скидкой?",
+            "answerability": "answer_self",
+            "needed_fact_keys": ["price.online", "discount.second_subject"],
+        },
+        active_brand="foton",
+        fact_key_catalog=("price.online", "discount.second_subject"),
+    )
+
+    findings = verify_output(
+        "За два предмета получится 18 000 ₽.",
+        facts={
+            "price.online": "Онлайн-курс: год — 10 000 ₽.",
+            "discount.second_subject": "Скидка на второй предмет онлайн — 20%.",
+        },
+        active_brand="foton",
+        contract=contract,
+        client_message="сколько будет за два предмета очно со скидкой?",
+        context={
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+            "TELEGRAM_CALC_OVER_GROUNDED": "1",
+        },
+    )
+
+    assert "unsupported_product_number" in {finding.code for finding in findings}
 
 
 def test_level_a_general_advice_gate_blocks_pressure_or_result_promise() -> None:
@@ -6442,6 +6622,162 @@ def test_c8_neighbor_payment_fact_does_not_allow_yes_or_closed_world_no() -> Non
     assert any(finding.code == "unsupported_existence_negative" for finding in no_result.findings)
 
 
+def test_wave3_closed_world_negative_adds_same_brand_alternative_only_when_flagged() -> None:
+    absence = "В УНПК отдельной банковской рассрочки нет."
+    alternative = "Доступны помесячная оплата, оплата за семестр или за год."
+    contract = parse_contract(
+        {
+        "current_question": "есть банковская рассрочка?",
+        "question_type": "existence_yes_no",
+        "existence_target": "банковская рассрочка",
+        "needed_fact_keys": ["payment_options.absence", "payment_options.alternative"],
+        "answerability": "answer_self",
+        },
+        active_brand="unpk",
+        fact_key_catalog=("payment_options.absence", "payment_options.alternative"),
+    )
+    facts = {"payment_options.absence": absence, "payment_options.alternative": alternative}
+
+    off = _safe_fallback_text(contract, facts=facts, context={})
+    on = _safe_fallback_text(
+        contract,
+        facts=facts,
+        context={"TELEGRAM_CLOSED_WORLD_NEGATIVE": "1"},
+    )
+
+    assert alternative not in off
+    assert absence in on
+    assert alternative in on
+
+
+def test_wave3_partial_answer_floor_says_grounded_fact_before_remaining_handoff() -> None:
+    store = FactStore(
+        catalog=("price.online", "schedule.days"),
+        store={"foton": {"price.online": "Онлайн-курс: год — 59 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит и по каким дням?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит и по каким дням?",
+                "answerability": "answer_self",
+                "needed_fact_keys": ["price.online", "schedule.days"],
+                "subquestions": [
+                    {"text": "сколько стоит", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "по каким дням", "answerable": "self", "needed_fact_keys": ["schedule.days"]},
+                ],
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={"TELEGRAM_PARTIAL_ANSWER_FLOOR": "1"},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "59 000" in result.draft_text
+    assert "менеджер" in result.draft_text.casefold()
+
+
+def test_wave3_partial_answer_floor_does_not_override_p0() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн-курс: год — 59 000 ₽."}})
+
+    result = run_pipeline(
+        conversation=_conv("верните деньги, и сколько стоит онлайн?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "верните деньги, и сколько стоит онлайн?",
+                "answerability": "answer_self",
+                "needed_fact_keys": ["price.online"],
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн-курс: год — 59 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={"TELEGRAM_PARTIAL_ANSWER_FLOOR": "1"},
+    )
+
+    assert result.route == "manager_only"
+    assert "59 000" not in result.draft_text
+
+
+def test_wave3_per_clause_gate_aliases_existing_composite_without_weakening_p0() -> None:
+    store = FactStore(catalog=("price.online",), store={"foton": {"price.online": "Онлайн-курс: год — 59 000 ₽."}})
+    safe = run_pipeline(
+        conversation=_conv("сколько стоит и какие дни?"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит и какие дни?",
+                "answerability": "answer_self",
+                "needed_fact_keys": ["price.online", "schedule.days"],
+                "subquestions": [
+                    {"text": "сколько стоит", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "какие дни", "answerable": "self", "needed_fact_keys": ["schedule.days"]},
+                ],
+            }
+        ),
+        draft_fn=None,
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={"TELEGRAM_PER_CLAUSE_GATE": "1"},
+    )
+    p0 = run_pipeline(
+        conversation=_conv("сколько стоит и верните деньги"),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит и верните деньги",
+                "answerability": "answer_self",
+                "needed_fact_keys": ["price.online"],
+                "subquestions": [
+                    {"text": "сколько стоит", "answerable": "self", "needed_fact_keys": ["price.online"]},
+                    {"text": "верните деньги", "answerable": "manager", "needed_fact_keys": []},
+                ],
+            }
+        ),
+        draft_fn=lambda _prompt: "Онлайн-курс: год — 59 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={"TELEGRAM_PER_CLAUSE_GATE": "1"},
+    )
+
+    assert safe.route == "bot_answer_self"
+    assert "59 000" in safe.draft_text
+    assert p0.route == "manager_only"
+    assert "59 000" not in p0.draft_text
+
+
+def test_wave3_scope_addressed_uses_requested_grade_inside_grounded_range() -> None:
+    store = FactStore(
+        catalog=("price.online.5_11",),
+        store={"unpk": {"price.online.5_11": "Онлайн-курсы 5-11 класс на 2026/27: семестр — 37 000 ₽, год — 59 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=_conv("сколько стоит онлайн для 7 класса?"),
+        active_brand="unpk",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "сколько стоит онлайн для 7 класса?",
+                "answerability": "answer_self",
+                "needed_fact_keys": ["price.online.5_11"],
+            }
+        ),
+        draft_fn=lambda _prompt: "Передам менеджеру.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={"TELEGRAM_SCOPE_ADDRESSED": "1"},
+    )
+
+    assert result.route == "bot_answer_self"
+    assert "для 7 класса" in result.draft_text
+    assert "37 000" in result.draft_text
+
+
 def test_c8_direct_invoice_question_is_not_answered_with_bank_installment_neighbor() -> None:
     store = FactStore(
         catalog=("installment.tbank",),
@@ -7257,6 +7593,45 @@ def test_q_thread_memory_uses_known_slots_for_elliptic_format_when_flagged(monke
     assert result.contract.planner_slots["grade"] == "10"
     assert result.contract.planner_slots["format"] == "очно"
     assert result.contract.known_slots["format"].value == "очно"
+
+
+def test_wave3_ellipsis_resolve_uses_existing_thread_memory_path(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_Q_THREAD_MEMORY", raising=False)
+    monkeypatch.setenv("TELEGRAM_ELLIPSIS_RESOLVE", "1")
+    fact_key = "regular_course.informatics.grade10.offline.price"
+    store = FactStore(
+        catalog=(fact_key,),
+        store={"foton": {fact_key: "Фотон: информатика 10 класс очно — семестр 49 000 ₽."}},
+    )
+
+    result = run_pipeline(
+        conversation=(
+            {"role": "client", "text": "интересует информатика для 10 класса онлайн"},
+            {"role": "client", "text": "а очно?"},
+        ),
+        active_brand="foton",
+        fact_store=store,
+        understand_fn=_understanding(
+            {
+                "current_question": "а очно?",
+                "needed_fact_keys": [],
+                "answerability": "answer_self",
+                "planner_slots": {"format": "очно"},
+            }
+        ),
+        draft_fn=lambda _prompt: "Информатика 10 класс очно — семестр 49 000 ₽.",
+        faithfulness_fn=lambda _prompt: {"unsupported": []},
+        context={
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "информатика", "grade": "10", "format": "онлайн"},
+                "slot_sources": {"subject": "client_turn_1", "grade": "client_turn_1", "format": "client_turn_1"},
+            }
+        },
+    )
+
+    assert result.route == "bot_answer_self"
+    assert fact_key in result.facts
+    assert "49 000" in result.draft_text
 
 
 def test_q_thread_memory_does_not_trust_bot_inferred_known_slots_without_topic_focus(monkeypatch) -> None:

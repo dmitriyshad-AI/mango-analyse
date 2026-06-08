@@ -72,6 +72,14 @@ from mango_mvp.channels.tone_block import (
     sell_prompt_enabled,
     tone_rich_format_enabled,
 )
+from mango_mvp.channels.wave3_flags import (
+    PILOT_CONFIG_ENV as WAVE3_PILOT_CONFIG_ENV,
+    PILOT_CONFIG_VERSION as WAVE3_PILOT_CONFIG_VERSION,
+    PROMISE_VS_FACT_ENV,
+    SOFT_REDACT_GRADED_ENV,
+    pilot_gold_wave1_flag_enabled,
+    wave3_flag_enabled,
+)
 from mango_mvp.channels.draft_prompt_builder import (
     IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES,
     build_draft_prompt,
@@ -120,8 +128,8 @@ VERIFIER_HANDOFF_CLAIMS_ENV = "TELEGRAM_VERIFIER_HANDOFF_CLAIMS"
 DIRECT_PATH_ENV = "TELEGRAM_DIRECT_PATH"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
-DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
-DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
+DIRECT_PATH_PILOT_CONFIG_ENV = WAVE3_PILOT_CONFIG_ENV
+DIRECT_PATH_PILOT_CONFIG_VERSION = WAVE3_PILOT_CONFIG_VERSION
 DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
 DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION = "direct_path_wide_fact_pack_v1_2026_06_08"
 DIRECT_PATH_WIDE_FACT_LIMIT = 60
@@ -4817,9 +4825,15 @@ def apply_authoritative_output_gate(
         if semantic_meta:
             semantic_meta["fallback_reason"] = semantic_meta.get("fallback_reason") or SEMANTIC_VERIFIER_DOWNGRADE_REASON
             metadata["semantic_output_verifier"] = semantic_meta
+        draft_text = (
+            _soft_redact_graded_client_text(result.draft_text, actionable, context=context)
+            if _soft_redact_graded_enabled(context)
+            else result.draft_text
+        )
         return replace(
             result,
             route=route,
+            draft_text=draft_text,
             safety_flags=flags,
             manager_checklist=checklist,
             forbidden_promises_detected=forbidden,
@@ -4852,6 +4866,37 @@ def _authoritative_gate_direct_path_keep_text(
     if not codes:
         return False
     return not bool(codes & DIRECT_PATH_REPLACE_TEXT_GATE_CODES)
+
+
+_SOFT_REDACT_LOW_RISK_CODES = frozenset({"derived_product_claim", "invented_generalization"})
+_SOFT_REDACT_HARD_TEXT_RE = re.compile(
+    r"₽|руб|%|\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b|"
+    r"\b(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)|"
+    r"\b(?:p0|возврат|жалоб|юрист|суд|персональн|телефон|фио)\b",
+    re.I,
+)
+
+
+def _soft_redact_graded_client_text(
+    text: str,
+    findings: Sequence[Mapping[str, Any]],
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return value
+    codes = {str(item.get("code") or "").strip() for item in findings if isinstance(item, Mapping)}
+    if not codes or not codes <= _SOFT_REDACT_LOW_RISK_CODES:
+        return value
+    details = " ".join(str(item.get("detail") or item.get("evidence") or "") for item in findings if isinstance(item, Mapping))
+    if _SOFT_REDACT_HARD_TEXT_RE.search(details):
+        return value
+    marker = "По этой части формулировка предварительная — менеджер сверит перед отправкой."
+    if marker.casefold() in value.casefold():
+        return value
+    trace_event(context, "soft_redact_graded", {"applied": True, "codes": sorted(codes)})
+    return f"{value.rstrip()} {marker}"
 
 
 def _direct_path_generic_replacement_text(context: Optional[Mapping[str, Any]]) -> str:
@@ -6296,7 +6341,32 @@ def find_unsupported_numeric_promises(
     if not claims:
         return ()
     fact_texts = _fresh_fact_texts(context)
+    if _promise_vs_fact_enabled(context):
+        personal = tuple(claim for claim in claims if _looks_like_personal_promise_claim(draft_text, claim))
+        grounded = tuple(
+            claim
+            for claim in claims
+            if claim not in personal and not _claim_supported_by_facts(claim, fact_texts)
+        )
+        return tuple(dict.fromkeys([*personal, *grounded]))
     return tuple(claim for claim in claims if not _claim_supported_by_facts(claim, fact_texts))
+
+
+def _looks_like_personal_promise_claim(text: str, claim: str) -> bool:
+    source = str(text or "")
+    claim_text = str(claim or "").strip()
+    if not source or not claim_text:
+        return False
+    low = source.casefold().replace("ё", "е")
+    if re.search(r"гарантир|обеща|точно\s+(?:поступ|сдад|успе|получ)|обязательно\s+(?:поступ|сдад|успе|получ)", low, re.I):
+        return True
+    for match in re.finditer(re.escape(claim_text), source, re.I):
+        window = source[max(0, match.start() - 100) : min(len(source), match.end() + 100)].casefold().replace("ё", "е")
+        if re.search(r"\b(?:я|мы|менеджер|сотрудник|преподаватель)\b[^.!?\n]{0,80}\b(?:свяж|ответ|перезвон|верн|пришл|сдела|оформ)", window, re.I):
+            return True
+        if re.search(r"\b(?:поступ|сдад|получ|набер|станет)\w*\b[^.!?\n]{0,80}\b(?:гарант|точно|обязательн)", window, re.I):
+            return True
+    return False
 
 
 def _is_verified_safe_numeric_template(draft_text: str) -> bool:
@@ -7041,11 +7111,17 @@ def apply_semantic_output_verifier(
 
 
 def _verifier_handoff_claims_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (VERIFIER_HANDOFF_CLAIMS_ENV, "verifier_handoff_claims_enabled"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    return _truthy_value(os.getenv(VERIFIER_HANDOFF_CLAIMS_ENV))
+    if isinstance(context, Mapping) and "verifier_handoff_claims_enabled" in context:
+        return _truthy_value(context.get("verifier_handoff_claims_enabled"))
+    return pilot_gold_wave1_flag_enabled(context, VERIFIER_HANDOFF_CLAIMS_ENV)
+
+
+def _promise_vs_fact_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return wave3_flag_enabled(context, PROMISE_VS_FACT_ENV)
+
+
+def _soft_redact_graded_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return wave3_flag_enabled(context, SOFT_REDACT_GRADED_ENV)
 
 
 def _semantic_verifier_is_whitelisted_pure_handoff(text: str) -> bool:

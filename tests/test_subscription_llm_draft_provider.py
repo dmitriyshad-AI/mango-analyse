@@ -4521,6 +4521,39 @@ def test_v2_unsupported_promise_guard_uses_retrieved_fact_metadata_for_discount_
     assert "unsupported_promise_detected" not in guarded.safety_flags
 
 
+def test_wave3_promise_vs_fact_allows_grounded_date_but_blocks_personal_guarantee() -> None:
+    metadata = {
+        "dialogue_contract_pipeline": {
+            "retrieved_facts": {
+                "discounts.early_booking": "Ранняя цена действует до 1 июля."
+            }
+        }
+    }
+    grounded = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Ранняя цена действует до 1 июля.",
+        topic_id="theme:005_discounts",
+        metadata=metadata,
+    )
+    promise = replace(
+        grounded,
+        draft_text="Гарантирую, что цена сохранится до 1 июля.",
+    )
+
+    grounded_checked = apply_unsupported_promise_guard(
+        grounded,
+        context={"active_brand": "foton", "TELEGRAM_PROMISE_VS_FACT": "1"},
+    )
+    promise_checked = apply_unsupported_promise_guard(
+        promise,
+        context={"active_brand": "foton", "TELEGRAM_PROMISE_VS_FACT": "1"},
+    )
+
+    assert "unsupported_promise_detected" not in grounded_checked.safety_flags
+    assert promise_checked.route == "manager_only"
+    assert "unsupported_promise_detected" in promise_checked.safety_flags
+
+
 def test_v2_unsupported_promise_guard_blocks_100_points_without_retrieved_fact() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -9704,6 +9737,47 @@ def test_wave1_verifier_handoff_claims_on_keeps_p0_and_brand_gates() -> None:
     assert p0_checked.metadata["semantic_output_verifier"]["skip_reason"] == "locked_p0_or_high_risk_deferral"
     assert brand_gated.route == "manager_only"
     assert "brand_leak" in {item["code"] for item in brand_gated.metadata["authoritative_output_gate"]["findings"]}
+
+
+def test_wave3_soft_redact_graded_marks_low_risk_semantic_finding_but_keeps_hard_number_blocked() -> None:
+    soft = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Обычно в группе около 12 человек.",
+        metadata={
+            "semantic_output_verifier": {
+                "findings": [
+                    {
+                        "code": "derived_product_claim",
+                        "span": "около 12 человек",
+                        "relation_to_base": "adjacent",
+                        "detail": "размер группы",
+                    }
+                ]
+            }
+        },
+    )
+    soft_gated = apply_authoritative_output_gate(
+        soft,
+        client_message="сколько человек в группе?",
+        context={"active_brand": "foton", "TELEGRAM_SOFT_REDACT_GRADED": "1"},
+    )
+
+    hard = SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Курс стоит 70 900 ₽.")
+    hard_gated = apply_authoritative_output_gate(
+        hard,
+        client_message="сколько стоит?",
+        context={
+            "active_brand": "foton",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+            "TELEGRAM_SOFT_REDACT_GRADED": "1",
+        },
+    )
+
+    assert soft_gated.route == "draft_for_manager"
+    assert "формулировка предварительная" in soft_gated.draft_text
+    assert hard_gated.route == "manager_only"
+    assert "70 900" not in hard_gated.draft_text
 
 
 def test_semantic_output_verifier_checks_handoff_with_factual_claim_sentence() -> None:

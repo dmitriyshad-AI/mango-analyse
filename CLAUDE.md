@@ -70,7 +70,7 @@
 
 - **ADR-002 / стабилизация:** прямой путь — действующее пилотное решение. Старая «лазанья» заморожена как история и не является фолбэком пилота.
 - Фолбэк пилота при no-draft: нет клиентского черновика + алерт менеджеру, а не возврат к старому слоёному ответу.
-- Именованный конфиг приёмки: `pilot_gold_v1` = v6.6 snapshot + `TELEGRAM_DIRECT_PATH=1` + `TELEGRAM_BOT_GOLD_REAL=1` + gold-пак `real_manager_gold_2026-06-08.yaml`.
+- Именованный конфиг приёмки: `pilot_gold_v1` = v6.6 snapshot + `TELEGRAM_DIRECT_PATH=1` + `TELEGRAM_BOT_GOLD_REAL=1` + gold-пак `real_manager_gold_2026-06-08.yaml` + принятая Волна 1 (`TELEGRAM_NUMBER_GATE_SCOPE_AWARE=1`, `TELEGRAM_VERIFIER_HANDOFF_CLAIMS=1`). Волна 2 в этот конфиг не входит.
 - Валидность direct-прогона: `bot_direct_draft > 0`, `bot_semantic_output_verifier > 0`, authoritative gate checked, минимум один ход с `gold_real_example_ids`; `bot_faithfulness=0` для direct path — норма.
 - Судья для новых приёмочных прогонов: `--judge-prompt-version v9`. Нельзя сравнивать v2 и v9 без пере-суда одной и той же сырьевой базы.
 

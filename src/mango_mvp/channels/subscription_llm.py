@@ -3030,8 +3030,9 @@ def _direct_path_apply_wave3_closed_world_negative(
 
 def _direct_path_negative_text_with_exact_alternative(negative_text: str, exact_facts: Mapping[str, str]) -> str:
     text = str(negative_text or "").strip()
-    if not text or "Альтернатива по подтверждённым фактам" in text:
+    if not text:
         return text
+    text = text.replace("Альтернатива по подтверждённым фактам:", "Из доступного:")
     alternatives: list[str] = []
     negative_norm = text.casefold().replace("ё", "е")
     for value in exact_facts.values():
@@ -3045,7 +3046,7 @@ def _direct_path_negative_text_with_exact_alternative(negative_text: str, exact_
             alternatives.append(fact)
     if not alternatives:
         return text
-    return f"{text.rstrip(' .')}. Альтернатива по подтверждённым фактам: {' '.join(dict.fromkeys(alternatives[:2]))}"
+    return f"{text.rstrip(' .')}. Из доступного: {' '.join(dict.fromkeys(alternatives[:2]))}"
 
 
 def _direct_path_apply_wave3_partial_floor(

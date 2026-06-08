@@ -10657,7 +10657,7 @@ def test_wave3_direct_closed_world_negative_answers_from_explicit_negative_exact
     assert provider.calls == 1
     assert result.route == "bot_answer_self_for_pilot"
     assert negative in result.draft_text
-    assert "Альтернатива по подтверждённым фактам" in result.draft_text
+    assert "Из доступного" in result.draft_text
     assert "помесячно" in result.draft_text
     assert result.metadata["direct_path"]["closed_world_negative_applied"] is True
     assert result.metadata["authoritative_output_gate"]["action"] == "pass"

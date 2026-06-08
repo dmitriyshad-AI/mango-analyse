@@ -1219,16 +1219,20 @@ def _direct_path_config_invalid(
     ]
     if len(completed) < window:
         return {"invalid": False, "checked_dialogs": len(completed), "threshold": window}
-    recent = completed[:window]
-    called = [_dialog_direct_model_called(dialog) for dialog in recent]
-    invalid = not any(called)
+    first_window = completed[:window]
+    called = [_dialog_direct_model_called(dialog) for dialog in first_window]
+    any_called_global = any(_dialog_direct_model_called(dialog) for dialog in completed)
+    invalid = not any(called) and not any_called_global
     return {
         "invalid": invalid,
         "reason": "config_invalid" if invalid else "",
-        "checked_dialogs": len(recent),
+        "checked_dialogs": len(first_window),
         "threshold": window,
-        "dialog_ids": [str(dialog.get("dialog_id") or "") for dialog in recent],
-        "model_called_by_dialog": {str(dialog.get("dialog_id") or ""): value for dialog, value in zip(recent, called)},
+        "dialog_ids": [str(dialog.get("dialog_id") or "") for dialog in first_window],
+        "model_called_by_dialog": {
+            str(dialog.get("dialog_id") or ""): value for dialog, value in zip(first_window, called)
+        },
+        "any_model_called_global": any_called_global,
     }
 
 

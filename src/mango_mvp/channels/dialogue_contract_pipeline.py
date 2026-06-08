@@ -49,7 +49,7 @@ QUALITY_USEFUL_HANDOFF_ENV = "TELEGRAM_Q_USEFUL_HANDOFF"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 _FAITHFULNESS_SHADOW_CONTEXT_KEY = "_faithfulness_shadow"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
-    "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json"
+    "product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json"
 )
 MAX_CATALOG_KEYS = 240
 MAX_REPAIR_ATTEMPTS = 2

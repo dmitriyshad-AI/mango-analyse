@@ -91,6 +91,7 @@ class TaskSpec:
     brain: str
     parallel: int
     max_hours: float
+    judge_prompt_version: str
     env: dict[str, str]
 
 
@@ -204,7 +205,7 @@ def validate_task_dict(data: Mapping[str, object]) -> TaskSpec:
     missing = sorted(required - set(data))
     if missing:
         raise WatcherError("task_schema_mismatch", f"missing fields: {', '.join(missing)}")
-    extra = sorted(set(data) - required - {"env"})
+    extra = sorted(set(data) - required - {"env", "judge_prompt_version"})
     if extra:
         raise WatcherError("task_schema_mismatch", f"unknown fields: {', '.join(extra)}")
 
@@ -227,8 +228,12 @@ def validate_task_dict(data: Mapping[str, object]) -> TaskSpec:
         raise WatcherError("task_schema_mismatch", "parallel/max_hours must be numeric") from exc
     if parallel < 1 or parallel > 4:
         raise WatcherError("task_schema_mismatch", "parallel must be 1..4")
-    if max_hours <= 0 or max_hours > 8:
-        raise WatcherError("task_schema_mismatch", "max_hours must be >0 and <=8")
+    if max_hours <= 0 or max_hours > 9:
+        raise WatcherError("task_schema_mismatch", "max_hours must be >0 and <=9")
+
+    judge_prompt_version = str(data.get("judge_prompt_version") or "v9").strip().lower()
+    if judge_prompt_version not in {"v2", "v9"}:
+        raise WatcherError("task_schema_mismatch", "judge_prompt_version must be v2|v9")
 
     env_raw = data.get("env") or {}
     if not isinstance(env_raw, Mapping):
@@ -251,6 +256,7 @@ def validate_task_dict(data: Mapping[str, object]) -> TaskSpec:
         brain=brain,
         parallel=parallel,
         max_hours=max_hours,
+        judge_prompt_version=judge_prompt_version,
         env=env,
     )
 
@@ -816,6 +822,8 @@ class M1Watcher:
             "medium",
             "--parallel",
             str(spec.parallel),
+            "--judge-prompt-version",
+            spec.judge_prompt_version,
             "--out-dir",
             str(out_dir),
         )
@@ -934,6 +942,9 @@ class M1Watcher:
         summary = load_json(work_out_dir / "dynamic_summary.json", {})
         if not isinstance(summary, Mapping):
             summary = {}
+        config_validity = summary.get("config_validity") if isinstance(summary.get("config_validity"), Mapping) else {}
+        if config_validity.get("invalid"):
+            status = "config_invalid"
 
         terminal_dir = self.done if status == "success" else self.failed
         self._write_report(

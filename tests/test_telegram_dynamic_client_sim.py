@@ -511,6 +511,74 @@ def test_derived_claim_draft_priority_hint_and_summary_counter(tmp_path):
     assert summary["run_config"]["judge_prompt_version_id"] == sim.JUDGE_PROMPT_VERSION
 
 
+def test_direct_path_fail_fast_marks_config_invalid(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH", "1")
+    transcripts = [
+        {
+            "dialog_id": f"d{i}",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [{"bot_direct_path": {"attempted": True, "model_called": False}}],
+        }
+        for i in range(4)
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": f"d{i}", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True} for i in range(4)],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert summary["config_validity"]["invalid"] is True
+    assert summary["config_validity"]["reason"] == "config_invalid"
+
+
+def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH", "1")
+    transcripts = [
+        {
+            "dialog_id": f"d{i}",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [{"bot_direct_path": {"attempted": True, "model_called": i == 2}}],
+        }
+        for i in range(4)
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": f"d{i}", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True} for i in range(4)],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert summary["config_validity"]["invalid"] is False
+
+
+def test_direct_path_fail_fast_uses_pilot_gold_config(monkeypatch, tmp_path):
+    monkeypatch.delenv("TELEGRAM_DIRECT_PATH", raising=False)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    transcripts = [
+        {
+            "dialog_id": f"d{i}",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [{"bot_direct_path": {"attempted": True, "model_called": False}}],
+        }
+        for i in range(4)
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": f"d{i}", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True} for i in range(4)],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert summary["config_validity"]["invalid"] is True
+
+
 def test_judge_fact_audit_generic_claims_are_v9_only(tmp_path):
     snapshot = {
         "facts": [
@@ -771,7 +839,7 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
 
 
 def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:
-    snapshot = Path("product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json")
+    snapshot = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
     assert snapshot.exists()
 
     context = sim.build_bot_prompt_context(

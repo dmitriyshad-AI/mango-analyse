@@ -12,7 +12,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260603_v6_5_summer_format_cleanup"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260608_v6_6_staging"
 
 REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "priority",
@@ -291,7 +291,7 @@ def test_v3_q14_q15_closed_with_correct_scope(kb_v3: KbReleaseV3) -> None:
         assert not _is_true(fact.get("usable_for_precise_answer")), fact
         assert _is_true(fact.get("internal_only")) or "stale_previous_year_not_current" in _fact_blob(fact), fact
         q15_scope = _fact_scope_blob(fact)
-        assert _has_any(q15_scope, ("старая ветка", "previous_year", "stale_previous_year")), fact
+        assert _has_any(q15_scope, ("superseded", "старый отдельный продукт")), fact
         assert _has_class_scope(q15_scope, first="9", last="11"), fact
         assert not _has_any(q15_scope, ("5-11", "5_11", "1-4", "1_4")), fact
 
@@ -420,12 +420,22 @@ def test_v3_rc2a_client_safe_discount_and_olympiad_facts(kb_v3: KbReleaseV3) -> 
 
     olymp = by_key_brand[("unpk", "prices_regular_2026_27.online_olympiad_phystech_classes.client_safe_text")]
     olymp_text = str(olymp.get("client_safe_text") or olymp.get("fact_text") or "")
-    assert "Олимпиадная подготовка Физтех онлайн" in olymp_text
-    assert "9 и 11 классов" in olymp_text
+    assert "Олимпиадная подготовка онлайн" in olymp_text
+    assert "обычных онлайн-курсов" in olymp_text
+    assert "отдельного продукта нет" in olymp_text
+    assert "41 800" not in olymp_text and "69 900" not in olymp_text
     assert olymp.get("usable_for_precise_answer") is True
-    applies_to = (_jsonish(olymp.get("structured_value")).get("applies_to") or {})
-    assert applies_to.get("grades") == [9, 11]
-    assert applies_to.get("formats") == ["online"]
+
+    weekday = by_key_brand[
+        ("unpk", "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text")
+    ]
+    weekday_text = str(weekday.get("client_safe_text") or weekday.get("fact_text") or "")
+    assert "9 и 11 классов" in weekday_text
+    assert "будням" in weekday_text
+    assert "41 800" in weekday_text and "69 900" in weekday_text
+    weekday_applies_to = (_jsonish(weekday.get("structured_value")).get("applies_to") or {})
+    assert weekday_applies_to.get("grades") == [9, 11]
+    assert weekday_applies_to.get("formats") == ["online"]
 
 
 def test_v3_refund_post_payment_is_client_safe_but_limited(kb_v3: KbReleaseV3) -> None:
@@ -507,8 +517,8 @@ def test_v3_confirmed_manager_only_candidates_move_to_client_safe(kb_v3: KbRelea
 
     q15_handoff = by_key_brand[("unpk", "team_answers.q15.unpk_online_other_classes.manager_handoff")]
     q15_text = str(q15_handoff.get("client_safe_text") or "")
-    assert "вне подтверждённого формата 2 раза в неделю" in q15_text
-    assert "точные условия должен проверить менеджер" in q15_text
+    assert "Вне двух подтверждённых онлайн-тарифов УНПК" in q15_text
+    assert "точные условия проверяет менеджер" in q15_text
     assert "41 800" not in q15_text and "69 900" not in q15_text
 
 

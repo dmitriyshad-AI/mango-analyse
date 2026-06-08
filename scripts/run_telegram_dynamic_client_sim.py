@@ -39,7 +39,7 @@ from mango_mvp.insights.tone_score import summarize_tone_scores
 
 
 DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke_tests_v7_dynamic_sim_2026-05-21/v7_dynamic_client_sim_2026-05-21.jsonl")
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
 JUDGE_PROMPT_VERSION_V2 = "judge_v2_current"
@@ -51,6 +51,7 @@ METRIC_TARGETS = {
     "send_unedited_rate": 0.45,
 }
 HANDOFF_TRACE_ENV = "TELEGRAM_HANDOFF_TRACE"
+DIRECT_PATH_FAIL_FAST_DIALOGS = 4
 
 
 @dataclass(frozen=True)
@@ -783,6 +784,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
                     flush=True,
                 )
+                config_invalid = _direct_path_config_invalid(transcripts, persona_order=persona_order)
+                if config_invalid.get("invalid"):
+                    print(json.dumps(config_invalid, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
+                    return 2
         else:
             print(f"parallel_dialogs={args.parallel} pending={len(pending_personas)}", flush=True)
             with ThreadPoolExecutor(max_workers=args.parallel) as executor:
@@ -831,6 +836,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
                         flush=True,
                     )
+                    config_invalid = _direct_path_config_invalid(transcripts, persona_order=persona_order)
+                    if config_invalid.get("invalid"):
+                        print(json.dumps(config_invalid, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
+                        return 2
         turn_rows = build_turn_rows(transcripts)
 
     summary = write_dynamic_outputs(
@@ -1173,6 +1182,54 @@ def extract_judge_results(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapp
         for dialog in transcripts
         if isinstance(dialog.get("judge_result"), Mapping)
     ]
+
+
+def _truthy_env_value(value: object) -> bool:
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "on"}
+
+
+def _direct_path_fail_fast_enabled() -> bool:
+    return _truthy_env_value(os.getenv("TELEGRAM_DIRECT_PATH")) or (
+        str(os.getenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG") or "").strip() == "pilot_gold_v1"
+    )
+
+
+def _dialog_direct_model_called(dialog: Mapping[str, Any]) -> bool:
+    for turn in dialog.get("turns") or []:
+        if not isinstance(turn, Mapping):
+            continue
+        direct = turn.get("bot_direct_path") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+        if direct.get("model_called") is True:
+            return True
+    return False
+
+
+def _direct_path_config_invalid(
+    transcripts: Sequence[Mapping[str, Any]],
+    *,
+    persona_order: Mapping[str, int],
+    window: int = DIRECT_PATH_FAIL_FAST_DIALOGS,
+) -> Mapping[str, Any]:
+    if not _direct_path_fail_fast_enabled() or window <= 0:
+        return {"invalid": False}
+    completed = [
+        dialog
+        for dialog in sort_transcripts_by_persona_order(transcripts, persona_order)
+        if str(dialog.get("run_status") or "completed") == "completed"
+    ]
+    if len(completed) < window:
+        return {"invalid": False, "checked_dialogs": len(completed), "threshold": window}
+    recent = completed[:window]
+    called = [_dialog_direct_model_called(dialog) for dialog in recent]
+    invalid = not any(called)
+    return {
+        "invalid": invalid,
+        "reason": "config_invalid" if invalid else "",
+        "checked_dialogs": len(recent),
+        "threshold": window,
+        "dialog_ids": [str(dialog.get("dialog_id") or "") for dialog in recent],
+        "model_called_by_dialog": {str(dialog.get("dialog_id") or ""): value for dialog, value in zip(recent, called)},
+    }
 
 
 def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -1543,6 +1600,8 @@ def build_bot_prompt_context(
     )
     payload = dict(pilot_context.to_prompt_context())
     payload["active_brand"] = brand
+    payload["snapshot_path"] = str(snapshot_path)
+    payload["knowledge_snapshot_path"] = str(snapshot_path)
     payload["known_dialog_fields"] = known_dialog
     if "dialogue_memory_view" not in payload:
         payload["dialogue_memory_view"] = build_dialogue_memory(
@@ -2562,6 +2621,10 @@ def build_summary(
     close_detect = _close_detect_summary(transcripts)
     tone_sell_prompt = _tone_sell_prompt_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
+    config_validity = _direct_path_config_invalid(
+        transcripts,
+        persona_order={str(dialog.get("dialog_id") or ""): index for index, dialog in enumerate(transcripts)},
+    )
     include_handoff_trace = _handoff_trace_enabled() or any(
         isinstance(turn, Mapping) and isinstance(turn.get("handoff_trace"), Mapping) and bool(turn.get("handoff_trace"))
         for dialog in transcripts
@@ -2612,6 +2675,7 @@ def build_summary(
         "violated_gates": dict(violated_gates),
         "judge_parse_issues": dict(judge_parse_issues),
         "run_statuses": dict(run_statuses),
+        "config_validity": dict(config_validity),
         "infra_error_dialogs": [
             {"dialog_id": dialog.get("dialog_id"), "run_status": dialog.get("run_status"), "infra_error": dialog.get("infra_error")}
             for dialog in transcripts

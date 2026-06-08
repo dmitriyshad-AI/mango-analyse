@@ -1,0 +1,20 @@
+Commands:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py tests/test_telegram_dynamic_client_sim.py tests/test_m1_watcher.py tests/test_kb_release_v3_import.py
+
+Result:
+532 passed in 7.74s
+
+Command:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests
+
+Result:
+2805 passed, 2 skipped, 1 warning in 41.01s
+
+Command:
+
+git diff --check
+
+Result:
+passed

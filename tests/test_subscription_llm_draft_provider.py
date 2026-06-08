@@ -4,6 +4,7 @@ import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from typing import Mapping, Sequence
 
 import pytest
 import yaml
@@ -29,6 +30,9 @@ from mango_mvp.channels.subscription_llm import (
     CONTACT_FOTON_SAFE_TEXT,
     BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
     DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH,
     DIALOGUE_CONTRACT_V2_TEMPLATE_REGISTRY,
     DraftGenerationResult,
@@ -71,6 +75,8 @@ from mango_mvp.channels.subscription_llm import (
     apply_warm_frame,
     apply_semantic_output_verifier,
     apply_semantic_diagnosis_guard,
+    _direct_path_context_fact_pack,
+    _direct_path_render_fact_block,
     build_semantic_output_regen_prompt,
     build_semantic_output_verifier_prompt,
     build_semantic_diagnosis_prompt,
@@ -10161,6 +10167,145 @@ class _DirectPathProvider(SubscriptionLlmDraftProvider):
         return self.result
 
 
+V66_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
+
+
+def _wide_pack_context(
+    *,
+    brand: str,
+    message: str,
+    known_slots: Mapping[str, str] | None = None,
+    primary_intent: str = "pricing",
+) -> dict[str, object]:
+    return {
+        "active_brand": brand,
+        "snapshot_path": str(V66_SNAPSHOT_PATH),
+        "conversation_intent_plan": {
+            "primary_intent": primary_intent,
+            "answer_topics": [primary_intent],
+            "required_fact_keys": ["prices.current"] if primary_intent == "pricing" else [],
+        },
+        "known_slots": dict(known_slots or {}),
+        "recent_messages": [f"Клиент: {message}"],
+    }
+
+
+def _wide_pack_text(pack: Mapping[str, object], keys: Sequence[str] | None = None) -> str:
+    facts = pack.get("facts") if isinstance(pack.get("facts"), Mapping) else {}
+    meta = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
+    selected = keys or tuple(facts.keys())
+    return _direct_path_render_fact_block(facts, fact_metadata=meta, keys=tuple(str(key) for key in selected))
+
+
+def test_direct_path_wide_pack_price_close_contains_unpk_offline_price_pair() -> None:
+    message = "Сколько стоит очно физика 9 класс?"
+    pack = _direct_path_context_fact_pack(
+        _wide_pack_context(brand="unpk", message=message),
+        client_message=message,
+    )
+
+    exact_text = _wide_pack_text(pack, pack["exact_keys"])
+    assert str(pack["selected_category"]).startswith("pricing")
+    assert "49 000" in exact_text
+    assert "82 000" in exact_text
+    assert len(pack["facts"]) <= 60
+
+
+def test_direct_path_wide_pack_is_brand_isolated_for_both_brands() -> None:
+    for brand in ("foton", "unpk"):
+        pack = _direct_path_context_fact_pack(
+            _wide_pack_context(brand=brand, message="Сколько стоит курс?", primary_intent="pricing"),
+            client_message="Сколько стоит курс?",
+        )
+        metadata = pack["fact_metadata"]
+        assert metadata
+        assert {item["brand"] for item in metadata.values()} == {brand}
+
+
+def test_direct_path_wide_pack_serializes_only_client_safe_fields() -> None:
+    pack = _direct_path_context_fact_pack(
+        _wide_pack_context(brand="foton", message="Сколько стоит онлайн?", primary_intent="pricing"),
+        client_message="Сколько стоит онлайн?",
+    )
+    text = _wide_pack_text(pack)
+    assert "internal_text" not in text
+    assert "manager_check" not in text
+    assert "Скорняжн" not in text
+    assert "лиценз" not in text.casefold()
+
+
+def test_direct_path_wide_pack_excludes_expired_client_safe_fact(tmp_path) -> None:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "expired.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "forbidden_for_client": False,
+                "internal_only": False,
+                "valid_until": "2026-05-15",
+                "client_safe_text": "Фотон: старая цена — 1 000 ₽.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "fresh.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "forbidden_for_client": False,
+                "internal_only": False,
+                "valid_until": "2027-08-31",
+                "client_safe_text": "Фотон: новая цена — 2 000 ₽.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "foton",
+            "snapshot_path": str(snapshot_path),
+            "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+        },
+        client_message="Сколько стоит?",
+    )
+    text = _wide_pack_text(pack)
+
+    assert "старая цена" not in text
+    assert "новая цена" in text
+
+
+def test_direct_path_wide_pack_schedule_stays_under_limit_and_keeps_exact_block() -> None:
+    message = "Когда занятия и какое расписание?"
+    pack = _direct_path_context_fact_pack(
+        _wide_pack_context(brand="unpk", message=message, primary_intent="schedule"),
+        client_message=message,
+    )
+    facts = pack["facts"]
+    meta = pack["fact_metadata"]
+    assert facts
+    assert pack["exact_keys"]
+    assert len(facts) <= 60
+    assert sum(len(_wide_pack_text(pack, [key])) for key in facts) <= DIRECT_PATH_WIDE_FACT_CHAR_LIMIT
+    assert _direct_path_render_fact_block(facts, fact_metadata=meta, keys=pack["exact_keys"])
+
+
+def test_direct_path_wide_pack_marks_scope_conflict_as_adjacent() -> None:
+    message = "Сколько стоит физика 9 класс?"
+    pack = _direct_path_context_fact_pack(
+        _wide_pack_context(brand="unpk", message=message, known_slots={"format": "очно"}, primary_intent="pricing"),
+        client_message=message,
+    )
+    exact_text = _wide_pack_text(pack, pack["exact_keys"]).casefold()
+    adjacent_text = _wide_pack_text(pack, pack["adjacent_keys"]).casefold()
+    assert "очно" in exact_text
+    assert "49 000" in exact_text
+    assert "онлайн" in adjacent_text
+
+
 def test_direct_path_preblocks_p0_without_model_call() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
@@ -10204,6 +10349,8 @@ def test_direct_path_overrides_pipeline_and_keeps_clean_close() -> None:
     assert "dialogue_contract_pipeline" not in result.metadata
     assert "close_detect" not in result.metadata
     assert result.metadata["direct_path"]["text_composition_source"] == "direct_path_model"
+    assert result.metadata["direct_path"]["wide_facts_count"] == 1
+    assert result.metadata["direct_path"]["selected_category"] == "legacy_context"
 
 
 def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
@@ -10232,6 +10379,31 @@ def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
     assert "unsupported_product_number" in {item["code"] for item in gate["findings"]}
     assert result.metadata["direct_path"]["downgraded"] is True
     assert result.metadata["direct_path"]["reason_class"] == "output_safety"
+
+
+def test_direct_path_hard_gate_generic_replacement_avoids_repeat() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Можно оплатить за 2-3 месяца, так будет удобнее.",
+        )
+    )
+    result = provider.build_draft(
+        "Можно оплатить помесячно?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "confirmed_facts": {
+                "payment.foton.installment": "Фотон: рассрочка доступна на 6, 10 или 12 месяцев."
+            },
+            "recent_messages": [f"Ответ: {SAFE_FALLBACK_DRAFT_TEXT}"],
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.draft_text != SAFE_FALLBACK_DRAFT_TEXT
+    assert "менеджер" in result.draft_text.casefold()
 
 
 def test_direct_path_soft_gate_finding_keeps_model_text_for_manager() -> None:
@@ -10343,6 +10515,25 @@ def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
     assert "Стоимость за один предмет" in provider_with_gold.last_prompt
     assert result.metadata["direct_path"]["gold_real_enabled"] is True
     assert "foton_price_installment_01" in result.metadata["direct_path"]["gold_real_example_ids"]
+
+
+def test_direct_path_pilot_gold_v1_enables_direct_and_gold_without_extra_flags() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по рассрочке.")
+    )
+    result = provider.build_draft(
+        "Рассрочка есть?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+            "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert "Живые образцы менеджерского стиля" in provider.last_prompt
+    assert result.metadata["direct_path"]["pilot_config"] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert result.metadata["direct_path"]["gold_real_enabled"] is True
 
 
 def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:

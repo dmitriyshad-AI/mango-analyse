@@ -17,7 +17,9 @@ from scripts.m1_watcher import sha256_file, write_text_atomic
 
 
 DEFAULT_TESTS_ROOT = Path.home() / "Yandex.Disk.localized" / "OpenClaw" / "Actual Mango Tests"
-DEFAULT_KB_SNAPSHOT = "product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json"
+DEFAULT_KB_SNAPSHOT = "product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json"
+DEFAULT_PILOT_CONFIG = "pilot_gold_v1"
+DEFAULT_GOLD_PACK_VERSION = "real_manager_gold_2026-06-08"
 
 
 def _git(args: list[str], repo: Path) -> str:
@@ -76,6 +78,9 @@ def build_bundle(
         f"head: {head}",
         f"created: {datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')}",
         f"kb_snapshot: {kb_snapshot}",
+        f"pilot_config: {DEFAULT_PILOT_CONFIG}",
+        f"gold_pack_version: {DEFAULT_GOLD_PACK_VERSION}",
+        "judge_prompt_version: v9",
         *extra_info_lines,
         "",
     ]

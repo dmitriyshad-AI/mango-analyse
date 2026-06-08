@@ -22,7 +22,7 @@ def _make_bundle(root: Path, bundle_id: str = "mango_clean_12345678") -> Path:
             [
                 bundle_id,
                 "head: 1234567890abcdef",
-                "kb_snapshot: product_data/knowledge_base/kb_release_20260603_v6_5_summer_format_cleanup/kb_release_v3_snapshot.json",
+                "kb_snapshot: product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json",
                 "",
             ]
         ),
@@ -128,6 +128,7 @@ def test_success_report_includes_readiness_cli_versions_and_heartbeat(tmp_path):
     assert "codex_cli_version: codex test-version" in report
     assert "claude_cli_version: claude test-version" in report
     assert "readiness:" in report
+    assert "--judge-prompt-version v9" in report
     assert "import_mango_mvp" in report
     assert "disk_free_bytes" in report
     heartbeat = json.loads((tmp_path / "tasks" / "_done" / "task1.heartbeat").read_text(encoding="utf-8"))
@@ -277,6 +278,9 @@ def test_parallel_env_and_set_path_are_rejected(tmp_path):
 
     _write_task(tmp_path, "2026-06-07_parallel.task.yaml", task_id="bad_parallel", set_rel=set_rel, set_sha=set_sha, parallel=8)
     assert _run_ready_cycle(_new_watcher(tmp_path)) == "task_schema_mismatch"
+
+    _write_task(tmp_path, "2026-06-07_max_hours.task.yaml", task_id="nine_hours", set_rel=set_rel, set_sha=set_sha, max_hours="9")
+    assert _run_ready_cycle(_new_watcher(tmp_path)) == "success"
 
     _write_task(tmp_path, "2026-06-07_env.task.yaml", task_id="bad_env", set_rel=set_rel, set_sha=set_sha, env='  PATH: "/tmp"\n')
     assert _run_ready_cycle(_new_watcher(tmp_path)) == "task_schema_mismatch"
@@ -429,6 +433,23 @@ def test_timeout_marks_failed(tmp_path):
 
     assert _run_ready_cycle(_new_watcher(tmp_path, runner=timeout_runner)) == "timeout"
     assert "timeout" in (tmp_path / "tasks" / "_failed" / "task1.report.md").read_text(encoding="utf-8")
+
+
+def test_config_invalid_summary_gets_named_watcher_status(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+    _write_task(tmp_path, "2026-06-07_config_invalid.task.yaml", set_rel=set_rel, set_sha=set_sha)
+
+    def invalid_runner(spec, deploy_dir, out_dir, command, env):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "dynamic_summary.json").write_text(
+            json.dumps({"config_validity": {"invalid": True, "reason": "config_invalid"}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return watcher.RunOutcome(2, True, False, command=tuple(command))
+
+    assert _run_ready_cycle(_new_watcher(tmp_path, runner=invalid_runner)) == "config_invalid"
+    assert (tmp_path / "tasks" / "_failed" / "task1.report.md").exists()
 
 
 def test_ack_counter_blocks_fourth_unconfirmed_executed_task(tmp_path):

@@ -62,6 +62,7 @@ from mango_mvp.channels.subscription_llm import (
     TONE_SELL_PROMPT_ENV,
     TONE_WARM_FRAME_ENV,
     UNPK_INSTALLMENT_APPROVED_FALLBACK_TEXT,
+    VERIFIER_HANDOFF_CLAIMS_ENV,
     apply_payment_confirmation_guard,
     apply_a2_proactive_layer,
     apply_authoritative_output_gate,
@@ -9596,6 +9597,115 @@ def test_semantic_output_verifier_skips_service_handoff_without_factual_claim() 
     assert checked.metadata["semantic_output_verifier"]["skip_reason"] == "pure_handoff"
 
 
+def test_wave1_verifier_handoff_claims_off_keeps_current_pure_handoff_skip() -> None:
+    base = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="У нас сильные преподаватели, передам менеджеру.",
+        topic_id="theme:016_program",
+    )
+    calls = 0
+
+    def verifier(_prompt: str):
+        nonlocal calls
+        calls += 1
+        return {"findings": [{"code": "derived_product_claim"}]}
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Сильные преподаватели?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, VERIFIER_HANDOFF_CLAIMS_ENV: "0", "active_brand": "foton"},
+        verifier_fn=verifier,
+    )
+
+    assert calls == 0
+    assert checked.metadata["semantic_output_verifier"]["skipped"] is True
+    assert checked.metadata["semantic_output_verifier"]["skip_reason"] == "pure_handoff"
+
+
+def test_wave1_verifier_handoff_claims_on_keeps_canonical_template_skipped() -> None:
+    base = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text=SAFE_FALLBACK_DRAFT_TEXT,
+        topic_id="theme:001_pricing",
+    )
+
+    def verifier(_prompt: str):
+        raise AssertionError("canonical pure handoff must stay skipped")
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Сколько стоит?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, VERIFIER_HANDOFF_CLAIMS_ENV: "1", "active_brand": "foton"},
+        verifier_fn=verifier,
+    )
+
+    assert checked.metadata["semantic_output_verifier"]["skipped"] is True
+    assert checked.metadata["semantic_output_verifier"]["skip_reason"] == "pure_handoff"
+
+
+def test_wave1_verifier_handoff_claims_on_checks_substantive_handoff() -> None:
+    base = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="У нас сильные преподаватели, передам менеджеру.",
+        topic_id="theme:016_program",
+    )
+    calls = 0
+
+    def verifier(_prompt: str):
+        nonlocal calls
+        calls += 1
+        return {
+            "findings": [
+                {
+                    "code": "derived_product_claim",
+                    "span": "сильные преподаватели",
+                    "relation_to_base": "absent",
+                }
+            ]
+        }
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Сильные преподаватели?",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, VERIFIER_HANDOFF_CLAIMS_ENV: "1", "active_brand": "foton"},
+        verifier_fn=verifier,
+    )
+    gated = apply_authoritative_output_gate(checked, client_message="Сильные преподаватели?", context={"active_brand": "foton"})
+
+    assert calls == 1
+    assert checked.metadata["semantic_output_verifier"]["checked"] is True
+    assert checked.metadata["semantic_output_verifier"]["finding_codes"] == ["derived_product_claim"]
+    assert gated.route == "draft_for_manager"
+    assert gated.metadata["authoritative_output_gate"]["action"] == "downgrade_keep_text"
+
+
+def test_wave1_verifier_handoff_claims_on_keeps_p0_and_brand_gates() -> None:
+    p0 = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Приняли обращение, передам менеджеру.",
+        topic_id="theme:009_refund",
+        safety_flags=("high_risk_manager_only",),
+    )
+
+    p0_checked = apply_semantic_output_verifier(
+        p0,
+        client_message="Верните деньги, ребёнок не справится",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, VERIFIER_HANDOFF_CLAIMS_ENV: "1", "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": [{"code": "derived_product_claim"}]},
+    )
+    brand_checked = apply_semantic_output_verifier(
+        _semantic_verifier_base_result("У Фотона и УНПК одинаковые условия."),
+        client_message="Сравните Фотон и УНПК",
+        context={SEMANTIC_OUTPUT_VERIFIER_ENV: True, VERIFIER_HANDOFF_CLAIMS_ENV: "1", "active_brand": "foton"},
+        verifier_fn=lambda _prompt: {"findings": []},
+    )
+    brand_gated = apply_authoritative_output_gate(brand_checked, client_message="Сравните Фотон и УНПК", context={"active_brand": "foton"})
+
+    assert p0_checked.metadata["semantic_output_verifier"]["skip_reason"] == "locked_p0_or_high_risk_deferral"
+    assert brand_gated.route == "manager_only"
+    assert "brand_leak" in {item["code"] for item in brand_gated.metadata["authoritative_output_gate"]["findings"]}
+
+
 def test_semantic_output_verifier_checks_handoff_with_factual_claim_sentence() -> None:
     base = SubscriptionDraftResult(
         route="draft_for_manager",
@@ -10312,6 +10422,40 @@ def test_direct_path_wide_pack_marks_scope_conflict_as_adjacent() -> None:
     assert "очно" in exact_text
     assert "49 000" in exact_text
     assert "онлайн" in adjacent_text
+
+
+def test_wave1_number_scope_aware_wrong_scope_downgrades_direct_path_text() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Очно для 9 класса стоит 29 750 ₽.",
+        topic_id="theme:001_pricing",
+        metadata={
+            "direct_path": {
+                "enabled": True,
+                "direct_path_attempted": True,
+                "retrieved_facts": {
+                    "price.online": "Онлайн для 9 класса стоит 29 750 ₽.",
+                },
+            }
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="сколько стоит очно физика 9 класс?",
+        context={
+            "active_brand": "foton",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+        },
+    )
+
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gated.route == "draft_for_manager"
+    assert gated.draft_text == result.draft_text
+    assert gate["action"] == "downgrade_keep_text"
+    assert "wrong_scope" in {item["code"] for item in gate["findings"]}
+    assert "direct_path_gate_text_preserved" in gated.safety_flags
 
 
 def test_direct_path_preblocks_p0_without_model_call() -> None:

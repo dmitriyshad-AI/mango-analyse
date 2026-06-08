@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
+from mango_mvp.channels.fact_scope_spec import blocked_neighbors_for, detect_fact_scopes, fact_scopes_allowed
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
 from mango_mvp.channels.p0_recall_spec import codes_from_text, hard_codes_from_text, is_benign_hypothetical_refund, soft_codes_from_text
@@ -37,6 +38,7 @@ DIALOGUE_CONTRACT_PIPELINE_ENV = "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE"
 FAITHFULNESS_SHADOW_ENV = "TELEGRAM_FAITHFULNESS_SHADOW"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
+NUMBER_GATE_SCOPE_AWARE_ENV = "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"
 STEP4_NUMBER_GROUNDING_ENV = "TELEGRAM_STEP4_NUMBER_GROUNDING"
 TRAVEL_COMPOSE_ENV = "TELEGRAM_A_TRAVEL_COMPOSE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
@@ -649,6 +651,12 @@ def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
         if context.get(FREE_NUMBER_GATE_ENV) is not None:
             return _truthy(context.get(FREE_NUMBER_GATE_ENV))
     return _truthy(os.getenv(FREE_NUMBER_GATE_ENV)) or _truthy(os.getenv(STEP4_NUMBER_GROUNDING_ENV))
+
+
+def number_gate_scope_aware_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(NUMBER_GATE_SCOPE_AWARE_ENV) is not None:
+        return _truthy(context.get(NUMBER_GATE_SCOPE_AWARE_ENV))
+    return _truthy(os.getenv(NUMBER_GATE_SCOPE_AWARE_ENV))
 
 
 def travel_compose_enabled(context: Mapping[str, Any] | None = None) -> bool:
@@ -4206,21 +4214,47 @@ def _free_number_gate_findings(
 ) -> list[VerificationFinding]:
     fact_surfaces = _free_number_surfaces(" ".join(str(value) for value in facts.values()))
     client_surfaces = _free_number_surfaces(_client_number_context_text(client_message, context=context))
+    scope_aware = number_gate_scope_aware_enabled(context)
+    scoped_facts = _scope_aware_number_facts(facts) if scope_aware else ()
     product_tokens: list[str] = []
+    wrong_scope_tokens: list[str] = []
     general_without_marker: list[str] = []
     for token, start, end in _free_number_token_matches(text):
         surfaces = _free_number_surfaces(token)
         if not surfaces:
             continue
         payment_plan_surfaces = _payment_plan_count_surfaces_for_token(text, token, start=start, end=end)
-        if payment_plan_surfaces:
-            if fact_surfaces.intersection(payment_plan_surfaces):
+        match_surfaces = payment_plan_surfaces or surfaces
+        if scope_aware:
+            supported, wrong_scope_seen = _scope_aware_number_supported(
+                match_surfaces,
+                scoped_facts,
+                text=text,
+                token=token,
+                start=start,
+                end=end,
+                client_message=client_message,
+                context=context,
+            )
+            if supported:
                 continue
-        elif fact_surfaces.intersection(surfaces):
-            continue
+            scope_product_context = _scope_aware_product_number_context(text, token, surfaces, start=start, end=end)
+            if wrong_scope_seen and scope_product_context:
+                wrong_scope_tokens.append(token)
+                continue
+        else:
+            if payment_plan_surfaces:
+                if fact_surfaces.intersection(payment_plan_surfaces):
+                    continue
+            elif fact_surfaces.intersection(surfaces):
+                continue
         if _is_route_estimate_number_context(text, token, estimate_domain=estimate_domain):
             pass
-        elif _is_free_product_number_context(text, token, start=start, end=end):
+        elif (
+            _scope_aware_product_number_context(text, token, surfaces, start=start, end=end)
+            if scope_aware
+            else _is_free_product_number_context(text, token, start=start, end=end)
+        ):
             product_tokens.append(token)
             continue
         if _is_free_structural_number(token, surfaces, text=text, start=start, end=end) or client_surfaces.intersection(surfaces):
@@ -4235,6 +4269,13 @@ def _free_number_gate_findings(
                 f"продуктовые числа вне подтверждённых фактов: {sorted(dict.fromkeys(product_tokens))}",
             )
         )
+    if wrong_scope_tokens:
+        findings.append(
+            VerificationFinding(
+                "wrong_scope",
+                f"числа найдены только в фактах другого скоупа: {sorted(dict.fromkeys(wrong_scope_tokens))}",
+            )
+        )
     if general_without_marker:
         findings.append(
             VerificationFinding(
@@ -4243,6 +4284,154 @@ def _free_number_gate_findings(
             )
         )
     return findings
+
+
+@dataclass(frozen=True)
+class _ScopeAwareNumberFact:
+    key: str
+    text: str
+    surfaces: frozenset[str]
+    scopes: frozenset[str]
+    formats: frozenset[str]
+    grades: frozenset[str]
+
+
+def _scope_aware_number_facts(facts: Mapping[str, str]) -> tuple[_ScopeAwareNumberFact, ...]:
+    result: list[_ScopeAwareNumberFact] = []
+    for raw_key, raw_text in (facts or {}).items():
+        key = str(raw_key or "").strip()
+        text = str(raw_text or "").strip()
+        if not key and not text:
+            continue
+        combined = f"{key} {text}"
+        surfaces = frozenset(_free_number_surfaces(text))
+        if not surfaces:
+            continue
+        result.append(
+            _ScopeAwareNumberFact(
+                key=key,
+                text=text,
+                surfaces=surfaces,
+                scopes=frozenset(detect_fact_scopes(combined, fact_types=_number_scope_fact_types(key))),
+                formats=frozenset(_format_values_from_text(combined)),
+                grades=frozenset(_grade_values_from_fact_scope(key, text)),
+            )
+        )
+    return tuple(result)
+
+
+def _scope_aware_number_supported(
+    surfaces: set[str],
+    scoped_facts: Sequence[_ScopeAwareNumberFact],
+    *,
+    text: str,
+    token: str,
+    start: int,
+    end: int,
+    client_message: str,
+    context: Mapping[str, Any] | None,
+) -> tuple[bool, bool]:
+    if not surfaces or not scoped_facts:
+        return False, False
+    query_text = _number_scope_query_text(
+        text,
+        token,
+        start=start,
+        end=end,
+        client_message=client_message,
+        context=context,
+    )
+    matched_wrong_scope = False
+    for fact in scoped_facts:
+        if not fact.surfaces.intersection(surfaces):
+            continue
+        if _scope_aware_number_fact_allowed(fact, query_text=query_text):
+            return True, False
+        matched_wrong_scope = True
+    return False, matched_wrong_scope
+
+
+def _scope_aware_number_fact_allowed(fact: _ScopeAwareNumberFact, *, query_text: str) -> bool:
+    requested_formats = _format_values_from_text(query_text)
+    if requested_formats and fact.formats and requested_formats.isdisjoint(fact.formats):
+        return False
+    requested_grade = _grade_from_text(query_text)
+    if requested_grade and fact.grades and requested_grade not in fact.grades:
+        return False
+    requested_scopes = detect_fact_scopes(query_text)
+    if not requested_scopes:
+        return True
+    if not fact.scopes:
+        return True
+    for scope in requested_scopes:
+        if fact_scopes_allowed(set(fact.scopes), requested_scope=scope, blocked_neighbor_scopes=blocked_neighbors_for(scope)):
+            return True
+    return False
+
+
+def _number_scope_query_text(
+    text: str,
+    token: str,
+    *,
+    start: int,
+    end: int,
+    client_message: str,
+    context: Mapping[str, Any] | None,
+) -> str:
+    parts = [str(client_message or "")]
+    parts.append(_free_number_context_window(str(text or ""), start=start, end=end, radius=80))
+    if isinstance(context, MappingABC):
+        for raw in (
+            context.get("current_question"),
+            context.get("question"),
+            (context.get("conversation_intent_plan") or {}).get("primary_intent")
+            if isinstance(context.get("conversation_intent_plan"), MappingABC)
+            else "",
+            (context.get("conversation_intent_plan") or {}).get("product_scope")
+            if isinstance(context.get("conversation_intent_plan"), MappingABC)
+            else "",
+        ):
+            if raw:
+                parts.append(str(raw))
+        memory = context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), MappingABC) else {}
+        known_slots = memory.get("known_slots") if isinstance(memory.get("known_slots"), MappingABC) else {}
+        for key in ("brand", "product", "format", "grade", "class", "subject"):
+            value = known_slots.get(key) if isinstance(known_slots, MappingABC) else None
+            if value:
+                parts.append(f"{key}: {value}")
+    return " ".join(part for part in parts if str(part or "").strip())
+
+
+def _number_scope_fact_types(fact_key: str) -> tuple[str, ...]:
+    key = str(fact_key or "").casefold().replace("ё", "е")
+    result: list[str] = []
+    if "installment" in key or "rassroch" in key or "рассроч" in key:
+        result.append("installment")
+    if "discount" in key or "скид" in key:
+        result.append("discount")
+    if "camp_lvsh" in key or "lvsh" in key or "лвш" in key:
+        result.append("camp_lvsh")
+    if "camp_city" in key or "city_day_camp" in key or "город" in key:
+        result.append("camp_city")
+    if "contact" in key or "office_hours" in key:
+        result.append("contact")
+    return tuple(dict.fromkeys(result))
+
+
+def _scope_aware_product_number_context(
+    text: str,
+    token: str,
+    surfaces: set[str],
+    *,
+    start: int,
+    end: int,
+) -> bool:
+    if _is_free_product_number_context(text, token, start=start, end=end):
+        return True
+    if not surfaces or surfaces <= _STRUCTURAL_NUMBER_OK:
+        return False
+    window = _free_number_context_window(str(text or ""), start=start, end=end, radius=35)
+    return bool(_FREE_NUMBER_PRODUCT_CTX_RE.search(window))
 
 
 def _client_number_context_text(client_message: str, *, context: Mapping[str, Any] | None) -> str:

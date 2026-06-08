@@ -31,7 +31,9 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     faithfulness_shadow_enabled as dialogue_contract_faithfulness_shadow_enabled,
     faithfulness_shadow_events as dialogue_contract_faithfulness_shadow_events,
     faithfulness_shadow_record as dialogue_contract_faithfulness_shadow_record,
+    _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
     _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
+    _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
     _is_pure_handoff_text as dialogue_contract_is_pure_handoff_text,
     concrete_anchors as dialogue_contract_concrete_anchors,
     _established_topic_from_context as dialogue_contract_established_topic_from_context,
@@ -114,6 +116,7 @@ SEMANTIC_OUTPUT_VERIFIER_ENV = "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER"
 SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV = "TELEGRAM_SEMANTIC_VERIFIER_MODEL"
 SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV = "TELEGRAM_SEMANTIC_VERIFIER_REASONING"
 SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV = "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC"
+VERIFIER_HANDOFF_CLAIMS_ENV = "TELEGRAM_VERIFIER_HANDOFF_CLAIMS"
 DIRECT_PATH_ENV = "TELEGRAM_DIRECT_PATH"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
@@ -6761,7 +6764,10 @@ def apply_semantic_output_verifier(
         verifier_meta["skip_reason"] = "locked_p0_or_high_risk_deferral"
         return replace(result, metadata=metadata)
     handoff_claim_text = dialogue_contract_handoff_factual_claim_text(result.draft_text)
-    if dialogue_contract_is_pure_handoff_text(result.draft_text) and not handoff_claim_text:
+    pure_handoff = dialogue_contract_is_pure_handoff_text(result.draft_text)
+    if pure_handoff and not handoff_claim_text and (
+        not _verifier_handoff_claims_enabled(context) or _semantic_verifier_is_whitelisted_pure_handoff(result.draft_text)
+    ):
         verifier_meta["skipped"] = True
         verifier_meta["skip_reason"] = "pure_handoff"
         return replace(result, metadata=metadata)
@@ -6862,6 +6868,34 @@ def apply_semantic_output_verifier(
     if needs_regen:
         verifier_meta["fallback_reason"] = SEMANTIC_VERIFIER_DOWNGRADE_REASON
     return replace(result, metadata=metadata)
+
+
+def _verifier_handoff_claims_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (VERIFIER_HANDOFF_CLAIMS_ENV, "verifier_handoff_claims_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(VERIFIER_HANDOFF_CLAIMS_ENV))
+
+
+def _semantic_verifier_is_whitelisted_pure_handoff(text: str) -> bool:
+    normalized = _normalized_handoff_template_text(text)
+    if not normalized:
+        return False
+    whitelist = {
+        _normalized_handoff_template_text(item)
+        for item in (
+            SAFE_FALLBACK_DRAFT_TEXT,
+            *_HUMANE_GENERIC_HANDOFF_TEXTS,
+            *dialogue_contract_generic_handoff_texts,
+            *dialogue_contract_handoff_exhausted_texts,
+        )
+    }
+    return normalized in whitelist
+
+
+def _normalized_handoff_template_text(text: str) -> str:
+    return " ".join(str(text or "").split()).casefold().replace("ё", "е")
 
 
 def _run_semantic_output_verifier_once(

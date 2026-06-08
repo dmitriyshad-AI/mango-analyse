@@ -1,0 +1,60 @@
+# Test Output
+
+## Diff hygiene
+
+Command:
+
+```bash
+git diff --check
+```
+
+Result: passed with no output.
+
+## Targeted B1 tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_dialogue_contract_pipeline.py -k 'wave1_number_scope_aware or level_a_free_number_gate_flag_off or product_number_gate'
+```
+
+Result:
+
+```text
+6 passed, 269 deselected
+```
+
+## Targeted B5 and direct-path integration tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'wave1_verifier_handoff_claims or wave1_number_scope_aware or semantic_output_verifier_skips_only_locked_or_pure_handoff_texts or semantic_output_verifier_skips_service_handoff_without_factual_claim or semantic_output_verifier_checks_handoff_with_factual_claim_sentence'
+```
+
+Result:
+
+```text
+8 passed, 378 deselected
+```
+
+## Full pytest
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests
+```
+
+Result:
+
+```text
+2817 passed, 2 skipped, 1 warning in 46.71s
+```
+
+Warning was the existing local `urllib3` LibreSSL warning:
+
+```text
+NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'
+```
+

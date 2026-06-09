@@ -10854,6 +10854,35 @@ def test_presale_output_sanitizer_masks_names_from_memory_slots() -> None:
     assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
 
 
+def test_presale_output_sanitizer_masks_inflected_single_names_from_memory_slots() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Передайте Ирине: для Артёма есть группа.",
+            topic_id="theme:020_enrollment",
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, жду.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            PRESALE_PII_MEMORY_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Для записи менеджер помогает подобрать группу и оформить заявку."},
+            "dialogue_memory_view": {
+                "crm_known_slots": {"client_name": "Ирина", "child_name": "Артём"},
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert "Ирине" not in result.draft_text
+    assert "Артёма" not in result.draft_text
+    assert "данные ребёнка" in result.draft_text
+    assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+
+
 def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(

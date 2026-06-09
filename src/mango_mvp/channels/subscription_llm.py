@@ -5323,7 +5323,14 @@ def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
         if len(parts) >= 2:
             candidates.append(parts[-1])
     for match in _CLIENT_SELF_NAME_MARKER_RE.finditer(client):
-        candidates.append(match.group("name"))
+        name = match.group("name")
+        candidates.append(name)
+        parts = [part for part in str(name or "").split() if part]
+        proper_parts = [part for part in parts if re.match(r"^[А-ЯЁ]", part)]
+        if len(proper_parts) >= 1:
+            candidates.append(proper_parts[0])
+        if len(proper_parts) >= 2:
+            candidates.append(proper_parts[-1])
     if phone:
         phone_pos = client.find(phone)
         for match in _CLIENT_NAME_PAIR_RE.finditer(client):

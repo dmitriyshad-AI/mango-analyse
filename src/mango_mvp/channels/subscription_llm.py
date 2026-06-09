@@ -2859,18 +2859,6 @@ def _direct_path_context_fact_pack(
     return pack
 
 
-def _direct_path_context_fact_items(
-    context: Optional[Mapping[str, Any]],
-    *,
-    client_message: str = "",
-    limit: int = DIRECT_PATH_WIDE_FACT_LIMIT,
-    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
-) -> dict[str, str]:
-    pack = _direct_path_context_fact_pack(context, client_message=client_message, limit=limit, retriever_fn=retriever_fn)
-    facts = pack.get("facts")
-    return dict(facts) if isinstance(facts, Mapping) else {}
-
-
 def _direct_path_recent_messages(context: Optional[Mapping[str, Any]], *, limit: int = 8) -> tuple[str, ...]:
     if not isinstance(context, Mapping):
         return ()
@@ -6550,14 +6538,6 @@ def _pipeline_fact_texts(result: SubscriptionDraftResult) -> dict[str, str]:
     }
 
 
-def _has_trial_retrieved_fact(result: SubscriptionDraftResult) -> bool:
-    for key, text in _pipeline_fact_texts(result).items():
-        normalized = " ".join((str(key or ""), str(text or ""))).casefold().replace("ё", "е")
-        if has_any_marker(normalized, ("trial", "пробн", "фрагмент занятия", "фрагмент урок")):
-            return True
-    return False
-
-
 def _pipeline_contract(
     result: SubscriptionDraftResult,
     *,
@@ -9837,16 +9817,6 @@ def _is_enrollment_signup_question(text: str) -> bool:
     )
 
 
-def _is_enrollment_process_question(text: str) -> bool:
-    value = str(text or "").casefold().replace("ё", "е")
-    if not _is_enrollment_signup_question(value):
-        return False
-    return bool(
-        re.search(r"\b(?:как|надо|нужно|можно\s+ли|приезж\w*|дистанц\w*|оформ\w*|для|куда)\b", value)
-        or re.search(r"\b(?:на\s+)?(?:курс|программ|обучен)\b", value)
-    )
-
-
 def _is_lesson_recording_question(text: str) -> bool:
     value = str(text or "").casefold().replace("ё", "е")
     if _is_enrollment_signup_question(value) and not _has_word_marker(value, "пропуст", "пропущен", "пересмотр", "урок", "заняти"):
@@ -9856,11 +9826,6 @@ def _is_lesson_recording_question(text: str) -> bool:
         or re.search(r"\b(?:урок|заняти|лекци|вебинар)[^.?!\n]{0,80}\bзапис(?:ь|и|ью|ям|ями)\b", value, flags=re.I)
         or _has_word_marker(value, "пересмотр", "пропущен", "пропуст")
     )
-
-
-def _mentions_schedule_day_or_time(text: str) -> bool:
-    value = str(text or "").casefold().replace("ё", "е")
-    return bool(re.search(r"\b(?:дни|дней|дням|день|дата|датам|время|часы|часов)\b", value) or has_marker(value, "распис"))
 
 
 def _has_word_marker(text: str, *markers: str) -> bool:
@@ -9893,83 +9858,6 @@ def _asks_invoice_monthly_payment(text: str) -> bool:
     invoice_or_transfer = has_any_marker(value, ("по счету", "по счёту", "счет", "счёт", "банковск", "перевод", "реквизит"))
     negates_installment = has_any_marker(value, ("не рассроч", "не долями", "не частями", "не через банк", "не про рассроч"))
     return bool(monthly and (invoice_or_transfer or negates_installment))
-
-
-def _price_question_explicitly_supersedes_installment(text: str) -> bool:
-    value = str(text or "").casefold().replace("ё", "е")
-    return has_any_marker(
-        value,
-        (
-            "не про рассроч",
-            "рассрочку поняла",
-            "рассрочку уже",
-            "нужна цена",
-            "нужна стоимость",
-            "цена за год",
-            "стоимость за год",
-        ),
-    )
-
-
-def _manager_handoff_request_text(context: Optional[Mapping[str, Any]]) -> str:
-    known = known_context_fields(context)
-    details = []
-    if known.get("grade"):
-        details.append(f"{known['grade']} класс")
-    if known.get("subject"):
-        details.append(str(known["subject"]))
-    if known.get("format"):
-        details.append(str(known["format"]))
-    suffix = f" Вижу уже: {', '.join(details)}." if details else ""
-    return MANAGER_HANDOFF_REQUEST_SAFE_TEXT + suffix
-
-
-def _presale_refund_handoff_ack_text(context: Optional[Mapping[str, Any]]) -> str:
-    known = known_context_fields(context)
-    details = []
-    if known.get("grade"):
-        details.append(f"{known['grade']} класс")
-    if known.get("subject"):
-        details.append(str(known["subject"]))
-    if known.get("format"):
-        details.append(str(known["format"]))
-    suffix = f" Вижу уже: {', '.join(details)}." if details else ""
-    return (
-        "Да, передам менеджеру именно вопрос по условиям возврата до оплаты. "
-        "Он подтвердит актуальные правила по выбранному курсу; повторно писать класс, предмет и формат не нужно."
-        f"{suffix}"
-    )
-
-
-def _price_fix_process_text(context: Optional[Mapping[str, Any]]) -> str:
-    known = known_context_fields(context)
-    details = []
-    if known.get("grade"):
-        details.append(f"{known['grade']} класс")
-    if known.get("subject"):
-        details.append(str(known["subject"]))
-    if known.get("format"):
-        details.append(str(known["format"]))
-    suffix = f" Вижу контекст: {', '.join(details)}." if details else ""
-    return PRICE_FIX_PROCESS_SAFE_TEXT + suffix
-
-
-def _enrollment_signup_process_text(context: Optional[Mapping[str, Any]]) -> str:
-    known = known_context_fields(context)
-    details = []
-    if known.get("grade"):
-        details.append(f"{known['grade']} класс")
-    if known.get("subject"):
-        details.append(str(known["subject"]))
-    if known.get("format"):
-        details.append(str(known["format"]))
-    suffix = f" Вижу уже: {', '.join(details)}." if details else ""
-    return (
-        "Запись и оформление по умолчанию можно пройти дистанционно, приезжать не нужно. "
-        "Если клиенту очень нужна очная встреча, менеджер отдельно согласует возможность. "
-        "Передам менеджеру запрос на оформление, чтобы он подтвердил группу и следующий шаг."
-        f"{suffix}"
-    )
 
 
 def _terminal_safe_template(
@@ -10718,49 +10606,12 @@ def _ensure_sentence(text: str) -> str:
     return value if value.endswith((".", "!", "?")) else f"{value}."
 
 
-def _defer_direct_process_to_format_choice_template(
-    result: SubscriptionDraftResult,
-    *,
-    client_message: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> bool:
-    if _active_brand(context) != "unpk":
-        return False
-    client_haystack = str(client_message or "").casefold().replace("ё", "е")
-    if not has_any_marker(client_haystack, ("пусть менеджер", "менеджер проверит", "передайте менеджеру", "передам менеджеру")):
-        return False
-    if not has_any_marker(client_haystack, ("выходн", "суббот", "воскрес", "по дням", "распис")):
-        return False
-    plan = _conversation_intent_plan(context)
-    if str(plan.get("primary_intent") or "") not in {"schedule", "format", "general_consultation"} and result.topic_id != "theme:013_schedule":
-        return False
-    known = known_context_fields(context)
-    known_format = str(known.get("format") or "").casefold()
-    return bool(
-        known_format
-        or has_any_marker(client_haystack, ("онлайн", "дистанц", "мтс", "линк", "очно", "офлайн", "сретен"))
-    )
-
-
 def _format_choice_is_disjunctive_question(text: str) -> bool:
     value = str(text or "").casefold().replace("ё", "е")
     return bool(
         ("онлайн" in value and has_any_marker(value, ("очно", "офлайн")) and has_marker(value, "или"))
         or ("очно" in value and "онлайн" in value and "?" in value)
     )
-
-
-def _recent_format_choice_was_ambiguous(context: Optional[Mapping[str, Any]]) -> bool:
-    if not isinstance(context, Mapping):
-        return False
-    recent = context.get("recent_messages")
-    if not isinstance(recent, Sequence) or isinstance(recent, (str, bytes, bytearray)):
-        return False
-    for item in list(recent)[-5:]:
-        text = str(item or "").casefold().replace("ё", "е")
-        if _format_choice_is_disjunctive_question(text):
-            return True
-    return False
 
 
 def _foton_offline_free_trial_guard_template(
@@ -10934,58 +10785,6 @@ def _dedupe_sentence(text: str, sentence: str) -> str:
     after = value[first + len(target) :]
     after = after.replace(target, "")
     return before + after
-
-
-def _without_known_grade_reask(text: str, *, context: Optional[Mapping[str, Any]]) -> str:
-    known = known_context_fields(context)
-    if not known.get("grade"):
-        return text
-    value = str(text or "")
-    replacements = (
-        (
-            "Напишите класс ребёнка — подберём смену и проверим наличие.",
-            "По вашему классу менеджер проверит подходящую смену и наличие мест.",
-        ),
-        (
-            "Напишите класс ребёнка — подберём подходящую смену и проверим актуальные условия.",
-            "По вашему классу подберём подходящую смену и проверим актуальные условия.",
-        ),
-        (
-            "Напишите класс ребёнка — менеджер проверит, можем ли ещё закрепить место.",
-            "По вашему классу менеджер проверит, можем ли ещё закрепить место.",
-        ),
-    )
-    for old, new in replacements:
-        value = value.replace(old, new)
-    return value
-
-
-def _known_subject_or_format(context: Optional[Mapping[str, Any]], marker: str) -> bool:
-    if not isinstance(context, Mapping):
-        return False
-    known = known_context_fields(context)
-    if any(has_marker(item, marker) for item in known.values()):
-        return True
-    for key in ("known_dialog_fields", "known_client_fields", "customer_context_summary", "known_context_summary"):
-        value = context.get(key)
-        if isinstance(value, Mapping):
-            if any(has_marker(item, marker) for item in value.values()):
-                return True
-        elif has_marker(value, marker):
-            return True
-    return False
-
-
-def _known_grade_int(context: Optional[Mapping[str, Any]], *, client_message: str = "") -> int:
-    known = known_context_fields(context)
-    value = str(known.get("grade") or "").strip()
-    if not value:
-        match = re.search(r"\b(?P<grade>[1-9]|10|11)\s*(?:класс|класса|классе|кл\.?)\b", str(client_message or ""), flags=re.I)
-        value = match.group("grade") if match else ""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
 
 
 def _autonomy_policy(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -11954,17 +11753,6 @@ def _asks_money_price_question(text: str) -> bool:
     )
 
 
-def _is_generic_price_question_without_selection(client_haystack: str) -> bool:
-    text = str(client_haystack or "").casefold().replace("ё", "е")
-    asks_price = has_any_marker(text, ("сколько", "стоим", "цен", "почем", "почём", "прайс"))
-    if not asks_price:
-        return False
-    has_grade = bool(re.search(r"\b(?:[1-9]|10|11)\s*(?:класс|классе|кл\.?)\b", text))
-    has_format = has_any_marker(text, ("очно", "очный", "онлайн", "дистанц"))
-    has_product = has_any_marker(text, ("лвш", "лагер", "интенсив", "4 недели", "четыре недели", "егэ", "огэ"))
-    return not (has_grade or has_format or has_product)
-
-
 def _foton_online_price_text_from_facts(context: Optional[Mapping[str, Any]]) -> str:
     semester = _price_amount_from_facts(context, required_markers=("онлайн",), period_markers=("семестр",))
     year = _price_amount_from_facts(
@@ -12008,10 +11796,6 @@ def _price_amount_from_facts(
             amount = " ".join(match.group(0).replace("\u00a0", " ").split())
             return amount if "₽" in amount or "руб" in amount.casefold() else f"{amount} ₽"
     return ""
-
-
-def _normalized_fact_text(context: Optional[Mapping[str, Any]]) -> str:
-    return " ".join(_fresh_fact_texts(context)).replace("\u00a0", " ").casefold()
 
 
 def _is_unpk_installment_case(

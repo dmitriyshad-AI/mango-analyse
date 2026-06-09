@@ -119,6 +119,10 @@ SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV = "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC"
 VERIFIER_HANDOFF_CLAIMS_ENV = "TELEGRAM_VERIFIER_HANDOFF_CLAIMS"
 NUMBER_GATE_SCOPE_AWARE_ENV = "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"
 DIRECT_PATH_ENV = "TELEGRAM_DIRECT_PATH"
+LLM_RETRIEVE_ENV = "TELEGRAM_LLM_RETRIEVE"
+LLM_RETRIEVE_MODEL_ENV = "TELEGRAM_LLM_RETRIEVE_MODEL"
+LLM_RETRIEVE_REASONING_ENV = "TELEGRAM_LLM_RETRIEVE_REASONING"
+LLM_RETRIEVE_TIMEOUT_ENV = "TELEGRAM_LLM_RETRIEVE_TIMEOUT_SEC"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
 PRESALE_SAFETY_ENV = "TELEGRAM_PRESALE_SAFETY"
@@ -2083,6 +2087,14 @@ def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_gold_profile_enabled(context)
 
 
+def _llm_retrieve_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (LLM_RETRIEVE_ENV, "llm_retrieve_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(LLM_RETRIEVE_ENV))
+
+
 def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> str:
     if isinstance(context, Mapping):
         for key in (DIRECT_PATH_PILOT_CONFIG_ENV, "direct_path_pilot_config", "pilot_config"):
@@ -2461,69 +2473,28 @@ def _direct_path_core_fact(fact: Mapping[str, Any]) -> bool:
     )
 
 
-def _direct_path_wide_fact_pack(
-    context: Optional[Mapping[str, Any]],
+def _direct_path_empty_fact_pack(active_brand: str, *, selected_category: str = "empty") -> Mapping[str, Any]:
+    return {
+        "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
+        "facts": {},
+        "exact_keys": [],
+        "adjacent_keys": [],
+        "selected_category": selected_category,
+        "fact_metadata": {},
+    }
+
+
+def _direct_path_records_to_fact_pack(
     *,
-    client_message: str = "",
-    max_facts: int = DIRECT_PATH_WIDE_FACT_LIMIT,
-    max_chars: int = DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
+    active_brand: str,
+    legacy: Mapping[str, str],
+    exact_records: Sequence[Mapping[str, Any]],
+    adjacent_records: Sequence[Mapping[str, Any]],
+    selected_category: str,
+    max_facts: int,
+    max_chars: int,
+    extra_metadata: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
-    legacy = _direct_path_legacy_context_fact_items(context, limit=18)
-    active_brand = _active_brand(context)
-    snapshot_path = _direct_path_snapshot_path_from_context(context)
-    snapshot = _direct_path_load_snapshot(snapshot_path)
-    records = [
-        fact
-        for fact in _direct_path_snapshot_facts(snapshot)
-        if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand)
-    ]
-    if not records:
-        return {
-            "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
-            "facts": legacy,
-            "exact_keys": list(legacy.keys()),
-            "adjacent_keys": [],
-            "selected_category": "legacy_context",
-            "fact_metadata": {key: {"brand": active_brand, "fact_type": "", "product": ""} for key in legacy},
-        }
-
-    categories = _direct_path_selected_categories(client_message, context)
-    selected_category = "+".join(categories) if categories else "fallback_core"
-    candidates = [
-        fact
-        for fact in records
-        if (_direct_path_core_fact(fact) if not categories else bool(_direct_path_fact_categories(fact).intersection(categories)))
-    ]
-    if not candidates:
-        candidates = [fact for fact in records if _direct_path_core_fact(fact)]
-        selected_category = "fallback_core"
-    if not candidates:
-        candidates = records[:max_facts]
-        selected_category = "fallback_core"
-
-    slots = _direct_path_slot_scope(context)
-    scored = [
-        (_direct_path_fact_relevance_score(fact, client_message=client_message, categories=categories or ("pricing", "format", "schedule", "address", "course"), slots=slots), idx, fact)
-        for idx, fact in enumerate(candidates)
-    ]
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    ordered = [fact for _, _, fact in scored]
-
-    has_scope_slots = bool(slots)
-    exact_records: list[Mapping[str, Any]] = []
-    adjacent_records: list[Mapping[str, Any]] = []
-    for fact in ordered:
-        conflicts = _direct_path_fact_conflicts_slots(fact, slots)
-        if not has_scope_slots and selected_category == "pricing":
-            exact_records.append(fact)
-        elif conflicts:
-            adjacent_records.append(fact)
-        else:
-            exact_records.append(fact)
-    if not exact_records and ordered:
-        exact_records = [ordered[0]]
-        adjacent_records = ordered[1:]
-
     facts: dict[str, str] = {}
     meta: dict[str, dict[str, str]] = {}
 
@@ -2533,7 +2504,14 @@ def _direct_path_wide_fact_pack(
         if not key or not text or key in facts:
             return False
         prospective = {**facts, key: text}
-        prospective_meta = {**meta, key: {"brand": str(fact.get("brand") or ""), "fact_type": str(fact.get("fact_type") or ""), "product": str(fact.get("product") or "")}}
+        prospective_meta = {
+            **meta,
+            key: {
+                "brand": str(fact.get("brand") or ""),
+                "fact_type": str(fact.get("fact_type") or ""),
+                "product": str(fact.get("product") or ""),
+            },
+        }
         if len(prospective) > fact_limit:
             return False
         if _direct_path_fact_pack_char_count(prospective, prospective_meta, list(prospective.keys())) > char_limit:
@@ -2559,7 +2537,7 @@ def _direct_path_wide_fact_pack(
         meta = {key: {"brand": active_brand, "fact_type": "", "product": ""} for key in facts}
         selected_category = "legacy_context"
 
-    return {
+    result: dict[str, Any] = {
         "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
         "facts": facts,
         "exact_keys": exact_keys,
@@ -2567,6 +2545,297 @@ def _direct_path_wide_fact_pack(
         "selected_category": selected_category,
         "fact_metadata": meta,
     }
+    if extra_metadata:
+        result.update(dict(extra_metadata))
+    return result
+
+
+def _direct_path_keyword_fact_pack_from_records(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    legacy: Mapping[str, str],
+    active_brand: str,
+    context: Optional[Mapping[str, Any]],
+    client_message: str,
+    max_facts: int,
+    max_chars: int,
+    extra_metadata: Optional[Mapping[str, Any]] = None,
+) -> Mapping[str, Any]:
+    categories = _direct_path_selected_categories(client_message, context)
+    selected_category = "+".join(categories) if categories else "fallback_core"
+    candidates = [
+        fact
+        for fact in records
+        if (_direct_path_core_fact(fact) if not categories else bool(_direct_path_fact_categories(fact).intersection(categories)))
+    ]
+    if not candidates:
+        candidates = [fact for fact in records if _direct_path_core_fact(fact)]
+        selected_category = "fallback_core"
+    if not candidates:
+        candidates = list(records)[:max_facts]
+        selected_category = "fallback_core"
+
+    slots = _direct_path_slot_scope(context)
+    scored = [
+        (
+            _direct_path_fact_relevance_score(
+                fact,
+                client_message=client_message,
+                categories=categories or ("pricing", "format", "schedule", "address", "course"),
+                slots=slots,
+            ),
+            idx,
+            fact,
+        )
+        for idx, fact in enumerate(candidates)
+    ]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    ordered = [fact for _, _, fact in scored]
+
+    has_scope_slots = bool(slots)
+    exact_records: list[Mapping[str, Any]] = []
+    adjacent_records: list[Mapping[str, Any]] = []
+    for fact in ordered:
+        conflicts = _direct_path_fact_conflicts_slots(fact, slots)
+        if not has_scope_slots and selected_category == "pricing":
+            exact_records.append(fact)
+        elif conflicts:
+            adjacent_records.append(fact)
+        else:
+            exact_records.append(fact)
+    if not exact_records and ordered:
+        exact_records = [ordered[0]]
+        adjacent_records = ordered[1:]
+
+    return _direct_path_records_to_fact_pack(
+        active_brand=active_brand,
+        legacy=legacy,
+        exact_records=exact_records,
+        adjacent_records=adjacent_records,
+        selected_category=selected_category,
+        max_facts=max_facts,
+        max_chars=max_chars,
+        extra_metadata=extra_metadata,
+    )
+
+
+def _direct_path_retriever_candidate_summary(fact: Mapping[str, Any]) -> str:
+    text = _direct_path_snapshot_fact_text(fact)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > 220:
+        text = text[:217].rstrip() + "..."
+    fact_type = str(fact.get("fact_type") or "").strip()
+    product = str(fact.get("product") or "").strip()
+    prefix = "; ".join(item for item in (f"fact_type={fact_type}" if fact_type else "", f"product={product}" if product else "") if item)
+    return f"{prefix}: {text}" if prefix else text
+
+
+def build_direct_path_llm_retriever_prompt(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]],
+    candidates: Sequence[Mapping[str, Any]],
+) -> str:
+    recent = "\n".join(_direct_path_recent_messages(context, limit=6)) or "(нет истории)"
+    slots = json.dumps(_direct_path_known_slots(context), ensure_ascii=False, sort_keys=True)
+    plan = {}
+    if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping):
+        source_plan = context["conversation_intent_plan"]
+        plan = {
+            key: source_plan.get(key)
+            for key in ("primary_intent", "answer_topics", "required_fact_keys", "planner_slots", "planner_confidence")
+            if key in source_plan
+        }
+    plan_json = json.dumps(plan, ensure_ascii=False, sort_keys=True)
+    lines = []
+    for fact in candidates:
+        key = _direct_path_snapshot_fact_key(fact)
+        if not key:
+            continue
+        lines.append(f"- {key}: {_direct_path_retriever_candidate_summary(fact)}")
+    candidate_block = "\n".join(lines) or "(нет кандидатов)"
+    return (
+        "Ты выбираешь факты для черновика ответа учебного центра.\n"
+        "Твоя задача — выбрать id фактов из списка кандидатов. Не пиши клиентский текст.\n"
+        "Выбирай ВСЕ факты, которые могут помочь ответить на вопрос, включая смысловые связи и следующий шаг; "
+        "не ограничивайся дословными совпадениями.\n"
+        "exact_ids — факты, которые прямо отвечают на вопрос или его часть. adjacent_ids — смежные полезные факты.\n"
+        "Нельзя выдумывать id: используй только id из списка кандидатов.\n\n"
+        f"Вопрос клиента:\n{client_message}\n\n"
+        f"Последние реплики:\n{recent}\n\n"
+        f"Известные слоты: {slots}\n"
+        f"План/интент: {plan_json}\n\n"
+        f"Кандидаты:\n{candidate_block}\n\n"
+        'Верни строго JSON: {"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+    )
+
+
+def _direct_path_retriever_ids(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        seq: Sequence[Any] = [value]
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        seq = value
+    else:
+        return ()
+    result: list[str] = []
+    for item in seq:
+        key = str(item or "").strip()
+        if key and key not in result:
+            result.append(key)
+    return tuple(result)
+
+
+def _direct_path_llm_retrieve_fact_pack(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    legacy: Mapping[str, str],
+    active_brand: str,
+    context: Optional[Mapping[str, Any]],
+    client_message: str,
+    max_facts: int,
+    max_chars: int,
+    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]],
+) -> tuple[Optional[Mapping[str, Any]], Mapping[str, Any]]:
+    candidate_by_key = {
+        _direct_path_snapshot_fact_key(fact): fact
+        for fact in records
+        if _direct_path_snapshot_fact_key(fact)
+    }
+    metadata: dict[str, Any] = {
+        "enabled": True,
+        "used": False,
+        "fallback": False,
+        "fallback_reason": "",
+        "candidate_count": len(candidate_by_key),
+        "selected_exact_ids": [],
+        "selected_adjacent_ids": [],
+        "invalid_ids": [],
+        "active_brand": str(active_brand or ""),
+    }
+    if not candidate_by_key:
+        metadata.update({"fallback": True, "fallback_reason": "no_candidates"})
+        return None, metadata
+    if retriever_fn is None:
+        metadata.update({"fallback": True, "fallback_reason": "retriever_fn_missing"})
+        return None, metadata
+    prompt = build_direct_path_llm_retriever_prompt(client_message, context=context, candidates=records)
+    try:
+        raw_payload = retriever_fn(prompt)
+    except subprocess.TimeoutExpired:
+        metadata.update({"fallback": True, "fallback_reason": "timeout"})
+        return None, metadata
+    except Exception as exc:  # noqa: BLE001
+        metadata.update({"fallback": True, "fallback_reason": "runtime_error", "error": str(exc)[:300]})
+        return None, metadata
+    try:
+        payload = extract_json_object(raw_payload) if isinstance(raw_payload, str) else dict(raw_payload)
+    except Exception as exc:  # noqa: BLE001
+        metadata.update({"fallback": True, "fallback_reason": "invalid_json", "error": str(exc)[:300]})
+        return None, metadata
+    exact_raw = _direct_path_retriever_ids(payload.get("exact_ids") or payload.get("exact") or payload.get("exact_fact_ids"))
+    adjacent_raw = _direct_path_retriever_ids(payload.get("adjacent_ids") or payload.get("adjacent") or payload.get("adjacent_fact_ids"))
+    selected_exact: list[str] = []
+    selected_adjacent: list[str] = []
+    invalid: list[str] = []
+    for key in (*exact_raw, *adjacent_raw):
+        if key not in candidate_by_key:
+            if key not in invalid:
+                invalid.append(key)
+            continue
+        if key in selected_exact or key in selected_adjacent:
+            continue
+        if key in exact_raw:
+            selected_exact.append(key)
+        else:
+            selected_adjacent.append(key)
+    metadata["invalid_ids"] = invalid
+    if not selected_exact and not selected_adjacent:
+        metadata.update({"fallback": True, "fallback_reason": "empty_selection"})
+        return None, metadata
+
+    slots = _direct_path_slot_scope(context)
+    exact_records: list[Mapping[str, Any]] = []
+    adjacent_records: list[Mapping[str, Any]] = []
+    for key in selected_exact:
+        fact = candidate_by_key[key]
+        if _direct_path_fact_conflicts_slots(fact, slots):
+            adjacent_records.append(fact)
+        else:
+            exact_records.append(fact)
+    for key in selected_adjacent:
+        adjacent_records.append(candidate_by_key[key])
+    metadata.update(
+        {
+            "used": True,
+            "selected_exact_ids": list(selected_exact),
+            "selected_adjacent_ids": list(selected_adjacent),
+        }
+    )
+    pack = _direct_path_records_to_fact_pack(
+        active_brand=active_brand,
+        legacy=legacy,
+        exact_records=exact_records,
+        adjacent_records=adjacent_records,
+        selected_category="llm_retrieve",
+        max_facts=max_facts,
+        max_chars=max_chars,
+        extra_metadata={"llm_retrieve": metadata},
+    )
+    return pack, metadata
+
+
+def _direct_path_wide_fact_pack(
+    context: Optional[Mapping[str, Any]],
+    *,
+    client_message: str = "",
+    max_facts: int = DIRECT_PATH_WIDE_FACT_LIMIT,
+    max_chars: int = DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
+    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
+) -> Mapping[str, Any]:
+    legacy = _direct_path_legacy_context_fact_items(context, limit=18)
+    active_brand = _active_brand(context)
+    snapshot_path = _direct_path_snapshot_path_from_context(context)
+    snapshot = _direct_path_load_snapshot(snapshot_path)
+    records = [
+        fact
+        for fact in _direct_path_snapshot_facts(snapshot)
+        if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand)
+    ]
+    if not records:
+        return {
+            "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
+            "facts": legacy,
+            "exact_keys": list(legacy.keys()),
+            "adjacent_keys": [],
+            "selected_category": "legacy_context",
+            "fact_metadata": {key: {"brand": active_brand, "fact_type": "", "product": ""} for key in legacy},
+        }
+
+    llm_retrieve_metadata: Optional[Mapping[str, Any]] = None
+    if _llm_retrieve_enabled(context):
+        llm_pack, llm_retrieve_metadata = _direct_path_llm_retrieve_fact_pack(
+            records,
+            legacy=legacy,
+            active_brand=active_brand,
+            context=context,
+            client_message=client_message,
+            max_facts=max_facts,
+            max_chars=max_chars,
+            retriever_fn=retriever_fn,
+        )
+        if llm_pack is not None:
+            return llm_pack
+
+    return _direct_path_keyword_fact_pack_from_records(
+        records,
+        legacy=legacy,
+        active_brand=active_brand,
+        context=context,
+        client_message=client_message,
+        max_facts=max_facts,
+        max_chars=max_chars,
+        extra_metadata={"llm_retrieve": llm_retrieve_metadata} if llm_retrieve_metadata is not None else None,
+    )
 
 
 def _direct_path_context_fact_pack(
@@ -2574,8 +2843,9 @@ def _direct_path_context_fact_pack(
     *,
     client_message: str = "",
     limit: int = DIRECT_PATH_WIDE_FACT_LIMIT,
+    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
 ) -> Mapping[str, Any]:
-    pack = _direct_path_wide_fact_pack(context, client_message=client_message, max_facts=limit)
+    pack = _direct_path_wide_fact_pack(context, client_message=client_message, max_facts=limit, retriever_fn=retriever_fn)
     facts = pack.get("facts")
     if not isinstance(facts, Mapping):
         return {
@@ -2594,8 +2864,9 @@ def _direct_path_context_fact_items(
     *,
     client_message: str = "",
     limit: int = DIRECT_PATH_WIDE_FACT_LIMIT,
+    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
 ) -> dict[str, str]:
-    pack = _direct_path_context_fact_pack(context, client_message=client_message, limit=limit)
+    pack = _direct_path_context_fact_pack(context, client_message=client_message, limit=limit, retriever_fn=retriever_fn)
     facts = pack.get("facts")
     return dict(facts) if isinstance(facts, Mapping) else {}
 
@@ -2930,7 +3201,7 @@ def _direct_path_metadata(
     fact_meta = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
     exact_keys = [str(key) for key in (pack.get("exact_keys") or ()) if str(key).strip()]
     adjacent_keys = [str(key) for key in (pack.get("adjacent_keys") or ()) if str(key).strip()]
-    return {
+    metadata = {
         "schema_version": DIRECT_PATH_SCHEMA_VERSION,
         "enabled": True,
         "pilot_config": str(pilot_config or ""),
@@ -2959,6 +3230,9 @@ def _direct_path_metadata(
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),
     }
+    if isinstance(pack.get("llm_retrieve"), Mapping):
+        metadata["llm_retrieve"] = dict(pack["llm_retrieve"])  # type: ignore[index]
+    return metadata
 
 
 def _direct_path_preblocked_result(
@@ -3286,13 +3560,26 @@ class SubscriptionLlmDraftProvider:
         *,
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
-        fact_pack = _direct_path_context_fact_pack(context, client_message=client_message)
+        llm_retrieve = _llm_retrieve_enabled(context)
+        if llm_retrieve:
+            empty_pack = _direct_path_empty_fact_pack(_active_brand(context), selected_category="preblocked_before_llm_retrieve")
+            preblocked = _direct_path_preblocked_result(client_message, context=context, facts={}, fact_pack=empty_pack)
+            if preblocked is not None:
+                before_gate_route = preblocked.route
+                gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
+                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
+        fact_pack = _direct_path_context_fact_pack(
+            context,
+            client_message=client_message,
+            retriever_fn=self._direct_path_llm_retrieve_runner if llm_retrieve else None,
+        )
         facts = dict(fact_pack.get("facts") or {})
-        preblocked = _direct_path_preblocked_result(client_message, context=context, facts=facts, fact_pack=fact_pack)
-        if preblocked is not None:
-            before_gate_route = preblocked.route
-            gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
-            return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
+        if not llm_retrieve:
+            preblocked = _direct_path_preblocked_result(client_message, context=context, facts=facts, fact_pack=fact_pack)
+            if preblocked is not None:
+                before_gate_route = preblocked.route
+                gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
+                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
 
         active_brand = _active_brand(context)
         pilot_config = _direct_path_pilot_config(context)
@@ -3560,6 +3847,20 @@ class SubscriptionLlmDraftProvider:
             reasoning_effort=os.getenv(SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV) or "medium",
             timeout_sec=_semantic_output_verifier_timeout_sec(),
         )
+
+    def _direct_path_llm_retrieve_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        raw = self._run_prompt_text(
+            prompt,
+            prefix="mango_direct_path_retriever_",
+            suffix=".json",
+            model=os.getenv(LLM_RETRIEVE_MODEL_ENV) or self.model,
+            reasoning_effort=os.getenv(LLM_RETRIEVE_REASONING_ENV) or "low",
+            timeout_sec=_llm_retrieve_timeout_sec(),
+        )
+        try:
+            return extract_json_object(raw)
+        except Exception:
+            return raw
 
     def _dialogue_contract_repair_runner(self, prompt: str) -> str:
         return self._run_prompt_text(
@@ -7490,6 +7791,13 @@ def _semantic_output_verifier_override(context: Optional[Mapping[str, Any]]) -> 
 def _semantic_output_verifier_timeout_sec() -> int:
     try:
         return max(1, int(float(os.getenv(SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV) or "30")))
+    except Exception:
+        return 30
+
+
+def _llm_retrieve_timeout_sec() -> int:
+    try:
+        return max(1, int(float(os.getenv(LLM_RETRIEVE_TIMEOUT_ENV) or "30")))
     except Exception:
         return 30
 

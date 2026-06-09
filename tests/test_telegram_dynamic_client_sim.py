@@ -1504,7 +1504,13 @@ def test_semantic_output_verifier_summary_dedupes_deterministic_same_class() -> 
 
 def test_llm_call_summary_exposes_semantic_output_roles() -> None:
     summary = sim._llm_call_summary(
-        {"bot_semantic_output_verifier": 3, "bot_semantic_output_regen": 1, "bot_direct_draft": 2, "client": 2},
+        {
+            "bot_semantic_output_verifier": 3,
+            "bot_semantic_output_regen": 1,
+            "bot_direct_draft": 2,
+            "bot_retriever": 1,
+            "client": 2,
+        },
         dialogs=1,
         turns=2,
     )
@@ -1512,7 +1518,8 @@ def test_llm_call_summary_exposes_semantic_output_roles() -> None:
     assert summary["bot_semantic_output_verifier"] == 3
     assert summary["bot_semantic_output_regen"] == 1
     assert summary["bot_direct_draft"] == 2
-    assert summary["total"] == 8
+    assert summary["bot_retriever"] == 1
+    assert summary["total"] == 9
 
 
 def test_direct_path_runner_counts_llm_role(monkeypatch) -> None:
@@ -1530,6 +1537,19 @@ def test_direct_path_runner_counts_llm_role(monkeypatch) -> None:
 
     assert result.draft_text == "Да, подскажу."
     assert counter.snapshot()["bot_direct_draft"] == 1
+
+
+def test_direct_path_retriever_runner_counts_llm_role(monkeypatch) -> None:
+    counter = sim.LlmCallCounter()
+    provider = sim.CountingSubscriptionLlmDraftProvider(llm_call_counter=counter)
+
+    def fake_retriever_runner(self, prompt: str) -> object:
+        return {"exact_ids": ["fact.one"], "adjacent_ids": []}
+
+    monkeypatch.setattr(sim.SubscriptionLlmDraftProvider, "_direct_path_llm_retrieve_runner", fake_retriever_runner)
+
+    assert provider._direct_path_llm_retrieve_runner("prompt") == {"exact_ids": ["fact.one"], "adjacent_ids": []}
+    assert counter.snapshot()["bot_retriever"] == 1
 
 
 def test_claude_json_model_uses_toolless_print_command(monkeypatch) -> None:
@@ -1877,6 +1897,7 @@ def test_dynamic_summary_includes_llm_call_counts(tmp_path):
         "client": 2,
         "bot_draft": 3,
         "bot_direct_draft": 0,
+        "bot_retriever": 0,
         "bot_critic": 1,
         "bot_faithfulness": 2,
         "bot_selling_compose": 1,

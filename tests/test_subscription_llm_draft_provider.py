@@ -49,6 +49,7 @@ from mango_mvp.channels.subscription_llm import (
     PAYMENT_DISPUTE_SAFE_TEXT,
     PRESALE_META_RU_ENV,
     PRESALE_PII_MEMORY_ENV,
+    PRESALE_SOURCE_ID_ENV,
     PRESALE_VERIFIER_FAILSOFT_ENV,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
     SAFE_FALLBACK_DRAFT_TEXT,
@@ -4844,6 +4845,84 @@ def test_presale_ru_meta_sanitizer_removes_confirmed_facts_jargon_without_flaggi
 
     assert clean_gated.draft_text == clean.draft_text
     assert "output_sanitizer" not in clean_gated.metadata
+
+
+def test_presale_source_id_sanitizer_removes_bare_fact_identifier() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "По факту presentation_format_facts_2026_05_21: "
+            "Очные группы делятся по уровням."
+        ),
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Как делятся группы?",
+        context={"active_brand": "foton", PRESALE_SOURCE_ID_ENV: "1"},
+    )
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gated.draft_text == "Очные группы делятся по уровням."
+    assert "presentation_format_facts_2026_05_21" not in gated.draft_text
+    assert "по факту" not in gated.draft_text.casefold()
+    assert "presale_source_id" in gated.metadata["output_sanitizer"]["reasons"]
+
+
+def test_presale_source_id_sanitizer_does_not_cut_normal_fact_or_format_words() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Факт простой: формат занятий зависит от выбранной группы.",
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Какой формат?",
+        context={"active_brand": "foton", PRESALE_SOURCE_ID_ENV: "1"},
+    )
+
+    assert gated.draft_text == result.draft_text
+    assert "output_sanitizer" not in gated.metadata
+
+
+def test_presale_source_id_sanitizer_off_parity_keeps_identifier() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По факту presentation_format_facts_2026_05_21: Очные группы делятся по уровням.",
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Как делятся группы?",
+        context={"active_brand": "foton", PRESALE_SOURCE_ID_ENV: "0"},
+    )
+
+    assert gated.draft_text == result.draft_text
+    assert "output_sanitizer" not in gated.metadata
+
+
+def test_presale_source_id_sanitizer_enabled_by_pilot_gold_config() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Источник kb_v6_6_client_safe_facts_2026_06_08.homework: домашние задания проверяются.",
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Домашку проверяют?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        },
+    )
+
+    assert "kb_v6_6_client_safe_facts_2026_06_08" not in gated.draft_text
+    assert gated.draft_text == "домашние задания проверяются."
+    assert "presale_source_id" in gated.metadata["output_sanitizer"]["reasons"]
 
 
 def test_output_sanitizer_preserves_client_paragraphs() -> None:

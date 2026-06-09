@@ -124,6 +124,7 @@ PRESALE_SAFETY_ENV = "TELEGRAM_PRESALE_SAFETY"
 PRESALE_PII_MEMORY_ENV = "TELEGRAM_PRESALE_PII_MEMORY"
 PRESALE_VERIFIER_FAILSOFT_ENV = "TELEGRAM_PRESALE_VERIFIER_FAILSOFT"
 PRESALE_META_RU_ENV = "TELEGRAM_PRESALE_META_RU"
+PRESALE_SOURCE_ID_ENV = "TELEGRAM_PRESALE_SOURCE_ID"
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
@@ -461,6 +462,20 @@ INTERNAL_SERVICE_MARKER_RE = re.compile(
 )
 INTERNAL_SERVICE_TOKEN_RE = re.compile(
     r"\b(?:source|source_id|fact_id|trace_id|freshness)\s*[:=]\s*[^\s;\],.]+|source:[A-Za-z0-9_:\-]+|fact:[A-Za-z0-9_:\-]+|kc_chunk:[A-Za-z0-9_:\-]+|kb_release_[A-Za-z0-9_\-]+|product_data/[^\s;\],.]+|/Users/[^\s;\],.]+",
+    re.I,
+)
+PRESALE_SOURCE_ID_TOKEN_PATTERN = (
+    r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*_facts_\d{4}_\d{2}_\d{2}(?:[._][a-z0-9]+)*"
+    r"|source_coverage_audit_\d{4}_\d{2}_\d{2}(?:[._][a-z0-9]+)*"
+    r"|prices_regular_\d{4}_\d{2}(?:[._][a-z0-9]+)*"
+)
+PRESALE_SOURCE_ID_PHRASE_RE = re.compile(
+    rf"(?<![\w/.-])(?:по\s+факту|факт|источник|source|source_id|fact_id)\s+"
+    rf"(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\w/.-])\s*[:;,.—-]?\s*",
+    re.I,
+)
+PRESALE_SOURCE_ID_TOKEN_RE = re.compile(
+    rf"(?<![\w/.-])(?:{PRESALE_SOURCE_ID_TOKEN_PATTERN})(?![\w/.-])",
     re.I,
 )
 INTERNAL_SCAFFOLD_PREFIX_RE = re.compile(
@@ -5004,6 +5019,7 @@ def apply_output_sanitizer(
             result.draft_text,
             client_message=pii_client_message,
             presale_ru_meta=_presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV),
+            presale_source_id=_presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV),
         )
     else:
         cleaned, reasons = _sanitize_client_pii_echo(result.draft_text, client_message=pii_client_message)
@@ -5012,6 +5028,9 @@ def apply_output_sanitizer(
         if _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV):
             cleaned, meta_reasons = _sanitize_presale_ru_meta_lines(cleaned)
             reasons = (*reasons, *meta_reasons)
+        if _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV):
+            cleaned, source_id_reasons = _sanitize_presale_source_id_text(cleaned)
+            reasons = (*reasons, *source_id_reasons)
     if not reasons and cleaned == result.draft_text:
         return result
 
@@ -5053,6 +5072,7 @@ def _sanitize_output_client_text(
     *,
     client_message: str = "",
     presale_ru_meta: bool = False,
+    presale_source_id: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     raw = str(text or "")
     if not raw:
@@ -5106,6 +5126,10 @@ def _sanitize_output_client_text(
         kept_lines.append(stripped)
     value = "\n".join(kept_lines)
 
+    if presale_source_id:
+        value, source_id_reasons = _sanitize_presale_source_id_text(value)
+        reasons.extend(source_id_reasons)
+
     value, bad_tone_removed = OUTPUT_SANITIZER_BAD_TONE_PHRASE_RE.subn("", value)
     if bad_tone_removed:
         reasons.append("bad_tone_phrase")
@@ -5145,6 +5169,17 @@ def _sanitize_presale_ru_meta_lines(text: str) -> tuple[str, tuple[str, ...]]:
         kept.append(line)
     value = _normalize_output_sanitizer_text("\n".join(kept))
     return value, ("presale_ru_meta_line",) if removed else ()
+
+
+def _sanitize_presale_source_id_text(text: str) -> tuple[str, tuple[str, ...]]:
+    raw = str(text or "")
+    if not raw or not PRESALE_SOURCE_ID_TOKEN_RE.search(raw):
+        return raw, ()
+    value, phrase_removed = PRESALE_SOURCE_ID_PHRASE_RE.subn(" ", raw)
+    value, token_removed = PRESALE_SOURCE_ID_TOKEN_RE.subn(" ", value)
+    if not phrase_removed and not token_removed:
+        return raw, ()
+    return _normalize_output_sanitizer_text(value), ("presale_source_id",)
 
 
 _CLIENT_NAME_PAIR_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b")

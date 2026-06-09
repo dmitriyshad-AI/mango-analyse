@@ -13,9 +13,11 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     FactStore,
     FAITHFULNESS_SHADOW_ENV,
+    NUMBER_GATE_SCOPE_AWARE_ENV,
     _safe_fallback_text,
     build_faithfulness_prompt,
     check_claim_faithfulness,
+    number_gate_scope_aware_enabled,
     run_pipeline,
     verify_output as verify_dialogue_contract_output,
 )
@@ -46,6 +48,7 @@ from mango_mvp.channels.subscription_llm import (
     OFF_TOPIC_FOTON_SAFE_TEXT,
     OFF_TOPIC_UNPK_SAFE_TEXT,
     OUTPUT_SANITIZER_ENV,
+    PRESALE_SAFETY_ENV,
     PAYMENT_DISPUTE_SAFE_TEXT,
     PRESALE_META_RU_ENV,
     PRESALE_PII_MEMORY_ENV,
@@ -82,11 +85,17 @@ from mango_mvp.channels.subscription_llm import (
     apply_semantic_diagnosis_guard,
     _direct_path_context_fact_pack,
     _direct_path_render_fact_block,
+    _direct_path_enabled,
+    _direct_path_gold_real_enabled,
     build_semantic_output_regen_prompt,
     build_semantic_output_verifier_prompt,
     build_semantic_diagnosis_prompt,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     SEMANTIC_VERIFIER_DOWNGRADE_REASON,
+    _output_sanitizer_enabled,
+    _presale_safety_enabled,
+    _semantic_output_verifier_enabled,
+    _verifier_handoff_claims_enabled,
     apply_unstated_subject_guard,
     apply_unsupported_promise_guard,
     apply_unconfirmed_operational_specificity_guard,
@@ -11136,6 +11145,174 @@ def test_direct_path_pilot_gold_v1_enables_direct_and_gold_without_extra_flags()
     assert "Живые образцы менеджерского стиля" in provider.last_prompt
     assert result.metadata["direct_path"]["pilot_config"] == DIRECT_PATH_PILOT_CONFIG_VERSION
     assert result.metadata["direct_path"]["gold_real_enabled"] is True
+
+
+def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
+    for key in (
+        DIRECT_PATH_ENV,
+        BOT_GOLD_REAL_ENV,
+        SEMANTIC_OUTPUT_VERIFIER_ENV,
+        OUTPUT_SANITIZER_ENV,
+        NUMBER_GATE_SCOPE_AWARE_ENV,
+        VERIFIER_HANDOFF_CLAIMS_ENV,
+        PRESALE_SAFETY_ENV,
+        PRESALE_PII_MEMORY_ENV,
+        PRESALE_VERIFIER_FAILSOFT_ENV,
+        PRESALE_META_RU_ENV,
+        PRESALE_SOURCE_ID_ENV,
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert _direct_path_enabled(context) is True
+    assert _direct_path_gold_real_enabled(context) is True
+    assert _semantic_output_verifier_enabled(context) is True
+    assert _output_sanitizer_enabled(context) is True
+    assert number_gate_scope_aware_enabled(context) is True
+    assert _verifier_handoff_claims_enabled(context) is True
+    assert _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV) is True
+    assert _presale_safety_enabled(context, subflag=PRESALE_VERIFIER_FAILSOFT_ENV) is True
+    assert _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV) is True
+    assert _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV) is True
+
+
+def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> None:
+    for key in (
+        DIRECT_PATH_ENV,
+        BOT_GOLD_REAL_ENV,
+        SEMANTIC_OUTPUT_VERIFIER_ENV,
+        OUTPUT_SANITIZER_ENV,
+        NUMBER_GATE_SCOPE_AWARE_ENV,
+        VERIFIER_HANDOFF_CLAIMS_ENV,
+        PRESALE_SAFETY_ENV,
+        PRESALE_PII_MEMORY_ENV,
+        PRESALE_VERIFIER_FAILSOFT_ENV,
+        PRESALE_META_RU_ENV,
+        PRESALE_SOURCE_ID_ENV,
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по рассрочке.")
+    )
+    result = provider.build_draft(
+        "Рассрочка есть?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+            SEMANTIC_OUTPUT_VERIFIER_ENV: "0",
+            "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
+        },
+    )
+
+    assert _semantic_output_verifier_enabled(
+        {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION, SEMANTIC_OUTPUT_VERIFIER_ENV: "0"}
+    ) is False
+    assert result.metadata["direct_path"]["pilot_profile_overrides"] == {SEMANTIC_OUTPUT_VERIFIER_ENV: "0"}
+
+
+def test_without_pilot_config_profile_flags_keep_default_off(monkeypatch) -> None:
+    for key in (
+        DIRECT_PATH_ENV,
+        BOT_GOLD_REAL_ENV,
+        SEMANTIC_OUTPUT_VERIFIER_ENV,
+        OUTPUT_SANITIZER_ENV,
+        NUMBER_GATE_SCOPE_AWARE_ENV,
+        VERIFIER_HANDOFF_CLAIMS_ENV,
+        PRESALE_SAFETY_ENV,
+        PRESALE_PII_MEMORY_ENV,
+        PRESALE_VERIFIER_FAILSOFT_ENV,
+        PRESALE_META_RU_ENV,
+        PRESALE_SOURCE_ID_ENV,
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    context: dict[str, object] = {}
+
+    assert _direct_path_enabled(context) is False
+    assert _direct_path_gold_real_enabled(context) is False
+    assert _semantic_output_verifier_enabled(context) is False
+    assert _output_sanitizer_enabled(context) is False
+    assert number_gate_scope_aware_enabled(context) is False
+    assert _verifier_handoff_claims_enabled(context) is False
+    assert _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV) is False
+
+
+def test_direct_path_legacy_context_filters_unsafe_upstream_facts() -> None:
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "foton",
+            "confirmed_facts": {
+                "valid.fact": {
+                    "brand": "foton",
+                    "allowed_for_client_answer": True,
+                    "forbidden_for_client": False,
+                    "internal_only": False,
+                    "valid_until": "2027-08-31",
+                    "client_safe_text": "Фотон: безопасный факт для клиента.",
+                },
+                "wrong.brand": {
+                    "brand": "unpk",
+                    "allowed_for_client_answer": True,
+                    "client_safe_text": "УНПК: чужой бренд.",
+                },
+                "not.client.safe": {
+                    "brand": "foton",
+                    "allowed_for_client_answer": False,
+                    "client_safe_text": "Фотон: не клиентский факт.",
+                },
+                "expired.fact": {
+                    "brand": "foton",
+                    "allowed_for_client_answer": True,
+                    "valid_until": "2020-01-01",
+                    "client_safe_text": "Фотон: устаревший факт.",
+                },
+            },
+        },
+        client_message="Расскажите условия",
+    )
+
+    facts = pack["facts"]
+    assert "valid.fact" in facts
+    assert "wrong.brand" not in facts
+    assert "not.client.safe" not in facts
+    assert "expired.fact" not in facts
+    assert facts["valid.fact"] == "Фотон: безопасный факт для клиента."
+
+
+def test_direct_path_gate_downgrades_manager_deadline_promise_but_keeps_text() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Менеджер свяжется завтра утром и поможет оформить запись.",
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result)
+    gate = gated.metadata["authoritative_output_gate"]
+
+    assert gated.route == "draft_for_manager"
+    assert gated.draft_text == result.draft_text
+    assert gate["action"] == "downgrade_keep_text"
+    assert "unsupported_manager_deadline_promise" in {item["code"] for item in gate["findings"]}
+    assert "direct_path_gate_text_preserved" in gated.safety_flags
+
+
+def test_direct_path_gate_allows_manager_contact_without_deadline() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Менеджер свяжется и поможет оформить запись.",
+        metadata={"direct_path": {"enabled": True, "direct_path_attempted": True}},
+    )
+
+    gated = apply_authoritative_output_gate(result)
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gated.draft_text == result.draft_text
+    assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
 
 
 def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:

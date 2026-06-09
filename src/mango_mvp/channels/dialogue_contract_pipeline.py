@@ -39,6 +39,8 @@ FAITHFULNESS_SHADOW_ENV = "TELEGRAM_FAITHFULNESS_SHADOW"
 ESTIMATE_MODE_ENV = "TELEGRAM_A_ESTIMATE_MODE"
 FREE_NUMBER_GATE_ENV = "TELEGRAM_A_FREE_NUMBER_GATE"
 NUMBER_GATE_SCOPE_AWARE_ENV = "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"
+DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
+DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 STEP4_NUMBER_GROUNDING_ENV = "TELEGRAM_STEP4_NUMBER_GROUNDING"
 TRAVEL_COMPOSE_ENV = "TELEGRAM_A_TRAVEL_COMPOSE"
 QUALITY_PARTIAL_YIELD_ENV = "TELEGRAM_Q_PARTIAL_YIELD"
@@ -656,7 +658,13 @@ def free_number_gate_enabled(context: Mapping[str, Any] | None = None) -> bool:
 def number_gate_scope_aware_enabled(context: Mapping[str, Any] | None = None) -> bool:
     if isinstance(context, MappingABC) and context.get(NUMBER_GATE_SCOPE_AWARE_ENV) is not None:
         return _truthy(context.get(NUMBER_GATE_SCOPE_AWARE_ENV))
-    return _truthy(os.getenv(NUMBER_GATE_SCOPE_AWARE_ENV))
+    if NUMBER_GATE_SCOPE_AWARE_ENV in os.environ:
+        return _truthy(os.getenv(NUMBER_GATE_SCOPE_AWARE_ENV))
+    if isinstance(context, MappingABC):
+        for key in (DIRECT_PATH_PILOT_CONFIG_ENV, "direct_path_pilot_config", "pilot_config"):
+            if str(context.get(key) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION:
+                return True
+    return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
 
 
 def travel_compose_enabled(context: Mapping[str, Any] | None = None) -> bool:

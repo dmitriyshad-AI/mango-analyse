@@ -117,6 +117,7 @@ SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV = "TELEGRAM_SEMANTIC_VERIFIER_MODEL"
 SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV = "TELEGRAM_SEMANTIC_VERIFIER_REASONING"
 SEMANTIC_OUTPUT_VERIFIER_TIMEOUT_ENV = "TELEGRAM_SEMANTIC_VERIFIER_TIMEOUT_SEC"
 VERIFIER_HANDOFF_CLAIMS_ENV = "TELEGRAM_VERIFIER_HANDOFF_CLAIMS"
+NUMBER_GATE_SCOPE_AWARE_ENV = "TELEGRAM_NUMBER_GATE_SCOPE_AWARE"
 DIRECT_PATH_ENV = "TELEGRAM_DIRECT_PATH"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
@@ -127,6 +128,19 @@ PRESALE_META_RU_ENV = "TELEGRAM_PRESALE_META_RU"
 PRESALE_SOURCE_ID_ENV = "TELEGRAM_PRESALE_SOURCE_ID"
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
+DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
+    DIRECT_PATH_ENV,
+    BOT_GOLD_REAL_ENV,
+    SEMANTIC_OUTPUT_VERIFIER_ENV,
+    OUTPUT_SANITIZER_ENV,
+    NUMBER_GATE_SCOPE_AWARE_ENV,
+    VERIFIER_HANDOFF_CLAIMS_ENV,
+    PRESALE_SAFETY_ENV,
+    PRESALE_PII_MEMORY_ENV,
+    PRESALE_VERIFIER_FAILSOFT_ENV,
+    PRESALE_META_RU_ENV,
+    PRESALE_SOURCE_ID_ENV,
+)
 DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
 DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION = "direct_path_wide_fact_pack_v1_2026_06_08"
 DIRECT_PATH_WIDE_FACT_LIMIT = 60
@@ -572,6 +586,17 @@ COSMETIC_OPENING_RE = re.compile(
     r"понимаю[,.]?\s*|спасибо(?:\s+за\s+сообщение|\s+за\s+вопрос)?[,.]?\s*)",
     re.I,
 )
+MANAGER_ACTION_PROMISE_ACTOR_RE = re.compile(r"\b(?:менеджер|сотрудник|специалист|куратор)\b", re.I)
+MANAGER_ACTION_PROMISE_ACTION_RE = re.compile(
+    r"\b(?:свяж(?:ется|утся)|позвон(?:ит|ят)|напиш(?:ет|ут)|ответ(?:ит|ят)|верн[её]тся|провер(?:ит|ят)|уточн(?:ит|ят))\b",
+    re.I,
+)
+MANAGER_ACTION_PROMISE_DEADLINE_RE = re.compile(
+    r"\b(?:сегодня|завтра|утром|вечером|дн[её]м|после\s+обеда|"
+    r"в\s+течение\s+\d+\s*(?:минут|час(?:а|ов)?|дн(?:я|ей)?|сут(?:ок|ки)?)|"
+    r"до\s+\d{1,2}(?::\d{2})?|к\s+\d{1,2}(?::\d{2})?)\b",
+    re.I,
+)
 
 ALLOWED_ROUTES = {"draft_for_manager", "manager_only", "blocked", "bot_answer_self", "bot_answer_self_for_pilot"}
 AUTONOMOUS_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
@@ -603,6 +628,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "self_contradiction": "downgrade",
     "wrong_scope": "downgrade",
     "unsupported_followup_deadline": "downgrade",
+    "unsupported_manager_deadline_promise": "downgrade_keep_text",
     "unsupported_schedule_assumption": "downgrade",
     "unsupported_offline_visit_invitation": "downgrade",
     "unsupported_content_delivery_action": "downgrade",
@@ -2048,13 +2074,13 @@ DIRECT_PATH_MISSION_TEMPLATE = (
 
 
 def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if _direct_path_pilot_config(context) == DIRECT_PATH_PILOT_CONFIG_VERSION:
-        return True
     if isinstance(context, Mapping):
         for key in (DIRECT_PATH_ENV, "direct_path_enabled"):
             if key in context:
                 return _truthy_value(context.get(key))
-    return _truthy_value(os.getenv(DIRECT_PATH_ENV))
+    if DIRECT_PATH_ENV in os.environ:
+        return _truthy_value(os.getenv(DIRECT_PATH_ENV))
+    return _pilot_gold_profile_enabled(context)
 
 
 def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> str:
@@ -2076,7 +2102,7 @@ def _presale_safety_enabled(context: Optional[Mapping[str, Any]] = None, *, subf
         return _truthy_value(os.getenv(subflag))
     if PRESALE_SAFETY_ENV in os.environ:
         return _truthy_value(os.getenv(PRESALE_SAFETY_ENV))
-    return _direct_path_pilot_config(context) == DIRECT_PATH_PILOT_CONFIG_VERSION
+    return _pilot_gold_profile_enabled(context)
 
 
 def _direct_path_brand_label(active_brand: str) -> str:
@@ -2175,31 +2201,54 @@ def _direct_path_add_fact(items: dict[str, str], key: str, value: Any) -> None:
         items.setdefault(fact_key, text)
 
 
+def _direct_path_legacy_context_fact_allowed(value: Any, *, active_brand: str) -> bool:
+    if not isinstance(value, Mapping):
+        return True
+    brand = str(value.get("brand") or value.get("active_brand") or "").strip().casefold()
+    if brand and brand != str(active_brand or "").strip().casefold():
+        return False
+    if "allowed_for_client_answer" in value and value.get("allowed_for_client_answer") is not True:
+        return False
+    if "client_safe" in value and value.get("client_safe") is not True:
+        return False
+    if value.get("forbidden_for_client") is True or value.get("internal_only") is True:
+        return False
+    if "valid_until" in value and not _direct_path_valid_until_ok(value.get("valid_until")):
+        return False
+    return True
+
+
+def _direct_path_add_legacy_fact(items: dict[str, str], key: str, value: Any, *, active_brand: str) -> None:
+    if _direct_path_legacy_context_fact_allowed(value, active_brand=active_brand):
+        _direct_path_add_fact(items, key, value)
+
+
 def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]], *, limit: int = 18) -> dict[str, str]:
     items: dict[str, str] = {}
     if not isinstance(context, Mapping):
         return items
+    active_brand = _active_brand(context)
     confirmed = context.get("confirmed_facts")
     if isinstance(confirmed, Mapping):
         for key, value in confirmed.items():
-            _direct_path_add_fact(items, str(key), value)
+            _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
     facts_context = context.get("facts_context")
     if isinstance(facts_context, Mapping):
         confirmed_context = facts_context.get("confirmed_facts")
         if isinstance(confirmed_context, Mapping):
             for key, value in confirmed_context.items():
-                _direct_path_add_fact(items, str(key), value)
+                _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
     pipeline = context.get("dialogue_contract_pipeline")
     if isinstance(pipeline, Mapping) and isinstance(pipeline.get("retrieved_facts"), Mapping):
         for key, value in pipeline["retrieved_facts"].items():
-            _direct_path_add_fact(items, str(key), value)
+            _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
     snippets = context.get("knowledge_snippets")
     if isinstance(snippets, Mapping):
         for key, value in snippets.items():
-            _direct_path_add_fact(items, f"snippet:{key}", value)
+            _direct_path_add_legacy_fact(items, f"snippet:{key}", value, active_brand=active_brand)
     elif isinstance(snippets, Sequence) and not isinstance(snippets, (str, bytes, bytearray)):
         for idx, value in enumerate(snippets, 1):
-            _direct_path_add_fact(items, f"snippet:{idx}", value)
+            _direct_path_add_legacy_fact(items, f"snippet:{idx}", value, active_brand=active_brand)
     return dict(list(items.items())[:limit])
 
 
@@ -2688,13 +2737,13 @@ DIRECT_PATH_GOLD_TOPIC_KEYWORDS: Mapping[str, tuple[str, ...]] = {
 
 
 def _direct_path_gold_real_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if _direct_path_pilot_config(context) == DIRECT_PATH_PILOT_CONFIG_VERSION:
-        return True
     if isinstance(context, Mapping):
         for key in (BOT_GOLD_REAL_ENV, "bot_gold_real", "direct_path_gold_real"):
             if key in context:
                 return _truthy_value(context.get(key))
-    return _truthy_value(os.getenv(BOT_GOLD_REAL_ENV))
+    if BOT_GOLD_REAL_ENV in os.environ:
+        return _truthy_value(os.getenv(BOT_GOLD_REAL_ENV))
+    return _pilot_gold_profile_enabled(context)
 
 
 def _direct_path_gold_pack_path() -> Path:
@@ -2874,6 +2923,7 @@ def _direct_path_metadata(
     reason_class: str = "",
     reason_evidence: Optional[Mapping[str, Any]] = None,
     pilot_config: str = "",
+    context: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     gold_ids = [str(item.get("id") or "").strip() for item in gold_examples if str(item.get("id") or "").strip()]
     pack = fact_pack if isinstance(fact_pack, Mapping) else {}
@@ -2885,6 +2935,7 @@ def _direct_path_metadata(
         "enabled": True,
         "pilot_config": str(pilot_config or ""),
         "pilot_config_version": DIRECT_PATH_PILOT_CONFIG_VERSION if str(pilot_config or "") == DIRECT_PATH_PILOT_CONFIG_VERSION else "",
+        "pilot_profile_overrides": _pilot_profile_overrides(context),
         "attempted": bool(attempted),
         "model_called": bool(model_called),
         "preblocked": bool(preblocked),
@@ -2934,6 +2985,7 @@ def _direct_path_preblocked_result(
             fact_pack=fact_pack,
             preblocked=True,
             pilot_config=pilot_config,
+            context=context,
             preblock_reason="p0_pre_gate",
             reason_class="p0_deferral",
             reason_evidence={"p0_reason": p0_reason, "p0_kind": kind},
@@ -2957,6 +3009,7 @@ def _direct_path_preblocked_result(
             fact_pack=fact_pack,
             preblocked=True,
             pilot_config=pilot_config,
+            context=context,
             preblock_reason="high_risk",
             reason_class="high_risk",
             reason_evidence={"risk_codes": list(high_risk)},
@@ -2979,6 +3032,7 @@ def _direct_path_preblocked_result(
             fact_pack=fact_pack,
             preblocked=True,
             pilot_config=pilot_config,
+            context=context,
             preblock_reason="force_manager_only",
             reason_class="policy_permission",
             reason_evidence={"source": "rop_policy"},
@@ -3000,6 +3054,7 @@ def _direct_path_preblocked_result(
             fact_pack=fact_pack,
             preblocked=True,
             pilot_config=pilot_config,
+            context=context,
             preblock_reason="unknown_brand",
             reason_class="policy_permission",
             reason_evidence={"active_brand": "unknown"},
@@ -3250,6 +3305,7 @@ class SubscriptionLlmDraftProvider:
             fact_pack=fact_pack,
             gold_examples=gold_examples,
             pilot_config=pilot_config,
+            context=context,
         )
         try:
             result = self._direct_path_draft_runner(prompt)
@@ -5560,7 +5616,30 @@ def _authoritative_gate_text_guard_findings(result: SubscriptionDraftResult) -> 
     guarded = guard_promocode_leak(result)
     if guarded is not result and guarded.draft_text != result.draft_text:
         findings.append(_authoritative_gate_finding("promocode_leak", source="guard_promocode_leak"))
+    manager_deadline = _manager_deadline_promise_detail(result.draft_text)
+    if manager_deadline:
+        findings.append(
+            _authoritative_gate_finding(
+                "unsupported_manager_deadline_promise",
+                detail=manager_deadline,
+                source="manager_deadline_promise_guard",
+            )
+        )
     return findings
+
+
+def _manager_deadline_promise_detail(text: str) -> str:
+    for sentence in re.split(r"(?<=[.?!])\s+|\n+", str(text or "")):
+        value = " ".join(sentence.split())
+        if not value:
+            continue
+        if (
+            MANAGER_ACTION_PROMISE_ACTOR_RE.search(value)
+            and MANAGER_ACTION_PROMISE_ACTION_RE.search(value)
+            and MANAGER_ACTION_PROMISE_DEADLINE_RE.search(value)
+        ):
+            return value[:240]
+    return ""
 
 
 def _authoritative_gate_a2_findings(
@@ -7285,11 +7364,7 @@ def apply_semantic_output_verifier(
 
 
 def _verifier_handoff_claims_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (VERIFIER_HANDOFF_CLAIMS_ENV, "verifier_handoff_claims_enabled"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    return _truthy_value(os.getenv(VERIFIER_HANDOFF_CLAIMS_ENV))
+    return _pilot_profile_flag_enabled(context, VERIFIER_HANDOFF_CLAIMS_ENV, aliases=("verifier_handoff_claims_enabled",))
 
 
 def _semantic_verifier_is_whitelisted_pure_handoff(text: str) -> bool:
@@ -12144,6 +12219,55 @@ def _truthy_value(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да"}
 
 
+def _explicit_truthy_setting(
+    context: Optional[Mapping[str, Any]],
+    env_name: str,
+    *,
+    aliases: Sequence[str] = (),
+) -> Optional[bool]:
+    if isinstance(context, Mapping):
+        for key in (env_name, *aliases):
+            if key in context:
+                return _truthy_value(context.get(key))
+    if env_name in os.environ:
+        return _truthy_value(os.getenv(env_name))
+    return None
+
+
+def _pilot_gold_profile_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _direct_path_pilot_config(context) == DIRECT_PATH_PILOT_CONFIG_VERSION
+
+
+def _pilot_profile_flag_enabled(
+    context: Optional[Mapping[str, Any]],
+    env_name: str,
+    *,
+    aliases: Sequence[str] = (),
+) -> bool:
+    explicit = _explicit_truthy_setting(context, env_name, aliases=aliases)
+    if explicit is not None:
+        return explicit
+    return _pilot_gold_profile_enabled(context)
+
+
+def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, str]:
+    if not _pilot_gold_profile_enabled(context):
+        return {}
+    aliases: Mapping[str, tuple[str, ...]] = {
+        DIRECT_PATH_ENV: ("direct_path_enabled",),
+        BOT_GOLD_REAL_ENV: ("bot_gold_real", "direct_path_gold_real"),
+        OUTPUT_SANITIZER_ENV: ("output_sanitizer_enabled",),
+        SEMANTIC_OUTPUT_VERIFIER_ENV: ("semantic_output_verifier_enabled",),
+        VERIFIER_HANDOFF_CLAIMS_ENV: ("verifier_handoff_claims_enabled",),
+    }
+    result: dict[str, str] = {}
+    for env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS:
+        explicit = _explicit_truthy_setting(context, env_name, aliases=aliases.get(env_name, ()))
+        if explicit is False:
+            result[env_name] = "0"
+    return result
+
+
 def _step4_keep_answer_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     if isinstance(context, Mapping) and context.get(STEP4_KEEP_ANSWER_ENV) is not None:
         return _truthy_value(context.get(STEP4_KEEP_ANSWER_ENV))
@@ -12153,11 +12277,7 @@ def _step4_keep_answer_enabled(context: Optional[Mapping[str, Any]] = None) -> b
 
 
 def _output_sanitizer_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (OUTPUT_SANITIZER_ENV, "output_sanitizer_enabled"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    return _truthy_value(os.getenv(OUTPUT_SANITIZER_ENV))
+    return _pilot_profile_flag_enabled(context, OUTPUT_SANITIZER_ENV, aliases=("output_sanitizer_enabled",))
 
 
 def _phase2_tone_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -12193,13 +12313,9 @@ def _semantic_diagnosis_guard_enabled(context: Optional[Mapping[str, Any]] = Non
 
 
 def _semantic_output_verifier_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (SEMANTIC_OUTPUT_VERIFIER_ENV, "semantic_output_verifier_enabled"):
-            if key in context:
-                return _truthy_value(context.get(key))
     # In a future autonomous send mode Дмитрий may choose fail-closed when this
     # verifier is unavailable; today it is advisory in draft-only mode.
-    return _truthy_value(os.getenv(SEMANTIC_OUTPUT_VERIFIER_ENV))
+    return _pilot_profile_flag_enabled(context, SEMANTIC_OUTPUT_VERIFIER_ENV, aliases=("semantic_output_verifier_enabled",))
 
 
 def _answer_quality_llm_rewrite_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

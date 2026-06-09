@@ -2582,6 +2582,52 @@ def _text_composition_source_summary(transcripts: Sequence[Mapping[str, Any]]) -
     }
 
 
+def _direct_path_rubric_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    reasons: Counter[str] = Counter()
+    total = 0
+    rubric_enabled = 0
+    rubric_regenerated = 0
+    deferral_text_in_self = 0
+    examples: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        if not isinstance(dialog, Mapping):
+            continue
+        dialog_id = str(dialog.get("dialog_id") or "")
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            direct = turn.get("bot_direct_path")
+            if not isinstance(direct, Mapping) or not direct:
+                continue
+            total += 1
+            if direct.get("rubric_enabled"):
+                rubric_enabled += 1
+            if direct.get("rubric_regenerated"):
+                rubric_regenerated += 1
+            reason = str(direct.get("rubric_reason") or "").strip()
+            if reason:
+                reasons[reason] += 1
+            if direct.get("deferral_text_in_self"):
+                deferral_text_in_self += 1
+                if len(examples) < 20:
+                    examples.append(
+                        {
+                            "dialog_id": dialog_id,
+                            "turn": turn.get("turn"),
+                            "route": turn.get("bot_route"),
+                        }
+                    )
+    return {
+        "schema_version": "direct_path_rubric_v1_2026_06_10",
+        "turns": total,
+        "rubric_enabled": rubric_enabled,
+        "rubric_regenerated": rubric_regenerated,
+        "rubric_reasons": dict(reasons),
+        "deferral_text_in_self": deferral_text_in_self,
+        "deferral_text_in_self_examples": examples,
+    }
+
+
 def build_summary(
     transcripts: Sequence[Mapping[str, Any]],
     judge_results: Sequence[Mapping[str, Any]],
@@ -2622,6 +2668,7 @@ def build_summary(
     tone_metric_non_p0_self = summarize_tone_scores(_non_p0_self_route_transcripts(transcripts))
     rich_format = _rich_format_summary(transcripts)
     text_composition = _text_composition_source_summary(transcripts)
+    direct_path_rubric = _direct_path_rubric_summary(transcripts)
     claude_cli_errors = _claude_cli_error_summary(transcripts)
     fallback_reasons = _turn_fallback_reason_summary(transcripts)
     manager_deferrals = _manager_deferral_summary(transcripts)
@@ -2744,6 +2791,7 @@ def build_summary(
         "tone_metric_non_p0_self": tone_metric_non_p0_self,
         "rich_format": rich_format,
         "text_composition_source": text_composition,
+        "direct_path_rubric": direct_path_rubric,
         "llm_calls": llm_call_summary,
         "semantic_output_verifier": semantic_output_verifier,
         "turn_fallback_reasons": fallback_reasons,

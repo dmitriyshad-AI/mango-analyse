@@ -125,6 +125,7 @@ LLM_RETRIEVE_MODEL_ENV = "TELEGRAM_LLM_RETRIEVE_MODEL"
 LLM_RETRIEVE_REASONING_ENV = "TELEGRAM_LLM_RETRIEVE_REASONING"
 LLM_RETRIEVE_TIMEOUT_ENV = "TELEGRAM_LLM_RETRIEVE_TIMEOUT_SEC"
 TEMPLATE_FROM_KB_ENV = "TELEGRAM_TEMPLATE_FROM_KB"
+ROUTE_RUBRIC_ENV = "TELEGRAM_ROUTE_RUBRIC"
 NIGHT_HOURS_NOTE_ENV = "TELEGRAM_NIGHT_HOURS_NOTE"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
@@ -171,6 +172,7 @@ PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
 _MANAGER_CONTACT_PROMISE_PATTERNS = (
     re.compile(r"\b(?:менеджер\w*|сотрудник\w*)\b[^.!?\n]{0,80}\b(?:верн[её]тся|свяжется|подключится|ответит)\b", re.I),
     re.compile(r"\b(?:верн[её]тся|свяжется|подключится|ответит)\b[^.!?\n]{0,80}\b(?:менеджер\w*|сотрудник\w*)\b", re.I),
+    re.compile(r"\bпередам\b[^.!?\n]{0,40}\b(?:вопрос\s+|вас\s+)?менеджер\w*\b", re.I),
 )
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 CONCRETE_FACT_RE = re.compile(
@@ -2102,6 +2104,38 @@ DIRECT_PATH_MISSION_TEMPLATE = (
     "если это не подтверждено в памяти или фактах. Если клиент сам написал ФИО ребёнка,\n"
     "телефон или другой контакт, подтверди получение без дословного повтора этих данных."
 )
+DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT = (
+    "написать «менеджер свяжется» без срока только в черновике для менеджера, "
+    "но нельзя «свяжется завтра/утром/в течение N»"
+)
+DIRECT_PATH_ROUTE_RUBRIC_BLOCK = (
+    'Выбор маршрута:\n'
+    '- "bot_answer_self_for_pilot" — когда факты из блока «Факты по вашему вопросу» покрывают вопрос клиента '
+    'и не требуется действие менеджера. Отвечай по фактам уверенно и не обещай, что «менеджер свяжется», '
+    '— ты уже отвечаешь. Смежные факты покрытием НЕ считаются: на их основе самостоятельный ответ не выбирай.\n'
+    '- "draft_for_manager" — когда фактов не хватает, нужно ДЕЙСТВИЕ или проверка менеджера '
+    '(оформить запись, отправить документы, проверить оплату, персональные данные) или вопрос требует личной оценки. '
+    'Обязательно заполни missing_facts: какого факта или какой проверки не хватает. В черновике пиши содержательный '
+    'ответ по фактам для менеджера — а не «передам менеджеру» как весь текст.\n'
+    'Развилка по процессам: РАССКАЗАТЬ, как устроен процесс (как проходит запись, что после оплаты, есть лист ожидания), '
+    '— это самостоятельный ответ по факту процесса. ВЫПОЛНИТЬ действие по просьбе клиента («запишите меня», '
+    '«пришлите договор», «проверьте оплату») — это draft_for_manager.\n'
+    'Запрещено: выбирать "draft_for_manager" на всякий случай при полных фактах.'
+)
+
+
+def _direct_path_mission_text(*, brand_label: str, context: Optional[Mapping[str, Any]]) -> str:
+    mission = DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)
+    if not _route_rubric_enabled(context):
+        return mission
+    return mission.replace(
+        "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»",
+        DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT,
+    )
+
+
+def _direct_path_route_rubric_block(context: Optional[Mapping[str, Any]]) -> str:
+    return f"{DIRECT_PATH_ROUTE_RUBRIC_BLOCK}\n\n" if _route_rubric_enabled(context) else ""
 
 
 def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -2120,6 +2154,14 @@ def _llm_retrieve_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
             if key in context:
                 return _truthy_value(context.get(key))
     return _truthy_value(os.getenv(LLM_RETRIEVE_ENV))
+
+
+def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (ROUTE_RUBRIC_ENV, "route_rubric_enabled"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    return _truthy_value(os.getenv(ROUTE_RUBRIC_ENV))
 
 
 def _template_from_kb_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -3315,7 +3357,8 @@ def _build_direct_path_prompt(
     memory = _direct_path_prompt_memory_view(context)
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
     return (
-        f"{DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)}\n\n"
+        f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
+        f"{_direct_path_route_rubric_block(context)}"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
@@ -3398,6 +3441,9 @@ def _direct_path_metadata(
         "direct_path_attempted": bool(attempted),
         "direct_path_downgraded": False,
         "direct_path_regenerated": False,
+        "rubric_enabled": _route_rubric_enabled(context),
+        "rubric_regenerated": False,
+        "rubric_reason": "",
         "reason_class": str(reason_class or ""),
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),
@@ -3527,6 +3573,43 @@ def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Ma
     return replace(result, metadata=metadata)
 
 
+def _direct_path_prepare_model_result(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
+    return replace(
+        result,
+        context_used=tuple(dict.fromkeys([*result.context_used, "direct_path", "client_safe_facts"])),
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "direct_path_model", "draft_only"])),
+    )
+
+
+def _direct_path_route_rubric_should_regenerate(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+    model_called: bool,
+) -> bool:
+    if not _route_rubric_enabled(context):
+        return False
+    if not model_called or result.route != "draft_for_manager":
+        return False
+    if result.missing_facts:
+        return False
+    return bool(facts)
+
+
+def _build_direct_path_route_rubric_regen_prompt(prompt: str, first_result: SubscriptionDraftResult) -> str:
+    previous_json = json.dumps(first_result.to_json_dict(include_raw_response=False), ensure_ascii=False, indent=2)
+    return (
+        f"{str(prompt or '').rstrip()}\n\n"
+        "Предыдущий JSON-ответ модели:\n"
+        f"{previous_json}\n\n"
+        'В предыдущем ответе выбран "draft_for_manager", но missing_facts пуст, хотя факты по вопросу есть. '
+        "Либо ответь самостоятельно по фактам, либо заполни missing_facts конкретным недостающим фактом "
+        "или нужной проверкой менеджера.\n"
+        "Верни только JSON без Markdown и без комментариев."
+    )
+
+
 def _direct_path_finalize_metadata(
     result: SubscriptionDraftResult,
     *,
@@ -3564,6 +3647,7 @@ def _direct_path_finalize_metadata(
             "downgraded": downgraded,
             "direct_path_regenerated": regenerated,
             "regenerated": regenerated,
+            "deferral_text_in_self": bool(result.route in AUTONOMOUS_ROUTES and _has_manager_contact_promise(result.draft_text)),
             "is_manager_deferral": result.route not in AUTONOMOUS_ROUTES,
             "reason_class": reason_class,
             "reason_evidence": reason_evidence,
@@ -3799,11 +3883,15 @@ class SubscriptionLlmDraftProvider:
             )
             result = safe_fallback_draft(reason="direct_path_error", metadata={"direct_path": direct_meta, "last_error": str(exc)[:400]})
         else:
-            result = replace(
-                result,
-                context_used=tuple(dict.fromkeys([*result.context_used, "direct_path", "client_safe_facts"])),
-                safety_flags=tuple(dict.fromkeys([*result.safety_flags, "direct_path_model", "draft_only"])),
-            )
+            result = _direct_path_prepare_model_result(result)
+            if _direct_path_route_rubric_should_regenerate(result, context=context, facts=facts, model_called=True):
+                direct_meta["rubric_reason"] = "missing_justification"
+                regen_prompt = _build_direct_path_route_rubric_regen_prompt(prompt, result)
+                try:
+                    result = _direct_path_prepare_model_result(self._direct_path_draft_runner(regen_prompt))
+                    direct_meta["rubric_regenerated"] = True
+                except Exception as exc:  # noqa: BLE001
+                    direct_meta["rubric_reason"] = f"regen_failed:{str(exc)[:160]}"
             result = _direct_path_merge_metadata(result, direct_meta)
 
         semantic_checked = apply_semantic_output_verifier(

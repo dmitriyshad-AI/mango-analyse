@@ -10559,6 +10559,24 @@ class _DirectPathProvider(SubscriptionLlmDraftProvider):
         return self.result
 
 
+class _DirectPathSequenceProvider(SubscriptionLlmDraftProvider):
+    def __init__(self, *results: SubscriptionDraftResult | Exception) -> None:
+        super().__init__()
+        self.results = list(results)
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
+        self.calls += 1
+        self.prompts.append(prompt)
+        if not self.results:
+            raise AssertionError("unexpected direct path draft call")
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 class _DirectPathRetrieverProvider(_DirectPathProvider):
     def __init__(self, result: SubscriptionDraftResult, retriever_payload: Mapping[str, object] | Exception) -> None:
         super().__init__(result)
@@ -11148,6 +11166,251 @@ def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_n
     assert "нельзя «свяжется завтра/утром/в течение n»" in prompt
     assert "не утверждай, что телефон или контакт уже есть" in prompt
     assert "без дословного повтора этих данных" in prompt
+
+
+def test_route_rubric_not_enabled_by_pilot_gold_profile(monkeypatch) -> None:
+    for key in (subscription_llm.ROUTE_RUBRIC_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
+        monkeypatch.delenv(key, raising=False)
+
+    context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert subscription_llm.ROUTE_RUBRIC_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._route_rubric_enabled(context) is False
+    assert subscription_llm._route_rubric_enabled({"route_rubric_enabled": "1"}) is True
+
+
+def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
+    for key in (subscription_llm.ROUTE_RUBRIC_ENV,):
+        monkeypatch.delenv(key, raising=False)
+    context = {
+        "active_brand": "foton",
+        "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
+        "recent_messages": ["Клиент: Сколько стоит?"],
+    }
+
+    off_prompt = subscription_llm._build_direct_path_prompt("Сколько стоит?", context=context)
+    expected_off = """Ты — менеджер-консультант учебного центра Фотон. Тебе пишет родитель с задачей
+про ребёнка. Твоя цель — реально помочь разобраться и довести до записи на
+подходящий курс. Продажа — это помощь: польза с первого ответа, предугадывай
+следующий вопрос, веди к понятному шагу. Не дави: честность важнее сделки.
+Числа, даты и условия — только из фактов; чего нет в фактах — скажи честно
+и предложи шаг. Если правило безопасности или передача менеджеру противоречат
+записи — правило важнее. Не обещай действия и сроки от имени менеджера: можно
+написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»
+или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,
+если это не подтверждено в памяти или фактах. Если клиент сам написал ФИО ребёнка,
+телефон или другой контакт, подтверди получение без дословного повтора этих данных.
+
+Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,
+классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.
+
+Активный бренд: Фотон (foton).
+Текущее сообщение клиента:
+Сколько стоит?
+
+Факты по вашему вопросу:
+- fact.price: Фотон: годовой курс стоит 59 000 ₽.
+
+Смежные факты — используй только если вопрос реально про это:
+(нет подтверждённых фактов в этом блоке)
+
+Память диалога:
+{}
+
+Известные слоты:
+{}
+
+Последние реплики:
+Клиент: Сколько стоит?
+
+Верни только JSON без Markdown и без комментариев:
+{
+  "route": "bot_answer_self_for_pilot" | "draft_for_manager",
+  "draft_text": "текст для клиента",
+  "manager_checklist": [],
+  "missing_facts": [],
+  "context_used": []
+}
+"""
+    assert off_prompt == expected_off
+
+    on_prompt = subscription_llm._build_direct_path_prompt(
+        "Сколько стоит?",
+        context={**context, subscription_llm.ROUTE_RUBRIC_ENV: "1"},
+    )
+
+    assert off_prompt != on_prompt
+    assert "Выбор маршрута:" in on_prompt
+    assert "Смежные факты покрытием НЕ считаются" in on_prompt
+    assert "только в черновике для менеджера" in on_prompt
+    assert "можно\nнаписать «менеджер свяжется» без срока, но нельзя" not in on_prompt
+
+
+def test_route_rubric_regenerates_unjustified_deferral_once() -> None:
+    provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру."),
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Годовой курс стоит 59 000 ₽."),
+    )
+
+    result = provider.build_draft(
+        "Сколько стоит год?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.ROUTE_RUBRIC_ENV: "1",
+            "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
+        },
+    )
+
+    direct = result.metadata["direct_path"]
+    assert provider.calls == 2
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "Предыдущий JSON-ответ модели" in provider.prompts[1]
+    assert '"route": "draft_for_manager"' in provider.prompts[1]
+    assert "missing_facts пуст" in provider.prompts[1]
+    assert direct["rubric_enabled"] is True
+    assert direct["rubric_regenerated"] is True
+    assert direct["rubric_reason"] == "missing_justification"
+    assert direct["direct_path_regenerated"] is False
+
+
+def test_route_rubric_no_regen_matrix_and_no_code_route_promotion(tmp_path: Path) -> None:
+    common = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.ROUTE_RUBRIC_ENV: "1",
+        "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
+    }
+
+    self_provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Годовой курс стоит 59 000 ₽.")
+    )
+    self_result = self_provider.build_draft("Сколько стоит год?", context=common)
+    assert self_provider.calls == 1
+    assert self_result.route == "bot_answer_self_for_pilot"
+
+    missing_provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Нужно проверить.", missing_facts=("наличие мест",))
+    )
+    missing_result = missing_provider.build_draft("Есть места?", context=common)
+    assert missing_provider.calls == 1
+    assert missing_result.route == "draft_for_manager"
+
+    no_facts_provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру.")
+    )
+    no_facts_result = no_facts_provider.build_draft(
+        "Неизвестный вопрос",
+        context={
+            "active_brand": "foton",
+            "snapshot_path": str(tmp_path / "missing_snapshot.json"),
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.ROUTE_RUBRIC_ENV: "1",
+        },
+    )
+    assert no_facts_provider.calls == 1
+    assert no_facts_result.metadata["direct_path"]["wide_facts_count"] == 0
+
+    off_provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Факт есть, но route не повышаем кодом.")
+    )
+    off_result = off_provider.build_draft(
+        "Сколько стоит год?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.ROUTE_RUBRIC_ENV: "0",
+            "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
+        },
+    )
+    assert off_provider.calls == 1
+    assert off_result.route == "draft_for_manager"
+    assert off_result.metadata["direct_path"]["rubric_enabled"] is False
+    assert off_result.metadata["direct_path"]["rubric_regenerated"] is False
+
+    preblock_provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+    preblock_result = preblock_provider.build_draft(
+        "Сколько стоит?",
+        context={
+            "active_brand": "unknown",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.ROUTE_RUBRIC_ENV: "1",
+            "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
+        },
+    )
+    assert preblock_provider.calls == 0
+    assert preblock_result.metadata["direct_path"]["model_called"] is False
+
+
+def test_route_rubric_regen_error_keeps_first_result() -> None:
+    first = SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру.")
+    provider = _DirectPathSequenceProvider(first, RuntimeError("temporary outage"))
+
+    result = provider.build_draft(
+        "Сколько стоит год?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.ROUTE_RUBRIC_ENV: "1",
+            "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
+        },
+    )
+
+    direct = result.metadata["direct_path"]
+    assert provider.calls == 2
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == first.draft_text
+    assert direct["rubric_regenerated"] is False
+    assert str(direct["rubric_reason"]).startswith("regen_failed:temporary outage")
+
+
+def test_route_rubric_regenerated_self_still_passes_authoritative_gate() -> None:
+    provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру."),
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Можно оплатить за 2-3 месяца."),
+    )
+
+    result = provider.build_draft(
+        "Можно оплатить помесячно?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.ROUTE_RUBRIC_ENV: "1",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "confirmed_facts": {
+                "payment.foton.installment": "Фотон: рассрочка доступна на 6, 10 или 12 месяцев."
+            },
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    assert provider.calls == 2
+    assert result.route == "manager_only"
+    assert gate["action"] == "block"
+    assert "unsupported_product_number" in {item["code"] for item in gate["findings"]}
+    assert result.metadata["direct_path"]["rubric_regenerated"] is True
+    assert result.metadata["direct_path"]["reason_class"] == "output_safety"
+
+
+def test_route_rubric_deferral_text_in_self_metadata() -> None:
+    provider = _DirectPathSequenceProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Передам вопрос менеджеру.")
+    )
+
+    result = provider.build_draft(
+        "Спасибо, поняла.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.ROUTE_RUBRIC_ENV: "1",
+            "confirmed_facts": {"fact.process": "Фотон: запись оформляется через менеджера."},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.metadata["direct_path"]["deferral_text_in_self"] is True
 
 
 def test_direct_path_output_sanitizer_removes_client_phone_and_child_name_echo() -> None:

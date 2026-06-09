@@ -40,6 +40,7 @@ from mango_mvp.channels.subscription_llm import (
     IDENTITY_FOTON_SAFE_TEXT,
     LEGAL_THREAT_SAFE_TEXT,
     KNOWN_CONTEXT_REPAIR_TEXT,
+    LLM_RETRIEVE_ENV,
     MATKAP_FEDERAL_TIMING_SAFE_TEXT,
     MATKAP_REGIONAL_SAFE_TEXT,
     MATKAP_SFR_REVIEW_SAFE_TEXT,
@@ -10285,6 +10286,21 @@ class _DirectPathProvider(SubscriptionLlmDraftProvider):
         return self.result
 
 
+class _DirectPathRetrieverProvider(_DirectPathProvider):
+    def __init__(self, result: SubscriptionDraftResult, retriever_payload: Mapping[str, object] | Exception) -> None:
+        super().__init__(result)
+        self.retriever_payload = retriever_payload
+        self.retriever_calls = 0
+        self.last_retriever_prompt = ""
+
+    def _direct_path_llm_retrieve_runner(self, prompt: str) -> Mapping[str, object] | str:
+        self.retriever_calls += 1
+        self.last_retriever_prompt = prompt
+        if isinstance(self.retriever_payload, Exception):
+            raise self.retriever_payload
+        return self.retriever_payload
+
+
 V66_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
 
 
@@ -10313,6 +10329,56 @@ def _wide_pack_text(pack: Mapping[str, object], keys: Sequence[str] | None = Non
     meta = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
     selected = keys or tuple(facts.keys())
     return _direct_path_render_fact_block(facts, fact_metadata=meta, keys=tuple(str(key) for key in selected))
+
+
+def _write_wave6_snapshot(tmp_path: Path) -> Path:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "foton.price.online",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "forbidden_for_client": False,
+                "internal_only": False,
+                "client_safe_text": "Фотон: онлайн-курс стоит 74 500 ₽ за год.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.enrollment.next_step",
+                "fact_type": "enrollment",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "forbidden_for_client": False,
+                "internal_only": False,
+                "client_safe_text": "Фотон: после оплаты менеджер помогает оформить заявку и подобрать группу.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.schedule",
+                "fact_type": "schedule",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "forbidden_for_client": False,
+                "internal_only": False,
+                "client_safe_text": "Фотон: расписание подбирается по классу и формату.",
+            },
+            {
+                "brand": "unpk",
+                "fact_key": "unpk.price.offline",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "forbidden_for_client": False,
+                "internal_only": False,
+                "client_safe_text": "УНПК МФТИ: очный курс стоит 49 000 ₽ за семестр.",
+            },
+        ]
+    }
+    path = tmp_path / "wave6_snapshot.json"
+    path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def test_direct_path_wide_pack_price_close_contains_unpk_offline_price_pair() -> None:
@@ -10422,6 +10488,167 @@ def test_direct_path_wide_pack_marks_scope_conflict_as_adjacent() -> None:
     assert "очно" in exact_text
     assert "49 000" in exact_text
     assert "онлайн" in adjacent_text
+
+
+def test_wave6_llm_retrieve_off_parity_keeps_keyword_pack(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+    }
+    calls = 0
+
+    def retriever(_: str) -> Mapping[str, object]:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("retriever must not be called with flag OFF")
+
+    keyword = _direct_path_context_fact_pack(context, client_message="Сколько стоит?")
+    off = _direct_path_context_fact_pack(
+        {**context, LLM_RETRIEVE_ENV: "0"},
+        client_message="Сколько стоит?",
+        retriever_fn=retriever,
+    )
+
+    assert off == keyword
+    assert calls == 0
+
+
+def test_wave6_llm_retrieve_selects_enrollment_fact_for_paid_next_step(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    message = "Оплатила, что дальше?"
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+    }
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message=message,
+        retriever_fn=lambda prompt: {"exact_ids": ["foton.enrollment.next_step"], "adjacent_ids": ["foton.schedule"]},
+    )
+
+    assert pack["selected_category"] == "llm_retrieve"
+    assert pack["exact_keys"] == ["foton.enrollment.next_step"]
+    assert "foton.schedule" in pack["adjacent_keys"]
+    assert "после оплаты" in _wide_pack_text(pack, pack["exact_keys"]).casefold()
+    assert pack["llm_retrieve"]["used"] is True
+
+
+def test_wave6_llm_retrieve_brand_isolation_filters_candidates_before_model(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    seen_prompt = ""
+
+    def retriever(prompt: str) -> Mapping[str, object]:
+        nonlocal seen_prompt
+        seen_prompt = prompt
+        return {"exact_ids": ["unpk.price.offline", "foton.enrollment.next_step"], "adjacent_ids": []}
+
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "foton",
+            "snapshot_path": str(snapshot_path),
+            LLM_RETRIEVE_ENV: "1",
+        },
+        client_message="Оплатила, что дальше?",
+        retriever_fn=retriever,
+    )
+
+    assert "unpk.price.offline" not in seen_prompt
+    assert "УНПК" not in seen_prompt
+    assert "unpk.price.offline" not in pack["facts"]
+    assert set(pack["facts"]) == {"foton.enrollment.next_step"}
+    assert pack["llm_retrieve"]["invalid_ids"] == ["unpk.price.offline"]
+    assert {item["brand"] for item in pack["fact_metadata"].values()} == {"foton"}
+
+
+def test_wave6_llm_retrieve_fail_soft_falls_back_to_keyword(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+    }
+    keyword = _direct_path_context_fact_pack({**context, LLM_RETRIEVE_ENV: "0"}, client_message="Сколько стоит?")
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит?",
+        retriever_fn=lambda prompt: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd="retriever", timeout=1)),
+    )
+
+    assert pack["facts"] == keyword["facts"]
+    assert pack["exact_keys"] == keyword["exact_keys"]
+    assert pack["adjacent_keys"] == keyword["adjacent_keys"]
+    assert pack["llm_retrieve"]["fallback"] is True
+    assert pack["llm_retrieve"]["fallback_reason"] == "timeout"
+
+
+def test_wave6_llm_retrieve_discards_hallucinated_ids_and_uses_valid_selection(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "foton",
+            "snapshot_path": str(snapshot_path),
+            LLM_RETRIEVE_ENV: "1",
+        },
+        client_message="Оплатила, что дальше?",
+        retriever_fn=lambda prompt: {"exact_ids": ["missing.fact", "foton.enrollment.next_step"], "adjacent_ids": []},
+    )
+
+    assert "missing.fact" not in pack["facts"]
+    assert pack["exact_keys"] == ["foton.enrollment.next_step"]
+    assert pack["llm_retrieve"]["invalid_ids"] == ["missing.fact"]
+
+
+def test_wave6_llm_retrieve_only_hallucinated_ids_falls_back_to_keyword(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+    }
+    keyword = _direct_path_context_fact_pack({**context, LLM_RETRIEVE_ENV: "0"}, client_message="Сколько стоит?")
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит?",
+        retriever_fn=lambda prompt: {"exact_ids": ["missing.fact"], "adjacent_ids": []},
+    )
+
+    assert pack["facts"] == keyword["facts"]
+    assert pack["llm_retrieve"]["fallback"] is True
+    assert pack["llm_retrieve"]["fallback_reason"] == "empty_selection"
+    assert pack["llm_retrieve"]["invalid_ids"] == ["missing.fact"]
+
+
+def test_wave6_llm_retrieve_p0_preblock_skips_retriever_and_direct_model(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathRetrieverProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно."),
+        retriever_payload={"exact_ids": ["foton.enrollment.next_step"], "adjacent_ids": []},
+    )
+
+    result = provider.build_draft(
+        "С карты списали дважды, верните деньги",
+        context={
+            "active_brand": "foton",
+            "snapshot_path": str(snapshot_path),
+            DIRECT_PATH_ENV: "1",
+            LLM_RETRIEVE_ENV: "1",
+        },
+    )
+
+    assert provider.retriever_calls == 0
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert result.metadata["direct_path"]["selected_category"] == "preblocked_before_llm_retrieve"
 
 
 def test_wave1_number_scope_aware_wrong_scope_downgrades_direct_path_text() -> None:

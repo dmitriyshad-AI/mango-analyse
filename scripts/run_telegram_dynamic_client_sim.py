@@ -243,6 +243,10 @@ class CountingSubscriptionLlmDraftProvider(SubscriptionLlmDraftProvider):
         self._count_llm_call("bot_direct_draft")
         return super()._direct_path_draft_runner(prompt)
 
+    def _direct_path_llm_retrieve_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        self._count_llm_call("bot_retriever")
+        return super()._direct_path_llm_retrieve_runner(prompt)
+
 
 class CodexJsonModel:
     def __init__(
@@ -2873,6 +2877,7 @@ def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) ->
         "client": role_counts.get("client", 0),
         "bot_draft": role_counts.get("bot_draft", 0),
         "bot_direct_draft": role_counts.get("bot_direct_draft", 0),
+        "bot_retriever": role_counts.get("bot_retriever", 0),
         "bot_critic": role_counts.get("bot_critic", 0),
         "bot_faithfulness": role_counts.get("bot_faithfulness", 0),
         "bot_selling_compose": role_counts.get("bot_selling_compose", 0),

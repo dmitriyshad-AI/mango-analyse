@@ -1,0 +1,28 @@
+{
+  "profiles": {
+    "telegram-foton-profile-id": {
+      "brand": "foton",
+      "channel": "telegram",
+      "label": "Foton Telegram"
+    },
+    "max-foton-profile-id": {
+      "brand": "foton",
+      "channel": "max",
+      "label": "Foton MAX"
+    },
+    "telegram-unpk-profile-id": {
+      "brand": "unpk",
+      "channel": "telegram",
+      "label": "UNPK Telegram"
+    },
+    "max-unpk-profile-id": {
+      "brand": "unpk",
+      "channel": "max",
+      "label": "UNPK MAX"
+    }
+  },
+  "allowed_test_lead_ids": [
+    "123456789"
+  ],
+  "manager_edit_log_path": "runs/amo_wappi_phase1/manager_edits.jsonl"
+}

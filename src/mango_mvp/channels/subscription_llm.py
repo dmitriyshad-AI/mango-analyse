@@ -122,6 +122,10 @@ BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
+ANTI_PROMISE_ENV = "TELEGRAM_ANTI_PROMISE"
+ANTI_PROMISE_PROMPT_ENV = "TELEGRAM_ANTI_PROMISE_PROMPT"
+ANTI_PROMISE_CATEGORIES_ENV = "TELEGRAM_ANTI_PROMISE_CATEGORIES"
+ANTI_PROMISE_PROMOTE_ENV = "TELEGRAM_ANTI_PROMISE_PROMOTE"
 DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
 DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION = "direct_path_wide_fact_pack_v1_2026_06_08"
 DIRECT_PATH_WIDE_FACT_LIMIT = 60
@@ -2021,6 +2025,22 @@ DIRECT_PATH_MISSION_TEMPLATE = (
 )
 
 
+ANTI_PROMISE_ENROLLMENT_HINT_RE = re.compile(
+    r"\b(?:оплатил[аи]?|после\s+оплат|что\s+дальше|как\s+попасть|тест|вступительн|анкет|доступ|записат|записаться|оформ)\b",
+    re.I,
+)
+ANTI_PROMISE_MANAGER_PROMISE_RE = re.compile(
+    r"\b(?:передам|передать|менеджер\s+(?:свяжется|верн[её]тся|проверит|ответит|подскажет)|"
+    r"он\s+(?:свяжется|верн[её]тся|проверит|ответит|пришл[её]т)|"
+    r"она\s+(?:свяжется|верн[её]тся|проверит|ответит|пришл[её]т))\b",
+    re.I,
+)
+ANTI_PROMISE_LIVE_ACTION_RE = re.compile(
+    r"\b(?:договор|документ|брон|бронь|оформ|заявк|провер(?:к|ит)|оплат|возврат|чек|письм|почт|мест[ао])\b",
+    re.I,
+)
+
+
 def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     if _direct_path_pilot_config(context) == DIRECT_PATH_PILOT_CONFIG_VERSION:
         return True
@@ -2029,6 +2049,31 @@ def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
             if key in context:
                 return _truthy_value(context.get(key))
     return _truthy_value(os.getenv(DIRECT_PATH_ENV))
+
+
+def _anti_promise_enabled(context: Optional[Mapping[str, Any]] = None, *, subflag: str = "") -> bool:
+    if isinstance(context, Mapping):
+        if subflag:
+            for key in (subflag, subflag.lower(), subflag.replace("TELEGRAM_", "").lower()):
+                if key in context:
+                    return _truthy_value(context.get(key)) or _truthy_value(context.get(ANTI_PROMISE_ENV))
+        if ANTI_PROMISE_ENV in context:
+            return _truthy_value(context.get(ANTI_PROMISE_ENV))
+    if subflag and _truthy_value(os.getenv(subflag)):
+        return True
+    return _truthy_value(os.getenv(ANTI_PROMISE_ENV))
+
+
+def _anti_promise_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _anti_promise_enabled(context, subflag=ANTI_PROMISE_PROMPT_ENV)
+
+
+def _anti_promise_categories_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _anti_promise_enabled(context, subflag=ANTI_PROMISE_CATEGORIES_ENV)
+
+
+def _anti_promise_promote_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _anti_promise_enabled(context, subflag=ANTI_PROMISE_PROMOTE_ENV)
 
 
 def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> str:
@@ -2254,7 +2299,11 @@ def _direct_path_selected_categories(client_message: str, context: Optional[Mapp
         category = _direct_path_category_from_hint(value)
         if category and category not in categories:
             categories.append(category)
-    return tuple(categories[:2])
+    if not _anti_promise_categories_enabled(context):
+        return tuple(categories[:2])
+    if ANTI_PROMISE_ENROLLMENT_HINT_RE.search(str(client_message or "")) and "enrollment" not in categories:
+        categories.append("enrollment")
+    return tuple(categories[:4])
 
 
 def _direct_path_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
@@ -2612,6 +2661,35 @@ def _direct_path_topic_hints(client_message: str, context: Optional[Mapping[str,
     return hints
 
 
+def _direct_path_gold_example_has_manager_promise(item: Mapping[str, Any]) -> bool:
+    haystack = f"{item.get('manager_response_masked') or ''} {item.get('prompt_example') or ''}"
+    return bool(ANTI_PROMISE_MANAGER_PROMISE_RE.search(haystack))
+
+
+def _direct_path_gold_example_is_live_action(item: Mapping[str, Any]) -> bool:
+    topic = str(item.get("topic") or "").strip().casefold()
+    haystack = f"{item.get('client') or ''} {item.get('manager_response_masked') or ''} {item.get('prompt_example') or ''}"
+    return topic in {"docs", "enrollment", "payment_flex"} or bool(ANTI_PROMISE_LIVE_ACTION_RE.search(haystack))
+
+
+def _direct_path_filter_anti_promise_gold_examples(
+    examples: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    result: list[Mapping[str, Any]] = []
+    for item in examples:
+        has_promise = _direct_path_gold_example_has_manager_promise(item)
+        live_action = _direct_path_gold_example_is_live_action(item)
+        if has_promise and not live_action:
+            continue
+        if has_promise and live_action:
+            enriched = dict(item)
+            enriched["_anti_promise_live_action_example"] = True
+            result.append(enriched)
+            continue
+        result.append(item)
+    return tuple(result)
+
+
 def _direct_path_select_gold_real_examples(
     client_message: str,
     *,
@@ -2645,6 +2723,8 @@ def _direct_path_select_gold_real_examples(
             selected.append(item)
             if len(selected) >= min(2, limit):
                 break
+    if _anti_promise_prompt_enabled(context):
+        return _direct_path_filter_anti_promise_gold_examples(selected)
     return tuple(selected)
 
 
@@ -2654,6 +2734,8 @@ def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str
     lines = [
         "Живые образцы менеджерского стиля. Это НЕ источник фактов: маски в квадратных скобках заменяй только подтверждёнными фактами текущего хода или опускай.",
     ]
+    if any(_truthy_value(item.get("_anti_promise_live_action_example")) for item in examples):
+        lines.append("Не копируй передачу менеджеру из live-действий в справочные ответы.")
     for idx, item in enumerate(examples, 1):
         client = str(item.get("client") or "").strip()
         answer = str(item.get("manager_response_masked") or "").strip()
@@ -2663,9 +2745,24 @@ def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str
         lines.append(f"{idx}. Тема: {item.get('topic')}.")
         lines.append(f"   Клиент: {client}")
         lines.append(f"   Хороший стиль: {answer}")
+        if _truthy_value(item.get("_anti_promise_live_action_example")):
+            lines.append("   Граница: это пример live-действия менеджера; не используй такой handoff, если можно ответить подтверждённым фактом.")
         if note:
             lines.append(f"   Принцип: {note}")
     return "\n".join(lines)
+
+
+def _direct_path_anti_promise_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
+    if not _anti_promise_prompt_enabled(context):
+        return ""
+    return (
+        "Анти-уход при факте:\n"
+        "- Если в блоке exact-фактов есть подтверждённый факт под текущий вопрос, сначала ответь этим фактом сам.\n"
+        "- Не пиши «передам менеджеру», «менеджер свяжется/вернётся/проверит/ответит» как обычный следующий шаг после справочного факта.\n"
+        "- Route `draft_for_manager` выбирай только когда факта нет, клиент просит live-действие менеджера или нужна проверка/документы/бронь/оплата/P0.\n"
+        "- Если факта нет, честно скажи, что этот пункт нужно уточнить, но не придумывай порядок записи, тест, кабинет, договор или сроки.\n"
+        "- Live-действие менеджера допустимо только для договора, документов, брони, проверки оплаты/возврата и похожих действий."
+    )
 
 
 def _build_direct_path_prompt(
@@ -2686,6 +2783,7 @@ def _build_direct_path_prompt(
     exact_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=exact_keys)
     adjacent_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=adjacent_keys)
     gold_block = _direct_path_gold_prompt_block(gold_examples)
+    anti_promise_block = _direct_path_anti_promise_prompt_block(context)
     recent_block = "\n".join(_direct_path_recent_messages(context)) or "(диалог только начался)"
     slots = _direct_path_known_slots(context)
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
@@ -2693,6 +2791,8 @@ def _build_direct_path_prompt(
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
     return (
         f"{DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)}\n\n"
+        + (f"{anti_promise_block}\n\n" if anti_promise_block else "")
+        +
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
@@ -2944,6 +3044,183 @@ def _direct_path_finalize_metadata(
     return replace(result, metadata=metadata)
 
 
+def _direct_path_exact_fact_pairs_for_promotion(
+    result: SubscriptionDraftResult,
+    context: Optional[Mapping[str, Any]],
+) -> tuple[tuple[str, str], ...]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    facts = direct.get("retrieved_facts") if isinstance(direct.get("retrieved_facts"), Mapping) else {}
+    exact_keys = direct.get("wide_fact_exact_keys") if isinstance(direct.get("wide_fact_exact_keys"), Sequence) else ()
+    adjacent_keys = {str(key) for key in (direct.get("wide_fact_adjacent_keys") or ()) if str(key).strip()}
+    fact_meta = direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {}
+    active_brand = _active_brand(context)
+    pairs: list[tuple[str, str]] = []
+    for raw_key in exact_keys:
+        key = str(raw_key or "").strip()
+        if not key or key in adjacent_keys:
+            continue
+        text = str(facts.get(key) or "").strip()
+        if not text:
+            continue
+        meta = fact_meta.get(key) if isinstance(fact_meta.get(key), Mapping) else {}
+        fact_brand = str(meta.get("brand") or "").strip().casefold()
+        if fact_brand and fact_brand != active_brand:
+            continue
+        pairs.append((key, text))
+    return tuple(pairs)
+
+
+_FACT_PRONOUNCED_STOPWORDS = frozenset(
+    {
+        "фотон",
+        "унпк",
+        "мфти",
+        "москва",
+        "класс",
+        "классы",
+        "учебный",
+        "центр",
+        "курсы",
+        "курс",
+        "занятия",
+        "занятие",
+        "факт",
+        "client",
+        "safe",
+        "text",
+    }
+)
+
+
+def _direct_path_fact_content_tokens(text: Any) -> set[str]:
+    normalized = _normalize_fact_match_text(text)
+    return {
+        token
+        for token in re.findall(r"[a-zа-яё]{5,}", normalized, flags=re.I)
+        if token not in _FACT_PRONOUNCED_STOPWORDS
+    }
+
+
+def _direct_path_fact_pronounced_in_text(draft_text: str, fact_text: str) -> bool:
+    normalized_draft = _normalize_fact_match_text(draft_text)
+    normalized_fact = _normalize_fact_match_text(fact_text)
+    if not normalized_draft or not normalized_fact:
+        return False
+    if normalized_fact in normalized_draft:
+        return True
+    fact_anchors = _fact_match_anchors(fact_text)
+    draft_anchors = _fact_match_anchors(draft_text)
+    hard_anchors = {anchor for anchor in fact_anchors if re.search(r"\d", anchor) or anchor.startswith(("unit:", "deadline:", "condition:"))}
+    fact_tokens = _direct_path_fact_content_tokens(fact_text)
+    draft_tokens = _direct_path_fact_content_tokens(draft_text)
+    token_overlap = fact_tokens & draft_tokens
+    if hard_anchors and hard_anchors <= draft_anchors and token_overlap:
+        return True
+    if len(fact_tokens) <= 2:
+        return bool(fact_tokens and fact_tokens <= draft_tokens)
+    return len(token_overlap) >= 2
+
+
+def _direct_path_has_pronounced_exact_fact(result: SubscriptionDraftResult, context: Optional[Mapping[str, Any]]) -> bool:
+    return any(
+        _direct_path_fact_pronounced_in_text(result.draft_text, fact_text)
+        for _, fact_text in _direct_path_exact_fact_pairs_for_promotion(result, context)
+    )
+
+
+def _direct_path_has_manager_promise(text: str) -> bool:
+    return bool(ANTI_PROMISE_MANAGER_PROMISE_RE.search(str(text or "")))
+
+
+def _direct_path_can_promote_to_self(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    if not _anti_promise_promote_enabled(context):
+        return False
+    if result.route != "draft_for_manager":
+        return False
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    if not _truthy_value(direct.get("enabled") or direct.get("attempted") or direct.get("direct_path_attempted")):
+        return False
+    gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
+    if str(gate.get("action") or "").strip() != "pass":
+        return False
+    findings = gate.get("findings") if isinstance(gate.get("findings"), Sequence) else ()
+    if any(isinstance(item, Mapping) and str(item.get("code") or "").strip() for item in findings):
+        return False
+    if dialogue_contract_p0_pre_gate(client_message, context=context) or detect_high_risk_input_markers(client_message, context=context):
+        return False
+    if is_high_risk_result(result):
+        return False
+    if _active_brand(context) == "unknown":
+        return False
+    if _direct_path_has_manager_promise(result.draft_text):
+        return False
+    return _direct_path_has_pronounced_exact_fact(result, context)
+
+
+def _direct_path_maybe_promote_draft_to_self(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    if not _direct_path_can_promote_to_self(result, client_message=client_message, context=context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    direct.update({"anti_promise_promote_attempted": True})
+    metadata["direct_path"] = direct
+    promoted = replace(
+        result,
+        route="bot_answer_self_for_pilot",
+        safety_flags=tuple(dict.fromkeys([*result.safety_flags, "direct_path_anti_promise_promoted_self"])),
+        metadata=metadata,
+    )
+    rechecked = apply_authoritative_output_gate(promoted, client_message=client_message, context=context)
+    recheck_gate = (
+        rechecked.metadata.get("authoritative_output_gate")
+        if isinstance(rechecked.metadata, Mapping) and isinstance(rechecked.metadata.get("authoritative_output_gate"), Mapping)
+        else {}
+    )
+    if rechecked.route in AUTONOMOUS_ROUTES and str(recheck_gate.get("action") or "") == "pass":
+        final_metadata = dict(rechecked.metadata)
+        final_direct = dict(final_metadata.get("direct_path") or {})
+        final_direct.update(
+            {
+                "anti_promise_promoted": True,
+                "anti_promise_promote_rechecked": True,
+                "anti_promise_promote_reverted": False,
+            }
+        )
+        final_metadata["direct_path"] = final_direct
+        return replace(rechecked, metadata=final_metadata)
+
+    original_metadata = dict(result.metadata)
+    original_direct = dict(original_metadata.get("direct_path") or {})
+    original_direct.update(
+        {
+            "anti_promise_promote_attempted": True,
+            "anti_promise_promoted": False,
+            "anti_promise_promote_rechecked": True,
+            "anti_promise_promote_reverted": True,
+            "anti_promise_recheck_action": str(recheck_gate.get("action") or ""),
+            "anti_promise_recheck_findings": [
+                str(item.get("code") or "")
+                for item in (recheck_gate.get("findings") or ())
+                if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+            ],
+        }
+    )
+    original_metadata["direct_path"] = original_direct
+    return replace(result, metadata=original_metadata)
+
+
 class SubscriptionLlmDraftProvider:
     def __init__(
         self,
@@ -3169,7 +3446,8 @@ class SubscriptionLlmDraftProvider:
         )
         before_gate_route = semantic_checked.route
         gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
-        return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
+        promoted = _direct_path_maybe_promote_draft_to_self(gated, client_message=client_message, context=context)
+        return _direct_path_finalize_metadata(promoted, before_gate_route=before_gate_route)
 
     def _build_dialogue_contract_pipeline_draft(
         self,

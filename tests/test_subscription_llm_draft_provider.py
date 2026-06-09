@@ -9,6 +9,7 @@ from typing import Mapping, Sequence
 import pytest
 import yaml
 
+import mango_mvp.channels.subscription_llm as subscription_llm_module
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     FactStore,
@@ -28,6 +29,10 @@ from mango_mvp.channels.subscription_llm import (
     CodexExecDraftProvider,
     COMPLAINT_SAFE_TEXT,
     CONTACT_FOTON_SAFE_TEXT,
+    ANTI_PROMISE_ENV,
+    ANTI_PROMISE_PROMPT_ENV,
+    ANTI_PROMISE_CATEGORIES_ENV,
+    ANTI_PROMISE_PROMOTE_ENV,
     BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
     DIRECT_PATH_PILOT_CONFIG_ENV,
@@ -77,6 +82,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_semantic_output_verifier,
     apply_semantic_diagnosis_guard,
     _direct_path_context_fact_pack,
+    _direct_path_filter_anti_promise_gold_examples,
     _direct_path_render_fact_block,
     build_semantic_output_regen_prompt,
     build_semantic_output_verifier_prompt,
@@ -10877,6 +10883,205 @@ def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
     assert "Стоимость за один предмет" in provider_with_gold.last_prompt
     assert result.metadata["direct_path"]["gold_real_enabled"] is True
     assert "foton_price_installment_01" in result.metadata["direct_path"]["gold_real_example_ids"]
+
+
+def test_wave5_anti_promise_flags_off_keep_direct_prompt_and_categories() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по оплате.")
+    )
+    message = "Оплатила курс, что дальше?"
+    context = {
+        **_wide_pack_context(brand="foton", message=message, primary_intent="pricing"),
+        DIRECT_PATH_ENV: "1",
+    }
+    result = provider.build_draft(
+        message,
+        context=context,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "Анти-уход при факте" not in provider.last_prompt
+    assert "можно\nнаписать «менеджер свяжется» без срока" in provider.last_prompt
+    assert result.metadata["direct_path"]["selected_category"] == "pricing"
+
+
+def test_wave5_anti_promise_prompt_adds_answer_first_contract() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Уточню этот пункт.")
+    )
+    provider.build_draft(
+        "Оплатила курс, что дальше?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            ANTI_PROMISE_PROMPT_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Фотон: перед стартом ребёнок проходит вступительное тестирование."},
+        },
+    )
+
+    prompt = provider.last_prompt
+    assert "Анти-уход при факте" in prompt
+    assert "сначала ответь этим фактом сам" in prompt
+    assert "Route `draft_for_manager` выбирай только когда факта нет" in prompt
+
+
+def test_wave5_anti_promise_gold_filter_skips_non_live_promise_and_marks_live_action() -> None:
+    filtered = _direct_path_filter_anti_promise_gold_examples(
+        [
+            {
+                "id": "generic_handoff",
+                "topic": "price",
+                "manager_response_masked": "Цена [из фактов]. Передам менеджеру, он ответит.",
+                "prompt_example": "Обычный справочный ответ.",
+            },
+            {
+                "id": "docs_live",
+                "topic": "docs",
+                "manager_response_masked": "Передам менеджеру, он пришлёт договор.",
+                "prompt_example": "Документы отправляет менеджер.",
+            },
+        ]
+    )
+
+    assert [item["id"] for item in filtered] == ["docs_live"]
+    assert filtered[0]["_anti_promise_live_action_example"] is True
+
+
+def test_wave5_anti_promise_categories_add_enrollment_for_after_payment() -> None:
+    message = "Оплатила курс на сайте, что дальше и где взять тест?"
+    base_context = _wide_pack_context(
+        brand="foton",
+        message=message,
+        primary_intent="pricing",
+    )
+    base_pack = _direct_path_context_fact_pack(base_context, client_message=message)
+    enabled_context = {**base_context, ANTI_PROMISE_CATEGORIES_ENV: "1"}
+    enabled_pack = _direct_path_context_fact_pack(enabled_context, client_message=message)
+
+    assert base_pack["selected_category"] == "pricing"
+    assert "enrollment" in str(enabled_pack["selected_category"]).split("+")
+
+
+def test_wave5_promotes_clean_draft_with_pronounced_exact_fact_to_self() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Да, подскажу: Фотон проводит бесплатное пробное занятие.",
+            topic_id="theme:023_trial_class",
+        )
+    )
+    result = provider.build_draft(
+        "Есть пробное?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            ANTI_PROMISE_ENV: "1",
+            "confirmed_facts": {"trial.foton": "Фотон проводит бесплатное пробное занятие."},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.metadata["direct_path"]["anti_promise_promoted"] is True
+    assert result.metadata["direct_path"]["reason_class"] == ""
+    assert result.metadata["is_manager_deferral"] is False
+
+
+@pytest.mark.parametrize(
+    ("route", "draft_text", "client_message", "expected_route"),
+    [
+        ("draft_for_manager", "Передам менеджеру.", "Есть пробное?", "draft_for_manager"),
+        ("draft_for_manager", "Фотон проводит бесплатное пробное занятие. Передам менеджеру.", "Есть пробное?", "draft_for_manager"),
+        ("manager_only", "Фотон проводит бесплатное пробное занятие.", "Есть пробное?", "manager_only"),
+        ("draft_for_manager", "Фотон проводит бесплатное пробное занятие.", "С карты списали дважды, верните деньги", "manager_only"),
+    ],
+)
+def test_wave5_promote_negative_boundaries(route: str, draft_text: str, client_message: str, expected_route: str) -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route=route, draft_text=draft_text, topic_id="theme:023_trial_class")
+    )
+    result = provider.build_draft(
+        client_message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            ANTI_PROMISE_ENV: "1",
+            "confirmed_facts": {"trial.foton": "Фотон проводит бесплатное пробное занятие."},
+        },
+    )
+
+    assert result.route == expected_route
+    assert result.metadata["direct_path"].get("anti_promise_promoted") is not True
+
+
+def test_wave5_promote_does_not_override_gate_findings() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Фотон проводит бесплатное пробное занятие, а УНПК тоже подойдёт.",
+            topic_id="theme:023_trial_class",
+        )
+    )
+    result = provider.build_draft(
+        "Есть пробное?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            ANTI_PROMISE_ENV: "1",
+            "confirmed_facts": {"trial.foton": "Фотон проводит бесплатное пробное занятие."},
+        },
+    )
+
+    assert result.route == "manager_only"
+    assert result.metadata["authoritative_output_gate"]["action"] == "block"
+    assert result.metadata["direct_path"].get("anti_promise_promoted") is not True
+
+
+def test_wave5_promote_reverts_when_recheck_gate_finds_hard_issue(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_gate(result: SubscriptionDraftResult, *, client_message: str = "", context: Mapping[str, object] | None = None):
+        calls["count"] += 1
+        metadata = dict(result.metadata)
+        if calls["count"] == 1:
+            metadata["authoritative_output_gate"] = {
+                "checked": True,
+                "action": "pass",
+                "findings": [],
+                "route_before": result.route,
+                "route_after": result.route,
+            }
+            return replace(result, metadata=metadata)
+        metadata["authoritative_output_gate"] = {
+            "checked": True,
+            "action": "block",
+            "findings": [{"code": "brand_leak", "policy": "block"}],
+            "route_before": result.route,
+            "route_after": "manager_only",
+        }
+        return replace(result, route="manager_only", metadata=metadata)
+
+    monkeypatch.setattr(subscription_llm_module, "apply_authoritative_output_gate", fake_gate)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Фотон проводит бесплатное пробное занятие.",
+            topic_id="theme:023_trial_class",
+        )
+    )
+    result = provider.build_draft(
+        "Есть пробное?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            ANTI_PROMISE_ENV: "1",
+            "confirmed_facts": {"trial.foton": "Фотон проводит бесплатное пробное занятие."},
+        },
+    )
+
+    assert calls["count"] == 2
+    assert result.route == "draft_for_manager"
+    assert result.metadata["direct_path"]["anti_promise_promote_reverted"] is True
+    assert result.metadata["direct_path"]["anti_promise_recheck_findings"] == ["brand_leak"]
 
 
 def test_direct_path_pilot_gold_v1_enables_direct_and_gold_without_extra_flags() -> None:

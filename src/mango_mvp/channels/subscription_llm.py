@@ -134,6 +134,10 @@ DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
     / "real_manager_gold_2026-06-08.yaml"
 )
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION = "real_manager_gold_2026-06-08"
+GRADED_GATE_ENV = "TELEGRAM_GRADED_GATE"
+GRADED_GATE_PROMPT_ENV = "TELEGRAM_GRADED_GATE_PROMPT"
+GRADED_GATE_ROUTE_ENV = "TELEGRAM_GRADED_GATE_ROUTE"
+GRADED_GATE_REGEN_ENV = "TELEGRAM_GRADED_GATE_REGEN"
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 SEMANTIC_OUTPUT_VERIFIER_SCHEMA_VERSION = "semantic_output_verifier_v1_2026_06_06"
@@ -2031,6 +2035,17 @@ def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _truthy_value(os.getenv(DIRECT_PATH_ENV))
 
 
+def _graded_gate_enabled(context: Optional[Mapping[str, Any]] = None, *, subflag: str = "") -> bool:
+    if isinstance(context, Mapping):
+        if _truthy_value(context.get(GRADED_GATE_ENV)):
+            return True
+        if subflag and _truthy_value(context.get(subflag)):
+            return True
+    if _truthy_value(os.getenv(GRADED_GATE_ENV)):
+        return True
+    return bool(subflag and _truthy_value(os.getenv(subflag)))
+
+
 def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> str:
     if isinstance(context, Mapping):
         for key in (DIRECT_PATH_PILOT_CONFIG_ENV, "direct_path_pilot_config", "pilot_config"):
@@ -2691,10 +2706,19 @@ def _build_direct_path_prompt(
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
     memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) and isinstance(context.get("dialogue_memory_view"), Mapping) else {}
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
+    graded_hint = (
+        "Если точного факта под вопрос нет, но есть близкий подтверждённый факт того же бренда, "
+        "ответь полезно из этого факта с короткой пометкой неуверенности: например, "
+        "«точную цифру/деталь менеджер сверит». Не уходи к менеджеру только из-за близкого факта. "
+        "Уходи к менеджеру на P0 (возврат, жалоба, юридический спор), смешении брендов или когда факта реально нет.\n\n"
+        if _graded_gate_enabled(context, subflag=GRADED_GATE_PROMPT_ENV)
+        else ""
+    )
     return (
         f"{DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)}\n\n"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
+        f"{graded_hint}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{client_message}\n\n"
         + (f"{gold_block}\n\n" if gold_block else "")
@@ -2908,7 +2932,11 @@ def _direct_path_finalize_metadata(
     downgraded = gate_action in {"block", "downgrade", "downgrade_keep_text"} or (
         before_gate_route in AUTONOMOUS_ROUTES and result.route not in AUTONOMOUS_ROUTES
     )
-    regenerated = bool(verifier.get("regen_attempted") or verifier.get("regen_accepted"))
+    regenerated = bool(
+        verifier.get("regen_attempted")
+        or verifier.get("regen_accepted")
+        or direct.get("graded_gate_regen_attempted")
+    )
     reason_class = ""
     reason_evidence: dict[str, Any] = {}
     if result.route not in AUTONOMOUS_ROUTES:
@@ -2937,10 +2965,83 @@ def _direct_path_finalize_metadata(
             "reason_evidence": reason_evidence,
         }
     )
+    if direct.get("graded_gate_regen_attempted"):
+        direct["graded_gate_regen_accepted"] = bool(
+            result.route in AUTONOMOUS_ROUTES
+            and gate_action not in {"block", "downgrade", "downgrade_keep_text"}
+        )
     metadata["direct_path"] = direct
     metadata["text_composition_source"] = direct.get("text_composition_source") or metadata.get("text_composition_source")
     metadata["is_manager_deferral"] = bool(direct["is_manager_deferral"])
     metadata["reason_class"] = reason_class
+    return replace(result, metadata=metadata)
+
+
+def _direct_path_graded_gate_regen_needed(result: SubscriptionDraftResult, context: Optional[Mapping[str, Any]]) -> bool:
+    if not _graded_gate_enabled(context, subflag=GRADED_GATE_REGEN_ENV):
+        return False
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
+    if not _truthy_value(direct.get("direct_path_attempted") or direct.get("attempted")):
+        return False
+    if _truthy_value(direct.get("graded_gate_regen_attempted")):
+        return False
+    if str(gate.get("action") or "") != "graded_low_risk":
+        return False
+    if not direct.get("retrieved_facts"):
+        return False
+    return result.route not in AUTONOMOUS_ROUTES or dialogue_contract_is_pure_handoff_text(result.draft_text)
+
+
+def _build_direct_path_graded_gate_regen_prompt(
+    original_prompt: str,
+    *,
+    previous_text: str,
+    findings: Sequence[Mapping[str, Any]],
+) -> str:
+    finding_lines = []
+    for item in findings[:4]:
+        finding_lines.append(
+            "- "
+            + " / ".join(
+                part
+                for part in (
+                    str(item.get("code") or "").strip(),
+                    str(item.get("relation_to_base") or "").strip(),
+                    str(item.get("nearest_fact_key") or "").strip(),
+                    str(item.get("detail") or "").strip(),
+                )
+                if part
+            )
+        )
+    finding_block = "\n".join(finding_lines) or "- низкорисковая находка рядом с подтверждённым фактом"
+    return (
+        f"{original_prompt}\n\n"
+        "Повторная попытка: предыдущий черновик слишком рано передал вопрос менеджеру.\n"
+        "Есть близкие подтверждённые факты из блока выше, и находка не относится к P0, бренду, ПДн или новому числу.\n"
+        "Дай полезный ответ из этих фактов с коротким маркером неуверенности "
+        "(например: «точную деталь менеджер сверит»). Не пиши чистый handoff, если можешь ответить по фактам.\n"
+        f"Предыдущий черновик:\n{previous_text}\n\n"
+        f"Низкорисковые находки:\n{finding_block}\n\n"
+        "Верни только JSON в той же схеме."
+    )
+
+
+def _direct_path_mark_graded_gate_regen(
+    result: SubscriptionDraftResult,
+    *,
+    attempted: bool,
+    accepted: bool = False,
+    error: str = "",
+) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    direct["graded_gate_regen_attempted"] = bool(attempted)
+    direct["graded_gate_regen_accepted"] = bool(accepted)
+    if error:
+        direct["graded_gate_regen_error"] = error[:240]
+    metadata["direct_path"] = direct
     return replace(result, metadata=metadata)
 
 
@@ -3169,6 +3270,39 @@ class SubscriptionLlmDraftProvider:
         )
         before_gate_route = semantic_checked.route
         gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
+        if _direct_path_graded_gate_regen_needed(gated, context):
+            gate = gated.metadata.get("authoritative_output_gate") if isinstance(gated.metadata, Mapping) else {}
+            findings = gate.get("findings") if isinstance(gate, Mapping) and isinstance(gate.get("findings"), Sequence) else ()
+            marked = _direct_path_mark_graded_gate_regen(gated, attempted=True)
+            direct_after_gate = marked.metadata.get("direct_path") if isinstance(marked.metadata, Mapping) else {}
+            regen_meta = dict(direct_after_gate) if isinstance(direct_after_gate, Mapping) else dict(direct_meta)
+            regen_prompt = _build_direct_path_graded_gate_regen_prompt(
+                prompt,
+                previous_text=gated.draft_text,
+                findings=findings if not isinstance(findings, (str, bytes, bytearray)) else (),
+            )
+            try:
+                regen_result = self._direct_path_draft_runner(regen_prompt)
+            except Exception as exc:  # noqa: BLE001
+                marked = _direct_path_mark_graded_gate_regen(marked, attempted=True, error=str(exc)[:240])
+                return _direct_path_finalize_metadata(marked, before_gate_route=before_gate_route)
+            regen_meta["graded_gate_regen_attempted"] = True
+            regen_meta["graded_gate_regen_accepted"] = False
+            regen_result = replace(
+                regen_result,
+                context_used=tuple(dict.fromkeys([*regen_result.context_used, "direct_path", "client_safe_facts", "graded_gate_regen"])),
+                safety_flags=tuple(dict.fromkeys([*regen_result.safety_flags, "direct_path_model", "draft_only", "graded_gate_regen"])),
+            )
+            regen_result = _direct_path_merge_metadata(regen_result, regen_meta)
+            regen_checked = apply_semantic_output_verifier(
+                regen_result,
+                client_message=client_message,
+                context=context,
+                verifier_fn=self._semantic_output_verifier_runner,
+                regen_fn=self._semantic_output_regen_runner,
+            )
+            before_gate_route = regen_checked.route
+            gated = apply_authoritative_output_gate(regen_checked, client_message=client_message, context=context)
         return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
 
     def _build_dialogue_contract_pipeline_draft(
@@ -4741,9 +4875,19 @@ def apply_authoritative_output_gate(
     result = apply_output_sanitizer(result, context=context, client_message=client_message)
     findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
     actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
+    graded_route_enabled = (
+        _graded_gate_enabled(context, subflag=GRADED_GATE_ROUTE_ENV)
+        and _authoritative_gate_direct_path_active(result)
+    )
+    if graded_route_enabled:
+        findings = _graded_gate_annotate_findings(findings)
     direct_path_keep_text = _authoritative_gate_direct_path_keep_text(result, findings)
     actionable = [finding for finding, action in zip(findings, actions) if action in {"block", "downgrade", "downgrade_keep_text"}]
+    graded_low_risk = graded_route_enabled and _graded_gate_low_risk_actionable(findings, actions)
     gate_action = (
+        "graded_low_risk"
+        if graded_low_risk
+        else
         "downgrade_keep_text"
         if direct_path_keep_text
         else
@@ -4776,6 +4920,29 @@ def apply_authoritative_output_gate(
             return replace(result, metadata=metadata)
     if not actionable:
         return replace(result, metadata=metadata)
+    if graded_low_risk:
+        metadata["authoritative_output_gate"]["route_after"] = result.route
+        metadata["authoritative_output_gate"]["graded_gate"] = True
+        draft_text = _graded_gate_add_uncertainty_marker(result.draft_text)
+        flags = tuple(
+            dict.fromkeys(
+                [
+                    *result.safety_flags,
+                    "authoritative_gate:graded_low_risk",
+                ]
+            )
+        )
+        checklist = tuple(dict.fromkeys([*result.manager_checklist, _semantic_output_manager_note(actionable)]))
+        return replace(
+            result,
+            draft_text=draft_text,
+            safety_flags=flags,
+            manager_checklist=checklist,
+            forbidden_promises_detected=tuple(
+                dict.fromkeys([*result.forbidden_promises_detected, *[str(item["code"]) for item in actionable]])
+            ),
+            metadata=metadata,
+        )
 
     route = "draft_for_manager" if direct_path_keep_text else _authoritative_gate_downgraded_route(result.route, actions)
     metadata["authoritative_output_gate"]["route_after"] = route
@@ -5210,6 +5377,102 @@ def _authoritative_gate_action(code: str) -> str:
     return str(GATE_BLOCKING_CODES.get(str(code or ""), "warn") or "warn")
 
 
+GRADED_GATE_LOW_RISK_CODES = frozenset(
+    {
+        "wrong_scope",
+        "general_number_without_marker",
+        "derived_product_claim",
+        "invented_generalization",
+    }
+)
+GRADED_GATE_HARD_CODES = frozenset(
+    {
+        "hard_p0",
+        "zero_collect_required",
+        "brand_leak",
+        "cross_brand",
+        "meta_leak",
+        "ai_disclosure",
+        "identity_disclosure",
+        "draft_placeholder",
+        "promocode_leak",
+        "p0_promise",
+        "p0_semantic_risk",
+        "unsupported_promise",
+        "unsupported_product_claim",
+        "unsupported_product_number",
+        "unsupported_entity",
+        "fake_enrollment_claim",
+        "proactive_pii_echo",
+        "individual_diagnosis",
+        "estimate_individual_child_advice",
+        "estimate_general_advice_risk",
+        "forbidden_scope",
+        "unconfirmed_schedule",
+        "self_contradiction",
+        "unsupported_followup_deadline",
+        "unsupported_schedule_assumption",
+        "unsupported_offline_visit_invitation",
+        "unsupported_content_delivery_action",
+        "unconfirmed_operational_specificity",
+    }
+)
+GRADED_GATE_MARKER_RE = re.compile(
+    r"\b(?:ориентировочн|примерн|судя\s+по|по\s+близк\w+\s+факт|точн\w+\s+(?:цифр\w+|детал\w+|услов\w+).{0,40}свер|менеджер\s+(?:сверит|уточнит|проверит))",
+    re.I,
+)
+
+
+def _finding_severity(code: str, relation_to_base: str = "") -> str:
+    normalized_code = str(code or "").strip()
+    relation = str(relation_to_base or "").strip().casefold()
+    if relation in {"absent", "contradicts"}:
+        return "hard"
+    if normalized_code in GRADED_GATE_HARD_CODES:
+        return "hard"
+    if normalized_code == "general_number_without_marker":
+        return "low_risk"
+    if normalized_code in GRADED_GATE_LOW_RISK_CODES and relation == "adjacent":
+        return "low_risk"
+    return "hard"
+
+
+def _authoritative_gate_direct_path_active(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    return _truthy_value(direct.get("enabled") or direct.get("attempted") or direct.get("direct_path_attempted"))
+
+
+def _graded_gate_annotate_findings(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    annotated: list[dict[str, str]] = []
+    for item in findings:
+        finding = dict(item)
+        severity = _finding_severity(str(finding.get("code") or ""), str(finding.get("relation_to_base") or ""))
+        finding["severity"] = severity
+        annotated.append({str(key): str(value) for key, value in finding.items()})
+    return annotated
+
+
+def _graded_gate_low_risk_actionable(findings: Sequence[Mapping[str, Any]], actions: Sequence[str]) -> bool:
+    actionable = [
+        finding
+        for finding, action in zip(findings, actions)
+        if action in {"block", "downgrade", "downgrade_keep_text"}
+    ]
+    return bool(actionable) and all(str(item.get("severity") or "") == "low_risk" for item in actionable)
+
+
+def _graded_gate_uncertainty_marked(text: str) -> bool:
+    return bool(GRADED_GATE_MARKER_RE.search(str(text or "")))
+
+
+def _graded_gate_add_uncertainty_marker(text: str) -> str:
+    value = str(text or "").strip()
+    if not value or _graded_gate_uncertainty_marked(value):
+        return value
+    return f"{value.rstrip()} Точную деталь менеджер сверит."
+
+
 def _authoritative_gate_downgraded_route(route: str, actions: Sequence[str]) -> str:
     current = str(route or "manager_only")
     if "block" in set(actions):
@@ -5277,7 +5540,10 @@ def _authoritative_gate_findings(
             facts=facts,
         ):
             continue
-        findings.append(_authoritative_gate_finding(finding.code, detail=finding.detail, source="verify_output"))
+        extra: dict[str, str] = {}
+        if finding.code == "wrong_scope":
+            extra["relation_to_base"] = "adjacent"
+        findings.append(_authoritative_gate_finding(finding.code, detail=finding.detail, source="verify_output", **extra))
 
     safety = classify_answer_safety(
         client_message=client_message,

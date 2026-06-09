@@ -78,6 +78,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_semantic_diagnosis_guard,
     _direct_path_context_fact_pack,
     _direct_path_render_fact_block,
+    _finding_severity,
     build_semantic_output_regen_prompt,
     build_semantic_output_verifier_prompt,
     build_semantic_diagnosis_prompt,
@@ -10285,6 +10286,20 @@ class _DirectPathProvider(SubscriptionLlmDraftProvider):
         return self.result
 
 
+class _DirectPathSequenceProvider(SubscriptionLlmDraftProvider):
+    def __init__(self, results: Sequence[SubscriptionDraftResult]) -> None:
+        super().__init__()
+        self.results = list(results)
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
+        self.calls += 1
+        self.prompts.append(prompt)
+        index = min(self.calls - 1, len(self.results) - 1)
+        return self.results[index]
+
+
 V66_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
 
 
@@ -10456,6 +10471,290 @@ def test_wave1_number_scope_aware_wrong_scope_downgrades_direct_path_text() -> N
     assert gate["action"] == "downgrade_keep_text"
     assert "wrong_scope" in {item["code"] for item in gate["findings"]}
     assert "direct_path_gate_text_preserved" in gated.safety_flags
+
+
+@pytest.mark.parametrize(
+    ("code", "relation", "expected"),
+    [
+        ("wrong_scope", "adjacent", "low_risk"),
+        ("general_number_without_marker", "", "low_risk"),
+        ("derived_product_claim", "adjacent", "low_risk"),
+        ("invented_generalization", "adjacent", "low_risk"),
+        ("derived_product_claim", "absent", "hard"),
+        ("invented_generalization", "absent", "hard"),
+        ("derived_product_claim", "contradicts", "hard"),
+        ("brand_leak", "adjacent", "hard"),
+        ("hard_p0", "adjacent", "hard"),
+        ("identity_disclosure", "adjacent", "hard"),
+        ("unsupported_product_number", "absent", "hard"),
+        ("unsupported_entity", "absent", "hard"),
+        ("wrong_scope", "", "hard"),
+    ],
+)
+def test_wave4_finding_severity_is_deterministic(code: str, relation: str, expected: str) -> None:
+    assert _finding_severity(code, relation) == expected
+
+
+def test_wave4_direct_prompt_adds_grounded_low_risk_instruction_only_when_enabled() -> None:
+    off = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу.")
+    )
+    on = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу.")
+    )
+
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        "confirmed_facts": {"price.online": "Фотон: онлайн-курс стоит 29 750 ₽."},
+    }
+    off.build_draft("Сколько стоит?", context=context)
+    on.build_draft("Сколько стоит?", context={**context, "TELEGRAM_GRADED_GATE": "1"})
+
+    assert "Если точного факта под вопрос нет" not in off.last_prompt
+    assert "Если точного факта под вопрос нет" in on.last_prompt
+    assert "Не уходи к менеджеру только из-за близкого факта" in on.last_prompt
+
+
+def test_wave4_low_risk_wrong_scope_keeps_direct_answer_with_marker() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Очно для 9 класса стоит 29 750 ₽.",
+        topic_id="theme:001_pricing",
+        metadata={
+            "direct_path": {
+                "enabled": True,
+                "direct_path_attempted": True,
+                "retrieved_facts": {
+                    "price.online": "Онлайн для 9 класса стоит 29 750 ₽.",
+                },
+            }
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="сколько стоит очно физика 9 класс?",
+        context={
+            "active_brand": "foton",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "TELEGRAM_NUMBER_GATE_SCOPE_AWARE": "1",
+            "TELEGRAM_GRADED_GATE": "1",
+        },
+    )
+
+    gate = gated.metadata["authoritative_output_gate"]
+    finding = next(item for item in gate["findings"] if item["code"] == "wrong_scope")
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gate["action"] == "graded_low_risk"
+    assert finding["relation_to_base"] == "adjacent"
+    assert finding["severity"] == "low_risk"
+    assert "Точную деталь менеджер сверит" in gated.draft_text
+    assert "authoritative_output_gate_blocked" not in gated.safety_flags
+
+
+def test_wave4_low_risk_semantic_adjacent_keeps_direct_answer_with_single_marker() -> None:
+    text = "Похожий очный курс есть и для этого запроса. Точную деталь менеджер сверит."
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=text,
+        metadata={
+            "direct_path": {"enabled": True, "direct_path_attempted": True, "retrieved_facts": {"course.offline": "Очный курс есть."}},
+            "semantic_output_verifier": {
+                "findings": [
+                    {
+                        "code": "derived_product_claim",
+                        "span": "похожий очный курс",
+                        "relation_to_base": "adjacent",
+                        "nearest_fact_key": "course.offline",
+                    }
+                ]
+            },
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="А онлайн такой есть?",
+        context={"active_brand": "foton", "TELEGRAM_GRADED_GATE": "1"},
+    )
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gated.metadata["authoritative_output_gate"]["action"] == "graded_low_risk"
+    assert gated.draft_text == text
+    assert gated.draft_text.count("Точную деталь менеджер сверит") == 1
+
+
+def test_wave4_exact_fact_without_finding_gets_no_uncertainty_marker() -> None:
+    text = "Фотон: онлайн-курс стоит 29 750 ₽."
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=text,
+        metadata={
+            "direct_path": {
+                "enabled": True,
+                "direct_path_attempted": True,
+                "retrieved_facts": {"price.online": text},
+            }
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Сколько стоит онлайн?",
+        context={"active_brand": "foton", "TELEGRAM_GRADED_GATE": "1", "TELEGRAM_A_FREE_NUMBER_GATE": "1"},
+    )
+
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
+    assert gated.draft_text == text
+    assert "Точную деталь менеджер сверит" not in gated.draft_text
+
+
+def test_wave4_hard_findings_still_veto_direct_path() -> None:
+    number = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Можно оплатить за 2-3 месяца.")
+    ).build_draft(
+        "Можно оплатить помесячно?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_GRADED_GATE": "1",
+            "TELEGRAM_A_FREE_NUMBER_GATE": "1",
+            "confirmed_facts": {"payment.foton.installment": "Фотон: рассрочка доступна на 6, 10 или 12 месяцев."},
+        },
+    )
+    brand = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="В Фотоне есть пробное, а в УНПК условия похожие.")
+    ).build_draft(
+        "Есть пробное?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", "TELEGRAM_GRADED_GATE": "1"},
+    )
+    promise = apply_authoritative_output_gate(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Гарантируем поступление в вуз.",
+            metadata={"direct_path": {"enabled": True, "direct_path_attempted": True, "retrieved_facts": {}}},
+        ),
+        client_message="Гарантируете результат?",
+        context={"active_brand": "foton", "TELEGRAM_GRADED_GATE": "1"},
+    )
+    p0 = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    ).build_draft(
+        "С карты списали дважды, верните деньги",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", "TELEGRAM_GRADED_GATE": "1"},
+    )
+
+    assert number.route == "manager_only"
+    assert number.metadata["authoritative_output_gate"]["action"] == "block"
+    assert "unsupported_product_number" in {item["code"] for item in number.metadata["authoritative_output_gate"]["findings"]}
+    assert brand.route == "manager_only"
+    assert "brand_leak" in {item["code"] for item in brand.metadata["authoritative_output_gate"]["findings"]}
+    assert promise.route == "manager_only"
+    assert "p0_promise" in {item["code"] for item in promise.metadata["authoritative_output_gate"]["findings"]}
+    assert p0.route == "manager_only"
+    assert p0.metadata["direct_path"]["preblocked"] is True
+
+
+def test_wave4_direct_pii_echo_is_still_sanitized_before_gate() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Приняла: Иванов Артём, телефон: +7 999 123-45-67. Передам менеджеру.",
+        )
+    )
+
+    result = provider.build_draft(
+        "Ребёнок Иванов Артём, телефон +7 999 123-45-67.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", "TELEGRAM_GRADED_GATE": "1"},
+    )
+
+    assert "Иванов" not in result.draft_text
+    assert "Артём" not in result.draft_text
+    assert "+7 999" not in result.draft_text
+    assert result.metadata["output_sanitizer"]["applied"] is True
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_wave4_regenerates_once_when_low_risk_direct_text_is_handoff() -> None:
+    first = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам менеджеру, он уточнит условия.",
+        metadata={
+            "semantic_output_verifier": {
+                "findings": [
+                    {
+                        "code": "derived_product_claim",
+                        "span": "условия",
+                        "relation_to_base": "adjacent",
+                        "nearest_fact_key": "course.offline",
+                    }
+                ]
+            }
+        },
+    )
+    second = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="По близкому факту есть очный курс; точную деталь менеджер сверит.",
+    )
+    provider = _DirectPathSequenceProvider([first, second])
+
+    result = provider.build_draft(
+        "Есть такой же курс онлайн?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_GRADED_GATE": "1",
+            "confirmed_facts": {"course.offline": "Фотон: очный курс по физике есть."},
+        },
+    )
+
+    assert provider.calls == 2
+    assert "Повторная попытка" in provider.prompts[1]
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "очный курс" in result.draft_text
+    assert result.metadata["direct_path"]["graded_gate_regen_attempted"] is True
+    assert result.metadata["direct_path"]["graded_gate_regen_accepted"] is True
+
+
+def test_wave4_regenerated_answer_runs_hard_gate_again() -> None:
+    first = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам менеджеру, он уточнит условия.",
+        metadata={
+            "semantic_output_verifier": {
+                "findings": [
+                    {
+                        "code": "derived_product_claim",
+                        "span": "условия",
+                        "relation_to_base": "adjacent",
+                        "nearest_fact_key": "course.offline",
+                    }
+                ]
+            }
+        },
+    )
+    unsafe_second = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="В Фотоне есть очный курс, а в УНПК условия такие же.",
+    )
+    provider = _DirectPathSequenceProvider([first, unsafe_second])
+
+    result = provider.build_draft(
+        "Есть такой же курс онлайн?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "TELEGRAM_GRADED_GATE": "1",
+            "confirmed_facts": {"course.offline": "Фотон: очный курс по физике есть."},
+        },
+    )
+
+    assert provider.calls == 2
+    assert result.route == "manager_only"
+    assert "brand_leak" in {item["code"] for item in result.metadata["authoritative_output_gate"]["findings"]}
+    assert result.metadata["direct_path"]["graded_gate_regen_attempted"] is True
 
 
 def test_direct_path_preblocks_p0_without_model_call() -> None:

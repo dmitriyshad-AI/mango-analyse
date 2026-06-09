@@ -149,6 +149,7 @@ def test_draft_note_write_allowed_only_for_test_lead() -> None:
     note_text = calls[0]["json_body"][0]["params"]["text"]
     assert DRAFT_NOTE_MARKER in note_text
     assert "Бренд: foton" in note_text
+    assert "Europe/Moscow" in note_text
     assert "Wappi profile_id: profile-1" in note_text
     assert "Подскажите, пожалуйста" in note_text
 
@@ -200,13 +201,40 @@ def test_manager_edit_log_keeps_bot_and_manager_texts_side_by_side(tmp_path: Pat
     rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert rows == [
         {
-            "schema_version": "amo_wappi_manager_edit_log_v1_2026_06_09",
+            "schema_version": "amo_wappi_manager_edit_log_v2_2026_06_10",
             "created_at": "2026-06-09T12:00:00+00:00",
             "lead_id": "123",
             "brand": "unpk",
             "profile_id": "profile-unpk",
+            "chat_id": "",
+            "message_id": "",
+            "matched_message_id": "",
+            "draft_route": "",
+            "match_class": "",
+            "ratio": None,
+            "draft_ts": "",
+            "sent_ts": "",
+            "window_closed": False,
             "bot_draft_text": "Черновик бота",
             "manager_sent_text": "Финальный текст менеджера",
             "reason_codes": ["edited_tone"],
         }
     ]
+
+
+def test_draft_note_text_includes_route_safety_and_truncates() -> None:
+    text = build_draft_note_text(
+        draft_text="x" * 7000,
+        brand="foton",
+        profile_id="profile-1",
+        route="manager_only",
+        safety_flags=("p0_deferral", "output_safety"),
+        outgoing_visibility_note="бот не видит ответы менеджера",
+        created_at=datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert "Маршрут: бот передал менеджеру" in text
+    assert "Флаги безопасности: p0_deferral, output_safety" in text
+    assert "бот не видит ответы менеджера" in text
+    assert len(text) <= 6000
+    assert "Черновик усечён" in text

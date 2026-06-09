@@ -6,6 +6,7 @@ import socket
 import ssl
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 from urllib import error as url_error
@@ -19,6 +20,8 @@ DEFAULT_AMO_WAPPI_CONFIG_PATH = Path.home() / ".mango_secrets" / "amo_wappi_phas
 WAPPI_DEFAULT_BASE_URL = "https://wappi.pro"
 VALID_BRANDS = frozenset({"foton", "unpk"})
 DRAFT_NOTE_MARKER = "ЧЕРНОВИК БОТА, не отправлено"
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+MAX_DRAFT_NOTE_TEXT_CHARS = 6000
 
 JsonTransport = Callable[..., Mapping[str, Any]]
 
@@ -255,6 +258,9 @@ class AmoPhase1Client:
         draft_text: str,
         brand: str,
         profile_id: str = "",
+        route: str = "",
+        safety_flags: Sequence[str] = (),
+        outgoing_visibility_note: str = "",
         created_at: datetime | None = None,
     ) -> Mapping[str, Any]:
         allowed_lead_id = config.require_note_allowed(lead_id)
@@ -262,6 +268,9 @@ class AmoPhase1Client:
             draft_text=draft_text,
             brand=brand,
             profile_id=profile_id,
+            route=route,
+            safety_flags=safety_flags,
+            outgoing_visibility_note=outgoing_visibility_note,
             created_at=created_at,
         )
         body = [{"note_type": "common", "params": {"text": note_text}}]
@@ -323,6 +332,62 @@ class WappiPhase1Client:
             profiles.extend(self.list_profiles("max"))
         return profiles
 
+    def list_telegram_chats(
+        self,
+        *,
+        profile_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "desc",
+        show_all: bool = False,
+    ) -> Mapping[str, Any]:
+        params = {
+            "profile_id": str(profile_id),
+            "limit": max(1, min(int(limit), 100)),
+            "offset": max(0, int(offset)),
+            "order": str(order or "desc"),
+            "show_all": "true" if show_all else "false",
+        }
+        return self._request_telegram("GET", "/tapi/sync/chats/get", params=params)
+
+    def get_telegram_chat_messages(
+        self,
+        *,
+        profile_id: str,
+        chat_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "desc",
+        mark_all: bool = False,
+    ) -> Mapping[str, Any]:
+        params = {
+            "profile_id": str(profile_id),
+            "chat_id": str(chat_id),
+            "limit": max(1, min(int(limit), 100)),
+            "offset": max(0, int(offset)),
+            "order": str(order or "desc"),
+            "mark_all": "true" if mark_all else "false",
+        }
+        return self._request_telegram("GET", "/tapi/sync/messages/get", params=params)
+
+    def _request_telegram(self, method: str, path: str, *, params: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
+        token = self._token_for_channel("telegram")
+        url = url_parse.urljoin(f"{self.config.base_url.rstrip('/')}/", path.lstrip("/"))
+        if params:
+            query = url_parse.urlencode({key: value for key, value in params.items() if value not in (None, "")}, doseq=True)
+            if query:
+                url = f"{url}?{query}"
+        headers = {"Authorization": token}
+        if self.transport is not None:
+            return self.transport(
+                method=method.upper(),
+                url=url,
+                headers=headers,
+                json_body=None,
+                timeout_seconds=self.config.timeout_seconds,
+            )
+        return _json_http_request(method=method, url=url, headers=headers, timeout_seconds=self.config.timeout_seconds)
+
 
 def _extract_wappi_profiles(payload: Mapping[str, Any], *, channel: str) -> list[Mapping[str, Any]]:
     candidates: Any = payload.get("profiles")
@@ -351,19 +416,44 @@ def build_draft_note_text(
     draft_text: str,
     brand: str,
     profile_id: str = "",
+    route: str = "",
+    safety_flags: Sequence[str] = (),
+    outgoing_visibility_note: str = "",
     created_at: datetime | None = None,
 ) -> str:
-    timestamp = (created_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    timestamp = (created_at or datetime.now(timezone.utc)).astimezone(MOSCOW_TZ).isoformat()
     brand_value = _normalize_brand(brand)
+    route_value = str(route or "").strip()
+    flags = tuple(str(item).strip() for item in safety_flags if str(item).strip())
+    if route_value in {"bot_answer_self", "bot_answer_self_for_pilot"}:
+        route_line = "Маршрут: черновик (бот считает безопасным)"
+    elif route_value == "draft_for_manager":
+        route_line = "Маршрут: черновик (проверить)"
+    elif route_value in {"manager_only", "blocked"}:
+        route_line = "Маршрут: бот передал менеджеру"
+    elif route_value:
+        route_line = f"Маршрут: {route_value}"
+    else:
+        route_line = ""
     parts = [
         DRAFT_NOTE_MARKER,
         f"Бренд: {brand_value}",
-        f"Время: {timestamp}",
+        f"Время: {timestamp} (Europe/Moscow)",
     ]
     if str(profile_id or "").strip():
         parts.append(f"Wappi profile_id: {str(profile_id).strip()}")
+    if route_line:
+        parts.append(route_line)
+    if flags:
+        parts.append("Флаги безопасности: " + ", ".join(flags))
+    if str(outgoing_visibility_note or "").strip():
+        parts.append(str(outgoing_visibility_note).strip())
     parts.extend(["", str(draft_text or "").strip()])
-    return "\n".join(parts).strip()
+    text = "\n".join(parts).strip()
+    if len(text) <= MAX_DRAFT_NOTE_TEXT_CHARS:
+        return text
+    marker = "\n\n[Черновик усечён до 6000 символов]"
+    return text[: MAX_DRAFT_NOTE_TEXT_CHARS - len(marker)].rstrip() + marker
 
 
 @dataclass(frozen=True)
@@ -372,17 +462,36 @@ class ManagerEditLogRecord:
     brand: str
     profile_id: str
     bot_draft_text: str
+    chat_id: str = ""
+    message_id: str = ""
+    matched_message_id: str = ""
+    draft_route: str = ""
+    match_class: str = ""
+    ratio: float | None = None
+    draft_ts: str = ""
+    sent_ts: str = ""
+    window_closed: bool = False
     manager_sent_text: str = ""
     reason_codes: tuple[str, ...] = ()
     created_at: str = ""
 
     def as_json(self) -> dict[str, Any]:
+        ratio_value = None if self.ratio is None else float(self.ratio)
         return {
-            "schema_version": "amo_wappi_manager_edit_log_v1_2026_06_09",
+            "schema_version": "amo_wappi_manager_edit_log_v2_2026_06_10",
             "created_at": self.created_at or datetime.now(timezone.utc).isoformat(),
             "lead_id": str(self.lead_id),
             "brand": _normalize_brand(self.brand),
             "profile_id": str(self.profile_id or ""),
+            "chat_id": str(self.chat_id or ""),
+            "message_id": str(self.message_id or ""),
+            "matched_message_id": str(self.matched_message_id or ""),
+            "draft_route": str(self.draft_route or ""),
+            "match_class": str(self.match_class or ""),
+            "ratio": ratio_value,
+            "draft_ts": str(self.draft_ts or ""),
+            "sent_ts": str(self.sent_ts or ""),
+            "window_closed": bool(self.window_closed),
             "bot_draft_text": str(self.bot_draft_text or ""),
             "manager_sent_text": str(self.manager_sent_text or ""),
             "reason_codes": list(self.reason_codes),

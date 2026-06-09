@@ -66,6 +66,7 @@ from mango_mvp.channels.subscription_llm import (
     TAX_FNS_REVIEW_SAFE_TEXT,
     TAX_LICENSE_SAFE_TEXT,
     TAX_ONLINE_FORM_SAFE_TEXT,
+    TEMPLATE_FROM_KB_ENV,
     TONE_CLOSE_DETECT_ENV,
     TONE_RICH_FORMAT_ENV,
     TONE_SELL_PROMPT_ENV,
@@ -10573,8 +10574,8 @@ class _DirectPathRetrieverProvider(_DirectPathProvider):
         return self.retriever_payload
 
 
-V66_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
-V67_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r2/kb_release_v3_snapshot.json")
+V67_SNAPSHOT_PATH = DEFAULT_SNAPSHOT_PATH
 
 
 def _wide_pack_context(
@@ -10586,7 +10587,7 @@ def _wide_pack_context(
 ) -> dict[str, object]:
     return {
         "active_brand": brand,
-        "snapshot_path": str(V66_SNAPSHOT_PATH),
+        "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
         "conversation_intent_plan": {
             "primary_intent": primary_intent,
             "answer_topics": [primary_intent],
@@ -10658,6 +10659,65 @@ def test_template_from_kb_renders_address_and_contacts_from_v67_snapshot() -> No
         render=subscription_llm._direct_path_fact_value,
     )
     assert rendered_phone == "+7 (495) 150-81-51"
+
+
+def test_template_from_kb_pilot_gold_renders_wave1_templates_from_default_snapshot(monkeypatch) -> None:
+    for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
+        monkeypatch.delenv(key, raising=False)
+    context = {
+        "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+    }
+
+    cases = (
+        (
+            "foton",
+            "Где вы в Москве?",
+            "Верхняя Красносельская ул., 30",
+            ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
+        ),
+        (
+            "unpk",
+            "Где в Москве обычные занятия?",
+            "Сретенка, 20",
+            ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
+        ),
+        (
+            "unpk",
+            "Какие площадки?",
+            "Площадки УНПК:",
+            ADDRESS_UNPK_SAFE_TEXT,
+        ),
+    )
+
+    for brand, message, expected, literal in cases:
+        rendered = subscription_llm._terminal_safe_template(
+            SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
+            client_message=message,
+            context={**context, "active_brand": brand},
+        )
+        assert expected in rendered
+        assert rendered != literal
+        assert "лучше уточнить" not in rendered.casefold()
+
+
+def test_template_from_kb_pilot_gold_explicit_off_returns_literal(monkeypatch) -> None:
+    for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
+        monkeypatch.delenv(key, raising=False)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        TEMPLATE_FROM_KB_ENV: "0",
+    }
+
+    rendered = subscription_llm._terminal_safe_template(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
+        client_message="Где вы в Москве?",
+        context=context,
+    )
+
+    assert rendered == ADDRESS_FOTON_MOSCOW_SAFE_TEXT
 
 
 def test_template_from_kb_uses_neutral_fallback_for_missing_or_foreign_fact() -> None:
@@ -11578,6 +11638,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         PRESALE_VERIFIER_FAILSOFT_ENV,
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
+        TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
         monkeypatch.delenv(key, raising=False)
@@ -11594,6 +11655,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _presale_safety_enabled(context, subflag=PRESALE_VERIFIER_FAILSOFT_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV) is True
+    assert subscription_llm._template_from_kb_enabled(context) is True
 
 
 def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> None:
@@ -11609,6 +11671,7 @@ def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> 
         PRESALE_VERIFIER_FAILSOFT_ENV,
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
+        TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
         monkeypatch.delenv(key, raising=False)
@@ -11622,6 +11685,7 @@ def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> 
             "active_brand": "foton",
             DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
             SEMANTIC_OUTPUT_VERIFIER_ENV: "0",
+            TEMPLATE_FROM_KB_ENV: "0",
             "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
         },
     )
@@ -11629,7 +11693,13 @@ def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> 
     assert _semantic_output_verifier_enabled(
         {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION, SEMANTIC_OUTPUT_VERIFIER_ENV: "0"}
     ) is False
-    assert result.metadata["direct_path"]["pilot_profile_overrides"] == {SEMANTIC_OUTPUT_VERIFIER_ENV: "0"}
+    assert result.metadata["direct_path"]["pilot_profile_overrides"] == {
+        SEMANTIC_OUTPUT_VERIFIER_ENV: "0",
+        TEMPLATE_FROM_KB_ENV: "0",
+    }
+    assert subscription_llm._template_from_kb_enabled(
+        {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION, TEMPLATE_FROM_KB_ENV: "0"}
+    ) is False
 
 
 def test_without_pilot_config_profile_flags_keep_default_off(monkeypatch) -> None:
@@ -11645,6 +11715,7 @@ def test_without_pilot_config_profile_flags_keep_default_off(monkeypatch) -> Non
         PRESALE_VERIFIER_FAILSOFT_ENV,
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
+        TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
         monkeypatch.delenv(key, raising=False)
@@ -11658,6 +11729,7 @@ def test_without_pilot_config_profile_flags_keep_default_off(monkeypatch) -> Non
     assert number_gate_scope_aware_enabled(context) is False
     assert _verifier_handoff_claims_enabled(context) is False
     assert _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV) is False
+    assert subscription_llm._template_from_kb_enabled(context) is False
 
 
 def test_direct_path_legacy_context_filters_unsafe_upstream_facts() -> None:

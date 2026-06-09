@@ -12,7 +12,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260608_v6_6_staging"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260610_v6_7_staging_r2"
 
 REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "priority",
@@ -837,11 +837,16 @@ def test_v3_short_machine_client_text_requires_template(kb_v3: KbReleaseV3) -> N
     bad = []
     for fact in _allowed_client_facts(kb_v3.facts):
         text = str(fact.get("client_safe_text") or "")
-        if re.search(r"—\s*([^—.]{1,42})\.$", text) and re.search(
-            r"—\s*(?:[0-9]+(?:[.,][0-9]+)?%?|[0-9]+[–-][0-9]+|да|нет|[А-Яа-яA-Za-z ]{1,24})\.$",
-            text,
-            re.I,
-        ):
+        tail_match = re.search(r"—\s*([^—.]{1,42})\.$", text)
+        if not tail_match:
+            continue
+        tail = tail_match.group(1).strip()
+        short_label = bool(re.fullmatch(r"[А-Яа-яA-Za-z-]+(?:\s+[А-Яа-яA-Za-z-]+){0,2}", tail))
+        machine_tail = bool(
+            re.fullmatch(r"[0-9]+(?:[.,][0-9]+)?%?|[0-9]+[–-][0-9]+|да|нет", tail, re.I)
+            or short_label
+        )
+        if machine_tail:
             if fact.get("fact_type") != "contact" and not fact.get("bot_template_required"):
                 bad.append(fact)
     assert not bad, _fact_ids(bad[:30])

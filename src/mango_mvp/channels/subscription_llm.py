@@ -142,6 +142,7 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     OUTPUT_SANITIZER_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
+    TEMPLATE_FROM_KB_ENV,
     PRESALE_SAFETY_ENV,
     PRESALE_PII_MEMORY_ENV,
     PRESALE_VERIFIER_FAILSOFT_ENV,
@@ -2128,7 +2129,7 @@ def _template_from_kb_enabled(context: Optional[Mapping[str, Any]] = None) -> bo
                 return _truthy_value(context.get(key))
     if TEMPLATE_FROM_KB_ENV in os.environ:
         return _truthy_value(os.getenv(TEMPLATE_FROM_KB_ENV))
-    return False
+    return _pilot_gold_profile_enabled(context)
 
 
 def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> str:
@@ -12596,6 +12597,7 @@ def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, 
         OUTPUT_SANITIZER_ENV: ("output_sanitizer_enabled",),
         SEMANTIC_OUTPUT_VERIFIER_ENV: ("semantic_output_verifier_enabled",),
         VERIFIER_HANDOFF_CLAIMS_ENV: ("verifier_handoff_claims_enabled",),
+        TEMPLATE_FROM_KB_ENV: ("template_from_kb",),
     }
     result: dict[str, str] = {}
     for env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS:

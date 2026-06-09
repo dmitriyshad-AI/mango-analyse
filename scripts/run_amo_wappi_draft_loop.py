@@ -42,7 +42,7 @@ from mango_mvp.pilot_context_assembly import build_pilot_context_payload
 
 DEFAULT_PROFILES_PATH = Path.home() / ".mango_secrets" / "amo_wappi_profiles.json"
 DEFAULT_PAIRS_PATH = Path.home() / ".mango_secrets" / "draft_loop_pairs.json"
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r2/kb_release_v3_snapshot.json")
 
 
 def parse_args() -> argparse.Namespace:

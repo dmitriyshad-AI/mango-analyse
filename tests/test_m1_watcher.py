@@ -22,7 +22,7 @@ def _make_bundle(root: Path, bundle_id: str = "mango_clean_12345678") -> Path:
             [
                 bundle_id,
                 "head: 1234567890abcdef",
-                "kb_snapshot: product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json",
+                "kb_snapshot: product_data/knowledge_base/kb_release_20260610_v6_7_staging_r2/kb_release_v3_snapshot.json",
                 "",
             ]
         ),

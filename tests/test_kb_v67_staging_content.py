@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-V67_RELEASE = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260610_v6_7_staging"
+V67_RELEASE = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260610_v6_7_staging_r2"
 V67_FACTS = V67_RELEASE / "facts_registry.jsonl"
 
 
@@ -64,10 +64,9 @@ def test_kb_v67_client_safe_texts_do_not_regress_to_removed_process_terms():
         assert phrase not in all_client_text
 
 
-def test_kb_v67_default_snapshot_not_switched_yet():
+def test_kb_v67_r2_is_default_snapshot_now():
     pipeline = (PROJECT_ROOT / "src" / "mango_mvp" / "channels" / "dialogue_contract_pipeline.py").read_text(
         encoding="utf-8"
     )
-    assert "kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json" in pipeline
-    assert "kb_release_20260610_v6_7_staging/kb_release_v3_snapshot.json" not in pipeline
-
+    assert "kb_release_20260610_v6_7_staging_r2/kb_release_v3_snapshot.json" in pipeline
+    assert "kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json" not in pipeline

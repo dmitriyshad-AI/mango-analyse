@@ -19,7 +19,6 @@ from urllib import request as url_request
 from urllib import error as url_error
 
 from mango_mvp.channels.subscription_llm import (
-    AUTONOMY_MATRIX_SAFE_TOPIC_IDS,
     SAFE_FALLBACK_DRAFT_TEXT,
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
@@ -28,14 +27,18 @@ from mango_mvp.channels.subscription_llm import (
 from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answer
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV
 from mango_mvp.channels.manager_handoff_summary import build_manager_handoff_summary
-from mango_mvp.channels.new_lead_funnel import LeadFunnelState, build_lead_funnel_state, lead_funnel_context_payload
+from mango_mvp.channels.new_lead_funnel import LeadFunnelState
 from mango_mvp.channels.telegram_pilot_store import (
     PILOT_DRAFT_STATUS_MANAGER_ONLY,
     PILOT_DRAFT_STATUS_NEEDS_REVIEW,
     TelegramPilotSQLiteStore,
 )
 from mango_mvp.channels.telegram_pilot_p0_register import append_p0_register_record, build_p0_register_record
-from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
+from mango_mvp.pilot_context_assembly import (
+    attach_funnel_state_to_context as assemble_funnel_state_context,
+    build_funnel_state as assemble_funnel_state,
+    build_pilot_context_payload,
+)
 from mango_mvp.channels.night_funnel_shadow import (
     DEFAULT_CONTROL_PATH as NIGHT_FUNNEL_DEFAULT_CONTROL_PATH,
     DEFAULT_INBOUND_TEE_PATH as NIGHT_FUNNEL_DEFAULT_TEE_PATH,
@@ -649,11 +652,6 @@ class PublicPilotBotRuntime:
             self.log_event("crm_prefetch_error", chat_id=chat_id, payload={"brand": self.config.brand, "error": str(exc)[:240]})
 
     def build_context(self, *, chat_id: int, session: ChatSession, current_text: str) -> Mapping[str, Any]:
-        client_identity: dict[str, Any] = {
-            "channel": "telegram_bot",
-            "channel_thread_id": str(chat_id),
-            "channel_user_id": str(chat_id),
-        }
         if session.debug_phone:
             crm_context = dict(session.crm_context or {})
             if not crm_context:
@@ -665,75 +663,25 @@ class PublicPilotBotRuntime:
                     crm_server_url=self.config.crm_server_url,
                     crm_server_api_key=self.config.crm_server_api_key,
                 )
-            client_identity.update(
-                {
-                    "phone": session.debug_phone,
-                    "debug_impersonation": True,
-                    **dict(session.debug_client),
-                }
-            )
         else:
             crm_context = {}
-        customer_summary = debug_customer_summary(session.debug_phone, session.debug_client)
-        if crm_context.get("summary"):
-            customer_summary = "\n".join(item for item in (customer_summary, str(crm_context["summary"])) if item)
-        known_client_fields = known_client_fields_for_session(session=session, crm_context=crm_context)
-        known_dialog_fields = known_dialog_fields_from_messages(
-            [*tuple(session.recent_messages)[-10:], current_text],
-            active_brand=self.config.brand,
-        )
-        known_context_summary_text = build_known_context_summary(known_client_fields, known_dialog_fields)
-        rop_policy = {
-            "bot_permission": "bot_answer_self_for_pilot",
-            "autonomy_policy": {
-                "allow_autonomous": True,
-                "allowed_topic_ids": sorted(AUTONOMY_MATRIX_SAFE_TOPIC_IDS),
-                "default": "draft_for_manager_or_manager_only",
-                "fact_requirement": "client_safe_fact_verified",
-                "p0_overrides_autonomy": True,
-            },
-        }
-        pilot_context = build_telegram_pilot_context_from_snapshot(
-            current_text,
+        return build_pilot_context_payload(
+            current_text=current_text,
             snapshot_path=self.config.snapshot_path,
             active_brand=self.config.brand,
-            rop_policy=rop_policy,
             recent_messages=tuple(session.recent_messages)[-10:],
-            client_identity=client_identity,
-            customer_summary=customer_summary,
-            amo_context=crm_context.get("amo_context") if isinstance(crm_context.get("amo_context"), Mapping) else None,
-            tallanto_context=crm_context.get("tallanto_context")
-            if isinstance(crm_context.get("tallanto_context"), Mapping)
-            else None,
-            timeline_context=crm_context.get("timeline_context")
-            if isinstance(crm_context.get("timeline_context"), Mapping)
-            else None,
-            risk_flags=tuple(crm_context.get("risk_flags") or ()),
-            known_slots=known_dialog_fields,
             dialogue_memory=session.dialogue_memory,
             session_id=f"telegram_public_pilot:{self.config.brand}:{chat_id}",
+            channel="telegram_bot",
+            channel_thread_id=str(chat_id),
+            channel_user_id=str(chat_id),
+            dialogue_contract_pipeline_enabled=self.config.dialogue_contract_pipeline_enabled,
+            sends_client_replies=True,
+            debug_impersonation_enabled=True,
+            debug_phone=session.debug_phone,
+            debug_client=session.debug_client,
+            crm_context=crm_context,
         )
-        payload = dict(pilot_context.to_prompt_context())
-        payload["active_brand"] = self.config.brand
-        payload[DIALOGUE_CONTRACT_PIPELINE_ENV] = self.config.dialogue_contract_pipeline_enabled
-        if known_client_fields:
-            payload["known_client_fields"] = known_client_fields
-        if known_dialog_fields:
-            payload["known_dialog_fields"] = known_dialog_fields
-        if known_context_summary_text:
-            payload["known_context_summary"] = known_context_summary_text
-        if crm_context:
-            payload["read_only_customer_context"] = crm_context
-        payload["public_pilot_mode"] = {
-            "enabled": True,
-            "sends_client_replies": True,
-            "debug_impersonation_enabled": True,
-            "brand_isolation_required": True,
-            "no_crm_tallanto_write": True,
-            "crm_tallanto_read_only": True,
-            "do_not_disclose_crm_tallanto_private_data": True,
-        }
-        return payload
 
     def build_funnel_state(
         self,
@@ -745,30 +693,16 @@ class PublicPilotBotRuntime:
         result: SubscriptionDraftResult | None = None,
     ) -> LeadFunnelState:
         del chat_id
-        return build_lead_funnel_state(
-            current_text,
+        return assemble_funnel_state(
+            current_text=current_text,
             active_brand=self.config.brand,
             recent_messages=tuple(session.recent_messages)[-10:],
             context=context,
-            topic_id=str((result.topic_id if result else context.get("topic_id")) or ""),
-            message_type=str((result.message_type if result else context.get("message_type")) or ""),
-            risk_level=str((result.risk_level if result else context.get("risk_level")) or ""),
-            route=str((result.route if result else context.get("route")) or ""),
-            safety_flags=tuple(result.safety_flags if result else context.get("safety_flags") or ()),
+            result=result,
         )
 
     def attach_funnel_state_to_context(self, context: Mapping[str, Any], funnel_state: LeadFunnelState) -> Mapping[str, Any]:
-        payload = dict(context)
-        funnel_payload = lead_funnel_context_payload(funnel_state)
-        payload["funnel_state"] = funnel_payload
-        payload["known_slots"] = dict(funnel_payload.get("filled_slots") or {})
-        payload["missing_slots"] = list(funnel_payload.get("missing_slots") or [])
-        payload["next_best_question"] = str(funnel_payload.get("next_best_question") or "")
-        payload["next_step_type"] = str(funnel_payload.get("next_step_type") or "")
-        payload["lead_stage"] = str(funnel_payload.get("lead_stage") or "")
-        payload["client_segment"] = str(funnel_payload.get("client_segment") or "")
-        payload["semantic_flags"] = list(funnel_payload.get("semantic_flags") or [])
-        return payload
+        return assemble_funnel_state_context(context, funnel_state)
 
     def build_manager_summary(
         self,

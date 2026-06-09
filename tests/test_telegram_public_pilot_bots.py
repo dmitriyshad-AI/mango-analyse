@@ -24,6 +24,7 @@ from scripts.run_telegram_public_pilot_bots import (
     PublicPilotBotRuntime,
 )
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
+from mango_mvp.pilot_context_assembly import build_pilot_context_payload
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.night_funnel_shadow import (
     AUTO_SEND,
@@ -249,6 +250,65 @@ def test_public_pilot_context_enables_dialogue_contract_pipeline_by_default(tmp_
 
     assert context[DIALOGUE_CONTRACT_PIPELINE_ENV] is True
     assert pipeline_enabled(context) is True
+
+
+def test_public_pilot_context_matches_extracted_assembly(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=snapshot,
+        store_enabled=False,
+    )
+    session = ChatSession()
+    session.recent_messages.append("Клиент: 8 класс, физика")
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+
+    from_runtime = runtime.build_context(chat_id=123, session=session, current_text="Сколько стоит онлайн?")
+    runtime.close()
+    from_module = build_pilot_context_payload(
+        current_text="Сколько стоит онлайн?",
+        snapshot_path=snapshot,
+        active_brand="foton",
+        recent_messages=tuple(session.recent_messages)[-10:],
+        dialogue_memory=session.dialogue_memory,
+        session_id="telegram_public_pilot:foton:123",
+        channel="telegram_bot",
+        channel_thread_id="123",
+        channel_user_id="123",
+        dialogue_contract_pipeline_enabled=True,
+        sends_client_replies=True,
+        debug_impersonation_enabled=True,
+        crm_context={},
+    )
+
+    assert from_runtime == from_module
+
+
+def test_extracted_context_supports_draft_loop_mode_without_client_send(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+
+    context = build_pilot_context_payload(
+        current_text="Подскажите стоимость",
+        snapshot_path=snapshot,
+        active_brand="unpk",
+        recent_messages=("Клиент: 9 класс физика",),
+        dialogue_memory={},
+        session_id="amo_draft_loop:unpk:profile-1:chat-1",
+        channel="wappi_telegram",
+        channel_thread_id="profile-1:chat-1",
+        channel_user_id="chat-1",
+        dialogue_contract_pipeline_enabled=True,
+        sends_client_replies=False,
+        debug_impersonation_enabled=False,
+        crm_context={},
+    )
+
+    assert context["public_pilot_mode"]["sends_client_replies"] is False
+    assert context["public_pilot_mode"]["debug_impersonation_enabled"] is False
+    assert context["client_identity"]["channel"] == "wappi_telegram"
+    assert context["client_identity"]["channel_thread_id"] == "profile-1:chat-1"
 
 
 def test_public_pilot_context_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:

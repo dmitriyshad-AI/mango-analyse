@@ -10503,6 +10503,7 @@ class _DirectPathRetrieverProvider(_DirectPathProvider):
 
 
 V66_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260608_v6_6_staging/kb_release_v3_snapshot.json")
+V67_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging/kb_release_v3_snapshot.json")
 
 
 def _wide_pack_context(
@@ -10530,6 +10531,80 @@ def _wide_pack_text(pack: Mapping[str, object], keys: Sequence[str] | None = Non
     meta = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
     selected = keys or tuple(facts.keys())
     return _direct_path_render_fact_block(facts, fact_metadata=meta, keys=tuple(str(key) for key in selected))
+
+
+def test_template_from_kb_off_keeps_literal_terminal_template() -> None:
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(V67_SNAPSHOT_PATH),
+        subscription_llm.TEMPLATE_FROM_KB_ENV: "0",
+    }
+
+    text = subscription_llm._terminal_safe_template(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
+        client_message="Где вы в Москве?",
+        context=context,
+    )
+
+    assert text == ADDRESS_FOTON_MOSCOW_SAFE_TEXT
+
+
+def test_template_from_kb_renders_address_and_contacts_from_v67_snapshot() -> None:
+    foton_context = {
+        "active_brand": "foton",
+        "snapshot_path": str(V67_SNAPSHOT_PATH),
+        subscription_llm.TEMPLATE_FROM_KB_ENV: "1",
+    }
+    unpk_context = {
+        "active_brand": "unpk",
+        "snapshot_path": str(V67_SNAPSHOT_PATH),
+        subscription_llm.TEMPLATE_FROM_KB_ENV: "1",
+    }
+
+    foton_address = subscription_llm._terminal_safe_template(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
+        client_message="Где вы в Москве?",
+        context=foton_context,
+    )
+    assert "Верхняя Красносельская ул., 30" in foton_address
+    assert "Красносельская" in foton_address
+    assert foton_address != ADDRESS_FOTON_MOSCOW_SAFE_TEXT
+
+    unpk_contacts = subscription_llm._terminal_safe_template(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
+        client_message="Дайте телефон, пожалуйста",
+        context=unpk_context,
+    )
+    assert "+7 (495) 150-81-51" in unpk_contacts
+    assert "8 (800) 500-81-51" in unpk_contacts
+    assert "edu@kmipt.ru" in unpk_contacts
+    rendered_phone = subscription_llm._direct_path_template_from_fact(
+        active_brand="unpk",
+        fact_key="contacts_unpk.phone",
+        literal_text="literal",
+        neutral_fallback="fallback",
+        context=unpk_context,
+        render=subscription_llm._direct_path_fact_value,
+    )
+    assert rendered_phone == "+7 (495) 150-81-51"
+
+
+def test_template_from_kb_uses_neutral_fallback_for_missing_or_foreign_fact() -> None:
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(V67_SNAPSHOT_PATH),
+        subscription_llm.TEMPLATE_FROM_KB_ENV: "1",
+    }
+
+    text = subscription_llm._direct_path_template_from_fact(
+        active_brand="foton",
+        fact_key="contacts_unpk.phone",
+        literal_text="literal",
+        neutral_fallback="Актуальные контакты лучше уточнить у менеджера.",
+        context=context,
+    )
+
+    assert text == "Актуальные контакты лучше уточнить у менеджера."
 
 
 def _write_wave6_snapshot(tmp_path: Path) -> Path:

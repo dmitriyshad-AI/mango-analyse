@@ -123,6 +123,7 @@ LLM_RETRIEVE_ENV = "TELEGRAM_LLM_RETRIEVE"
 LLM_RETRIEVE_MODEL_ENV = "TELEGRAM_LLM_RETRIEVE_MODEL"
 LLM_RETRIEVE_REASONING_ENV = "TELEGRAM_LLM_RETRIEVE_REASONING"
 LLM_RETRIEVE_TIMEOUT_ENV = "TELEGRAM_LLM_RETRIEVE_TIMEOUT_SEC"
+TEMPLATE_FROM_KB_ENV = "TELEGRAM_TEMPLATE_FROM_KB"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
 PRESALE_SAFETY_ENV = "TELEGRAM_PRESALE_SAFETY"
@@ -1081,13 +1082,28 @@ _INFORMATIONAL_SAFE_TEMPLATE_NAMES = {"terminal"}
 
 
 def _is_informational_terminal_template(text: str) -> bool:
-    return str(text or "").strip() in {
+    clean = str(text or "").strip()
+    if _is_template_from_kb_terminal_text(clean):
+        return True
+    return clean in {
         ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
         ADDRESS_UNPK_SAFE_TEXT,
         ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
         CONTACT_FOTON_SAFE_TEXT,
         CONTACT_UNPK_SAFE_TEXT,
     }
+
+
+def _is_template_from_kb_terminal_text(text: str) -> bool:
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return False
+    return (
+        clean.startswith("Здравствуйте! В Москве Фотон находится по адресу ")
+        or clean.startswith("Здравствуйте! Регулярные занятия в Москве проходят по адресу ")
+        or clean.startswith("Площадки УНПК: Москва — ")
+        or clean.startswith("Телефоны: ")
+    )
 
 
 def _safe_template_already_applied(result: SubscriptionDraftResult) -> bool:
@@ -1180,7 +1196,10 @@ def _policy_c_identity_allowed(
 
 
 def _is_terminal_direct_info_template(text: str) -> bool:
-    return str(text or "") in {
+    clean = str(text or "")
+    if _is_template_from_kb_terminal_text(clean):
+        return True
+    return clean in {
         ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
         ADDRESS_UNPK_SAFE_TEXT,
         ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
@@ -2095,6 +2114,16 @@ def _llm_retrieve_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _truthy_value(os.getenv(LLM_RETRIEVE_ENV))
 
 
+def _template_from_kb_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (TEMPLATE_FROM_KB_ENV, "template_from_kb"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    if TEMPLATE_FROM_KB_ENV in os.environ:
+        return _truthy_value(os.getenv(TEMPLATE_FROM_KB_ENV))
+    return False
+
+
 def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> str:
     if isinstance(context, Mapping):
         for key in (DIRECT_PATH_PILOT_CONFIG_ENV, "direct_path_pilot_config", "pilot_config"):
@@ -2190,6 +2219,153 @@ def _direct_path_snapshot_fact_text(fact: Mapping[str, Any]) -> str:
         if text:
             return _client_clean_fact_text(text)
     return ""
+
+
+def _direct_path_fact_by_brand_key(
+    snapshot: Mapping[str, Any],
+    *,
+    active_brand: str,
+    fact_key: str,
+) -> Optional[Mapping[str, Any]]:
+    key = str(fact_key or "").strip()
+    brand = str(active_brand or "").strip().casefold()
+    if not key or brand not in {"foton", "unpk"}:
+        return None
+    for fact in _direct_path_snapshot_facts(snapshot):
+        if str(fact.get("fact_key") or "") != key:
+            continue
+        if str(fact.get("brand") or "").casefold() != brand:
+            continue
+        if _direct_path_client_safe_snapshot_fact(fact, active_brand=brand):
+            return fact
+    return None
+
+
+def _direct_path_fact_value(text: str) -> str:
+    value = _client_clean_fact_text(text)
+    if "—" in value:
+        value = value.rsplit("—", 1)[-1].strip()
+    return value.rstrip(" .")
+
+
+def _direct_path_template_from_fact(
+    *,
+    active_brand: str,
+    fact_key: str,
+    literal_text: str,
+    neutral_fallback: str,
+    context: Optional[Mapping[str, Any]] = None,
+    render: Optional[Callable[[str], str]] = None,
+) -> str:
+    if not _template_from_kb_enabled(context):
+        return literal_text
+    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
+    fact = _direct_path_fact_by_brand_key(snapshot, active_brand=active_brand, fact_key=fact_key)
+    if not isinstance(fact, Mapping):
+        trace_event(context, "template_from_kb", {"fact_key": fact_key, "outcome": "fallback", "reason": "missing"})
+        return neutral_fallback
+    text = _direct_path_snapshot_fact_text(fact)
+    if render is not None:
+        text = render(text)
+    text = str(text or "").strip()
+    if text:
+        trace_event(context, "template_from_kb", {"fact_key": fact_key, "outcome": "hit"})
+        return text
+    trace_event(context, "template_from_kb", {"fact_key": fact_key, "outcome": "fallback", "reason": "empty"})
+    return neutral_fallback
+
+
+def _direct_path_template_fact_text(
+    *,
+    active_brand: str,
+    fact_key: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
+    fact = _direct_path_fact_by_brand_key(snapshot, active_brand=active_brand, fact_key=fact_key)
+    return _direct_path_snapshot_fact_text(fact) if isinstance(fact, Mapping) else ""
+
+
+def _foton_address_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
+    return _direct_path_template_from_fact(
+        active_brand="foton",
+        fact_key="locations_foton.addresses.1.address",
+        literal_text=ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
+        neutral_fallback="Адрес московской площадки Фотона лучше уточнит менеджер по выбранному формату.",
+        context=context,
+        render=lambda text: (
+            f"Здравствуйте! В Москве Фотон находится по адресу {_direct_path_fact_value(text)}, метро Красносельская. "
+            "Если хотите, подскажу, какие группы есть на этой площадке."
+        ),
+    )
+
+
+def _unpk_moscow_address_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
+    return _direct_path_template_from_fact(
+        active_brand="unpk",
+        fact_key="locations_unpk.addresses.1.address",
+        literal_text=ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT,
+        neutral_fallback="Адрес московской площадки УНПК лучше уточнит менеджер по выбранному формату.",
+        context=context,
+        render=lambda text: (
+            f"Здравствуйте! Регулярные занятия в Москве проходят по адресу {_direct_path_fact_value(text)}. "
+            "Если хотите, подскажу ближайшие группы."
+        ),
+    )
+
+
+def _unpk_all_addresses_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
+    if not _template_from_kb_enabled(context):
+        return ADDRESS_UNPK_SAFE_TEXT
+    sretenka = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="unpk", fact_key="locations_unpk.addresses.1.address", context=context)
+    )
+    mfti = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="unpk", fact_key="locations_unpk.addresses.2.address", context=context)
+    )
+    patsayeva = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="unpk", fact_key="locations_unpk.addresses.3.address", context=context)
+    )
+    if not (sretenka and mfti and patsayeva):
+        trace_event(context, "template_from_kb", {"fact_key": "locations_unpk.addresses.*.address", "outcome": "fallback"})
+        return "Площадки УНПК лучше уточнить у менеджера по выбранному формату."
+    trace_event(context, "template_from_kb", {"fact_key": "locations_unpk.addresses.*.address", "outcome": "hit"})
+    return f"Площадки УНПК: Москва — {sretenka}; Долгопрудный — {mfti} и {patsayeva}."
+
+
+def _foton_contact_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
+    if not _template_from_kb_enabled(context):
+        return CONTACT_FOTON_SAFE_TEXT
+    phone = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="foton", fact_key="contacts_foton.phone", context=context)
+    )
+    toll_free = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="foton", fact_key="contacts_foton.toll_free", context=context)
+    )
+    if not (phone and toll_free):
+        trace_event(context, "template_from_kb", {"fact_key": "contacts_foton.phone+toll_free", "outcome": "fallback"})
+        return "Актуальные контакты Фотона лучше уточнить у менеджера."
+    trace_event(context, "template_from_kb", {"fact_key": "contacts_foton.phone+toll_free", "outcome": "hit"})
+    return f"Телефоны: {phone} и {toll_free}. График: Пн-Вс с 10:00 до 18:00."
+
+
+def _unpk_contact_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
+    if not _template_from_kb_enabled(context):
+        return CONTACT_UNPK_SAFE_TEXT
+    phone = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="unpk", fact_key="contacts_unpk.phone", context=context)
+    )
+    toll_free = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="unpk", fact_key="contacts_unpk.toll_free", context=context)
+    )
+    email = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="unpk", fact_key="contacts_unpk.email", context=context)
+    )
+    if not (phone and toll_free and email):
+        trace_event(context, "template_from_kb", {"fact_key": "contacts_unpk.phone+toll_free+email", "outcome": "fallback"})
+        return "Актуальные контакты УНПК лучше уточнить у менеджера."
+    trace_event(context, "template_from_kb", {"fact_key": "contacts_unpk.phone+toll_free+email", "outcome": "hit"})
+    return f"Телефоны: {phone} и {toll_free}. Email: {email}. График: Пн-Вс с 10:00 до 18:00."
 
 
 def _direct_path_fact_text(value: Any) -> str:
@@ -9958,7 +10134,7 @@ def _terminal_safe_template(
     if active_brand == "unpk" and "моск" in client_haystack and (
         "обычн" in client_haystack or "регулярн" in client_haystack or "заняти" in client_haystack
     ):
-        return ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT
+        return _unpk_moscow_address_template_from_kb(context)
     address_negated = any(marker in client_haystack for marker in ("адрес не нужен", "адреса не нужны", "не про адрес", "адрес не надо"))
     plan = _conversation_intent_plan(context)
     held_scope = str(plan.get("fact_scope") or "")
@@ -9973,9 +10149,9 @@ def _terminal_safe_template(
         or "площадк" in client_haystack
         or "моск" in client_haystack
     ):
-        return ADDRESS_FOTON_MOSCOW_SAFE_TEXT
+        return _foton_address_template_from_kb(context)
     if active_brand == "unpk" and not recording_followup and not address_negated and ("площадки" in client_haystack or "адрес" in client_haystack):
-        return ADDRESS_UNPK_SAFE_TEXT
+        return _unpk_all_addresses_template_from_kb(context)
     asks_contact = (
         "дайте телефон" in client_haystack
         or "какой номер" in client_haystack
@@ -9983,9 +10159,9 @@ def _terminal_safe_template(
         or ("связаться" in client_haystack and ("телефон" in client_haystack or "номер" in client_haystack))
     )
     if active_brand == "foton" and asks_contact:
-        return CONTACT_FOTON_SAFE_TEXT
+        return _foton_contact_template_from_kb(context)
     if active_brand == "unpk" and asks_contact:
-        return CONTACT_UNPK_SAFE_TEXT
+        return _unpk_contact_template_from_kb(context)
     if "квитанц" in client_haystack:
         return QUITTANCE_SAFE_TEXT
     if "интенсив" in client_haystack and any(marker in client_haystack for marker in ("сколько", "стоим", "цен", "почем", "почём")):

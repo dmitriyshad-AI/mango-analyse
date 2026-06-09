@@ -9,6 +9,7 @@ from typing import Mapping, Sequence
 import pytest
 import yaml
 
+import mango_mvp.channels.subscription_llm as subscription_llm
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
     FactStore,
@@ -125,6 +126,50 @@ from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dia
 
 def _trace_rows(path: Path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_tz5_client_safe_literals_do_not_regress_process_decisions() -> None:
+    checked = "\n".join(
+        (
+            subscription_llm.PROMOCODE_SAFE_TEXT,
+            subscription_llm.UNPK_LVSH_SEATS_SAFE_TEXT,
+            subscription_llm.FOTON_LVSH_PRICE_SAFE_TEXT,
+            subscription_llm.UNPK_LVSH_PRICE_SAFE_TEXT,
+            subscription_llm.UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT,
+            subscription_llm.FOTON_LVSH_DATES_SAFE_TEXT,
+            subscription_llm.UNPK_LVSH_DATES_SAFE_TEXT,
+            subscription_llm.CONTRACT_ENTITY_SAFE_TEXT,
+            subscription_llm.CROSS_BRAND_GENERIC_SAFE_TEXT,
+            subscription_llm.CROSS_BRAND_PLATFORM_SAFE_TEXT,
+            subscription_llm.FOTON_ONLINE_TRIAL_SAFE_TEXT,
+            subscription_llm.UNPK_TRIAL_SAFE_TEXT,
+            subscription_llm.UNPK_CAMP_OVERVIEW_SAFE_TEXT,
+        )
+    )
+
+    for forbidden in (
+        "почти распрод",
+        "живой менеджер",
+        "живой сотрудник",
+        "МТС Линк",
+        "Webinar",
+        "акции и промокоды",
+        "подскажет актуальные акции",
+        "по нашей программе и наших условиях",
+        "Если клиент сам попросит",
+        "онлайн-смена",
+    ):
+        assert forbidden.casefold() not in checked.casefold()
+    assert "Промокодов сейчас нет" in subscription_llm.PROMOCODE_SAFE_TEXT
+    assert "учтено в прайсе" in subscription_llm.PROMOCODE_SAFE_TEXT
+    assert "SohoLMS" in subscription_llm.CROSS_BRAND_PLATFORM_SAFE_TEXT
+    assert "договор-оферта" in subscription_llm.CONTRACT_ENTITY_SAFE_TEXT
+    assert "93 100 ₽" in subscription_llm.FOTON_LVSH_PRICE_SAFE_TEXT
+    assert "98 000 ₽" in subscription_llm.FOTON_LVSH_PRICE_SAFE_TEXT
+    assert "114 000 ₽" in subscription_llm.UNPK_LVSH_PRICE_SAFE_TEXT
+    assert "120 000 ₽" in subscription_llm.UNPK_LVSH_PRICE_DETAILS_SAFE_TEXT
+    assert "20-28 июня" in subscription_llm.FOTON_LVSH_DATES_SAFE_TEXT
+    assert "18-26 июля" in subscription_llm.UNPK_LVSH_DATES_SAFE_TEXT
 
 
 def test_codex_exec_provider_builds_command_without_openai_key(tmp_path: Path) -> None:

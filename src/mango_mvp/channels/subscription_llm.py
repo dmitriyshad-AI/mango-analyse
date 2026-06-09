@@ -8,10 +8,11 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -124,6 +125,7 @@ LLM_RETRIEVE_MODEL_ENV = "TELEGRAM_LLM_RETRIEVE_MODEL"
 LLM_RETRIEVE_REASONING_ENV = "TELEGRAM_LLM_RETRIEVE_REASONING"
 LLM_RETRIEVE_TIMEOUT_ENV = "TELEGRAM_LLM_RETRIEVE_TIMEOUT_SEC"
 TEMPLATE_FROM_KB_ENV = "TELEGRAM_TEMPLATE_FROM_KB"
+NIGHT_HOURS_NOTE_ENV = "TELEGRAM_NIGHT_HOURS_NOTE"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
 PRESALE_SAFETY_ENV = "TELEGRAM_PRESALE_SAFETY"
@@ -163,7 +165,12 @@ AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06
 SEMANTIC_OUTPUT_VERIFIER_SCHEMA_VERSION = "semantic_output_verifier_v1_2026_06_06"
 SEMANTIC_VERIFIER_DOWNGRADE_REASON = "semantic_verifier_downgrade"
 SEMANTIC_VERIFIER_UNAVAILABLE_REASON = "semantic_verifier_unavailable"
+NIGHT_HOURS_NOTE_TEXT = "Сейчас нерабочее время — менеджер ответит ежедневно с 10:00 до 18:00 по Москве."
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
+_MANAGER_CONTACT_PROMISE_PATTERNS = (
+    re.compile(r"\b(?:менеджер\w*|сотрудник\w*)\b[^.!?\n]{0,80}\b(?:верн[её]тся|свяжется|подключится|ответит)\b", re.I),
+    re.compile(r"\b(?:верн[её]тся|свяжется|подключится|ответит)\b[^.!?\n]{0,80}\b(?:менеджер\w*|сотрудник\w*)\b", re.I),
+)
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 CONCRETE_FACT_RE = re.compile(
     r"("
@@ -5431,14 +5438,14 @@ def apply_authoritative_output_gate(
     }
     if gate_action == "annotate":
         checklist = tuple(dict.fromkeys([*result.manager_checklist, _semantic_output_manager_note(findings)]))
-        return replace(result, manager_checklist=checklist, metadata=metadata)
+        return apply_night_hours_note(replace(result, manager_checklist=checklist, metadata=metadata), context=context)
     if not actionable:
         if direct_path_keep_text:
             actionable = list(findings)
         else:
-            return replace(result, metadata=metadata)
+            return apply_night_hours_note(replace(result, metadata=metadata), context=context)
     if not actionable:
-        return replace(result, metadata=metadata)
+        return apply_night_hours_note(replace(result, metadata=metadata), context=context)
 
     route = "draft_for_manager" if direct_path_keep_text else _authoritative_gate_downgraded_route(result.route, actions)
     metadata["authoritative_output_gate"]["route_after"] = route
@@ -5480,27 +5487,89 @@ def apply_authoritative_output_gate(
         if semantic_meta:
             semantic_meta["fallback_reason"] = semantic_meta.get("fallback_reason") or SEMANTIC_VERIFIER_DOWNGRADE_REASON
             metadata["semantic_output_verifier"] = semantic_meta
-        return replace(
+        return apply_night_hours_note(
+            replace(
+                result,
+                route=route,
+                safety_flags=flags,
+                manager_checklist=checklist,
+                forbidden_promises_detected=forbidden,
+                metadata=metadata,
+                error=result.error,
+            ),
+            context=context,
+        )
+    return apply_night_hours_note(
+        replace(
             result,
             route=route,
+            draft_text=_direct_path_generic_replacement_text(context)
+            if _truthy_value((result.metadata.get("direct_path") or {}).get("direct_path_attempted") if isinstance(result.metadata.get("direct_path"), Mapping) else False)
+            else SAFE_FALLBACK_DRAFT_TEXT,
             safety_flags=flags,
             manager_checklist=checklist,
             forbidden_promises_detected=forbidden,
             metadata=metadata,
-            error=result.error,
-        )
-    return replace(
-        result,
-        route=route,
-        draft_text=_direct_path_generic_replacement_text(context)
-        if _truthy_value((result.metadata.get("direct_path") or {}).get("direct_path_attempted") if isinstance(result.metadata.get("direct_path"), Mapping) else False)
-        else SAFE_FALLBACK_DRAFT_TEXT,
-        safety_flags=flags,
-        manager_checklist=checklist,
-        forbidden_promises_detected=forbidden,
-        metadata=metadata,
-        error=result.error or "authoritative_output_gate_blocked",
+            error=result.error or "authoritative_output_gate_blocked",
+        ),
+        context=context,
     )
+
+
+def apply_night_hours_note(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _night_hours_note_enabled(context):
+        return result
+    text = str(result.draft_text or "").strip()
+    if not text or NIGHT_HOURS_NOTE_TEXT in text:
+        return result
+    if not _has_manager_contact_promise(text):
+        return result
+    if not _outside_moscow_work_hours(context):
+        return result
+    flags = tuple(dict.fromkeys([*result.safety_flags, "night_hours_note_applied"]))
+    metadata = {
+        **dict(result.metadata),
+        "night_hours_note": {
+            "applied": True,
+            "hour_msk": _current_moscow_hour(context),
+            "window": "10:00-18:00",
+        },
+    }
+    return replace(result, draft_text=f"{text} {NIGHT_HOURS_NOTE_TEXT}", safety_flags=flags, metadata=metadata)
+
+
+def _night_hours_note_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (NIGHT_HOURS_NOTE_ENV, "night_hours_note"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    if NIGHT_HOURS_NOTE_ENV in os.environ:
+        return _truthy_value(os.getenv(NIGHT_HOURS_NOTE_ENV))
+    return False
+
+
+def _has_manager_contact_promise(text: str) -> bool:
+    return any(pattern.search(str(text or "")) for pattern in _MANAGER_CONTACT_PROMISE_PATTERNS)
+
+
+def _current_moscow_hour(context: Optional[Mapping[str, Any]] = None) -> int:
+    if isinstance(context, Mapping):
+        for key in ("now_msk_hour", "current_msk_hour", "moscow_hour", "hour_msk"):
+            if key in context:
+                try:
+                    return int(float(str(context.get(key)))) % 24
+                except Exception:
+                    break
+    return datetime.now(ZoneInfo("Europe/Moscow")).hour
+
+
+def _outside_moscow_work_hours(context: Optional[Mapping[str, Any]] = None) -> bool:
+    hour = _current_moscow_hour(context)
+    return hour < 10 or hour >= 18
 
 
 def _authoritative_gate_direct_path_keep_text(

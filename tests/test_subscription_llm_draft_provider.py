@@ -5575,6 +5575,77 @@ def test_output_sanitizer_is_off_by_default() -> None:
     assert "output_sanitizer" not in gated.metadata
 
 
+def test_night_hours_note_is_off_by_default() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру, он вернётся с ответом.",
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Когда ответят?",
+        context={"active_brand": "foton", "now_msk_hour": 22},
+    )
+
+    assert gated.draft_text == result.draft_text
+    assert "night_hours_note_applied" not in gated.safety_flags
+
+
+def test_night_hours_note_skips_daytime_and_adds_once_at_night() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам вопрос менеджеру, он вернётся с ответом.",
+        topic_id="service:S2_unclear",
+    )
+    base_context = {"active_brand": "foton", subscription_llm.NIGHT_HOURS_NOTE_ENV: "1"}
+
+    daytime = apply_authoritative_output_gate(
+        result,
+        client_message="Когда ответят?",
+        context={**base_context, "now_msk_hour": 12},
+    )
+    nighttime = apply_authoritative_output_gate(
+        result,
+        client_message="Когда ответят?",
+        context={**base_context, "now_msk_hour": 22},
+    )
+    repeated = apply_authoritative_output_gate(
+        nighttime,
+        client_message="Когда ответят?",
+        context={**base_context, "now_msk_hour": 22},
+    )
+
+    assert daytime.draft_text == result.draft_text
+    assert nighttime.draft_text.count(subscription_llm.NIGHT_HOURS_NOTE_TEXT) == 1
+    assert repeated.draft_text.count(subscription_llm.NIGHT_HOURS_NOTE_TEXT) == 1
+    assert "night_hours_note_applied" in nighttime.safety_flags
+    assert nighttime.metadata["night_hours_note"]["hour_msk"] == 22
+
+
+def test_night_hours_note_covers_p0_manager_text() -> None:
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text=PAYMENT_DISPUTE_SAFE_TEXT,
+        topic_id="theme:003_payment_status",
+        safety_flags=("payment_dispute_manager_only",),
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Деньги списали дважды",
+        context={
+            "active_brand": "foton",
+            subscription_llm.NIGHT_HOURS_NOTE_ENV: "1",
+            "now_msk_hour": 23,
+        },
+    )
+
+    assert gated.route == "manager_only"
+    assert gated.draft_text.count(subscription_llm.NIGHT_HOURS_NOTE_TEXT) == 1
+    assert "night_hours_note_applied" in gated.safety_flags
+
+
 def test_authoritative_output_gate_blocks_operational_specificity_without_fact() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

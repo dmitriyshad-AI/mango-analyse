@@ -47,6 +47,9 @@ from mango_mvp.channels.subscription_llm import (
     OFF_TOPIC_UNPK_SAFE_TEXT,
     OUTPUT_SANITIZER_ENV,
     PAYMENT_DISPUTE_SAFE_TEXT,
+    PRESALE_META_RU_ENV,
+    PRESALE_PII_MEMORY_ENV,
+    PRESALE_VERIFIER_FAILSOFT_ENV,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
     SAFE_FALLBACK_DRAFT_TEXT,
     ADMISSION_GUARANTEE_SAFE_TEXT,
@@ -4810,6 +4813,39 @@ def test_output_sanitizer_removes_semantic_regen_edit_comment() -> None:
     assert "internal_metadata_removed_from_draft" in gated.safety_flags
 
 
+def test_presale_ru_meta_sanitizer_removes_confirmed_facts_jargon_without_flagging_clean_handoff() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Этого нет в подтверждённых фактах.",
+        topic_id="service:S2_unclear",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="А можно так?",
+        context={"active_brand": "foton", PRESALE_META_RU_ENV: "1"},
+    )
+
+    assert "подтверждённых фактах" not in gated.draft_text
+    assert gated.route == "draft_for_manager"
+    assert gated.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert "presale_ru_meta_line" in gated.metadata["output_sanitizer"]["reasons"]
+
+    clean = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="У меня нет подтверждённого факта именно про этот вариант — менеджер уточнит.",
+        topic_id="service:S2_unclear",
+    )
+    clean_gated = apply_authoritative_output_gate(
+        clean,
+        client_message="А можно так?",
+        context={"active_brand": "foton", PRESALE_META_RU_ENV: "1"},
+    )
+
+    assert clean_gated.draft_text == clean.draft_text
+    assert "output_sanitizer" not in clean_gated.metadata
+
+
 def test_output_sanitizer_preserves_client_paragraphs() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
@@ -9515,6 +9551,38 @@ def test_semantic_output_verifier_fail_soft_retries_once_on_timeout() -> None:
     assert any("недоступен" in item for item in checked.manager_checklist)
 
 
+def test_presale_semantic_output_verifier_reports_provider_rc_error() -> None:
+    calls = 0
+
+    def failing_runner(cmd, **kwargs):
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(cmd, 7, stdout="", stderr="auth failed")
+
+    provider = SubscriptionLlmDraftProvider(runner=failing_runner)
+    context = {
+        SEMANTIC_OUTPUT_VERIFIER_ENV: True,
+        PRESALE_VERIFIER_FAILSOFT_ENV: "1",
+        "active_brand": "foton",
+    }
+    base = _semantic_verifier_base_result("Да, очная группа есть.")
+
+    checked = apply_semantic_output_verifier(
+        base,
+        client_message="Есть очная группа?",
+        context=context,
+        verifier_fn=provider._semantic_output_verifier_runner_for_context(context),
+    )
+
+    meta = checked.metadata["semantic_output_verifier"]
+    assert calls == 2
+    assert meta["checked"] is False
+    assert meta["unavailable"] is True
+    assert "provider_error rc=7" in meta["error"]
+    assert checked.route == base.route
+    assert checked.draft_text == base.draft_text
+
+
 def test_semantic_output_verifier_absorbs_diagnosis_cases_any_route_and_hedged_false_case() -> None:
     substantive = _semantic_verifier_base_result(
         "По таким вводным слишком тяжело быть не должно: ритм посильный.",
@@ -10641,6 +10709,70 @@ def test_direct_path_output_sanitizer_masks_client_phone_from_recent_window() ->
     assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
     assert "client_phone_echo" in result.metadata["output_sanitizer"]["reasons"]
     assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_presale_direct_path_prompt_filters_pii_slots_but_keeps_safe_slots() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по физике.")
+    )
+
+    provider.build_draft(
+        "Подскажите курс.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            PRESALE_PII_MEMORY_ENV: "1",
+            "known_slots": {
+                "subject": "физика",
+                "grade": "9",
+                "client_name": "Ирина",
+                "phone": "+7 999 123-45-67",
+            },
+            "dialogue_memory_view": {
+                "known_slots": {"subject": "физика", "client_name": "Ирина"},
+                "crm_known_slots": {"child_name": "Артём", "phone": "+7 999 123-45-67"},
+                "conversation_summary_short": "Ирина просит курс для Артёма, телефон +7 999 123-45-67.",
+            },
+            "confirmed_facts": {"format.foton": "Фотон: есть очные и онлайн-занятия."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert "физика" in provider.last_prompt
+    assert '"grade": "9"' in provider.last_prompt
+    assert "Ирина" not in provider.last_prompt
+    assert "Артём" not in provider.last_prompt
+    assert "+7 999" not in provider.last_prompt
+    assert "conversation_summary_short" not in provider.last_prompt
+
+
+def test_presale_output_sanitizer_masks_names_from_memory_slots() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Спасибо, Ирина! По сыну Артёму менеджер подберёт группу.",
+            topic_id="theme:020_enrollment",
+        )
+    )
+
+    result = provider.build_draft(
+        "Спасибо, жду.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            PRESALE_PII_MEMORY_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Для записи менеджер помогает подобрать группу и оформить заявку."},
+            "dialogue_memory_view": {
+                "crm_known_slots": {"client_name": "Ирина", "child_name": "Артём"},
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
+    assert "Ирина" not in result.draft_text
+    assert "Артём" not in result.draft_text
+    assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
 
 
 def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None:

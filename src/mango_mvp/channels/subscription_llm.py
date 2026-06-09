@@ -120,6 +120,10 @@ VERIFIER_HANDOFF_CLAIMS_ENV = "TELEGRAM_VERIFIER_HANDOFF_CLAIMS"
 DIRECT_PATH_ENV = "TELEGRAM_DIRECT_PATH"
 BOT_GOLD_REAL_ENV = "TELEGRAM_BOT_GOLD_REAL"
 BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
+PRESALE_SAFETY_ENV = "TELEGRAM_PRESALE_SAFETY"
+PRESALE_PII_MEMORY_ENV = "TELEGRAM_PRESALE_PII_MEMORY"
+PRESALE_VERIFIER_FAILSOFT_ENV = "TELEGRAM_PRESALE_VERIFIER_FAILSOFT"
+PRESALE_META_RU_ENV = "TELEGRAM_PRESALE_META_RU"
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
@@ -517,6 +521,13 @@ OUTPUT_SANITIZER_META_LINE_RE = re.compile(
     r"(?:изуча\w+\s+задач\w+|созда\w+\s+план|что\s+вижу\s*:|вопрос\s+к\s+тебе\s*:|"
     r"прежде\s+чем\s+дать\s+черновик|проблема\s+с\s+данными|инструкци\w+\s+шаг\w+\s+требу\w+|"
     r"правил\w+\s+шаг\w+\s+требу\w+|оформ\w+[^.\n]{0,120}audits/_inbox|audits/_inbox)",
+    re.I,
+)
+PRESALE_RU_META_LINE_RE = re.compile(
+    r"(?:(?:этого|этой\s+информации|такого|таких\s+данных)?\s*нет\s+в\s+подтвержд[её]нных\s+фактах|"
+    r"в\s+фактах\s+нет\s+подтверждени[яе]|"
+    r"не\s+подтвержд[её]н[оа]?\s+фактами|"
+    r"отсутствует\s+в\s+подтвержд[её]нных\s+(?:фактах|данных))",
     re.I,
 )
 OUTPUT_SANITIZER_OPTION_LINE_RE = re.compile(r"^\s*(?:[A-CА-В]\)|[A-CА-В]\.)\s+", re.I)
@@ -2040,6 +2051,19 @@ def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> st
     return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip()
 
 
+def _presale_safety_enabled(context: Optional[Mapping[str, Any]] = None, *, subflag: str = "") -> bool:
+    if isinstance(context, Mapping):
+        if subflag and subflag in context:
+            return _truthy_value(context.get(subflag))
+        if PRESALE_SAFETY_ENV in context:
+            return _truthy_value(context.get(PRESALE_SAFETY_ENV))
+    if subflag and subflag in os.environ:
+        return _truthy_value(os.getenv(subflag))
+    if PRESALE_SAFETY_ENV in os.environ:
+        return _truthy_value(os.getenv(PRESALE_SAFETY_ENV))
+    return _direct_path_pilot_config(context) == DIRECT_PATH_PILOT_CONFIG_VERSION
+
+
 def _direct_path_brand_label(active_brand: str) -> str:
     brand = str(active_brand or "").strip().casefold()
     if brand == "foton":
@@ -2542,6 +2566,98 @@ def _direct_path_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, 
     return result
 
 
+PRESALE_PROMPT_SAFE_SLOT_KEYS = frozenset(
+    {
+        "active_brand",
+        "brand",
+        "campus",
+        "city",
+        "class",
+        "course",
+        "exam",
+        "format",
+        "grade",
+        "intent",
+        "level",
+        "learning_goal",
+        "message_type",
+        "modality",
+        "platform",
+        "primary_intent",
+        "product",
+        "schedule",
+        "subject",
+        "topic",
+        "topic_focus",
+        "topic_id",
+        "training_format",
+    }
+)
+PRESALE_PROMPT_SENSITIVE_KEY_RE = re.compile(
+    r"(?:phone|телефон|contact|контакт|email|mail|почт|name|имя|фио|fio|identity|client|parent|mother|father|мам|пап|родител|реб[её]н|child|student|ученик)",
+    re.I,
+)
+
+
+def _presale_prompt_safe_key(key: object) -> bool:
+    normalized = str(key or "").strip().casefold()
+    if not normalized or PRESALE_PROMPT_SENSITIVE_KEY_RE.search(normalized):
+        return False
+    return normalized in PRESALE_PROMPT_SAFE_SLOT_KEYS
+
+
+def _presale_prompt_safe_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        filtered = {
+            str(key): _presale_prompt_safe_value(item)
+            for key, item in value.items()
+            if _presale_prompt_safe_key(key) and str(item or "").strip()
+        }
+        return {key: item for key, item in filtered.items() if item not in ("", {}, [])}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        items = [_presale_prompt_safe_value(item) for item in value[:8]]
+        return [item for item in items if item not in ("", {}, [])]
+    text = " ".join(str(value or "").split())
+    if not text or _A2_PHONE_RE.search(text) or re.search(r"[\w.+-]+@[\w.-]+\.\w+", text, re.I):
+        return ""
+    return text[:220]
+
+
+def _direct_path_prompt_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    slots = _direct_path_known_slots(context)
+    if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+        return slots
+    return {
+        key: value
+        for key, value in (
+            (str(key), _presale_prompt_safe_value(value))
+            for key, value in slots.items()
+            if _presale_prompt_safe_key(key)
+        )
+        if value not in ("", {}, [])
+    }
+
+
+def _direct_path_prompt_memory_view(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not isinstance(context, Mapping) or not isinstance(context.get("dialogue_memory_view"), Mapping):
+        return {}
+    memory = context["dialogue_memory_view"]
+    if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+        return memory
+    result: dict[str, Any] = {}
+    for key in ("known_slots", "client_confirmed_slots", "topic_focus"):
+        value = memory.get(key)
+        if isinstance(value, Mapping):
+            filtered = _presale_prompt_safe_value(value)
+            if filtered:
+                result[key] = filtered
+    for key in ("topic", "topic_id", "primary_intent", "message_type"):
+        value = _presale_prompt_safe_value(memory.get(key))
+        if value:
+            result[key] = value
+    return result
+
+
 DIRECT_PATH_GOLD_TOPIC_KEYWORDS: Mapping[str, tuple[str, ...]] = {
     "camp": ("лагер", "лш", "лвш", "смен", "летн"),
     "close": ("спасибо", "подума", "понятно", "вернем", "вернём"),
@@ -2687,9 +2803,9 @@ def _build_direct_path_prompt(
     adjacent_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=adjacent_keys)
     gold_block = _direct_path_gold_prompt_block(gold_examples)
     recent_block = "\n".join(_direct_path_recent_messages(context)) or "(диалог только начался)"
-    slots = _direct_path_known_slots(context)
+    slots = _direct_path_prompt_known_slots(context)
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
-    memory = context.get("dialogue_memory_view") if isinstance(context, Mapping) and isinstance(context.get("dialogue_memory_view"), Mapping) else {}
+    memory = _direct_path_prompt_memory_view(context)
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
     return (
         f"{DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)}\n\n"
@@ -3018,7 +3134,7 @@ class SubscriptionLlmDraftProvider:
                 observed,
                 client_message=client_message,
                 context=context,
-                verifier_fn=self._semantic_output_verifier_runner,
+                verifier_fn=self._semantic_output_verifier_runner_for_context(context),
                 regen_fn=self._semantic_output_regen_runner,
             )
             if not _semantic_output_verifier_enabled(context):
@@ -3080,7 +3196,7 @@ class SubscriptionLlmDraftProvider:
             result,
             client_message=client_message,
             context=context,
-            verifier_fn=self._semantic_output_verifier_runner,
+            verifier_fn=self._semantic_output_verifier_runner_for_context(context),
             regen_fn=self._semantic_output_regen_runner,
         )
         if not _semantic_output_verifier_enabled(context):
@@ -3164,7 +3280,7 @@ class SubscriptionLlmDraftProvider:
             result,
             client_message=client_message,
             context=context,
-            verifier_fn=self._semantic_output_verifier_runner,
+            verifier_fn=self._semantic_output_verifier_runner_for_context(context),
             regen_fn=self._semantic_output_regen_runner,
         )
         before_gate_route = semantic_checked.route
@@ -3345,7 +3461,11 @@ class SubscriptionLlmDraftProvider:
         except Exception:
             return raw
 
-    def _semantic_output_verifier_runner(self, prompt: str) -> Mapping[str, Any] | str:
+    def _semantic_output_verifier_runner_for_context(self, context: Optional[Mapping[str, Any]]) -> Callable[[str], Mapping[str, Any] | str]:
+        raise_on_provider_error = _presale_safety_enabled(context, subflag=PRESALE_VERIFIER_FAILSOFT_ENV)
+        return lambda prompt: self._semantic_output_verifier_runner(prompt, raise_on_provider_error=raise_on_provider_error)
+
+    def _semantic_output_verifier_runner(self, prompt: str, *, raise_on_provider_error: bool = False) -> Mapping[str, Any] | str:
         raw = self._run_prompt_text(
             prompt,
             prefix="mango_semantic_output_verifier_",
@@ -3353,6 +3473,7 @@ class SubscriptionLlmDraftProvider:
             model=os.getenv(SEMANTIC_OUTPUT_VERIFIER_MODEL_ENV) or self.model,
             reasoning_effort=os.getenv(SEMANTIC_OUTPUT_VERIFIER_REASONING_ENV) or "medium",
             timeout_sec=_semantic_output_verifier_timeout_sec(),
+            raise_on_error=raise_on_provider_error,
         )
         try:
             return extract_json_object(raw)
@@ -3702,6 +3823,7 @@ class SubscriptionLlmDraftProvider:
         model: str | None = None,
         reasoning_effort: str | None = None,
         timeout_sec: int | None = None,
+        raise_on_error: bool = False,
     ) -> str:
         with tempfile.NamedTemporaryFile(prefix=prefix, suffix=suffix) as out_file:
             output_path = Path(out_file.name)
@@ -3723,6 +3845,11 @@ class SubscriptionLlmDraftProvider:
                 )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
+            if raise_on_error:
+                detail = " ".join(str(proc.stderr or proc.stdout or raw or "").split())[:500]
+                if detail:
+                    raise _PromptProviderError(f"provider_error rc={proc.returncode}: {detail}")
+                raise _PromptProviderError(f"provider_error rc={proc.returncode}")
             return ""
         return raw or proc.stdout or proc.stderr or ""
 
@@ -4873,11 +5000,18 @@ def apply_output_sanitizer(
     client_pii_deecho_allowed = not _a2_is_proactive_result(result)
     pii_client_message = _client_pii_echo_context(client_message=client_message, context=context) if client_pii_deecho_allowed else ""
     if sanitizer_enabled:
-        cleaned, reasons = _sanitize_output_client_text(result.draft_text, client_message=pii_client_message)
+        cleaned, reasons = _sanitize_output_client_text(
+            result.draft_text,
+            client_message=pii_client_message,
+            presale_ru_meta=_presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV),
+        )
     else:
         cleaned, reasons = _sanitize_client_pii_echo(result.draft_text, client_message=pii_client_message)
         if cleaned != result.draft_text and "client_pii_echo" not in reasons:
             reasons = (*reasons, "client_pii_echo")
+        if _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV):
+            cleaned, meta_reasons = _sanitize_presale_ru_meta_lines(cleaned)
+            reasons = (*reasons, *meta_reasons)
     if not reasons and cleaned == result.draft_text:
         return result
 
@@ -4914,7 +5048,12 @@ def apply_output_sanitizer(
     )
 
 
-def _sanitize_output_client_text(text: str, *, client_message: str = "") -> tuple[str, tuple[str, ...]]:
+def _sanitize_output_client_text(
+    text: str,
+    *,
+    client_message: str = "",
+    presale_ru_meta: bool = False,
+) -> tuple[str, tuple[str, ...]]:
     raw = str(text or "")
     if not raw:
         return "", ()
@@ -4958,6 +5097,9 @@ def _sanitize_output_client_text(text: str, *, client_message: str = "") -> tupl
         if OUTPUT_SANITIZER_META_LINE_RE.search(stripped):
             reasons.append("meta_process_line")
             continue
+        if presale_ru_meta and PRESALE_RU_META_LINE_RE.search(stripped):
+            reasons.append("presale_ru_meta_line")
+            continue
         if plan_context and OUTPUT_SANITIZER_OPTION_LINE_RE.search(stripped):
             reasons.append("plan_option_line")
             continue
@@ -4987,6 +5129,22 @@ def _sanitize_output_client_text(text: str, *, client_message: str = "") -> tupl
     if value != raw and not reasons:
         reasons.append("normalized")
     return value, tuple(dict.fromkeys(reasons))
+
+
+def _sanitize_presale_ru_meta_lines(text: str) -> tuple[str, tuple[str, ...]]:
+    raw = str(text or "")
+    if not raw or not PRESALE_RU_META_LINE_RE.search(raw):
+        return raw, ()
+    kept: list[str] = []
+    removed = False
+    for line in raw.splitlines() or [raw]:
+        stripped = line.strip()
+        if stripped and PRESALE_RU_META_LINE_RE.search(stripped):
+            removed = True
+            continue
+        kept.append(line)
+    value = _normalize_output_sanitizer_text("\n".join(kept))
+    return value, ("presale_ru_meta_line",) if removed else ()
 
 
 _CLIENT_NAME_PAIR_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b")
@@ -5060,6 +5218,8 @@ def _client_pii_echo_context(*, client_message: str = "", context: Optional[Mapp
                         text = str(item.get("text") or "").strip()
                         if text:
                             items.append(text)
+            if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+                items.extend(_client_pii_slot_context_lines(memory))
         recent = context.get("recent_messages")
         if isinstance(recent, Sequence) and not isinstance(recent, (str, bytes, bytearray)):
             for item in recent:
@@ -5068,11 +5228,53 @@ def _client_pii_echo_context(*, client_message: str = "", context: Optional[Mapp
                     value = text.split(":", 1)[-1].strip()
                     if value:
                         items.append(value)
+        if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+            items.extend(_client_pii_slot_context_lines(context))
     current = str(client_message or "").strip()
     if current:
         items.append(current)
     deduped = tuple(dict.fromkeys(item for item in items if item))
     return "\n".join(deduped[-8:])
+
+
+PRESALE_PII_NAME_KEY_RE = re.compile(r"(?:name|имя|фио|fio|parent|mother|father|мам|пап|родител|client)", re.I)
+PRESALE_PII_CHILD_NAME_KEY_RE = re.compile(r"(?:child|student|реб[её]н|ученик|доч|сын)", re.I)
+PRESALE_PII_PHONE_KEY_RE = re.compile(r"(?:phone|телефон|contact|контакт)", re.I)
+
+
+def _client_pii_slot_context_lines(source: Mapping[str, Any]) -> list[str]:
+    containers: list[Mapping[str, Any]] = []
+    for key in ("known_slots", "known_dialog_fields", "known_client_fields", "client_identity", "crm_known_slots", "client_confirmed_slots"):
+        value = source.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    memory = source.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        containers.extend(_client_pii_slot_context_lines_as_containers(memory))
+    lines: list[str] = []
+    for container in containers:
+        for key, raw in container.items():
+            value = raw.get("value") if isinstance(raw, Mapping) else raw
+            text = " ".join(str(value or "").split()).strip(" ,.;:!?")
+            if not text:
+                continue
+            key_text = str(key or "")
+            if PRESALE_PII_PHONE_KEY_RE.search(key_text) or _A2_PHONE_RE.fullmatch(text):
+                lines.append(f"телефон {text}")
+            elif PRESALE_PII_CHILD_NAME_KEY_RE.search(key_text):
+                lines.append(f"ребёнок {text}")
+            elif PRESALE_PII_NAME_KEY_RE.search(key_text):
+                lines.append(f"меня зовут {text}")
+    return lines
+
+
+def _client_pii_slot_context_lines_as_containers(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    containers: list[Mapping[str, Any]] = []
+    for key in ("known_slots", "client_confirmed_slots", "crm_known_slots", "client_identity", "known_client_fields"):
+        value = source.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    return containers
 
 
 def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
@@ -12201,4 +12403,8 @@ def _is_retryable(stderr: str) -> bool:
 
 
 class _CodexRetryableError(RuntimeError):
+    pass
+
+
+class _PromptProviderError(RuntimeError):
     pass

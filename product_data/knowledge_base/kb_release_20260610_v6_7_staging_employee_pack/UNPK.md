@@ -782,7 +782,7 @@
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: ЛВШ Менделеево — 114 000 ₽.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- УНПК: ЛВШ Менделеево — ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽. Полная стоимость — 120 000 ₽. Места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа..
+- УНПК: ЛВШ Менделеево — ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽. Полная стоимость — 120 000 ₽. Места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - УНПК: ЛВШ Менделеево, Москва — бесплатно.
   Источник: facts_for_bot_UNPK.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.

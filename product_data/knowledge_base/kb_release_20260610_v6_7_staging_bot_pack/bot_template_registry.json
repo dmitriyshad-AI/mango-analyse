@@ -707,7 +707,7 @@
     {
       "brand": "foton",
       "client_send": false,
-      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_pricing_2026_client_safe_text_when_price_asked:21bfeb38cb",
+      "fact_id": "fact:v3:foton:lvsh_mendeleevo_2026_pricing_2026_client_safe_text_when_price_asked:7ff0f2017c",
       "fact_key": "lvsh_mendeleevo_2026.pricing_2026.client_safe_text_when_price_asked",
       "fact_type": "price",
       "fallback_route": "manager_only",
@@ -1647,7 +1647,7 @@
     {
       "brand": "unpk",
       "client_send": false,
-      "fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_pricing_2026_client_safe_text_when_price_asked:60a4048e13",
+      "fact_id": "fact:v3:unpk:lvsh_mendeleevo_2026_pricing_2026_client_safe_text_when_price_asked:d4e5131b48",
       "fact_key": "lvsh_mendeleevo_2026.pricing_2026.client_safe_text_when_price_asked",
       "fact_type": "price",
       "fallback_route": "manager_only",

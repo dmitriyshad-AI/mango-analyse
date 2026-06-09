@@ -651,7 +651,7 @@
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: ЛВШ Менделеево — 93 100 ₽.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
-- Фотон: ЛВШ Менделеево — ЛВШ Менделеево у Фотона сейчас стоит 93 100 ₽. Полная стоимость — 98 000 ₽. Места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа..
+- Фотон: ЛВШ Менделеево — ЛВШ Менделеево у Фотона сейчас стоит 93 100 ₽. Полная стоимость — 98 000 ₽. Места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.
 - Фотон: ЛВШ Менделеево, Москва — да.
   Источник: facts_for_bot_FOTON.yaml (Claude layer v3). Статус: `document_verified`. Маршрут: `bot_answer_self_for_pilot`.

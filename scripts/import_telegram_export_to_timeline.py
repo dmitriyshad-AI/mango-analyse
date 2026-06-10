@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
+from urllib.parse import quote
 
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
@@ -424,7 +425,12 @@ def build_timeline_records(
     records: list[TimelineSourceRecord] = []
     seen_source_ids: set[str] = set()
     for msg in messages:
-        dialog_id = text_id(msg.get("dialog_id"))
+        dialog_id = optional_str(msg.get("dialog_id"))
+        message_id = optional_str(msg.get("message_id"))
+        received_at = optional_str(msg.get("date"))
+        if not dialog_id or not message_id or not received_at:
+            counters.skipped += 1
+            continue
         dialog = dialogs.get(dialog_id, {})
         message_peer_kind = str(msg.get("peer_kind") or "").strip().lower()
         dialog_peer_kind = str(dialog.get("peer_kind") or "").strip().lower()
@@ -602,7 +608,7 @@ def load_existing_message_source_ids(
 
 
 def open_readonly_sqlite(db_path: Path) -> sqlite3.Connection:
-    uri = f"file:{db_path.resolve(strict=False)}?mode=ro"
+    uri = f"file:{quote(str(db_path.resolve(strict=False)), safe='/:')}?mode=ro&immutable=1"
     con = sqlite3.connect(uri, uri=True, timeout=15)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA query_only = ON")

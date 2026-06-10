@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityStatus
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from scripts.import_whatsapp_export_to_timeline import (
     WhatsAppImportConfig,
@@ -200,6 +201,52 @@ def test_apply_import_is_idempotent_and_adds_phone_identity_link(tmp_path: Path)
     assert summary["counts"]["ingestion_runs"] == 1
     assert len(phone_links) == 4
     assert second["import_report"]["write_status_counts"]["duplicate"] >= 9
+
+
+def test_apply_import_links_phone_chat_to_existing_customer_without_duplicate_profile(tmp_path: Path) -> None:
+    source = tmp_path / "all_whatsapp_chats.txt"
+    source.write_text(
+        """===== CHAT: +7 999 111-22-33 =====
+2025-04-30
+09:20
+Client One
+Inbound question
+""",
+        encoding="utf-8",
+    )
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    existing = CustomerIdentity(
+        tenant_id="foton",
+        customer_id="existing-customer",
+        identity_status=IdentityStatus.STRONG,
+        display_name="Existing",
+        primary_phone="+79991112233",
+        source_ref="seed",
+    )
+    store = CustomerTimelineSQLiteStore(timeline_db, allowed_root=tmp_path)
+    try:
+        store.upsert_customer(existing)
+    finally:
+        store.close()
+
+    report = run_whatsapp_import(
+        WhatsAppImportConfig(
+            source=source,
+            timeline_db=timeline_db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            brand="unknown",
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(timeline_db) as con:
+        customer_count = con.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0]
+        event_customer_id = con.execute("SELECT customer_id FROM timeline_events").fetchone()[0]
+
+    assert report["links"]["unique_existing_phone_matches"] == 1
+    assert customer_count == 1
+    assert event_customer_id == "existing-customer"
 
 
 def test_phone_and_non_phone_chats_do_not_crash_and_persist_expected_source_ids(tmp_path: Path) -> None:

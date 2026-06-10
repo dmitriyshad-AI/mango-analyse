@@ -9,10 +9,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, cast
+from urllib.parse import quote
 
 from mango_mvp.customer_timeline.contracts import (
     IdentityLink,
@@ -154,9 +156,10 @@ class WhatsAppParseStats:
 class WhatsAppTimelineNormalizer:
     source_system = SOURCE_SYSTEM
 
-    def __init__(self, *, tenant_id: str) -> None:
+    def __init__(self, *, tenant_id: str, phone_customer_ids: Mapping[str, str] | None = None) -> None:
         self.tenant_id = normalize_key(tenant_id, "tenant_id")
         self._channel_normalizer = ChannelMessageNormalizer(tenant_id=self.tenant_id)
+        self._phone_customer_ids = dict(phone_customer_ids or {})
 
     def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
         batch = self._channel_normalizer.normalize(record)
@@ -166,20 +169,28 @@ class WhatsAppTimelineNormalizer:
 
         customers = batch.customers
         links = batch.identity_links
+        customer_id = batch.customers[0].customer_id if batch.customers else ""
         if phone and customers:
-            customer = customers[0]
-            customers = tuple(
-                replace(item, identity_status=IdentityStatus.STRONG, primary_phone=phone)
-                if item.customer_id == customer.customer_id
-                else item
-                for item in customers
-            )
-            event_at = batch.events[0].event_at if batch.events else customer.first_seen_at
+            base_customer = customers[0]
+            existing_customer_id = self._phone_customer_ids.get(str(phone))
+            if existing_customer_id:
+                customer_id = existing_customer_id
+                customers = ()
+            else:
+                customer_id = base_customer.customer_id
+                customers = tuple(
+                    replace(item, identity_status=IdentityStatus.STRONG, primary_phone=phone)
+                    if item.customer_id == base_customer.customer_id
+                    else item
+                    for item in customers
+                )
+            event_at = batch.events[0].event_at if batch.events else base_customer.first_seen_at
+            links = tuple(replace(link, customer_id=customer_id) for link in links)
             links = (
                 *links,
                 IdentityLink(
                     tenant_id=self.tenant_id,
-                    customer_id=customer.customer_id,
+                    customer_id=customer_id,
                     link_type="phone",
                     link_value=str(phone),
                     source_system=self.source_system,
@@ -196,12 +207,13 @@ class WhatsAppTimelineNormalizer:
             )
 
         events = tuple(
-            replace(event, metadata={**event.metadata, "brand": brand, "channel": CHANNEL})
+            replace(event, customer_id=customer_id or event.customer_id, metadata={**event.metadata, "brand": brand, "channel": CHANNEL})
             for event in batch.events
         )
         chunks = tuple(
             replace(
                 chunk,
+                customer_id=customer_id or chunk.customer_id,
                 relevance_tags=tuple(dict.fromkeys((*chunk.relevance_tags, brand))),
                 metadata={**chunk.metadata, "brand": brand, "channel": CHANNEL},
             )
@@ -277,7 +289,13 @@ def run_whatsapp_import(config: WhatsAppImportConfig) -> Mapping[str, Any]:
         source_path=config.source,
         brand=config.brand,
     )
-    normalizer = WhatsAppTimelineNormalizer(tenant_id=config.tenant_id)
+    phones = {str(record.payload.get("chat_phone") or "") for record in records if record.payload.get("chat_phone")}
+    phone_customer_ids = load_unique_phone_customer_ids(
+        config.timeline_db,
+        tenant_id=config.tenant_id,
+        phones=phones,
+    )
+    normalizer = WhatsAppTimelineNormalizer(tenant_id=config.tenant_id, phone_customer_ids=phone_customer_ids)
     idempotency_key = stable_digest(
         {
             "tenant_id": config.tenant_id,
@@ -327,6 +345,7 @@ def run_whatsapp_import(config: WhatsAppImportConfig) -> Mapping[str, Any]:
         parse_stats=parse_stats,
         import_report=import_report,
         validation_ok=validation_ok,
+        phone_customer_ids=phone_customer_ids,
         source_inventory_before=source_inventory_before,
         source_inventory_after=source_inventory_after,
         store_summary_before=store_summary_before,
@@ -340,6 +359,7 @@ def build_report(
     parse_stats: WhatsAppParseStats,
     import_report: TimelineImportReport,
     validation_ok: bool,
+    phone_customer_ids: Mapping[str, str],
     source_inventory_before: Sequence[Mapping[str, Any]],
     source_inventory_after: Sequence[Mapping[str, Any]],
     store_summary_before: Optional[Mapping[str, Any]],
@@ -384,6 +404,9 @@ def build_report(
             },
         },
         "import_report": import_report.to_json_dict(),
+        "links": {
+            "unique_existing_phone_matches": len(phone_customer_ids),
+        },
         "store_summary_before": store_summary_before,
         "store_summary_after": store_summary_after,
         "safety": {
@@ -410,6 +433,80 @@ def parse_whatsapp_export_file(
         brand=brand,
     )
     return records
+
+
+def load_unique_phone_customer_ids(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    phones: set[str],
+) -> dict[str, str]:
+    if not phones or not db_path.exists():
+        return {}
+    rows = query_existing_phone_rows(db_path, tenant_id=tenant_id, phones=phones)
+    by_phone: dict[str, set[str]] = {}
+    for phone, customer_id in rows:
+        if phone and customer_id:
+            by_phone.setdefault(phone, set()).add(customer_id)
+    return {phone: next(iter(customer_ids)) for phone, customer_ids in by_phone.items() if len(customer_ids) == 1}
+
+
+def query_existing_phone_rows(db_path: Path, *, tenant_id: str, phones: set[str]) -> tuple[tuple[str, str], ...]:
+    rows: list[tuple[str, str]] = []
+    with open_readonly_sqlite(db_path) as con:
+        if sqlite_table_exists(con, "customer_identities"):
+            for chunk in chunks(sorted(phones), 800):
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(
+                    (str(row["primary_phone"]), str(row["customer_id"]))
+                    for row in con.execute(
+                        f"""
+                        SELECT primary_phone, customer_id
+                        FROM customer_identities
+                        WHERE tenant_id = ? AND primary_phone IN ({placeholders})
+                        """,
+                        (tenant_id, *chunk),
+                    )
+                    if row["primary_phone"] and row["customer_id"]
+                )
+        if sqlite_table_exists(con, "identity_links"):
+            for chunk in chunks(sorted(phones), 800):
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(
+                    (str(row["link_value"]), str(row["customer_id"]))
+                    for row in con.execute(
+                        f"""
+                        SELECT link_value, customer_id
+                        FROM identity_links
+                        WHERE tenant_id = ?
+                          AND link_type IN ('phone', 'mango_client_phone')
+                          AND link_value IN ({placeholders})
+                        """,
+                        (tenant_id, *chunk),
+                    )
+                    if row["link_value"] and row["customer_id"]
+                )
+    return tuple(rows)
+
+
+def open_readonly_sqlite(db_path: Path) -> sqlite3.Connection:
+    uri = f"file:{quote(str(db_path.resolve(strict=False)), safe='/:')}?mode=ro&immutable=1"
+    con = sqlite3.connect(uri, uri=True, timeout=15)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA query_only = ON")
+    return con
+
+
+def sqlite_table_exists(con: sqlite3.Connection, table_name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def chunks(values: Sequence[str], size: int) -> tuple[tuple[str, ...], ...]:
+    return tuple(tuple(values[idx : idx + size]) for idx in range(0, len(values), size))
 
 
 def parse_whatsapp_export_text(

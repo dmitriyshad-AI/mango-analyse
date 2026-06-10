@@ -64,7 +64,7 @@
 
 ## База знаний
 
-- **Дефолт: v6.7 r2** `product_data/knowledge_base/kb_release_20260610_v6_7_staging_r2/kb_release_v3_snapshot.json` (схема снимка v3, сборщик v6.1 — `scripts/build_kb_release_v6_1_team_answers.py`, только он).
+- **Дефолт: v6.7 r3** `product_data/knowledge_base/kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json` (схема снимка v3, сборщик v6.1 — `scripts/build_kb_release_v6_1_team_answers.py`, только он).
 - v6.3/v6.4/v6.5 устарели для новых пилотных прогонов; staging-решения v6.6 зафиксированы в `D1_audit_backlog/kb_v6_6_staging.md`.
 - Пересборка может испортить ТЕКСТ факта — грепать client_safe_text изменённых фактов.
 
@@ -72,7 +72,7 @@
 
 - **ADR-002 / стабилизация:** прямой путь — действующее пилотное решение. Старая «лазанья» заморожена как история и не является фолбэком пилота.
 - Фолбэк пилота при no-draft: нет клиентского черновика + алерт менеджеру, а не возврат к старому слоёному ответу.
-- Именованный конфиг приёмки: `pilot_gold_v1` = v6.7 r2 snapshot + `TELEGRAM_DIRECT_PATH=1` + `TELEGRAM_BOT_GOLD_REAL=1` + `TELEGRAM_TEMPLATE_FROM_KB=1` + gold-пак `real_manager_gold_2026-06-08.yaml`.
+- Именованный конфиг приёмки: `pilot_gold_v1` = v6.7 r3 snapshot + `TELEGRAM_DIRECT_PATH=1` + `TELEGRAM_BOT_GOLD_REAL=1` + `TELEGRAM_TEMPLATE_FROM_KB=1` + gold-пак `real_manager_gold_2026-06-08.yaml`.
 - Валидность direct-прогона: `bot_direct_draft > 0`, `bot_semantic_output_verifier > 0`, authoritative gate checked, минимум один ход с `gold_real_example_ids`; `bot_faithfulness=0` для direct path — норма.
 - Судья для новых приёмочных прогонов: `--judge-prompt-version v9`. Нельзя сравнивать v2 и v9 без пере-суда одной и той же сырьевой базы.
 

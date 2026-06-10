@@ -12,7 +12,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260610_v6_7_staging_r2"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "product_data" / "knowledge_base" / "kb_release_20260610_v6_7_staging_r3"
 
 REQUIRED_APPROVAL_QUEUE_COLUMNS = {
     "priority",

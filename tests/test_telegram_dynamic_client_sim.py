@@ -895,7 +895,7 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
 
 
 def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:
-    snapshot = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r2/kb_release_v3_snapshot.json")
+    snapshot = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json")
     assert snapshot.exists()
 
     context = sim.build_bot_prompt_context(

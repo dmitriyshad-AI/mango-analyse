@@ -64,7 +64,7 @@ from mango_mvp.channels.night_funnel_shadow import (
 
 
 DEFAULT_ENV_FILE = Path("/Users/dmitrijfabarisov/.codex/mango_telegram_pilot_bots.env")
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r2/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json")
 DEFAULT_CRM_ENV_FILE = Path("stable_runtime/amocrm_runtime/.env.private")
 DEFAULT_LOG_DIR = Path(".codex_local/telegram_pilot_bots/logs")
 DEFAULT_CACHE_DIR = Path(".codex_local/telegram_pilot_bots/llm_cache")

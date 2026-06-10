@@ -304,7 +304,7 @@ class AiOfficeAmoNoteClient:
 
     def _request(self, method: str, path: str, *, json_body: Any = None) -> Mapping[str, Any]:
         url = url_parse.urljoin(f"{self.config.base_url.rstrip('/')}/", path.lstrip("/"))
-        headers = {"X-API-Key": self.config.api_key}
+        headers = {"X-API-Key": self.config.api_key, "User-Agent": "mango-draft-loop/1.0"}
         if self.transport is not None:
             return self.transport(
                 method=method.upper(),

@@ -240,6 +240,29 @@ def test_read_only_missing_db_fails_without_creating_file(tmp_path: Path) -> Non
     assert not db_path.parent.exists()
 
 
+def test_bulk_write_defers_commit_and_rolls_back_on_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    first = identity(phone="+79160000001")
+
+    with store.bulk_write():
+        store.upsert_customer(first)
+        with sqlite3.connect(db_path) as external:
+            assert external.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0] == 0
+
+    with sqlite3.connect(db_path) as external:
+        assert external.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0] == 1
+
+    with pytest.raises(RuntimeError, match="abort bulk"):
+        with store.bulk_write():
+            store.upsert_customer(identity(phone="+79160000002"))
+            raise RuntimeError("abort bulk")
+
+    with sqlite3.connect(db_path) as external:
+        assert external.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0] == 1
+    store.close()
+
+
 def test_path_guard_rejects_runtime_outside_and_stable_runtime_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="stable_runtime"):
         CustomerTimelineSQLiteStore(tmp_path / "stable_runtime" / "customer_timeline.sqlite", allowed_root=tmp_path)

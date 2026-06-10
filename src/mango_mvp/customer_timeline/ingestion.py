@@ -267,34 +267,35 @@ class TimelineImportService:
         inferred_conflicts = infer_identity_conflicts(batches)
         normalized_counts["conflicts"] = normalized_counts.get("conflicts", 0) + len(inferred_conflicts)
         if not dry_run:
-            for batch in batches:
-                for result in self._apply_batch(batch, actor=actor, ingestion_run_id=run_id):
+            with self.store.bulk_write():
+                for batch in batches:
+                    for result in self._apply_batch(batch, actor=actor, ingestion_run_id=run_id):
+                        write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
+                for conflict in inferred_conflicts:
+                    result = self.store.record_conflict(
+                        conflict["tenant_id"],
+                        conflict_type=conflict["conflict_type"],
+                        entity_refs=tuple(conflict["entity_refs"]),
+                        severity=conflict.get("severity") or "medium",
+                        status=conflict.get("status") or "open",
+                        summary=conflict.get("summary"),
+                        metadata=conflict.get("metadata") or {},
+                        actor=actor,
+                        ingestion_run_id=run_id,
+                    )
                     write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
-            for conflict in inferred_conflicts:
-                result = self.store.record_conflict(
-                    conflict["tenant_id"],
-                    conflict_type=conflict["conflict_type"],
-                    entity_refs=tuple(conflict["entity_refs"]),
-                    severity=conflict.get("severity") or "medium",
-                    status=conflict.get("status") or "open",
-                    summary=conflict.get("summary"),
-                    metadata=conflict.get("metadata") or {},
-                    actor=actor,
-                    ingestion_run_id=run_id,
-                )
-                write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
-        if not dry_run and run_id:
-            self.store.finish_ingestion_run(
-                run_id,
-                status="completed" if not errors else "completed_with_errors",
-                accepted_count=accepted,
-                rejected_count=len(errors),
-                metadata={
-                    "normalized_counts": dict(normalized_counts),
-                    "write_status_counts": dict(write_status_counts),
-                },
-                actor=actor,
-            )
+                if run_id:
+                    self.store.finish_ingestion_run(
+                        run_id,
+                        status="completed" if not errors else "completed_with_errors",
+                        accepted_count=accepted,
+                        rejected_count=len(errors),
+                        metadata={
+                            "normalized_counts": dict(normalized_counts),
+                            "write_status_counts": dict(write_status_counts),
+                        },
+                        actor=actor,
+                    )
         source_inventory_after = build_source_inventory(normalized_records)
         return TimelineImportReport(
             schema_version=CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION,

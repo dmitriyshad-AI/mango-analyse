@@ -134,6 +134,7 @@ stable_runtime/amocrm_runtime/.env.private
 product_data/customer_timeline/deal_aware_sample_*/
 product_data/customer_timeline/contact_control_sample_*/
 product_data/customer_timeline/canonical_readonly_*/
+product_data/customer_profiles/
 
 # Local Mango/API/audio working artifacts
 product_data/mango_api_reconcile_*/
@@ -182,6 +183,7 @@ test_runs/
 test_sets/
 
 # Local source data dumps
+all_whatsapp_chats.txt
 product_data/channel_archive/
 2026-03-05-21-06-49-ч1/
 2026-03-05-21-06-49-ч2/

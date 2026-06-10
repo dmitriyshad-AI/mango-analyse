@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from mango_mvp.customer_timeline.contracts import (
     BotContextChunk,
@@ -278,6 +279,8 @@ class CustomerTimelineSQLiteStore:
         guard_customer_timeline_sqlite_path(self.db_path)
         self.read_only = bool(read_only)
         self._clock = clock or now_utc
+        self._bulk_write_depth = 0
+        self._bulk_write_dirty = False
         self._con = self._connect()
         if not self.read_only:
             self.bootstrap()
@@ -301,6 +304,27 @@ class CustomerTimelineSQLiteStore:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
+
+    @contextmanager
+    def bulk_write(self) -> Iterator["CustomerTimelineSQLiteStore"]:
+        """Defer per-record commits until the end of a local batch write."""
+        self._ensure_writable()
+        outermost = self._bulk_write_depth == 0
+        self._bulk_write_depth += 1
+        try:
+            yield self
+        except Exception:
+            if outermost:
+                self._con.rollback()
+                self._bulk_write_dirty = False
+            raise
+        else:
+            if outermost and self._bulk_write_dirty:
+                self._con.commit()
+        finally:
+            self._bulk_write_depth -= 1
+            if outermost:
+                self._bulk_write_dirty = False
 
     @property
     def open_result(self) -> CustomerTimelineSQLiteOpenResult:
@@ -544,7 +568,7 @@ class CustomerTimelineSQLiteStore:
             """,
             (CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID, CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION, self._now().isoformat()),
         )
-        self._con.commit()
+        self._commit()
         self._fts_enabled = self._detect_existing_fts()
 
     def upsert_customer(
@@ -710,7 +734,7 @@ class CustomerTimelineSQLiteStore:
             commit=False,
         )
         self._sync_event_fts(event, payload, record_hash)
-        self._con.commit()
+        self._commit()
         return result
 
     def upsert_artifact(
@@ -832,7 +856,7 @@ class CustomerTimelineSQLiteStore:
             commit=False,
         )
         self._sync_chunk_fts(chunk, record_hash)
-        self._con.commit()
+        self._commit()
         return result
 
     def start_ingestion_run(
@@ -1449,7 +1473,7 @@ class CustomerTimelineSQLiteStore:
             now=self._now(),
         )
         if commit:
-            self._con.commit()
+            self._commit()
         return CustomerTimelineStoreWriteResult(
             record_type=record_type,
             record_id=key,
@@ -1485,6 +1509,12 @@ class CustomerTimelineSQLiteStore:
             actor=actor,
             ingestion_run_id=run.run_id,
         )
+
+    def _commit(self) -> None:
+        if self._bulk_write_depth > 0:
+            self._bulk_write_dirty = True
+            return
+        self._con.commit()
 
     def _append_audit_log(
         self,

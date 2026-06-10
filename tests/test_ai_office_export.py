@@ -15,6 +15,7 @@ from mango_mvp import cli as cli_module
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
 from mango_mvp.services.export_ai_office import (
+    _parse_analysis,
     build_call_insight_payload_for_record,
     push_call_insights,
 )
@@ -32,6 +33,30 @@ class _FakeResponse:
 
 
 class AIOfficeExportTest(unittest.TestCase):
+    def test_parse_analysis_does_not_backfill_analysis_meta(self) -> None:
+        settings = make_settings()
+        call = CallRecord(
+            id=500,
+            source_file="/tmp/calls/call-500.mp3",
+            source_filename="call-500.mp3",
+            phone="+79990001122",
+            manager_name="Иванов Иван",
+            transcript_text="[00:01.0] Клиент: Нужна математика для 9 класса.",
+            analysis_json=json.dumps(
+                {
+                    "summary": "Клиент интересуется математикой.",
+                    "next_step": "Отправить программу",
+                    "follow_up_score": 70,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        parsed = _parse_analysis(call, settings)
+
+        self.assertEqual(parsed.get("analysis_schema_version"), "v2")
+        self.assertNotIn("analysis_meta", parsed)
+
     def test_build_call_insight_payload_for_record_maps_v2_analysis(self) -> None:
         settings = make_settings()
         call = CallRecord(

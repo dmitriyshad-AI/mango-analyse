@@ -401,6 +401,7 @@ class AnalyzeServiceTest(unittest.TestCase):
                 state["calls"] += 1
                 self.assertIn("--model", cmd)
                 self.assertIn("gpt-5.4-mini", cmd)
+                self.assertIn("--ignore-user-config", cmd)
                 out_path = Path(cmd[cmd.index("--output-last-message") + 1])
                 out_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
                 return CompletedProcess(cmd, 0, stdout="", stderr="")

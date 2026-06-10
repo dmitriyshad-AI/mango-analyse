@@ -1995,6 +1995,28 @@ class AnalyzeService:
         raw = payload if isinstance(payload, dict) else {}
         return self._normalize_analysis(call, text, raw)
 
+    def _analysis_model_for_provider(self, provider: str) -> str:
+        if provider == "codex_cli":
+            return (self._settings.codex_analyze_model or "").strip() or "unknown"
+        if provider == "openai":
+            return (self._settings.openai_analysis_model or "").strip() or "unknown"
+        if provider == "ollama":
+            return (self._settings.ollama_model or "").strip() or "unknown"
+        if provider == "mock":
+            return "mock"
+        return provider or "unknown"
+
+    def _build_analysis_meta(self, analysis: Dict[str, Any]) -> Dict[str, str]:
+        provider = (self._settings.analyze_provider or "").strip().lower() or "mock"
+        quality_flags = analysis.get("quality_flags") if isinstance(analysis.get("quality_flags"), dict) else {}
+        prompt_version = quality_flags.get("analyze_prompt_version") or self._analysis_prompt_version()
+        return {
+            "analysis_model": self._analysis_model_for_provider(provider),
+            "analysis_provider": provider,
+            "analysis_prompt_version": str(prompt_version),
+            "analyzed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
     def _mock_analysis(self, call: CallRecord, text: str) -> Dict[str, Any]:
         _ = call
         lowered = text.lower()
@@ -2193,6 +2215,7 @@ class AnalyzeService:
                     "exec",
                     "--skip-git-repo-check",
                     "--ephemeral",
+                    "--ignore-user-config",
                     "--sandbox",
                     "read-only",
                     "--model",
@@ -2305,6 +2328,7 @@ class AnalyzeService:
                     raise RuntimeError("Empty transcript_text")
                 raw_analysis = self._analyze_text(call, text)
                 analysis = self._normalize_analysis(call, text, raw_analysis)
+                analysis["analysis_meta"] = self._build_analysis_meta(analysis)
                 call.analysis_json = json.dumps(analysis, ensure_ascii=False)
                 self._export_analysis_files(call, analysis)
                 call.analysis_status = "done"

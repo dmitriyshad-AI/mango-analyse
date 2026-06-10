@@ -46,6 +46,7 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertEqual(migrated.get("next_step"), "Отправить программу")
         self.assertEqual(migrated["crm_blocks"]["student"]["grade_current"], "10")
         self.assertIn("математика", migrated["crm_blocks"]["interests"]["subjects"])
+        self.assertNotIn("analysis_meta", migrated)
 
     def test_normalize_analysis_emits_v2_blocks_and_legacy(self) -> None:
         service = AnalyzeService(make_settings())
@@ -87,6 +88,32 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertEqual(analysis["next_step"], "Перезвонить завтра")
         self.assertEqual(analysis["follow_up_score"], 72)
         self.assertGreaterEqual(len(analysis.get("evidence") or []), 1)
+
+    def test_analysis_meta_uses_provider_model_and_actual_prompt_version(self) -> None:
+        codex_service = AnalyzeService(
+            replace(
+                make_settings(),
+                analyze_provider="codex_cli",
+                codex_analyze_model="gpt-5.4-mini",
+            )
+        )
+        codex_meta = codex_service._build_analysis_meta(
+            {"quality_flags": {"analyze_prompt_version": "v7"}}
+        )
+        self.assertEqual(codex_meta["analysis_provider"], "codex_cli")
+        self.assertEqual(codex_meta["analysis_model"], "gpt-5.4-mini")
+        self.assertEqual(codex_meta["analysis_prompt_version"], "v7")
+
+        openai_service = AnalyzeService(
+            replace(
+                make_settings(),
+                analyze_provider="openai",
+                openai_analysis_model="gpt-4o-mini",
+            )
+        )
+        openai_meta = openai_service._build_analysis_meta({})
+        self.assertEqual(openai_meta["analysis_provider"], "openai")
+        self.assertEqual(openai_meta["analysis_model"], "gpt-4o-mini")
 
     def test_normalize_analysis_preserves_prompt_quality_flags(self) -> None:
         service = AnalyzeService(make_settings())
@@ -414,6 +441,15 @@ class AnalysisSchemaTest(unittest.TestCase):
             with session_factory() as session:
                 result = service.run(session, limit=10)
             self.assertEqual(result["success"], 1)
+            with session_factory() as session:
+                call = session.query(CallRecord).one()
+                analysis = json.loads(call.analysis_json or "{}")
+            meta = analysis.get("analysis_meta")
+            self.assertIsInstance(meta, dict)
+            self.assertEqual(meta["analysis_provider"], "mock")
+            self.assertEqual(meta["analysis_model"], "mock")
+            self.assertEqual(meta["analysis_prompt_version"], "v6")
+            self.assertTrue(meta["analyzed_at"].endswith("+00:00"))
 
             base = export_dir / calls_dir.name / f"{source.stem}"
             summary_path = base.with_name(f"{source.stem}_history_summary.txt")
@@ -638,6 +674,10 @@ class AnalysisSchemaTest(unittest.TestCase):
             structured = json.loads(structured_path.read_text(encoding="utf-8"))
             self.assertIn("Петрова Анна", summary_text)
             self.assertEqual(structured["next_step"]["action"], "Уточнить информацию и сообщить клиенту")
+            with session_factory() as session:
+                call = session.query(CallRecord).one()
+                migrated = json.loads(call.analysis_json or "{}")
+            self.assertNotIn("analysis_meta", migrated)
 
 
 if __name__ == "__main__":

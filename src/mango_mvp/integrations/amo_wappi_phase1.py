@@ -15,9 +15,11 @@ from urllib import request as url_request
 
 
 AMO_WAPPI_ENV_FILE = Path.home() / ".mango_secrets" / "amo_wappi.env"
+AI_OFFICE_ENV_FILE = Path.home() / ".mango_secrets" / "ai_office.env"
 AMO_WAPPI_CONFIG_PATH_ENV = "AMO_WAPPI_CONFIG_PATH"
 DEFAULT_AMO_WAPPI_CONFIG_PATH = Path.home() / ".mango_secrets" / "amo_wappi_phase1.json"
 WAPPI_DEFAULT_BASE_URL = "https://wappi.pro"
+AI_OFFICE_DEFAULT_BASE_URL = "https://api.fotonai.online"
 VALID_BRANDS = frozenset({"foton", "unpk"})
 DRAFT_NOTE_MARKER = "ЧЕРНОВИК БОТА, не отправлено"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
@@ -275,6 +277,78 @@ class AmoPhase1Client:
         )
         body = [{"note_type": "common", "params": {"text": note_text}}]
         return self._request("POST", f"/api/v4/leads/{int(allowed_lead_id)}/notes", json_body=body)
+
+
+@dataclass(frozen=True)
+class AiOfficeClientConfig:
+    base_url: str
+    api_key: str
+    timeout_seconds: int = 25
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "AiOfficeClientConfig":
+        source = env or os.environ
+        base_url = _normalize_base_url(
+            str(source.get("AI_OFFICE_API_BASE_URL") or AI_OFFICE_DEFAULT_BASE_URL),
+            default=AI_OFFICE_DEFAULT_BASE_URL,
+        )
+        api_key = _read_env(source, "AI_OFFICE_API_KEY", "CRM_SERVER_API_KEY")
+        timeout = int(source.get("AI_OFFICE_TIMEOUT_SEC", source.get("AMO_WAPPI_HTTP_TIMEOUT_SEC", "25")) or "25")
+        return cls(base_url=base_url, api_key=api_key, timeout_seconds=timeout)
+
+
+class AiOfficeAmoNoteClient:
+    def __init__(self, config: AiOfficeClientConfig, *, transport: JsonTransport | None = None) -> None:
+        self.config = config
+        self.transport = transport
+
+    def _request(self, method: str, path: str, *, json_body: Any = None) -> Mapping[str, Any]:
+        url = url_parse.urljoin(f"{self.config.base_url.rstrip('/')}/", path.lstrip("/"))
+        headers = {"X-API-Key": self.config.api_key}
+        if self.transport is not None:
+            return self.transport(
+                method=method.upper(),
+                url=url,
+                headers=headers,
+                json_body=json_body,
+                timeout_seconds=self.config.timeout_seconds,
+            )
+        return _json_http_request(
+            method=method,
+            url=url,
+            headers=headers,
+            json_body=json_body,
+            timeout_seconds=self.config.timeout_seconds,
+        )
+
+    def add_draft_note_to_test_lead(
+        self,
+        lead_id: int | str,
+        *,
+        config: AmoWappiPhase1Config,
+        draft_text: str,
+        brand: str,
+        profile_id: str = "",
+        route: str = "",
+        safety_flags: Sequence[str] = (),
+        outgoing_visibility_note: str = "",
+        created_at: datetime | None = None,
+    ) -> Mapping[str, Any]:
+        allowed_lead_id = config.require_note_allowed(lead_id)
+        note_text = build_draft_note_text(
+            draft_text=draft_text,
+            brand=brand,
+            profile_id=profile_id,
+            route=route,
+            safety_flags=safety_flags,
+            outgoing_visibility_note=outgoing_visibility_note,
+            created_at=created_at,
+        )
+        return self._request(
+            "POST",
+            f"/api/integrations/amocrm/leads/{int(allowed_lead_id)}/notes",
+            json_body={"text": note_text},
+        )
 
 
 @dataclass(frozen=True)

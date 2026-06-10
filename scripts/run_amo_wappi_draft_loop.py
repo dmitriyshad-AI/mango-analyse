@@ -15,10 +15,11 @@ from mango_mvp.channels.subscription_llm import (
     SubscriptionLlmDraftProvider,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import (
+    AI_OFFICE_ENV_FILE,
     AMO_WAPPI_ENV_FILE,
     DEFAULT_AMO_WAPPI_CONFIG_PATH,
-    AmoClientConfig,
-    AmoPhase1Client,
+    AiOfficeAmoNoteClient,
+    AiOfficeClientConfig,
     AmoWappiPhase1Config,
     WappiClientConfig,
     WappiPhase1Client,
@@ -54,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", default=True, help="Do not POST AMO notes. Default.")
     parser.add_argument("--live-write", action="store_true", help="Allow AMO note POST after all allowlist checks.")
     parser.add_argument("--env-file", type=Path, default=AMO_WAPPI_ENV_FILE)
+    parser.add_argument("--ai-office-env-file", type=Path, default=AI_OFFICE_ENV_FILE)
     parser.add_argument("--profiles-file", type=Path, default=DEFAULT_PROFILES_PATH)
     parser.add_argument("--pairs-file", type=Path, default=DEFAULT_PAIRS_PATH)
     parser.add_argument("--phase1-config", type=Path, default=DEFAULT_AMO_WAPPI_CONFIG_PATH)
@@ -115,21 +117,28 @@ def build_context_builder(snapshot_path: Path):
     return _build
 
 
-def build_safe_transport(amo_config: AmoClientConfig, wappi_config: WappiClientConfig) -> DefaultDenyTransport:
-    hosts = {
-        url_parse.urlparse(amo_config.base_url).netloc.casefold(),
-        url_parse.urlparse(wappi_config.base_url).netloc.casefold(),
-    }
-    return DefaultDenyTransport(_json_http_request, policy=SafeTransportPolicy(allowed_hosts=frozenset(host for host in hosts if host)))
+def build_safe_transport(ai_office_config: AiOfficeClientConfig, wappi_config: WappiClientConfig) -> DefaultDenyTransport:
+    ai_office_host = url_parse.urlparse(ai_office_config.base_url).netloc.casefold()
+    wappi_host = url_parse.urlparse(wappi_config.base_url).netloc.casefold()
+    return DefaultDenyTransport(
+        _json_http_request,
+        policy=SafeTransportPolicy(
+            wappi_hosts=frozenset(host for host in (wappi_host,) if host),
+            amo_read_hosts=frozenset(),
+            ai_office_hosts=frozenset(host for host in (ai_office_host,) if host),
+        ),
+    )
 
 
 def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     load_env_file(args.env_file)
+    if args.ai_office_env_file.expanduser().exists():
+        load_env_file(args.ai_office_env_file)
     os.environ.setdefault(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
     config = build_config(args)
-    amo_config = AmoClientConfig.from_env()
+    ai_office_config = AiOfficeClientConfig.from_env()
     wappi_config = WappiClientConfig.from_env()
-    transport = build_safe_transport(amo_config, wappi_config)
+    transport = build_safe_transport(ai_office_config, wappi_config)
     bot_provider = SubscriptionLlmDraftProvider(
         model=args.model,
         reasoning_effort=args.reasoning,
@@ -140,7 +149,7 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     return AmoWappiDraftLoop(
         config=config,
         wappi_client=WappiPhase1Client(wappi_config, transport=transport),
-        amo_client=AmoPhase1Client(amo_config, transport=transport),
+        amo_client=AiOfficeAmoNoteClient(ai_office_config, transport=transport),
         bot_provider=bot_provider,
         context_builder=build_context_builder(args.snapshot),
         state=DraftLoopState(config.state_path),
@@ -164,4 +173,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

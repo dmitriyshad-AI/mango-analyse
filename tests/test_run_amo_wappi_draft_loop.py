@@ -62,9 +62,9 @@ def test_context_builder_marks_draft_loop_as_not_sending_clients(tmp_path: Path)
 
 
 def test_safe_transport_blocks_unlisted_wappi_get() -> None:
-    amo_config = runner.AmoClientConfig(base_url="https://educent.amocrm.ru", access_token="token")
+    ai_office_config = runner.AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="key")
     wappi_config = runner.WappiClientConfig(base_url="https://wappi.pro", telegram_token="token")
-    transport = runner.build_safe_transport(amo_config, wappi_config)
+    transport = runner.build_safe_transport(ai_office_config, wappi_config)
 
     try:
         transport(method="GET", url="https://wappi.pro/tapi/profile/queue/purge?profile_id=p")
@@ -73,3 +73,9 @@ def test_safe_transport_blocks_unlisted_wappi_get() -> None:
     else:  # pragma: no cover
         raise AssertionError("queue purge must be denied")
 
+    try:
+        transport(method="POST", url="https://educent.amocrm.ru/api/v4/leads/49832125/notes")
+    except TransportDenied:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("direct amoCRM note writes must be denied")

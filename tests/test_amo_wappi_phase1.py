@@ -9,6 +9,8 @@ import pytest
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AMO_WAPPI_CONFIG_PATH_ENV,
     DRAFT_NOTE_MARKER,
+    AiOfficeAmoNoteClient,
+    AiOfficeClientConfig,
     AmoClientConfig,
     AmoPhase1Client,
     AmoWappiConfigError,
@@ -174,6 +176,52 @@ def test_draft_note_write_outside_allowlist_is_blocked_before_http() -> None:
             draft_text="Черновик",
             brand="foton",
         )
+
+    assert calls == []
+
+
+def test_ai_office_note_client_posts_only_server_endpoint() -> None:
+    calls: list[dict] = []
+
+    def transport(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "note_id": 9001}
+
+    config = AmoWappiPhase1Config(
+        profile_brand_map={"profile-1": "foton"},
+        allowed_test_lead_ids=frozenset({"49832125"}),
+    )
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=transport,
+    )
+
+    response = client.add_draft_note_to_test_lead(
+        "49832125",
+        config=config,
+        draft_text="Черновик",
+        brand="foton",
+        profile_id="profile-1",
+    )
+
+    assert response == {"status": "ok", "note_id": 9001}
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["url"] == "https://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes"
+    assert calls[0]["headers"] == {"X-API-Key": "secret-key"}
+    assert calls[0]["json_body"]["text"].startswith(DRAFT_NOTE_MARKER)
+    assert "Черновик" in calls[0]["json_body"]["text"]
+
+
+def test_ai_office_note_client_blocks_non_allowlisted_lead_before_http() -> None:
+    calls: list[dict] = []
+    config = AmoWappiPhase1Config(allowed_test_lead_ids=frozenset({"49832125"}))
+    client = AiOfficeAmoNoteClient(
+        AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="secret-key"),
+        transport=lambda **kwargs: calls.append(kwargs),
+    )
+
+    with pytest.raises(AmoWappiWriteBlocked):
+        client.add_draft_note_to_test_lead("111", config=config, draft_text="Черновик", brand="foton")
 
     assert calls == []
 

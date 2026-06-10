@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
-from mango_mvp.integrations.amo_wappi_phase1 import AmoPhase1Client, AmoWappiPhase1Config, WappiPhase1Client
+from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config, WappiPhase1Client
 
 
 DEFAULT_DRAFT_LOOP_DIR = Path.home() / ".mango_local" / "draft_loop"
@@ -112,6 +112,11 @@ class WappiHistoryMessage:
 
 class DraftBotProvider(Protocol):
     def build_draft(self, client_message: str, *, context: Mapping[str, Any] | None = None) -> SubscriptionDraftResult:
+        ...
+
+
+class AmoDraftNoteClient(Protocol):
+    def add_draft_note_to_test_lead(self, lead_id: int | str, **kwargs: Any) -> Mapping[str, Any]:
         ...
 
 
@@ -260,7 +265,7 @@ class AmoWappiDraftLoop:
         *,
         config: DraftLoopConfig,
         wappi_client: WappiPhase1Client,
-        amo_client: AmoPhase1Client,
+        amo_client: AmoDraftNoteClient,
         bot_provider: DraftBotProvider,
         context_builder: ContextBuilder,
         journal: DraftLoopJournal | None = None,

@@ -99,6 +99,7 @@ class TelegramBuildCounters:
     linked_by_phone: int = 0
     session_only: int = 0
     duplicates: int = 0
+    bad_jsonl_rows: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -110,7 +111,21 @@ class TelegramBuildCounters:
             "linked_by_phone": self.linked_by_phone,
             "session_only": self.session_only,
             "duplicates": self.duplicates,
+            "bad_jsonl_rows": self.bad_jsonl_rows,
         }
+
+
+@dataclass(frozen=True)
+class JsonlReadResult:
+    rows: tuple[Mapping[str, Any], ...]
+    nonempty_lines: int
+    bad_rows: int
+
+
+@dataclass(frozen=True)
+class PhoneCustomerLookup:
+    unique_customer_ids: Mapping[str, str]
+    ambiguous_phone_matches: int
 
 
 class TelegramExportTimelineNormalizer:
@@ -260,16 +275,21 @@ def config_from_args(args: argparse.Namespace) -> TelegramExportImportConfig:
 
 def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[str, Any]:
     source_inventory_before = source_file_inventory(config.dialogs_path, config.messages_path)
-    dialog_rows = read_jsonl(config.dialogs_path)
+    dialog_read = read_jsonl_lenient(config.dialogs_path)
+    dialog_rows = dialog_read.rows
     dialogs = dialogs_by_id(dialog_rows)
-    messages = read_jsonl(config.messages_path)
+    message_read = read_jsonl_lenient(config.messages_path)
+    messages = message_read.rows
     records, counters = build_timeline_records(
         dialogs=dialogs,
-        dialog_count=len(dialog_rows),
+        dialog_count=dialog_read.nonempty_lines,
         messages=messages,
+        message_count=message_read.nonempty_lines,
         brand=config.brand,
         source_path=config.messages_path,
     )
+    counters.bad_jsonl_rows = dialog_read.bad_rows + message_read.bad_rows
+    counters.skipped += message_read.bad_rows
     source_ids = tuple(str(record.payload["timeline_source_id"]) for record in records)
     existing_source_ids = load_existing_message_source_ids(
         config.timeline_db,
@@ -280,11 +300,12 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
     counters.duplicates += existing_duplicate_count
 
     phones = {str(record.payload.get("dialog_phone_normalized") or "") for record in records if record.payload.get("dialog_phone_normalized")}
-    phone_customer_ids = load_unique_phone_customer_ids(
+    phone_lookup = load_phone_customer_lookup(
         config.timeline_db,
         tenant_id=config.tenant_id,
         phones=phones,
     )
+    phone_customer_ids = dict(phone_lookup.unique_customer_ids)
     normalizer = TelegramExportTimelineNormalizer(
         tenant_id=config.tenant_id,
         phone_customer_ids=phone_customer_ids,
@@ -365,6 +386,7 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
         },
         "links": {
             "unique_existing_phone_matches": len(phone_customer_ids),
+            "ambiguous_phone_matches": phone_lookup.ambiguous_phone_matches,
             "existing_duplicate_source_ids": existing_duplicate_count,
         },
         "normalization": {
@@ -418,10 +440,14 @@ def build_timeline_records(
     dialogs: Mapping[str, Mapping[str, Any]],
     dialog_count: Optional[int] = None,
     messages: Sequence[Mapping[str, Any]],
+    message_count: Optional[int] = None,
     brand: str,
     source_path: Path,
 ) -> tuple[tuple[TimelineSourceRecord, ...], TelegramBuildCounters]:
-    counters = TelegramBuildCounters(dialogs=len(dialogs) if dialog_count is None else dialog_count, messages=len(messages))
+    counters = TelegramBuildCounters(
+        dialogs=len(dialogs) if dialog_count is None else dialog_count,
+        messages=len(messages) if message_count is None else message_count,
+    )
     records: list[TimelineSourceRecord] = []
     seen_source_ids: set[str] = set()
     for msg in messages:
@@ -507,17 +533,29 @@ def dialogs_by_id(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, A
 
 
 def read_jsonl(path: Path) -> tuple[Mapping[str, Any], ...]:
+    return read_jsonl_lenient(path).rows
+
+
+def read_jsonl_lenient(path: Path) -> JsonlReadResult:
     rows: list[Mapping[str, Any]] = []
+    nonempty_lines = 0
+    bad_rows = 0
     with path.open("r", encoding="utf-8") as handle:
         for lineno, line in enumerate(handle, start=1):
             text = line.strip()
             if not text:
                 continue
-            payload = json.loads(text)
+            nonempty_lines += 1
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                bad_rows += 1
+                continue
             if not isinstance(payload, Mapping):
-                raise ValueError(f"{path.name} line {lineno} must contain a JSON object")
+                bad_rows += 1
+                continue
             rows.append(dict(payload))
-    return tuple(rows)
+    return JsonlReadResult(rows=tuple(rows), nonempty_lines=nonempty_lines, bad_rows=bad_rows)
 
 
 def load_unique_phone_customer_ids(
@@ -526,15 +564,27 @@ def load_unique_phone_customer_ids(
     tenant_id: str,
     phones: set[str],
 ) -> dict[str, str]:
+    return dict(load_phone_customer_lookup(db_path, tenant_id=tenant_id, phones=phones).unique_customer_ids)
+
+
+def load_phone_customer_lookup(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    phones: set[str],
+) -> PhoneCustomerLookup:
     if not phones or not db_path.exists():
-        return {}
+        return PhoneCustomerLookup(unique_customer_ids={}, ambiguous_phone_matches=0)
     tenant = normalize_key(tenant_id, "tenant_id")
     rows = query_existing_phone_rows(db_path, tenant_id=tenant, phones=phones)
     by_phone: dict[str, set[str]] = {}
     for phone, customer_id in rows:
         if phone and customer_id:
             by_phone.setdefault(phone, set()).add(customer_id)
-    return {phone: next(iter(customer_ids)) for phone, customer_ids in by_phone.items() if len(customer_ids) == 1}
+    return PhoneCustomerLookup(
+        unique_customer_ids={phone: next(iter(customer_ids)) for phone, customer_ids in by_phone.items() if len(customer_ids) == 1},
+        ambiguous_phone_matches=sum(1 for customer_ids in by_phone.values() if len(customer_ids) > 1),
+    )
 
 
 def query_existing_phone_rows(db_path: Path, *, tenant_id: str, phones: set[str]) -> tuple[tuple[str, str], ...]:

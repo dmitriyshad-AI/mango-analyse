@@ -116,6 +116,42 @@ def test_malformed_export_rows_are_skipped_instead_of_failing(tmp_path: Path) ->
     assert report["summary"]["records_accepted"] == 1
 
 
+def test_invalid_jsonl_line_is_skipped_with_counter(tmp_path: Path) -> None:
+    export_dir = tmp_path / "telegram_export"
+    export_dir.mkdir()
+    write_jsonl(
+        export_dir / "dialogs.jsonl",
+        [{"dialog_id": 100, "name": "Мария", "peer_kind": "user", "phone": None}],
+    )
+    valid_message = {
+        "dialog_id": 100,
+        "peer_kind": "user",
+        "message_id": 200,
+        "date": "2026-03-28T09:38:18+00:00",
+        "sender_id": 100,
+        "text": "Живая строка после битой",
+        "out": False,
+    }
+    (export_dir / "messages.jsonl").write_text(
+        "{bad json\n" + json.dumps(valid_message, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    report = run_telegram_export_import(
+        TelegramExportImportConfig(
+            export_dir=export_dir,
+            allowed_root=tmp_path,
+            timeline_db=tmp_path / "timeline.sqlite",
+        )
+    )
+
+    assert report["validation_ok"] is True
+    assert report["counters"]["messages"] == 2
+    assert report["counters"]["bad_jsonl_rows"] == 1
+    assert report["counters"]["skipped"] == 1
+    assert report["summary"]["records_accepted"] == 1
+
+
 def test_out_message_imports_as_outbound_and_keeps_brand_tag(tmp_path: Path) -> None:
     export_dir = write_export(
         tmp_path,
@@ -234,6 +270,45 @@ def test_phone_links_existing_customer_and_repeat_import_does_not_duplicate(tmp_
     assert count_rows(timeline_db, "timeline_events") == 1
 
 
+def test_ambiguous_phone_match_is_counted_without_first_match_merge(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "timeline.sqlite"
+    existing_ids = seed_duplicate_phone_customers(timeline_db, tmp_path, phone="+79991112233")
+    export_dir = write_export(
+        tmp_path,
+        dialogs=[
+            {"dialog_id": 102, "name": "Пётр", "peer_kind": "user", "phone": "9991112233"},
+        ],
+        messages=[
+            {
+                "dialog_id": 102,
+                "dialog_name": "Пётр",
+                "peer_kind": "user",
+                "message_id": 202,
+                "date": "2026-03-28T09:38:18+00:00",
+                "sender_id": 102,
+                "text": "Есть курс для 7 класса?",
+                "out": False,
+            }
+        ],
+    )
+
+    report = run_telegram_export_import(
+        TelegramExportImportConfig(
+            export_dir=export_dir,
+            allowed_root=tmp_path,
+            timeline_db=timeline_db,
+            brand="foton",
+            apply=True,
+        )
+    )
+
+    event = fetch_one_json(timeline_db, "timeline_events")
+    assert report["links"]["unique_existing_phone_matches"] == 0
+    assert report["links"]["ambiguous_phone_matches"] == 1
+    assert event["customer_id"] not in existing_ids
+    assert count_rows(timeline_db, "timeline_events") == 1
+
+
 def test_readonly_lookup_handles_timeline_db_path_with_spaces(tmp_path: Path) -> None:
     root = tmp_path / "root with spaces"
     root.mkdir()
@@ -309,6 +384,34 @@ def seed_customer(db_path: Path, allowed_root: Path, *, phone: str) -> str:
     finally:
         store.close()
     return customer.customer_id
+
+
+def seed_duplicate_phone_customers(db_path: Path, allowed_root: Path, *, phone: str) -> set[str]:
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root)
+    customers = [
+        CustomerIdentity(
+            tenant_id="foton",
+            customer_id="existing-customer-1",
+            identity_status=IdentityStatus.STRONG,
+            display_name="Existing 1",
+            primary_phone=phone,
+            source_ref="amocrm:contact:1",
+        ),
+        CustomerIdentity(
+            tenant_id="foton",
+            customer_id="existing-customer-2",
+            identity_status=IdentityStatus.STRONG,
+            display_name="Existing 2",
+            primary_phone=phone,
+            source_ref="amocrm:contact:2",
+        ),
+    ]
+    try:
+        for customer in customers:
+            store.upsert_customer(customer, actor="test")
+    finally:
+        store.close()
+    return {customer.customer_id for customer in customers}
 
 
 def fetch_one_json(db_path: Path, table: str) -> dict[str, object]:

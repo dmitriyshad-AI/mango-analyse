@@ -184,6 +184,7 @@ test_sets/
 
 # Local source data dumps
 all_whatsapp_chats.txt
+telegram_import_report.json
 product_data/channel_archive/
 2026-03-05-21-06-49-ч1/
 2026-03-05-21-06-49-ч2/

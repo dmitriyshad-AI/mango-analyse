@@ -249,6 +249,39 @@ Inbound question
     assert event_customer_id == "existing-customer"
 
 
+def test_ambiguous_phone_match_is_counted_without_first_match_merge(tmp_path: Path) -> None:
+    source = tmp_path / "all_whatsapp_chats.txt"
+    source.write_text(
+        """===== CHAT: +7 999 111-22-33 =====
+2025-04-30
+09:20
+Client One
+Inbound question
+""",
+        encoding="utf-8",
+    )
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    existing_ids = seed_duplicate_phone_customers(timeline_db, tmp_path, phone="+79991112233")
+
+    report = run_whatsapp_import(
+        WhatsAppImportConfig(
+            source=source,
+            timeline_db=timeline_db,
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            brand="unknown",
+            apply=True,
+        )
+    )
+
+    with sqlite3.connect(timeline_db) as con:
+        event_customer_id = con.execute("SELECT customer_id FROM timeline_events").fetchone()[0]
+
+    assert report["links"]["unique_existing_phone_matches"] == 0
+    assert report["links"]["ambiguous_phone_matches"] == 1
+    assert event_customer_id not in existing_ids
+
+
 def test_phone_and_non_phone_chats_do_not_crash_and_persist_expected_source_ids(tmp_path: Path) -> None:
     source = write_fixture(tmp_path)
     timeline_db = tmp_path / "customer_timeline.sqlite"
@@ -275,3 +308,31 @@ def test_phone_and_non_phone_chats_do_not_crash_and_persist_expected_source_ids(
     maria_record = next(json.loads(row[2]) for row in rows if row[0] == "whatsapp:Maria Client:2025-06-05T14:40:1")
     assert maria_record["record"]["message"]["chat_phone"] is None
     assert maria_record["record"]["message"]["brand_hint"] == "foton"
+
+
+def seed_duplicate_phone_customers(db_path: Path, allowed_root: Path, *, phone: str) -> set[str]:
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root)
+    customers = [
+        CustomerIdentity(
+            tenant_id="foton",
+            customer_id="existing-customer-1",
+            identity_status=IdentityStatus.STRONG,
+            display_name="Existing 1",
+            primary_phone=phone,
+            source_ref="amocrm:contact:1",
+        ),
+        CustomerIdentity(
+            tenant_id="foton",
+            customer_id="existing-customer-2",
+            identity_status=IdentityStatus.STRONG,
+            display_name="Existing 2",
+            primary_phone=phone,
+            source_ref="amocrm:contact:2",
+        ),
+    ]
+    try:
+        for customer in customers:
+            store.upsert_customer(customer, actor="test")
+    finally:
+        store.close()
+    return {customer.customer_id for customer in customers}

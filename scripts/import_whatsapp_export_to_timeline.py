@@ -153,6 +153,12 @@ class WhatsAppParseStats:
         }
 
 
+@dataclass(frozen=True)
+class PhoneCustomerLookup:
+    unique_customer_ids: Mapping[str, str]
+    ambiguous_phone_matches: int
+
+
 class WhatsAppTimelineNormalizer:
     source_system = SOURCE_SYSTEM
 
@@ -290,11 +296,12 @@ def run_whatsapp_import(config: WhatsAppImportConfig) -> Mapping[str, Any]:
         brand=config.brand,
     )
     phones = {str(record.payload.get("chat_phone") or "") for record in records if record.payload.get("chat_phone")}
-    phone_customer_ids = load_unique_phone_customer_ids(
+    phone_lookup = load_phone_customer_lookup(
         config.timeline_db,
         tenant_id=config.tenant_id,
         phones=phones,
     )
+    phone_customer_ids = dict(phone_lookup.unique_customer_ids)
     normalizer = WhatsAppTimelineNormalizer(tenant_id=config.tenant_id, phone_customer_ids=phone_customer_ids)
     idempotency_key = stable_digest(
         {
@@ -345,7 +352,7 @@ def run_whatsapp_import(config: WhatsAppImportConfig) -> Mapping[str, Any]:
         parse_stats=parse_stats,
         import_report=import_report,
         validation_ok=validation_ok,
-        phone_customer_ids=phone_customer_ids,
+        phone_lookup=phone_lookup,
         source_inventory_before=source_inventory_before,
         source_inventory_after=source_inventory_after,
         store_summary_before=store_summary_before,
@@ -359,7 +366,7 @@ def build_report(
     parse_stats: WhatsAppParseStats,
     import_report: TimelineImportReport,
     validation_ok: bool,
-    phone_customer_ids: Mapping[str, str],
+    phone_lookup: PhoneCustomerLookup,
     source_inventory_before: Sequence[Mapping[str, Any]],
     source_inventory_after: Sequence[Mapping[str, Any]],
     store_summary_before: Optional[Mapping[str, Any]],
@@ -405,7 +412,8 @@ def build_report(
         },
         "import_report": import_report.to_json_dict(),
         "links": {
-            "unique_existing_phone_matches": len(phone_customer_ids),
+            "unique_existing_phone_matches": len(phone_lookup.unique_customer_ids),
+            "ambiguous_phone_matches": phone_lookup.ambiguous_phone_matches,
         },
         "store_summary_before": store_summary_before,
         "store_summary_after": store_summary_after,
@@ -441,14 +449,26 @@ def load_unique_phone_customer_ids(
     tenant_id: str,
     phones: set[str],
 ) -> dict[str, str]:
+    return dict(load_phone_customer_lookup(db_path, tenant_id=tenant_id, phones=phones).unique_customer_ids)
+
+
+def load_phone_customer_lookup(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    phones: set[str],
+) -> PhoneCustomerLookup:
     if not phones or not db_path.exists():
-        return {}
+        return PhoneCustomerLookup(unique_customer_ids={}, ambiguous_phone_matches=0)
     rows = query_existing_phone_rows(db_path, tenant_id=tenant_id, phones=phones)
     by_phone: dict[str, set[str]] = {}
     for phone, customer_id in rows:
         if phone and customer_id:
             by_phone.setdefault(phone, set()).add(customer_id)
-    return {phone: next(iter(customer_ids)) for phone, customer_ids in by_phone.items() if len(customer_ids) == 1}
+    return PhoneCustomerLookup(
+        unique_customer_ids={phone: next(iter(customer_ids)) for phone, customer_ids in by_phone.items() if len(customer_ids) == 1},
+        ambiguous_phone_matches=sum(1 for customer_ids in by_phone.values() if len(customer_ids) > 1),
+    )
 
 
 def query_existing_phone_rows(db_path: Path, *, tenant_id: str, phones: set[str]) -> tuple[tuple[str, str], ...]:

@@ -6977,6 +6977,9 @@ def test_p0_pre_gate_forces_only_hard_codes_and_leaves_soft_reputation_to_model(
     assert p0_pre_gate("Верните деньги, занятия не идут.", context={}) == "refund"
     assert p0_pre_gate("Оплатил, доступа нет.", context={}) == "payment_dispute"
     assert p0_pre_gate("Буду писать отзыв в интернете, но сначала хочу понять условия.", context={}) is None
+    assert p0_pre_gate("Ребёнок расстроился после занятия, как ему помочь?", context={}) is None
+    assert p0_pre_gate("Накричали на ребёнка на занятии.", context={}) == "complaint"
+    assert p0_pre_gate("Ребёнка унизили на занятии, я этого так не оставлю.", context={}) == "complaint"
 
 
 def test_p0_pre_gate_keeps_explicit_presale_refund_followup_non_p0_with_refund_latch() -> None:

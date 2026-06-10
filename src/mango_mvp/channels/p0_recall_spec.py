@@ -46,6 +46,22 @@ COMPLAINT_RE = re.compile(
     re.I,
 )
 
+_CHILD_CONTEXT_PATTERN = r"(?:реб[её]н\w*|сын\w*|доч\w*|дочка|ученик\w*|учениц\w*|школьник\w*|школьниц\w*)"
+_CHILD_INCIDENT_PATTERN = (
+    r"(?:униз\w*|оскорб\w*|накрич\w*|высмея\w*|издева\w*|"
+    r"дов[её]л\w*\s+до\s+сл[её]з|довели\s+до\s+сл[её]з)"
+)
+CHILD_INCIDENT_COMPLAINT_RE = re.compile(
+    rf"(?:{_CHILD_CONTEXT_PATTERN}[^.!?\n]{{0,100}}{_CHILD_INCIDENT_PATTERN}"
+    rf"|{_CHILD_INCIDENT_PATTERN}[^.!?\n]{{0,100}}{_CHILD_CONTEXT_PATTERN})",
+    re.I,
+)
+CHILD_COMPLAINT_ESCALATION_RE = re.compile(
+    rf"{_CHILD_CONTEXT_PATTERN}[^.!?\n]{{0,140}}(?:при\s+всех[^.!?\n]{{0,80}})?(?:этого\s+так\s+не\s+оставл\w*|буду\s+разбират\w*|"
+    r"напиш\w*\s+жалоб\w*)",
+    re.I,
+)
+
 REPUTATION_RE = re.compile(
     r"отзыв\w*\s+в\s+интернет|всех\s+предупреж\w*|напиш\w*\s+отзыв|остав\w*\s+отзыв",
     re.I,
@@ -145,6 +161,11 @@ P0_TRUE_POSITIVE_CASES: tuple[tuple[str, str], ...] = (
     ("Деньги ушли, а доступа нет.", "payment_dispute"),
     ("Оплатил, а курс так и не открыли.", "payment_dispute"),
     *((message, "payment_dispute") for message in PAYMENT_DISPUTE_POSITIVE_CASES),
+    ("Ребёнка унизили на занятии, я этого так не оставлю.", "complaint"),
+    ("На ребёнка накричали при всей группе.", "complaint"),
+    ("Преподаватель высмеял сына при всех.", "complaint"),
+    ("Дочку довели до слёз на занятии, буду разбираться.", "complaint"),
+    ("Учитель оскорбил ребёнка.", "complaint"),
     ("Не буду платить, это развод.", "complaint"),
     ("Отдайте оплату обратно.", "refund"),
     ("Аннулировать договор.", "refund"),
@@ -165,10 +186,14 @@ P0_BENIGN_CASES: tuple[str, ...] = (
     "Верните меня в список рассылки.",
     *PAYMENT_DISPUTE_BENIGN_CASES,
     "Оплатить можно позже, когда появится доступ?",
+    "Ребёнок расстроился после занятия, как ему помочь?",
+    "Ребёнок стесняется отвечать при всех, что посоветуете?",
 )
 
 
 def has_complaint_signal(text: str) -> bool:
+    if CHILD_INCIDENT_COMPLAINT_RE.search(text) or CHILD_COMPLAINT_ESCALATION_RE.search(text):
+        return True
     if re.search(r"\b(?:вас|их|родител\w*|клиент\w*)[^.!?\n]{0,30}\bне\s+обманыва\w*", str(text or ""), re.I) and not re.search(
         r"мошенн|незаконн|возмущ|недовол|ужасн|плохо\s+уч|некомпетент|суд|прокурат|роспотреб|верн\w*\s+деньг",
         str(text or ""),

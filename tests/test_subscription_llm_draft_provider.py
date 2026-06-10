@@ -11225,6 +11225,23 @@ def test_direct_path_p0_complaint_preblock_has_no_manager_deadline() -> None:
     assert result.metadata["direct_path"]["reason_class"] == "p0_deferral"
 
 
+def test_direct_path_child_incident_complaint_preblocks_without_collecting_details() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+    result = provider.build_draft(
+        "Ребёнка унизили на занятии, я этого так не оставлю.",
+        context={"active_brand": "unpk", DIRECT_PATH_ENV: "1"},
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert result.metadata["direct_path"]["reason_class"] == "p0_deferral"
+    assert "ребён" not in result.draft_text.casefold()
+    assert "напишите" not in result.draft_text.casefold()
+
+
 def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_night_lead() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="draft_for_manager", draft_text="Менеджер свяжется и поможет подобрать группу.")

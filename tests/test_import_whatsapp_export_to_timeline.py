@@ -105,6 +105,16 @@ def test_parser_handles_multiline_outbound_service_skip_two_chats_and_phone_link
     assert payloads[-1]["chat_phone"] is None
 
 
+def test_parser_default_brand_is_unpk_and_channel_shared(tmp_path: Path) -> None:
+    source = write_fixture(tmp_path)
+
+    records, _stats = parse_whatsapp_export_text(source.read_text(encoding="utf-8"), source_path=source)
+
+    payload = records[0].payload
+    assert payload["brand_hint"] == "unpk"
+    assert payload["channel_shared"] is True
+
+
 def test_cli_defaults_to_dry_run_and_does_not_create_timeline_db(tmp_path: Path, capsys) -> None:
     source = write_fixture(tmp_path)
     timeline_db = tmp_path / "customer_timeline.sqlite"

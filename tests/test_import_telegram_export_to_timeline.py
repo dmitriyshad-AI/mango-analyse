@@ -221,10 +221,15 @@ def test_phone_null_does_not_crash_and_stays_session_only(tmp_path: Path) -> Non
         )
     )
 
+    event = fetch_one_json(timeline_db, "timeline_events")
+    chunk = fetch_one_json(timeline_db, "bot_context_chunks")
     links = fetch_all_json(timeline_db, "identity_links")
     assert report["counters"]["imported"] == 1
+    assert report["summary"]["brand"] == "unpk"
     assert report["counters"]["linked_by_phone"] == 0
     assert report["counters"]["session_only"] == 1
+    assert event["metadata"]["brand"] == "unpk"
+    assert "brand:unpk" in chunk["relevance_tags"]
     assert {item["link_type"] for item in links} == {"telegram_user_id", "channel_session_id"}
 
 

@@ -59,7 +59,7 @@ class WhatsAppImportConfig:
     timeline_db: Path
     allowed_root: Path
     tenant_id: str
-    brand: str = "unknown"
+    brand: str = "unpk"
     apply: bool = False
     actor: str = "whatsapp_timeline_import"
 
@@ -108,6 +108,7 @@ class WhatsAppParsedMessage:
     def to_payload(self) -> Mapping[str, Any]:
         return {
             "channel": CHANNEL,
+            "channel_shared": True,
             "channel_thread_id": self.chat_key,
             "channel_message_id": self.channel_message_id,
             "channel_user_id": self.chat_phone or self.chat_key,
@@ -213,15 +214,19 @@ class WhatsAppTimelineNormalizer:
             )
 
         events = tuple(
-            replace(event, customer_id=customer_id or event.customer_id, metadata={**event.metadata, "brand": brand, "channel": CHANNEL})
+            replace(
+                event,
+                customer_id=customer_id or event.customer_id,
+                metadata={**event.metadata, "brand": brand, "channel": CHANNEL, "channel_shared": True},
+            )
             for event in batch.events
         )
         chunks = tuple(
             replace(
                 chunk,
                 customer_id=customer_id or chunk.customer_id,
-                relevance_tags=tuple(dict.fromkeys((*chunk.relevance_tags, brand))),
-                metadata={**chunk.metadata, "brand": brand, "channel": CHANNEL},
+                relevance_tags=tuple(dict.fromkeys((*chunk.relevance_tags, brand, "channel_shared:true"))),
+                metadata={**chunk.metadata, "brand": brand, "channel": CHANNEL, "channel_shared": True},
             )
             for chunk in batch.bot_context_chunks
         )
@@ -270,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeline-db", required=True, help="Target local customer timeline SQLite DB")
     parser.add_argument("--allowed-root", required=True, help="Root that must contain source and timeline DB")
     parser.add_argument("--tenant-id", required=True)
-    parser.add_argument("--brand", choices=("foton", "unpk", "unknown"), default="unknown")
+    parser.add_argument("--brand", choices=("foton", "unpk", "unknown"), default="unpk")
     parser.add_argument("--apply", action="store_true", help="Actually write the local timeline DB")
     parser.add_argument("--actor", default="whatsapp_timeline_import")
     return parser
@@ -432,7 +437,7 @@ def parse_whatsapp_export_file(
     path: Path | str,
     *,
     allowed_root: Path | str,
-    brand: str = "unknown",
+    brand: str = "unpk",
 ) -> tuple[TimelineSourceRecord, ...]:
     source_path = guard_customer_timeline_source_path(path, allowed_root)
     records, _stats = parse_whatsapp_export_text(
@@ -533,7 +538,7 @@ def parse_whatsapp_export_text(
     text: str,
     *,
     source_path: Path | str,
-    brand: str = "unknown",
+    brand: str = "unpk",
 ) -> tuple[tuple[TimelineSourceRecord, ...], WhatsAppParseStats]:
     normalized_brand = normalize_brand(brand)
     source = str(Path(source_path).resolve(strict=False))

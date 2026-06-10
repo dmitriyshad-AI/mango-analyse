@@ -49,7 +49,7 @@ class TelegramExportImportConfig:
     allowed_root: Path
     timeline_db: Path
     tenant_id: str = "foton"
-    brand: str = "unknown"
+    brand: str = "unpk"
     apply: bool = False
     out_path: Optional[Path] = None
     actor: str = "telegram_export_timeline_import"
@@ -249,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target timeline DB. Defaults to <allowed-root>/customer_timeline/customer_timeline.sqlite.",
     )
     parser.add_argument("--tenant-id", default="foton")
-    parser.add_argument("--brand", choices=sorted(BRANDS), default="unknown")
+    parser.add_argument("--brand", choices=sorted(BRANDS), default="unpk")
     parser.add_argument("--apply", action="store_true", help="Write into the local timeline DB.")
     parser.add_argument("--out", help="Optional JSON report path. If omitted, report is printed to stdout.")
     parser.add_argument("--actor", default="telegram_export_timeline_import")

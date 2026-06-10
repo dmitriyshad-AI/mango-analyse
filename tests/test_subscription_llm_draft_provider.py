@@ -11787,6 +11787,74 @@ def test_direct_path_unsupported_product_number_is_downgraded_by_gate() -> None:
     assert result.metadata["direct_path"]["reason_class"] == "output_safety"
 
 
+def test_direct_path_derived_product_number_keeps_text_with_addressed_checklist() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="За два предмета выйдет 181 740 ₽, это выгоднее.",
+        )
+    )
+    result = provider.build_draft(
+        "Сколько будет за два предмета?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {
+                "price.semester": "Фотон: семестр стоит 49 000 ₽.",
+                "price.year": "Фотон: год стоит 82 000 ₽.",
+            },
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    codes = {item["code"] for item in gate["findings"]}
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "За два предмета выйдет 181 740 ₽, это выгоднее."
+    assert gate["action"] == "downgrade_keep_text"
+    assert "derived_product_number" in codes
+    assert "direct_path_gate_text_preserved" in result.safety_flags
+    assert any("Проверьте 181 740 ₽ — вычислено ботом, в прайсе нет." == item for item in result.manager_checklist)
+    assert "derived_product_number" not in subscription_llm.DIRECT_PATH_REPLACE_TEXT_GATE_CODES
+
+
+def test_direct_path_derived_product_number_allows_fact_and_client_numbers() -> None:
+    fact_provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Семестр — 49 000 ₽, год — 82 000 ₽.",
+        )
+    )
+    fact_result = fact_provider.build_draft(
+        "Сколько стоит очно?",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {
+                "price.offline": "УНПК: очные группы стоят: семестр — 49 000 ₽, год — 82 000 ₽."
+            },
+        },
+    )
+    fact_gate = fact_result.metadata["authoritative_output_gate"]
+    assert "derived_product_number" not in {item["code"] for item in fact_gate["findings"]}
+
+    client_provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="16,4% как точный итог не подтверждаю: менеджер сверит расчёт.",
+        )
+    )
+    client_result = client_provider.build_draft(
+        "У меня выходит 16,4%, верно?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"price.year": "Фотон: год стоит 82 000 ₽."},
+        },
+    )
+    client_gate = client_result.metadata["authoritative_output_gate"]
+    assert "derived_product_number" not in {item["code"] for item in client_gate["findings"]}
+
+
 def test_direct_path_hard_gate_generic_replacement_avoids_repeat() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(

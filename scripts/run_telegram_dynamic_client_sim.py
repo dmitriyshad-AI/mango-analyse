@@ -3605,6 +3605,8 @@ def _authoritative_output_gate_metadata_from_result(result: Any) -> Mapping[str,
             compact_findings.append(
                 {
                     "code": code,
+                    "detail": str(item.get("detail") or "").strip(),
+                    "span": str(item.get("span") or "").strip(),
                     "policy": str(item.get("policy") or "").strip(),
                     "source": str(item.get("source") or "").strip(),
                     "relation_to_base": str(item.get("relation_to_base") or "").strip(),

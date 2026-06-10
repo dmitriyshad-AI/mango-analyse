@@ -1312,6 +1312,36 @@ def test_handoff_trace_uses_authoritative_gate_findings_when_reason_missing(monk
     assert sim._turn_fallback_reason_summary([{"turns": [turn]}]) == {"authoritative_output_gate:brand_leak": 1}
 
 
+def test_authoritative_gate_compact_metadata_keeps_detail_and_span():
+    result = type(
+        "Result",
+        (),
+        {
+            "metadata": {
+                "authoritative_output_gate": {
+                    "checked": True,
+                    "action": "downgrade_keep_text",
+                    "findings": [
+                        {
+                            "code": "derived_product_number",
+                            "detail": "181 740 ₽",
+                            "span": "181 740 ₽",
+                            "policy": "downgrade_keep_text",
+                            "source": "derived_product_number_gate",
+                        }
+                    ],
+                }
+            }
+        },
+    )()
+
+    compact = sim._authoritative_output_gate_metadata_from_result(result)
+
+    assert compact["findings"][0]["code"] == "derived_product_number"
+    assert compact["findings"][0]["detail"] == "181 740 ₽"
+    assert compact["findings"][0]["span"] == "181 740 ₽"
+
+
 def test_manager_deferral_summary_enforces_route_reason_invariant():
     summary = sim._manager_deferral_summary(
         [

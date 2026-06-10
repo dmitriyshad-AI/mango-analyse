@@ -612,6 +612,11 @@ MANAGER_ACTION_PROMISE_DEADLINE_RE = re.compile(
     r"до\s+\d{1,2}(?::\d{2})?|к\s+\d{1,2}(?::\d{2})?)\b",
     re.I,
 )
+DERIVED_PRODUCT_NUMBER_RE = re.compile(
+    r"\b\d[\d\s\u00a0]*(?:[.,]\d+)?\s*(?:₽|руб(?:\.|лей|ля|ль)?|р\.)(?=$|[\s,.;:!?])|"
+    r"\b(?:\d+(?:[.,]\d+)?\s*/\s*)*\d+(?:[.,]\d+)?\s*(?:%|процент(?:ов|а)?)(?=$|[\s,.;:!?])",
+    re.I,
+)
 
 ALLOWED_ROUTES = {"draft_for_manager", "manager_only", "blocked", "bot_answer_self", "bot_answer_self_for_pilot"}
 AUTONOMOUS_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
@@ -652,6 +657,7 @@ GATE_BLOCKING_CODES: Mapping[str, str] = {
     "proactive_pii_echo": "block",
     "proactive_too_many_questions": "downgrade",
     "proactive_emoji_overuse": "downgrade",
+    "derived_product_number": "downgrade_keep_text",
     "derived_product_claim": "downgrade_keep_text",
     "individual_diagnosis": "downgrade_keep_text",
     "invented_generalization": "annotate",
@@ -5558,6 +5564,7 @@ def apply_authoritative_output_gate(
         )
     )
     semantic_note = _semantic_output_manager_note(actionable)
+    derived_number_notes = _derived_product_number_manager_notes(actionable)
     checklist_items = [
         *result.manager_checklist,
         (
@@ -5566,7 +5573,12 @@ def apply_authoritative_output_gate(
             else "Финальный safety gate заблокировал клиентский текст: не отправлять без ручной проверки."
         ),
     ]
-    if "downgrade_keep_text" in actions:
+    checklist_items.extend(derived_number_notes)
+    has_semantic_finding = any(
+        str(item.get("source") or "") == "semantic_output_verifier" or str(item.get("code") or "") in _SEMANTIC_OUTPUT_VERIFIER_CODES
+        for item in actionable
+    )
+    if "downgrade_keep_text" in actions and (has_semantic_finding or not derived_number_notes):
         checklist_items.append(semantic_note)
     checklist = tuple(
         dict.fromkeys(
@@ -6179,6 +6191,14 @@ def _authoritative_gate_findings(
 
     gate_context = _context_with_dialogue_contract_retrieved_facts(context, result)
     facts = _authoritative_gate_fact_texts(result, gate_context)
+    findings.extend(
+        _authoritative_gate_derived_product_number_findings(
+            result,
+            client_message=client_message,
+            context=gate_context,
+            facts=facts,
+        )
+    )
     contract = _pipeline_contract(result, active_brand=_active_brand(gate_context), fact_keys=tuple(facts.keys()))
     previous_bot_texts = _humanity_previous_bot_texts(gate_context)
     p0_already_guarded = _authoritative_gate_p0_already_guarded(result)
@@ -6357,6 +6377,18 @@ def _semantic_output_manager_note(findings: Sequence[Mapping[str, Any]]) -> str:
     return "Смысловой верификатор: " + "; ".join(samples)[:200] + suffix
 
 
+def _derived_product_number_manager_notes(findings: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    notes: list[str] = []
+    for item in findings:
+        if str(item.get("code") or "") != "derived_product_number":
+            continue
+        span = str(item.get("span") or item.get("detail") or "").strip()
+        if not span:
+            continue
+        notes.append(f"Проверьте {span} — вычислено ботом, в прайсе нет.")
+    return tuple(dict.fromkeys(notes))
+
+
 def _a2_is_proactive_result(result: SubscriptionDraftResult) -> bool:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     a2 = metadata.get("a2_proactive") if isinstance(metadata.get("a2_proactive"), Mapping) else {}
@@ -6432,6 +6464,70 @@ def _authoritative_gate_existing_guard_findings(
                 continue
             findings.append(_authoritative_gate_finding(code, detail="; ".join(claims), source=fn.__name__))
     return findings
+
+
+def _authoritative_gate_derived_product_number_findings(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+) -> list[dict[str, str]]:
+    if _authoritative_gate_verified_content_flag(result):
+        return []
+    draft_claims = _derived_product_number_claims(result.draft_text)
+    if not draft_claims:
+        return []
+    fact_surfaces = {
+        normalized
+        for value in facts.values()
+        for _span, normalized in _derived_product_number_claims(str(value or ""))
+    }
+    client_context = _client_pii_echo_context(client_message=client_message, context=context)
+    client_surfaces = {normalized for _span, normalized in _derived_product_number_claims(client_context)}
+    findings: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for span, normalized in draft_claims:
+        if normalized in fact_surfaces or normalized in client_surfaces or normalized in seen:
+            continue
+        seen.add(normalized)
+        findings.append(
+            _authoritative_gate_finding(
+                "derived_product_number",
+                detail=span,
+                source="derived_product_number_gate",
+                span=span,
+                evidence=normalized,
+            )
+        )
+    return findings
+
+
+def _derived_product_number_claims(text: str) -> tuple[tuple[str, str], ...]:
+    claims: list[tuple[str, str]] = []
+    for match in DERIVED_PRODUCT_NUMBER_RE.finditer(str(text or "")):
+        span = " ".join(match.group(0).replace("\u00a0", " ").split())
+        if not span:
+            continue
+        is_percent = bool(re.search(r"%|процент", span, flags=re.I))
+        numbers = re.findall(r"\d+(?:[.,]\d+)?", span)
+        if is_percent:
+            for raw in numbers:
+                normalized = _normalize_derived_number_surface(raw)
+                if normalized:
+                    claims.append((span, f"{normalized}%"))
+            continue
+        normalized = _normalize_derived_number_surface("".join(numbers))
+        if normalized:
+            claims.append((span, normalized))
+    return tuple(claims)
+
+
+def _normalize_derived_number_surface(value: str) -> str:
+    normalized = str(value or "").replace("\u00a0", " ").replace(" ", "").replace(",", ".").strip()
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized
 
 
 def _authoritative_guard_changed(before: SubscriptionDraftResult, after: SubscriptionDraftResult) -> bool:
@@ -6568,7 +6664,7 @@ def _dedupe_gate_findings(findings: Sequence[Mapping[str, str]]) -> list[dict[st
             "source": source,
             "policy": _authoritative_gate_action(code),
         }
-        for extra_key in ("relation_to_base", "nearest_fact_key", "evidence", "missing_fact"):
+        for extra_key in ("relation_to_base", "nearest_fact_key", "evidence", "missing_fact", "span"):
             extra_value = str(item.get(extra_key) or "").strip()
             if extra_value:
                 compact[extra_key] = extra_value

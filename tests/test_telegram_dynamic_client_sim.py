@@ -534,6 +534,28 @@ def test_direct_path_fail_fast_marks_config_invalid(monkeypatch, tmp_path):
     assert summary["config_validity"]["reason"] == "config_invalid"
 
 
+def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.delenv("TELEGRAM_TEMPLATE_FROM_KB", raising=False)
+    monkeypatch.delenv("TELEGRAM_ROUTE_RUBRIC", raising=False)
+    monkeypatch.setenv("TELEGRAM_LLM_RETRIEVE", "1")
+    snapshot_path = tmp_path / "snapshot.json"
+
+    summary = sim.build_summary(
+        [{"dialog_id": "flags", "brand": "foton", "run_status": "completed", "turns": []}],
+        [{"dialog_id": "flags", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=snapshot_path,
+    )
+
+    flags = summary["run_config"]["key_flags"]
+    assert flags["profile"] == {"env": "pilot_gold_v1", "effective": True}
+    assert flags["render"] == {"env": "", "effective": True}
+    assert flags["rubric"] == {"env": "", "effective": True}
+    assert flags["retriever"] == {"env": "1", "effective": True}
+    assert flags["snapshot"] == str(snapshot_path)
+
+
 def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_DIRECT_PATH", "1")
     transcripts = [

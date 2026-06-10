@@ -10660,6 +10660,16 @@ def test_template_from_kb_renders_address_and_contacts_from_v67_snapshot() -> No
     assert "Красносельская" in foton_address
     assert foton_address != ADDRESS_FOTON_MOSCOW_SAFE_TEXT
 
+    foton_contacts = subscription_llm._terminal_safe_template(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
+        client_message="Дайте телефон и почту, пожалуйста",
+        context=foton_context,
+    )
+    assert "8 (495) 500-25-88" in foton_contacts
+    assert "8 (800) 550-25-88" in foton_contacts
+    assert "edu@cdpofoton.ru" in foton_contacts
+    assert foton_context["template_from_kb_trace"][-1]["fact_key"] == "contacts_foton.phone+toll_free+email"
+
     unpk_contacts = subscription_llm._terminal_safe_template(
         SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
         client_message="Дайте телефон, пожалуйста",
@@ -10719,6 +10729,26 @@ def test_template_from_kb_pilot_gold_renders_wave1_templates_from_default_snapsh
         assert "лучше уточнить" not in rendered.casefold()
 
 
+def test_template_from_kb_contact_trace_is_visible_in_direct_metadata(monkeypatch) -> None:
+    for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
+        monkeypatch.delenv(key, raising=False)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+    }
+    provider = _DirectPathProvider(SubscriptionDraftResult(route="draft_for_manager", draft_text="Дайте контакты."))
+
+    result = provider.build_draft("Дайте телефон и почту", context=context)
+
+    trace = result.metadata["direct_path"]["template_from_kb_trace"]
+    assert trace[-1]["fact_key"] == "direct_path.wide_fact_pack"
+    assert trace[-1]["outcome"] == "hit"
+    assert trace[-1]["selected_category"] == "contact"
+    assert "contacts_foton.email" in trace[-1]["exact_keys"]
+    assert result.metadata["template_from_kb_trace"] == trace
+
+
 def test_template_from_kb_pilot_gold_explicit_off_returns_literal(monkeypatch) -> None:
     for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
         monkeypatch.delenv(key, raising=False)
@@ -10754,6 +10784,55 @@ def test_template_from_kb_uses_neutral_fallback_for_missing_or_foreign_fact() ->
     )
 
     assert text == "Актуальные контакты лучше уточнить у менеджера."
+
+
+def test_direct_path_contact_question_selects_contact_facts_from_snapshot() -> None:
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "foton",
+            "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
+            "conversation_intent_plan": {
+                "primary_intent": "enrollment",
+                "answer_topics": ["enrollment", "format"],
+            },
+        },
+        client_message="Дайте телефон и почту",
+    )
+
+    assert "contact" in str(pack["selected_category"])
+    assert "contacts_foton.phone" in pack["facts"]
+    assert "contacts_foton.email" in pack["facts"]
+
+
+def test_terminal_contact_request_ignores_client_own_contact() -> None:
+    text = subscription_llm._terminal_safe_template(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text=""),
+        client_message="Мой телефон +7 999 000-00-00, моя почта test@example.com",
+        context={
+            "active_brand": "foton",
+            "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
+            TEMPLATE_FROM_KB_ENV: "1",
+        },
+    )
+
+    assert text == ""
+
+
+def test_direct_path_contact_facts_do_not_answer_class_schedule() -> None:
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "foton",
+            "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
+            "conversation_intent_plan": {
+                "primary_intent": "schedule",
+                "answer_topics": ["schedule"],
+            },
+        },
+        client_message="По каким дням занятия?",
+    )
+
+    assert "schedule" in str(pack["selected_category"])
+    assert "contact" not in str(pack["selected_category"])
 
 
 def _write_wave6_snapshot(tmp_path: Path) -> Path:

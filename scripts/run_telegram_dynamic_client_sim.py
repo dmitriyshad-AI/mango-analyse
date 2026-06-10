@@ -1192,6 +1192,31 @@ def _truthy_env_value(value: object) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "on"}
 
 
+def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
+    profile = str(os.getenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG") or "").strip()
+    profile_enabled = profile == "pilot_gold_v1"
+    profile_default_on = {
+        "TELEGRAM_TEMPLATE_FROM_KB",
+        "TELEGRAM_ROUTE_RUBRIC",
+    }
+
+    def flag_state(name: str) -> Mapping[str, Any]:
+        raw = os.getenv(name)
+        if raw is None:
+            effective = profile_enabled and name in profile_default_on
+        else:
+            effective = _truthy_env_value(raw)
+        return {"env": "" if raw is None else str(raw), "effective": bool(effective)}
+
+    return {
+        "profile": {"env": profile, "effective": profile_enabled},
+        "render": flag_state("TELEGRAM_TEMPLATE_FROM_KB"),
+        "rubric": flag_state("TELEGRAM_ROUTE_RUBRIC"),
+        "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
+        "snapshot": str(snapshot_path),
+    }
+
+
 def _direct_path_fail_fast_enabled() -> bool:
     return _truthy_env_value(os.getenv("TELEGRAM_DIRECT_PATH")) or (
         str(os.getenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG") or "").strip() == "pilot_gold_v1"
@@ -2707,6 +2732,7 @@ def build_summary(
             "judge_version": JUDGE_FACT_AUDIT_VERSION,
             "judge_prompt_version": normalize_judge_prompt_version(judge_prompt_version),
             "judge_prompt_version_id": judge_prompt_version_id(judge_prompt_version),
+            "key_flags": _run_key_flags(snapshot_path),
             "answer_quality_llm_rewrite_enabled": (
                 os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
                 or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}

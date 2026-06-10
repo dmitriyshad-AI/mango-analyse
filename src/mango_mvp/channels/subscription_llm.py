@@ -2321,17 +2321,35 @@ def _direct_path_template_from_fact(
     snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
     fact = _direct_path_fact_by_brand_key(snapshot, active_brand=active_brand, fact_key=fact_key)
     if not isinstance(fact, Mapping):
-        trace_event(context, "template_from_kb", {"fact_key": fact_key, "outcome": "fallback", "reason": "missing"})
+        _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "fallback", "reason": "missing"})
         return neutral_fallback
     text = _direct_path_snapshot_fact_text(fact)
     if render is not None:
         text = render(text)
     text = str(text or "").strip()
     if text:
-        trace_event(context, "template_from_kb", {"fact_key": fact_key, "outcome": "hit"})
+        _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "hit"})
         return text
-    trace_event(context, "template_from_kb", {"fact_key": fact_key, "outcome": "fallback", "reason": "empty"})
+    _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "fallback", "reason": "empty"})
     return neutral_fallback
+
+
+def _template_from_kb_context_trace(context: Optional[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(context, Mapping):
+        return ()
+    value = context.get("template_from_kb_trace")
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(dict(item) for item in value if isinstance(item, Mapping))
+
+
+def _template_from_kb_trace_event(context: Optional[Mapping[str, Any]], payload: Mapping[str, Any]) -> None:
+    event = dict(payload)
+    trace_event(context, "template_from_kb", event)
+    if isinstance(context, dict):
+        existing = context.setdefault("template_from_kb_trace", [])
+        if isinstance(existing, list):
+            existing.append(event)
 
 
 def _direct_path_template_fact_text(
@@ -2386,9 +2404,9 @@ def _unpk_all_addresses_template_from_kb(context: Optional[Mapping[str, Any]]) -
         _direct_path_template_fact_text(active_brand="unpk", fact_key="locations_unpk.addresses.3.address", context=context)
     )
     if not (sretenka and mfti and patsayeva):
-        trace_event(context, "template_from_kb", {"fact_key": "locations_unpk.addresses.*.address", "outcome": "fallback"})
+        _template_from_kb_trace_event(context, {"fact_key": "locations_unpk.addresses.*.address", "outcome": "fallback"})
         return "Площадки УНПК лучше уточнить у менеджера по выбранному формату."
-    trace_event(context, "template_from_kb", {"fact_key": "locations_unpk.addresses.*.address", "outcome": "hit"})
+    _template_from_kb_trace_event(context, {"fact_key": "locations_unpk.addresses.*.address", "outcome": "hit"})
     return f"Площадки УНПК: Москва — {sretenka}; Долгопрудный — {mfti} и {patsayeva}."
 
 
@@ -2401,11 +2419,14 @@ def _foton_contact_template_from_kb(context: Optional[Mapping[str, Any]]) -> str
     toll_free = _direct_path_fact_value(
         _direct_path_template_fact_text(active_brand="foton", fact_key="contacts_foton.toll_free", context=context)
     )
-    if not (phone and toll_free):
-        trace_event(context, "template_from_kb", {"fact_key": "contacts_foton.phone+toll_free", "outcome": "fallback"})
+    email = _direct_path_fact_value(
+        _direct_path_template_fact_text(active_brand="foton", fact_key="contacts_foton.email", context=context)
+    )
+    if not (phone and toll_free and email):
+        _template_from_kb_trace_event(context, {"fact_key": "contacts_foton.phone+toll_free+email", "outcome": "fallback"})
         return "Актуальные контакты Фотона лучше уточнить у менеджера."
-    trace_event(context, "template_from_kb", {"fact_key": "contacts_foton.phone+toll_free", "outcome": "hit"})
-    return f"Телефоны: {phone} и {toll_free}. График: Пн-Вс с 10:00 до 18:00."
+    _template_from_kb_trace_event(context, {"fact_key": "contacts_foton.phone+toll_free+email", "outcome": "hit"})
+    return f"Телефоны: {phone} и {toll_free}. Email: {email}. График: Пн-Вс с 10:00 до 18:00."
 
 
 def _unpk_contact_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
@@ -2421,9 +2442,9 @@ def _unpk_contact_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
         _direct_path_template_fact_text(active_brand="unpk", fact_key="contacts_unpk.email", context=context)
     )
     if not (phone and toll_free and email):
-        trace_event(context, "template_from_kb", {"fact_key": "contacts_unpk.phone+toll_free+email", "outcome": "fallback"})
+        _template_from_kb_trace_event(context, {"fact_key": "contacts_unpk.phone+toll_free+email", "outcome": "fallback"})
         return "Актуальные контакты УНПК лучше уточнить у менеджера."
-    trace_event(context, "template_from_kb", {"fact_key": "contacts_unpk.phone+toll_free+email", "outcome": "hit"})
+    _template_from_kb_trace_event(context, {"fact_key": "contacts_unpk.phone+toll_free+email", "outcome": "hit"})
     return f"Телефоны: {phone} и {toll_free}. Email: {email}. График: Пн-Вс с 10:00 до 18:00."
 
 
@@ -2506,6 +2527,7 @@ DIRECT_PATH_CATEGORY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "documents": ("document", "documents", "certificate", "tax", "matkap", "документ", "справк", "вычет", "маткап"),
     "format": ("format", "platform", "recording", "онлайн", "очно", "платформ", "запис", "формат"),
     "enrollment": ("enrollment", "trial", "запис", "оформ", "пробн", "вступ", "тест"),
+    "contact": ("contact", "contacts", "phone", "email", "e-mail", "mail", "контакт", "телефон", "номер", "почт", "связаться"),
     "address": ("address", "location", "transport", "адрес", "где", "дорог", "добир", "трансфер"),
     "course": ("teacher", "program", "homework", "materials", "level", "преподав", "программ", "дз", "материал", "уров"),
 }
@@ -2530,6 +2552,12 @@ def _direct_path_fact_categories(fact: Mapping[str, Any]) -> frozenset[str]:
         categories.add("format")
     if fact_type in {"trial", "enrollment"} or re.search(r"пробн|записат|записаться|оформ|вступительн|тест", haystack):
         categories.add("enrollment")
+    if (
+        fact_type == "contact"
+        or "contacts_" in haystack
+        or re.search(r"контакт|телефон|phone|toll_free|email|e-mail|почт", haystack)
+    ):
+        categories.add("contact")
     if fact_type in {"address", "location", "transport"} or re.search(r"адрес|локац|москва|долгопруд|дорог|добир|трансфер", haystack):
         categories.add("address")
     if fact_type in {"teacher", "program", "homework", "materials", "level", "course_parameter"} or re.search(r"программ|преподав|домашн|дз|материал|уров|заняти|ак\.ч", haystack):
@@ -2553,6 +2581,8 @@ def _direct_path_category_from_hint(value: Any) -> str:
         return "format"
     if text in {"enrollment", "trial", "readiness"}:
         return "enrollment"
+    if text in {"contact", "contacts", "phone", "email", "mail"}:
+        return "contact"
     if text in {"transport", "logistics", "travel_time", "route_logistics", "address"}:
         return "address"
     if text in {"teacher", "program", "homework", "level", "value", "course_pick"}:
@@ -2589,6 +2619,9 @@ def _direct_path_selected_categories(client_message: str, context: Optional[Mapp
         category = _direct_path_category_from_hint(value)
         if category and category not in categories:
             categories.append(category)
+    client_category = _direct_path_category_from_hint(client_message)
+    if client_category in {"contact", "address"}:
+        categories = [client_category, *[item for item in categories if item != client_category]]
     return tuple(categories[:2])
 
 
@@ -3457,6 +3490,16 @@ def _direct_path_metadata(
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),
     }
+    if _template_from_kb_enabled(context) and facts:
+        metadata["template_from_kb_trace"] = [
+            {
+                "fact_key": "direct_path.wide_fact_pack",
+                "outcome": "hit",
+                "selected_category": str(pack.get("selected_category") or ""),
+                "fact_count": len(facts),
+                "exact_keys": exact_keys[:20],
+            }
+        ]
     if isinstance(pack.get("llm_retrieve"), Mapping):
         metadata["llm_retrieve"] = dict(pack["llm_retrieve"])  # type: ignore[index]
     return metadata
@@ -3623,6 +3666,7 @@ def _direct_path_finalize_metadata(
     result: SubscriptionDraftResult,
     *,
     before_gate_route: str,
+    context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
     metadata = dict(result.metadata)
     direct = dict(metadata.get("direct_path") or {})
@@ -3662,6 +3706,15 @@ def _direct_path_finalize_metadata(
             "reason_evidence": reason_evidence,
         }
     )
+    template_trace = [
+        dict(item)
+        for item in (direct.get("template_from_kb_trace") or ())
+        if isinstance(item, Mapping)
+    ]
+    template_trace.extend(dict(item) for item in _template_from_kb_context_trace(context))
+    if template_trace:
+        direct["template_from_kb_trace"] = template_trace
+        metadata["template_from_kb_trace"] = template_trace
     metadata["direct_path"] = direct
     metadata["text_composition_source"] = direct.get("text_composition_source") or metadata.get("text_composition_source")
     metadata["is_manager_deferral"] = bool(direct["is_manager_deferral"])
@@ -3832,7 +3885,7 @@ class SubscriptionLlmDraftProvider:
             if preblocked is not None:
                 before_gate_route = preblocked.route
                 gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
-                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
+                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route, context=context)
         fact_pack = _direct_path_context_fact_pack(
             context,
             client_message=client_message,
@@ -3844,7 +3897,7 @@ class SubscriptionLlmDraftProvider:
             if preblocked is not None:
                 before_gate_route = preblocked.route
                 gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
-                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
+                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route, context=context)
 
         active_brand = _active_brand(context)
         pilot_config = _direct_path_pilot_config(context)
@@ -3912,7 +3965,7 @@ class SubscriptionLlmDraftProvider:
         )
         before_gate_route = semantic_checked.route
         gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
-        return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route)
+        return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route, context=context)
 
     def _build_dialogue_contract_pipeline_draft(
         self,
@@ -10409,12 +10462,7 @@ def _terminal_safe_template(
         return _foton_address_template_from_kb(context)
     if active_brand == "unpk" and not recording_followup and not address_negated and ("площадки" in client_haystack or "адрес" in client_haystack):
         return _unpk_all_addresses_template_from_kb(context)
-    asks_contact = (
-        "дайте телефон" in client_haystack
-        or "какой номер" in client_haystack
-        or "по какому номеру" in client_haystack
-        or ("связаться" in client_haystack and ("телефон" in client_haystack or "номер" in client_haystack))
-    )
+    asks_contact = _asks_center_contact(client_haystack)
     if active_brand == "foton" and asks_contact:
         return _foton_contact_template_from_kb(context)
     if active_brand == "unpk" and asks_contact:
@@ -10443,6 +10491,24 @@ def _terminal_safe_template(
     if "юр.лица" in client_haystack or "юрлица" in client_haystack or "юридическ" in client_haystack:
         return CONTRACT_ENTITY_SAFE_TEXT
     return ""
+
+
+def _asks_center_contact(text: str) -> bool:
+    haystack = str(text or "").casefold().replace("ё", "е")
+    if not haystack:
+        return False
+    if re.search(r"\b(?:мой|моя|мои|свой|своя|свои|наш|наша)\s+(?:телефон|номер|почт|email|e-mail)\b", haystack):
+        return False
+    contact_marker = r"(?:телефон|номер|контакт|почт|email|e-mail|куда\s+писать|как\s+связаться|связаться)"
+    request_marker = r"(?:дайте|подскажите|скажите|пришлите|напишите|укажите|нужен|нужна|какой|какая|какие|ваш|ваша|ваши)"
+    return bool(
+        re.search(rf"\b{request_marker}\b[\s\S]{{0,40}}\b{contact_marker}\b", haystack)
+        or re.search(rf"\b{contact_marker}\b[\s\S]{{0,40}}\b{request_marker}\b", haystack)
+        or "как связаться" in haystack
+        or "куда писать" in haystack
+        or "по какому номеру" in haystack
+        or "на какую почту" in haystack
+    )
 
 
 def _cross_brand_safe_template(

@@ -1198,6 +1198,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
     profile_default_on = {
         "TELEGRAM_TEMPLATE_FROM_KB",
         "TELEGRAM_ROUTE_RUBRIC",
+        "TELEGRAM_LLM_RETRIEVE",
     }
 
     def flag_state(name: str) -> Mapping[str, Any]:

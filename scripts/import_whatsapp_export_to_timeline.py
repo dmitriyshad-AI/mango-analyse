@@ -320,7 +320,6 @@ def run_whatsapp_import(config: WhatsAppImportConfig) -> Mapping[str, Any]:
     validation_ok = (
         import_report.validation_ok
         and import_report.source_unchanged
-        and parse_stats.skipped_malformed == 0
         and safety_ok(timeline_ingestion_safety_contract())
     )
     return build_report(
@@ -347,6 +346,7 @@ def build_report(
     store_summary_after: Optional[Mapping[str, Any]],
 ) -> Mapping[str, Any]:
     safety = timeline_ingestion_safety_contract()
+    status = "completed_with_warnings" if parse_stats.skipped_malformed else "completed"
     return {
         "schema_version": WHATSAPP_TIMELINE_IMPORT_SCHEMA_VERSION,
         "mode": "apply" if config.apply else "dry_run_preview",
@@ -354,7 +354,7 @@ def build_report(
         "validation_ok": validation_ok,
         "summary": {
             "validation_ok": validation_ok,
-            "status": "completed" if validation_ok else "completed_with_warnings",
+            "status": status if validation_ok else "completed_with_warnings",
             "tenant_id": config.tenant_id,
             "brand": config.brand,
             "source_system": SOURCE_SYSTEM,

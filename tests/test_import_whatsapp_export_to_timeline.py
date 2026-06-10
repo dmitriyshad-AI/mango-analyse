@@ -140,6 +140,38 @@ def test_cli_defaults_to_dry_run_and_does_not_create_timeline_db(tmp_path: Path,
     assert report["safety"]["write_product_timeline_db"] is False
 
 
+def test_malformed_whatsapp_fragment_is_reported_as_warning_not_failed_batch(tmp_path: Path) -> None:
+    source = tmp_path / "all_whatsapp_chats.txt"
+    source.write_text(
+        """===== CHAT: +7 999 111-22-33 =====
+2025-04-30
+09:20
+===== CHAT: +7 999 111-22-33 =====
+2025-04-30
+09:21
+Client One
+Valid inbound after malformed fragment
+""",
+        encoding="utf-8",
+    )
+
+    report = run_whatsapp_import(
+        WhatsAppImportConfig(
+            source=source,
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            brand="unknown",
+            apply=False,
+        )
+    )
+
+    assert report["validation_ok"] is True
+    assert report["summary"]["status"] == "completed_with_warnings"
+    assert report["summary"]["records_loaded"] == 1
+    assert report["summary"]["skipped_malformed"] == 1
+
+
 def test_apply_import_is_idempotent_and_adds_phone_identity_link(tmp_path: Path) -> None:
     source = write_fixture(tmp_path)
     timeline_db = tmp_path / "customer_timeline.sqlite"

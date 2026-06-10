@@ -87,6 +87,7 @@ class PilotContext:
     knowledge_base_version: str = ""
     risk_flags: Sequence[str] = field(default_factory=tuple)
     dialogue_memory_view: Mapping[str, Any] = field(default_factory=dict)
+    dialogue_memory_state: Mapping[str, Any] = field(default_factory=dict)
     conversation_intent_plan: Mapping[str, Any] = field(default_factory=dict)
     answer_contract: Mapping[str, Any] = field(default_factory=dict)
     gold_answers_v3: Mapping[str, Any] = field(default_factory=dict)
@@ -199,6 +200,7 @@ class PilotContext:
             "knowledge_base_version": self.knowledge_base_version,
             "risk_flags": list(self.risk_flags),
             "dialogue_memory_view": dict(self.dialogue_memory_view),
+            "dialogue_memory_state": dict(self.dialogue_memory_state),
             "conversation_intent_plan": dict(self.conversation_intent_plan),
             "answer_contract": dict(self.answer_contract),
             "gold_answers_v3": dict(self.gold_answers_v3),
@@ -242,6 +244,7 @@ def build_pilot_context(
     knowledge_base_version: str = "",
     risk_flags: Sequence[str] = (),
     dialogue_memory_view: Mapping[str, Any] | None = None,
+    dialogue_memory_state: Mapping[str, Any] | None = None,
     conversation_intent_plan: Mapping[str, Any] | None = None,
     answer_contract: Mapping[str, Any] | None = None,
     gold_answers_v3: Mapping[str, Any] | None = None,
@@ -299,6 +302,7 @@ def build_pilot_context(
         knowledge_base_version=knowledge_base_version,
         risk_flags=tuple(merged_risks),
         dialogue_memory_view=dialogue_memory_view or {},
+        dialogue_memory_state=dialogue_memory_state or {},
         conversation_intent_plan=conversation_intent_plan or {},
         answer_contract=answer_contract or {},
         gold_answers_v3=gold_answers_v3 or {},

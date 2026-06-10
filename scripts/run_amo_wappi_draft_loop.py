@@ -103,17 +103,26 @@ def build_config(args: argparse.Namespace) -> DraftLoopConfig:
 
 
 def build_context_builder(snapshot_path: Path):
-    def _build(key: DraftLoopKey, history: list[str] | tuple[str, ...], client_message: str, brand: str) -> Mapping[str, Any]:
+    def _build(
+        key: DraftLoopKey,
+        history: list[str] | tuple[str, ...],
+        client_message: str,
+        brand: str,
+        *,
+        dialogue_memory: Mapping[str, Any] | None = None,
+        current_message_id: str = "",
+    ) -> Mapping[str, Any]:
         return build_pilot_context_payload(
             current_text=client_message,
             snapshot_path=snapshot_path,
             active_brand=brand,
             recent_messages=tuple(history)[-10:],
-            dialogue_memory={},
+            dialogue_memory=dialogue_memory or {},
             session_id=f"amo_draft_loop:{brand}:{key.profile_id}:{key.chat_id}",
             channel="wappi_telegram",
             channel_thread_id=key.value,
             channel_user_id=key.chat_id,
+            current_message_id=current_message_id,
             dialogue_contract_pipeline_enabled=True,
             sends_client_replies=False,
             debug_impersonation_enabled=False,

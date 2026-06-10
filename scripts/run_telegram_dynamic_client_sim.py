@@ -32,7 +32,7 @@ from mango_mvp.channels.subscription_llm import (
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
 from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_funnel_context_payload
-from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
+from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dialogue_memory, update_dialogue_memory_after_answer
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
 from mango_mvp.insights.tone_score import summarize_tone_scores
@@ -1045,6 +1045,8 @@ def build_judge_model(args: argparse.Namespace) -> Any:
 
 
 def build_memory_model(args: argparse.Namespace) -> Any:
+    if str(os.getenv(MEMORY_PROVENANCE_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return None
     if args.memory_mode == "off":
         return None
     if args.memory_mode == "fake":

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV
 from mango_mvp.integrations.draft_loop import (
     AmoWappiDraftLoop,
     DraftLoopConfig,
@@ -155,6 +156,51 @@ def test_draft_loop_journal_records_config_fingerprint_on_draft_created(tmp_path
     draft_created = next(row for row in rows if row["event"] == "draft_created")
     assert draft_created["config_fingerprint"] == fingerprint
     assert draft_created["config_fingerprint"]["schema_version"] == "draft_loop_config_fingerprint_v1_2026_06_10"
+
+
+def test_draft_loop_persists_provenance_memory_by_profile_chat(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    bot = FakeBot()
+    calls: list[dict] = []
+
+    def context_builder(key, history, client_message, brand, *, dialogue_memory=None, current_message_id=""):
+        from mango_mvp.channels.dialogue_memory import build_dialogue_memory
+
+        memory = build_dialogue_memory(
+            current_message=client_message,
+            active_brand=brand,
+            recent_messages=history,
+            previous_memory=dialogue_memory or {},
+            context={"current_message_id": current_message_id},
+            session_id=f"test:{key.value}",
+        )
+        payload = {"dialogue_memory_view": memory.to_prompt_view(), "dialogue_memory_state": memory.to_json_dict()}
+        calls.append({"memory": dialogue_memory or {}, "message_id": current_message_id, "payload": payload})
+        return payload
+
+    cfg = _config(tmp_path, pairs={key: pair})
+    wappi = FakeWappi(
+        {"profile-foton": [{"id": "chat-1", "type": "user"}]},
+        {("profile-foton", "chat-1"): [_message("m1", text="Сын в 7 классе, физика онлайн")]},
+    )
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=context_builder,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    loop.run_once(dry_run=False)
+
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    stored = state["dialogue_memory"][key.value]
+    assert stored["known_slots"]["grade"]["value"] == "7"
+    assert stored["known_slots"]["grade"]["message_id"] == "m1"
+    assert calls[0]["message_id"] == "m1"
 
 
 def test_draft_loop_journal_reads_old_rows_without_config_fingerprint(tmp_path: Path) -> None:

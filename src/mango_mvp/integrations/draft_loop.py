@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, update_dialogue_memory_after_answer
 from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config, WappiPhase1Client
 
 
@@ -28,6 +29,10 @@ class DraftLoopError(RuntimeError):
 
 class DraftLoopConfigError(DraftLoopError):
     pass
+
+
+def _memory_provenance_enabled() -> bool:
+    return str(os.getenv(MEMORY_PROVENANCE_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True, order=True)
@@ -153,7 +158,7 @@ class AmoDraftNoteClient(Protocol):
         ...
 
 
-ContextBuilder = Callable[[DraftLoopKey, Sequence[str], str, str], Mapping[str, Any]]
+ContextBuilder = Callable[..., Mapping[str, Any]]
 AutoResolver = Callable[[DraftLoopKey, WappiHistoryMessage], Optional[Mapping[str, Any]]]
 
 
@@ -203,7 +208,7 @@ class DraftLoopState:
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"processed": [], "pending_notes": {}}
+            return {"processed": [], "pending_notes": {}, "dialogue_memory": {}}
         try:
             decoded = json.loads(self.path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
@@ -212,6 +217,7 @@ class DraftLoopState:
             raise DraftLoopConfigError("Draft loop state must be a JSON object.")
         decoded.setdefault("processed", [])
         decoded.setdefault("pending_notes", {})
+        decoded.setdefault("dialogue_memory", {})
         return decoded
 
     def processed_keys(self) -> set[tuple[str, str, str]]:
@@ -246,6 +252,18 @@ class DraftLoopState:
         pending = dict(self.payload.get("pending_notes") or {})
         pending.pop(state_key, None)
         self.payload["pending_notes"] = pending
+
+    def dialogue_memory_for(self, key: DraftLoopKey) -> Mapping[str, Any]:
+        raw = self.payload.get("dialogue_memory")
+        if not isinstance(raw, Mapping):
+            return {}
+        item = raw.get(key.value)
+        return dict(item) if isinstance(item, Mapping) else {}
+
+    def set_dialogue_memory(self, key: DraftLoopKey, memory: Mapping[str, Any]) -> None:
+        data = dict(self.payload.get("dialogue_memory") or {})
+        data[key.value] = dict(memory)
+        self.payload["dialogue_memory"] = data
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -422,11 +440,34 @@ class AmoWappiDraftLoop:
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
         history = _history_lines(messages[-self.config.history_limit :])
         client_message = inbound_new[-1].text
-        context = self.context_builder(key, history, client_message, brand)
+        previous_memory = self.state.dialogue_memory_for(key)
+        context = self._build_context(
+            key,
+            history,
+            client_message,
+            brand,
+            dialogue_memory=previous_memory,
+            current_message_id=inbound_new[-1].message_id,
+        )
         result = self.bot_provider.build_draft(client_message, context=context)
         route = str(getattr(result, "route", "") or "")
         safety_flags = tuple(str(item) for item in (getattr(result, "safety_flags", ()) or ()))
         draft_text = str(getattr(result, "draft_text", "") or "")
+        if _memory_provenance_enabled():
+            memory_source = (
+                context.get("dialogue_memory_state")
+                if isinstance(context.get("dialogue_memory_state"), Mapping)
+                else context.get("dialogue_memory_view")
+            )
+            updated_memory = update_dialogue_memory_after_answer(
+                memory_source if isinstance(memory_source, Mapping) else {},
+                answer_text=draft_text,
+                route=route,
+                fact_refs=tuple(getattr(result, "context_used", ()) or ()),
+                safety_flags=safety_flags,
+                memory_llm_fn=None,
+            )
+            self.state.set_dialogue_memory(key, updated_memory.to_json_dict())
         last_message = inbound_new[-1]
         pending_payload = {
             "profile_id": last_message.profile_id,
@@ -451,6 +492,28 @@ class AmoWappiDraftLoop:
             self.state.mark_processed(item)
         self.journal.append({**pending_payload, "event": "note_written", "status": "note_written"})
         return {"processed": len(inbound_new), "skipped": 0, "bot_calls": 1}
+
+    def _build_context(
+        self,
+        key: DraftLoopKey,
+        history: Sequence[str],
+        client_message: str,
+        brand: str,
+        *,
+        dialogue_memory: Mapping[str, Any],
+        current_message_id: str,
+    ) -> Mapping[str, Any]:
+        try:
+            return self.context_builder(
+                key,
+                history,
+                client_message,
+                brand,
+                dialogue_memory=dialogue_memory,
+                current_message_id=current_message_id,
+            )
+        except TypeError:
+            return self.context_builder(key, history, client_message, brand)
 
     def retry_pending_notes(self) -> int:
         retries = 0

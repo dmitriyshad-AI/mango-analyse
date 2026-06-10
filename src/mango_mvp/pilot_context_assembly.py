@@ -150,6 +150,7 @@ def build_pilot_context_payload(
     debug_phone: str = "",
     debug_client: Mapping[str, Any] | None = None,
     crm_context: Mapping[str, Any] | None = None,
+    current_message_id: str = "",
 ) -> Mapping[str, Any]:
     client_identity: dict[str, Any] = {
         "channel": channel,
@@ -207,6 +208,7 @@ def build_pilot_context_payload(
         known_slots=known_dialog_fields,
         dialogue_memory=dialogue_memory or {},
         session_id=session_id,
+        current_message_id=current_message_id,
     )
     payload = dict(pilot_context.to_prompt_context())
     payload["active_brand"] = active_brand
@@ -264,4 +266,3 @@ def attach_funnel_state_to_context(context: Mapping[str, Any], funnel_state: Lea
     payload["client_segment"] = str(funnel_payload.get("client_segment") or "")
     payload["semantic_flags"] = list(funnel_payload.get("semantic_flags") or [])
     return payload
-

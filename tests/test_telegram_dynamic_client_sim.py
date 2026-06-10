@@ -1564,6 +1564,13 @@ def test_build_memory_model_modes_use_low_reasoning() -> None:
     assert codex_model.reasoning_effort == "low"
 
 
+def test_build_memory_model_disabled_by_memory_provenance(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_MEMORY_PROVENANCE", "1")
+    args = argparse.Namespace(memory_mode="codex", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
+
+    assert sim.build_memory_model(args) is None
+
+
 def test_codex_json_model_can_run_isolated(monkeypatch) -> None:
     calls = []
 

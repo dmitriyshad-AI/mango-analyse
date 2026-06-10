@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -24,8 +25,10 @@ from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 
 DIALOGUE_MEMORY_SCHEMA_VERSION = "dialogue_memory_v2_2026_05_23"
+MEMORY_PROVENANCE_ENV = "TELEGRAM_MEMORY_PROVENANCE"
 MAX_TURNS = 20
 MAX_PROMPT_TURNS = 20
+MAX_MEMORY_QUOTE_CHARS = 200
 
 QUESTION_KIND_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("live_availability", ("мест", "налич", "брон", "заброни")),
@@ -151,9 +154,13 @@ _MEMORY_LLM_OVERRIDABLE_SLOT_SOURCES = {"dialogue_memory", "memory_llm", "bot_in
 class DialogueTurn:
     role: str
     text: str
+    message_id: str = ""
 
     def to_json_dict(self) -> Mapping[str, str]:
-        return {"role": self.role, "text": self.text[:700]}
+        payload = {"role": self.role, "text": self.text[:700]}
+        if self.message_id:
+            payload["message_id"] = self.message_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -161,9 +168,22 @@ class DialogueSlot:
     value: str
     source: str
     confidence: float = 0.0
+    turn_index: int = 0
+    quote: str = ""
+    child_key: str = ""
+    message_id: str = ""
 
     def to_json_dict(self) -> Mapping[str, Any]:
-        return {"value": self.value, "source": self.source, "confidence": round(float(self.confidence), 3)}
+        payload: dict[str, Any] = {"value": self.value, "source": self.source, "confidence": round(float(self.confidence), 3)}
+        if self.turn_index:
+            payload["turn_index"] = self.turn_index
+        if self.quote:
+            payload["quote"] = self.quote[:MAX_MEMORY_QUOTE_CHARS]
+        if self.child_key:
+            payload["child_key"] = self.child_key
+        if self.message_id:
+            payload["message_id"] = self.message_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -224,6 +244,7 @@ class DialogueMemory:
     held_state: HeldState = field(default_factory=HeldState)
     current_message_roles: Mapping[str, Any] = field(default_factory=dict)
     proactive_state: Mapping[str, Any] = field(default_factory=dict)
+    slot_history: tuple[Mapping[str, Any], ...] = ()
     conversation_summary_short: str = ""
     open_loop_summary: str = ""
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -256,13 +277,31 @@ class DialogueMemory:
             "held_state": self.held_state.to_json_dict(),
             "current_message_roles": dict(self.current_message_roles),
             "proactive_state": dict(self.proactive_state),
+            "slot_history": [dict(item) for item in self.slot_history],
             "conversation_summary_short": self.conversation_summary_short,
             "open_loop_summary": self.open_loop_summary,
             "updated_at": self.updated_at,
         }
 
     def to_prompt_view(self) -> Mapping[str, Any]:
-        known_values = {key: slot.value for key, slot in self.known_slots.items() if slot.value}
+        provenance_enabled = _memory_provenance_enabled()
+        known_values = {
+            key: slot.value
+            for key, slot in self.known_slots.items()
+            if slot.value and (not provenance_enabled or slot.source != "memory_provenance" or bool(slot.quote))
+        }
+        slot_provenance = {
+            key: {
+                "value": slot.value,
+                "source": slot.source,
+                "turn_index": slot.turn_index,
+                "message_id": slot.message_id,
+                "child_key": slot.child_key,
+                "quote": slot.quote[:MAX_MEMORY_QUOTE_CHARS],
+            }
+            for key, slot in self.known_slots.items()
+            if slot.value and slot.source == "memory_provenance" and slot.quote
+        }
         return {
             "schema_version": self.schema_version,
             "session_id": self.session_id,
@@ -270,6 +309,13 @@ class DialogueMemory:
             "recent_turns": [turn.to_json_dict() for turn in self.turns[-MAX_PROMPT_TURNS:]],
             "known_slots": known_values,
             "slot_sources": {key: slot.source for key, slot in self.known_slots.items() if slot.value},
+            "slot_provenance": slot_provenance,
+            "memory_provenance": {
+                "enabled": provenance_enabled,
+                "slot_history": [dict(item) for item in self.slot_history[-12:]],
+            }
+            if provenance_enabled
+            else {},
             "open_question": self.open_question.to_json_dict(),
             "answered_questions": list(self.answered_questions[-5:]),
             "last_bot_commitments": list(self.last_bot_commitments[-5:]),
@@ -313,12 +359,19 @@ def build_dialogue_memory(
         turns = tuple(_parse_recent_messages(recent_messages))
     current_text = _clean(current_message)
     if current_text:
-        turns = (*turns, DialogueTurn("client", current_text))[-MAX_TURNS:]
+        current_message_id = ""
+        if isinstance(context, Mapping):
+            current_message_id = _clean(context.get("current_message_id"))
+        turns = (*turns, DialogueTurn("client", current_text, current_message_id))[-MAX_TURNS:]
 
-    slot_map = _slots_from_previous(previous_memory)
-    _merge_slots(slot_map, known_slots or {}, source_name="provided_context", confidence=0.82)
-    _merge_slots(slot_map, _extract_slots_from_turns(turns), source_name="dialogue_memory", confidence=0.9)
-    _merge_slots(slot_map, _extract_slots_from_text(current_text), source_name="dialogue_memory", confidence=0.95, override=True)
+    slot_history: tuple[Mapping[str, Any], ...] = _slot_history_from_previous(previous_memory)
+    if _memory_provenance_enabled():
+        slot_map, slot_history = _extract_provenance_slots(turns, previous_memory=previous_memory)
+    else:
+        slot_map = _slots_from_previous(previous_memory)
+        _merge_slots(slot_map, known_slots or {}, source_name="provided_context", confidence=0.82)
+        _merge_slots(slot_map, _extract_slots_from_turns(turns), source_name="dialogue_memory", confidence=0.9)
+        _merge_slots(slot_map, _extract_slots_from_text(current_text), source_name="dialogue_memory", confidence=0.95, override=True)
 
     open_question = _detect_open_question(current_text)
     previous = dialogue_memory_from_mapping(previous_memory) if isinstance(previous_memory, Mapping) else previous_memory
@@ -356,7 +409,7 @@ def build_dialogue_memory(
     sales_stage = _sales_stage(slot_map, open_question=open_question, risk_flags=risks, handoff_state=handoff)
     unanswered = _unanswered_questions(previous_memory, open_question=open_question)
     topic_focus = _topic_focus(slot_map, open_question=open_question, active_brand=brand)
-    client_confirmed = _slots_by_source(slot_map, {"dialogue_memory"})
+    client_confirmed = _slots_by_source(slot_map, {"dialogue_memory", "memory_provenance"})
     crm_known = _slots_by_source(slot_map, {"provided_context"})
     return DialogueMemory(
         session_id=session_id or _stable_session_id(brand, turns),
@@ -383,6 +436,7 @@ def build_dialogue_memory(
         held_state=held_state,
         current_message_roles=current_roles.to_prompt_view(),
         proactive_state=dict(previous.proactive_state) if isinstance(previous, DialogueMemory) else {},
+        slot_history=slot_history,
         conversation_summary_short=_conversation_summary_short(slot_map, topic_focus=topic_focus, open_question=open_question),
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=_pending_manager_actions(commitments)),
     )
@@ -452,9 +506,12 @@ def update_dialogue_memory_after_answer(
         held_state=current.held_state,
         current_message_roles=dict(current.current_message_roles),
         proactive_state=proactive_state,
+        slot_history=tuple(current.slot_history),
         conversation_summary_short=current.conversation_summary_short,
         open_loop_summary=_open_loop_summary(open_question=open_question, risk_flags=risks, pending_actions=pending_actions),
     )
+    if _memory_provenance_enabled():
+        return updated
     if memory_llm_fn is None:
         return updated
     try:
@@ -760,7 +817,15 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
     slots = {}
     for key, raw in (data.get("known_slots") or {}).items() if isinstance(data.get("known_slots"), Mapping) else ():
         if isinstance(raw, Mapping):
-            slots[str(key)] = DialogueSlot(str(raw.get("value") or ""), str(raw.get("source") or "unknown"), float(raw.get("confidence") or 0.0))
+            slots[str(key)] = DialogueSlot(
+                str(raw.get("value") or ""),
+                str(raw.get("source") or "unknown"),
+                float(raw.get("confidence") or 0.0),
+                int(raw.get("turn_index") or 0),
+                str(raw.get("quote") or "")[:MAX_MEMORY_QUOTE_CHARS],
+                str(raw.get("child_key") or ""),
+                str(raw.get("message_id") or ""),
+            )
         else:
             slots[str(key)] = DialogueSlot(str(raw or ""), "unknown", 0.0)
     open_raw = data.get("open_question") if isinstance(data.get("open_question"), Mapping) else {}
@@ -768,7 +833,7 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         session_id=str(data.get("session_id") or ""),
         active_brand=normalize_brand(data.get("active_brand")),
         turns=tuple(
-            DialogueTurn(str(item.get("role") or ""), _clean(item.get("text")))
+            DialogueTurn(str(item.get("role") or ""), _clean(item.get("text")), str(item.get("message_id") or ""))
             for item in (data.get("turns") or [])
             if isinstance(item, Mapping)
         )[-MAX_TURNS:],
@@ -797,6 +862,7 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
         held_state=held_state_from_mapping(data.get("held_state") if isinstance(data.get("held_state"), Mapping) else {}),
         current_message_roles=dict(data.get("current_message_roles") or {}) if isinstance(data.get("current_message_roles"), Mapping) else {},
         proactive_state=dict(data.get("proactive_state") or {}) if isinstance(data.get("proactive_state"), Mapping) else {},
+        slot_history=tuple(dict(item) for item in (data.get("slot_history") or ()) if isinstance(item, Mapping))[-40:],
         conversation_summary_short=str(data.get("conversation_summary_short") or "")[:500],
         open_loop_summary=str(data.get("open_loop_summary") or "")[:500],
     )
@@ -859,6 +925,188 @@ def _parse_recent_messages(messages: Sequence[str]) -> tuple[DialogueTurn, ...]:
             role = "client"
         turns.append(DialogueTurn(role, text))
     return tuple(turns[-MAX_TURNS:])
+
+
+def _memory_provenance_enabled() -> bool:
+    return str(os.getenv(MEMORY_PROVENANCE_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_GRADE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?P<grade>[1-9]|1[01])\s*[- ]?(?:й|ый|ого)?\s*(?:класс\w*|кл\.?)\b", re.I),
+    re.compile(r"\bза\s+(?P<grade>[1-9]|1[01])\s*(?:класс\w*|кл\.?)\b", re.I),
+    re.compile(r"\bкласс[: ]+(?P<grade>[1-9]|1[01])\b", re.I),
+    re.compile(r"\b(?:перешли|перешел|перешёл|перешла|заканчивает|заканчиваем)\s+в\s+(?P<grade>[1-9]|1[01])\b", re.I),
+)
+_SUBJECT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bматематик[аиуойе]?|\bматем\b", re.I), "математика"),
+    (re.compile(r"\bфизик[аиуойе]?", re.I), "физика"),
+    (re.compile(r"\bинформатик[аиуойе]?|\bпрограммировани[еяю]", re.I), "информатика"),
+    (re.compile(r"\bрусск(?:ий|ого|ому|им|ом)?(?:\s+язык)?", re.I), "русский язык"),
+    (re.compile(r"\bанглийск(?:ий|ого|ому|им|ом)?(?:\s+язык)?", re.I), "английский язык"),
+    (re.compile(r"\bхими[яиюей]", re.I), "химия"),
+    (re.compile(r"\bбиологи[яиюей]", re.I), "биология"),
+)
+_FORMAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:онлайн|online|дистанционно|дистанционн\w*|из дома)\b", re.I), "онлайн"),
+    (re.compile(r"\b(?:очно|очный|очная|офлайн|offline|в центр|приезжать)\b", re.I), "очно"),
+)
+_LOCATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:Красносельск\w*|Сретенк\w*|Долгопрудн\w*|Институтск\w*|Пацаев\w*|Менделеев\w*)\b", re.I),
+    re.compile(r"\bрядом\s+с\s+метро\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z -]{1,40}", re.I),
+)
+_PAYMENT_PREF_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bчастями\b", re.I), "частями"),
+    (re.compile(r"\bпомесячно\b", re.I), "помесячно"),
+    (re.compile(r"\bза\s+семестр\b", re.I), "за семестр"),
+    (re.compile(r"\bза\s+год\b", re.I), "за год"),
+    (re.compile(r"\bматкапитал\w*\b", re.I), "маткапитал"),
+)
+_CHILD_NAME_MARKER_RE = re.compile(
+    r"\b(?:сына|сын|дочь|дочку|дочк[аеуы]|реб[её]н(?:ка|ок))\s+зовут\s+(?P<name>[А-ЯЁ][а-яё]{2,20})\b"
+    r"|\b(?:зовут|фио|для)\s*[:\-]?\s*(?P<name2>[А-ЯЁ][а-яё]{2,20})\b",
+    re.I,
+)
+_NAME_GRADE_RE = re.compile(r"\b(?P<name>[А-ЯЁ][а-яё]{2,20})\s+в\s+(?:[1-9]|1[01])\s*(?:класс|кл\.?)\b", re.I)
+_CHILD_GRADE_RE = re.compile(
+    r"\b(?P<marker>сыну?|дочк[аеуы]|дочь|младш\w*|старш\w*)\s+в\s+(?P<grade>[1-9]|1[01])\s*(?:класс\w*|кл\.?)\b",
+    re.I,
+)
+_NEW_CHILD_RE = re.compile(r"\b(?:втор(?:ой|ая)|младш\w*|старш\w*|ещ[её]\s+один\s+реб)\b", re.I)
+
+
+def _slot_history_from_previous(previous: Mapping[str, Any] | DialogueMemory | None) -> tuple[Mapping[str, Any], ...]:
+    if isinstance(previous, DialogueMemory):
+        return tuple(dict(item) for item in previous.slot_history)[-40:]
+    if isinstance(previous, Mapping):
+        return tuple(dict(item) for item in (previous.get("slot_history") or ()) if isinstance(item, Mapping))[-40:]
+    return ()
+
+
+def _extract_provenance_slots(
+    turns: Sequence[DialogueTurn],
+    *,
+    previous_memory: Mapping[str, Any] | DialogueMemory | None,
+) -> tuple[dict[str, DialogueSlot], tuple[Mapping[str, Any], ...]]:
+    slots = _slots_from_previous(previous_memory)
+    history = list(_slot_history_from_previous(previous_memory))
+    latest_child_key = _latest_child_key(slots) or "child_1"
+    client_turn_index = 0
+    seen_messages: set[str] = set()
+    for turn in turns:
+        if turn.role != "client" or not turn.text:
+            continue
+        if turn.message_id and turn.message_id in seen_messages:
+            continue
+        if turn.message_id:
+            seen_messages.add(turn.message_id)
+        client_turn_index += 1
+        child_key = latest_child_key
+        if _NEW_CHILD_RE.search(turn.text):
+            child_key = _next_child_key(slots)
+        extracted = _extract_provenance_slots_from_client_text(
+            turn.text,
+            turn_index=client_turn_index,
+            message_id=turn.message_id,
+            child_key=child_key,
+        )
+        if extracted.get("child_name") and child_key == latest_child_key and _NEW_CHILD_RE.search(turn.text):
+            latest_child_key = child_key
+        elif extracted.get("child_name"):
+            latest_child_key = child_key
+        for key, slot in extracted.items():
+            existing = slots.get(key)
+            if existing and existing.value and existing.value != slot.value:
+                history.append({**existing.to_json_dict(), "field": key, "superseded": True})
+            slots[key] = slot
+    return slots, tuple(history[-40:])
+
+
+def _extract_provenance_slots_from_client_text(
+    text: str,
+    *,
+    turn_index: int,
+    message_id: str,
+    child_key: str,
+) -> Mapping[str, DialogueSlot]:
+    result: dict[str, DialogueSlot] = {}
+    child_grade_matches = list(_CHILD_GRADE_RE.finditer(text))
+    if child_grade_matches:
+        for index, match in enumerate(child_grade_matches, start=1):
+            marker = normalize_text(match.group("marker"))
+            inferred_child = "child_2" if "доч" in marker or "младш" in marker or index > 1 else "child_1"
+            slot = _provenance_slot("grade", match.group("grade"), match.group(0), turn_index, message_id, inferred_child)
+            result[f"{inferred_child}_grade"] = slot
+            result["grade"] = slot
+    for pattern in _GRADE_PATTERNS:
+        if "grade" in result:
+            break
+        match = pattern.search(text)
+        if match:
+            grade = match.group("grade")
+            if grade.isdigit() and 1 <= int(grade) <= 11:
+                result["grade"] = _provenance_slot("grade", grade, match.group(0), turn_index, message_id, child_key)
+            break
+    for pattern, value in _SUBJECT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            result["subject"] = _provenance_slot("subject", value, match.group(0), turn_index, message_id, child_key)
+            break
+    for pattern, value in _FORMAT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            result["format"] = _provenance_slot("format", value, match.group(0), turn_index, message_id, child_key)
+            break
+    for pattern in _LOCATION_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            result["location"] = _provenance_slot("location", match.group(0), match.group(0), turn_index, message_id, child_key)
+            break
+    for pattern, value in _PAYMENT_PREF_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            result["payment_pref"] = _provenance_slot("payment_pref", value, match.group(0), turn_index, message_id, child_key)
+            break
+    name_match = _CHILD_NAME_MARKER_RE.search(text) or _NAME_GRADE_RE.search(text)
+    if name_match:
+        name = name_match.groupdict().get("name") or name_match.groupdict().get("name2") or ""
+        result["child_name"] = _provenance_slot("child_name", _normalize_child_name(name), name_match.group(0), turn_index, message_id, child_key)
+    return result
+
+
+def _provenance_slot(field: str, value: str, quote: str, turn_index: int, message_id: str, child_key: str) -> DialogueSlot:
+    del field
+    return DialogueSlot(
+        value=str(value or "").strip()[:160],
+        source="memory_provenance",
+        confidence=1.0,
+        turn_index=turn_index,
+        quote=_clean(quote)[:MAX_MEMORY_QUOTE_CHARS],
+        child_key=child_key,
+        message_id=str(message_id or ""),
+    )
+
+
+def _latest_child_key(slots: Mapping[str, DialogueSlot]) -> str:
+    for slot in reversed(list(slots.values())):
+        if slot.child_key:
+            return slot.child_key
+    return ""
+
+
+def _next_child_key(slots: Mapping[str, DialogueSlot]) -> str:
+    indexes = [1]
+    for slot in slots.values():
+        match = re.fullmatch(r"child_(\d+)", slot.child_key or "")
+        if match:
+            indexes.append(int(match.group(1)))
+    return f"child_{max(indexes) + 1}"
+
+
+def _normalize_child_name(name: str) -> str:
+    text = _clean(name).strip(".,:;!?")
+    if not text:
+        return ""
+    return text[:1].upper() + text[1:].lower()
 
 
 def _extract_slots_from_turns(turns: Sequence[DialogueTurn]) -> Mapping[str, Any]:

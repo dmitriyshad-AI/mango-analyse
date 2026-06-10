@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from mango_mvp.channels.dialogue_memory import (
+    MEMORY_PROVENANCE_ENV,
     build_memory_llm_prompt,
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
@@ -266,6 +267,102 @@ def test_build_memory_llm_prompt_requests_strict_json_and_keeps_brand_rule() -> 
     assert "low reasoning" in prompt
     assert "мелкую/быструю модель" in prompt
     assert "active_brand менять нельзя" in prompt
+
+
+def test_memory_provenance_extracts_only_client_slots_with_quote(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Сына зовут Артём, он в 7 классе, нужна физика очно на Красносельской.",
+        active_brand="foton",
+        recent_messages=["Ответ: менеджер сказал, что 9 класс онлайн"],
+        session_id="s-provenance",
+    )
+    view = memory.to_prompt_view()
+
+    assert view["memory_provenance"]["enabled"] is True
+    assert view["known_slots"]["grade"] == "7"
+    assert view["known_slots"]["subject"] == "физика"
+    assert view["known_slots"]["format"] == "очно"
+    assert view["known_slots"]["child_name"] == "Артём"
+    assert "9" not in view["known_slots"].values()
+    assert view["slot_provenance"]["grade"]["quote"]
+    assert view["slot_provenance"]["grade"]["turn_index"] == 1
+
+
+def test_memory_provenance_hides_quote_less_slot_from_prompt(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Сколько стоит?",
+        active_brand="foton",
+        previous_memory={
+            "active_brand": "foton",
+            "known_slots": {"grade": {"value": "8", "source": "memory_provenance", "confidence": 1.0}},
+        },
+        session_id="s-provenance-quote",
+    )
+
+    assert "grade" not in memory.to_prompt_view()["known_slots"]
+
+
+def test_memory_provenance_stores_superseded_conflict(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    initial = build_dialogue_memory(
+        current_message="Ребёнок в 9 классе, математика онлайн",
+        active_brand="unpk",
+        context={"current_message_id": "m1"},
+        session_id="s-provenance-conflict",
+    )
+    followup = build_dialogue_memory(
+        current_message="Поправлю: 10 класс.",
+        active_brand="unpk",
+        context={"current_message_id": "m2"},
+        previous_memory=initial,
+        session_id="s-provenance-conflict",
+    )
+
+    assert followup.to_prompt_view()["known_slots"]["grade"] == "10"
+    assert any(item.get("field") == "grade" and item.get("superseded") for item in followup.slot_history)
+
+
+def test_memory_provenance_skips_memory_llm_call(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    memory = build_dialogue_memory(
+        current_message="8 класс, физика онлайн",
+        active_brand="foton",
+        session_id="s-provenance-no-llm",
+    )
+
+    def fail_if_called(_prompt: str):
+        raise AssertionError("memory LLM must not be called in provenance mode")
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Подскажу по фактам.",
+        route="bot_answer_self",
+        memory_llm_fn=fail_if_called,
+    )
+
+    assert updated.to_prompt_view()["memory_provenance"]["enabled"] is True
+
+
+def test_memory_provenance_keeps_two_children_separate(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Сыну в 7 классе, дочке в 4 классе. Сколько стоит?",
+        active_brand="foton",
+        session_id="s-provenance-two-kids",
+    )
+    view = memory.to_prompt_view()
+
+    assert view["known_slots"]["grade"] == "4"
+    assert view["known_slots"]["child_1_grade"] == "7"
+    assert view["known_slots"]["child_2_grade"] == "4"
+    assert view["slot_provenance"]["child_1_grade"]["child_key"] == "child_1"
+    assert view["slot_provenance"]["child_2_grade"]["child_key"] == "child_2"
 
 
 def test_dialogue_memory_tracks_commitment_and_closes_open_question() -> None:

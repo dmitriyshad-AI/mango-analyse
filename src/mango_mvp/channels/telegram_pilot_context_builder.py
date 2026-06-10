@@ -121,6 +121,7 @@ def build_telegram_pilot_context(
     known_slots: Mapping[str, Any] | None = None,
     dialogue_memory: Mapping[str, Any] | DialogueMemory | None = None,
     session_id: str = "",
+    current_message_id: str = "",
 ) -> PilotContext:
     """Build PilotContext for Telegram manager drafts from a compact KC snapshot."""
 
@@ -132,6 +133,7 @@ def build_telegram_pilot_context(
         active_brand=active_brand,
         recent_messages=recent_messages,
         known_slots=known_slots or {},
+        context={"current_message_id": str(current_message_id or "")},
         previous_memory=dialogue_memory,
         session_id=session_id,
     )
@@ -261,6 +263,7 @@ def build_telegram_pilot_context(
         knowledge_base_version=snapshot_context.knowledge_base_version,
         risk_flags=risk_flags,
         dialogue_memory_view=memory_view,
+        dialogue_memory_state=memory.to_json_dict(),
         conversation_intent_plan=intent_view,
         answer_contract=answer_contract.to_prompt_view(),
         gold_answers_v3=gold_answers_v3,

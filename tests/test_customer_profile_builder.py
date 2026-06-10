@@ -292,6 +292,29 @@ def test_builder_matches_master_call_by_last_10_digits(tmp_path: Path) -> None:
         assert any(row["field"] == "grade" for row in store.active_fields("cust-1"))
 
 
+def test_builder_counts_master_call_without_phone_as_unmatched(tmp_path: Path) -> None:
+    timeline_db = _timeline_db(tmp_path)
+    analysis = _analysis()
+    analysis["_phone"] = None
+    master_db = _master_calls_db(tmp_path, [(100, "2026-01-10T10:00:00+00:00", analysis)])
+    profiles_db = tmp_path / "profiles.sqlite"
+
+    report = CustomerProfileBuilder(
+        CustomerProfileBuildOptions(
+            timeline_db=timeline_db,
+            profiles_db=profiles_db,
+            master_calls_db=master_db,
+            customer_ids=("cust-1",),
+        )
+    ).build()
+
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        fields = store.active_fields("cust-1")
+
+    assert report["unmatched_calls"] == 1
+    assert not [row for row in fields if row["source_system"] == "mango_processed_summary"]
+
+
 def test_store_enforces_profile_field_foreign_key(tmp_path: Path) -> None:
     profiles_db = tmp_path / "profiles.sqlite"
     with CustomerProfileSQLiteStore(profiles_db):

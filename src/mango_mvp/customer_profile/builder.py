@@ -209,8 +209,11 @@ class CustomerProfileBuilder:
             ).fetchall()
             for row in rows:
                 phone = normalize_phone(str(row["phone"] or ""))
+                if not phone:
+                    unmatched += 1
+                    continue
                 profile_ids_for_phone = phone_map.get(phone) or phone_map.get(last10(phone)) or []
-                if not phone or not profile_ids_for_phone:
+                if not profile_ids_for_phone:
                     unmatched += 1
                     continue
                 if len(set(profile_ids_for_phone)) > 1:
@@ -411,8 +414,8 @@ def joined(value: Any) -> str:
     return text(value)
 
 
-def last10(phone: str) -> str:
-    digits = "".join(ch for ch in phone if ch.isdigit())
+def last10(phone: Any) -> str:
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
     return digits[-10:] if len(digits) >= 10 else digits
 
 

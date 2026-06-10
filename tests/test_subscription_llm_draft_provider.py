@@ -12122,6 +12122,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         BOT_GOLD_REAL_ENV,
         SEMANTIC_OUTPUT_VERIFIER_ENV,
         OUTPUT_SANITIZER_ENV,
+        LLM_RETRIEVE_ENV,
         NUMBER_GATE_SCOPE_AWARE_ENV,
         VERIFIER_HANDOFF_CLAIMS_ENV,
         PRESALE_SAFETY_ENV,
@@ -12140,6 +12141,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _direct_path_gold_real_enabled(context) is True
     assert _semantic_output_verifier_enabled(context) is True
     assert _output_sanitizer_enabled(context) is True
+    assert subscription_llm._llm_retrieve_enabled(context) is True
     assert number_gate_scope_aware_enabled(context) is True
     assert _verifier_handoff_claims_enabled(context) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV) is True
@@ -12149,12 +12151,46 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm._template_from_kb_enabled(context) is True
 
 
+def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv(LLM_RETRIEVE_ENV, raising=False)
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+    }
+    calls = 0
+
+    def retriever(_: str) -> Mapping[str, object]:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("explicit TELEGRAM_LLM_RETRIEVE=0 must keep keyword selection")
+
+    keyword = _direct_path_context_fact_pack(
+        {**context, LLM_RETRIEVE_ENV: "0"},
+        client_message="Сколько стоит?",
+    )
+    off = _direct_path_context_fact_pack(
+        {**context, LLM_RETRIEVE_ENV: "0"},
+        client_message="Сколько стоит?",
+        retriever_fn=retriever,
+    )
+
+    assert subscription_llm._llm_retrieve_enabled(context) is True
+    assert subscription_llm._llm_retrieve_enabled({**context, LLM_RETRIEVE_ENV: "0"}) is False
+    assert off == keyword
+    assert off["selected_category"] != "llm_retrieve"
+    assert calls == 0
+
+
 def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> None:
     for key in (
         DIRECT_PATH_ENV,
         BOT_GOLD_REAL_ENV,
         SEMANTIC_OUTPUT_VERIFIER_ENV,
         OUTPUT_SANITIZER_ENV,
+        LLM_RETRIEVE_ENV,
         NUMBER_GATE_SCOPE_AWARE_ENV,
         VERIFIER_HANDOFF_CLAIMS_ENV,
         PRESALE_SAFETY_ENV,
@@ -12176,6 +12212,7 @@ def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> 
             "active_brand": "foton",
             DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
             SEMANTIC_OUTPUT_VERIFIER_ENV: "0",
+            LLM_RETRIEVE_ENV: "0",
             TEMPLATE_FROM_KB_ENV: "0",
             "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
         },
@@ -12186,6 +12223,7 @@ def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> 
     ) is False
     assert result.metadata["direct_path"]["pilot_profile_overrides"] == {
         SEMANTIC_OUTPUT_VERIFIER_ENV: "0",
+        LLM_RETRIEVE_ENV: "0",
         TEMPLATE_FROM_KB_ENV: "0",
     }
     assert subscription_llm._template_from_kb_enabled(
@@ -12199,6 +12237,7 @@ def test_without_pilot_config_profile_flags_keep_default_off(monkeypatch) -> Non
         BOT_GOLD_REAL_ENV,
         SEMANTIC_OUTPUT_VERIFIER_ENV,
         OUTPUT_SANITIZER_ENV,
+        LLM_RETRIEVE_ENV,
         NUMBER_GATE_SCOPE_AWARE_ENV,
         VERIFIER_HANDOFF_CLAIMS_ENV,
         PRESALE_SAFETY_ENV,

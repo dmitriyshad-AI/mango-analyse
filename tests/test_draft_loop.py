@@ -11,12 +11,14 @@ from mango_mvp.integrations.draft_loop import (
     AmoWappiDraftLoop,
     DraftLoopConfig,
     DraftLoopConfigError,
+    DraftLoopJournal,
     DraftLoopKey,
     DraftLoopPair,
     DraftLoopProfile,
     DraftLoopState,
     DraftWindow,
     OutgoingWindowMessage,
+    build_draft_loop_config_fingerprint,
     classify_manager_edit_windows,
     load_pairs_file,
 )
@@ -59,7 +61,7 @@ class FakeBot:
         )
 
 
-def _config(tmp_path: Path, *, pairs=None) -> DraftLoopConfig:
+def _config(tmp_path: Path, *, pairs=None, config_fingerprint=None) -> DraftLoopConfig:
     profile = DraftLoopProfile(profile_id="profile-foton", brand="foton", channel="telegram")
     return DraftLoopConfig(
         profiles={profile.profile_id: profile},
@@ -70,6 +72,7 @@ def _config(tmp_path: Path, *, pairs=None) -> DraftLoopConfig:
         manager_edit_log_path=tmp_path / "manager_edits.jsonl",
         stop_path=tmp_path / "STOP_DRAFT_LOOP",
         debounce_seconds=60,
+        config_fingerprint=config_fingerprint or {},
     )
 
 
@@ -124,6 +127,70 @@ def test_draft_loop_uses_composite_key_and_writes_single_note(tmp_path: Path) ->
     assert amo.notes[0]["route"] == "bot_answer_self"
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert {item["message_id"] for item in state["processed"]} == {"m1", "m2"}
+
+
+def test_draft_loop_journal_records_config_fingerprint_on_draft_created(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    fingerprint = {
+        "schema_version": "draft_loop_config_fingerprint_v1_2026_06_10",
+        "tree_hash": "abc12345",
+        "kb_release_dir": "kb_release_20260610_v6_7_staging_r3",
+        "gold_pack_version": "real_manager_gold_2026-06-08",
+    }
+    cfg = _config(tmp_path, pairs={key: pair}, config_fingerprint=fingerprint)
+    wappi = FakeWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [_message("m1")]})
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    loop.run_once(dry_run=True)
+
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    draft_created = next(row for row in rows if row["event"] == "draft_created")
+    assert draft_created["config_fingerprint"] == fingerprint
+    assert draft_created["config_fingerprint"]["schema_version"] == "draft_loop_config_fingerprint_v1_2026_06_10"
+
+
+def test_draft_loop_journal_reads_old_rows_without_config_fingerprint(tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.jsonl"
+    journal_path.write_text(
+        json.dumps(
+            {
+                "event": "note_written",
+                "status": "note_written",
+                "profile_id": "profile-foton",
+                "chat_id": "chat-1",
+                "message_id": "old-1",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    journal = DraftLoopJournal(journal_path)
+
+    assert journal.rows()[0]["message_id"] == "old-1"
+    assert journal.processed_message_keys() == {("profile-foton", "chat-1", "old-1")}
+
+
+def test_build_draft_loop_config_fingerprint_uses_snapshot_dir_and_gold_version(tmp_path: Path) -> None:
+    snapshot = tmp_path / "kb_release_test" / "kb_release_v3_snapshot.json"
+    snapshot.parent.mkdir()
+    snapshot.write_text("{}", encoding="utf-8")
+
+    fingerprint = build_draft_loop_config_fingerprint(snapshot, gold_pack_version="gold-v1", repo_root=tmp_path)
+
+    assert fingerprint["schema_version"] == "draft_loop_config_fingerprint_v1_2026_06_10"
+    assert fingerprint["kb_release_dir"] == "kb_release_test"
+    assert fingerprint["gold_pack_version"] == "gold-v1"
+    assert fingerprint["tree_hash"] == "unknown"
 
 
 def test_draft_loop_never_writes_note_for_auto_candidate_without_explicit_pair(tmp_path: Path) -> None:

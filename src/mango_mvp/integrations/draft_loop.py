@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ DEFAULT_DRAFT_LOOP_DIR = Path.home() / ".mango_local" / "draft_loop"
 DEFAULT_STOP_PATH = Path.home() / ".mango_secrets" / "STOP_DRAFT_LOOP"
 DEFAULT_DEBOUNCE_SECONDS = 60
 DEFAULT_HISTORY_LIMIT = 10
+CONFIG_FINGERPRINT_SCHEMA_VERSION = "draft_loop_config_fingerprint_v1_2026_06_10"
 
 
 class DraftLoopError(RuntimeError):
@@ -70,6 +72,7 @@ class DraftLoopConfig:
     debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS
     history_limit: int = DEFAULT_HISTORY_LIMIT
     manager_outgoing_visible: bool | None = None
+    config_fingerprint: Mapping[str, str] = field(default_factory=dict)
 
     def brand_for_profile(self, profile_id: str) -> str:
         profile = self.profiles.get(str(profile_id).strip())
@@ -86,6 +89,36 @@ class DraftLoopConfig:
             allowed_test_lead_ids=frozenset(str(item) for item in self.allowed_test_lead_ids),
             manager_edit_log_path=self.manager_edit_log_path,
         )
+
+
+def build_draft_loop_config_fingerprint(
+    snapshot_path: Path | str | None,
+    *,
+    gold_pack_version: str,
+    repo_root: Path | str | None = None,
+) -> Mapping[str, str]:
+    root = Path(repo_root).expanduser() if repo_root is not None else Path(__file__).resolve().parents[3]
+    tree_hash = "unknown"
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short=8", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        tree_hash = completed.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        tree_hash = "unknown"
+    kb_release_dir = ""
+    if snapshot_path is not None:
+        kb_release_dir = Path(snapshot_path).expanduser().parent.name
+    return {
+        "schema_version": CONFIG_FINGERPRINT_SCHEMA_VERSION,
+        "tree_hash": tree_hash,
+        "kb_release_dir": kb_release_dir,
+        "gold_pack_version": str(gold_pack_version or ""),
+    }
 
 
 @dataclass(frozen=True)
@@ -404,6 +437,7 @@ class AmoWappiDraftLoop:
             "route": route,
             "safety_flags": list(safety_flags),
             "bot_draft_text": draft_text,
+            "config_fingerprint": dict(self.config.config_fingerprint or {}),
             "status": "note_pending",
         }
         self.journal.append({**pending_payload, "event": "draft_created", "status": "dry_run" if dry_run else "note_pending"})

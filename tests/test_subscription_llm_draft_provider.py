@@ -10994,6 +10994,43 @@ def test_direct_path_wide_pack_marks_scope_conflict_as_adjacent() -> None:
     assert "онлайн" in adjacent_text
 
 
+def test_wave6_llm_retriever_prompt_tells_model_to_restore_incomplete_question() -> None:
+    prompt = subscription_llm.build_direct_path_llm_retriever_prompt(
+        "А по физике?",
+        context={
+            "recent_messages": ("Клиент: Сколько стоит очная математика 9 класс?", "Бот: Очный курс стоит 49 000 ₽."),
+            "known_slots": {"format": "очно", "grade": "9"},
+        },
+        candidates=[
+            {
+                "fact_key": "foton.physics.offline.price",
+                "client_safe_text": "Очный курс физики для 9 класса стоит 49 000 ₽.",
+                "fact_type": "price",
+                "product": "offline",
+            }
+        ],
+    )
+
+    assert "Если текущий вопрос неполный" in prompt
+    assert "восстанови его по последним репликам диалога" in prompt
+    assert "А по физике?" in prompt
+    assert "Сколько стоит очная математика 9 класс?" in prompt
+    assert "foton.physics.offline.price" in prompt
+
+
+def test_wave6_llm_retriever_prompt_keeps_standalone_question_verbatim() -> None:
+    question = "Сколько стоит очная физика для 9 класса?"
+
+    prompt = subscription_llm.build_direct_path_llm_retriever_prompt(
+        question,
+        context={"recent_messages": ("Клиент: Здравствуйте",)},
+        candidates=[{"fact_key": "foton.physics.offline.price", "client_safe_text": "Очная физика стоит 49 000 ₽."}],
+    )
+
+    assert f"Вопрос клиента:\n{question}\n\n" in prompt
+    assert "foton.physics.offline.price" in prompt
+
+
 def test_wave6_llm_retrieve_off_parity_keeps_keyword_pack(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     context = {

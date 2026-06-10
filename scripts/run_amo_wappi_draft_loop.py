@@ -12,6 +12,7 @@ from urllib import parse as url_parse
 from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
+    DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION,
     SubscriptionLlmDraftProvider,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import (
@@ -35,6 +36,7 @@ from mango_mvp.integrations.draft_loop import (
     DraftLoopKey,
     DraftLoopProfile,
     DraftLoopState,
+    build_draft_loop_config_fingerprint,
     load_pairs_file,
     load_profiles_file,
 )
@@ -93,6 +95,10 @@ def build_config(args: argparse.Namespace) -> DraftLoopConfig:
         manager_edit_log_path=local_dir / "manager_edits.jsonl",
         stop_path=args.stop_file.expanduser(),
         manager_outgoing_visible=visibility,
+        config_fingerprint=build_draft_loop_config_fingerprint(
+            getattr(args, "snapshot", DEFAULT_SNAPSHOT),
+            gold_pack_version=DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION,
+        ),
     )
 
 

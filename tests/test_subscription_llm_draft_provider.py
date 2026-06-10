@@ -11168,14 +11168,15 @@ def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_n
     assert "без дословного повтора этих данных" in prompt
 
 
-def test_route_rubric_not_enabled_by_pilot_gold_profile(monkeypatch) -> None:
+def test_route_rubric_enabled_by_pilot_gold_profile(monkeypatch) -> None:
     for key in (subscription_llm.ROUTE_RUBRIC_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
         monkeypatch.delenv(key, raising=False)
 
     context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
 
-    assert subscription_llm.ROUTE_RUBRIC_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm._route_rubric_enabled(context) is False
+    assert subscription_llm.ROUTE_RUBRIC_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._route_rubric_enabled(context) is True
+    assert subscription_llm._route_rubric_enabled({**context, subscription_llm.ROUTE_RUBRIC_ENV: "0"}) is False
     assert subscription_llm._route_rubric_enabled({"route_rubric_enabled": "1"}) is True
 
 

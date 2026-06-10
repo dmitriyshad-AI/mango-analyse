@@ -141,6 +141,7 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     BOT_GOLD_REAL_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     OUTPUT_SANITIZER_ENV,
+    ROUTE_RUBRIC_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
     TEMPLATE_FROM_KB_ENV,
@@ -2169,11 +2170,7 @@ def _llm_retrieve_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
 
 
 def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (ROUTE_RUBRIC_ENV, "route_rubric_enabled"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    return _truthy_value(os.getenv(ROUTE_RUBRIC_ENV))
+    return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
 
 
 def _template_from_kb_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -12786,6 +12783,7 @@ def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, 
         BOT_GOLD_REAL_ENV: ("bot_gold_real", "direct_path_gold_real"),
         OUTPUT_SANITIZER_ENV: ("output_sanitizer_enabled",),
         SEMANTIC_OUTPUT_VERIFIER_ENV: ("semantic_output_verifier_enabled",),
+        ROUTE_RUBRIC_ENV: ("route_rubric_enabled",),
         VERIFIER_HANDOFF_CLAIMS_ENV: ("verifier_handoff_claims_enabled",),
         TEMPLATE_FROM_KB_ENV: ("template_from_kb",),
     }

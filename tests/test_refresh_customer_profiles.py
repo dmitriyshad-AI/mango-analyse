@@ -126,6 +126,29 @@ def test_detect_quiet_dialogs_and_journal_refresh_reports_bad_active_unmatched(t
     }
 
 
+def test_quiet_minutes_default_is_30_and_cli_override_wins() -> None:
+    rows = [
+        {"profile_id": "journal-active", "chat_id": "101", "created_at": (NOW - timedelta(minutes=20)).isoformat()},
+    ]
+    base_args = [
+        "--timeline-db",
+        "timeline.sqlite",
+        "--profiles-db",
+        "profiles.sqlite",
+        "--from-journal",
+        "journal.copy.jsonl",
+    ]
+
+    default_args = refresh.build_parser().parse_args(base_args)
+    override_args = refresh.build_parser().parse_args([*base_args, "--quiet-minutes", "15"])
+
+    assert refresh.DEFAULT_QUIET_MINUTES == 30
+    assert default_args.quiet_minutes == 30
+    assert override_args.quiet_minutes == 15
+    assert refresh.detect_quiet_dialogs(rows, NOW) == []
+    assert refresh.detect_quiet_dialogs(rows, NOW, quiet_minutes=15) == [("journal-active", "101")]
+
+
 def test_refresh_customer_profiles_does_not_import_or_use_live_draft_module() -> None:
     source_path = Path(refresh.__file__)
     source = source_path.read_text(encoding="utf-8")

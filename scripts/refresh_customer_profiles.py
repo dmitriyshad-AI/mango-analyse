@@ -12,6 +12,7 @@ from mango_mvp.customer_profile.builder import CustomerProfileBuilder, CustomerP
 
 
 _LIVE_JOURNAL_COPY_SOURCE = Path.home() / ".mango_local" / ("draft" + "_loop") / "journal.jsonl"
+DEFAULT_QUIET_MINUTES = 30
 
 
 def parse_iso_datetime(value: Any) -> datetime | None:
@@ -35,7 +36,7 @@ def parse_iso_datetime(value: Any) -> datetime | None:
 def detect_quiet_dialogs(
     journal_rows: Iterable[Mapping[str, Any]],
     now_utc: datetime,
-    quiet_minutes: int = 30,
+    quiet_minutes: int = DEFAULT_QUIET_MINUTES,
 ) -> list[tuple[str, str]]:
     now = parse_iso_datetime(now_utc)
     if now is None:
@@ -201,7 +202,7 @@ def refresh_from_journal(
     tenant_id: str,
     journal_path: Path,
     now_utc: datetime,
-    quiet_minutes: int = 30,
+    quiet_minutes: int = DEFAULT_QUIET_MINUTES,
     build_id: str | None = None,
 ) -> Mapping[str, Any]:
     rows, bad_rows = read_journal_jsonl(journal_path)
@@ -287,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--since", help="Rebuild customers with timeline_events.created_at greater than this ISO timestamp.")
     mode.add_argument("--from-journal", help="Read a copied journal.jsonl and rebuild quiet matched dialogs.")
     parser.add_argument("--now-utc", help="ISO timestamp for journal quiet detection. Defaults to current UTC time.")
-    parser.add_argument("--quiet-minutes", type=int, default=30)
+    parser.add_argument("--quiet-minutes", type=int, default=DEFAULT_QUIET_MINUTES)
     return parser
 
 

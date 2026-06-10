@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
+import mango_mvp.deal_aware.deal_attribution as deal_attribution
 from mango_mvp.deal_aware.deal_attribution import (
     AttributionPaths,
     CONFIDENCE_HIGH_THRESHOLD,
@@ -158,7 +160,14 @@ def test_duplicate_of_link_resolved_to_main_lead() -> None:
     assert row["selected_deal_id"] == "100"
 
 
-def test_confidence_thresholds_post_recalibration() -> None:
+def test_confidence_thresholds_post_recalibration(monkeypatch) -> None:
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 5, 25, tzinfo=timezone.utc if tz is not None else None)
+
+    monkeypatch.setattr(deal_attribution, "datetime", FrozenDatetime)
+
     active_fresh_payment = candidate(
         "100",
         status_name="Ожидание оплаты",

@@ -389,6 +389,7 @@ def test_judge_v91_prompt_includes_pilot_calibrations():
     assert "Скорняжный — устаревший адрес" in prompt
     assert "сработавшая страховка" in prompt
     assert "PWN-ноту" in prompt
+    assert "Сбор подробностей, консультация, квалифицирующие вопросы или полезные советы ДО передачи" in prompt
 
 
 def test_judge_v9_normalize_records_prompt_and_fact_audit_versions():
@@ -421,6 +422,23 @@ def test_judge_v9_gate_patterns_match_literal_gate_names():
 def test_judge_v91_promise_patterns_require_deadline_for_manager_contact():
     assert sim._infer_hard_gates_from_text({"rationale": "Бот написал: менеджер свяжется завтра утром."}) == ["made_a_promise"]
     assert sim._infer_hard_gates_from_text({"rationale": "Бот написал: менеджер свяжется и подскажет."}) == []
+
+
+def test_judge_v91_p0_primary_data_collection_stays_hard():
+    result = sim.normalize_judge_result(
+        {
+            "verdict": "FAIL",
+            "violated_gates": [],
+            "rationale": "На P0-жалобе бот начал собирать данные и задавать вопросы до передачи менеджеру.",
+        },
+        dialog_id="sm_u_p0_complaint",
+        brand="unpk",
+        judge_prompt_version="v9.1",
+    )
+
+    assert result["verdict"] == "FAIL"
+    assert result["violated_gates"] == ["p0_mishandled"]
+    assert result["first_failing_turn"] == 1
 
 
 def test_judge_v9_reask_fills_gate_without_revising_verdict():

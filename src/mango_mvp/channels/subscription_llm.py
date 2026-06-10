@@ -2108,8 +2108,8 @@ DIRECT_PATH_MISSION_TEMPLATE = (
     "записи — правило важнее. Не обещай действия и сроки от имени менеджера: можно\n"
     "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»\n"
     "или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,\n"
-    "если это не подтверждено в памяти или фактах. Если клиент сам написал ФИО ребёнка,\n"
-    "телефон или другой контакт, подтверди получение без дословного повтора этих данных."
+    "если это не подтверждено в памяти или фактах. Имя ребёнка можно использовать, если\n"
+    "клиент сам его назвал; телефон или ФИО целиком не дублируй."
 )
 DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT = (
     "написать «менеджер свяжется» без срока только в черновике для менеджера, "
@@ -5760,16 +5760,47 @@ def apply_output_sanitizer(
 ) -> SubscriptionDraftResult:
     sanitizer_enabled = _output_sanitizer_enabled(context)
     client_pii_deecho_allowed = not _a2_is_proactive_result(result)
-    pii_client_message = _client_pii_echo_context(client_message=client_message, context=context) if client_pii_deecho_allowed else ""
+    pii_client_message = (
+        _client_pii_echo_context(client_message=client_message, context=context)
+        if client_pii_deecho_allowed
+        else ""
+    )
+    pii_allowed_dialogue = (
+        _client_pii_echo_context(client_message=client_message, context=context, include_slot_context=False)
+        if client_pii_deecho_allowed
+        else ""
+    )
+    pii_names_for_checklist: tuple[str, ...] = ()
+    if pii_client_message:
+        pii_names_for_checklist = tuple(
+            dict.fromkeys(
+                [
+                    *_client_name_echoes(
+                        pii_client_message,
+                        result.draft_text,
+                        allowed_client_message=pii_allowed_dialogue,
+                    ),
+                    *_unexpected_client_name_echoes(
+                        result.draft_text,
+                        allowed_client_message=pii_allowed_dialogue,
+                    ),
+                ]
+            )
+        )
     if sanitizer_enabled:
         cleaned, reasons = _sanitize_output_client_text(
             result.draft_text,
             client_message=pii_client_message,
+            allowed_client_message=pii_allowed_dialogue,
             presale_ru_meta=_presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV),
             presale_source_id=_presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV),
         )
     else:
-        cleaned, reasons = _sanitize_client_pii_echo(result.draft_text, client_message=pii_client_message)
+        cleaned, reasons = _sanitize_client_pii_echo(
+            result.draft_text,
+            client_message=pii_client_message,
+            allowed_client_message=pii_allowed_dialogue,
+        )
         if cleaned != result.draft_text and "client_pii_echo" not in reasons:
             reasons = (*reasons, "client_pii_echo")
         if _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV):
@@ -5785,6 +5816,12 @@ def apply_output_sanitizer(
     route = result.route
     flags = [*result.safety_flags, "output_sanitizer_applied", *[f"output_sanitizer:{reason}" for reason in reasons]]
     checklist = list(result.manager_checklist)
+    if "client_name_echo" in reasons and pii_names_for_checklist:
+        checklist.append(
+            "Проверьте имя в черновике: "
+            + ", ".join(pii_names_for_checklist[:4])
+            + " не было разрешено текущим диалогом или было ФИО целиком; в тексте замаскировано."
+        )
     if fallback:
         cleaned = SAFE_FALLBACK_DRAFT_TEXT
         if route != "manager_only":
@@ -5818,6 +5855,7 @@ def _sanitize_output_client_text(
     text: str,
     *,
     client_message: str = "",
+    allowed_client_message: Optional[str] = None,
     presale_ru_meta: bool = False,
     presale_source_id: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
@@ -5890,7 +5928,11 @@ def _sanitize_output_client_text(
         value = stripped
         reasons.append("internal_service_marker")
 
-    value, pii_reasons = _sanitize_client_pii_echo(value, client_message=client_message)
+    value, pii_reasons = _sanitize_client_pii_echo(
+        value,
+        client_message=client_message,
+        allowed_client_message=allowed_client_message,
+    )
     reasons.extend(pii_reasons)
 
     value = _normalize_output_sanitizer_text(value)
@@ -5961,14 +6003,27 @@ _CLIENT_PII_CONFIRMATION_RE = re.compile(
 )
 
 
-def _sanitize_client_pii_echo(text: str, *, client_message: str = "") -> tuple[str, tuple[str, ...]]:
+def _sanitize_client_pii_echo(
+    text: str,
+    *,
+    client_message: str = "",
+    allowed_client_message: Optional[str] = None,
+) -> tuple[str, tuple[str, ...]]:
     value = str(text or "")
     client = str(client_message or "")
     if not value or not client:
         return value, ()
+    allowed = client if allowed_client_message is None else str(allowed_client_message or "")
     phone = _a2_extract_phone(client)
     phone_echoed = bool(phone and _a2_phone_echoed(phone, value))
-    echoed_names = tuple(_client_name_echoes(client, value))
+    echoed_names = tuple(
+        dict.fromkeys(
+            [
+                *_client_name_echoes(client, value, allowed_client_message=allowed),
+                *_unexpected_client_name_echoes(value, allowed_client_message=allowed),
+            ]
+        )
+    )
     if not phone_echoed and not echoed_names:
         return value, ()
 
@@ -5978,7 +6033,8 @@ def _sanitize_client_pii_echo(text: str, *, client_message: str = "") -> tuple[s
     if echoed_names:
         reasons.append("client_name_echo")
 
-    if _CLIENT_PII_CONFIRMATION_RE.search(value):
+    whole_identity_echoed = any(" " in name for name in echoed_names)
+    if _CLIENT_PII_CONFIRMATION_RE.search(value) and (phone_echoed or whole_identity_echoed):
         return "Записала, передам менеджеру — он свяжется с вами.", tuple(reasons)
 
     if phone_echoed:
@@ -5988,7 +6044,12 @@ def _sanitize_client_pii_echo(text: str, *, client_message: str = "") -> tuple[s
     return value, tuple(reasons)
 
 
-def _client_pii_echo_context(*, client_message: str = "", context: Optional[Mapping[str, Any]] = None) -> str:
+def _client_pii_echo_context(
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+    include_slot_context: bool = True,
+) -> str:
     items: list[str] = []
     if isinstance(context, Mapping):
         memory = context.get("dialogue_memory_view")
@@ -6000,7 +6061,7 @@ def _client_pii_echo_context(*, client_message: str = "", context: Optional[Mapp
                         text = str(item.get("text") or "").strip()
                         if text:
                             items.append(text)
-            if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+            if include_slot_context and _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
                 items.extend(_client_pii_slot_context_lines(memory))
         recent = context.get("recent_messages")
         if isinstance(recent, Sequence) and not isinstance(recent, (str, bytes, bytearray)):
@@ -6010,7 +6071,7 @@ def _client_pii_echo_context(*, client_message: str = "", context: Optional[Mapp
                     value = text.split(":", 1)[-1].strip()
                     if value:
                         items.append(value)
-        if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+        if include_slot_context and _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
             items.extend(_client_pii_slot_context_lines(context))
     current = str(client_message or "").strip()
     if current:
@@ -6059,9 +6120,15 @@ def _client_pii_slot_context_lines_as_containers(source: Mapping[str, Any]) -> l
     return containers
 
 
-def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
+def _client_name_echoes(
+    client_message: str,
+    bot_text: str,
+    *,
+    allowed_client_message: Optional[str] = None,
+) -> tuple[str, ...]:
     candidates: list[str] = []
     client = " ".join(str(client_message or "").split())
+    allowed_names = _client_dialogue_allowed_names(client if allowed_client_message is None else str(allowed_client_message or ""))
     phone = _a2_extract_phone(client)
     for match in _CLIENT_NAME_MARKER_RE.finditer(client):
         name = match.group("name")
@@ -6090,9 +6157,68 @@ def _client_name_echoes(client_message: str, bot_text: str) -> tuple[str, ...]:
         words = [word.casefold().replace("ё", "е") for word in name.split()]
         if not words or any(word in _CLIENT_NAME_STOPWORDS for word in words):
             continue
+        if len(name.split()) == 1 and _client_name_allowed(name, allowed_names):
+            continue
         if _client_name_echoed(name, bot_text) and name not in result:
             result.append(name)
     return tuple(result)
+
+
+_DRAFT_PERSON_NAME_CONTEXT_RE = re.compile(
+    r"(?:(?i:спасибо,|здравствуйте,|добрый\s+(?:день|вечер),|доброе\s+утро,|"
+    r"записал[аи]?|запишем|передайте|по\s+сыну|по\s+дочери|для|"
+    r"сын[ау]?|доч(?:ь|ку|ери)?|реб[её]н(?:ок|ка|ку)?|ученик(?:а)?|ученица))\s+"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,})"
+)
+
+
+def _unexpected_client_name_echoes(bot_text: str, *, allowed_client_message: str = "") -> tuple[str, ...]:
+    allowed_names = _client_dialogue_allowed_names(allowed_client_message)
+    result: list[str] = []
+    for match in _DRAFT_PERSON_NAME_CONTEXT_RE.finditer(str(bot_text or "")):
+        name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
+        if not name:
+            continue
+        normalized = name.casefold().replace("ё", "е")
+        if normalized in _CLIENT_NAME_STOPWORDS or _client_name_allowed(name, allowed_names):
+            continue
+        if name not in result:
+            result.append(name)
+    return tuple(result)
+
+
+def _client_dialogue_allowed_names(client_message: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    client = " ".join(str(client_message or "").split())
+    for match in _CLIENT_NAME_MARKER_RE.finditer(client):
+        name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
+        if name:
+            candidates.append(name)
+            parts = [part for part in name.split() if part]
+            if len(parts) >= 2:
+                candidates.append(parts[-1])
+    for match in _CLIENT_SELF_NAME_MARKER_RE.finditer(client):
+        name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
+        if name:
+            parts = [part for part in name.split() if part]
+            proper_parts = [part for part in parts if re.match(r"^[А-ЯЁ]", part)]
+            candidates.extend(proper_parts[:2])
+    result: list[str] = []
+    for raw in candidates:
+        words = [word.casefold().replace("ё", "е") for word in str(raw or "").split()]
+        if not words or any(word in _CLIENT_NAME_STOPWORDS for word in words):
+            continue
+        value = " ".join(str(raw or "").split())
+        if value and value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def _client_name_allowed(name: str, allowed_names: Sequence[str]) -> bool:
+    value = str(name or "").strip()
+    if not value:
+        return False
+    return any(_client_name_echoed(allowed, value) or _client_name_echoed(value, allowed) for allowed in allowed_names)
 
 
 def _client_name_echoed(name: str, text: str) -> bool:

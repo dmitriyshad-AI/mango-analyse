@@ -11244,7 +11244,8 @@ def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_n
     assert "«менеджер свяжется» без срока" in prompt
     assert "нельзя «свяжется завтра/утром/в течение n»" in prompt
     assert "не утверждай, что телефон или контакт уже есть" in prompt
-    assert "без дословного повтора этих данных" in prompt
+    assert "имя ребёнка можно использовать, если" in prompt
+    assert "телефон или фио целиком не дублируй" in prompt
 
 
 def test_route_rubric_enabled_by_pilot_gold_profile(monkeypatch) -> None:
@@ -11278,8 +11279,8 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
 записи — правило важнее. Не обещай действия и сроки от имени менеджера: можно
 написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»
 или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,
-если это не подтверждено в памяти или фактах. Если клиент сам написал ФИО ребёнка,
-телефон или другой контакт, подтверди получение без дословного повтора этих данных.
+если это не подтверждено в памяти или фактах. Имя ребёнка можно использовать, если
+клиент сам его назвал; телефон или ФИО целиком не дублируй.
 
 Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,
 классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.
@@ -11327,8 +11328,8 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
 записи — правило важнее. Не обещай действия и сроки от имени менеджера: можно
 написать «менеджер свяжется» без срока только в черновике для менеджера, но нельзя «свяжется завтра/утром/в течение N»
 или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,
-если это не подтверждено в памяти или фактах. Если клиент сам написал ФИО ребёнка,
-телефон или другой контакт, подтверди получение без дословного повтора этих данных.
+если это не подтверждено в памяти или фактах. Имя ребёнка можно использовать, если
+клиент сам его назвал; телефон или ФИО целиком не дублируй.
 
 Выбор маршрута:
 - "bot_answer_self_for_pilot" — когда факты из блока «Факты по вашему вопросу» покрывают вопрос клиента и не требуется действие менеджера. Отвечай по фактам уверенно и не обещай, что «менеджер свяжется», — ты уже отвечаешь. Смежные факты покрытием НЕ считаются: на их основе самостоятельный ответ не выбирай.
@@ -11581,7 +11582,7 @@ def test_direct_path_output_sanitizer_removes_client_phone_and_child_name_echo()
     assert result.metadata["direct_path"]["downgraded"] is False
 
 
-def test_direct_path_output_sanitizer_masks_single_inflected_child_name_echo() -> None:
+def test_direct_path_output_sanitizer_allows_named_child_name_declension() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="draft_for_manager",
@@ -11602,15 +11603,13 @@ def test_direct_path_output_sanitizer_masks_single_inflected_child_name_echo() -
 
     assert provider.calls == 1
     assert result.route == "draft_for_manager"
-    assert "Петру" not in result.draft_text
-    assert "Пётр" not in result.draft_text
-    assert "данные ребёнка" in result.draft_text
-    assert result.metadata["output_sanitizer"]["applied"] is True
-    assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert "Петру" in result.draft_text
+    assert "данные ребёнка" not in result.draft_text
+    assert "output_sanitizer" not in result.metadata or result.metadata["output_sanitizer"].get("applied") is not True
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
-def test_direct_path_output_sanitizer_masks_client_names_from_recent_window() -> None:
+def test_direct_path_output_sanitizer_allows_client_names_from_recent_window() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
             route="draft_for_manager",
@@ -11634,10 +11633,36 @@ def test_direct_path_output_sanitizer_masks_client_names_from_recent_window() ->
 
     assert provider.calls == 1
     assert result.route == "draft_for_manager"
-    assert "Ирина" not in result.draft_text
-    assert "Артём" not in result.draft_text
-    assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
+    assert "Ирина" in result.draft_text
+    assert "Артёму" in result.draft_text
+    assert "output_sanitizer" not in result.metadata or result.metadata["output_sanitizer"].get("applied") is not True
+    assert result.metadata["authoritative_output_gate"]["checked"] is True
+
+
+def test_direct_path_output_sanitizer_masks_unmentioned_child_name() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Записала Артёма на консультацию по математике.",
+            topic_id="theme:020_enrollment",
+        )
+    )
+
+    result = provider.build_draft(
+        "Запишите Кирилла на математику.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "confirmed_facts": {"enrollment.foton": "Для записи менеджер помогает подобрать группу и оформить заявку."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "Артёма" not in result.draft_text
+    assert "данные ребёнка" in result.draft_text
     assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert any("Артёма" in item for item in result.manager_checklist)
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
@@ -11732,10 +11757,11 @@ def test_presale_output_sanitizer_masks_names_from_memory_slots() -> None:
     )
 
     assert provider.calls == 1
-    assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
+    assert result.draft_text == "Спасибо, данные ребёнка! По сыну данные ребёнка менеджер подберёт группу."
     assert "Ирина" not in result.draft_text
     assert "Артём" not in result.draft_text
     assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert any("Ирина" in item and "Артём" in item for item in result.manager_checklist)
 
 
 def test_presale_output_sanitizer_masks_inflected_single_names_from_memory_slots() -> None:

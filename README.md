@@ -304,6 +304,15 @@ mango-mvp export-failed-resolve-queue --out failed_resolve_queue.csv --limit 100
 mango-mvp export-crm-fields --out crm_fields.csv --only-done --limit 100000
 ```
 
+## Dynamic simulator replay
+
+`scripts/run_telegram_dynamic_client_sim.py --replay-from <run>/dynamic_dialog_transcripts.jsonl`
+replays the exact saved client messages, reruns the bot and judge, and does not call the
+client model (`llm_calls.client = 0`). Use it only to compare how the bot answers the same
+input after prompt, fact, or gate changes. It is not valid for judging new dialogue dynamics,
+because a real client would react differently to changed bot answers. Do not point
+`--replay-from` at the same `--out-dir/dynamic_dialog_transcripts.jsonl`.
+
 ## Operational reliability
 
 Current reliability controls:

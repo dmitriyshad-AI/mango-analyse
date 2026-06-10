@@ -43,8 +43,9 @@ DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260610_v6_7_st
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
 JUDGE_PROMPT_VERSION_V2 = "judge_v2_current"
-JUDGE_PROMPT_VERSION = "judge_v9_verifier_aware"
-JUDGE_PROMPT_VERSIONS = ("v2", "v9")
+JUDGE_PROMPT_VERSION_V9 = "judge_v9_verifier_aware"
+JUDGE_PROMPT_VERSION = "judge_v9_1_pilot_calibrated"
+JUDGE_PROMPT_VERSIONS = ("v2", "v9", "v9.1")
 METRIC_TARGETS = {
     "pass_rate": 0.8,
     "hard_gate_pass_rate": 0.95,
@@ -68,6 +69,22 @@ class FakeClientModel:
         if "turn_index=2" in prompt:
             return {"message": "6 класс, математика, онлайн. Что дальше?", "stop": False}
         return {"message": "Спасибо, поняла.", "stop": True}
+
+
+class ReplayClientModel:
+    def __init__(self, source_turns: Sequence[Mapping[str, Any]]) -> None:
+        self._turns = tuple(source_turns)
+        self._index = 0
+
+    def generate(self, prompt: str) -> Mapping[str, Any]:
+        if self._index >= len(self._turns):
+            return {"message": "Поняла, спасибо.", "stop": True}
+        turn = self._turns[self._index]
+        self._index += 1
+        return {
+            "message": str(turn.get("client_message") or ""),
+            "stop": bool(turn.get("client_stop")),
+        }
 
 
 class FakeJudgeModel:
@@ -556,6 +573,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Re-judge existing dynamic_dialog_transcripts.jsonl instead of re-running client and bot.",
     )
     parser.add_argument(
+        "--replay-from",
+        type=Path,
+        default=None,
+        help="Replay exact client messages from an existing dynamic_dialog_transcripts.jsonl while re-running the bot and judge.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Continue an interrupted run by loading existing dynamic_dialog_transcripts.jsonl from --out-dir.",
@@ -581,7 +604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--judge-prompt-version",
         choices=JUDGE_PROMPT_VERSIONS,
         default="v2",
-        help="Judge prompt calibration. v2 keeps current measurement series; v9 is verifier-aware.",
+        help="Judge prompt calibration. v2 keeps old series; v9 is an alias of current v9.1.",
     )
     parser.add_argument("--bot-mode", choices=("codex", "claude", "fake"), default="codex")
     parser.add_argument(
@@ -641,7 +664,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if "stable_runtime" in args.out_dir.resolve(strict=False).parts:
         raise ValueError("Refusing to write dynamic sim outputs under stable_runtime")
-    if (args.bot_mode == "codex" or args.transcripts_in is not None) and not args.snapshot.exists():
+    if (args.bot_mode == "codex" or args.transcripts_in is not None or args.replay_from is not None) and not args.snapshot.exists():
         raise FileNotFoundError(f"Knowledge snapshot not found: {args.snapshot}")
 
     sim_input = load_dynamic_sim_input(args.scenarios)
@@ -662,6 +685,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         str(persona.get("dialog_id") or ""): index
         for index, persona in enumerate(personas)
     }
+
+    if args.transcripts_in is not None and args.replay_from is not None:
+        raise ValueError("--transcripts-in and --replay-from are mutually exclusive")
+    if args.replay_from is not None and args.replay_from.resolve(strict=False) == transcripts_path.resolve(strict=False):
+        raise ValueError("--replay-from must differ from --out-dir/dynamic_dialog_transcripts.jsonl")
 
     if args.transcripts_in is not None:
         judge_model = build_judge_model(args)
@@ -696,7 +724,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         turn_rows = build_turn_rows(transcripts)
     else:
         transcripts = []
-        if args.resume and transcripts_path.exists():
+        replay_dialogs: list[Mapping[str, Any]] = []
+        replay_by_id: dict[str, Mapping[str, Any]] = {}
+        replay_source_run = ""
+        if args.replay_from is not None:
+            replay_dialogs = list(load_transcripts(args.replay_from))
+            replay_by_id = {str(dialog.get("dialog_id") or ""): dialog for dialog in replay_dialogs if str(dialog.get("dialog_id") or "").strip()}
+            replay_source_run = str(args.replay_from)
+        if args.resume and transcripts_path.exists() and args.replay_from is None:
             transcripts = list(load_transcripts(transcripts_path))
             print(f"resume_loaded_dialogs={len(transcripts)}", flush=True)
         existing_by_id = {str(dialog.get("dialog_id") or ""): dict(dialog) for dialog in transcripts if str(dialog.get("dialog_id") or "").strip()}
@@ -721,6 +756,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         pending_personas = []
         for persona in personas:
             dialog_id = str(persona.get("dialog_id") or "")
+            if args.replay_from is not None and dialog_id not in replay_by_id:
+                continue
             if dialog_id in completed_ids:
                 print(f"skip_completed_dialog={dialog_id}", flush=True)
                 continue
@@ -740,21 +777,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"run_dialog={dialog_id}", flush=True)
                 started = time.time()
                 try:
-                    dialog = run_one_dialog(
-                        persona,
-                        simulator_spec=sim_input.simulator_spec,
-                        judge_spec=sim_input.judge_spec,
-                        client_model=client_model,
-                        judge_model=judge_model,
-                        bot_provider=bot_provider,
-                        memory_model=memory_model,
-                        selling_compose_model=selling_compose_model,
-                        semantic_output_verifier_model=semantic_output_verifier_model,
-                        snapshot_path=args.snapshot,
-                        max_turns_override=args.max_turns,
-                        debug_trace_run_dir=args.out_dir,
-                        judge_prompt_version=args.judge_prompt_version,
-                    )
+                    if args.replay_from is not None:
+                        dialog = run_one_dialog_replay(
+                            replay_by_id[dialog_id],
+                            persona=persona,
+                            judge_spec=sim_input.judge_spec,
+                            judge_model=judge_model,
+                            bot_provider=bot_provider,
+                            memory_model=memory_model,
+                            selling_compose_model=selling_compose_model,
+                            semantic_output_verifier_model=semantic_output_verifier_model,
+                            snapshot_path=args.snapshot,
+                            max_turns_override=args.max_turns,
+                            debug_trace_run_dir=args.out_dir,
+                            judge_prompt_version=args.judge_prompt_version,
+                            replay_source_run=replay_source_run,
+                        )
+                    else:
+                        dialog = run_one_dialog(
+                            persona,
+                            simulator_spec=sim_input.simulator_spec,
+                            judge_spec=sim_input.judge_spec,
+                            client_model=client_model,
+                            judge_model=judge_model,
+                            bot_provider=bot_provider,
+                            memory_model=memory_model,
+                            selling_compose_model=selling_compose_model,
+                            semantic_output_verifier_model=semantic_output_verifier_model,
+                            snapshot_path=args.snapshot,
+                            max_turns_override=args.max_turns,
+                            debug_trace_run_dir=args.out_dir,
+                            judge_prompt_version=args.judge_prompt_version,
+                        )
                     dialog = {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
                 except Exception as exc:  # noqa: BLE001
                     dialog = build_infra_error_dialog(
@@ -783,6 +837,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parallel=args.parallel,
                     llm_calls=llm_call_counter.snapshot(),
                     judge_prompt_version=args.judge_prompt_version,
+                    replay_source_run=replay_source_run,
                 )
                 print(
                     f"done_dialog={dialog_id} elapsed={dialog['elapsed_seconds']}s verdict={dialog['judge_result'].get('verdict')}",
@@ -795,18 +850,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(f"parallel_dialogs={args.parallel} pending={len(pending_personas)}", flush=True)
             with ThreadPoolExecutor(max_workers=args.parallel) as executor:
-                future_to_persona = {
-                    executor.submit(
-                        run_one_dialog_isolated,
-                        persona,
-                        simulator_spec=sim_input.simulator_spec,
-                        judge_spec=sim_input.judge_spec,
-                        snapshot_path=args.snapshot,
-                        max_turns_override=args.max_turns,
-                        args=args,
-                    ): persona
-                    for persona in pending_personas
-                }
+                if args.replay_from is not None:
+                    future_to_persona = {
+                        executor.submit(
+                            run_one_dialog_replay_isolated,
+                            persona,
+                            judge_spec=sim_input.judge_spec,
+                            snapshot_path=args.snapshot,
+                            max_turns_override=args.max_turns,
+                            args=args,
+                            replay_dialog=replay_by_id.get(str(persona.get("dialog_id") or "")),
+                            replay_source_run=replay_source_run,
+                        ): persona
+                        for persona in pending_personas
+                    }
+                else:
+                    future_to_persona = {
+                        executor.submit(
+                            run_one_dialog_isolated,
+                            persona,
+                            simulator_spec=sim_input.simulator_spec,
+                            judge_spec=sim_input.judge_spec,
+                            snapshot_path=args.snapshot,
+                            max_turns_override=args.max_turns,
+                            args=args,
+                        ): persona
+                        for persona in pending_personas
+                    }
                 for future in as_completed(future_to_persona):
                     persona = future_to_persona[future]
                     dialog_id = str(persona.get("dialog_id") or "")
@@ -835,6 +905,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         parallel=args.parallel,
                         llm_calls=llm_call_counter.snapshot(),
                         judge_prompt_version=args.judge_prompt_version,
+                        replay_source_run=replay_source_run,
                     )
                     print(
                         f"done_dialog={dialog_id} elapsed={dialog.get('elapsed_seconds')}s verdict={dialog['judge_result'].get('verdict')}",
@@ -863,6 +934,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parallel=args.parallel,
         llm_calls=llm_call_counter.snapshot(),
         judge_prompt_version=args.judge_prompt_version,
+        replay_source_run=str(args.replay_from or ""),
     )
     print(json.dumps({"ok": True, "out_dir": str(args.out_dir), **summary["totals"]}, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -886,6 +958,7 @@ def write_dynamic_outputs(
     parallel: int = 1,
     llm_calls: Mapping[str, int] | None = None,
     judge_prompt_version: str = "v2",
+    replay_source_run: str = "",
 ) -> Mapping[str, Any]:
     write_jsonl(transcripts_path, transcripts)
     write_jsonl(judge_path, judge_results)
@@ -905,6 +978,7 @@ def write_dynamic_outputs(
         parallel=parallel,
         llm_calls=llm_calls,
         judge_prompt_version=judge_prompt_version,
+        replay_source_run=replay_source_run,
     )
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     summary_md_path.write_text(render_summary_md(summary), encoding="utf-8")
@@ -1113,6 +1187,81 @@ def run_one_dialog_isolated(
         judge_prompt_version=args.judge_prompt_version,
     )
     return {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
+
+
+def run_one_dialog_replay_isolated(
+    persona: Mapping[str, Any],
+    *,
+    judge_spec: Mapping[str, Any],
+    snapshot_path: Path,
+    max_turns_override: int,
+    args: argparse.Namespace,
+    replay_dialog: Mapping[str, Any] | None,
+    replay_source_run: str,
+) -> Mapping[str, Any]:
+    dialog_id = str(persona.get("dialog_id") or "")
+    started = time.time()
+    print(f"run_dialog={dialog_id}", flush=True)
+    dialog = run_one_dialog_replay(
+        replay_dialog or {},
+        persona=persona,
+        judge_spec=judge_spec,
+        judge_model=build_judge_model(args),
+        bot_provider=build_bot_provider(args, dialog_id=dialog_id),
+        memory_model=build_memory_model(args),
+        selling_compose_model=build_selling_compose_model(args),
+        semantic_output_verifier_model=build_semantic_output_verifier_model(args),
+        snapshot_path=snapshot_path,
+        max_turns_override=max_turns_override,
+        debug_trace_run_dir=args.out_dir,
+        judge_prompt_version=args.judge_prompt_version,
+        replay_source_run=replay_source_run,
+    )
+    return {**dialog, "elapsed_seconds": round(time.time() - started, 3), "run_status": "completed"}
+
+
+def run_one_dialog_replay(
+    source_dialog: Mapping[str, Any],
+    *,
+    persona: Mapping[str, Any],
+    judge_spec: Mapping[str, Any],
+    judge_model: Any,
+    bot_provider: Any,
+    snapshot_path: Path,
+    memory_model: Any = None,
+    selling_compose_model: Any = None,
+    semantic_output_verifier_model: Any = None,
+    max_turns_override: int = 0,
+    debug_trace_run_dir: Path | None = None,
+    judge_prompt_version: str = "v2",
+    replay_source_run: str = "",
+) -> Mapping[str, Any]:
+    source_turns = [turn for turn in (source_dialog.get("turns") or []) if isinstance(turn, Mapping)]
+    if max_turns_override > 0:
+        source_turns = source_turns[:max_turns_override]
+    if not source_turns:
+        raise ValueError(f"Replay source has no turns for dialog_id={persona.get('dialog_id')!r}")
+    dialog = run_one_dialog(
+        persona,
+        simulator_spec={"type": "replay", "source": replay_source_run},
+        judge_spec=judge_spec,
+        client_model=ReplayClientModel(source_turns),
+        judge_model=judge_model,
+        bot_provider=bot_provider,
+        memory_model=memory_model,
+        selling_compose_model=selling_compose_model,
+        semantic_output_verifier_model=semantic_output_verifier_model,
+        snapshot_path=snapshot_path,
+        max_turns_override=len(source_turns),
+        debug_trace_run_dir=debug_trace_run_dir,
+        judge_prompt_version=judge_prompt_version,
+    )
+    return {
+        **dialog,
+        "replay": True,
+        "replay_source_run": replay_source_run,
+        "replay_source_dialog_id": str(source_dialog.get("dialog_id") or ""),
+    }
 
 
 def _dialog_completed(dialog: Mapping[str, Any]) -> bool:
@@ -1704,13 +1853,13 @@ def build_client_prompt(
 
 def normalize_judge_prompt_version(value: object) -> str:
     text = str(value or "v2").strip().casefold()
-    if text in {"v9", JUDGE_PROMPT_VERSION}:
-        return "v9"
+    if text in {"v9", "v9.1", "v91", JUDGE_PROMPT_VERSION, JUDGE_PROMPT_VERSION_V9}:
+        return "v9.1"
     return "v2"
 
 
 def _is_judge_prompt_v9(value: object) -> bool:
-    return normalize_judge_prompt_version(value) == "v9"
+    return normalize_judge_prompt_version(value) == "v9.1"
 
 
 def judge_prompt_version_id(value: object) -> str:
@@ -1742,7 +1891,7 @@ def build_judge_prompt(
         f"{turn.get('bot_knowledge_snippets') or []}"
         for turn in turns
     )
-    v9_rules = _judge_v9_rules() if version == "v9" else ""
+    v9_rules = _judge_v9_rules() if _is_judge_prompt_v9(version) else ""
     return (
         "Ты судья качества Telegram-бота образовательного центра.\n"
         "Верни только JSON по output_schema из judge_spec. Без Markdown.\n\n"
@@ -1797,14 +1946,24 @@ def _semantic_verifier_block_for_judge(turn: Mapping[str, Any], *, enabled: bool
 
 def _judge_v9_rules() -> str:
     return (
-        "Правила judge_v9 имеют приоритет над judge_spec ниже, если есть конфликт.\n"
+        "Правила judge_v9.1 имеют приоритет над judge_spec ниже, если есть конфликт.\n"
         "Используй bot_route как финальный маршрут. Автономные маршруты: bot_answer_self, bot_answer_self_for_pilot. "
         "Уведённые маршруты: draft_for_manager, manager_only.\n"
         "semantic_output_verifier — это внутренний финальный смысловой верификатор. Учитывай checked/skipped/skip_reason/"
         "unavailable/findings/action/evidence/span/relation_to_base вместе с финальным route.\n"
+        "Фраза «менеджер свяжется», «менеджер вернётся с ответом» или похожая БЕЗ срока не является made_a_promise; "
+        "маршрутную уместность такой фразы меряет grep-метрика, не судья. Если указан срок или гарантия действия "
+        "(например «свяжется завтра утром», «в течение 15 минут», «точно запишет») — made_a_promise остаётся hard gate.\n"
+        "Существование продукта для класса/формата проверяй по ВСЕМ подтверждённым фактам и фрагментам базы на ходе: "
+        "ценовой факт, продуктовый факт или факт расписания могут подтверждать продукт даже если отдельная предметная строка не найдена.\n"
+        "Карта площадок: Верхняя Красносельская, 30 — общий адрес Фотона и УНПК, легален для обоих брендов; "
+        "Сретенка, 20, Институтский пер., 9 и Пацаева, 7к1 — площадки УНПК; Скорняжный — устаревший адрес. "
+        "Адрес сам по себе не является brand_leak без чужого бренда или неверной атрибуции.\n"
         "Матрица derived-клеймов: если бот сделал НЕчисловой производный продуктовый клейм и финальный route автономный — это hard fabrication "
         "даже если verifier skipped/unavailable/checked clean или finding был annotate/keep. Если тот же клейм финально уведён в draft_for_manager/"
         "manager_only — это НЕ hard fabrication; добавь soft_flags_present: derived_claim_draft.\n"
+        "Если метаданные хода уже содержат finding derived_product_number или fact_grounding с action=downgrade_keep_text/"
+        "downgrade_to_manager, это сработавшая страховка: ставь PWN-ноту/soft flag, но не hard FAIL за тот же клейм.\n"
         "Жёсткие числа/цены/проценты/даты/сроки/расписание/адрес/бренд/P0/обещание остаются hard в любом маршруте, даже в черновике менеджеру.\n"
         "Метка verifier относится только к тому же клейму: смотри span/evidence. Одна метка не оправдывает весь ход.\n"
         "Если verdict=FAIL, violated_gates обязан содержать конкретный код; пустой violated_gates запрещён. "
@@ -1987,6 +2146,8 @@ JUDGE_GATE_TEXT_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             r"поступлен\w*",
             r"результат\w*",
             r"\bбалл\w*",
+            r"свяж\w+[\s\S]{0,40}(?:завтра|сегодня|утром|вечером|днем|дн[её]м|в\s+течение\s+\d+|через\s+\d+)",
+            r"верн[её]т\w+[\s\S]{0,40}(?:завтра|сегодня|утром|вечером|днем|дн[её]м|в\s+течение\s+\d+|через\s+\d+)",
             r"\bpromise\b",
             r"\bpressure\b",
         ),
@@ -2664,6 +2825,7 @@ def build_summary(
     parallel: int = 1,
     llm_calls: Mapping[str, int] | None = None,
     judge_prompt_version: str = "v2",
+    replay_source_run: str = "",
 ) -> Mapping[str, Any]:
     verdicts = Counter(str(item.get("verdict") or "") for item in judge_results)
     brands = Counter(str(item.get("brand") or "") for item in judge_results)
@@ -2727,6 +2889,8 @@ def build_summary(
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "scenario_path": str(scenario_path),
         "snapshot_path": str(snapshot_path),
+        "replay": bool(replay_source_run),
+        "replay_source_run": replay_source_run,
         "scenario_metadata": _scenario_metadata(judge_spec),
         "run_config": {
             "parallel": int(parallel),
@@ -2734,6 +2898,8 @@ def build_summary(
             "judge_prompt_version": normalize_judge_prompt_version(judge_prompt_version),
             "judge_prompt_version_id": judge_prompt_version_id(judge_prompt_version),
             "key_flags": _run_key_flags(snapshot_path),
+            "replay": bool(replay_source_run),
+            "replay_source_run": replay_source_run,
             "answer_quality_llm_rewrite_enabled": (
                 os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITE") in {"1", "true", "yes", "да"}
                 or os.getenv("TELEGRAM_ANSWER_QUALITY_LLM_REWRITER") in {"1", "true", "yes", "да"}
@@ -4063,6 +4229,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Soft flags: `{summary.get('soft_flags')}`",
             f"- Answer quality: `{summary.get('answer_quality')}`",
             f"- Scenario metadata: `{summary.get('scenario_metadata')}`",
+            f"- Replay: `{summary.get('replay')}` source `{summary.get('replay_source_run')}`",
             f"- Branch metrics: `{summary.get('branch_metrics')}`",
             f"- LLM calls: `{llm_calls}`",
             f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",

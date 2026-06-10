@@ -345,12 +345,50 @@ def test_judge_v9_prompt_includes_verifier_matrix_and_overrides_spec():
     )
 
     assert sim.JUDGE_PROMPT_VERSION in prompt
-    assert "Правила judge_v9 имеют приоритет над judge_spec" in prompt
+    assert "Правила judge_v9.1 имеют приоритет над judge_spec" in prompt
     assert "semantic_output_verifier=" in prompt
     assert "authoritative_output_gate=" in prompt
     assert "draft_for_manager" in prompt
     assert "derived_claim_draft" in prompt
     assert "Жёсткие числа/цены/проценты/даты/сроки/расписание/адрес/бренд/P0/обещание остаются hard" in prompt
+
+
+def test_judge_v91_prompt_includes_pilot_calibrations():
+    prompt = sim.build_judge_prompt(
+        {"output_schema": {"verdict": "PASS|FAIL"}},
+        {"dialog_id": "v91", "brand": "foton"},
+        [
+            {
+                "turn": 1,
+                "client_message": "Где занятия?",
+                "bot_text": "Менеджер свяжется и подскажет.",
+                "bot_route": "draft_for_manager",
+                "bot_topic_id": "",
+                "bot_safety_flags": [],
+                "bot_manager_checklist": [],
+                "bot_missing_facts": [],
+                "bot_semantic_output_verifier": {
+                    "checked": True,
+                    "findings": [{"code": "derived_product_number", "action": "downgrade_keep_text"}],
+                },
+                "bot_authoritative_output_gate": {"findings": [{"code": "fact_grounding", "action": "downgrade_keep_text"}]},
+                "judge_fact_audit": {},
+                "bot_confirmed_facts": ["address: Фотон: Верхняя Красносельская, 30."],
+                "bot_knowledge_snippets": ["УНПК: Верхняя Красносельская, 30."],
+            }
+        ],
+        judge_prompt_version="v9",
+    )
+
+    assert sim.judge_prompt_version_id("v9") == sim.JUDGE_PROMPT_VERSION
+    assert sim.normalize_judge_prompt_version(sim.JUDGE_PROMPT_VERSION_V9) == "v9.1"
+    assert "БЕЗ срока не является made_a_promise" in prompt
+    assert "маршрутную уместность такой фразы меряет grep-метрика" in prompt
+    assert "по ВСЕМ подтверждённым фактам" in prompt
+    assert "Верхняя Красносельская, 30 — общий адрес Фотона и УНПК" in prompt
+    assert "Скорняжный — устаревший адрес" in prompt
+    assert "сработавшая страховка" in prompt
+    assert "PWN-ноту" in prompt
 
 
 def test_judge_v9_normalize_records_prompt_and_fact_audit_versions():
@@ -378,6 +416,11 @@ def test_judge_v9_gate_patterns_match_literal_gate_names():
 
     for expected, rationale in cases.items():
         assert expected in sim._infer_failed_hard_gates({"rationale": rationale})
+
+
+def test_judge_v91_promise_patterns_require_deadline_for_manager_contact():
+    assert sim._infer_hard_gates_from_text({"rationale": "Бот написал: менеджер свяжется завтра утром."}) == ["made_a_promise"]
+    assert sim._infer_hard_gates_from_text({"rationale": "Бот написал: менеджер свяжется и подскажет."}) == []
 
 
 def test_judge_v9_reask_fills_gate_without_revising_verdict():
@@ -834,7 +877,7 @@ def test_rejudge_v9_script_writes_sidecar_without_recomputing_transcript(tmp_pat
     )
 
     assert rc == 0
-    out = tmp_path / "judge_results_v9.jsonl"
+    out = tmp_path / "judge_results_v91.jsonl"
     assert out.exists()
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert rows[0]["judge_prompt_version"] == sim.JUDGE_PROMPT_VERSION
@@ -879,6 +922,96 @@ def test_fake_run_writes_full_transcripts_and_review_queue(tmp_path, monkeypatch
     transcript = (out_dir / "full_transcripts.md").read_text(encoding="utf-8")
     assert "**Клиент:**" in transcript
     assert "**Бот:**" in transcript
+
+
+def test_replay_from_uses_saved_client_messages_and_marks_summary(tmp_path, monkeypatch):
+    path = tmp_path / "v7.jsonl"
+    out_dir = tmp_path / "replay_out"
+    source = tmp_path / "source_dynamic_dialog_transcripts.jsonl"
+    snapshot = tmp_path / "snapshot.json"
+    _write_scenarios(path)
+    snapshot.write_text(json.dumps({"facts": []}), encoding="utf-8")
+    source_dialog = {
+        "dialog_id": "v7_unpk_test",
+        "brand": "unpk",
+        "persona": {"dialog_id": "v7_unpk_test", "brand": "unpk", "persona": "source"},
+        "turns": [
+            {"turn": 1, "client_message": "Первый сохранённый вопрос", "client_stop": False},
+            {"turn": 2, "client_message": "Второй сохранённый вопрос", "client_stop": True},
+        ],
+        "run_status": "completed",
+    }
+    source.write_text(json.dumps(source_dialog, ensure_ascii=False) + "\n", encoding="utf-8")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    rc = sim.main(
+        [
+            "--scenarios",
+            str(path),
+            "--snapshot",
+            str(snapshot),
+            "--out-dir",
+            str(out_dir),
+            "--replay-from",
+            str(source),
+            "--client-mode",
+            "fake",
+            "--judge-mode",
+            "fake",
+            "--bot-mode",
+            "fake",
+            "--memory-mode",
+            "fake",
+            "--judge-prompt-version",
+            "v9.1",
+            "--parallel",
+            "1",
+        ]
+    )
+
+    assert rc == 0
+    transcript_rows = [json.loads(line) for line in (out_dir / "dynamic_dialog_transcripts.jsonl").read_text(encoding="utf-8").splitlines()]
+    turns = transcript_rows[0]["turns"]
+    assert [turn["client_message"] for turn in turns] == ["Первый сохранённый вопрос", "Второй сохранённый вопрос"]
+    assert transcript_rows[0]["replay"] is True
+    assert transcript_rows[0]["replay_source_run"] == str(source)
+    assert all(turn["bot_text"] for turn in turns)
+    summary = json.loads((out_dir / "dynamic_summary.json").read_text(encoding="utf-8"))
+    assert summary["replay"] is True
+    assert summary["replay_source_run"] == str(source)
+    assert summary["run_config"]["replay"] is True
+    assert summary["run_config"]["judge_prompt_version"] == "v9.1"
+    assert summary["run_config"]["judge_prompt_version_id"] == sim.JUDGE_PROMPT_VERSION
+    assert summary["llm_calls"]["client"] == 0
+
+
+def test_replay_from_refuses_same_output_transcript_path(tmp_path):
+    path = tmp_path / "v7.jsonl"
+    out_dir = tmp_path / "out"
+    snapshot = tmp_path / "snapshot.json"
+    _write_scenarios(path)
+    snapshot.write_text(json.dumps({"facts": []}), encoding="utf-8")
+    same_path = out_dir / "dynamic_dialog_transcripts.jsonl"
+
+    with pytest.raises(ValueError, match="--replay-from must differ"):
+        sim.main(
+            [
+                "--scenarios",
+                str(path),
+                "--snapshot",
+                str(snapshot),
+                "--out-dir",
+                str(out_dir),
+                "--replay-from",
+                str(same_path),
+                "--client-mode",
+                "fake",
+                "--judge-mode",
+                "fake",
+                "--bot-mode",
+                "fake",
+            ]
+        )
 
 
 def test_codex_bot_mode_requires_existing_snapshot(tmp_path):

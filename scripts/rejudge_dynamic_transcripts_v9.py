@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Offline v9 re-judge for saved dynamic simulator transcripts.
+"""Offline v9.1 re-judge for saved dynamic simulator transcripts.
 
 This script intentionally does not use run_telegram_dynamic_client_sim
-``--transcripts-in`` because that path re-attaches current context facts. v9
+``--transcripts-in`` because that path re-attaches current context facts. v9.1
 re-judge must read the saved per-turn fields as-is and write a sidecar result.
 """
 
@@ -22,10 +22,10 @@ from scripts import run_telegram_dynamic_client_sim as sim
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Re-judge saved dynamic transcripts with judge prompt v9.")
+    parser = argparse.ArgumentParser(description="Re-judge saved dynamic transcripts with judge prompt v9.1.")
     parser.add_argument("--transcripts", type=Path, required=True, help="Existing dynamic_dialog_transcripts.jsonl.")
     parser.add_argument("--scenarios", type=Path, required=True, help="Scenario file containing the original judge_spec row.")
-    parser.add_argument("--out", type=Path, default=None, help="Output jsonl. Default: judge_results_v9.jsonl next to transcripts.")
+    parser.add_argument("--out", type=Path, default=None, help="Output jsonl. Default: judge_results_v91.jsonl next to transcripts.")
     parser.add_argument("--brand", choices=("all", "foton", "unpk"), default="all")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--judge-mode", choices=("codex", "fake"), default="codex")
@@ -62,12 +62,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dialog.get("turns") or [],
                 dialog_id=str(dialog.get("dialog_id") or ""),
                 brand=str(dialog.get("brand") or ""),
-                judge_prompt_version="v9",
+                judge_prompt_version="v9.1",
                 run_status=str(dialog.get("run_status") or "completed"),
             )
         )
 
-    out = args.out or (args.transcripts.parent / "judge_results_v9.jsonl")
+    out = args.out or (args.transcripts.parent / "judge_results_v91.jsonl")
     sim.write_jsonl(out, rows)
     print(
         json.dumps(

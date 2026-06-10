@@ -2215,6 +2215,7 @@ class AnalyzeService:
                     "exec",
                     "--skip-git-repo-check",
                     "--ephemeral",
+                    "--ignore-user-config",
                     "--sandbox",
                     "read-only",
                     "--model",

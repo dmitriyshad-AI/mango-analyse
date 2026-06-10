@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -43,6 +44,7 @@ class CustomerProfileBuilder:
             fields = list(self._fields_from_timeline(timeline, profile_ids))
             if self.options.master_calls_db:
                 fields.extend(self._fields_from_master_calls(timeline, profile_ids))
+            fields, child_slot_merge = apply_child_slot_merge_candidates(fields)
             fields = list(apply_superseded_rules(fields))
         finally:
             timeline.close()
@@ -66,6 +68,7 @@ class CustomerProfileBuilder:
             "master_calls_db": str(self.options.master_calls_db) if self.options.master_calls_db else None,
             "unmatched_calls": getattr(self, "_unmatched_calls", 0),
             "ambiguous_calls": getattr(self, "_ambiguous_calls", 0),
+            "child_slot_merge": child_slot_merge,
         }
 
     def _select_profile_ids(self, con: sqlite3.Connection) -> list[str]:
@@ -337,7 +340,7 @@ def call_analysis_fields(
     if children:
         for idx, child in enumerate(children, start=1):
             if isinstance(child, Mapping):
-                yield from child_fields(profile_id, child, f"child_{idx}", source_ref, event_at, brand)
+                yield from child_fields(profile_id, child, explicit_child_key(child, idx), source_ref, event_at, brand)
     else:
         child: dict[str, Any] = {}
         people = structured.get("people") if isinstance(structured.get("people"), Mapping) else {}
@@ -424,3 +427,296 @@ def stable_child_key(child: Mapping[str, Any]) -> str:
     import hashlib
 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+
+
+_NAME_TOKEN_RE = re.compile(r"[a-zа-яё]+", re.IGNORECASE)
+
+_DIMINUTIVE_CANONICAL: dict[str, tuple[str, ...]] = {
+    "александр": ("александр",),
+    "александра": ("александра",),
+    "алеша": ("алексей",),
+    "алёша": ("алексей",),
+    "алексей": ("алексей",),
+    "анна": ("анна",),
+    "аня": ("анна",),
+    "артем": ("артем",),
+    "артемий": ("артемий",),
+    "ваня": ("иван",),
+    "валя": ("валентин", "валентина"),
+    "валентин": ("валентин",),
+    "валентина": ("валентина",),
+    "виктор": ("виктор",),
+    "вика": ("виктория",),
+    "виктория": ("виктория",),
+    "даня": ("даниил", "данил"),
+    "даниил": ("даниил",),
+    "данил": ("данил",),
+    "дима": ("дмитрий",),
+    "димитрий": ("дмитрий",),
+    "дмитрий": ("дмитрий",),
+    "егор": ("егор",),
+    "женя": ("евгений", "евгения"),
+    "евгений": ("евгений",),
+    "евгения": ("евгения",),
+    "иван": ("иван",),
+    "катя": ("екатерина",),
+    "екатерина": ("екатерина",),
+    "костя": ("константин",),
+    "константин": ("константин",),
+    "ксения": ("ксения",),
+    "ксюша": ("ксения",),
+    "леша": ("алексей",),
+    "мария": ("мария",),
+    "маша": ("мария",),
+    "михаил": ("михаил",),
+    "миша": ("михаил",),
+    "никита": ("никита",),
+    "олег": ("олег",),
+    "петр": ("петр",),
+    "петя": ("петр",),
+    "рома": ("роман",),
+    "роман": ("роман",),
+    "саша": ("александр", "александра"),
+    "саня": ("александр", "александра"),
+    "шура": ("александр", "александра"),
+    "софия": ("софия",),
+    "соня": ("софия",),
+    "таня": ("татьяна",),
+    "татьяна": ("татьяна",),
+    "тим": ("тимур",),
+    "тима": ("тимур",),
+    "тимур": ("тимур",),
+}
+
+
+def apply_child_slot_merge_candidates(
+    fields: Sequence[ProfileFieldCandidate],
+) -> tuple[list[ProfileFieldCandidate], Mapping[str, int]]:
+    child_slots = collect_child_slots(fields)
+    profile_groups: dict[str, list[tuple[str, list[str]]]] = {}
+    profile_canonical: dict[tuple[str, str], str] = {}
+    profiles_with_2plus_before = 0
+    profiles_with_2plus_after = 0
+
+    for profile_id, slots in child_slots.items():
+        if len(slots) >= 2:
+            profiles_with_2plus_before += 1
+        groups = child_slot_groups(slots)
+        profile_groups[profile_id] = groups
+        effective_children = len(groups) if groups else len(slots)
+        if effective_children >= 2:
+            profiles_with_2plus_after += 1
+        for canonical, members in groups:
+            for member in members:
+                profile_canonical[(profile_id, member)] = canonical
+
+    rewritten: list[ProfileFieldCandidate] = []
+    seen_ids: set[str] = set()
+    rekeyed_fields = 0
+    for field in fields:
+        canonical = profile_canonical.get((field.profile_id, field.child_key))
+        if canonical and canonical != field.child_key and is_child_field(field.field):
+            field = replace(field, child_key=canonical, field_id=None)
+            rekeyed_fields += 1
+        if field.field_id in seen_ids:
+            continue
+        seen_ids.add(field.field_id or "")
+        rewritten.append(field)
+
+    marker_fields = build_child_slot_merge_markers(fields, profile_groups)
+    rewritten.extend(marker_fields)
+    return rewritten, {
+        "profiles_with_2plus_children_before": profiles_with_2plus_before,
+        "profiles_with_2plus_children_after": profiles_with_2plus_after,
+        "merge_candidate_groups": len(marker_fields),
+        "child_slots_marked_merge_candidate": sum(len(members) for groups in profile_groups.values() for _, members in groups if len(members) > 1),
+        "child_slot_fields_rekeyed": rekeyed_fields,
+        "merge_candidate_markers_written": len(marker_fields),
+    }
+
+
+def collect_child_slots(fields: Sequence[ProfileFieldCandidate]) -> dict[str, dict[str, dict[str, set[str]]]]:
+    slots: dict[str, dict[str, dict[str, set[str]]]] = {}
+    for field in fields:
+        if not field.child_key or not is_child_field(field.field):
+            continue
+        slot = slots.setdefault(field.profile_id, {}).setdefault(
+            field.child_key,
+            {"names": set(), "grades": set(), "subjects": set()},
+        )
+        if field.field == "child_name":
+            slot["names"].add(field.value)
+        elif field.field == "grade":
+            slot["grades"].add(field.value)
+        elif field.field == "subject":
+            slot["subjects"].update(part.strip().lower() for part in field.value.split(";") if part.strip())
+    return slots
+
+
+def child_slot_groups(slots: Mapping[str, Mapping[str, set[str]]]) -> list[tuple[str, list[str]]]:
+    keys = sorted(slots, key=child_key_sort)
+    parents = {key: key for key in keys}
+
+    def find(key: str) -> str:
+        while parents[key] != key:
+            parents[key] = parents[parents[key]]
+            key = parents[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        root_left = find(left)
+        root_right = find(right)
+        if root_left == root_right:
+            return
+        canonical = min((root_left, root_right), key=child_key_sort)
+        other = root_right if canonical == root_left else root_left
+        parents[other] = canonical
+
+    for left_index, left_key in enumerate(keys):
+        for right_key in keys[left_index + 1 :]:
+            if child_slots_match(slots[left_key], slots[right_key]):
+                union(left_key, right_key)
+
+    grouped: dict[str, list[str]] = {}
+    for key in keys:
+        grouped.setdefault(find(key), []).append(key)
+    return [(canonical, members) for canonical, members in sorted(grouped.items(), key=lambda item: child_key_sort(item[0]))]
+
+
+def child_slots_match(left: Mapping[str, set[str]], right: Mapping[str, set[str]]) -> bool:
+    left_name = child_slot_name_key(left.get("names", set()))
+    right_name = child_slot_name_key(right.get("names", set()))
+    return bool(left_name and right_name and left_name == right_name)
+
+
+def build_child_slot_merge_markers(
+    original_fields: Sequence[ProfileFieldCandidate],
+    profile_groups: Mapping[str, Sequence[tuple[str, Sequence[str]]]],
+) -> list[ProfileFieldCandidate]:
+    latest_by_profile_key: dict[tuple[str, str], ProfileFieldCandidate] = {}
+    for field in original_fields:
+        if not field.child_key or not is_child_field(field.field):
+            continue
+        key = (field.profile_id, field.child_key)
+        current = latest_by_profile_key.get(key)
+        if current is None or (field.event_at, field.source_ref, field.field_id or "") > (
+            current.event_at,
+            current.source_ref,
+            current.field_id or "",
+        ):
+            latest_by_profile_key[key] = field
+
+    markers: list[ProfileFieldCandidate] = []
+    for profile_id, groups in profile_groups.items():
+        for canonical, members in groups:
+            if len(members) < 2:
+                continue
+            supporting_fields = [latest_by_profile_key[(profile_id, member)] for member in members if (profile_id, member) in latest_by_profile_key]
+            event_at = max((field.event_at for field in supporting_fields), default=datetime.now(timezone.utc))
+            value = json.dumps(
+                {
+                    "marker": "merge_candidate",
+                    "reason": "normalized_child_name_match",
+                    "canonical_child_key": canonical,
+                    "child_keys": sorted(members, key=child_key_sort),
+                    "normalized_name_keys": sorted(
+                        set().union(
+                            *[
+                                child_name_keys(collect_names_for_slot(original_fields, profile_id, member))
+                                for member in members
+                            ]
+                        )
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            markers.append(
+                ProfileFieldCandidate(
+                    profile_id=profile_id,
+                    field="child_slot_merge_candidate",
+                    value=value,
+                    child_key=canonical,
+                    source_system="customer_profile_builder",
+                    source_ref=f"child_slot_merge:{profile_id}:{canonical}",
+                    event_at=event_at,
+                    brand="unknown",
+                    quote="merge_candidate",
+                )
+            )
+    return markers
+
+
+def collect_names_for_slot(fields: Sequence[ProfileFieldCandidate], profile_id: str, child_key: str) -> set[str]:
+    return {
+        field.value
+        for field in fields
+        if field.profile_id == profile_id and field.child_key == child_key and field.field == "child_name"
+    }
+
+
+def child_name_keys(values: set[str]) -> set[str]:
+    result: set[str] = set()
+    for value in values:
+        tokens = normalized_name_tokens(value)
+        if not tokens:
+            continue
+        if len(tokens) == 1:
+            result.update(canonical_name_tokens(tokens[0]))
+            continue
+        known_tokens = [token for token in tokens if token in _DIMINUTIVE_CANONICAL]
+        for token in known_tokens:
+            result.update(canonical_name_tokens(token))
+    return result
+
+
+def child_slot_name_key(values: set[str]) -> str:
+    keys = child_name_keys(values)
+    return next(iter(keys)) if len(keys) == 1 else ""
+
+
+_ROLE_TOKENS = {
+    "дочка",
+    "дочь",
+    "мальчик",
+    "ребенок",
+    "ребёнок",
+    "сын",
+    "ученик",
+    "ученица",
+}
+
+
+def normalized_name_tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in (normalize_name_token(raw) for raw in _NAME_TOKEN_RE.findall(value))
+        if token and token not in _ROLE_TOKENS
+    ]
+
+
+def normalize_name_token(value: str) -> str:
+    return str(value or "").strip().lower().replace("ё", "е")
+
+
+def canonical_name_tokens(token: str) -> tuple[str, ...]:
+    normalized = normalize_name_token(token)
+    return _DIMINUTIVE_CANONICAL.get(normalized, (normalized,))
+
+
+def is_child_field(field: str) -> bool:
+    return field in {"child_name", "grade", "subject"}
+
+
+def explicit_child_key(child: Mapping[str, Any], index: int) -> str:
+    if text(child.get("child_name") or child.get("name")):
+        return f"child_{stable_child_key(child)}"
+    return f"child_{index}"
+
+
+def child_key_sort(value: str) -> tuple[int, int | str]:
+    match = re.fullmatch(r"child_(\d+)", str(value or ""))
+    if match:
+        return (0, int(match.group(1)))
+    return (1, str(value or ""))

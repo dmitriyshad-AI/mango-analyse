@@ -138,6 +138,18 @@ def _analysis(*, grade: str = "8", child_name: str = "Ребенок", subjects:
     }
 
 
+def _children_analysis(children: list[dict], *, parent_name: str = "Родитель") -> dict:
+    return {
+        "structured_fields": {
+            "children": children,
+            "people": {"parent_fio": parent_name},
+            "interests": {},
+            "next_step": {},
+        },
+        "target_product": "годовые курсы",
+    }
+
+
 def test_builder_marks_superseded_conflicting_grade_and_is_idempotent(tmp_path: Path) -> None:
     timeline_db = _timeline_db(tmp_path)
     master_db = _master_calls_db(
@@ -179,6 +191,130 @@ def test_builder_marks_superseded_conflicting_grade_and_is_idempotent(tmp_path: 
     assert all_grade_rows[1][1] == ""
 
 
+def test_builder_marks_duplicate_child_slots_as_merge_candidate(tmp_path: Path) -> None:
+    timeline_db = _timeline_db(tmp_path)
+    master_db = _master_calls_db(
+        tmp_path,
+        [
+            (100, "2026-01-10T10:00:00+00:00", _analysis(grade="7", child_name="Рома")),
+            (101, "2026-02-10T10:00:00+00:00", _analysis(grade="8", child_name="Роман")),
+        ],
+    )
+    profiles_db = tmp_path / "profiles.sqlite"
+    options = CustomerProfileBuildOptions(
+        timeline_db=timeline_db,
+        profiles_db=profiles_db,
+        master_calls_db=master_db,
+        customer_ids=("cust-1",),
+        build_id="test-build",
+    )
+
+    first = CustomerProfileBuilder(options).build()
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        active_first = store.active_fields("cust-1")
+    second = CustomerProfileBuilder(options).build()
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        active_second = store.active_fields("cust-1")
+
+    child_keys = {
+        row["child_key"]
+        for row in active_first
+        if row["field"] in {"child_name", "grade", "subject"}
+    }
+    marker_rows = [row for row in active_first if row["field"] == "child_slot_merge_candidate"]
+    active_grade = [row for row in active_first if row["field"] == "grade"]
+
+    assert len(child_keys) == 1
+    assert len(marker_rows) == 1
+    assert "merge_candidate" in marker_rows[0]["value"]
+    assert active_grade[0]["value"] == "8"
+    assert first["child_slot_merge"]["profiles_with_2plus_children_before"] == 1
+    assert first["child_slot_merge"]["profiles_with_2plus_children_after"] == 0
+    assert first["child_slot_merge"]["merge_candidate_groups"] == 1
+    assert second["fields_written"] == first["fields_written"]
+    assert active_second == active_first
+
+
+def test_builder_does_not_merge_different_children_or_ambiguous_diminutive(tmp_path: Path) -> None:
+    timeline_db = _timeline_db(tmp_path)
+    master_db = _master_calls_db(
+        tmp_path,
+        [
+            (
+                100,
+                "2026-01-10T10:00:00+00:00",
+                _children_analysis(
+                    [
+                        {"name": "Ермаков Тимур", "grade": "7", "subjects": ["математика"]},
+                        {"name": "Ермаков Олег", "grade": "7", "subjects": ["физика"]},
+                    ]
+                ),
+            ),
+            (
+                101,
+                "2026-02-10T10:00:00+00:00",
+                _children_analysis(
+                    [
+                        {"name": "Саша", "grade": "8", "subjects": ["математика"]},
+                        {"name": "Александр", "grade": "8", "subjects": ["физика"]},
+                    ]
+                ),
+            ),
+        ],
+    )
+    profiles_db = tmp_path / "profiles.sqlite"
+
+    report = CustomerProfileBuilder(
+        CustomerProfileBuildOptions(
+            timeline_db=timeline_db,
+            profiles_db=profiles_db,
+            master_calls_db=master_db,
+            customer_ids=("cust-1",),
+        )
+    ).build()
+
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        fields = store.active_fields("cust-1")
+
+    assert report["child_slot_merge"]["merge_candidate_groups"] == 0
+    assert not [row for row in fields if row["field"] == "child_slot_merge_candidate"]
+    assert {row["value"] for row in fields if row["field"] == "child_name"} == {
+        "Ермаков Тимур",
+        "Ермаков Олег",
+        "Саша",
+        "Александр",
+    }
+
+
+def test_builder_child_slot_merge_stays_within_profile(tmp_path: Path) -> None:
+    timeline_db = _timeline_db(tmp_path, duplicate_phone_customer=True)
+    master_db = _master_calls_db(
+        tmp_path,
+        [
+            (100, "2026-01-10T10:00:00+00:00", _analysis(grade="7", child_name="Рома")),
+            (101, "2026-02-10T10:00:00+00:00", _analysis(grade="8", child_name="Роман")),
+        ],
+    )
+    profiles_db = tmp_path / "profiles.sqlite"
+
+    report = CustomerProfileBuilder(
+        CustomerProfileBuildOptions(
+            timeline_db=timeline_db,
+            profiles_db=profiles_db,
+            master_calls_db=master_db,
+            customer_ids=("cust-1", "cust-2"),
+        )
+    ).build()
+
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        fields_1 = store.active_fields("cust-1")
+        fields_2 = store.active_fields("cust-2")
+
+    assert report["ambiguous_calls"] == 2
+    assert report["child_slot_merge"]["merge_candidate_groups"] == 0
+    assert not [row for row in fields_1 + fields_2 if row["source_system"] == "mango_processed_summary"]
+
+
 def test_builder_keeps_explicit_children_separate_by_child_key(tmp_path: Path) -> None:
     timeline_db = _timeline_db(tmp_path)
     master_db = _master_calls_db(
@@ -215,12 +351,12 @@ def test_builder_keeps_explicit_children_separate_by_child_key(tmp_path: Path) -
     with CustomerProfileSQLiteStore(profiles_db) as store:
         fields = store.active_fields("cust-1")
 
-    grades = {(row["child_key"], row["value"]) for row in fields if row["field"] == "grade"}
-    names = {(row["child_key"], row["value"]) for row in fields if row["field"] == "child_name"}
-    assert ("child_1", "7") in grades
-    assert ("child_2", "9") in grades
-    assert ("child_1", "Первый") in names
-    assert ("child_2", "Второй") in names
+    names = {row["value"]: row["child_key"] for row in fields if row["field"] == "child_name"}
+    grades = {row["child_key"]: row["value"] for row in fields if row["field"] == "grade"}
+    assert set(names) == {"Первый", "Второй"}
+    assert names["Первый"] != names["Второй"]
+    assert grades[names["Первый"]] == "7"
+    assert grades[names["Второй"]] == "9"
 
 
 def test_builder_does_not_mix_single_child_from_different_calls(tmp_path: Path) -> None:

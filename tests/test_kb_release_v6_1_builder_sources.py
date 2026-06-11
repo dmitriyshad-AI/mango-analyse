@@ -57,6 +57,33 @@ def test_release_manifest_can_drive_control_numbers_without_business_literals_in
     assert kb_builder.FRESHNESS_CHECK_DATE == "2026-05-24"
 
 
+def test_manifest_manual_override_can_remove_source_fact(monkeypatch) -> None:
+    from scripts import build_kb_release_v3_from_claude_handoff as kb_builder
+
+    monkeypatch.setattr(
+        kb_builder,
+        "MANIFEST_MANUAL_DECISION_FACT_OVERRIDES",
+        (
+            {
+                "fact_key": "legacy.fact",
+                "brand": "unpk",
+                "remove_from_release": True,
+                "reason": "obsolete source fact",
+            },
+        ),
+    )
+    facts = [
+        {"brand": "unpk", "fact_key": "legacy.fact", "fact_text": "old"},
+        {"brand": "foton", "fact_key": "legacy.fact", "fact_text": "other brand"},
+        {"brand": "unpk", "fact_key": "kept.fact", "fact_text": "kept"},
+    ]
+
+    result = kb_builder.remove_manifest_deleted_facts(facts)
+
+    assert [item["fact_key"] for item in result] == ["legacy.fact", "kept.fact"]
+    assert result[0]["brand"] == "foton"
+
+
 def test_post_filter_registry_keeps_installment_terms_brand_scoped() -> None:
     registry = build_post_filter_registry(
         {

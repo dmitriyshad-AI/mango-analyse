@@ -1,0 +1,8 @@
+{
+  "brand": "unpk",
+  "brand_separation_violation": 0,
+  "errors": 0,
+  "note": "The builder does not run Stage6. Real smoke results must be attached from an audit pack.",
+  "rows_total": 0,
+  "status": "not_run_by_builder"
+}

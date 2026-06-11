@@ -349,6 +349,7 @@ def build_kb_release_v3(
         )
     )
     facts.extend(build_policy_facts(handoff, source_lookup))
+    facts = remove_manifest_deleted_facts(facts)
     facts.extend(build_manual_decision_facts(source_lookup))
     facts = attach_source_details(dedupe_facts(facts), source_lookup=source_lookup)
     facts = ensure_fact_refresh_dates(facts)
@@ -858,6 +859,8 @@ def build_manual_decision_facts(source_lookup: Mapping[str, Mapping[str, Any]]) 
     for override in MANIFEST_MANUAL_DECISION_FACT_OVERRIDES:
         if not isinstance(override, Mapping):
             continue
+        if truthy(override.get("remove_from_release")):
+            continue
         fact_key = str(override.get("fact_key") or "").strip()
         source_key = str(override.get("source_key") or "").strip()
         if not fact_key or not source_key or source_key not in source_lookup:
@@ -867,6 +870,29 @@ def build_manual_decision_facts(source_lookup: Mapping[str, Mapping[str, Any]]) 
         spec["source"] = source_lookup[source_key]
         specs_by_key[fact_key] = spec
     return [make_manual_fact(**spec) for spec in specs_by_key.values()]
+
+
+def manifest_removed_fact_keys() -> set[tuple[str, str]]:
+    removed: set[tuple[str, str]] = set()
+    for override in MANIFEST_MANUAL_DECISION_FACT_OVERRIDES:
+        if not isinstance(override, Mapping) or not truthy(override.get("remove_from_release")):
+            continue
+        fact_key = str(override.get("fact_key") or "").strip()
+        brand = normalize_brand(str(override.get("brand") or ""))
+        if fact_key and brand:
+            removed.add((brand, fact_key))
+    return removed
+
+
+def remove_manifest_deleted_facts(facts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    removed = manifest_removed_fact_keys()
+    if not removed:
+        return [dict(fact) for fact in facts]
+    return [
+        dict(fact)
+        for fact in facts
+        if (normalize_brand(str(fact.get("brand") or "")), str(fact.get("fact_key") or "")) not in removed
+    ]
 
 
 def make_manual_fact(

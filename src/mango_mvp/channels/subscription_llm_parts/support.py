@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import re
-from typing import Any, Mapping, Optional, Sequence
+from datetime import date
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional, Sequence
 
+from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.dialogue_contract_pipeline import concrete_anchors as dialogue_contract_concrete_anchors
 
 
@@ -391,3 +396,169 @@ def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, 
         if explicit is False:
             result[env_name] = "0"
     return result
+
+
+def _template_from_kb_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    if isinstance(context, Mapping):
+        for key in (TEMPLATE_FROM_KB_ENV, "template_from_kb"):
+            if key in context:
+                return _truthy_value(context.get(key))
+    if TEMPLATE_FROM_KB_ENV in os.environ:
+        return _truthy_value(os.getenv(TEMPLATE_FROM_KB_ENV))
+    return _pilot_gold_profile_enabled(context)
+
+def _direct_path_snapshot_path_from_context(context: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(context, Mapping):
+        return ""
+    for key in ("snapshot_path", "knowledge_snapshot_path", "kb_snapshot_path"):
+        value = context.get(key)
+        if value:
+            return str(value)
+    return ""
+
+@lru_cache(maxsize=8)
+def _direct_path_load_snapshot(path_text: str) -> Mapping[str, Any]:
+    if not path_text:
+        return {}
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, Mapping) else {}
+
+def _direct_path_snapshot_facts(snapshot: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    facts = snapshot.get("facts") if isinstance(snapshot, Mapping) else None
+    if not isinstance(facts, Sequence) or isinstance(facts, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in facts if isinstance(item, Mapping))
+
+def _direct_path_valid_until_ok(value: Any, *, today: Optional[date] = None) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+    try:
+        valid_until = date.fromisoformat(raw[:10])
+    except ValueError:
+        return False
+    return valid_until >= (today or date.today())
+
+def _direct_path_client_safe_snapshot_fact(fact: Mapping[str, Any], *, active_brand: str) -> bool:
+    brand = str(fact.get("brand") or fact.get("active_brand") or "").strip().casefold()
+    return (
+        brand == str(active_brand or "").strip().casefold()
+        and fact.get("allowed_for_client_answer") is True
+        and fact.get("forbidden_for_client") is not True
+        and fact.get("internal_only") is not True
+        and _direct_path_valid_until_ok(fact.get("valid_until"))
+        and bool(str(fact.get("client_safe_text") or fact.get("fact_text") or "").strip())
+    )
+
+def _direct_path_snapshot_fact_text(fact: Mapping[str, Any]) -> str:
+    for key in ("client_safe_text", "fact_text"):
+        text = str(fact.get(key) or "").strip()
+        if text:
+            return _client_clean_fact_text(text)
+    return ""
+
+def _direct_path_fact_by_brand_key(
+    snapshot: Mapping[str, Any],
+    *,
+    active_brand: str,
+    fact_key: str,
+) -> Optional[Mapping[str, Any]]:
+    key = str(fact_key or "").strip()
+    brand = str(active_brand or "").strip().casefold()
+    if not key or brand not in {"foton", "unpk"}:
+        return None
+    for fact in _direct_path_snapshot_facts(snapshot):
+        if str(fact.get("fact_key") or "") != key:
+            continue
+        if str(fact.get("brand") or "").casefold() != brand:
+            continue
+        if _direct_path_client_safe_snapshot_fact(fact, active_brand=brand):
+            return fact
+    return None
+
+def _direct_path_fact_value(text: str) -> str:
+    value = _client_clean_fact_text(text)
+    if "—" in value:
+        value = value.rsplit("—", 1)[-1].strip()
+    return value.rstrip(" .")
+
+def _direct_path_template_from_fact(
+    *,
+    active_brand: str,
+    fact_key: str,
+    literal_text: str,
+    neutral_fallback: str,
+    context: Optional[Mapping[str, Any]] = None,
+    render: Optional[Callable[[str], str]] = None,
+) -> str:
+    if not _template_from_kb_enabled(context):
+        return literal_text
+    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
+    fact = _direct_path_fact_by_brand_key(snapshot, active_brand=active_brand, fact_key=fact_key)
+    if not isinstance(fact, Mapping):
+        _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "fallback", "reason": "missing"})
+        return neutral_fallback
+    text = _direct_path_snapshot_fact_text(fact)
+    if render is not None:
+        text = render(text)
+    text = str(text or "").strip()
+    if text:
+        _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "hit"})
+        return text
+    _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "fallback", "reason": "empty"})
+    return neutral_fallback
+
+def _template_from_kb_trace_event(context: Optional[Mapping[str, Any]], payload: Mapping[str, Any]) -> None:
+    event = dict(payload)
+    trace_event(context, "template_from_kb", event)
+    if isinstance(context, dict):
+        existing = context.setdefault("template_from_kb_trace", [])
+        if isinstance(existing, list):
+            existing.append(event)
+
+def _direct_path_template_fact_text(
+    *,
+    active_brand: str,
+    fact_key: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
+    fact = _direct_path_fact_by_brand_key(snapshot, active_brand=active_brand, fact_key=fact_key)
+    return _direct_path_snapshot_fact_text(fact) if isinstance(fact, Mapping) else ""
+
+def _client_clean_fact_text(value: object) -> str:
+    cleaned = " ".join(str(value or "").split())
+    if not cleaned:
+        return ""
+    cleaned = re.sub(
+        r"^(?P<brand>[^:]{1,40}:\s*)?черновик\s+для\s+ситуации\s+«[^»]+»\s*:\s*",
+        lambda match: str(match.group("brand") or ""),
+        cleaned,
+        flags=re.I,
+    )
+    cleaned = re.sub(
+        r"^(?P<brand>[^:]{1,40}:\s*)?черновик\s+для\s+ситуации\s+\"[^\"]+\"\s*:\s*",
+        lambda match: str(match.group("brand") or ""),
+        cleaned,
+        flags=re.I,
+    )
+    return cleaned.strip()
+
+def _active_brand(context: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(context, Mapping):
+        return "unknown"
+    value = context.get("active_brand")
+    if not value and isinstance(context.get("facts_context"), Mapping):
+        value = context["facts_context"].get("active_brand")  # type: ignore[index]
+    text = str(value or "unknown").strip().casefold()
+    if text in {"foton", "фотон"}:
+        return "foton"
+    if text in {"unpk", "унпк", "унпк мфти"}:
+        return "unpk"
+    return "unknown"

@@ -252,7 +252,10 @@ def test_public_pilot_context_enables_dialogue_contract_pipeline_by_default(tmp_
     assert pipeline_enabled(context) is True
 
 
-def test_public_pilot_context_matches_extracted_assembly(tmp_path: Path) -> None:
+def test_public_pilot_context_matches_extracted_assembly(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_MEMORY_PROVENANCE", raising=False)
+    monkeypatch.delenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", raising=False)
+
     snapshot = _night_snapshot(tmp_path)
     config = BrandBotConfig(
         brand="foton",

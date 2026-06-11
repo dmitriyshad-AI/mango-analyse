@@ -30,22 +30,24 @@ def run_cli(args: list[str], env_overrides: dict[str, str], cwd: Path | None = N
 
 class SmokePipelineTest(unittest.TestCase):
     def test_get_settings_parses_float_env_values(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "STEREO_OVERLAP_SIMILARITY_THRESHOLD": "0.93",
-                "MONO_ROLE_ASSIGNMENT_MIN_CONFIDENCE": "0.71",
-                "MONO_ROLE_ASSIGNMENT_LLM_THRESHOLD": "0.77",
-                "OLLAMA_TEMPERATURE": "0.15",
-            },
-            clear=False,
-        ):
-            get_settings.cache_clear()
-            settings = get_settings()
-            self.assertAlmostEqual(settings.stereo_overlap_similarity_threshold, 0.93)
-            self.assertAlmostEqual(settings.mono_role_assignment_min_confidence, 0.71)
-            self.assertAlmostEqual(settings.mono_role_assignment_llm_threshold, 0.77)
-            self.assertAlmostEqual(settings.ollama_temperature, 0.15)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "STEREO_OVERLAP_SIMILARITY_THRESHOLD": "0.93",
+                    "MONO_ROLE_ASSIGNMENT_MIN_CONFIDENCE": "0.71",
+                    "MONO_ROLE_ASSIGNMENT_LLM_THRESHOLD": "0.77",
+                    "OLLAMA_TEMPERATURE": "0.15",
+                },
+                clear=False,
+            ):
+                get_settings.cache_clear()
+                settings = get_settings()
+                self.assertAlmostEqual(settings.stereo_overlap_similarity_threshold, 0.93)
+                self.assertAlmostEqual(settings.mono_role_assignment_min_confidence, 0.71)
+                self.assertAlmostEqual(settings.mono_role_assignment_llm_threshold, 0.77)
+                self.assertAlmostEqual(settings.ollama_temperature, 0.15)
+        finally:
             get_settings.cache_clear()
 
     def test_init_db_creates_missing_sqlite_parent_dir(self) -> None:

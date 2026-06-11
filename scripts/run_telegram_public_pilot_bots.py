@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+import html
 import json
 import os
 import re
@@ -67,6 +68,8 @@ DEFAULT_ENV_FILE = Path("/Users/dmitrijfabarisov/.codex/mango_telegram_pilot_bot
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json")
 DEFAULT_CRM_ENV_FILE = Path("stable_runtime/amocrm_runtime/.env.private")
 DEFAULT_LOG_DIR = Path(".codex_local/telegram_pilot_bots/logs")
+DEFAULT_RUNTIME_DIR = Path(".codex_local/telegram_pilot_bots/runtime")
+DEFAULT_HEARTBEAT_PATH = DEFAULT_RUNTIME_DIR / "public_pilot_bots_heartbeat.json"
 DEFAULT_CACHE_DIR = Path(".codex_local/telegram_pilot_bots/llm_cache")
 DEFAULT_STORE_PATH = Path(".codex_local/telegram_pilot/telegram_pilot.sqlite")
 DEFAULT_P0_REGISTER_PATH = Path(".codex_local/telegram_pilot/p0_incident_register.csv")
@@ -98,6 +101,8 @@ NIGHT_FUNNEL_TEE_ENABLED_ENV = "TELEGRAM_NIGHT_FUNNEL_TEE_ENABLED"
 NIGHT_FUNNEL_TEE_PATH_ENV = "TELEGRAM_NIGHT_FUNNEL_TEE_PATH"
 NIGHT_FUNNEL_TEE_SOURCE_ENV = "TELEGRAM_NIGHT_FUNNEL_TEE_SOURCE"
 NIGHT_FUNNEL_TEE_RETENTION_DAYS_ENV = "TELEGRAM_NIGHT_FUNNEL_TEE_RETENTION_DAYS"
+PUBLIC_BOT_HEARTBEAT_PATH_ENV = "MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH"
+PUBLIC_PARSE_MODE_HTML_ENV = "TELEGRAM_PUBLIC_PARSE_MODE_HTML"
 
 DEBUG_PHONE_RE = re.compile(
     r"^\s*[\"'«»“”]*\s*представь\s*,?\s*что\s+я\s+пишу\s+с\s+номера\s+"
@@ -106,6 +111,11 @@ DEBUG_PHONE_RE = re.compile(
     re.I,
 )
 PHONE_DIGIT_RE = re.compile(r"\D+")
+PUBLIC_TELEGRAM_HIGHLIGHT_RE = re.compile(
+    r"(?P<price>\b\d[\d\s]{1,12}\s*(?:₽|руб(?:\.|лей|ля|ль)?))"
+    r"|(?P<date>\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b)"
+    r"|(?P<time>\b\d{1,2}:\d{2}(?:\s*[–-]\s*\d{1,2}:\d{2})?\b)"
+)
 
 
 @dataclass(frozen=True)
@@ -116,6 +126,7 @@ class BrandBotConfig:
     snapshot_path: Path
     debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS
     log_dir: Path = DEFAULT_LOG_DIR
+    heartbeat_path: Path = DEFAULT_HEARTBEAT_PATH
     cache_dir: Path = DEFAULT_CACHE_DIR
     model: str = "gpt-5.5"
     reasoning_effort: str = "xhigh"
@@ -154,6 +165,7 @@ class BrandBotConfig:
         object.__setattr__(self, "brand", brand)
         object.__setattr__(self, "snapshot_path", Path(self.snapshot_path))
         object.__setattr__(self, "log_dir", Path(self.log_dir))
+        object.__setattr__(self, "heartbeat_path", Path(self.heartbeat_path))
         object.__setattr__(self, "cache_dir", Path(self.cache_dir))
         crm_mode = str(self.crm_read_mode or "off").casefold().strip()
         if crm_mode not in {"off", "local", "live", "server"}:
@@ -261,6 +273,35 @@ def env_flag(env: Mapping[str, str], key: str, *, default: bool = False) -> bool
     return raw in {"1", "true", "yes", "on", "да"}
 
 
+def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def write_public_bot_heartbeat(
+    path: Path,
+    *,
+    status: str,
+    brands: Sequence[str],
+    event: str = "",
+    summary: Optional[Mapping[str, Any]] = None,
+) -> None:
+    write_json_atomic(
+        path,
+        {
+            "schema_version": "public_pilot_bot_heartbeat_v1_2026_06_12",
+            "status": str(status or "unknown"),
+            "last_cycle_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "pid": os.getpid(),
+            "brands": [str(item) for item in brands],
+            "event": str(event or ""),
+            "summary": dict(summary or {}),
+        },
+    )
+
+
 def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool = False) -> list[BrandBotConfig]:
     snapshot = Path(env.get(SNAPSHOT_ENV) or DEFAULT_SNAPSHOT)
     crm_env_file = Path(env.get(CRM_ENV_FILE_ENV) or DEFAULT_CRM_ENV_FILE)
@@ -271,6 +312,7 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
     reasoning = str(env.get("MANGO_TELEGRAM_CODEX_REASONING") or "xhigh")
     timeout = int(env.get("MANGO_TELEGRAM_CODEX_TIMEOUT_SEC") or "240")
     debounce = int(env.get("MANGO_TELEGRAM_DEBOUNCE_SECONDS") or DEFAULT_DEBOUNCE_SECONDS)
+    heartbeat_path = Path(env.get(PUBLIC_BOT_HEARTBEAT_PATH_ENV) or DEFAULT_HEARTBEAT_PATH)
     store_path = Path(env.get(PILOT_STORE_PATH_ENV) or DEFAULT_STORE_PATH)
     store_enabled = env_flag(env, PILOT_STORE_ENABLED_ENV, default=True)
     p0_register_path = Path(env.get(PILOT_P0_REGISTER_PATH_ENV) or DEFAULT_P0_REGISTER_PATH)
@@ -298,6 +340,7 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 display_name="Фотон",
                 snapshot_path=snapshot,
                 debounce_seconds=debounce,
+                heartbeat_path=heartbeat_path,
                 model=model,
                 reasoning_effort=reasoning,
                 timeout_sec=timeout,
@@ -333,6 +376,7 @@ def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool =
                 display_name="УНПК МФТИ",
                 snapshot_path=snapshot,
                 debounce_seconds=debounce,
+                heartbeat_path=heartbeat_path,
                 model=model,
                 reasoning_effort=reasoning,
                 timeout_sec=timeout,
@@ -381,8 +425,28 @@ class PublicPilotBotRuntime:
         item = self.sessions.get(chat_id)
         if item is None:
             item = ChatSession()
+            restored = self.latest_dialogue_memory_for_chat(chat_id)
+            if restored:
+                item.dialogue_memory = restored
             self.sessions[chat_id] = item
         return item
+
+    def latest_dialogue_memory_for_chat(self, chat_id: int) -> Mapping[str, Any]:
+        if self.store is None:
+            return {}
+        try:
+            snapshot = self.store.latest_dialogue_memory_snapshot(
+                session_id=f"telegram_public_pilot:{self.config.brand}:{chat_id}",
+                active_brand=self.config.brand,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.log_event(
+                "dialogue_memory_restore_error",
+                chat_id=chat_id,
+                payload={"brand": self.config.brand, "error": str(exc)[:240]},
+            )
+            return {}
+        return dict(snapshot or {})
 
     def close(self) -> None:
         if self.store is not None:
@@ -535,7 +599,12 @@ class PublicPilotBotRuntime:
                 context=context,
                 session=session,
             )
-            sent_message = await message.reply_text(text, disable_web_page_preview=True)
+            reply_payload = public_telegram_reply_payload(text)
+            sent_message = await message.reply_text(
+                str(reply_payload["text"]),
+                disable_web_page_preview=True,
+                parse_mode=reply_payload["parse_mode"],
+            )
             self.record_night_inbound_tee(
                 chat_id=chat_id,
                 input_text=combined_text,
@@ -1010,6 +1079,29 @@ def public_reply_text(result: SubscriptionDraftResult) -> str:
     if not text:
         text = SAFE_FALLBACK_DRAFT_TEXT
     return text[:3900]
+
+
+def public_telegram_html_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
+    source = env if env is not None else os.environ
+    return env_flag(source, PUBLIC_PARSE_MODE_HTML_ENV, default=False)
+
+
+def format_public_telegram_html(text: str) -> str:
+    raw = str(text or "")
+    parts: list[str] = []
+    last = 0
+    for match in PUBLIC_TELEGRAM_HIGHLIGHT_RE.finditer(raw):
+        parts.append(html.escape(raw[last : match.start()], quote=False))
+        parts.append(f"<b>{html.escape(match.group(0), quote=False)}</b>")
+        last = match.end()
+    parts.append(html.escape(raw[last:], quote=False))
+    return "".join(parts)
+
+
+def public_telegram_reply_payload(text: str, *, env: Optional[Mapping[str, str]] = None) -> Mapping[str, Any]:
+    if not public_telegram_html_enabled(env):
+        return {"text": text, "parse_mode": None}
+    return {"text": format_public_telegram_html(text), "parse_mode": "HTML"}
 
 
 def apply_public_autonomy_kill_switch(result: SubscriptionDraftResult, *, autonomy_enabled: bool) -> SubscriptionDraftResult:
@@ -1543,6 +1635,37 @@ async def get_me(configs: Sequence[BrandBotConfig]) -> list[Mapping[str, Any]]:
     return results
 
 
+async def public_bot_heartbeat_loop(
+    configs: Sequence[BrandBotConfig],
+    stop_event: asyncio.Event,
+    *,
+    interval_sec: int = 60,
+) -> None:
+    if not configs:
+        return
+    heartbeat_path = configs[0].heartbeat_path
+    brands = [config.brand for config in configs]
+    counter = 0
+    while not stop_event.is_set():
+        counter += 1
+        write_public_bot_heartbeat(
+            heartbeat_path,
+            status="polling",
+            brands=brands,
+            event="heartbeat",
+            summary={
+                "counter": counter,
+                "snapshot": str(configs[0].snapshot_path),
+                "model": configs[0].model,
+                "reasoning_effort": configs[0].reasoning_effort,
+            },
+        )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=max(1, int(interval_sec)))
+        except asyncio.TimeoutError:
+            continue
+
+
 async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mapping[str, Mapping[str, Any]], duration_sec: int | None) -> None:
     from telegram import Update
     from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -1550,6 +1673,7 @@ async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mappi
     runtimes = [PublicPilotBotRuntime(config, debug_clients=debug_clients) for config in configs]
     applications = []
     stop_event = asyncio.Event()
+    heartbeat_task: asyncio.Task[None] | None = None
 
     def stop_signal(*_: Any) -> None:
         stop_event.set()
@@ -1583,6 +1707,7 @@ async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mappi
         await app.updater.start_polling(allowed_updates=("message", "edited_message"))
         applications.append(app)
         runtime.log_event("polling_started", chat_id=0, payload={"brand": runtime.config.brand, "duration_sec": duration_sec})
+    heartbeat_task = asyncio.create_task(public_bot_heartbeat_loop(configs, stop_event))
 
     try:
         if duration_sec is None:
@@ -1590,6 +1715,11 @@ async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mappi
         else:
             await asyncio.sleep(max(1, int(duration_sec)))
     finally:
+        stop_event.set()
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
         for app in reversed(applications):
             if app.updater is not None:
                 await app.updater.stop()
@@ -1597,6 +1727,13 @@ async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mappi
             await app.shutdown()
         for runtime in runtimes:
             runtime.close()
+        if configs:
+            write_public_bot_heartbeat(
+                configs[0].heartbeat_path,
+                status="stopped",
+                brands=[config.brand for config in configs],
+                event="polling_stopped",
+            )
 
 
 def write_local_env_file(path: Path, *, foton_token: str, unpk_token: str) -> None:

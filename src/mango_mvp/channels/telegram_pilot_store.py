@@ -549,6 +549,25 @@ class TelegramPilotSQLiteStore:
     def list_dialogue_memory_snapshots(self, *, day: Optional[date | str] = None) -> tuple[Mapping[str, Any], ...]:
         return self._list_records("tgm_pilot_dialogue_memory", "memory_json", "created_at", day=day)
 
+    def latest_dialogue_memory_snapshot(self, *, session_id: str, active_brand: str) -> Optional[Mapping[str, Any]]:
+        session = require_text(session_id, "session_id")
+        brand = normalize_pilot_key(active_brand or "unknown", "active_brand")
+        row = self._fetch_one(
+            """
+            SELECT memory_json
+            FROM tgm_pilot_dialogue_memory
+            WHERE session_id = ? AND active_brand = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (session, brand),
+        )
+        if row is None:
+            return None
+        payload = json.loads(row["memory_json"])
+        snapshot = payload.get("memory_snapshot") if isinstance(payload, Mapping) else None
+        return dict(snapshot) if isinstance(snapshot, Mapping) else None
+
     def daily_summary(self, day: date | str) -> TelegramPilotDailySummary:
         day_text, start, end = day_bounds(day)
         params = (start.isoformat(), end.isoformat())

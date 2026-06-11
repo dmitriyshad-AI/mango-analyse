@@ -21,8 +21,10 @@ from scripts.run_telegram_public_pilot_bots import (
     knowledge_base_version_for_store,
     normalize_phone,
     parse_debug_phone_command,
+    public_telegram_reply_payload,
     public_reply_text,
     PublicPilotBotRuntime,
+    write_public_bot_heartbeat,
 )
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
 import mango_mvp.channels.dialogue_memory as dialogue_memory_module
@@ -222,6 +224,38 @@ def test_configs_from_env_builds_two_brand_isolated_configs(tmp_path: Path) -> N
     assert all(config.night_funnel_tee_retention_days == 3 for config in configs)
 
 
+def test_configs_from_env_sets_public_bot_heartbeat_path(tmp_path: Path) -> None:
+    heartbeat = tmp_path / "runtime" / "heartbeat.json"
+    configs = configs_from_env(
+        {
+            "MANGO_TELEGRAM_FOTON_BOT_TOKEN": "foton-token",
+            "MANGO_TELEGRAM_KB_SNAPSHOT": str(tmp_path / "snapshot.json"),
+            "MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH": str(heartbeat),
+        },
+        brand="foton",
+    )
+
+    assert configs[0].heartbeat_path == heartbeat
+
+
+def test_write_public_bot_heartbeat_has_no_client_text(tmp_path: Path) -> None:
+    path = tmp_path / "runtime" / "heartbeat.json"
+
+    write_public_bot_heartbeat(
+        path,
+        status="polling",
+        brands=("foton",),
+        event="heartbeat",
+        summary={"counter": 1},
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["status"] == "polling"
+    assert payload["brands"] == ["foton"]
+    assert payload["summary"]["counter"] == 1
+    assert "client_text" not in json.dumps(payload, ensure_ascii=False)
+
+
 def test_configs_from_env_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:
     configs = configs_from_env(
         {
@@ -354,6 +388,44 @@ def test_public_pilot_context_exposes_snapshot_to_direct_fact_pack(tmp_path: Pat
     assert "schedule_2026_27.groups.physics_8_online_sun_1430_1630" in pack["facts"]
 
 
+def test_public_pilot_context_restores_dialogue_memory_from_store(tmp_path: Path) -> None:
+    snapshot = _night_snapshot(tmp_path)
+    store_path = tmp_path / "telegram_pilot.sqlite"
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=snapshot,
+        store_path=store_path,
+        p0_register_path=tmp_path / "p0.csv",
+    )
+    first = PublicPilotBotRuntime(config, debug_clients={})
+    assert first.store is not None
+    first.store.upsert_dialogue_memory_snapshot(
+        message_key="message-1",
+        session_id="telegram_public_pilot:foton:123",
+        active_brand="foton",
+        memory_snapshot={
+            "schema_version": "dialogue_memory_v2_2026_05_23",
+            "session_id": "telegram_public_pilot:foton:123",
+            "active_brand": "foton",
+            "known_slots": {"grade": "8", "subject": "физика"},
+            "slot_sources": {"grade": "memory_provenance", "subject": "memory_provenance"},
+            "client_confirmed_slots": {"grade": "8", "subject": "физика"},
+        },
+    )
+    first.close()
+    restarted = PublicPilotBotRuntime(config, debug_clients={})
+
+    context = restarted.build_context(chat_id=123, session=restarted.session(123), current_text="онлайн")
+    restarted.close()
+
+    memory_view = context["dialogue_memory_view"]
+    assert memory_view["known_slots"]["grade"] == "8"
+    assert memory_view["known_slots"]["subject"] == "физика"
+    assert context["known_dialog_fields"]["format"] == "онлайн"
+
+
 def test_extracted_context_supports_draft_loop_mode_without_client_send(tmp_path: Path) -> None:
     snapshot = _night_snapshot(tmp_path)
 
@@ -413,6 +485,26 @@ def test_public_reply_text_falls_back_when_empty() -> None:
     text = public_reply_text(result)
     assert "передам вопрос менеджеру" in text.casefold()
     assert "спасибо за сообщение" not in text.casefold()
+
+
+def test_public_telegram_reply_payload_is_plain_by_default() -> None:
+    text = "Семестр — 29 750 ₽, старт 20.09."
+
+    payload = public_telegram_reply_payload(text, env={})
+
+    assert payload == {"text": text, "parse_mode": None}
+
+
+def test_public_telegram_reply_payload_escapes_and_highlights_when_enabled() -> None:
+    payload = public_telegram_reply_payload(
+        "Цена < 29 750 ₽, занятие 14:30-16:30, старт 20.09.",
+        env={"TELEGRAM_PUBLIC_PARSE_MODE_HTML": "1"},
+    )
+
+    assert payload["parse_mode"] == "HTML"
+    assert "Цена &lt; <b>29 750 ₽</b>" in payload["text"]
+    assert "<b>14:30-16:30</b>" in payload["text"]
+    assert "<b>20.09</b>" in payload["text"]
 
 
 def test_autonomy_kill_switch_downgrades_autonomous_route() -> None:

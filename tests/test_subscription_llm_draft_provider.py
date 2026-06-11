@@ -11080,6 +11080,70 @@ def test_wave6_llm_retrieve_selects_enrollment_fact_for_paid_next_step(tmp_path:
     assert pack["llm_retrieve"]["used"] is True
 
 
+def test_wave6_llm_retrieve_supplements_price_and_schedule_for_known_course(tmp_path: Path) -> None:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics8.online.schedule",
+                "fact_type": "schedule",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Физика, 8 класс, обычная группа, онлайн: воскресенье 14:30-16:30, старт 20.09.2026.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics8.offline.schedule",
+                "fact_type": "schedule",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Физика, 8 класс, базовая группа, очно: воскресенье 10:00-12:00, старт 13.09.2026.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.online.5_11.semester",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.offline.5_11.semester",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+    }
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="онлайн",
+        retriever_fn=lambda prompt: {
+            "exact_ids": ["foton.physics8.online.schedule"],
+            "adjacent_ids": ["foton.online.5_11.semester"],
+        },
+    )
+    exact_text = _wide_pack_text(pack, pack["exact_keys"])
+
+    assert "foton.physics8.online.schedule" in pack["exact_keys"]
+    assert "foton.online.5_11.semester" in pack["exact_keys"]
+    assert "foton.offline.5_11.semester" not in pack["facts"]
+    assert "14:30-16:30" in exact_text
+    assert "29 750" in exact_text
+    assert pack["llm_retrieve"]["supplemented_exact_ids"] == ["foton.online.5_11.semester"]
+
+
 def test_wave6_llm_retrieve_brand_isolation_filters_candidates_before_model(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     seen_prompt = ""
@@ -12390,6 +12454,9 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV) is True
     assert subscription_llm._template_from_kb_enabled(context) is True
+    assert TONE_RICH_FORMAT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.A_RICH_FORMAT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._a2_rich_format_enabled(context) is True
     assert subscription_llm.MEMORY_PROVENANCE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PII_RELATION_STOPWORDS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS

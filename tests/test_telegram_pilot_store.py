@@ -147,6 +147,37 @@ def test_store_keeps_funnel_context_and_manager_summary_idempotently(tmp_path) -
     store.close()
 
 
+def test_latest_dialogue_memory_snapshot_returns_latest_for_session(tmp_path) -> None:
+    store = TelegramPilotSQLiteStore(tmp_path / "telegram_pilot.sqlite", clock=StepClock())
+    session_id = "telegram_public_pilot:foton:123"
+
+    store.upsert_dialogue_memory_snapshot(
+        message_key="msg-1",
+        session_id=session_id,
+        active_brand="foton",
+        memory_snapshot={"known_slots": {"grade": "8"}, "schema_version": "dialogue_memory_v2_2026_05_23"},
+        created_at=START,
+    )
+    store.upsert_dialogue_memory_snapshot(
+        message_key="msg-2",
+        session_id=session_id,
+        active_brand="foton",
+        memory_snapshot={
+            "known_slots": {"grade": "8", "subject": "физика"},
+            "schema_version": "dialogue_memory_v2_2026_05_23",
+        },
+        created_at=START + timedelta(minutes=1),
+    )
+
+    latest = store.latest_dialogue_memory_snapshot(session_id=session_id, active_brand="foton")
+    other_brand = store.latest_dialogue_memory_snapshot(session_id=session_id, active_brand="unpk")
+    store.close()
+
+    assert latest is not None
+    assert latest["known_slots"] == {"grade": "8", "subject": "физика"}
+    assert other_brand is None
+
+
 def test_daily_summary_counts_useful_drafts(tmp_path) -> None:
     store = TelegramPilotSQLiteStore(tmp_path / "telegram_pilot.sqlite", clock=StepClock())
     useful = store_draft(store, inbound_message("msg-1", "first"))

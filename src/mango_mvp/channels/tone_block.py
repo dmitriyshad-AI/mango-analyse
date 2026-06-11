@@ -9,6 +9,8 @@ TONE_WARM_FRAME_ENV = "TELEGRAM_TONE_WARM_FRAME"
 TONE_CLOSE_DETECT_ENV = "TELEGRAM_TONE_CLOSE_DETECT"
 TONE_SELL_PROMPT_ENV = "TELEGRAM_TONE_SELL_PROMPT"
 TONE_RICH_FORMAT_ENV = "TELEGRAM_TONE_RICH_FORMAT"
+DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
+DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 
 _WARM_PREFIXES: tuple[str, ...] = (
     "Конечно! Вот как это устроено у нас: ",
@@ -66,7 +68,13 @@ def tone_rich_format_enabled(context: Mapping[str, Any] | None = None) -> bool:
         for key in (TONE_RICH_FORMAT_ENV, "tone_rich_format_enabled"):
             if key in context:
                 return truthy_value(context.get(key))
-    return truthy_value(os.getenv(TONE_RICH_FORMAT_ENV))
+    if TONE_RICH_FORMAT_ENV in os.environ:
+        return truthy_value(os.getenv(TONE_RICH_FORMAT_ENV))
+    if isinstance(context, Mapping):
+        profile = str(context.get(DIRECT_PATH_PILOT_CONFIG_ENV) or context.get("direct_path_pilot_config") or "").strip()
+        if profile == DIRECT_PATH_PILOT_CONFIG_VERSION:
+            return True
+    return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
 
 
 def apply_warm_frame(text: str, *, context: Mapping[str, Any] | None = None, kind: str = "") -> str:

@@ -424,6 +424,72 @@ def _direct_path_fact_relevance_score(fact: Mapping[str, Any], *, client_message
         score += 1
     return score
 
+def _direct_path_known_grade_subject(context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
+    known = _direct_path_known_slots(context)
+    grade = re.sub(r"\D+", "", str(known.get("grade") or known.get("class") or ""))[:2]
+    subject = _normalize_fact_match_text(known.get("subject") or known.get("course_subject") or "")
+    return grade, subject
+
+def _direct_path_subject_matches_fact(subject: str, fact_text: str) -> bool:
+    if not subject:
+        return False
+    text = _normalize_fact_match_text(fact_text)
+    subject_markers = (
+        ("физик", ("физик", "physics")),
+        ("математ", ("математ", "math")),
+        ("информат", ("информат", "программирован", "informatics", "programming")),
+        ("русск", ("русск", "russian")),
+        ("англий", ("англий", "english")),
+        ("хими", ("хими", "chemistry")),
+        ("биолог", ("биолог", "biology")),
+    )
+    for marker, aliases in subject_markers:
+        if marker in subject:
+            return any(alias in text for alias in aliases)
+    return subject in text
+
+def _direct_path_regular_course_price_fact(fact: Mapping[str, Any], fact_text: str) -> bool:
+    product = _normalize_fact_match_text(fact.get("product") or "")
+    text = _normalize_fact_match_text(fact_text)
+    if any(marker in text for marker in ("лагер", "лвш", "смен", "интенсив", "огэ интенсив", "егэ интенсив")):
+        return False
+    return "regular" in product or "regular_courses" in text or "учебный год" in text or "онлайн" in text or "очно" in text
+
+def _direct_path_course_fact_supplements(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    context: Optional[Mapping[str, Any]],
+    slots: Mapping[str, str],
+    existing_keys: set[str],
+) -> tuple[Mapping[str, Any], ...]:
+    grade, subject = _direct_path_known_grade_subject(context)
+    if not grade or not subject:
+        return ()
+    result: list[Mapping[str, Any]] = []
+    for fact in records:
+        key = _direct_path_snapshot_fact_key(fact)
+        if not key or key in existing_keys:
+            continue
+        categories = _direct_path_fact_categories(fact)
+        if "pricing" not in categories and "schedule" not in categories:
+            continue
+        haystack = f"{key} {fact.get('fact_type') or ''} {fact.get('product') or ''} {_direct_path_snapshot_fact_text(fact)}"
+        if not _direct_path_grade_in_fact(grade, haystack):
+            continue
+        if _direct_path_fact_conflicts_slots(fact, slots):
+            continue
+        fact_type = str(fact.get("fact_type") or "").strip().casefold()
+        if "schedule" in categories:
+            if not _direct_path_subject_matches_fact(subject, haystack):
+                continue
+        elif "pricing" in categories:
+            if fact_type != "price":
+                continue
+            if not _direct_path_regular_course_price_fact(fact, haystack):
+                continue
+        result.append(fact)
+    return tuple(result)
+
 def _direct_path_render_fact_line(key: str, text: str, meta: Mapping[str, str]) -> str:
     fact_type = str(meta.get("fact_type") or "").strip()
     product = str(meta.get("product") or "").strip()
@@ -744,11 +810,28 @@ def _direct_path_llm_retrieve_fact_pack(
             exact_records.append(fact)
     for key in selected_adjacent:
         adjacent_records.append(candidate_by_key[key])
+    supplemented_exact: list[str] = []
+    for fact in _direct_path_course_fact_supplements(
+        records,
+        context=context,
+        slots=slots,
+        existing_keys=set(selected_exact),
+    ):
+        key = _direct_path_snapshot_fact_key(fact)
+        if not key or key in selected_exact:
+            continue
+        if key in selected_adjacent:
+            selected_adjacent.remove(key)
+            adjacent_records = [item for item in adjacent_records if _direct_path_snapshot_fact_key(item) != key]
+        selected_exact.append(key)
+        exact_records.append(fact)
+        supplemented_exact.append(key)
     metadata.update(
         {
             "used": True,
             "selected_exact_ids": list(selected_exact),
             "selected_adjacent_ids": list(selected_adjacent),
+            "supplemented_exact_ids": supplemented_exact,
         }
     )
     pack = _direct_path_records_to_fact_pack(

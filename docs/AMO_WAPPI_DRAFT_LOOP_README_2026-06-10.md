@@ -51,15 +51,20 @@ python3 scripts/run_amo_wappi_draft_loop.py --once --live-write
 - есть явная пара в `draft_loop_pairs.json`;
 - `expected_brand` совпадает с брендом Wappi-профиля;
 - `lead_id` есть в allowlist phase1 или явно следует из пары;
-- транспорт разрешает только `POST /api/v4/leads/{id}/notes`.
+- транспорт разрешает только `POST /api/integrations/amocrm/leads/{id}/notes` на AI Office API; прямой POST в `amocrm.ru` запрещён.
 
 ## STOP
 
 Если существует `~/.mango_secrets/STOP_DRAFT_LOOP`, цикл только читает Wappi и пишет raw journal. Бот не вызывается, AMO note не пишется, входящие не помечаются обработанными.
+
+## Heartbeat and auth stop
+
+Heartbeat: `~/.mango_local/draft_loop/heartbeat.json` обновляется после каждого цикла.
+При серии 401/403 heartbeat получает `status=auth_error`, поллер больше не вызывает Wappi/бота до ручного обновления секретов и сброса state.
+Restart: обновить `~/.mango_secrets/amo_wappi.env`, проверить отсутствие `STOP_DRAFT_LOOP`, затем запустить `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_amo_wappi_draft_loop.py --loop --live-write`.
 
 ## Step 0 status
 
 Living API discovery: `D1_audit_backlog/WAPPI_DRAFT_LOOP_STEP0_2026-06-10.md`.
 
 Endpoint history подтверждён. Видимость исходящих, отправленных именно из AMO-интерфейса, требует ручной проверки на тестовой сделке 49832125. До этого `unedited_rate` считать экспериментальным.
-

@@ -313,6 +313,12 @@ input after prompt, fact, or gate changes. It is not valid for judging new dialo
 because a real client would react differently to changed bot answers. Do not point
 `--replay-from` at the same `--out-dir/dynamic_dialog_transcripts.jsonl`.
 
+## AMO/Wappi draft poller
+
+Heartbeat: `~/.mango_local/draft_loop/heartbeat.json` shows the last cycle and `auth_error` after repeated 401/403.
+Restart: clear expired credentials in `~/.mango_secrets/amo_wappi.env`, then run `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_amo_wappi_draft_loop.py --loop --live-write`.
+Stop: create `~/.mango_secrets/STOP_DRAFT_LOOP`; the poller will read Wappi but will not call the bot or write AMO notes.
+
 ## Operational reliability
 
 Current reliability controls:

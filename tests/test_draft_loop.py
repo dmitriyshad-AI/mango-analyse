@@ -29,8 +29,10 @@ class FakeWappi:
     def __init__(self, dialogs, messages_by_chat) -> None:
         self.dialogs = dialogs
         self.messages_by_chat = messages_by_chat
+        self.list_calls = 0
 
     def list_telegram_chats(self, *, profile_id: str, limit: int = 50):
+        self.list_calls += 1
         return {"dialogs": self.dialogs.get(profile_id, [])}
 
     def get_telegram_chat_messages(self, *, profile_id: str, chat_id: str, **kwargs):
@@ -71,6 +73,7 @@ def _config(tmp_path: Path, *, pairs=None, config_fingerprint=None) -> DraftLoop
         state_path=tmp_path / "state.json",
         journal_path=tmp_path / "journal.jsonl",
         manager_edit_log_path=tmp_path / "manager_edits.jsonl",
+        heartbeat_path=tmp_path / "heartbeat.json",
         stop_path=tmp_path / "STOP_DRAFT_LOOP",
         debounce_seconds=60,
         config_fingerprint=config_fingerprint or {},
@@ -382,6 +385,134 @@ def test_manager_edit_classifies_superseded_draft_sent_later_and_single_best_mat
     assert matched["d1"]["match_class"] == "unedited"
     assert matched["d1"]["matched_message_id"] == "o1"
     assert "d2" not in matched
+
+
+def test_manager_edit_window_keeps_evening_draft_until_next_business_day() -> None:
+    draft_ts = int(datetime(2026, 6, 10, 18, 0, tzinfo=timezone.utc).timestamp())
+    drafts = [DraftWindow(profile_id="p", chat_id="c", message_id="d1", bot_draft_text="Адрес: Красносельская, 30.", draft_ts=draft_ts)]
+    outgoing = [OutgoingWindowMessage(message_id="o1", text="Адрес: Красносельская, 30.", sent_ts=draft_ts + 10 * 60 * 60)]
+
+    rows = classify_manager_edit_windows(drafts, outgoing, now_ts=draft_ts + 10 * 60 * 60)
+
+    assert rows[0]["match_class"] == "unedited"
+    assert rows[0]["matched_message_id"] == "o1"
+
+
+def test_draft_loop_run_once_writes_manager_edit_match_from_outgoing_history(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    draft_ts = int(datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc).timestamp())
+    journal_path = tmp_path / "journal.jsonl"
+    journal_path.write_text(
+        json.dumps(
+            {
+                "event": "note_written",
+                "status": "note_written",
+                "profile_id": "profile-foton",
+                "chat_id": "chat-1",
+                "message_id": "m1",
+                "lead_id": "49832125",
+                "brand": "foton",
+                "route": "draft_for_manager",
+                "safety_flags": ["draft_only"],
+                "bot_draft_text": "Фотон находится на Верхней Красносельской, 30.",
+                "created_at": datetime.fromtimestamp(draft_ts, tz=timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg = _config(tmp_path, pairs={key: pair})
+    wappi = FakeWappi(
+        {"profile-foton": [{"id": "chat-1", "type": "user"}]},
+        {
+            ("profile-foton", "chat-1"): [
+                _message("m1", text="Какой адрес?", ts=draft_ts),
+                _message("18242", text="Фотон находится на Верхней Красносельской, 30.", ts=draft_ts + 12 * 60 * 60, from_me=True),
+            ]
+        },
+    )
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        journal=DraftLoopJournal(journal_path),
+        now_fn=lambda: datetime.fromtimestamp(draft_ts + 13 * 60 * 60, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=True)
+
+    assert summary["manager_edits_classified"] == 1
+    rows = [json.loads(line) for line in (tmp_path / "manager_edits.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["message_id"] == "m1"
+    assert rows[0]["matched_message_id"] == "18242"
+    assert rows[0]["match_class"] == "unedited"
+    assert rows[0]["lead_id"] == "49832125"
+
+    summary_again = loop.run_once(dry_run=True)
+    assert summary_again["manager_edits_classified"] == 0
+    assert len((tmp_path / "manager_edits.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_draft_loop_writes_heartbeat_on_success(tmp_path: Path) -> None:
+    loop = _loop(tmp_path, messages=[], pairs={})
+
+    summary = loop.run_once(dry_run=True)
+
+    heartbeat = json.loads((tmp_path / "heartbeat.json").read_text(encoding="utf-8"))
+    assert heartbeat["status"] == "ok"
+    assert heartbeat["summary"]["processed"] == summary["processed"]
+    assert heartbeat["last_cycle_at"]
+
+
+def test_draft_loop_auth_error_series_stops_without_calling_bot(tmp_path: Path) -> None:
+    class AuthFailWappi(FakeWappi):
+        def list_telegram_chats(self, *, profile_id: str, limit: int = 50):
+            self.list_calls += 1
+            raise RuntimeError("HTTP 401 Unauthorized")
+
+    cfg = _config(tmp_path, pairs={})
+    cfg = DraftLoopConfig(
+        profiles=cfg.profiles,
+        pairs=cfg.pairs,
+        allowed_test_lead_ids=cfg.allowed_test_lead_ids,
+        state_path=cfg.state_path,
+        journal_path=cfg.journal_path,
+        manager_edit_log_path=cfg.manager_edit_log_path,
+        heartbeat_path=cfg.heartbeat_path,
+        stop_path=cfg.stop_path,
+        debounce_seconds=cfg.debounce_seconds,
+        history_limit=cfg.history_limit,
+        auth_error_limit=2,
+    )
+    wappi = AuthFailWappi({"profile-foton": []}, {})
+    bot = FakeBot()
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    first = loop.run_once(dry_run=True)
+    second = loop.run_once(dry_run=True)
+    third = loop.run_once(dry_run=True)
+
+    assert first["auth_error"] is True
+    assert first["stopped"] is False
+    assert second["auth_error"] is True
+    assert second["stopped"] is True
+    assert third["stopped"] is True
+    assert wappi.list_calls == 2
+    assert bot.calls == []
+    heartbeat = json.loads((tmp_path / "heartbeat.json").read_text(encoding="utf-8"))
+    assert heartbeat["status"] == "auth_error"
+    assert heartbeat["auth_error_count"] == 2
 
 
 def test_draft_loop_modules_do_not_import_public_telegram_transport() -> None:

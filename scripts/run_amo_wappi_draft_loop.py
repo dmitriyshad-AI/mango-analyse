@@ -93,6 +93,7 @@ def build_config(args: argparse.Namespace) -> DraftLoopConfig:
         state_path=local_dir / "state.json",
         journal_path=local_dir / "journal.jsonl",
         manager_edit_log_path=local_dir / "manager_edits.jsonl",
+        heartbeat_path=local_dir / "heartbeat.json",
         stop_path=args.stop_file.expanduser(),
         manager_outgoing_visible=visibility,
         config_fingerprint=build_draft_loop_config_fingerprint(

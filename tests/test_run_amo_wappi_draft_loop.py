@@ -46,6 +46,7 @@ def test_build_config_loads_profiles_pairs_and_keeps_state_outside_repo(tmp_path
     assert config.pair_for(key).lead_id == "49832125"
     assert config.state_path == local_dir / "state.json"
     assert config.journal_path == local_dir / "journal.jsonl"
+    assert config.heartbeat_path == local_dir / "heartbeat.json"
     assert config.allowed_test_lead_ids == frozenset({"49832125"})
 
 

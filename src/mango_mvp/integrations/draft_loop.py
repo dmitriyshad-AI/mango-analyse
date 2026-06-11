@@ -6,14 +6,15 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Protocol, Sequence
+from zoneinfo import ZoneInfo
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, update_dialogue_memory_after_answer
-from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config, WappiPhase1Client
+from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config, ManagerEditLogRecord, WappiPhase1Client, append_manager_edit_log
 
 
 DEFAULT_DRAFT_LOOP_DIR = Path.home() / ".mango_local" / "draft_loop"
@@ -21,6 +22,8 @@ DEFAULT_STOP_PATH = Path.home() / ".mango_secrets" / "STOP_DRAFT_LOOP"
 DEFAULT_DEBOUNCE_SECONDS = 60
 DEFAULT_HISTORY_LIMIT = 10
 CONFIG_FINGERPRINT_SCHEMA_VERSION = "draft_loop_config_fingerprint_v1_2026_06_10"
+DEFAULT_AUTH_ERROR_LIMIT = 3
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 class DraftLoopError(RuntimeError):
@@ -73,9 +76,11 @@ class DraftLoopConfig:
     state_path: Path = DEFAULT_DRAFT_LOOP_DIR / "state.json"
     journal_path: Path = DEFAULT_DRAFT_LOOP_DIR / "journal.jsonl"
     manager_edit_log_path: Path = DEFAULT_DRAFT_LOOP_DIR / "manager_edits.jsonl"
+    heartbeat_path: Path = DEFAULT_DRAFT_LOOP_DIR / "heartbeat.json"
     stop_path: Path = DEFAULT_STOP_PATH
     debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS
     history_limit: int = DEFAULT_HISTORY_LIMIT
+    auth_error_limit: int = DEFAULT_AUTH_ERROR_LIMIT
     manager_outgoing_visible: bool | None = None
     config_fingerprint: Mapping[str, str] = field(default_factory=dict)
 
@@ -208,7 +213,7 @@ class DraftLoopState:
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"processed": [], "pending_notes": {}, "dialogue_memory": {}}
+            return {"processed": [], "pending_notes": {}, "dialogue_memory": {}, "manager_edit_matches": [], "auth_error_count": 0}
         try:
             decoded = json.loads(self.path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
@@ -218,6 +223,8 @@ class DraftLoopState:
         decoded.setdefault("processed", [])
         decoded.setdefault("pending_notes", {})
         decoded.setdefault("dialogue_memory", {})
+        decoded.setdefault("manager_edit_matches", [])
+        decoded.setdefault("auth_error_count", 0)
         return decoded
 
     def processed_keys(self) -> set[tuple[str, str, str]]:
@@ -265,6 +272,30 @@ class DraftLoopState:
         data[key.value] = dict(memory)
         self.payload["dialogue_memory"] = data
 
+    def manager_edit_match_keys(self) -> set[str]:
+        result: set[str] = set()
+        for item in self.payload.get("manager_edit_matches") or []:
+            if isinstance(item, str) and item:
+                result.add(item)
+        return result
+
+    def mark_manager_edit_match(self, key: str) -> None:
+        if not key:
+            return
+        items = [str(item) for item in (self.payload.get("manager_edit_matches") or []) if str(item)]
+        if key not in items:
+            items.append(key)
+        self.payload["manager_edit_matches"] = items[-5000:]
+
+    def auth_error_count(self) -> int:
+        try:
+            return int(self.payload.get("auth_error_count") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def set_auth_error_count(self, value: int) -> None:
+        self.payload["auth_error_count"] = max(0, int(value))
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = json.dumps(self.payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -277,6 +308,55 @@ class DraftLoopState:
 
 def _message_state_key(message: WappiHistoryMessage) -> str:
     return f"{message.profile_id}\t{message.chat_id}\t{message.message_id}"
+
+
+def _is_auth_error_exception(exc: BaseException) -> bool:
+    text = str(exc).casefold()
+    return any(marker in text for marker in ("401", "403", "unauthorized", "forbidden", "auth"))
+
+
+def _draft_log_priority(row: Mapping[str, Any]) -> int:
+    event = str(row.get("event") or "")
+    status = str(row.get("status") or "")
+    if event in {"note_written", "note_retried"} or status == "note_written":
+        return 30
+    if status == "note_pending":
+        return 20
+    if status == "dry_run":
+        return 10
+    return 0
+
+
+def _draft_row_ts(row: Mapping[str, Any]) -> int:
+    timestamp = row.get("timestamp")
+    try:
+        value = int(float(timestamp))
+        if value > 0:
+            return value
+    except (TypeError, ValueError):
+        pass
+    return _parse_iso_epoch(str(row.get("created_at") or ""))
+
+
+def _parse_iso_epoch(value: str) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.astimezone(timezone.utc).timestamp())
+
+
+def _iso_from_epoch(value: int) -> str:
+    if not value:
+        return ""
+    return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat()
 
 
 def _is_private_dialog(dialog: Mapping[str, Any]) -> bool:
@@ -336,50 +416,90 @@ class AmoWappiDraftLoop:
 
     def run_once(self, *, dry_run: bool = True) -> Mapping[str, Any]:
         stop_active = self.config.stop_path.expanduser().exists()
+        if self.state.auth_error_count() >= max(1, int(self.config.auth_error_limit)):
+            summary = {
+                "processed": 0,
+                "deferred": 0,
+                "skipped": 0,
+                "bot_calls": 0,
+                "retried_pending": 0,
+                "stop_active": stop_active,
+                "dry_run": dry_run,
+                "auth_error": True,
+                "auth_error_count": self.state.auth_error_count(),
+                "stopped": True,
+            }
+            self._write_heartbeat("auth_error", summary)
+            return summary
         retried = 0 if dry_run or stop_active else self.retry_pending_notes()
         processed_count = 0
         deferred_count = 0
         skipped_count = 0
         bot_calls = 0
+        manager_edit_count = 0
         now_epoch = int(self.now_fn().timestamp())
         seen_processed = self.state.processed_keys() | self.journal.processed_message_keys()
-        for profile in self.config.profiles.values():
-            if profile.channel != "telegram":
-                continue
-            dialogs_payload = self.wappi_client.list_telegram_chats(profile_id=profile.profile_id, limit=50)
-            dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
-            for dialog in dialogs if isinstance(dialogs, Sequence) else []:
-                if not isinstance(dialog, Mapping):
+        try:
+            for profile in self.config.profiles.values():
+                if profile.channel != "telegram":
                     continue
-                chat_id = str(dialog.get("id") or "").strip()
-                if not chat_id:
-                    continue
-                if not _is_private_dialog(dialog):
-                    self.journal.append({"event": "chat_skipped", "profile_id": profile.profile_id, "chat_id": chat_id, "reason": "non_private"})
-                    skipped_count += 1
-                    continue
-                messages = self._fetch_messages(profile.profile_id, chat_id)
-                inbound_new = [
-                    item
-                    for item in messages
-                    if item.is_inbound_text and item.key not in seen_processed and item.timestamp <= now_epoch - self.config.debounce_seconds
-                ]
-                if not inbound_new:
-                    recent_inbound = [item for item in messages if item.is_inbound_text and item.key not in seen_processed]
-                    if recent_inbound:
-                        deferred_count += 1
-                    continue
-                if stop_active:
-                    for item in inbound_new:
-                        self.journal.append(_message_event("stop_raw_inbound", item, status="stop_not_processed"))
-                    continue
-                result = self._process_chat_messages(profile, messages, inbound_new, dry_run=dry_run)
-                processed_count += int(result.get("processed", 0))
-                skipped_count += int(result.get("skipped", 0))
-                bot_calls += int(result.get("bot_calls", 0))
-        if not dry_run and not stop_active:
+                dialogs_payload = self.wappi_client.list_telegram_chats(profile_id=profile.profile_id, limit=50)
+                dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
+                for dialog in dialogs if isinstance(dialogs, Sequence) else []:
+                    if not isinstance(dialog, Mapping):
+                        continue
+                    chat_id = str(dialog.get("id") or "").strip()
+                    if not chat_id:
+                        continue
+                    if not _is_private_dialog(dialog):
+                        self.journal.append({"event": "chat_skipped", "profile_id": profile.profile_id, "chat_id": chat_id, "reason": "non_private"})
+                        skipped_count += 1
+                        continue
+                    messages = self._fetch_messages(profile.profile_id, chat_id)
+                    manager_edit_count += self._classify_manager_edits(profile, chat_id, messages)
+                    inbound_new = [
+                        item
+                        for item in messages
+                        if item.is_inbound_text and item.key not in seen_processed and item.timestamp <= now_epoch - self.config.debounce_seconds
+                    ]
+                    if not inbound_new:
+                        recent_inbound = [item for item in messages if item.is_inbound_text and item.key not in seen_processed]
+                        if recent_inbound:
+                            deferred_count += 1
+                        continue
+                    if stop_active:
+                        for item in inbound_new:
+                            self.journal.append(_message_event("stop_raw_inbound", item, status="stop_not_processed"))
+                        continue
+                    result = self._process_chat_messages(profile, messages, inbound_new, dry_run=dry_run)
+                    processed_count += int(result.get("processed", 0))
+                    skipped_count += int(result.get("skipped", 0))
+                    bot_calls += int(result.get("bot_calls", 0))
+        except Exception as exc:  # noqa: BLE001
+            if not _is_auth_error_exception(exc):
+                raise
+            auth_error_count = self.state.auth_error_count() + 1
+            self.state.set_auth_error_count(auth_error_count)
             self.state.save()
-        return {
+            summary = {
+                "processed": processed_count,
+                "deferred": deferred_count,
+                "skipped": skipped_count,
+                "bot_calls": bot_calls,
+                "retried_pending": retried,
+                "stop_active": stop_active,
+                "dry_run": dry_run,
+                "manager_edits_classified": manager_edit_count,
+                "auth_error": True,
+                "auth_error_count": auth_error_count,
+                "stopped": auth_error_count >= max(1, int(self.config.auth_error_limit)),
+                "error": str(exc)[:300],
+            }
+            self._write_heartbeat("auth_error", summary)
+            return summary
+        previous_auth_error_count = self.state.auth_error_count()
+        self.state.set_auth_error_count(0)
+        summary = {
             "processed": processed_count,
             "deferred": deferred_count,
             "skipped": skipped_count,
@@ -387,7 +507,16 @@ class AmoWappiDraftLoop:
             "retried_pending": retried,
             "stop_active": stop_active,
             "dry_run": dry_run,
+            "manager_edits_classified": manager_edit_count,
+            "auth_error": False,
+            "auth_error_count": 0,
         }
+        if not dry_run and not stop_active:
+            self.state.save()
+        elif manager_edit_count or previous_auth_error_count:
+            self.state.save()
+        self._write_heartbeat("stop" if stop_active else "ok", summary)
+        return summary
 
     def _fetch_messages(self, profile_id: str, chat_id: str) -> list[WappiHistoryMessage]:
         payload = self.wappi_client.get_telegram_chat_messages(
@@ -407,6 +536,100 @@ class AmoWappiDraftLoop:
                 messages.append(item)
         messages.sort(key=lambda item: (item.timestamp, item.message_id))
         return messages
+
+    def _classify_manager_edits(self, profile: DraftLoopProfile, chat_id: str, messages: Sequence[WappiHistoryMessage]) -> int:
+        key = DraftLoopKey(profile.profile_id, chat_id)
+        pair = self.config.pair_for(key)
+        if pair is None:
+            return 0
+        draft_by_message: dict[str, Mapping[str, Any]] = {}
+        for row in self.journal.rows():
+            if str(row.get("profile_id") or "") != profile.profile_id or str(row.get("chat_id") or "") != chat_id:
+                continue
+            if str(row.get("event") or "") not in {"note_written", "note_retried"} and str(row.get("status") or "") != "note_written":
+                continue
+            message_id = str(row.get("message_id") or "")
+            draft_text = str(row.get("bot_draft_text") or "")
+            if not message_id or not draft_text:
+                continue
+            current = draft_by_message.get(message_id)
+            if current is None or _draft_log_priority(row) >= _draft_log_priority(current):
+                draft_by_message[message_id] = row
+        if not draft_by_message:
+            return 0
+        drafts = [
+            DraftWindow(
+                profile_id=profile.profile_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                bot_draft_text=str(row.get("bot_draft_text") or ""),
+                draft_ts=_draft_row_ts(row),
+                superseded=False,
+            )
+            for message_id, row in sorted(draft_by_message.items(), key=lambda item: _draft_row_ts(item[1]))
+        ]
+        outgoing = [
+            OutgoingWindowMessage(message_id=item.message_id, text=item.text, sent_ts=item.timestamp)
+            for item in messages
+            if item.from_me and item.message_type == "text" and item.text.strip()
+        ]
+        now_ts = int(self.now_fn().timestamp())
+        classified = classify_manager_edit_windows(drafts, outgoing, now_ts=now_ts)
+        if not classified:
+            return 0
+        outgoing_by_id = {item.message_id: item for item in outgoing}
+        seen = self.state.manager_edit_match_keys()
+        written = 0
+        for row in classified:
+            message_id = str(row.get("message_id") or "")
+            match_class = str(row.get("match_class") or "")
+            matched_message_id = str(row.get("matched_message_id") or "")
+            match_key = f"{profile.profile_id}\t{chat_id}\t{message_id}\t{matched_message_id}\t{match_class}"
+            if match_key in seen:
+                continue
+            draft_row = draft_by_message.get(message_id) or {}
+            sent = outgoing_by_id.get(matched_message_id)
+            append_manager_edit_log(
+                self.config.manager_edit_log_path,
+                ManagerEditLogRecord(
+                    lead_id=pair.lead_id,
+                    brand=pair.expected_brand,
+                    profile_id=profile.profile_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    matched_message_id=matched_message_id,
+                    draft_route=str(draft_row.get("route") or ""),
+                    match_class=match_class,
+                    ratio=float(row.get("ratio") or 0.0),
+                    draft_ts=_iso_from_epoch(_draft_row_ts(draft_row)),
+                    sent_ts=_iso_from_epoch(sent.sent_ts) if sent is not None else "",
+                    window_closed=bool(row.get("window_closed")),
+                    bot_draft_text=str(draft_row.get("bot_draft_text") or ""),
+                    manager_sent_text=sent.text if sent is not None else "",
+                    reason_codes=tuple(str(item) for item in (draft_row.get("safety_flags") or ())),
+                ),
+            )
+            self.state.mark_manager_edit_match(match_key)
+            seen.add(match_key)
+            written += 1
+        return written
+
+    def _write_heartbeat(self, status: str, summary: Mapping[str, Any]) -> None:
+        target = self.config.heartbeat_path.expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": "draft_loop_heartbeat_v1_2026_06_11",
+            "last_cycle_at": self.now_fn().astimezone(timezone.utc).isoformat(),
+            "status": str(status or ""),
+            "auth_error_count": self.state.auth_error_count(),
+            "summary": dict(summary),
+        }
+        data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.write("\n")
+        os.replace(tmp_name, target)
 
     def _process_chat_messages(
         self,
@@ -624,14 +847,15 @@ def classify_manager_edit_windows(
     outgoing: Sequence[OutgoingWindowMessage],
     *,
     now_ts: int,
-    window_seconds: int = 4 * 60 * 60,
+    window_seconds: int | None = None,
 ) -> list[dict[str, Any]]:
     assigned_outgoing: set[str] = set()
     best_by_draft: dict[str, tuple[float, OutgoingWindowMessage]] = {}
     for sent in outgoing:
         candidates: list[tuple[float, DraftWindow]] = []
         for draft in drafts:
-            if sent.sent_ts < draft.draft_ts or sent.sent_ts > draft.draft_ts + window_seconds:
+            deadline_ts = _manager_edit_deadline_ts(draft.draft_ts, window_seconds=window_seconds)
+            if sent.sent_ts < draft.draft_ts or sent.sent_ts > deadline_ts:
                 continue
             ratio = manager_text_ratio(draft.bot_draft_text, sent.text)
             candidates.append((ratio, draft))
@@ -662,10 +886,11 @@ def classify_manager_edit_windows(
                 }
             )
             continue
-        closed = now_ts >= draft.draft_ts + window_seconds
+        deadline_ts = _manager_edit_deadline_ts(draft.draft_ts, window_seconds=window_seconds)
+        closed = now_ts >= deadline_ts
         if not closed:
             continue
-        had_outgoing = any(draft.draft_ts <= sent.sent_ts <= draft.draft_ts + window_seconds for sent in outgoing)
+        had_outgoing = any(draft.draft_ts <= sent.sent_ts <= deadline_ts for sent in outgoing)
         if draft.superseded:
             match_class = "superseded"
         elif had_outgoing:
@@ -682,6 +907,17 @@ def classify_manager_edit_windows(
             }
         )
     return result
+
+
+def _manager_edit_deadline_ts(draft_ts: int, *, window_seconds: int | None) -> int:
+    if window_seconds is not None:
+        return int(draft_ts) + int(window_seconds)
+    draft_dt = datetime.fromtimestamp(int(draft_ts), tz=timezone.utc).astimezone(MOSCOW_TZ)
+    deadline_date = draft_dt.date() + timedelta(days=1)
+    while deadline_date.weekday() >= 5:
+        deadline_date += timedelta(days=1)
+    deadline = datetime.combine(deadline_date, time(23, 59, 59), tzinfo=MOSCOW_TZ)
+    return int(deadline.astimezone(timezone.utc).timestamp())
 
 
 def load_profiles_file(path: Path | str) -> dict[str, DraftLoopProfile]:

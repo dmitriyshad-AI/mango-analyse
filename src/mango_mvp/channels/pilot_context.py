@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -7,6 +8,10 @@ from mango_mvp.channels.contracts import ChannelMessage
 
 
 PILOT_CONTEXT_SCHEMA_VERSION = "telegram_pilot_context_v1_2026_05_17"
+DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
+DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
+MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
+PILOT_CONTEXT_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -386,6 +391,15 @@ def compact_dialogue_memory_view(value: Mapping[str, Any] | None) -> Mapping[str
     if not isinstance(value, Mapping):
         return {}
     result = dict(compact_mapping(value, max_items=20, max_chars=700))
+    if _pilot_context_flag_enabled(MEMORY_PROVENANCE_COMPACT_ENV):
+        for key, max_items, max_chars in (
+            ("slot_sources", 18, 120),
+            ("client_confirmed_slots", 18, 160),
+            ("slot_provenance", 18, 300),
+        ):
+            mapped_value = value.get(key)
+            if isinstance(mapped_value, Mapping):
+                result[key] = compact_mapping(mapped_value, max_items=max_items, max_chars=max_chars)
     turns = value.get("recent_turns")
     if isinstance(turns, Sequence) and not isinstance(turns, (str, bytes, bytearray)):
         clean_turns: list[Mapping[str, str]] = []
@@ -422,6 +436,20 @@ def compact_dialogue_memory_view(value: Mapping[str, Any] | None) -> Mapping[str
             clean_text(item, max_chars=80) for item in do_not_ask_again if clean_text(item, max_chars=80)
         ][:16]
     return result
+
+
+def _pilot_context_flag_enabled(env_name: str) -> bool:
+    raw = os.getenv(env_name)
+    if raw is not None:
+        return _truthy_setting(raw)
+    return (
+        env_name in PILOT_CONTEXT_PROFILE_DEFAULT_ON_FLAGS
+        and str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
+    )
+
+
+def _truthy_setting(value: Any) -> bool:
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "on"}
 
 
 def compact_rop_policy(value: Mapping[str, Any] | None, *, max_items: int, max_chars: int) -> Mapping[str, Any]:

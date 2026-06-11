@@ -4,10 +4,12 @@ import json
 
 from mango_mvp.channels.dialogue_memory import (
     MEMORY_PROVENANCE_ENV,
+    MEMORY_CHILD_ELLIPSIS_ENV,
     build_memory_llm_prompt,
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
 )
+from mango_mvp.channels.pilot_context import MEMORY_PROVENANCE_COMPACT_ENV, compact_dialogue_memory_view
 
 
 def _trace_rows(path):
@@ -412,6 +414,60 @@ def test_memory_provenance_keeps_two_children_separate(monkeypatch) -> None:
     assert view["known_slots"]["child_2_grade"] == "4"
     assert view["slot_provenance"]["child_1_grade"]["child_key"] == "child_1"
     assert view["slot_provenance"]["child_2_grade"]["child_key"] == "child_2"
+
+
+def test_memory_provenance_compact_roundtrip_preserves_source_and_quote(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.setenv(MEMORY_PROVENANCE_COMPACT_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="9 класс, физика, очно",
+        active_brand="foton",
+        session_id="s-provenance-compact",
+    )
+    compact = compact_dialogue_memory_view(memory.to_prompt_view())
+
+    rebuilt = build_dialogue_memory(
+        current_message="А сколько стоит?",
+        active_brand="foton",
+        previous_memory=compact,
+        session_id="s-provenance-compact",
+    )
+
+    grade = rebuilt.known_slots["grade"]
+    assert grade.source == "memory_provenance"
+    assert "9 класс" in grade.quote
+    assert rebuilt.to_prompt_view()["slot_sources"]["grade"] == "memory_provenance"
+    assert rebuilt.to_prompt_view()["slot_provenance"]["grade"]["quote"]
+
+
+def test_memory_child_ellipsis_flag_extracts_second_child_grade(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.setenv(MEMORY_CHILD_ELLIPSIS_ENV, "0")
+    off = build_dialogue_memory(
+        current_message="У меня сын в 7 классе и дочь в 4-м",
+        active_brand="foton",
+        session_id="s-provenance-ellipsis-off",
+    ).to_prompt_view()
+
+    assert off["known_slots"]["child_1_grade"] == "7"
+    assert "child_2_grade" not in off["known_slots"]
+    assert off["known_slots"]["grade"] == "7"
+
+    monkeypatch.setenv(MEMORY_CHILD_ELLIPSIS_ENV, "1")
+    on = build_dialogue_memory(
+        current_message="У меня сын в 7 классе и дочь в 4-м",
+        active_brand="foton",
+        session_id="s-provenance-ellipsis-on",
+    ).to_prompt_view()
+
+    assert on["known_slots"]["child_1_grade"] == "7"
+    assert on["known_slots"]["child_2_grade"] == "4"
+    assert on["known_slots"]["grade"] == "4"
+    assert {
+        on["slot_provenance"]["child_1_grade"]["child_key"],
+        on["slot_provenance"]["child_2_grade"]["child_key"],
+    } == {"child_1", "child_2"}
 
 
 def test_dialogue_memory_tracks_commitment_and_closes_open_question() -> None:

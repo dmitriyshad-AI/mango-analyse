@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mango_mvp.channels.contracts import ChannelDirection, ChannelMessage
-from mango_mvp.channels.pilot_context import build_pilot_context, pilot_context_safety_contract
+from mango_mvp.channels.pilot_context import (
+    MEMORY_PROVENANCE_COMPACT_ENV,
+    build_pilot_context,
+    compact_dialogue_memory_view,
+    pilot_context_safety_contract,
+)
 from mango_mvp.channels.draft_prompt_builder import build_prompt_context
 from mango_mvp.channels.few_shot_reference import build_gold_answer_context, build_few_shot_reference
 
@@ -123,6 +128,36 @@ def test_pilot_context_compaction_preserves_held_state_and_focus() -> None:
     assert memory["held_state"]["active_fact_scope"] == "online_recordings"
     assert memory["topic_focus"]["product_family"] == "regular_course"
     assert "по онлайн-занятиям записи доступны" in memory["safe_answered_parts"]
+
+
+def test_pilot_context_memory_provenance_compact_flag_preserves_late_provenance(monkeypatch) -> None:
+    source = {
+        **{f"filler_{index}": f"value {index}" for index in range(24)},
+        "known_slots": {"grade": "9", "subject": "физика", "format": "очно"},
+        "slot_sources": {"grade": "memory_provenance", "subject": "memory_provenance", "format": "memory_provenance"},
+        "client_confirmed_slots": {"grade": "9", "subject": "физика", "format": "очно"},
+        "slot_provenance": {
+            "grade": {
+                "value": "9",
+                "source": "memory_provenance",
+                "quote": "9 класс, физика, очно",
+                "turn_index": 1,
+            }
+        },
+    }
+
+    monkeypatch.setenv(MEMORY_PROVENANCE_COMPACT_ENV, "0")
+    off = compact_dialogue_memory_view(source)
+    assert "known_slots" in off
+    assert "slot_provenance" not in off
+    assert "client_confirmed_slots" not in off
+
+    monkeypatch.setenv(MEMORY_PROVENANCE_COMPACT_ENV, "1")
+    on = compact_dialogue_memory_view(source)
+    assert on["known_slots"]["grade"] == "9"
+    assert on["slot_sources"]["grade"] == "memory_provenance"
+    assert on["client_confirmed_slots"]["format"] == "очно"
+    assert on["slot_provenance"]["grade"]["quote"] == "9 класс, физика, очно"
 
 
 def test_gold_answer_context_is_brand_topic_filtered_and_not_fact_source(monkeypatch, tmp_path: Path) -> None:

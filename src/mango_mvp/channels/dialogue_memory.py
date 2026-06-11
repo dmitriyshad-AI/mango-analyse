@@ -26,6 +26,11 @@ from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 DIALOGUE_MEMORY_SCHEMA_VERSION = "dialogue_memory_v2_2026_05_23"
 MEMORY_PROVENANCE_ENV = "TELEGRAM_MEMORY_PROVENANCE"
+DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
+DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
+MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
+MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
+MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = ()
 MAX_TURNS = 20
 MAX_PROMPT_TURNS = 20
 MAX_MEMORY_QUOTE_CHARS = 200
@@ -815,6 +820,9 @@ def _extract_json_object(value: Any) -> Mapping[str, Any]:
 def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueMemory:
     data = dict(payload or {})
     slots = {}
+    slot_provenance = data.get("slot_provenance") if isinstance(data.get("slot_provenance"), Mapping) else {}
+    slot_sources = data.get("slot_sources") if isinstance(data.get("slot_sources"), Mapping) else {}
+    restore_provenance = _memory_profile_flag_enabled(MEMORY_PROVENANCE_COMPACT_ENV)
     for key, raw in (data.get("known_slots") or {}).items() if isinstance(data.get("known_slots"), Mapping) else ():
         if isinstance(raw, Mapping):
             slots[str(key)] = DialogueSlot(
@@ -826,6 +834,19 @@ def dialogue_memory_from_mapping(payload: Mapping[str, Any] | None) -> DialogueM
                 str(raw.get("child_key") or ""),
                 str(raw.get("message_id") or ""),
             )
+        elif restore_provenance and isinstance(slot_provenance.get(key), Mapping):
+            provenance = slot_provenance.get(key) or {}
+            slots[str(key)] = DialogueSlot(
+                str(provenance.get("value") or raw or ""),
+                str(provenance.get("source") or slot_sources.get(key) or "unknown"),
+                float(provenance.get("confidence") or 1.0),
+                int(provenance.get("turn_index") or 0),
+                str(provenance.get("quote") or "")[:MAX_MEMORY_QUOTE_CHARS],
+                str(provenance.get("child_key") or ""),
+                str(provenance.get("message_id") or ""),
+            )
+        elif restore_provenance and str(slot_sources.get(key) or ""):
+            slots[str(key)] = DialogueSlot(str(raw or ""), str(slot_sources.get(key) or "unknown"), 0.0)
         else:
             slots[str(key)] = DialogueSlot(str(raw or ""), "unknown", 0.0)
     open_raw = data.get("open_question") if isinstance(data.get("open_question"), Mapping) else {}
@@ -931,7 +952,17 @@ def _memory_provenance_enabled() -> bool:
     explicit = os.getenv(MEMORY_PROVENANCE_ENV)
     if explicit is not None:
         return str(explicit).strip().lower() in {"1", "true", "yes", "on"}
-    return str(os.getenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG") or "").strip() == "pilot_gold_v1"
+    return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
+
+
+def _memory_profile_flag_enabled(env_name: str) -> bool:
+    explicit = os.getenv(env_name)
+    if explicit is not None:
+        return str(explicit).strip().lower() in {"1", "true", "yes", "on"}
+    return (
+        env_name in MEMORY_PROFILE_DEFAULT_ON_FLAGS
+        and str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
+    )
 
 
 _GRADE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -972,6 +1003,11 @@ _CHILD_NAME_MARKER_RE = re.compile(
 _NAME_GRADE_RE = re.compile(r"\b(?P<name>[А-ЯЁ][а-яё]{2,20})\s+в\s+(?:[1-9]|1[01])\s*(?:класс|кл\.?)\b", re.I)
 _CHILD_GRADE_RE = re.compile(
     r"\b(?P<marker>сыну?|дочк[аеуы]|дочь|младш\w*|старш\w*)\s+в\s+(?P<grade>[1-9]|1[01])\s*(?:класс\w*|кл\.?)\b",
+    re.I,
+)
+_CHILD_GRADE_ELLIPSIS_RE = re.compile(
+    r"\b(?P<marker>сыну?|дочк[аеуы]|дочь|мальчик\w*|девочк\w*|реб[её]н(?:ок|ка|ку)?|младш\w*|старш\w*)"
+    r"\s+в\s+(?P<grade>[1-9]|1[01])\s*[- ]?(?:м|й|ом|ым)\b",
     re.I,
 )
 _NEW_CHILD_RE = re.compile(r"\b(?:втор(?:ой|ая)|младш\w*|старш\w*|ещ[её]\s+один\s+реб)\b", re.I)
@@ -1033,10 +1069,19 @@ def _extract_provenance_slots_from_client_text(
 ) -> Mapping[str, DialogueSlot]:
     result: dict[str, DialogueSlot] = {}
     child_grade_matches = list(_CHILD_GRADE_RE.finditer(text))
+    if _memory_profile_flag_enabled(MEMORY_CHILD_ELLIPSIS_ENV):
+        child_grade_matches = sorted(
+            [*child_grade_matches, *_CHILD_GRADE_ELLIPSIS_RE.finditer(text)],
+            key=lambda match: match.start(),
+        )
     if child_grade_matches:
         for index, match in enumerate(child_grade_matches, start=1):
             marker = normalize_text(match.group("marker"))
-            inferred_child = "child_2" if "доч" in marker or "младш" in marker or index > 1 else "child_1"
+            inferred_child = (
+                "child_2"
+                if "доч" in marker or "девоч" in marker or "младш" in marker or index > 1
+                else "child_1"
+            )
             slot = _provenance_slot("grade", match.group("grade"), match.group(0), turn_index, message_id, inferred_child)
             result[f"{inferred_child}_grade"] = slot
             result["grade"] = slot

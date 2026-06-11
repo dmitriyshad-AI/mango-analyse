@@ -11962,6 +11962,33 @@ def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None
     assert "output_sanitizer" not in result.metadata or result.metadata["output_sanitizer"].get("applied") is not True
 
 
+def test_pii_relation_stopwords_flag_keeps_family_words(monkeypatch) -> None:
+    text = "У меня сын в 7 классе и дочь в 4-м"
+
+    monkeypatch.setenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, "0")
+    off_text, off_reasons = subscription_llm._sanitize_client_pii_echo(text, client_message=text)
+    assert off_text == "У меня [данные у менеджера] в 7 классе и дочь в 4-м"
+    assert "client_name_echo" in off_reasons
+
+    monkeypatch.setenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, "1")
+    on_text, on_reasons = subscription_llm._sanitize_client_pii_echo(text, client_message=text)
+    assert on_text == text
+    assert on_reasons == ()
+
+
+def test_pii_relation_stopwords_flag_still_masks_unmentioned_name(monkeypatch) -> None:
+    monkeypatch.setenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, "1")
+
+    sanitized, reasons = subscription_llm._sanitize_client_pii_echo(
+        "Для Ирины подберём группу.",
+        client_message="Спасибо, жду.",
+    )
+
+    assert "Ирины" not in sanitized
+    assert "данные ребёнка" in sanitized
+    assert "client_name_echo" in reasons
+
+
 def test_direct_path_p0_preblock_stays_manager_only_with_output_sanitizer() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")

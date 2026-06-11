@@ -135,6 +135,9 @@ PRESALE_VERIFIER_FAILSOFT_ENV = "TELEGRAM_PRESALE_VERIFIER_FAILSOFT"
 PRESALE_META_RU_ENV = "TELEGRAM_PRESALE_META_RU"
 PRESALE_SOURCE_ID_ENV = "TELEGRAM_PRESALE_SOURCE_ID"
 MEMORY_PROVENANCE_ENV = "TELEGRAM_MEMORY_PROVENANCE"
+MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
+PII_RELATION_STOPWORDS_ENV = "TELEGRAM_PII_RELATION_STOPWORDS"
+MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
@@ -6068,6 +6071,40 @@ _CLIENT_NAME_STOPWORDS = {
     "москва",
     "менеджер",
 }
+_CLIENT_RELATION_NAME_STOPWORDS = {
+    "сын",
+    "сына",
+    "сыну",
+    "сыном",
+    "сыне",
+    "дочь",
+    "дочку",
+    "дочка",
+    "дочке",
+    "дочки",
+    "дочери",
+    "дочерью",
+    "ребенок",
+    "ребенка",
+    "ребенку",
+    "ребенком",
+    "ребенке",
+    "ребёнок",
+    "ребёнка",
+    "ребёнку",
+    "ребёнком",
+    "ребёнке",
+    "мальчик",
+    "мальчика",
+    "мальчику",
+    "мальчиком",
+    "мальчике",
+    "девочка",
+    "девочку",
+    "девочке",
+    "девочки",
+    "девочкой",
+}
 _CLIENT_PII_CONFIRMATION_RE = re.compile(
     r"\b(?:принял[аи]?|записал[аи]?|передам|менеджер|свяжется|контакт|телефон|номер|заявк[ауи])\b",
     re.I,
@@ -6222,7 +6259,7 @@ def _client_pii_manager_items(client_context: str) -> tuple[str, ...]:
     for match in _CLIENT_NAME_PAIR_RE.finditer(text):
         name = " ".join(match.group(0).split())
         words = [word.casefold().replace("ё", "е") for word in name.split()]
-        if any(word in _CLIENT_NAME_STOPWORDS for word in words):
+        if any(word in _client_name_stopwords() for word in words):
             continue
         items.append(f"ФИО/имя: {name}")
     for match in _A2_PHONE_RE.finditer(text):
@@ -6230,6 +6267,13 @@ def _client_pii_manager_items(client_context: str) -> tuple[str, ...]:
     for match in _CLIENT_EMAIL_RE.finditer(text):
         items.append(f"email: {match.group(0).strip()}")
     return tuple(dict.fromkeys(items))
+
+
+def _client_name_stopwords() -> set[str]:
+    result = set(_CLIENT_NAME_STOPWORDS)
+    if _pilot_profile_default_on_flag_enabled(None, PII_RELATION_STOPWORDS_ENV):
+        result.update(item.replace("ё", "е") for item in _CLIENT_RELATION_NAME_STOPWORDS)
+    return result
 
 
 def _client_pii_slot_context_lines_as_containers(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -6278,7 +6322,7 @@ def _client_name_echoes(
     for raw in candidates:
         name = " ".join(str(raw or "").split()).strip(" ,.;:!?")
         words = [word.casefold().replace("ё", "е") for word in name.split()]
-        if not words or any(word in _CLIENT_NAME_STOPWORDS for word in words):
+        if not words or any(word in _client_name_stopwords() for word in words):
             continue
         if len(name.split()) == 1 and _client_name_allowed(name, allowed_names):
             continue
@@ -6303,7 +6347,7 @@ def _unexpected_client_name_echoes(bot_text: str, *, allowed_client_message: str
         if not name:
             continue
         normalized = name.casefold().replace("ё", "е")
-        if normalized in _CLIENT_NAME_STOPWORDS or _client_name_allowed(name, allowed_names):
+        if normalized in _client_name_stopwords() or _client_name_allowed(name, allowed_names):
             continue
         if name not in result:
             result.append(name)
@@ -6329,7 +6373,7 @@ def _client_dialogue_allowed_names(client_message: str) -> tuple[str, ...]:
     result: list[str] = []
     for raw in candidates:
         words = [word.casefold().replace("ё", "е") for word in str(raw or "").split()]
-        if not words or any(word in _CLIENT_NAME_STOPWORDS for word in words):
+        if not words or any(word in _client_name_stopwords() for word in words):
             continue
         value = " ".join(str(raw or "").split())
         if value and value not in result:
@@ -13140,6 +13184,18 @@ def _pilot_profile_flag_enabled(
     if explicit is not None:
         return explicit
     return _pilot_gold_profile_enabled(context)
+
+
+def _pilot_profile_default_on_flag_enabled(
+    context: Optional[Mapping[str, Any]],
+    env_name: str,
+    *,
+    aliases: Sequence[str] = (),
+) -> bool:
+    explicit = _explicit_truthy_setting(context, env_name, aliases=aliases)
+    if explicit is not None:
+        return explicit
+    return env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS and _pilot_gold_profile_enabled(context)
 
 
 def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, str]:

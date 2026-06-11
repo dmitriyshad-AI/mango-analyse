@@ -348,6 +348,55 @@ def test_memory_provenance_skips_memory_llm_call(monkeypatch) -> None:
     assert updated.to_prompt_view()["memory_provenance"]["enabled"] is True
 
 
+def test_memory_provenance_pilot_profile_skips_memory_llm_call(monkeypatch) -> None:
+    monkeypatch.delenv(MEMORY_PROVENANCE_ENV, raising=False)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    memory = build_dialogue_memory(
+        current_message="8 класс, физика онлайн",
+        active_brand="foton",
+        session_id="s-provenance-profile-no-llm",
+    )
+
+    def fail_if_called(_prompt: str):
+        raise AssertionError("pilot profile provenance must skip memory LLM")
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Подскажу по фактам.",
+        route="bot_answer_self",
+        memory_llm_fn=fail_if_called,
+    )
+
+    assert updated.to_prompt_view()["memory_provenance"]["enabled"] is True
+
+
+def test_memory_provenance_profile_explicit_zero_uses_memory_llm(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "0")
+    memory = build_dialogue_memory(
+        current_message="8 класс, физика онлайн",
+        active_brand="foton",
+        session_id="s-provenance-profile-off",
+    )
+    calls = 0
+
+    def memory_llm(_prompt: str):
+        nonlocal calls
+        calls += 1
+        return {"slots": {"goal": "подготовка"}, "summary": "Старая LLM-память включена."}
+
+    updated = update_dialogue_memory_after_answer(
+        memory,
+        answer_text="Подскажу по фактам.",
+        route="bot_answer_self",
+        memory_llm_fn=memory_llm,
+    )
+
+    assert calls == 1
+    assert updated.to_prompt_view()["memory_provenance"] == {}
+    assert updated.conversation_summary_short == "Старая LLM-память включена."
+
+
 def test_memory_provenance_keeps_two_children_separate(monkeypatch) -> None:
     monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
 

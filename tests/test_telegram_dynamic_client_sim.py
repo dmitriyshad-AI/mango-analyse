@@ -614,6 +614,7 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     assert flags["render"] == {"env": "", "effective": True}
     assert flags["rubric"] == {"env": "", "effective": True}
     assert flags["retriever"] == {"env": "", "effective": True}
+    assert flags["memory_provenance"] == {"env": "", "effective": True}
     assert flags["snapshot"] == str(snapshot_path)
 
 
@@ -629,6 +630,20 @@ def test_summary_key_run_flags_allow_explicit_retriever_disable(monkeypatch, tmp
     )
 
     assert summary["run_config"]["key_flags"]["retriever"] == {"env": "0", "effective": False}
+
+
+def test_summary_key_run_flags_allow_explicit_memory_provenance_disable(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setenv("TELEGRAM_MEMORY_PROVENANCE", "0")
+
+    summary = sim.build_summary(
+        [{"dialog_id": "flags", "brand": "foton", "run_status": "completed", "turns": []}],
+        [{"dialog_id": "flags", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert summary["run_config"]["key_flags"]["memory_provenance"] == {"env": "0", "effective": False}
 
 
 def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):
@@ -1587,6 +1602,17 @@ def test_build_memory_model_disabled_by_memory_provenance(monkeypatch) -> None:
     args = argparse.Namespace(memory_mode="codex", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
 
     assert sim.build_memory_model(args) is None
+
+
+def test_build_memory_model_disabled_by_pilot_profile_and_explicit_zero_restores_old_memory(monkeypatch) -> None:
+    args = argparse.Namespace(memory_mode="fake", memory_model="gpt-5.5", memory_reasoning="low", timeout_sec=180)
+    monkeypatch.delenv("TELEGRAM_MEMORY_PROVENANCE", raising=False)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+
+    assert sim.build_memory_model(args) is None
+
+    monkeypatch.setenv("TELEGRAM_MEMORY_PROVENANCE", "0")
+    assert isinstance(sim.build_memory_model(args), sim.FakeMemoryModel)
 
 
 def test_codex_json_model_can_run_isolated(monkeypatch) -> None:

@@ -12273,6 +12273,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         PRESALE_VERIFIER_FAILSOFT_ENV,
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
+        subscription_llm.MEMORY_PROVENANCE_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
@@ -12292,6 +12293,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV) is True
     assert subscription_llm._template_from_kb_enabled(context) is True
+    assert subscription_llm.MEMORY_PROVENANCE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:
@@ -12341,6 +12343,7 @@ def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> 
         PRESALE_VERIFIER_FAILSOFT_ENV,
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
+        subscription_llm.MEMORY_PROVENANCE_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):

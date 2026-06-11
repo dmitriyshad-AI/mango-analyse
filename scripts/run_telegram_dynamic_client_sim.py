@@ -1045,7 +1045,7 @@ def build_judge_model(args: argparse.Namespace) -> Any:
 
 
 def build_memory_model(args: argparse.Namespace) -> Any:
-    if str(os.getenv(MEMORY_PROVENANCE_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}:
+    if _memory_provenance_effective():
         return None
     if args.memory_mode == "off":
         return None
@@ -1343,6 +1343,13 @@ def _truthy_env_value(value: object) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "да", "on"}
 
 
+def _memory_provenance_effective() -> bool:
+    raw = os.getenv(MEMORY_PROVENANCE_ENV)
+    if raw is not None:
+        return _truthy_env_value(raw)
+    return str(os.getenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG") or "").strip() == "pilot_gold_v1"
+
+
 def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
     profile = str(os.getenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG") or "").strip()
     profile_enabled = profile == "pilot_gold_v1"
@@ -1350,6 +1357,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "TELEGRAM_TEMPLATE_FROM_KB",
         "TELEGRAM_ROUTE_RUBRIC",
         "TELEGRAM_LLM_RETRIEVE",
+        MEMORY_PROVENANCE_ENV,
     }
 
     def flag_state(name: str) -> Mapping[str, Any]:
@@ -1365,6 +1373,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "render": flag_state("TELEGRAM_TEMPLATE_FROM_KB"),
         "rubric": flag_state("TELEGRAM_ROUTE_RUBRIC"),
         "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
+        "memory_provenance": flag_state(MEMORY_PROVENANCE_ENV),
         "snapshot": str(snapshot_path),
     }
 

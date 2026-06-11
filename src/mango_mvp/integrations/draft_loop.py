@@ -35,7 +35,10 @@ class DraftLoopConfigError(DraftLoopError):
 
 
 def _memory_provenance_enabled() -> bool:
-    return str(os.getenv(MEMORY_PROVENANCE_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}
+    explicit = os.getenv(MEMORY_PROVENANCE_ENV)
+    if explicit is not None:
+        return str(explicit).strip().lower() in {"1", "true", "yes", "on"}
+    return str(os.getenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG") or "").strip() == "pilot_gold_v1"
 
 
 @dataclass(frozen=True, order=True)

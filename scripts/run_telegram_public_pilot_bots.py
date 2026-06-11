@@ -908,6 +908,9 @@ class PublicPilotBotRuntime:
                 "route_reason": "; ".join(result.manager_checklist[:3]) if result.manager_checklist else "",
                 "llm_result": result.to_json_dict(),
             }
+            fallback_reason = pilot_fallback_reason(result)
+            if fallback_reason:
+                metadata["fallback_reason"] = fallback_reason
             if funnel_state is not None:
                 funnel_payload = funnel_state.to_json_dict()
                 metadata.update(
@@ -1019,6 +1022,20 @@ def apply_public_autonomy_kill_switch(result: SubscriptionDraftResult, *, autono
         safety_flags=(*result.safety_flags, "autonomy_kill_switch_applied"),
         metadata={**dict(result.metadata), "original_route_before_autonomy_kill_switch": result.route},
     )
+
+
+def pilot_fallback_reason(result: SubscriptionDraftResult) -> str:
+    flags = {str(flag or "").strip() for flag in result.safety_flags}
+    if "llm_fallback" not in flags and not str(result.error or "").strip():
+        return ""
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_path = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    evidence = direct_path.get("reason_evidence") if isinstance(direct_path.get("reason_evidence"), Mapping) else {}
+    detail = str(evidence.get("provider_error") or metadata.get("last_error") or "").strip()
+    reason = str(result.error or direct_path.get("reason_class") or "llm_fallback").strip()
+    if detail and reason and detail != reason:
+        return f"{reason}: {detail}"[:700]
+    return (detail or reason)[:700]
 
 
 def telegram_message_datetime(message: Any, *, fallback: datetime) -> datetime:

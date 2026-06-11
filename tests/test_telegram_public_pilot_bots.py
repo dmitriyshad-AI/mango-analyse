@@ -408,6 +408,53 @@ def test_runtime_persists_pilot_decision_to_local_store(tmp_path: Path) -> None:
     assert knowledge_base_version_for_store({"knowledge_base_version": "kb-test"}, tmp_path / "snapshot.json") == "kb-test"
 
 
+def test_runtime_persists_visible_llm_fallback_reason(tmp_path: Path) -> None:
+    class FakeMessage:
+        message_id = 44
+        date = None
+
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=tmp_path / "snapshot.json",
+        store_path=tmp_path / "telegram_pilot.sqlite",
+        p0_register_path=tmp_path / "p0.csv",
+    )
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Чтобы не ошибиться, передам вопрос менеджеру.",
+        error="direct_path_error",
+        safety_flags=("manager_approval_required", "no_auto_send", "llm_fallback", "draft_only"),
+        metadata={
+            "direct_path": {
+                "reason_class": "provider_runtime",
+                "reason_evidence": {
+                    "provider_error": "codex exec failed rc=1: unknown variant default",
+                },
+            },
+            "last_error": "codex exec failed rc=1: unknown variant default",
+        },
+    )
+
+    runtime.persist_pilot_decision(
+        message=FakeMessage(),
+        chat_id=123,
+        input_text="Привет",
+        answer_text=result.draft_text,
+        context={"knowledge_base_version": "kb-test", "active_brand": "foton"},
+        result=result,
+        latency_seconds=1.2,
+        request_started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+    )
+    drafts = runtime.store.list_drafts() if runtime.store is not None else ()
+    runtime.close()
+
+    assert len(drafts) == 1
+    assert drafts[0]["metadata"]["fallback_reason"].startswith("direct_path_error: codex exec failed rc=1")
+
+
 def test_runtime_persists_funnel_and_manager_summary_metadata(tmp_path: Path) -> None:
     class FakeMessage:
         message_id = 43

@@ -534,16 +534,28 @@ Coverage parity:
 - правило: строки, покрытые до волны, покрыты после волны;
 - падение coverage parity равно падению волны.
 
+Постоянное дополнение L: до replay в каждой волне обязателен статический чек неопределенных имен:
+
+- основной вариант: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src ruff check --select F821 src/mango_mvp/channels/subscription_llm.py src/mango_mvp/channels/subscription_llm_parts`;
+- fallback, если `ruff` недоступен: `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pyflakes src/mango_mvp/channels/subscription_llm.py src/mango_mvp/channels/subscription_llm_parts`;
+- любое `F821` / undefined name = fail волны до replay;
+- перед запуском replay все перенесенные top-level функции должны иметь локально резолвящиеся глобальные имена: stdlib/imported sibling symbols/definitions in the same module;
+- для уже принятых wave2-4 гейт прогоняется задним числом и сохраняется в audit pack следующей волны.
+
 Протокол волны:
 
 1. Перенос.
-2. Focused pytest.
-3. Full pytest.
-4. Replay vs frozen baseline.
-5. Coverage parity.
-6. Identity asserts.
-7. Отчет-страница в `audits/_inbox/<wave>_<timestamp>/`.
-8. Коммит.
+2. `py_compile`.
+3. Static undefined-name gate (`ruff F821` или `pyflakes` fallback).
+4. Identity asserts.
+5. Move-only AST/compiled-body check.
+6. Wave-specific path/default invariants.
+7. Focused pytest.
+8. Full pytest, для волн 2-5 — два полных зеленых прогона подряд.
+9. Replay vs frozen baseline.
+10. Coverage parity.
+11. Отчет-страница в `audits/_inbox/<wave>_<timestamp>/`.
+12. Коммит.
 
 Отчет волны должен содержать:
 

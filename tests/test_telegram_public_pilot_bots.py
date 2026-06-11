@@ -24,6 +24,7 @@ from scripts.run_telegram_public_pilot_bots import (
     PublicPilotBotRuntime,
 )
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
+import mango_mvp.channels.dialogue_memory as dialogue_memory_module
 from mango_mvp.pilot_context_assembly import build_pilot_context_payload
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.night_funnel_shadow import (
@@ -255,6 +256,14 @@ def test_public_pilot_context_enables_dialogue_contract_pipeline_by_default(tmp_
 def test_public_pilot_context_matches_extracted_assembly(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_MEMORY_PROVENANCE", raising=False)
     monkeypatch.delenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", raising=False)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            fixed = datetime(2026, 6, 11, 12, 0, tzinfo=timezone.utc)
+            return fixed if tz is not None else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(dialogue_memory_module, "datetime", FrozenDatetime)
 
     snapshot = _night_snapshot(tmp_path)
     config = BrandBotConfig(

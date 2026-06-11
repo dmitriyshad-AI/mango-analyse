@@ -128,7 +128,7 @@ def test_success_report_includes_readiness_cli_versions_and_heartbeat(tmp_path):
     assert "codex_cli_version: codex test-version" in report
     assert "claude_cli_version: claude test-version" in report
     assert "readiness:" in report
-    assert "--judge-prompt-version v9" in report
+    assert "--judge-prompt-version v9.1" in report
     assert "import_mango_mvp" in report
     assert "disk_free_bytes" in report
     heartbeat = json.loads((tmp_path / "tasks" / "_done" / "task1.heartbeat").read_text(encoding="utf-8"))
@@ -137,6 +137,18 @@ def test_success_report_includes_readiness_cli_versions_and_heartbeat(tmp_path):
     assert heartbeat["stage"] == "success"
     assert heartbeat["transcript_exists"] is True
     assert heartbeat["stall"] is False
+
+
+def test_task_schema_accepts_explicit_judge_v91(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+    task = _write_task(tmp_path, "2026-06-07_judge_v91.task.yaml", set_rel=set_rel, set_sha=set_sha)
+    task.write_text(task.read_text(encoding="utf-8") + "judge_prompt_version: v9.1\n", encoding="utf-8")
+    task.with_suffix(task.suffix + ".ready").write_text(_sha(task), encoding="utf-8")
+
+    assert _run_ready_cycle(_new_watcher(tmp_path)) == "success"
+    report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
+    assert "--judge-prompt-version v9.1" in report
 
 
 def test_claude_task_uses_longer_llm_timeout(tmp_path):

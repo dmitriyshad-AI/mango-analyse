@@ -3187,6 +3187,8 @@ PRESALE_PROMPT_SENSITIVE_KEY_RE = re.compile(
     r"(?:phone|телефон|contact|контакт|email|mail|почт|name|имя|фио|fio|identity|client|parent|mother|father|мам|пап|родител|реб[её]н|child|student|ученик)",
     re.I,
 )
+PRESALE_PROMPT_CHILD_NAME_KEY_RE = re.compile(r"(?:child|student|реб[её]н|ученик|доч|сын)", re.I)
+PRESALE_PROMPT_PARENT_NAME_KEY_RE = re.compile(r"(?:client|parent|mother|father|мам|пап|родител)", re.I)
 
 
 def _presale_prompt_safe_key(key: object) -> bool:
@@ -3196,19 +3198,48 @@ def _presale_prompt_safe_key(key: object) -> bool:
     return normalized in PRESALE_PROMPT_SAFE_SLOT_KEYS
 
 
+def _presale_prompt_child_name_value(value: Any) -> str:
+    if isinstance(value, Mapping):
+        value = value.get("value")
+    text = " ".join(str(value or "").split()).strip(" ,.;:!?")
+    if not text or _A2_PHONE_RE.search(text) or _CLIENT_EMAIL_RE.search(text):
+        return ""
+    parts = [part for part in text.split() if re.match(r"^[А-ЯЁ][а-яё]{2,}$", part)]
+    if not parts:
+        return ""
+    if len(parts) >= 2 and _looks_like_russian_surname(parts[0]):
+        return parts[1]
+    return parts[0]
+
+
+def _presale_prompt_safe_slot_value(key: object, value: Any) -> Any:
+    key_text = str(key or "")
+    if PRESALE_PROMPT_CHILD_NAME_KEY_RE.search(key_text):
+        return _presale_prompt_child_name_value(value)
+    if PRESALE_PROMPT_PARENT_NAME_KEY_RE.search(key_text):
+        return ""
+    if PRESALE_PROMPT_SENSITIVE_KEY_RE.search(key_text):
+        return ""
+    return _presale_prompt_safe_value(value)
+
+
+def _presale_prompt_safe_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    filtered = {
+        str(key): _presale_prompt_safe_slot_value(key, item)
+        for key, item in value.items()
+        if str(key or "").strip() and str(item or "").strip()
+    }
+    return {key: item for key, item in filtered.items() if item not in ("", {}, [])}
+
+
 def _presale_prompt_safe_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        filtered = {
-            str(key): _presale_prompt_safe_value(item)
-            for key, item in value.items()
-            if _presale_prompt_safe_key(key) and str(item or "").strip()
-        }
-        return {key: item for key, item in filtered.items() if item not in ("", {}, [])}
+        return _presale_prompt_safe_mapping(value)
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         items = [_presale_prompt_safe_value(item) for item in value[:8]]
         return [item for item in items if item not in ("", {}, [])]
     text = " ".join(str(value or "").split())
-    if not text or _A2_PHONE_RE.search(text) or re.search(r"[\w.+-]+@[\w.-]+\.\w+", text, re.I):
+    if not text or _A2_PHONE_RE.search(text) or _CLIENT_EMAIL_RE.search(text):
         return ""
     return text[:220]
 
@@ -3217,15 +3248,7 @@ def _direct_path_prompt_known_slots(context: Optional[Mapping[str, Any]]) -> dic
     slots = _direct_path_known_slots(context)
     if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
         return slots
-    return {
-        key: value
-        for key, value in (
-            (str(key), _presale_prompt_safe_value(value))
-            for key, value in slots.items()
-            if _presale_prompt_safe_key(key)
-        )
-        if value not in ("", {}, [])
-    }
+    return _presale_prompt_safe_mapping(slots)
 
 
 def _direct_path_prompt_memory_view(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -3235,10 +3258,10 @@ def _direct_path_prompt_memory_view(context: Optional[Mapping[str, Any]]) -> Map
     if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
         return memory
     result: dict[str, Any] = {}
-    for key in ("known_slots", "client_confirmed_slots", "topic_focus"):
+    for key in ("known_slots", "client_confirmed_slots", "crm_known_slots", "topic_focus"):
         value = memory.get(key)
         if isinstance(value, Mapping):
-            filtered = _presale_prompt_safe_value(value)
+            filtered = _presale_prompt_safe_mapping(value)
             if filtered:
                 result[key] = filtered
     for key in ("topic", "topic_id", "primary_intent", "message_type"):
@@ -3246,6 +3269,21 @@ def _direct_path_prompt_memory_view(context: Optional[Mapping[str, Any]]) -> Map
         if value:
             result[key] = value
     return result
+
+
+def _presale_prompt_safe_dialogue_text(text: str) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    value = _replace_echoed_phone(value, _a2_extract_phone(value)) if _a2_extract_phone(value) else value
+    value = _CLIENT_EMAIL_RE.sub("[данные у менеджера]", value)
+    value = _PARTIAL_PHONE_CONTEXT_RE.sub(lambda m: f"{m.group('label')} [данные у менеджера]", value)
+    value = _CLIENT_CHILD_IDENTITY_PROMPT_RE.sub(
+        lambda m: f"{m.group('prefix')}{_presale_prompt_child_name_value(m.group('name')) or '[данные у менеджера]'}",
+        value,
+    )
+    value = _CLIENT_PARENT_IDENTITY_PROMPT_RE.sub(lambda m: f"{m.group('prefix')}[данные у менеджера]", value)
+    return _normalize_output_sanitizer_text(value)
 
 
 DIRECT_PATH_GOLD_TOPIC_KEYWORDS: Mapping[str, tuple[str, ...]] = {
@@ -3392,7 +3430,19 @@ def _build_direct_path_prompt(
     exact_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=exact_keys)
     adjacent_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=adjacent_keys)
     gold_block = _direct_path_gold_prompt_block(gold_examples)
-    recent_block = "\n".join(_direct_path_recent_messages(context)) or "(диалог только начался)"
+    recent_messages = _direct_path_recent_messages(context)
+    if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+        recent_messages = tuple(
+            item
+            for item in (_presale_prompt_safe_dialogue_text(message) for message in recent_messages)
+            if item
+        )
+    recent_block = "\n".join(recent_messages) or "(диалог только начался)"
+    prompt_client_message = (
+        _presale_prompt_safe_dialogue_text(client_message)
+        if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV)
+        else client_message
+    )
     slots = _direct_path_prompt_known_slots(context)
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
     memory = _direct_path_prompt_memory_view(context)
@@ -3403,7 +3453,7 @@ def _build_direct_path_prompt(
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
-        f"Текущее сообщение клиента:\n{client_message}\n\n"
+        f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
         + (f"{gold_block}\n\n" if gold_block else "")
         +
         "Факты по вашему вопросу:\n"
@@ -5815,12 +5865,15 @@ def apply_output_sanitizer(
     route = result.route
     flags = [*result.safety_flags, "output_sanitizer_applied", *[f"output_sanitizer:{reason}" for reason in reasons]]
     checklist = list(result.manager_checklist)
+    pii_manager_items = _client_pii_manager_items(pii_client_message)
     if "client_name_echo" in reasons and pii_names_for_checklist:
         checklist.append(
             "Проверьте имя в черновике: "
             + ", ".join(pii_names_for_checklist[:4])
             + " не было разрешено текущим диалогом или было ФИО целиком; в тексте замаскировано."
         )
+    if pii_manager_items and any(reason in reasons for reason in ("client_name_echo", "client_phone_echo", "client_email_echo")):
+        checklist.append("ПДн из диалога для менеджера: " + "; ".join(pii_manager_items[:8]) + ".")
     if fallback:
         cleaned = SAFE_FALLBACK_DRAFT_TEXT
         if route != "manager_only":
@@ -5971,9 +6024,26 @@ def _sanitize_presale_source_id_text(text: str) -> tuple[str, tuple[str, ...]]:
 
 
 _CLIENT_NAME_PAIR_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b")
+_CLIENT_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
+_PARTIAL_PHONE_CONTEXT_RE = re.compile(
+    r"(?P<label>\b(?:тел(?:ефон)?|номер|контакт)\b)\s*[:—-]?\s*(?P<value>(?:\+?7|8)?[\d\s().-]{3,}\.{0,3})",
+    re.I,
+)
 _CLIENT_NAME_MARKER_RE = re.compile(
-    r"(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
     r"ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})",
+    re.I,
+)
+_CLIENT_CHILD_IDENTITY_PROMPT_RE = re.compile(
+    r"(?P<prefix>\b(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|"
+    r"реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя|"
+    r"справк\w*\s+на)\s*[:—-]?\s*)"
+    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2})",
+    re.I,
+)
+_CLIENT_PARENT_IDENTITY_PROMPT_RE = re.compile(
+    r"(?P<prefix>\b(?:родител[ья]|мама|папа|меня\s+зовут|я)\s*[:—-]?\s*)"
     r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})",
     re.I,
 )
@@ -6015,6 +6085,7 @@ def _sanitize_client_pii_echo(
     allowed = client if allowed_client_message is None else str(allowed_client_message or "")
     phone = _a2_extract_phone(client)
     phone_echoed = bool(phone and _a2_phone_echoed(phone, value))
+    email_echoes = tuple(dict.fromkeys(match.group(0) for match in _CLIENT_EMAIL_RE.finditer(client) if match.group(0) in value))
     echoed_names = tuple(
         dict.fromkeys(
             [
@@ -6023,23 +6094,46 @@ def _sanitize_client_pii_echo(
             ]
         )
     )
-    if not phone_echoed and not echoed_names:
+    if not phone_echoed and not email_echoes and not echoed_names:
         return value, ()
 
     reasons: list[str] = []
     if phone_echoed:
         reasons.append("client_phone_echo")
+    if email_echoes:
+        reasons.append("client_email_echo")
     if echoed_names:
         reasons.append("client_name_echo")
 
-    whole_identity_echoed = any(" " in name for name in echoed_names)
-    if _CLIENT_PII_CONFIRMATION_RE.search(value) and (phone_echoed or whole_identity_echoed):
+    child_first_names = _client_dialogue_child_first_names(client)
+    parent_names = _client_dialogue_parent_names(client)
+    safe_child_replacements = {
+        name: first
+        for name in echoed_names
+        for first in (_presale_prompt_child_name_value(name),)
+        if first and len(str(name).split()) >= 2 and _client_name_allowed(first, child_first_names)
+    }
+    whole_identity_echoed = any(" " in name and name not in safe_child_replacements for name in echoed_names)
+    if _CLIENT_PII_CONFIRMATION_RE.search(value) and (phone_echoed or email_echoes or whole_identity_echoed) and not safe_child_replacements:
         return "Записала, передам менеджеру — он свяжется с вами.", tuple(reasons)
 
     if phone_echoed:
         value = _replace_echoed_phone(value, phone)
+    for email in email_echoes:
+        value = value.replace(email, "[данные у менеджера]")
     for name in echoed_names:
-        value = re.sub(_flexible_name_pattern(name), "данные ребёнка", value, flags=re.I)
+        if " " not in name and _client_name_allowed(name, child_first_names):
+            continue
+        replacement = safe_child_replacements.get(name)
+        if replacement is None:
+            replacement = (
+                "[данные у менеджера]"
+                if " " in name or _client_name_allowed(name, parent_names)
+                else "данные ребёнка"
+                if not _client_name_allowed(name, child_first_names)
+                else name
+            )
+        value = re.sub(_flexible_name_pattern(name), replacement, value, flags=re.I)
     return value, tuple(reasons)
 
 
@@ -6110,6 +6204,32 @@ def _client_pii_slot_context_lines(source: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _client_pii_manager_items(client_context: str) -> tuple[str, ...]:
+    text = " ".join(str(client_context or "").split())
+    if not text:
+        return ()
+    items: list[str] = []
+    for match in _CLIENT_NAME_MARKER_RE.finditer(text):
+        name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
+        if name and len(name.split()) >= 2:
+            items.append(f"ФИО/имя: {name}")
+    for match in _CLIENT_SELF_NAME_MARKER_RE.finditer(text):
+        name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
+        if name:
+            items.append(f"ФИО/имя родителя: {name}")
+    for match in _CLIENT_NAME_PAIR_RE.finditer(text):
+        name = " ".join(match.group(0).split())
+        words = [word.casefold().replace("ё", "е") for word in name.split()]
+        if any(word in _CLIENT_NAME_STOPWORDS for word in words):
+            continue
+        items.append(f"ФИО/имя: {name}")
+    for match in _A2_PHONE_RE.finditer(text):
+        items.append(f"телефон: {match.group(0).strip()}")
+    for match in _CLIENT_EMAIL_RE.finditer(text):
+        items.append(f"email: {match.group(0).strip()}")
+    return tuple(dict.fromkeys(items))
+
+
 def _client_pii_slot_context_lines_as_containers(source: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     containers: list[Mapping[str, Any]] = []
     for key in ("known_slots", "client_confirmed_slots", "crm_known_slots", "client_identity", "known_client_fields"):
@@ -6150,6 +6270,8 @@ def _client_name_echoes(
             if phone_pos >= 0 and abs(match.start() - phone_pos) > 140:
                 continue
             candidates.append(match.group(0))
+    for match in _CLIENT_CHILD_IDENTITY_PROMPT_RE.finditer(client):
+        candidates.append(match.group("name"))
     result: list[str] = []
     for raw in candidates:
         name = " ".join(str(raw or "").split()).strip(" ,.;:!?")
@@ -6213,6 +6335,31 @@ def _client_dialogue_allowed_names(client_message: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _client_dialogue_child_first_names(client_message: str) -> tuple[str, ...]:
+    result: list[str] = []
+    for match in _CLIENT_CHILD_IDENTITY_PROMPT_RE.finditer(" ".join(str(client_message or "").split())):
+        first = _presale_prompt_child_name_value(match.group("name"))
+        if first and first not in result:
+            result.append(first)
+    for match in _CLIENT_NAME_MARKER_RE.finditer(" ".join(str(client_message or "").split())):
+        first = _presale_prompt_child_name_value(match.group("name"))
+        if first and first not in result:
+            result.append(first)
+    return tuple(result)
+
+
+def _client_dialogue_parent_names(client_message: str) -> tuple[str, ...]:
+    result: list[str] = []
+    client = " ".join(str(client_message or "").split())
+    for pattern in (_CLIENT_PARENT_IDENTITY_PROMPT_RE, _CLIENT_SELF_NAME_MARKER_RE):
+        for match in pattern.finditer(client):
+            name = " ".join(str(match.group("name") or "").split()).strip(" ,.;:!?")
+            for part in ([name] + [item for item in name.split() if item]):
+                if part and part not in result:
+                    result.append(part)
+    return tuple(result)
+
+
 def _client_name_allowed(name: str, allowed_names: Sequence[str]) -> bool:
     value = str(name or "").strip()
     if not value:
@@ -6222,6 +6369,33 @@ def _client_name_allowed(name: str, allowed_names: Sequence[str]) -> bool:
 
 def _client_name_echoed(name: str, text: str) -> bool:
     return bool(re.search(_flexible_name_pattern(name), str(text or ""), flags=re.I))
+
+
+def _looks_like_russian_surname(word: str) -> bool:
+    normalized = str(word or "").casefold().replace("ё", "е")
+    return normalized.endswith(
+        (
+            "ов",
+            "ова",
+            "ову",
+            "ев",
+            "ева",
+            "еву",
+            "ин",
+            "ина",
+            "ину",
+            "ский",
+            "ская",
+            "ского",
+            "скую",
+            "цкий",
+            "цкая",
+            "цкого",
+            "цкую",
+            "енко",
+            "ко",
+        )
+    )
 
 
 def _flexible_name_pattern(name: str) -> str:
@@ -6259,7 +6433,7 @@ def _replace_echoed_phone(text: str, phone: str) -> str:
         candidate_digits = re.sub(r"\D+", "", match.group(0))
         if candidate_digits and (candidate_digits in digits or digits in candidate_digits):
             chunks.append(str(text or "")[last : match.start()])
-            chunks.append("контакт")
+            chunks.append("[данные у менеджера]")
             last = match.end()
     chunks.append(str(text or "")[last:])
     return "".join(chunks)

@@ -61,6 +61,22 @@ CHILD_COMPLAINT_ESCALATION_RE = re.compile(
     r"напиш\w*\s+жалоб\w*)",
     re.I,
 )
+CHILD_SAFETY_COMPLAINT_RE = re.compile(
+    rf"(?:{_CHILD_CONTEXT_PATTERN}[^.!?\n]{{0,120}}"
+    r"(?:остал\w*\s+один|никто\s+не\s+следил|без\s+(?:присмотр\w*|надзор\w*)|потерял\w*)"
+    rf"|(?:остал\w*\s+один|никто\s+не\s+следил|без\s+(?:присмотр\w*|надзор\w*)|потерял\w*)"
+    rf"[^.!?\n]{{0,120}}{_CHILD_CONTEXT_PATTERN}"
+    r"|педагог[^.!?\n]{0,60}(?:отсутствовал\w*|не\s+приш[её]л\w*)"
+    r"|преподавател\w*[^.!?\n]{0,60}(?:отсутствовал\w*|не\s+приш[её]л\w*))",
+    re.I,
+)
+SERVICE_COMPLAINT_RE = re.compile(
+    r"(?:менеджер[^.!?\n]{0,80}не\s+(?:отвеч\w*|перезвон\w*)"
+    r"|никто[^.!?\n]{0,40}не\s+перезвон\w*"
+    r"|сколько\s+можно\s+ждать"
+    r"|жд[ау]\w*[^.!?\n]{0,40}(?:второй|третий|\d+)[-\s]*(?:й|ой|ий)?\s+д(?:е|н)\w*)",
+    re.I,
+)
 
 REPUTATION_RE = re.compile(
     r"отзыв\w*\s+в\s+интернет|всех\s+предупреж\w*|напиш\w*\s+отзыв|остав\w*\s+отзыв",
@@ -166,6 +182,11 @@ P0_TRUE_POSITIVE_CASES: tuple[tuple[str, str], ...] = (
     ("Преподаватель высмеял сына при всех.", "complaint"),
     ("Дочку довели до слёз на занятии, буду разбираться.", "complaint"),
     ("Учитель оскорбил ребёнка.", "complaint"),
+    ("Ребёнок остался один после занятия, никто не следил.", "complaint"),
+    ("Педагог не пришёл, дети были одни.", "complaint"),
+    ("Сын потерялся, пока никто не следил за группой.", "complaint"),
+    ("Менеджер не отвечает третий день.", "complaint"),
+    ("Никто не перезвонил, сколько можно ждать?", "complaint"),
     ("Не буду платить, это развод.", "complaint"),
     ("Отдайте оплату обратно.", "refund"),
     ("Аннулировать договор.", "refund"),
@@ -188,11 +209,17 @@ P0_BENIGN_CASES: tuple[str, ...] = (
     "Оплатить можно позже, когда появится доступ?",
     "Ребёнок расстроился после занятия, как ему помочь?",
     "Ребёнок стесняется отвечать при всех, что посоветуете?",
+    "Педагог вышел на минуту — это нормально?",
 )
 
 
 def has_complaint_signal(text: str) -> bool:
-    if CHILD_INCIDENT_COMPLAINT_RE.search(text) or CHILD_COMPLAINT_ESCALATION_RE.search(text):
+    if (
+        CHILD_INCIDENT_COMPLAINT_RE.search(text)
+        or CHILD_COMPLAINT_ESCALATION_RE.search(text)
+        or CHILD_SAFETY_COMPLAINT_RE.search(text)
+        or SERVICE_COMPLAINT_RE.search(text)
+    ):
         return True
     if re.search(r"\b(?:вас|их|родител\w*|клиент\w*)[^.!?\n]{0,30}\bне\s+обманыва\w*", str(text or ""), re.I) and not re.search(
         r"мошенн|незаконн|возмущ|недовол|ужасн|плохо\s+уч|некомпетент|суд|прокурат|роспотреб|верн\w*\s+деньг",

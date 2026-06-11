@@ -11279,6 +11279,34 @@ def test_direct_path_child_incident_complaint_preblocks_without_collecting_detai
     assert "напишите" not in result.draft_text.casefold()
 
 
+def test_direct_path_child_safety_complaint_preblocks_from_first_turn() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+    result = provider.build_draft(
+        "Ребёнок остался один, никто не следил.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert result.metadata["direct_path"]["reason_evidence"]["p0_kind"] == "complaint"
+
+
+def test_direct_path_benign_teacher_minute_question_is_not_p0() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу, как обычно устроен присмотр.")
+    )
+    result = provider.build_draft(
+        "Педагог вышел на минуту — это нормально?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1", "confirmed_facts": {"format.foton": "Фотон: занятия ведёт преподаватель."}},
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+
+
 def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_night_lead() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="draft_for_manager", draft_text="Менеджер свяжется и поможет подобрать группу.")
@@ -11623,9 +11651,9 @@ def test_direct_path_output_sanitizer_removes_client_phone_and_child_name_echo()
 
     assert provider.calls == 1
     assert result.route == "draft_for_manager"
-    assert result.draft_text == "Записала, передам менеджеру — он свяжется с вами."
+    assert result.draft_text == "Приняла: Артём, телефон: [данные у менеджера]. Передам менеджеру, он свяжется."
     assert "Иванов" not in result.draft_text
-    assert "Артём" not in result.draft_text
+    assert "Артём" in result.draft_text
     assert "+7 999" not in result.draft_text
     assert "123-45-67" not in result.draft_text
     assert result.metadata["output_sanitizer"]["applied"] is True
@@ -11783,9 +11811,36 @@ def test_presale_direct_path_prompt_filters_pii_slots_but_keeps_safe_slots() -> 
     assert "физика" in provider.last_prompt
     assert '"grade": "9"' in provider.last_prompt
     assert "Ирина" not in provider.last_prompt
-    assert "Артём" not in provider.last_prompt
+    assert "Артём" in provider.last_prompt
     assert "+7 999" not in provider.last_prompt
     assert "conversation_summary_short" not in provider.last_prompt
+
+
+def test_presale_direct_path_prompt_masks_current_and_recent_pii_but_keeps_child_first_name() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="draft_for_manager", draft_text="Пётр, передам заявку менеджеру.")
+    )
+
+    provider.build_draft(
+        "Запишите нас: Иванов Пётр, 9 класс, телефон 8-900-123-45-67",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            PRESALE_PII_MEMORY_ENV: "1",
+            "recent_messages": [
+                "Клиент: Родитель: Иванова Мария Сергеевна, почта maria@example.com",
+            ],
+            "confirmed_facts": {"enrollment.unpk": "УНПК: менеджер помогает оформить заявку."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert "Пётр" in provider.last_prompt
+    assert "Иванов" not in provider.last_prompt
+    assert "Иванова" not in provider.last_prompt
+    assert "Мария" not in provider.last_prompt
+    assert "8-900" not in provider.last_prompt
+    assert "maria@example.com" not in provider.last_prompt
 
 
 def test_presale_output_sanitizer_masks_names_from_memory_slots() -> None:
@@ -11811,9 +11866,9 @@ def test_presale_output_sanitizer_masks_names_from_memory_slots() -> None:
     )
 
     assert provider.calls == 1
-    assert result.draft_text == "Спасибо, данные ребёнка! По сыну данные ребёнка менеджер подберёт группу."
+    assert result.draft_text == "Спасибо, [данные у менеджера]! По сыну Артёму менеджер подберёт группу."
     assert "Ирина" not in result.draft_text
-    assert "Артём" not in result.draft_text
+    assert "Артём" in result.draft_text
     assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
     assert any("Ирина" in item and "Артём" in item for item in result.manager_checklist)
 
@@ -11842,9 +11897,43 @@ def test_presale_output_sanitizer_masks_inflected_single_names_from_memory_slots
 
     assert provider.calls == 1
     assert "Ирине" not in result.draft_text
-    assert "Артёма" not in result.draft_text
-    assert "данные ребёнка" in result.draft_text
+    assert "Артёма" in result.draft_text
+    assert "[данные у менеджера]" in result.draft_text
     assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+
+
+def test_presale_output_sanitizer_keeps_child_first_name_and_moves_full_pii_to_checklist() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Записала Иванова Петра, телефон 8-900-123-45-67 и почту maria@example.com передам менеджеру.",
+            topic_id="theme:020_enrollment",
+        )
+    )
+
+    result = provider.build_draft(
+        "Запишите нас: Иванов Пётр, 9 класс, телефон 8-900-123-45-67, почта maria@example.com",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            PRESALE_PII_MEMORY_ENV: "1",
+            "confirmed_facts": {"enrollment.unpk": "УНПК: менеджер помогает оформить заявку."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert "Пётр" in result.draft_text
+    assert "Иванов" not in result.draft_text
+    assert "8-900" not in result.draft_text
+    assert "maria@example.com" not in result.draft_text
+    assert "[данные у менеджера]" in result.draft_text
+    assert "client_name_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert "client_phone_echo" in result.metadata["output_sanitizer"]["reasons"]
+    assert "client_email_echo" in result.metadata["output_sanitizer"]["reasons"]
+    checklist = "\n".join(result.manager_checklist)
+    assert "Иванов Пётр" in checklist
+    assert "8-900-123-45-67" in checklist
+    assert "maria@example.com" in checklist
 
 
 def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None:

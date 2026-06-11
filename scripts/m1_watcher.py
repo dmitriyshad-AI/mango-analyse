@@ -231,9 +231,9 @@ def validate_task_dict(data: Mapping[str, object]) -> TaskSpec:
     if max_hours <= 0 or max_hours > 9:
         raise WatcherError("task_schema_mismatch", "max_hours must be >0 and <=9")
 
-    judge_prompt_version = str(data.get("judge_prompt_version") or "v9").strip().lower()
-    if judge_prompt_version not in {"v2", "v9"}:
-        raise WatcherError("task_schema_mismatch", "judge_prompt_version must be v2|v9")
+    judge_prompt_version = str(data.get("judge_prompt_version") or "v9.1").strip().lower()
+    if judge_prompt_version not in {"v2", "v9", "v9.1"}:
+        raise WatcherError("task_schema_mismatch", "judge_prompt_version must be v2|v9|v9.1")
 
     env_raw = data.get("env") or {}
     if not isinstance(env_raw, Mapping):

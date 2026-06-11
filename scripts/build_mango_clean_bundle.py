@@ -17,7 +17,7 @@ from scripts.m1_watcher import sha256_file, write_text_atomic
 
 
 DEFAULT_TESTS_ROOT = Path.home() / "Yandex.Disk.localized" / "OpenClaw" / "Actual Mango Tests"
-DEFAULT_KB_SNAPSHOT = "product_data/knowledge_base/kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json"
+DEFAULT_KB_SNAPSHOT = "product_data/knowledge_base/kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json"
 DEFAULT_PILOT_CONFIG = "pilot_gold_v1"
 DEFAULT_GOLD_PACK_VERSION = "real_manager_gold_2026-06-08"
 

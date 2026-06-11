@@ -10593,7 +10593,7 @@ class _DirectPathRetrieverProvider(_DirectPathProvider):
         return self.retriever_payload
 
 
-DEFAULT_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json")
 V67_SNAPSHOT_PATH = DEFAULT_SNAPSHOT_PATH
 
 

@@ -39,7 +39,7 @@ from mango_mvp.insights.tone_score import summarize_tone_scores
 
 
 DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke_tests_v7_dynamic_sim_2026-05-21/v7_dynamic_client_sim_2026-05-21.jsonl")
-DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260610_v6_7_staging_r3/kb_release_v3_snapshot.json")
+DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
 JUDGE_PROMPT_VERSION_V2 = "judge_v2_current"

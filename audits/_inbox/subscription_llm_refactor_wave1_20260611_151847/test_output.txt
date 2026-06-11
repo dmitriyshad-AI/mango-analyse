@@ -1,0 +1,25 @@
+Focused pytest:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src COVERAGE_FILE=<audit>/.coverage.focused python3 -m coverage run --source=src/mango_mvp/channels -m pytest -q tests/test_subscription_llm_draft_provider.py tests/test_draft_prompt_builder.py tests/test_bot_policy_v2.py tests/test_dialogue_contract_pipeline.py tests/test_telegram_dynamic_client_sim.py tests/test_telegram_public_pilot_bots.py tests/test_telegram_bot_polling.py tests/test_telegram_manager_draft_pilot_script.py tests/test_draft_loop.py
+
+Result: 921 passed in 19.43s.
+
+Replay:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_subscription_llm_equivalence_replay.py
+
+Result: {"cases": 19, "errors": [], "status": "ok"}.
+
+Facade exports:
+
+Result: {"export_count": 771, "identity_checked": 0, "identity_skipped": 771, "mode": "monolith", "status": "ok"}.
+
+Move-only:
+
+Result: {"definitions_checked": 484, "errors": [], "mode": "monolith", "snapshot_definitions": 484, "status": "ok"}.
+
+Full pytest:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests
+
+Result: 3004 passed, 5 skipped, 1 warning in 45.29s.

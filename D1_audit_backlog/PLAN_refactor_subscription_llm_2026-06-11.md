@@ -283,6 +283,13 @@ src/mango_mvp/channels/subscription_llm_parts/
 | 7. Semantic/humanity/tone/final gate | Вынести semantic verifier, diagnosis, humanity, tone, A2, authoritative gate. | Не менять prompt text, verifier action matrix, final downgrade rules. | Verifier prompts, fake verifier results and final gated JSON identical. | Full pytest + verifier/humanity/tone replay. |
 | 8. Provider core | Вынести `SubscriptionLlmDraftProvider`, fake provider, runner methods, cache get/put. Старый файл становится thin facade. | Не менять ветвление `direct path -> dialogue contract -> legacy`, не менять runner/caching semantics. | Provider replay по legacy/direct/dialogue/fake дает identical prompt bytes, command args, route, text, flags, metadata. | Full pytest + fixed replay before/after. |
 
+Уточнение состава волн 2-5 после dependency-check:
+
+- Волна 2: только настоящие листья `build_codex_exec_command`, `build_codex_exec_env`, `codex_isolation_cwd`, `_with_codex_exec_metadata`, `_cache_key`, `_guard_cache_dir`, `_is_retryable`, `_CodexRetryableError`, `_PromptProviderError`, `extract_json_object` и их константы `DEFAULT_CODEX_MODEL`, `DEFAULT_CODEX_REASONING_EFFORT`, `_RETRYABLE_MARKERS`. Не переносить `parse_llm_json`, `normalize_subscription_draft_payload`, `safe_fallback_draft`, `_normalize_direct_path_payload`.
+- Волна 3: `SubscriptionDraftResult` переезжает вместе с `SUBSCRIPTION_LLM_SCHEMA_VERSION`, `SAFE_FALLBACK_DRAFT_TEXT`, `BASE_SAFETY_FLAGS`, `ALLOWED_ROUTES`, `ALLOWED_MESSAGE_TYPES`, `_clean_list`, `_clean_crm_recommendations`, `_clamp_float` и минимальным strip-блоком `strip_internal_service_markers`/`INTERNAL_*`/`_normalize_output_sanitizer_text`, потому что `__post_init__` зависит от него.
+- Волна 4: PII/toggle/fact helpers переносить кластерами. `_truthy_value`, `_explicit_truthy_setting`, `_pilot_profile_*`, `_direct_path_pilot_config`, `_A2_PHONE_RE`, `_CLIENT_EMAIL_RE`, `_looks_like_russian_surname`, `_presale_prompt_child_name_value` должны уйти с первым потребителем, чтобы не создать циклы.
+- Волна 5: переносить snapshot/fact-pack/render/retriever/gold/prompt leaves. Не считать leaf: `_direct_path_preblocked_result`, `_direct_path_p0_text`, `_direct_path_finalize_metadata`, `_direct_path_prepare_model_result`, `_normalize_direct_path_payload`; их держать до policy/post-layer/provider волн или переносить только с нужными shared-зависимостями.
+
 Коммитная дисциплина: одна волна = отдельный маленький коммит и audit pack. При любом расхождении replay или pytest волну не продолжать.
 
 Скорректированное правило циклов:
@@ -502,6 +509,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_subscription_llm_eq
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/check_subscription_llm_facade_exports.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/check_subscription_llm_move_only.py
 ```
 
 Скрипт должен проверять:
@@ -510,6 +518,15 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/check_subscription_llm_
 - `facade.X is parts.X` для всех реэкспортов;
 - классы, функции и исключения не продублированы;
 - особенно `_CodexRetryableError`, `_PromptProviderError`, `SubscriptionDraftResult`, `SubscriptionLlmDraftProvider`.
+
+Move-only checker должен проверять:
+
+- перед baseline freeze заморозить normalized AST и compiled body для каждой top-level функции/класса монолита;
+- после появления `subscription_llm_parts` сравнивать каждую функцию/класс из frozen snapshot с телом в parts;
+- маскировать имя файла, номера строк и позиции docstring;
+- любое отличие тела = fail волны даже при зеленых pytest/replay;
+- допустимые отличия только в import-секциях, их diff печатается в отчет волны;
+- дубли definition name в parts = fail.
 
 Coverage parity:
 
@@ -557,6 +574,20 @@ Coverage parity:
 - AMO/Wappi live write;
 - night shadow replay CLI без fake provider;
 - любые batch/live scripts.
+
+## 13. Финальная эквивалентность после волны 8
+
+Перед merge и после завершения волны 8 нужен отдельный финальный replay:
+
+- старое дерево: точка до волны 1, frozen baseline commit;
+- новое дерево: итоговый refactor commit;
+- полный набор 89 сценариев;
+- fake-runner с записанными ответами модели, без live LLM/ASR/AMO/Tallanto/write;
+- сравнение по каждому ходу: sha256 prompt bytes, route, draft_text, safety_flags, manager_checklist;
+- отчет-таблица расхождений в audit pack финальной приемки;
+- ожидаемое число строк расхождений: 0.
+
+Этот отчет является входным артефактом финальной приемки архитектора. Если есть хотя бы одно отличие, merge запрещен до отдельного решения архитектора.
 
 ## 11. Риски: не трогать в фазе 1
 

@@ -1,0 +1,19 @@
+{"case_id":"legacy_ok","kind":"legacy_ok","client_message":"Здравствуйте, что есть для 6 класса?","expect_fallback":false}
+{"case_id":"legacy_retryable_rc","kind":"legacy_retryable_rc","client_message":"Можно уточнить расписание?","expect_fallback":false}
+{"case_id":"legacy_non_retryable_rc","kind":"legacy_non_retryable_rc","client_message":"Сломайте provider без retry","expect_fallback":true}
+{"case_id":"legacy_timeout","kind":"legacy_timeout","client_message":"Смоделируй timeout provider","expect_fallback":true}
+{"case_id":"legacy_cache_put_hit","kind":"legacy_cache_put_hit","client_message":"Проверка cache put hit","expect_fallback":false}
+{"case_id":"guard_cache_dir_stable_runtime","kind":"guard_cache_dir_stable_runtime","client_message":"Проверка запрета stable_runtime cache","expect_fallback":false}
+{"case_id":"fake_provider_guarded","kind":"fake_provider_guarded","client_message":"Есть курс?","expect_fallback":false}
+{"case_id":"direct_ok","kind":"direct_ok","client_message":"Сколько стоит годовой курс?","expect_fallback":false}
+{"case_id":"direct_p0_preblock","kind":"direct_p0_preblock","client_message":"Деньги списали дважды, верните оплату","expect_fallback":false,"allow_policy_downgrade":true}
+{"case_id":"direct_default_gold_pack_path","kind":"direct_default_gold_pack_path","client_message":"Рассрочка есть?","expect_fallback":false}
+{"case_id":"direct_llm_retrieve_fake","kind":"direct_llm_retrieve_fake","client_message":"Сколько стоит годовой курс?","expect_fallback":false}
+{"case_id":"route_rubric_regen","kind":"route_rubric_regen","client_message":"Сколько стоит год?","expect_fallback":false}
+{"case_id":"dialogue_contract_ok","kind":"dialogue_contract_ok","client_message":"Сколько стоит годовой курс?","expect_fallback":false}
+{"case_id":"brand_separation","kind":"brand_separation","client_message":"У Фотона такие же условия, как у УНПК?","expect_fallback":false,"allow_policy_downgrade":true}
+{"case_id":"payment_confirmation","kind":"payment_confirmation","client_message":"Оплата прошла?","expect_fallback":false,"allow_policy_downgrade":true}
+{"case_id":"known_context_no_reask","kind":"known_context_no_reask","client_message":"Подберите курс","expect_fallback":false,"allow_policy_downgrade":true}
+{"case_id":"night_note","kind":"night_note","client_message":"Когда ответят?","expect_fallback":false}
+{"case_id":"valid_until_2099","kind":"valid_until_2099","client_message":"Проверка valid_until без date.today","expect_fallback":false}
+{"case_id":"memory_provenance_prompt","kind":"memory_provenance_prompt","client_message":"Спасибо, подберите группу","expect_fallback":false}

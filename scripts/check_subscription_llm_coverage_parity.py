@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,6 +13,7 @@ DEFAULT_SNAPSHOT = Path("D1_audit_backlog/subscription_llm_refactor_body_snapsho
 DEFAULT_BEFORE_FOCUSED = Path("audits/_inbox/subscription_llm_refactor_wave1_20260611_151847/coverage_focused.json")
 DEFAULT_BEFORE_REPLAY = Path("audits/_inbox/subscription_llm_refactor_wave1_20260611_151847/coverage_replay.json")
 MONOLITH_PATH = Path("src/mango_mvp/channels/subscription_llm.py")
+PARTS_MONOLITH_PATH = Path("src/mango_mvp/channels/subscription_llm_parts/monolith.py")
 PARTS_DIR = Path("src/mango_mvp/channels/subscription_llm_parts")
 
 
@@ -57,6 +59,61 @@ def current_def_spans(root: Path) -> dict[str, tuple[str, int, int]]:
     return result
 
 
+def git_text(root: Path, ref: str, path: str) -> str | None:
+    proc = subprocess.run(
+        ["git", "show", f"{ref}:{path}"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def git_paths(root: Path, ref: str) -> list[str]:
+    proc = subprocess.run(
+        [
+            "git",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            ref,
+            "--",
+            str(MONOLITH_PATH),
+            str(PARTS_DIR),
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return []
+    return [line for line in proc.stdout.splitlines() if line.endswith(".py")]
+
+
+def definition_spans_from_text(path: str, text: str) -> dict[str, tuple[str, int, int]]:
+    tree = ast.parse(text)
+    result: dict[str, tuple[str, int, int]] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        result[node.name] = (path, def_start(node), int(getattr(node, "end_lineno", node.lineno)))
+    return result
+
+
+def previous_def_spans(root: Path, ref: str) -> dict[str, tuple[str, int, int]]:
+    result: dict[str, tuple[str, int, int]] = {}
+    for path in git_paths(root, ref):
+        text = git_text(root, ref, path)
+        if text is None:
+            continue
+        result.update(definition_spans_from_text(path, text))
+    return result
+
+
 def old_body_line_map(snapshot: Mapping[str, Any]) -> dict[int, tuple[str, int]]:
     mapping: dict[int, tuple[str, int]] = {}
     for name, record in snapshot.get("definitions", {}).items():
@@ -74,6 +131,7 @@ def check_one(
     after_path: Path,
     snapshot: Mapping[str, Any],
     current_spans: Mapping[str, tuple[str, int, int]],
+    previous_spans: Mapping[str, tuple[str, int, int]],
 ) -> dict[str, Any]:
     before = coverage_lines(load_json(before_path))
     after_payload = load_json(after_path)
@@ -82,52 +140,62 @@ def check_one(
         path: set(lines).union(int(line) for line in (after_payload.get("files", {}).get(path, {}).get("missing_lines") or ()))
         for path, lines in after.items()
     }
-    old_executed = before.get(str(MONOLITH_PATH), set())
-    old_map = old_body_line_map(snapshot)
     checked = 0
     skipped_unmoved = 0
     skipped_non_executable = 0
     missing: list[dict[str, Any]] = []
     unmapped: list[int] = []
-    for old_line in sorted(old_executed):
-        item = old_map.get(old_line)
-        if item is None:
-            continue
-        name, offset = item
+    for name, record in sorted(snapshot.get("definitions", {}).items()):
         current = current_spans.get(name)
         if current is None:
-            unmapped.append(old_line)
+            unmapped.extend(range(int(record["lineno"]), int(record["end_lineno"]) + 1))
             continue
         current_path, current_start, current_end = current
         if current_path.endswith("/monolith.py"):
-            skipped_unmoved += 1
+            skipped_unmoved += int(record["end_lineno"]) - int(record["lineno"]) + 1
             continue
-        current_line = current_start + offset
-        if current_line > current_end:
-            missing.append(
-                {
-                    "definition": name,
-                    "old_line": old_line,
-                    "current_path": current_path,
-                    "current_line": current_line,
-                    "reason": "line_outside_current_span",
-                }
-            )
+        previous = previous_spans.get(name)
+        if previous is None:
+            previous = (str(MONOLITH_PATH), int(record["lineno"]), int(record["end_lineno"]))
+        previous_path, previous_start, _previous_end = previous
+        if previous_path == current_path and previous_start == current_start:
+            skipped_unmoved += int(record["end_lineno"]) - int(record["lineno"]) + 1
             continue
-        if current_line not in after_executable.get(current_path, set()):
-            skipped_non_executable += 1
-            continue
-        checked += 1
-        if current_line not in after.get(current_path, set()):
-            missing.append(
-                {
-                    "definition": name,
-                    "old_line": old_line,
-                    "current_path": current_path,
-                    "current_line": current_line,
-                    "reason": "not_executed_after",
-                }
-            )
+        for old_line in range(int(record["lineno"]), int(record["end_lineno"]) + 1):
+            offset = old_line - int(record["lineno"])
+            previous_line = previous_start + offset
+            current_line = current_start + offset
+            if previous_line not in before.get(previous_path, set()):
+                continue
+            if current_line > current_end:
+                missing.append(
+                    {
+                        "definition": name,
+                        "old_line": old_line,
+                        "before_path": previous_path,
+                        "before_line": previous_line,
+                        "current_path": current_path,
+                        "current_line": current_line,
+                        "reason": "line_outside_current_span",
+                    }
+                )
+                continue
+            if current_line not in after_executable.get(current_path, set()):
+                skipped_non_executable += 1
+                continue
+            checked += 1
+            if current_line not in after.get(current_path, set()):
+                missing.append(
+                    {
+                        "definition": name,
+                        "old_line": old_line,
+                        "before_path": previous_path,
+                        "before_line": previous_line,
+                        "current_path": current_path,
+                        "current_line": current_line,
+                        "reason": "not_executed_after",
+                    }
+                )
     return {
         "label": label,
         "before": str(before_path),
@@ -148,6 +216,7 @@ def main() -> int:
     parser.add_argument("--before-replay", type=Path, default=DEFAULT_BEFORE_REPLAY)
     parser.add_argument("--after-focused", type=Path, required=True)
     parser.add_argument("--after-replay", type=Path, required=True)
+    parser.add_argument("--before-ref", default="HEAD")
     parser.add_argument("--out", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -155,6 +224,7 @@ def main() -> int:
     root = repo_root()
     snapshot = load_json(root / args.snapshot if not args.snapshot.is_absolute() else args.snapshot)
     current_spans = current_def_spans(root)
+    previous_spans = previous_def_spans(root, args.before_ref)
 
     def root_path(path: Path) -> Path:
         return path if path.is_absolute() else root / path
@@ -166,6 +236,7 @@ def main() -> int:
             after_path=root_path(args.after_focused),
             snapshot=snapshot,
             current_spans=current_spans,
+            previous_spans=previous_spans,
         ),
         check_one(
             label="replay",
@@ -173,6 +244,7 @@ def main() -> int:
             after_path=root_path(args.after_replay),
             snapshot=snapshot,
             current_spans=current_spans,
+            previous_spans=previous_spans,
         ),
     ]
     payload = {

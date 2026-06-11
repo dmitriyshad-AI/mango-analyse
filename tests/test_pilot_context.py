@@ -146,13 +146,14 @@ def test_pilot_context_memory_provenance_compact_flag_preserves_late_provenance(
         },
     }
 
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
     monkeypatch.setenv(MEMORY_PROVENANCE_COMPACT_ENV, "0")
     off = compact_dialogue_memory_view(source)
     assert "known_slots" in off
     assert "slot_provenance" not in off
     assert "client_confirmed_slots" not in off
 
-    monkeypatch.setenv(MEMORY_PROVENANCE_COMPACT_ENV, "1")
+    monkeypatch.delenv(MEMORY_PROVENANCE_COMPACT_ENV, raising=False)
     on = compact_dialogue_memory_view(source)
     assert on["known_slots"]["grade"] == "9"
     assert on["slot_sources"]["grade"] == "memory_provenance"

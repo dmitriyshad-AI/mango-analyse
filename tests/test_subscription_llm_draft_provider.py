@@ -11965,19 +11965,21 @@ def test_direct_path_output_sanitizer_keeps_capitalized_non_name_words() -> None
 def test_pii_relation_stopwords_flag_keeps_family_words(monkeypatch) -> None:
     text = "У меня сын в 7 классе и дочь в 4-м"
 
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
     monkeypatch.setenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, "0")
     off_text, off_reasons = subscription_llm._sanitize_client_pii_echo(text, client_message=text)
     assert off_text == "У меня [данные у менеджера] в 7 классе и дочь в 4-м"
     assert "client_name_echo" in off_reasons
 
-    monkeypatch.setenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, "1")
+    monkeypatch.delenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, raising=False)
     on_text, on_reasons = subscription_llm._sanitize_client_pii_echo(text, client_message=text)
     assert on_text == text
     assert on_reasons == ()
 
 
 def test_pii_relation_stopwords_flag_still_masks_unmentioned_name(monkeypatch) -> None:
-    monkeypatch.setenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, "1")
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+    monkeypatch.delenv(subscription_llm.PII_RELATION_STOPWORDS_ENV, raising=False)
 
     sanitized, reasons = subscription_llm._sanitize_client_pii_echo(
         "Для Ирины подберём группу.",
@@ -12301,6 +12303,9 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
         subscription_llm.MEMORY_PROVENANCE_ENV,
+        subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
+        subscription_llm.PII_RELATION_STOPWORDS_ENV,
+        subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
@@ -12321,6 +12326,9 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV) is True
     assert subscription_llm._template_from_kb_enabled(context) is True
     assert subscription_llm.MEMORY_PROVENANCE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.PII_RELATION_STOPWORDS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:
@@ -12371,6 +12379,9 @@ def test_pilot_gold_v1_explicit_override_is_visible_in_metadata(monkeypatch) -> 
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
         subscription_llm.MEMORY_PROVENANCE_ENV,
+        subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
+        subscription_llm.PII_RELATION_STOPWORDS_ENV,
+        subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
@@ -12418,6 +12429,10 @@ def test_without_pilot_config_profile_flags_keep_default_off(monkeypatch) -> Non
         PRESALE_VERIFIER_FAILSOFT_ENV,
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
+        subscription_llm.MEMORY_PROVENANCE_ENV,
+        subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
+        subscription_llm.PII_RELATION_STOPWORDS_ENV,
+        subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):

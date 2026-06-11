@@ -417,8 +417,9 @@ def test_memory_provenance_keeps_two_children_separate(monkeypatch) -> None:
 
 
 def test_memory_provenance_compact_roundtrip_preserves_source_and_quote(monkeypatch) -> None:
-    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
-    monkeypatch.setenv(MEMORY_PROVENANCE_COMPACT_ENV, "1")
+    monkeypatch.delenv(MEMORY_PROVENANCE_ENV, raising=False)
+    monkeypatch.delenv(MEMORY_PROVENANCE_COMPACT_ENV, raising=False)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
 
     memory = build_dialogue_memory(
         current_message="9 класс, физика, очно",
@@ -442,7 +443,8 @@ def test_memory_provenance_compact_roundtrip_preserves_source_and_quote(monkeypa
 
 
 def test_memory_child_ellipsis_flag_extracts_second_child_grade(monkeypatch) -> None:
-    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.delenv(MEMORY_PROVENANCE_ENV, raising=False)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
     monkeypatch.setenv(MEMORY_CHILD_ELLIPSIS_ENV, "0")
     off = build_dialogue_memory(
         current_message="У меня сын в 7 классе и дочь в 4-м",
@@ -454,7 +456,7 @@ def test_memory_child_ellipsis_flag_extracts_second_child_grade(monkeypatch) -> 
     assert "child_2_grade" not in off["known_slots"]
     assert off["known_slots"]["grade"] == "7"
 
-    monkeypatch.setenv(MEMORY_CHILD_ELLIPSIS_ENV, "1")
+    monkeypatch.delenv(MEMORY_CHILD_ELLIPSIS_ENV, raising=False)
     on = build_dialogue_memory(
         current_message="У меня сын в 7 классе и дочь в 4-м",
         active_brand="foton",

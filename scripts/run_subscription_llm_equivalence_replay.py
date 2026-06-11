@@ -64,17 +64,35 @@ def stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def canonicalize_for_hash(value: Any) -> Any:
+STATE_TIME_KEYS = {"updated_at"}
+SLOT_HISTORY_TIME_KEYS = {
+    "at",
+    "created_at",
+    "recorded_at",
+    "started_at",
+    "timestamp",
+    "ts",
+    "updated_at",
+}
+
+
+def canonicalize_for_hash(value: Any, *, path: tuple[str, ...] = ()) -> Any:
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
         for key, item in value.items():
-            if str(key) in {"snapshot_path", "knowledge_snapshot_path", "kb_snapshot_path"}:
-                result[str(key)] = "<snapshot_path>"
+            key_text = str(key)
+            next_path = (*path, key_text)
+            if key_text in {"snapshot_path", "knowledge_snapshot_path", "kb_snapshot_path"}:
+                result[key_text] = "<snapshot_path>"
+            elif key_text in STATE_TIME_KEYS:
+                result[key_text] = "<state_time>"
+            elif "slot_history" in path and (key_text in SLOT_HISTORY_TIME_KEYS or key_text.endswith("_at")):
+                result[key_text] = "<slot_history_time>"
             else:
-                result[str(key)] = canonicalize_for_hash(item)
+                result[key_text] = canonicalize_for_hash(item, path=next_path)
         return result
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [canonicalize_for_hash(item) for item in value]
+        return [canonicalize_for_hash(item, path=(*path, "[]")) for item in value]
     return value
 
 

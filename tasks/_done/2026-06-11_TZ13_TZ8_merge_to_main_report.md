@@ -19,6 +19,7 @@ Accepted original commits were rebased on current `main`:
 ## Pre-merge checks
 
 - `TELEGRAM_MEMORY_PROVENANCE` is not present in `DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS`.
+- OFF parity: `build_dialogue_memory(...).to_json_dict()` with `TELEGRAM_MEMORY_PROVENANCE` unset matches pre-merge `main` (`6800755a`) byte-for-byte on the control input after removing only time-dependent `updated_at`.
 - Targeted NEG:
 
 ```text

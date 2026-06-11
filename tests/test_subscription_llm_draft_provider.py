@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -12235,6 +12236,43 @@ def test_direct_path_real_manager_gold_pack_lints_examples() -> None:
             assert "Фотон" not in manager_text
 
 
+def test_direct_path_real_manager_gold_v2_pack_lints_examples() -> None:
+    pack_path = (
+        DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH.parent
+        / "real_manager_gold_v2_2026-06-11.yaml"
+    )
+    payload = yaml.safe_load(pack_path.read_text(encoding="utf-8"))
+    examples = payload["examples"]
+
+    assert len(examples) == 38
+    assert payload["schema_version"] == "real_manager_gold_v2_2026_06_11"
+    by_id = {item["id"]: item for item in examples}
+    assert "Да, вариант на полгода есть" in by_id["foton_installment_01"]["manager_response_masked"]
+    assert "неделя ничего не решает" in by_id["foton_think_over_camp_01"]["manager_response_masked"]
+    assert "следит куратор" in by_id["unpk_anxiety_join_mid_01"]["manager_response_masked"]
+
+    for item in examples:
+        assert item["mission_gold"] is True
+        assert item["brand"] in {"foton", "unpk"}
+        assert item.get("source")
+        manager_text = item["manager_response_masked"]
+        prompt_example = item["prompt_example"]
+        assert "₽" not in manager_text
+        assert "+7" not in manager_text
+        assert "8 (" not in manager_text
+        bare_numbers = []
+        for match in re.finditer(r"\b\d+\b", manager_text):
+            before = manager_text[: match.start()]
+            if before.rfind("[") <= before.rfind("]"):
+                bare_numbers.append(match.group(0))
+        assert bare_numbers == []
+        assert "[" not in prompt_example and "]" not in prompt_example
+        if item["brand"] == "foton":
+            assert "УНПК" not in manager_text
+        if item["brand"] == "unpk":
+            assert "Фотон" not in manager_text
+
+
 def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по рассрочке.")
@@ -12259,6 +12297,7 @@ def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
             "active_brand": "foton",
             DIRECT_PATH_ENV: "1",
             BOT_GOLD_REAL_ENV: "1",
+            "conversation_intent_plan": {"primary_intent": "installment"},
             "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
         },
     )
@@ -12267,6 +12306,32 @@ def test_direct_path_real_manager_gold_is_gated_by_flag() -> None:
     assert "Стоимость за один предмет" in provider_with_gold.last_prompt
     assert result.metadata["direct_path"]["gold_real_enabled"] is True
     assert "foton_price_installment_01" in result.metadata["direct_path"]["gold_real_example_ids"]
+
+
+def test_direct_path_real_manager_gold_pack_env_overrides_examples(monkeypatch) -> None:
+    pack_path = (
+        DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH.parent
+        / "real_manager_gold_v2_2026-06-11.yaml"
+    )
+    monkeypatch.setenv(subscription_llm.BOT_GOLD_REAL_PACK_ENV, str(pack_path))
+
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Да, подскажу по рассрочке.")
+    )
+    result = provider.build_draft(
+        "Рассрочка на полгода есть?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            BOT_GOLD_REAL_ENV: "1",
+            "conversation_intent_plan": {"primary_intent": "installment"},
+            "confirmed_facts": {"installment.foton": "Фотон: доступны варианты на 6, 10 или 12 месяцев."},
+        },
+    )
+
+    assert "Да, вариант на полгода есть" in provider.last_prompt
+    assert "foton_installment_01" in result.metadata["direct_path"]["gold_real_example_ids"]
+    assert result.metadata["direct_path"]["gold_pack_version"] == "real_manager_gold_v2_2026-06-11"
 
 
 def test_direct_path_pilot_gold_v1_enables_direct_and_gold_without_extra_flags() -> None:

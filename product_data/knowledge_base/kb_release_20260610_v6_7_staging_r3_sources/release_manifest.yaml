@@ -7,6 +7,72 @@ client_safe_path_markers:
 - refund_presale_policy
 - refund_post_payment
 manual_decision_fact_overrides:
+- fact_key: gold_v2_r4_queue.foton.midyear_new_student_curator_support
+  fact_type: process
+  brand: foton
+  product: regular_courses_2026_27
+  fact_text: 'Очередь r4: куратор филиала следит, чтобы присоединившиеся среди года ученики комфортно и успешно осваивали
+    программу. Источник: владелец 11.06; ждёт подтверждения охвата (очные/онлайн).'
+  client_safe_text: ''
+  source_key: claude_layer_v3:changelog_team_answers
+  status: needs_owner_confirmation
+  route_policy: manager_handoff_only
+  linked_open_question: gold_v2_r4_scope_confirmation
+  internal_only: true
+  structured_value:
+    source_decision: owner_2026_06_11
+    pending_scope_confirmation: true
+    gold_example_id: unpk_anxiety_join_mid_01
+- fact_key: gold_v2_r4_queue.unpk.midyear_new_student_curator_support
+  fact_type: process
+  brand: unpk
+  product: regular_courses_2026_27
+  fact_text: 'Очередь r4: куратор филиала следит, чтобы присоединившиеся среди года ученики комфортно и успешно осваивали
+    программу. Источник: владелец 11.06; ждёт подтверждения охвата (очные/онлайн).'
+  client_safe_text: ''
+  source_key: claude_layer_v3:changelog_team_answers
+  status: needs_owner_confirmation
+  route_policy: manager_handoff_only
+  linked_open_question: gold_v2_r4_scope_confirmation
+  internal_only: true
+  structured_value:
+    source_decision: owner_2026_06_11
+    pending_scope_confirmation: true
+    gold_example_id: unpk_anxiety_join_mid_01
+- fact_key: gold_v2_r4_queue.foton.small_groups_personal_attention
+  fact_type: format
+  brand: foton
+  product: regular_courses_2026_27
+  fact_text: 'Очередь r4: регулярные курсы идут в небольших группах, преподаватель уделяет персональное внимание каждому
+    ученику. Источник: владелец 11.06; ждёт подтверждения охвата и размера групп.'
+  client_safe_text: ''
+  source_key: claude_layer_v3:changelog_team_answers
+  status: needs_owner_confirmation
+  route_policy: manager_handoff_only
+  linked_open_question: gold_v2_r4_group_size_confirmation
+  internal_only: true
+  structured_value:
+    source_decision: owner_2026_06_11
+    pending_scope_confirmation: true
+    pending_group_size_confirmation: true
+    gold_example_id: unpk_anxiety_join_mid_01
+- fact_key: gold_v2_r4_queue.unpk.small_groups_personal_attention
+  fact_type: format
+  brand: unpk
+  product: regular_courses_2026_27
+  fact_text: 'Очередь r4: регулярные курсы идут в небольших группах, преподаватель уделяет персональное внимание каждому
+    ученику. Источник: владелец 11.06; ждёт подтверждения охвата и размера групп.'
+  client_safe_text: ''
+  source_key: claude_layer_v3:changelog_team_answers
+  status: needs_owner_confirmation
+  route_policy: manager_handoff_only
+  linked_open_question: gold_v2_r4_group_size_confirmation
+  internal_only: true
+  structured_value:
+    source_decision: owner_2026_06_11
+    pending_scope_confirmation: true
+    pending_group_size_confirmation: true
+    gold_example_id: unpk_anxiety_join_mid_01
 - fact_key: team_answers.q15.unpk_online_other_classes.manager_handoff
   fact_type: program
   brand: unpk

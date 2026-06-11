@@ -1003,6 +1003,12 @@ def _direct_path_gold_pack_path() -> Path:
         return Path(override).expanduser()
     return DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH
 
+def _direct_path_gold_pack_version() -> str:
+    override = os.getenv(BOT_GOLD_REAL_PACK_ENV)
+    if override:
+        return Path(override).expanduser().stem
+    return DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION
+
 def _load_direct_path_gold_real_examples(path: Optional[Path] = None) -> tuple[Mapping[str, Any], ...]:
     pack_path = path or _direct_path_gold_pack_path()
     if not pack_path.exists():
@@ -1196,7 +1202,7 @@ def _direct_path_metadata(
         "wide_fact_adjacent_keys": adjacent_keys,
         "wide_fact_metadata": {str(key): dict(value) for key, value in fact_meta.items() if str(key).strip() and isinstance(value, Mapping)},
         "gold_real_enabled": bool(gold_ids),
-        "gold_pack_version": DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION if gold_ids else "",
+        "gold_pack_version": _direct_path_gold_pack_version() if gold_ids else "",
         "gold_real_example_ids": gold_ids,
         "text_composition_source": "direct_path_model" if model_called else "deterministic_preblock",
         "direct_path_attempted": bool(attempted),

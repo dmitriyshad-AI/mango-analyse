@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Mapping
 
 from scripts.run_telegram_public_pilot_bots import (
     apply_public_autonomy_kill_switch,
@@ -296,6 +297,61 @@ def test_public_pilot_context_matches_extracted_assembly(tmp_path: Path, monkeyp
     )
 
     assert from_runtime == from_module
+
+
+def test_public_pilot_context_exposes_snapshot_to_direct_fact_pack(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+                "allowed_for_client_answer": True,
+                "fact_type": "price",
+                "product": "regular_courses_2026_27",
+                "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "schedule_2026_27.groups.physics_8_online_sun_1430_1630",
+                "allowed_for_client_answer": True,
+                "fact_type": "deadline",
+                "product": "schedule_2026_27",
+                "client_safe_text": "Физика, 8 класс, обычная группа, онлайн: воскресенье 14:30-16:30, старт 20.09.2026.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=snapshot_path,
+        store_enabled=False,
+    )
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+
+    context = runtime.build_context(chat_id=123, session=ChatSession(), current_text="8 класс физика")
+    runtime.close()
+
+    from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_context_fact_pack
+
+    def select_all_candidates(prompt: str) -> Mapping[str, Any]:
+        ids = [
+            line[2:].split(":", 1)[0]
+            for line in prompt.splitlines()
+            if line.startswith("- ")
+        ]
+        return {"exact_ids": ids, "adjacent_ids": []}
+
+    pack = _direct_path_context_fact_pack(context, client_message="8 класс физика", retriever_fn=select_all_candidates)
+
+    assert context["snapshot_path"] == str(snapshot_path)
+    assert context["knowledge_snapshot_path"] == str(snapshot_path)
+    assert pack["selected_category"] == "llm_retrieve"
+    assert "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester" in pack["facts"]
+    assert "schedule_2026_27.groups.physics_8_online_sun_1430_1630" in pack["facts"]
 
 
 def test_extracted_context_supports_draft_loop_mode_without_client_send(tmp_path: Path) -> None:

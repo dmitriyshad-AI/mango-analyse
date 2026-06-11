@@ -212,6 +212,8 @@ def build_pilot_context_payload(
     )
     payload = dict(pilot_context.to_prompt_context())
     payload["active_brand"] = active_brand
+    payload["snapshot_path"] = str(snapshot_path)
+    payload["knowledge_snapshot_path"] = str(snapshot_path)
     payload[DIALOGUE_CONTRACT_PIPELINE_ENV] = dialogue_contract_pipeline_enabled
     if known_client_fields:
         payload["known_client_fields"] = known_client_fields

@@ -39,3 +39,43 @@
 - Вопрос с реальным отсутствующим процессным фактом: `draft_for_manager` должен содержать конкретные `missing_facts`.
 
 Симулятор и М1-прогоны не запускались: по ТЗ замер позже отдельной задачей.
+
+## Ночной локальный замер 2026-06-10
+
+Контекст:
+- Дерево: `2d2da7da`.
+- Машина: главный мак, M1 не трогался.
+- Временный `CODEX_HOME`: `/private/tmp/mango_codex_home_rubric_20260610_fast`.
+- Временный config содержит `service_tier = "fast"`; основной `~/.codex/config.toml` не менялся.
+- Live AMO-проба не запускалась.
+- Набор: `/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/smoke_v2_acceptance_2026-06-08.jsonl`.
+- Команда: `scripts/run_telegram_dynamic_client_sim.py --parallel 4 --judge-prompt-version v9`.
+- Сравнение только внутри пары OFF/ON на этой машине; с M1 не сравнивалось.
+
+OFF:
+- Out-dir: `runs/20260610_rubric_base_smoke89`.
+- Env: `TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1`.
+- Итог: `89 dialogs`, `26 PASS`, `57 PASS_WITH_NOTES`, `6 FAIL`, `ok=true`.
+- `config_validity.invalid=false`.
+- `bot_direct_draft=300`.
+- `bot_semantic_output_verifier=390`.
+- `bot_faithfulness=0`.
+- `direct_path_rubric.rubric_enabled=0`.
+- FAIL: `sm_f_xbrand2`, `sm_u_camp1`, `sm_u_camp_zvsh`, `sm_u_discount_year`, `sm_u_waitlist`, `sm_f_summer_prog`.
+
+ON:
+- Out-dir: `runs/20260610_rubric_on_smoke89`.
+- Env: `TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1`, `TELEGRAM_ROUTE_RUBRIC=1`.
+- Итог: `89 dialogs`, `34 PASS`, `47 PASS_WITH_NOTES`, `8 FAIL`, `ok=true`.
+- `config_validity.invalid=false`.
+- `bot_direct_draft=295`.
+- `bot_semantic_output_verifier=362`.
+- `bot_faithfulness=0`.
+- `direct_path_rubric.rubric_enabled=321`.
+- FAIL: `sm_f_camp1`, `sm_u_camp1`, `sm_u_install`, `sm_u_discount_year`, `sm_u_price_12`, `sm_f_pick2kl`, `sm_u_mixed`, `sm_f_format_both`.
+
+Валидность замера:
+- Оба плеча завершились полностью.
+- В обоих плечах direct draft и semantic verifier реально работали.
+- В ON рубрика реально включалась (`rubric_enabled=321`).
+- `config_validity.invalid=false` в обоих плечах.

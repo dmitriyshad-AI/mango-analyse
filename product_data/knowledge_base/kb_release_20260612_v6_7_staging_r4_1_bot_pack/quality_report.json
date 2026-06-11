@@ -1,0 +1,208 @@
+{
+  "blocking_failures": [],
+  "checks": {
+    "all_claude_sources_have_sha256": true,
+    "all_fact_source_ids_exist": true,
+    "allowed_client_text_has_no_license_numbers": true,
+    "allowed_client_text_passes_brand_safety": true,
+    "approval_queue_has_400_plus_items": true,
+    "approval_queue_has_business_types": true,
+    "approval_queue_has_required_columns": true,
+    "brand_scope_has_foton_and_unpk_facts": true,
+    "control_numbers_present": true,
+    "field_ranges_ok": true,
+    "forbidden_to_say_not_in_facts": true,
+    "no_empty_fact_text": true,
+    "post_filter_has_phrases": true,
+    "text_number_grounded": true,
+    "two_separate_bots_recorded": true,
+    "weekly_frequency_is_plausible": true
+  },
+  "control_numbers": {
+    "expected": [
+      "44600",
+      "74500",
+      "49000",
+      "82000",
+      "29750",
+      "47250",
+      "98000",
+      "120000",
+      "18800",
+      "34400",
+      "18900",
+      "94500",
+      "33000",
+      "50000",
+      "93100",
+      "114000",
+      "37 000",
+      "59000",
+      "41 800",
+      "69 900"
+    ],
+    "found": [
+      "44600",
+      "74500",
+      "49000",
+      "82000",
+      "29750",
+      "47250",
+      "98000",
+      "120000",
+      "18800",
+      "34400",
+      "18900",
+      "94500",
+      "33000",
+      "50000",
+      "93100",
+      "114000",
+      "37 000",
+      "59000",
+      "41 800",
+      "69 900"
+    ],
+    "missing": []
+  },
+  "created_at": "2026-06-11T23:32:29.498656+00:00",
+  "details": {
+    "allowed_client_text_violations": [],
+    "allowed_license_fact_ids": [],
+    "empty_fact_text_fact_ids": [],
+    "field_range_findings": [],
+    "forbidden_to_say_fact_ids": [],
+    "invalid_weekly_frequency_fact_ids": [],
+    "orphan_source_ids": [],
+    "text_number_global_match_suspects": [
+      {
+        "brand": "foton",
+        "claim": "12 месяц",
+        "fact_id": "fact:v3:foton:processes_2026_06_10_foton_installment_options:c90c71b305",
+        "fact_key": "processes_2026_06_10.foton.installment_options",
+        "field": "client_safe_text",
+        "kind": "months",
+        "matched_fact_keys": [
+          "installment.client_confirmed_terms.client_safe_text",
+          "installment.client_safe_text.when_asked",
+          "lvsh_mendeleevo_2026.payment_options_2026.client_safe_text"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 12
+      },
+      {
+        "brand": "foton",
+        "claim": "12 месяц",
+        "fact_id": "fact:v3:foton:processes_2026_06_10_foton_installment_options:c90c71b305",
+        "fact_key": "processes_2026_06_10.foton.installment_options",
+        "field": "fact_text",
+        "kind": "months",
+        "matched_fact_keys": [
+          "installment.client_confirmed_terms.client_safe_text",
+          "installment.client_safe_text.when_asked",
+          "lvsh_mendeleevo_2026.payment_options_2026.client_safe_text"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 12
+      },
+      {
+        "brand": "unpk",
+        "claim": "2 раза в недел",
+        "fact_id": "fact:v3:unpk:r4_owner_2026_06_11_unpk_lesson_duration_by_format:6f972a4eba",
+        "fact_key": "r4_owner_2026_06_11.unpk.lesson_duration_by_format",
+        "field": "client_safe_text",
+        "kind": "weekly_frequency",
+        "matched_fact_keys": [
+          "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 2
+      },
+      {
+        "brand": "unpk",
+        "claim": "2 раза в недел",
+        "fact_id": "fact:v3:unpk:r4_owner_2026_06_11_unpk_lesson_duration_by_format:6f972a4eba",
+        "fact_key": "r4_owner_2026_06_11.unpk.lesson_duration_by_format",
+        "field": "fact_text",
+        "kind": "weekly_frequency",
+        "matched_fact_keys": [
+          "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 2
+      },
+      {
+        "brand": "unpk",
+        "claim": "5 000 ₽",
+        "fact_id": "fact:v3:unpk:r4_owner_2026_06_11_unpk_refer_friend_online_cashback:7b6abc6eeb",
+        "fact_key": "r4_owner_2026_06_11.unpk.refer_friend_online_cashback",
+        "field": "client_safe_text",
+        "kind": "money",
+        "matched_fact_keys": [
+          "discounts.refer_a_friend.camp_advanced_tariff.cashback",
+          "discounts.refer_a_friend.online.cashback",
+          "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text",
+          "ls_city_2026_unpk.discounts.refer_a_friend.advanced",
+          "objection_responses.too_expensive_course.5"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 5000
+      },
+      {
+        "brand": "unpk",
+        "claim": "5 000 ₽",
+        "fact_id": "fact:v3:unpk:r4_owner_2026_06_11_unpk_refer_friend_online_cashback:7b6abc6eeb",
+        "fact_key": "r4_owner_2026_06_11.unpk.refer_friend_online_cashback",
+        "field": "fact_text",
+        "kind": "money",
+        "matched_fact_keys": [
+          "discounts.refer_a_friend.camp_advanced_tariff.cashback",
+          "discounts.refer_a_friend.online.cashback",
+          "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text",
+          "ls_city_2026_unpk.discounts.refer_a_friend.advanced",
+          "objection_responses.too_expensive_course.5"
+        ],
+        "reason": "global_fact_match_requires_review",
+        "value": 5000
+      }
+    ],
+    "text_number_grounding_findings": []
+  },
+  "quality_passed": true,
+  "schema_version": "kb_release_v3_quality_report_v1",
+  "stage6": {
+    "note": "Сборщик готовит v3 snapshot и fixtures-compatible поля; Stage 6 запускается отдельным безопасным тестовым контуром.",
+    "status": "not_run_by_builder"
+  },
+  "summary": {
+    "approval_queue_by_type": {
+      "availability": 1,
+      "camp_city": 17,
+      "camp_lvsh": 124,
+      "camp_zvsh": 3,
+      "contact": 14,
+      "contacts": 3,
+      "deadline": 133,
+      "discount": 68,
+      "documents": 67,
+      "format": 6,
+      "installment": 31,
+      "intensive": 34,
+      "location": 1,
+      "matkap": 44,
+      "payment": 2,
+      "policy": 19,
+      "price": 48,
+      "process": 66,
+      "program": 290,
+      "promocode": 13,
+      "refund": 18,
+      "tax": 40,
+      "teacher": 13
+    },
+    "approval_queue_items": 1055,
+    "client_allowed_facts": 695,
+    "facts_total": 1077,
+    "source_registry_total": 11
+  }
+}

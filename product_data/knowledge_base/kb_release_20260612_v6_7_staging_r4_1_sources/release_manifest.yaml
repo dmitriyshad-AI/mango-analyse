@@ -1,0 +1,2091 @@
+schema_version: kb_release_manifest_v1
+release_id: kb_release_20260612_v6_7_staging_r4_1
+builder_version: kb_release_v6_1_builder_2026_05_20
+freshness_check_date: '2026-06-12'
+source_mutation_policy: read_only_yaml_sources_no_business_patches_in_python
+client_safe_path_markers:
+- refund_presale_policy
+- refund_post_payment
+manual_decision_fact_overrides:
+- fact_key: r4_owner_2026_06_11.foton.midyear_new_student_curator_support
+  fact_type: process
+  brand: foton
+  product: regular_courses_2026_27
+  fact_text: Куратор следит, чтобы ученики комфортно и успешно осваивали программу — и в очных филиалах, и в онлайн-группах.
+  client_safe_text: Куратор следит, чтобы ученики комфортно и успешно осваивали программу — и в очных филиалах, и в онлайн-группах.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: r4_owner_decisions_2026_06_11
+  internal_only: false
+  structured_value:
+    source_decision: owner_2026_06_11
+    applies_to_formats:
+    - offline
+    - online
+    gold_example_id: unpk_anxiety_join_mid_01
+- fact_key: r4_owner_2026_06_11.unpk.midyear_new_student_curator_support
+  fact_type: process
+  brand: unpk
+  product: regular_courses_2026_27
+  fact_text: Куратор следит, чтобы ученики комфортно и успешно осваивали программу — и в очных филиалах, и в онлайн-группах.
+  client_safe_text: Куратор следит, чтобы ученики комфортно и успешно осваивали программу — и в очных филиалах, и в онлайн-группах.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: r4_owner_decisions_2026_06_11
+  internal_only: false
+  structured_value:
+    source_decision: owner_2026_06_11
+    applies_to_formats:
+    - offline
+    - online
+    gold_example_id: unpk_anxiety_join_mid_01
+- fact_key: r4_owner_2026_06_11.foton.small_groups_personal_attention
+  fact_type: format
+  brand: foton
+  product: regular_courses_2026_27
+  fact_text: Регулярные курсы проходят в небольших группах; преподаватель уделяет персональное внимание каждому ученику.
+  client_safe_text: Регулярные курсы проходят в небольших группах; преподаватель уделяет персональное внимание каждому ученику.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: r4_owner_decisions_2026_06_11
+  internal_only: false
+  structured_value:
+    source_decision: owner_2026_06_11
+    gold_example_id: unpk_anxiety_join_mid_01
+- fact_key: r4_owner_2026_06_11.unpk.small_groups_personal_attention
+  fact_type: format
+  brand: unpk
+  product: regular_courses_2026_27
+  fact_text: Регулярные курсы проходят в небольших группах; преподаватель уделяет персональное внимание каждому ученику.
+  client_safe_text: Регулярные курсы проходят в небольших группах; преподаватель уделяет персональное внимание каждому ученику.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: r4_owner_decisions_2026_06_11
+  internal_only: false
+  structured_value:
+    source_decision: owner_2026_06_11
+    gold_example_id: unpk_anxiety_join_mid_01
+- fact_key: team_answers.q15.unpk_online_other_classes.manager_handoff
+  fact_type: program
+  brand: unpk
+  product: regular_online_courses_2026_27
+  fact_text: Вне двух подтверждённых онлайн-тарифов УНПК точные условия проверяет менеджер.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: q15_closed
+  structured_value:
+    scope_exception: other_unpk_online_classes_require_manager
+- fact_key: processes_2026_06_10.foton.enrollment_signup_steps
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Для записи пришлите ФИО ученика и класс, ФИО родителя, почту для связи и выбранное направление. После записи
+    на почту придут подтверждение, договорные документы и способ оплаты.
+  client_safe_text: Для записи пришлите ФИО ученика и класс, ФИО родителя, почту для связи и выбранное направление. После
+    записи на почту придут подтверждение, договорные документы и способ оплаты.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.enrollment_signup_steps
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Для записи пришлите ФИО ученика и класс, ФИО родителя, почту для связи и выбранное направление. После записи
+    на почту придут подтверждение, договорные документы и способ оплаты.
+  client_safe_text: Для записи пришлите ФИО ученика и класс, ФИО родителя, почту для связи и выбранное направление. После
+    записи на почту придут подтверждение, договорные документы и способ оплаты.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.after_payment_access
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: После оплаты пришлите чек или квитанцию в чат или на почту. После подтверждения оплаты для онлайн-занятий
+    на почту придёт приглашение на учебную платформу и инструкция по подключению; с лета 2026 новые онлайн-занятия проходят
+    на SohoLMS, а курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных занятий пришлём информацию о центре,
+    группе и расписании.
+  client_safe_text: После оплаты пришлите чек или квитанцию в чат или на почту. После подтверждения оплаты для онлайн-занятий
+    на почту придёт приглашение на учебную платформу и инструкция по подключению; с лета 2026 новые онлайн-занятия проходят
+    на SohoLMS, а курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных занятий пришлём информацию о центре,
+    группе и расписании.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.after_payment_access
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: После оплаты пришлите чек или квитанцию в чат или на почту. После подтверждения оплаты для онлайн-занятий
+    на почту придёт приглашение на учебную платформу и инструкция по подключению; с лета 2026 новые онлайн-занятия проходят
+    на SohoLMS, а курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных занятий пришлём информацию о центре,
+    группе и расписании.
+  client_safe_text: После оплаты пришлите чек или квитанцию в чат или на почту. После подтверждения оплаты для онлайн-занятий
+    на почту придёт приглашение на учебную платформу и инструкция по подключению; с лета 2026 новые онлайн-занятия проходят
+    на SohoLMS, а курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных занятий пришлём информацию о центре,
+    группе и расписании.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.trial_fragment_or_first_lessons
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Отдельного бесплатного пробного занятия сейчас нет. Для знакомства с форматом можем прислать фрагмент онлайн-занятия;
+    первые занятия можно использовать, чтобы понять, подходит ли курс.
+  client_safe_text: Отдельного бесплатного пробного занятия сейчас нет. Для знакомства с форматом можем прислать фрагмент
+    онлайн-занятия; первые занятия можно использовать, чтобы понять, подходит ли курс.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.trial_fragment_or_first_lessons
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Отдельного бесплатного пробного занятия сейчас нет. Для знакомства с форматом можем прислать фрагмент онлайн-занятия;
+    первые занятия можно использовать, чтобы понять, подходит ли курс.
+  client_safe_text: Отдельного бесплатного пробного занятия сейчас нет. Для знакомства с форматом можем прислать фрагмент
+    онлайн-занятия; первые занятия можно использовать, чтобы понять, подходит ли курс.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.waitlist_when_no_places
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Если подходящей группы, времени или места сейчас нет, можно записаться в лист ожидания. Укажем приоритетные предметы
+    и формат, а менеджер подскажет ближайшую альтернативу.
+  client_safe_text: Если подходящей группы, времени или места сейчас нет, можно записаться в лист ожидания. Укажем приоритетные
+    предметы и формат, а менеджер подскажет ближайшую альтернативу.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.waitlist_when_no_places
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Если подходящей группы, времени или места сейчас нет, можно записаться в лист ожидания. Укажем приоритетные предметы
+    и формат, а менеджер подскажет ближайшую альтернативу.
+  client_safe_text: Если подходящей группы, времени или места сейчас нет, можно записаться в лист ожидания. Укажем приоритетные
+    предметы и формат, а менеджер подскажет ближайшую альтернативу.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.payment_general
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Оплатить можно по QR-коду, квитанции или ссылке на оплату. Если нужно оплатить бизнес-картой, можем прислать
+    ссылку через эквайринг Альфа-Банка.
+  client_safe_text: Оплатить можно по QR-коду, квитанции или ссылке на оплату. Если нужно оплатить бизнес-картой, можем прислать
+    ссылку через эквайринг Альфа-Банка.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.payment_general
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Оплатить можно по QR-коду, квитанции или ссылке на оплату. Если нужно оплатить бизнес-картой, можем прислать
+    ссылку через эквайринг Альфа-Банка.
+  client_safe_text: Оплатить можно по QR-коду, квитанции или ссылке на оплату. Если нужно оплатить бизнес-картой, можем прислать
+    ссылку через эквайринг Альфа-Банка.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.payment_semester_year_price
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.
+  client_safe_text: При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.payment_semester_year_price
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.
+  client_safe_text: При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.payment_confirmation_receipt
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: После оплаты пришлите чек или квитанцию. Если платёж был, но доступ не пришёл, менеджер проверит оплату по ФИО
+    ученика и выбранному курсу.
+  client_safe_text: После оплаты пришлите чек или квитанцию. Если платёж был, но доступ не пришёл, менеджер проверит оплату
+    по ФИО ученика и выбранному курсу.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.payment_confirmation_receipt
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: После оплаты пришлите чек или квитанцию. Если платёж был, но доступ не пришёл, менеджер проверит оплату по ФИО
+    ученика и выбранному курсу.
+  client_safe_text: После оплаты пришлите чек или квитанцию. Если платёж был, но доступ не пришёл, менеджер проверит оплату
+    по ФИО ученика и выбранному курсу.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.document_correction
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Если в договоре, квитанции или письме ошибка, напишите, что именно нужно исправить. Менеджер подготовит корректный
+    документ и пришлёт его на почту.
+  client_safe_text: Если в договоре, квитанции или письме ошибка, напишите, что именно нужно исправить. Менеджер подготовит
+    корректный документ и пришлёт его на почту.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.document_correction
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Если в договоре, квитанции или письме ошибка, напишите, что именно нужно исправить. Менеджер подготовит корректный
+    документ и пришлёт его на почту.
+  client_safe_text: Если в договоре, квитанции или письме ошибка, напишите, что именно нужно исправить. Менеджер подготовит
+    корректный документ и пришлёт его на почту.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.refund_process_manager_check
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'До оплаты можно спокойно уточнить порядок возврата: при досрочном отказе возвращается остаток неистраченных
+    средств. После оплаты точную сумму и документы проверяет менеджер.'
+  client_safe_text: 'До оплаты можно спокойно уточнить порядок возврата: при досрочном отказе возвращается остаток неистраченных
+    средств. После оплаты точную сумму и документы проверяет менеджер.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.refund_process_manager_check
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'До оплаты можно спокойно уточнить порядок возврата: при досрочном отказе возвращается остаток неистраченных
+    средств. После оплаты точную сумму и документы проверяет менеджер.'
+  client_safe_text: 'До оплаты можно спокойно уточнить порядок возврата: при досрочном отказе возвращается остаток неистраченных
+    средств. После оплаты точную сумму и документы проверяет менеджер.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.freeze_or_transfer
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: При личных обстоятельствах можно обсудить перенос обучения, смену группы или более гибкий график. Точные условия
+    зависят от курса и ситуации, их подтвердит менеджер.
+  client_safe_text: При личных обстоятельствах можно обсудить перенос обучения, смену группы или более гибкий график. Точные
+    условия зависят от курса и ситуации, их подтвердит менеджер.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.freeze_or_transfer
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: При личных обстоятельствах можно обсудить перенос обучения, смену группы или более гибкий график. Точные условия
+    зависят от курса и ситуации, их подтвердит менеджер.
+  client_safe_text: При личных обстоятельствах можно обсудить перенос обучения, смену группы или более гибкий график. Точные
+    условия зависят от курса и ситуации, их подтвердит менеджер.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.absences_materials
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Если занятие пропущено, предупредите нас заранее. Онлайн-записи и материалы помогают нагнать тему; по очным занятиям
+    материалы можно уточнить в чате группы или у администратора.
+  client_safe_text: Если занятие пропущено, предупредите нас заранее. Онлайн-записи и материалы помогают нагнать тему; по
+    очным занятиям материалы можно уточнить в чате группы или у администратора.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.absences_materials
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Если занятие пропущено, предупредите нас заранее. Онлайн-записи и материалы помогают нагнать тему; по очным занятиям
+    материалы можно уточнить в чате группы или у администратора.
+  client_safe_text: Если занятие пропущено, предупредите нас заранее. Онлайн-записи и материалы помогают нагнать тему; по
+    очным занятиям материалы можно уточнить в чате группы или у администратора.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.testing_intro
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Вступительное тестирование помогает подобрать подходящую группу по уровню. Обычно ребёнок проходит тест и заполняет
+    анкету до старта занятий.
+  client_safe_text: Вступительное тестирование помогает подобрать подходящую группу по уровню. Обычно ребёнок проходит тест
+    и заполняет анкету до старта занятий.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.testing_intro
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Вступительное тестирование помогает подобрать подходящую группу по уровню. Обычно ребёнок проходит тест и заполняет
+    анкету до старта занятий.
+  client_safe_text: Вступительное тестирование помогает подобрать подходящую группу по уровню. Обычно ребёнок проходит тест
+    и заполняет анкету до старта занятий.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.testing_results
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Результаты тестирования используют для распределения по уровню и группе. Итоговое распределение сообщит менеджер.
+  client_safe_text: Результаты тестирования используют для распределения по уровню и группе. Итоговое распределение сообщит
+    менеджер.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.testing_results
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Результаты тестирования используют для распределения по уровню и группе. Итоговое распределение сообщит менеджер.
+  client_safe_text: Результаты тестирования используют для распределения по уровню и группе. Итоговое распределение сообщит
+    менеджер.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.group_level_transfer
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Если ребёнку слишком легко или сложно, можно обсудить перевод в другую группу по уровню. Обычно учитываются рекомендация
+    преподавателя и пожелания семьи.
+  client_safe_text: Если ребёнку слишком легко или сложно, можно обсудить перевод в другую группу по уровню. Обычно учитываются
+    рекомендация преподавателя и пожелания семьи.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.group_level_transfer
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Если ребёнку слишком легко или сложно, можно обсудить перевод в другую группу по уровню. Обычно учитываются рекомендация
+    преподавателя и пожелания семьи.
+  client_safe_text: Если ребёнку слишком легко или сложно, можно обсудить перевод в другую группу по уровню. Обычно учитываются
+    рекомендация преподавателя и пожелания семьи.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.online_access_platform
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'Для онлайн-занятий доступ приходит на почту: приглашение, ссылка на платформу и инструкция по подключению.
+    С лета 2026 новые онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных
+    занятий пришлём информацию о центре, группе и расписании.'
+  client_safe_text: 'Для онлайн-занятий доступ приходит на почту: приглашение, ссылка на платформу и инструкция по подключению.
+    С лета 2026 новые онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных
+    занятий пришлём информацию о центре, группе и расписании.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.online_access_platform
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'Для онлайн-занятий доступ приходит на почту: приглашение, ссылка на платформу и инструкция по подключению.
+    С лета 2026 новые онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных
+    занятий пришлём информацию о центре, группе и расписании.'
+  client_safe_text: 'Для онлайн-занятий доступ приходит на почту: приглашение, ссылка на платформу и инструкция по подключению.
+    С лета 2026 новые онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Для очных
+    занятий пришлём информацию о центре, группе и расписании.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.personal_cabinet
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: В личном кабинете учебной платформы доступны занятия, материалы и записи онлайн-уроков. С лета 2026 новые
+    онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Если пароль забыт, его
+    восстанавливают через форму восстановления.
+  client_safe_text: В личном кабинете учебной платформы доступны занятия, материалы и записи онлайн-уроков. С лета 2026
+    новые онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Если пароль забыт,
+    его восстанавливают через форму восстановления.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.personal_cabinet
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: В личном кабинете учебной платформы доступны занятия, материалы и записи онлайн-уроков. С лета 2026 новые
+    онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Если пароль забыт, его
+    восстанавливают через форму восстановления.
+  client_safe_text: В личном кабинете учебной платформы доступны занятия, материалы и записи онлайн-уроков. С лета 2026
+    новые онлайн-занятия проходят на SohoLMS; курсы, начавшиеся до лета 2026, завершаются в MTS-Link. Если пароль забыт,
+    его восстанавливают через форму восстановления.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.recordings_materials
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Записи онлайн-занятий сохраняются в личном кабинете для пересмотра. Домашние задания и материалы доступны на
+    платформе или в чате группы, в зависимости от формата курса.
+  client_safe_text: Записи онлайн-занятий сохраняются в личном кабинете для пересмотра. Домашние задания и материалы доступны
+    на платформе или в чате группы, в зависимости от формата курса.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.recordings_materials
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Записи онлайн-занятий сохраняются в личном кабинете для пересмотра. Домашние задания и материалы доступны на
+    платформе или в чате группы, в зависимости от формата курса.
+  client_safe_text: Записи онлайн-занятий сохраняются в личном кабинете для пересмотра. Домашние задания и материалы доступны
+    на платформе или в чате группы, в зависимости от формата курса.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.technical_problem
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Если письмо, квитанция или ссылка не пришли, проверьте папку «Спам» и напишите нам. Менеджер проверит группу
+    и отправит актуальную ссылку или письмо повторно.
+  client_safe_text: Если письмо, квитанция или ссылка не пришли, проверьте папку «Спам» и напишите нам. Менеджер проверит
+    группу и отправит актуальную ссылку или письмо повторно.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.technical_problem
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Если письмо, квитанция или ссылка не пришли, проверьте папку «Спам» и напишите нам. Менеджер проверит группу
+    и отправит актуальную ссылку или письмо повторно.
+  client_safe_text: Если письмо, квитанция или ссылка не пришли, проверьте папку «Спам» и напишите нам. Менеджер проверит
+    группу и отправит актуальную ссылку или письмо повторно.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.marketing_codes_absent
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'Промокодов сейчас нет. Из реальных выгод: при оплате за семестр или за год выходит выгоднее — это уже учтено
+    в прайсе.'
+  client_safe_text: 'Промокодов сейчас нет. Из реальных выгод: при оплате за семестр или за год выходит выгоднее — это уже
+    учтено в прайсе.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.marketing_codes_absent
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'Промокодов сейчас нет. Из реальных выгод: при оплате за семестр или за год выходит выгоднее — это уже учтено
+    в прайсе.'
+  client_safe_text: 'Промокодов сейчас нет. Из реальных выгод: при оплате за семестр или за год выходит выгоднее — это уже
+    учтено в прайсе.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.schedule_final
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Финальное расписание уже есть. Напишите класс, предмет, формат и удобное время — подберём группу и пришлём
+    актуальные варианты.
+  client_safe_text: Финальное расписание уже есть. Напишите класс, предмет, формат и удобное время — подберём группу и пришлём
+    актуальные варианты.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.schedule_final
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Финальное расписание уже есть. Напишите класс, предмет, формат и удобное время — подберём группу и пришлём
+    актуальные варианты.
+  client_safe_text: Финальное расписание уже есть. Напишите класс, предмет, формат и удобное время — подберём группу и пришлём
+    актуальные варианты.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.schedule_reason
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Точные слоты пришлём после распределения по уровню группы. Стараемся учитывать класс, формат и пожелания по
+    времени.
+  client_safe_text: Точные слоты пришлём после распределения по уровню группы. Стараемся учитывать класс, формат и пожелания
+    по времени.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.schedule_reason
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Точные слоты пришлём после распределения по уровню группы. Стараемся учитывать класс, формат и пожелания по
+    времени.
+  client_safe_text: Точные слоты пришлём после распределения по уровню группы. Стараемся учитывать класс, формат и пожелания
+    по времени.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.camp_enrollment
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: По ЛВШ Фотона места распроданы; можно записаться в лист ожидания или выбрать городскую очную школу Фотона.
+  client_safe_text: По ЛВШ Фотона места распроданы; можно записаться в лист ожидания или выбрать городскую очную школу Фотона.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.camp_enrollment
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: По ЛВШ УНПК места распроданы; можно записаться в лист ожидания, выбрать городскую очную школу УНПК или онлайн-летнюю
+    школу УНПК.
+  client_safe_text: По ЛВШ УНПК места распроданы; можно записаться в лист ожидания, выбрать городскую очную школу УНПК или
+    онлайн-летнюю школу УНПК.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.camp_contents
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: По сменам заранее отправляем документы и организационные детали. В программу входят занятия, материалы и мероприятия;
+    точный состав зависит от выбранной смены.
+  client_safe_text: По сменам заранее отправляем документы и организационные детали. В программу входят занятия, материалы
+    и мероприятия; точный состав зависит от выбранной смены.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.camp_contents
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: По сменам заранее отправляем документы и организационные детали. В программу входят занятия, материалы и мероприятия;
+    точный состав зависит от выбранной смены.
+  client_safe_text: По сменам заранее отправляем документы и организационные детали. В программу входят занятия, материалы
+    и мероприятия; точный состав зависит от выбранной смены.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.homework_feedback
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'Домашние задания проверяются. Обратную связь по успеваемости можно запросить: менеджер передаст вопрос преподавателю
+    или куратору.'
+  client_safe_text: 'Домашние задания проверяются. Обратную связь по успеваемости можно запросить: менеджер передаст вопрос
+    преподавателю или куратору.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.homework_feedback
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'Домашние задания проверяются. Обратную связь по успеваемости можно запросить: менеджер передаст вопрос преподавателю
+    или куратору.'
+  client_safe_text: 'Домашние задания проверяются. Обратную связь по успеваемости можно запросить: менеджер передаст вопрос
+    преподавателю или куратору.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.teacher_change
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Если преподаватель или группа не подошли, можно обсудить другую группу или другого преподавателя. Методика и
+    программа сохраняются, а переход согласуют по уровню и расписанию.
+  client_safe_text: Если преподаватель или группа не подошли, можно обсудить другую группу или другого преподавателя. Методика
+    и программа сохраняются, а переход согласуют по уровню и расписанию.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.teacher_change
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Если преподаватель или группа не подошли, можно обсудить другую группу или другого преподавателя. Методика и
+    программа сохраняются, а переход согласуют по уровню и расписанию.
+  client_safe_text: Если преподаватель или группа не подошли, можно обсудить другую группу или другого преподавателя. Методика
+    и программа сохраняются, а переход согласуют по уровню и расписанию.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.parent_feedback
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: Родитель может запросить обратную связь по занятиям и прогрессу. Менеджер передаст запрос преподавателю или куратору
+    и вернётся с ответом.
+  client_safe_text: Родитель может запросить обратную связь по занятиям и прогрессу. Менеджер передаст запрос преподавателю
+    или куратору и вернётся с ответом.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.parent_feedback
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: Родитель может запросить обратную связь по занятиям и прогрессу. Менеджер передаст запрос преподавателю или куратору
+    и вернётся с ответом.
+  client_safe_text: Родитель может запросить обратную связь по занятиям и прогрессу. Менеджер передаст запрос преподавателю
+    или куратору и вернётся с ответом.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.completion_certificate
+  fact_type: process
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: По итогам курса можно получить документ о прохождении обучения. Формат и срок выдачи зависят от программы; менеджер
+    подскажет, как получить документ.
+  client_safe_text: По итогам курса можно получить документ о прохождении обучения. Формат и срок выдачи зависят от программы;
+    менеджер подскажет, как получить документ.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.completion_certificate
+  fact_type: process
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: По итогам курса можно получить документ о прохождении обучения. Формат и срок выдачи зависят от программы; менеджер
+    подскажет, как получить документ.
+  client_safe_text: По итогам курса можно получить документ о прохождении обучения. Формат и срок выдачи зависят от программы;
+    менеджер подскажет, как получить документ.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.contract_documents
+  fact_type: documents
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'Договор идёт через договор-оферту: оплата означает согласие с условиями. Отдельный подписанный договор обычно
+    не нужен, кроме отдельных случаев вроде маткапитала.'
+  client_safe_text: 'Договор идёт через договор-оферту: оплата означает согласие с условиями. Отдельный подписанный договор
+    обычно не нужен, кроме отдельных случаев вроде маткапитала.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.contract_documents
+  fact_type: documents
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'Договор идёт через договор-оферту: оплата означает согласие с условиями. Отдельный подписанный договор обычно
+    не нужен, кроме отдельных случаев вроде маткапитала.'
+  client_safe_text: 'Договор идёт через договор-оферту: оплата означает согласие с условиями. Отдельный подписанный договор
+    обычно не нужен, кроме отдельных случаев вроде маткапитала.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.installment_options
+  fact_type: installment
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'В Фотоне можно оплатить обучение частями: доступны банковские варианты на 6, 10 или 12 месяцев, сервис Долями,
+    а также внутренняя разбивка оплаты помесячно, по семестрам или за учебный год по заявлению. Условия и оформление поможет
+    подобрать менеджер.'
+  client_safe_text: 'В Фотоне можно оплатить обучение частями: доступны банковские варианты на 6, 10 или 12 месяцев, сервис
+    Долями, а также внутренняя разбивка оплаты помесячно, по семестрам или за учебный год по заявлению. Условия и оформление
+    поможет подобрать менеджер.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.payment_schedules_without_bank_installment
+  fact_type: installment
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: В УНПК банковской рассрочки нет, но оплату можно разбить помесячно, по семестрам или за учебный год — оформляется
+    по заявлению, поможет менеджер. При оплате за семестр или за год выгода уже учтена в прайсе.
+  client_safe_text: В УНПК банковской рассрочки нет, но оплату можно разбить помесячно, по семестрам или за учебный год —
+    оформляется по заявлению, поможет менеджер. При оплате за семестр или за год выгода уже учтена в прайсе.
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.contact_channels
+  fact_type: contacts
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'Писать можно в этот чат, на почту edu@cdpofoton.ru, в Telegram @cdpoFoton или Max https://max.ru/u/f9LHodD0cOLwNT41ZnvrqFpeEYPjPaighujNZKxMVIQuUgR-6ITFlmHzB74.
+    Телефон центра: 8 (495) 500-25-88.'
+  client_safe_text: 'Писать можно в этот чат, на почту edu@cdpofoton.ru, в Telegram @cdpoFoton или Max https://max.ru/u/f9LHodD0cOLwNT41ZnvrqFpeEYPjPaighujNZKxMVIQuUgR-6ITFlmHzB74.
+    Телефон центра: 8 (495) 500-25-88.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.unpk.contact_channels
+  fact_type: contacts
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'Писать можно в этот чат, на почту edu@kmipt.ru или в Telegram @unpk_mipt. Горячая линия: 8 (800) 500-81-51 и
+    8 (495) 150-81-51.'
+  client_safe_text: 'Писать можно в этот чат, на почту edu@kmipt.ru или в Telegram @unpk_mipt. Горячая линия: 8 (800) 500-81-51
+    и 8 (495) 150-81-51.'
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: bot_answer_self_for_pilot
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: false
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+- fact_key: processes_2026_06_10.foton.online_switch_after_four_sick_absences_internal
+  fact_type: policy
+  brand: foton
+  product: customer_processes_2026_06_10
+  fact_text: 'Исключение по подключению к онлайн-занятию вместо очного: пропуск 4 и более занятий подряд по болезни. Это внутреннее
+    правило для менеджерской проверки, не самостоятельный клиентский ответ.'
+  client_safe_text: ''
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: manager_handoff_only
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: true
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+    allowed_for_client_answer: false
+- fact_key: processes_2026_06_10.unpk.online_switch_after_four_sick_absences_internal
+  fact_type: policy
+  brand: unpk
+  product: customer_processes_2026_06_10
+  fact_text: 'Исключение по подключению к онлайн-занятию вместо очного: пропуск 4 и более занятий подряд по болезни. Это внутреннее
+    правило для менеджерской проверки, не самостоятельный клиентский ответ.'
+  client_safe_text: ''
+  source_key: claude_layer_v3:changelog_team_answers
+  status: verified
+  route_policy: manager_handoff_only
+  linked_open_question: tz5_processes_2026_06_10
+  internal_only: true
+  structured_value:
+    process_source: processes_client_safe_drafts_2026_06_09
+    allowed_for_client_answer: false
+# r4 owner decisions, appended as manifest-only overrides (2026-06-11)
+- fact_key: online_platform.name
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 platform transition replaces SohoLMS-only wording'
+- fact_key: academic_year_2026_27.daily_hours
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 differentiated lesson duration by format'
+- fact_key: academic_year_2026_27.weekly_lessons
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 differentiated lesson duration by format'
+- fact_key: lvsh_mendeleevo_2026.availability_2026.client_safe_text
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 sold-out LVSH alternatives'
+- fact_key: matkap.child_age.sertificate_owner_min
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: matkap.child_age.student_max
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: matkap.client_safe_text.when_age_over_18
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: matkap.client_safe_text.when_asked
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: online_platform.name
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 platform transition replaces SohoLMS-only wording'
+- fact_key: academic_year_2026_27.daily_hours
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 differentiated lesson duration by format'
+- fact_key: academic_year_2026_27.weekly_lessons
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 differentiated lesson duration by format'
+- fact_key: lvsh_mendeleevo_2026.availability_2026.client_safe_text
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 sold-out LVSH alternatives'
+- fact_key: matkap.child_age.sertificate_owner_min
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: matkap.child_age.student_max
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: matkap.client_safe_text.when_age_over_18
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: matkap.client_safe_text.when_asked
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 SFR matkap age rule replaces old wording'
+- fact_key: results_social_proof.total_alumni_confirmation
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 removes rebuild artifact 2026 pupils'
+- fact_key: r4_owner_2026_06_11.foton.online_platform_transition
+  fact_type: 'process'
+  brand: 'foton'
+  product: 'online_platform_2026'
+  fact_text: 'С лета 2026 онлайн-занятия проходят на платформе SohoLMS. Курсы, начавшиеся до лета 2026, завершаются в MTS-Link.'
+  client_safe_text: 'С лета 2026 онлайн-занятия проходят на платформе SohoLMS. Курсы, начавшиеся до лета 2026, завершаются в MTS-Link.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.center_visit_by_appointment
+  fact_type: 'process'
+  brand: 'foton'
+  product: 'contacts_and_visits'
+  fact_text: 'Визит в центр Фотона организуем по предварительной записи: подберём время и сотрудника филиала для встречи.'
+  client_safe_text: 'Визит в центр Фотона организуем по предварительной записи: подберём время и сотрудника филиала для встречи.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.lesson_duration_by_format
+  fact_type: 'format'
+  brand: 'foton'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Длительность зависит от формата: в выходных группах 5–11 классов — 1 занятие в неделю по 3 ак.ч.; в группах 1–4 классов — 1 занятие в неделю по 2 ак.ч.'
+  client_safe_text: 'Длительность зависит от формата: в выходных группах 5–11 классов — 1 занятие в неделю по 3 ак.ч.; в группах 1–4 классов — 1 занятие в неделю по 2 ак.ч.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.subject_lineup_2026_27
+  fact_type: 'program'
+  brand: 'foton'
+  product: 'regular_courses_2026_27'
+  fact_text: 'По предметам доступны математика, физика, информатика (включая программирование) и русский язык; с учебного года 2026/27 добавляется курс искусственного интеллекта.'
+  client_safe_text: 'По предметам доступны математика, физика, информатика (включая программирование) и русский язык; с учебного года 2026/27 добавляется курс искусственного интеллекта.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.matkap_family_age_rule
+  fact_type: 'payment'
+  brand: 'foton'
+  product: 'matkap'
+  fact_text: 'Оплатить обучение материнским капиталом можно, когда ребёнку, с появлением которого возникло право на сертификат, исполнится 3 года. Направить средства можно на обучение любого из детей семьи — главное, чтобы к началу обучения ему было не больше 25 лет. Работаем с федеральным маткапиталом; менеджер пришлёт перечень документов и поможет с оформлением через СФР.'
+  client_safe_text: 'Оплатить обучение материнским капиталом можно, когда ребёнку, с появлением которого возникло право на сертификат, исполнится 3 года. Направить средства можно на обучение любого из детей семьи — главное, чтобы к началу обучения ему было не больше 25 лет. Работаем с федеральным маткапиталом; менеджер пришлёт перечень документов и поможет с оформлением через СФР.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.internal_payment_split
+  fact_type: 'installment'
+  brand: 'foton'
+  product: 'payment_options'
+  fact_text: 'Оплату можно разбить: помесячно, по семестрам или за учебный год — оформляется по заявлению, поможет менеджер.'
+  client_safe_text: 'Оплату можно разбить: помесячно, по семестрам или за учебный год — оформляется по заявлению, поможет менеджер.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.address_contact_source_policy_internal
+  fact_type: 'policy'
+  brand: 'foton'
+  product: 'internal_kb_policy'
+  fact_text: 'Канон адресов и контактов для ответов бота — база знаний; сайты и карты не использовать как источник сверки адресов и контактов, кроме подтверждённого Max-канала Фотона.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+    client_allowed: false
+- fact_key: r4_owner_2026_06_11.unpk.online_platform_transition
+  fact_type: 'process'
+  brand: 'unpk'
+  product: 'online_platform_2026'
+  fact_text: 'С лета 2026 онлайн-занятия проходят на платформе SohoLMS. Курсы, начавшиеся до лета 2026, завершаются в MTS-Link.'
+  client_safe_text: 'С лета 2026 онлайн-занятия проходят на платформе SohoLMS. Курсы, начавшиеся до лета 2026, завершаются в MTS-Link.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.center_visit_by_appointment
+  fact_type: 'process'
+  brand: 'unpk'
+  product: 'contacts_and_visits'
+  fact_text: 'Визит в центр УНПК организуем по предварительной записи: подберём время и сотрудника филиала для встречи.'
+  client_safe_text: 'Визит в центр УНПК организуем по предварительной записи: подберём время и сотрудника филиала для встречи.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.lesson_duration_by_format
+  fact_type: 'format'
+  brand: 'unpk'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Длительность зависит от формата: в выходных группах 5–11 классов — 1 занятие в неделю по 3 ак.ч.; в группах 1–4 классов — 1 занятие в неделю по 2 ак.ч.; часть онлайн-курсов идёт 2 раза в неделю по 2 ак.ч.'
+  client_safe_text: 'Длительность зависит от формата: в выходных группах 5–11 классов — 1 занятие в неделю по 3 ак.ч.; в группах 1–4 классов — 1 занятие в неделю по 2 ак.ч.; часть онлайн-курсов идёт 2 раза в неделю по 2 ак.ч.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.subject_lineup_2026_27
+  fact_type: 'program'
+  brand: 'unpk'
+  product: 'regular_courses_2026_27'
+  fact_text: 'По предметам доступны математика, физика, информатика (включая программирование) и русский язык; с учебного года 2026/27 добавляется курс искусственного интеллекта.'
+  client_safe_text: 'По предметам доступны математика, физика, информатика (включая программирование) и русский язык; с учебного года 2026/27 добавляется курс искусственного интеллекта.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.matkap_family_age_rule
+  fact_type: 'payment'
+  brand: 'unpk'
+  product: 'matkap'
+  fact_text: 'Оплатить обучение материнским капиталом можно, когда ребёнку, с появлением которого возникло право на сертификат, исполнится 3 года. Направить средства можно на обучение любого из детей семьи — главное, чтобы к началу обучения ему было не больше 25 лет. Работаем с федеральным маткапиталом; менеджер пришлёт перечень документов и поможет с оформлением через СФР.'
+  client_safe_text: 'Оплатить обучение материнским капиталом можно, когда ребёнку, с появлением которого возникло право на сертификат, исполнится 3 года. Направить средства можно на обучение любого из детей семьи — главное, чтобы к началу обучения ему было не больше 25 лет. Работаем с федеральным маткапиталом; менеджер пришлёт перечень документов и поможет с оформлением через СФР.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.internal_payment_split
+  fact_type: 'installment'
+  brand: 'unpk'
+  product: 'payment_options'
+  fact_text: 'Оплату можно разбить: помесячно, по семестрам или за учебный год — оформляется по заявлению, поможет менеджер.'
+  client_safe_text: 'Оплату можно разбить: помесячно, по семестрам или за учебный год — оформляется по заявлению, поможет менеджер.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.address_contact_source_policy_internal
+  fact_type: 'policy'
+  brand: 'unpk'
+  product: 'internal_kb_policy'
+  fact_text: 'Канон адресов и контактов для ответов бота — база знаний; сайты и карты не использовать как источник сверки адресов и контактов, кроме подтверждённого Max-канала Фотона.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+    client_allowed: false
+- fact_key: r4_owner_2026_06_11.unpk.moscow_regular_address
+  fact_type: 'location'
+  brand: 'unpk'
+  product: 'regular_courses_2026_27'
+  fact_text: 'В Москве у УНПК есть действующие адреса: Сретенка, 20 и Верхняя Красносельская, 30. Конкретную группу подберём по расписанию.'
+  client_safe_text: 'В Москве у УНПК есть действующие адреса: Сретенка, 20 и Верхняя Красносельская, 30. Конкретную группу подберём по расписанию.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.main_office_dolgoprudny
+  fact_type: 'contacts'
+  brand: 'unpk'
+  product: 'main_office'
+  fact_text: 'Главный офис УНПК: Долгопрудный, Первомайская, д. 3, каб. 401, корпус прикладной математики МФТИ.'
+  client_safe_text: 'Главный офис УНПК: Долгопрудный, Первомайская, д. 3, каб. 401, корпус прикладной математики МФТИ.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.lobnya_zhukovsky_manager_only_internal
+  fact_type: 'policy'
+  brand: 'unpk'
+  product: 'unsupported_locations'
+  fact_text: 'Лобня и Жуковский относятся к другим руководителям и не обслуживаются ботом: существование не отрицать, на клиентский вопрос мягко передать менеджеру.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+    client_blocked_locations:
+    - 'Лобня'
+    - 'Жуковский'
+- fact_key: r4_owner_2026_06_11.unpk.refer_friend_online_cashback
+  fact_type: 'discount'
+  brand: 'unpk'
+  product: 'regular_online_courses_2026_27'
+  fact_text: 'По онлайн-курсам УНПК кэшбэк по программе «Приведи друга» — 5 000 ₽ после первого семестра обучения друга.'
+  client_safe_text: 'По онлайн-курсам УНПК кэшбэк по программе «Приведи друга» — 5 000 ₽ после первого семестра обучения друга.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.lvsh_availability_alternatives
+  fact_type: 'availability'
+  brand: 'foton'
+  product: 'lvsh_2026'
+  fact_text: 'По ЛВШ Фотона места распроданы; можно записаться в лист ожидания или выбрать городскую очную школу Фотона.'
+  client_safe_text: 'По ЛВШ Фотона места распроданы; можно записаться в лист ожидания или выбрать городскую очную школу Фотона.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.unpk.lvsh_availability_alternatives
+  fact_type: 'availability'
+  brand: 'unpk'
+  product: 'lvsh_2026'
+  fact_text: 'По ЛВШ УНПК места распроданы; можно записаться в лист ожидания, выбрать городскую очную школу УНПК или онлайн-летнюю школу УНПК.'
+  client_safe_text: 'По ЛВШ УНПК места распроданы; можно записаться в лист ожидания, выбрать городскую очную школу УНПК или онлайн-летнюю школу УНПК.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: r4_owner_2026_06_11.foton.city_summer_school_availability
+  fact_type: 'availability'
+  brand: 'foton'
+  product: 'city_summer_school_2026'
+  fact_text: 'По городской летней школе Фотона набор идёт только на первую смену; набор на вторую смену закрыт.'
+  client_safe_text: 'По городской летней школе Фотона набор идёт только на первую смену; набор на вторую смену закрыт.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: tg_unpk_verified_2026_05_21.client_facts.matkap_federal_only.client_safe_text
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4 SFR matkap federal-only wording replaces youngest-child claim'
+- fact_key: tg_unpk_verified_2026_05_21.client_facts.matkap_federal_only.client_safe_text
+  fact_type: 'matkap'
+  brand: 'unpk'
+  product: 'tg_unpk_verified_2026_05_21'
+  fact_text: 'Принимаем федеральный материнский капитал; региональный маткапитал не принимаем.'
+  client_safe_text: 'Принимаем федеральный материнский капитал; региональный маткапитал не принимаем.'
+  source_key: 'claude_layer_v3:facts_for_bot_UNPK'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_owner_decisions_2026_06_11'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_11'
+- fact_key: individual_lessons_foton.format
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 replaces stale individual-lessons do-not-use facts with owner-approved manager handoff wording'
+- fact_key: individual_lessons_foton.note_internal
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 replaces stale individual-lessons do-not-use facts with owner-approved manager handoff wording'
+- fact_key: individual_lessons_foton.prices.lesson_45min
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 removes stale individual lesson prices from release'
+- fact_key: individual_lessons_foton.prices.package_5_sessions
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 removes stale individual lesson prices from release'
+- fact_key: individual_lessons_foton.prices.session_90min
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 removes stale individual lesson prices from release'
+- fact_key: processes_2026_06_10.foton.trial_fragment_or_first_lessons
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 replaces trial acquaintance mechanics with owner-approved wording'
+- fact_key: processes_2026_06_10.unpk.trial_fragment_or_first_lessons
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4.1 replaces trial acquaintance mechanics with owner-approved wording'
+- fact_key: kb_v6_6_client_safe_facts_2026_06_08.trial_other_group_free_trial.client_safe_text
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 adds manager-agreement qualifier for one-off free visit in another group'
+- fact_key: tg_unpk_verified_2026_05_21.client_facts.city_school_formats.client_safe_text
+  brand: 'unpk'
+  remove_from_release: true
+  reason: 'r4.1 replaces Premium naming with descriptive city-school tariff names'
+- fact_key: ls_city_2026_foton.moscow_foton.prices.base
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 replaces city summer school tariff wording with owner-approved tariff names'
+- fact_key: ls_city_2026_foton.moscow_foton.prices.plus_half
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 clarifies that 49 000 is half of the optional block, not the full block'
+- fact_key: ls_city_2026_foton.moscow_foton.prices.plus_full
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 replaces city summer school tariff wording with owner-approved tariff names'
+- fact_key: r4_1_owner_2026_06_12.foton.individual_lessons_request
+  fact_type: 'program'
+  brand: 'foton'
+  product: 'individual_lessons'
+  fact_text: 'Индивидуальные занятия возможны по запросу — детали и стоимость подскажет менеджер.'
+  client_safe_text: 'Индивидуальные занятия возможны по запросу — детали и стоимость подскажет менеджер.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'draft_for_manager'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    bot_behavior: 'do_not_proactively_offer_individual_lessons; answer direct question and pass to manager'
+- fact_key: r4_1_owner_2026_06_12.unpk.individual_lessons_request
+  fact_type: 'program'
+  brand: 'unpk'
+  product: 'individual_lessons'
+  fact_text: 'Индивидуальные занятия возможны по запросу — детали и стоимость подскажет менеджер.'
+  client_safe_text: 'Индивидуальные занятия возможны по запросу — детали и стоимость подскажет менеджер.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'draft_for_manager'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    bot_behavior: 'do_not_proactively_offer_individual_lessons; answer direct question and pass to manager'
+- fact_key: r4_1_owner_2026_06_12.foton.acquaintance_mechanics
+  fact_type: 'process'
+  brand: 'foton'
+  product: 'trial_and_acquaintance'
+  fact_text: 'Для знакомства с форматом можно посмотреть фрагмент онлайн-занятия. Первые занятия можно использовать, чтобы понять, подходит ли курс. При сомнениях можно бесплатно посетить пробное занятие в другой группе — по согласованию с менеджером. Постоянного бесплатного формата нет.'
+  client_safe_text: 'Для знакомства с форматом можно посмотреть фрагмент онлайн-занятия. Первые занятия можно использовать, чтобы понять, подходит ли курс. При сомнениях можно бесплатно посетить пробное занятие в другой группе — по согласованию с менеджером. Постоянного бесплатного формата нет.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    proactive_free_trial_offer: false
+    free_visit_requires_manager_agreement: true
+- fact_key: r4_1_owner_2026_06_12.unpk.acquaintance_mechanics
+  fact_type: 'process'
+  brand: 'unpk'
+  product: 'trial_and_acquaintance'
+  fact_text: 'Для знакомства с форматом можно посмотреть фрагмент онлайн-занятия. Первые занятия можно использовать, чтобы понять, подходит ли курс. При сомнениях можно бесплатно посетить пробное занятие в другой группе — по согласованию с менеджером. Постоянного бесплатного формата нет.'
+  client_safe_text: 'Для знакомства с форматом можно посмотреть фрагмент онлайн-занятия. Первые занятия можно использовать, чтобы понять, подходит ли курс. При сомнениях можно бесплатно посетить пробное занятие в другой группе — по согласованию с менеджером. Постоянного бесплатного формата нет.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    proactive_free_trial_offer: false
+    free_visit_requires_manager_agreement: true
+- fact_key: r4_1_owner_2026_06_12.foton.midyear_entry_payment_and_records
+  fact_type: 'process'
+  brand: 'foton'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Присоединиться можно в течение года. Оплата по семестрам: при записи до конца календарного 2026 года — полная стоимость; с января — 50% полной стоимости курса. Пройденный материал доступен в записях. Заявление на перерасчёт не требуется.'
+  client_safe_text: 'Присоединиться можно в течение года. Оплата по семестрам: при записи до конца календарного 2026 года — полная стоимость; с января — 50% полной стоимости курса. Пройденный материал доступен в записях. Заявление на перерасчёт не требуется.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    applies_to_year: 2026
+    percentage: 50
+- fact_key: r4_1_owner_2026_06_12.unpk.midyear_entry_payment_and_records
+  fact_type: 'process'
+  brand: 'unpk'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Присоединиться можно в течение года. Оплата по семестрам: при записи до конца календарного 2026 года — полная стоимость; с января — 50% полной стоимости курса. Пройденный материал доступен в записях. Заявление на перерасчёт не требуется.'
+  client_safe_text: 'Присоединиться можно в течение года. Оплата по семестрам: при записи до конца календарного 2026 года — полная стоимость; с января — 50% полной стоимости курса. Пройденный материал доступен в записях. Заявление на перерасчёт не требуется.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    applies_to_year: 2026
+    percentage: 50
+- fact_key: r4_1_owner_2026_06_12.foton.funds_transfer_and_makeup
+  fact_type: 'policy'
+  brand: 'foton'
+  product: 'payment_and_attendance'
+  fact_text: 'Оплаченные средства не сгорают: остаток переносится на следующий период, год или смену. Пропущенное по справке занятие можно перенести или вернуть за него деньги. Перенос между предметами или форматами — по согласованию с менеджером.'
+  client_safe_text: 'Оплаченные средства не сгорают: остаток переносится на следующий период, год или смену. Пропущенное по справке занятие можно перенести или вернуть за него деньги. Перенос между предметами или форматами — по согласованию с менеджером.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.funds_transfer_and_makeup
+  fact_type: 'policy'
+  brand: 'unpk'
+  product: 'payment_and_attendance'
+  fact_text: 'Оплаченные средства не сгорают: остаток переносится на следующий период, год или смену. Пропущенное по справке занятие можно перенести или вернуть за него деньги. Перенос между предметами или форматами — по согласованию с менеджером.'
+  client_safe_text: 'Оплаченные средства не сгорают: остаток переносится на следующий период, год или смену. Пропущенное по справке занятие можно перенести или вернуть за него деньги. Перенос между предметами или форматами — по согласованию с менеджером.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.foton.organization_payment_invoice
+  fact_type: 'process'
+  brand: 'foton'
+  product: 'payment_methods'
+  fact_text: 'Можно оплатить от организации: выставим счёт. Понадобится заключить договор и прислать карточку организации. Две квитанции на два предмета — можно.'
+  client_safe_text: 'Можно оплатить от организации: выставим счёт. Понадобится заключить договор и прислать карточку организации. Две квитанции на два предмета — можно.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.organization_payment_invoice
+  fact_type: 'process'
+  brand: 'unpk'
+  product: 'payment_methods'
+  fact_text: 'Можно оплатить от организации: выставим счёт. Понадобится заключить договор и прислать карточку организации. Две квитанции на два предмета — можно.'
+  client_safe_text: 'Можно оплатить от организации: выставим счёт. Понадобится заключить договор и прислать карточку организации. Две квитанции на два предмета — можно.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.foton.regular_group_size
+  fact_type: 'format'
+  brand: 'foton'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Очные группы — от 3 до 12 человек, обычно 7-8. Онлайн-группы — 10-20 человек, обычно 12-15.'
+  client_safe_text: 'Очные группы — от 3 до 12 человек, обычно 7-8. Онлайн-группы — 10-20 человек, обычно 12-15.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.regular_group_size
+  fact_type: 'format'
+  brand: 'unpk'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Очные группы — от 3 до 12 человек, обычно 7-8. Онлайн-группы — 10-20 человек, обычно 12-15.'
+  client_safe_text: 'Очные группы — от 3 до 12 человек, обычно 7-8. Онлайн-группы — 10-20 человек, обычно 12-15.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.foton.author_program_not_single_textbook
+  fact_type: 'program'
+  brand: 'foton'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Занятия идут по авторской сборной программе центра, а не по одному школьному учебнику. При необходимости преподаватель порекомендует дополнительные пособия.'
+  client_safe_text: 'Занятия идут по авторской сборной программе центра, а не по одному школьному учебнику. При необходимости преподаватель порекомендует дополнительные пособия.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.author_program_not_single_textbook
+  fact_type: 'program'
+  brand: 'unpk'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Занятия идут по авторской сборной программе центра, а не по одному школьному учебнику. При необходимости преподаватель порекомендует дополнительные пособия.'
+  client_safe_text: 'Занятия идут по авторской сборной программе центра, а не по одному школьному учебнику. При необходимости преподаватель порекомендует дополнительные пособия.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.foton.no_boarding_except_lvsh
+  fact_type: 'camp_lvsh'
+  brand: 'foton'
+  product: 'boarding_and_camps'
+  fact_text: 'Постоянного проживания или интерната нет. Проживание есть только в выездной школе ЛВШ в Менделеево — по 2-3 человека в номере. Городские летние школы — дневные, без проживания.'
+  client_safe_text: 'Постоянного проживания или интерната нет. Проживание есть только в выездной школе ЛВШ в Менделеево — по 2-3 человека в номере. Городские летние школы — дневные, без проживания.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.no_boarding_except_lvsh
+  fact_type: 'camp_lvsh'
+  brand: 'unpk'
+  product: 'boarding_and_camps'
+  fact_text: 'Постоянного проживания или интерната нет. Проживание есть только в выездной школе ЛВШ в Менделеево — по 2-3 человека в номере. Городские летние школы — дневные, без проживания.'
+  client_safe_text: 'Постоянного проживания или интерната нет. Проживание есть только в выездной школе ЛВШ в Менделеево — по 2-3 человека в номере. Городские летние школы — дневные, без проживания.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.foton.university_target_and_open_days
+  fact_type: 'policy'
+  brand: 'foton'
+  product: 'university_information'
+  fact_text: 'Информацию о целевом обучении и днях открытых дверей рекомендуем посмотреть на сайте вуза, в который вы хотите поступать.'
+  client_safe_text: 'Информацию о целевом обучении и днях открытых дверей рекомендуем посмотреть на сайте вуза, в который вы хотите поступать.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.university_target_and_open_days
+  fact_type: 'policy'
+  brand: 'unpk'
+  product: 'university_information'
+  fact_text: 'Информацию о целевом обучении и днях открытых дверей рекомендуем посмотреть на сайте вуза, в который вы хотите поступать.'
+  client_safe_text: 'Информацию о целевом обучении и днях открытых дверей рекомендуем посмотреть на сайте вуза, в который вы хотите поступать.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.foton.schedule_timezone_msk
+  fact_type: 'course_parameter'
+  brand: 'foton'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Время всех занятий указано по московскому времени (МСК) — и онлайн, и очных.'
+  client_safe_text: 'Время всех занятий указано по московскому времени (МСК) — и онлайн, и очных.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.schedule_timezone_msk
+  fact_type: 'course_parameter'
+  brand: 'unpk'
+  product: 'regular_courses_2026_27'
+  fact_text: 'Время всех занятий указано по московскому времени (МСК) — и онлайн, и очных.'
+  client_safe_text: 'Время всех занятий указано по московскому времени (МСК) — и онлайн, и очных.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+- fact_key: r4_1_owner_2026_06_12.unpk.city_summer_school_tariffs
+  fact_type: 'price'
+  brand: 'unpk'
+  product: 'city_summer_school_2026'
+  fact_text: 'Тарифы городской летней школы УНПК: «База» — 39 500 ₽, актуальная цена с 02.06.2026, обязательный блок 12:00-16:45; «База + факультативный блок» — 59 500 ₽, обязательный блок плюс менторская группа 3-4 человека 16:30-18:00 для подготовки проекта; «База + факультативный блок с индивидуальным обучением» — 99 500 ₽, можно выбрать утро или вечер.'
+  client_safe_text: 'Тарифы городской летней школы УНПК: «База» — 39 500 ₽, обязательный блок 12:00-16:45; «База + факультативный блок» — 59 500 ₽, обязательный блок плюс менторская группа 3-4 человека 16:30-18:00 для подготовки проекта; «База + факультативный блок с индивидуальным обучением» — 99 500 ₽, можно выбрать утро или вечер.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    valid_from: '2026-06-02'
+    expired_price_37500_client_safe: false
+    raw_value: '39500 ₽; 59500 ₽; 99500 ₽'
+- fact_key: r4_1_owner_2026_06_12.foton.city_summer_school_tariffs
+  fact_type: 'price'
+  brand: 'foton'
+  product: 'city_summer_school_2026'
+  fact_text: 'Тарифы городской летней школы Фотона: «База» — 34 300 ₽; «База + половина факультативного блока» — 49 000 ₽; «База + полный факультативный блок» — 59 000 ₽.'
+  client_safe_text: 'Тарифы городской летней школы Фотона: «База» — 34 300 ₽; «База + половина факультативного блока» — 49 000 ₽; «База + полный факультативный блок» — 59 000 ₽.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    forbidden_old_tariff_name: 'Премиум 10'
+    raw_value: '34300 ₽; 49000 ₽; 59000 ₽'
+- fact_key: ls_city_2026_foton.moscow_foton.prices.base
+  fact_type: 'price'
+  brand: 'foton'
+  product: 'city_summer_school_2026'
+  fact_text: 'Фотон: городской летний лагерь, Москва, тариф «База» — 34 300 ₽.'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва, тариф «База» — 34 300 ₽.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    amount: 34300
+- fact_key: ls_city_2026_foton.moscow_foton.prices.plus_half
+  fact_type: 'price'
+  brand: 'foton'
+  product: 'city_summer_school_2026'
+  fact_text: 'Фотон: городской летний лагерь, Москва, тариф «База + половина факультативного блока» — 49 000 ₽.'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва, тариф «База + половина факультативного блока» — 49 000 ₽.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    value_is_half_optional_block: true
+    amount: 49000
+- fact_key: ls_city_2026_foton.moscow_foton.prices.plus_full
+  fact_type: 'price'
+  brand: 'foton'
+  product: 'city_summer_school_2026'
+  fact_text: 'Фотон: городской летний лагерь, Москва, тариф «База + полный факультативный блок» — 59 000 ₽.'
+  client_safe_text: 'Фотон: городской летний лагерь, Москва, тариф «База + полный факультативный блок» — 59 000 ₽.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    amount: 59000
+- fact_key: r4_1_owner_2026_06_12.foton.cancelled_lvsh_shift_august_15_23
+  fact_type: 'availability'
+  brand: 'foton'
+  product: 'lvsh_2026'
+  fact_text: 'Смены 15-23 августа в этом году нет — она отменена. На вопрос об этой смене нужно сказать, что такой смены нет, и предложить действующие даты из базы знаний.'
+  client_safe_text: 'Смены 15-23 августа в этом году нет — она отменена. Можем подобрать действующие даты из актуальных смен.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    negative_fact: true
+- fact_key: r4_1_owner_2026_06_12.unpk.cancelled_lvsh_shift_august_15_23
+  fact_type: 'availability'
+  brand: 'unpk'
+  product: 'lvsh_2026'
+  fact_text: 'Смены 15-23 августа в этом году нет — она отменена. На вопрос об этой смене нужно сказать, что такой смены нет, и предложить действующие даты из базы знаний.'
+  client_safe_text: 'Смены 15-23 августа в этом году нет — она отменена. Можем подобрать действующие даты из актуальных смен.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    negative_fact: true
+- fact_key: r4_1_owner_2026_06_12.foton.matkap_refund_to_sfr_internal
+  fact_type: 'matkap'
+  brand: 'foton'
+  product: 'matkap_refund'
+  fact_text: 'При возврате оплаты, внесённой материнским капиталом, заявление оформляется так, что средства возвращаются на счёт СФР, а не клиенту наличными. Со стороны центра оформление занимает до 10 рабочих дней; сроки зачисления зависят от СФР.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    client_allowed: false
+- fact_key: r4_1_owner_2026_06_12.unpk.matkap_refund_to_sfr_internal
+  fact_type: 'matkap'
+  brand: 'unpk'
+  product: 'matkap_refund'
+  fact_text: 'При возврате оплаты, внесённой материнским капиталом, заявление оформляется так, что средства возвращаются на счёт СФР, а не клиенту наличными. Со стороны центра оформление занимает до 10 рабочих дней; сроки зачисления зависят от СФР.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    client_allowed: false
+- fact_key: r4_1_owner_2026_06_12.foton.nonpayment_second_semester_freeze_internal
+  fact_type: 'policy'
+  brand: 'foton'
+  product: 'payment_risk'
+  fact_text: 'Доступ замораживается через неделю неоплаты второго семестра.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    client_allowed: false
+- fact_key: r4_1_owner_2026_06_12.unpk.nonpayment_second_semester_freeze_internal
+  fact_type: 'policy'
+  brand: 'unpk'
+  product: 'payment_risk'
+  fact_text: 'Доступ замораживается через неделю неоплаты второго семестра.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    client_allowed: false
+- fact_key: r4_1_owner_2026_06_12.foton.new_online_oge_ege_math_product_internal
+  fact_type: 'program'
+  brand: 'foton'
+  product: 'new_online_oge_ege_math'
+  fact_text: 'Новый онлайн-продукт Фотона по математике ОГЭ/ЕГЭ с 4 тарифами в клиентскую базу не вносить. Бот продукт не упоминает; на прямой вопрос передаёт менеджеру.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    client_allowed: false
+    anti_fact: true
+- fact_key: r4_1_owner_2026_06_12.foton.oge_ege_mock_exams_internal
+  fact_type: 'program'
+  brand: 'foton'
+  product: 'mock_exams'
+  fact_text: 'Отдельного продукта пробников ОГЭ/ЕГЭ нет: это разовые промо-акции, филиалы проводят их по своему усмотрению. На вопрос расписание акций подскажет менеджер.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    client_allowed: false
+- fact_key: r4_1_owner_2026_06_12.unpk.oge_ege_mock_exams_internal
+  fact_type: 'program'
+  brand: 'unpk'
+  product: 'mock_exams'
+  fact_text: 'Отдельного продукта пробников ОГЭ/ЕГЭ нет: это разовые промо-акции, филиалы проводят их по своему усмотрению. На вопрос расписание акций подскажет менеджер.'
+  client_safe_text: ''
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'manager_handoff_only'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: true
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    client_allowed: false
+structured_metadata_rules:
+- brand: unpk
+  fact_key_prefix: kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.
+  applies_to:
+    grades:
+    - 9
+    - 11
+    formats:
+    - online
+    products:
+    - regular_online_courses_weekday_2x2
+  is_positive_statement: true
+control_numbers:
+  remove:
+  - '11900'
+  - '56500'
+  - '94000'
+  - '16900'
+  - '27720'
+  - '89900'
+  - '75000'
+  - '83800'
+  - '3900'
+  - '6900'
+  - '23000'
+  add:
+  - '93100'
+  - '114000'
+  - '120000'
+  - '98000'
+  - 37 000
+  - '59000'
+  - 41 800
+  - 69 900
+source_files:
+  gold_answers_v3:
+    filename: gold_answers_v3.yaml
+    source_id: dmitry_approved:gold_answers_v3_2026_05_22
+    kind: yaml
+    brand: brand_neutral
+    description: Эталонные ответы и правила живого тона для Telegram-бота.
+required_source_files:
+- UPDATE_REPORT_2026-05-19.md
+- facts/facts_for_bot_FOTON.yaml
+- facts/facts_for_bot_UNPK.yaml
+- facts/brand_rules.yaml
+- facts/bot_policy.yaml
+- facts/facts_internal_only.yaml
+- facts/gold_answers_v3.yaml
+required_yaml_paths:
+- file: facts/facts_for_bot_FOTON.yaml
+  path: contacts_foton.vk
+  reason: Foton VK must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: lvsh_mendeleevo_2026.pricing_2026.current_price
+  reason: Foton LVSH current price must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: lvsh_mendeleevo_2026.transfer_from_moscow
+  reason: Foton LVSH transfer facts must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: contacts_unpk.email
+  reason: UNPK email must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: lvsh_mendeleevo_2026.pricing_2026.current_price
+  reason: UNPK LVSH current price must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: lvsh_mendeleevo_2026.transfer_from_moscow
+  reason: UNPK LVSH transfer facts must come from YAML.
+- file: facts/brand_rules.yaml
+  path: forbidden_client_mentions.when_active_brand_is_foton.blocked_terms
+  reason: Brand-specific forbidden terms must come from YAML.
+- file: facts/brand_rules.yaml
+  path: forbidden_client_mentions.when_active_brand_is_unpk.blocked_terms
+  reason: Brand-specific forbidden terms must come from YAML.
+- file: facts/bot_policy.yaml
+  path: theme_routes.installment
+  reason: Installment policy must come from YAML.
+- file: facts/gold_answers_v3.yaml
+  path: topics
+  reason: Gold answers must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: schedule_2026_27.groups
+  reason: Foton 2026/27 schedule facts must come from YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: schedule_2026_27.groups
+  reason: UNPK 2026/27 schedule facts must come from YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.lesson_format.client_safe_text
+  reason: Foton v6.5 lesson format fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text
+  reason: Foton v6.5 summer school fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_tariffs.client_safe_text
+  reason: Foton v6.5 summer tariffs fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text
+  reason: Foton v6.5 summer discounts fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.lesson_format.client_safe_text
+  reason: UNPK v6.5 lesson format fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text
+  reason: UNPK v6.5 Dolgoprudny summer school fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_primary_patsayeva.client_safe_text
+  reason: UNPK v6.5 Patsayeva prerecord fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny_tariffs.client_safe_text
+  reason: UNPK v6.5 Dolgoprudny tariffs fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text
+  reason: UNPK v6.5 Moscow summer school fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text
+  reason: UNPK v6.5 summer discounts fact must come from supervised YAML.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_mfti_discount.client_safe_text
+  reason: UNPK v6.5 MFTI employee discount fact must come from supervised YAML.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.homework_check_always_checked.client_safe_text
+  reason: Foton v6.6 client-safe fact homework_check_always_checked must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.schedule_level_split_parallel_groups.client_safe_text
+  reason: Foton v6.6 client-safe fact schedule_level_split_parallel_groups must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_groups_levels.client_safe_text
+  reason: Foton v6.6 client-safe fact offline_groups_levels must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_online_instead_offline_exception_2026_27.client_safe_text
+  reason: Foton v6.6 client-safe fact attendance_online_instead_offline_exception_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_makeup_other_group.client_safe_text
+  reason: Foton v6.6 client-safe fact attendance_makeup_other_group must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text
+  reason: Foton v6.6 client-safe fact materials_handouts_default must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.study_pause_flexible_schedule_personal.client_safe_text
+  reason: Foton v6.6 client-safe fact study_pause_flexible_schedule_personal must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.trial_other_group_free_trial.client_safe_text
+  reason: Foton v6.6 client-safe fact trial_other_group_free_trial must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_phys_tech_no_separate_groups_foton_2026_27.client_safe_text
+  reason: Foton v6.6 client-safe fact offline_phys_tech_no_separate_groups_foton_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.entrance_test_results_delivery.client_safe_text
+  reason: Foton v6.6 client-safe fact entrance_test_results_delivery must come from supervised staging.
+- file: facts/facts_for_bot_FOTON.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_first_lesson_diagnostic_check.client_safe_text
+  reason: Foton v6.6 client-safe fact offline_first_lesson_diagnostic_check must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.homework_check_always_checked.client_safe_text
+  reason: UNPK v6.6 client-safe fact homework_check_always_checked must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.schedule_level_split_parallel_groups.client_safe_text
+  reason: UNPK v6.6 client-safe fact schedule_level_split_parallel_groups must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_groups_levels.client_safe_text
+  reason: UNPK v6.6 client-safe fact offline_groups_levels must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_phys_tech_level_default.client_safe_text
+  reason: UNPK v6.6 client-safe fact offline_phys_tech_level_default must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_online_instead_offline_exception_2026_27.client_safe_text
+  reason: UNPK v6.6 client-safe fact attendance_online_instead_offline_exception_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.attendance_makeup_other_group.client_safe_text
+  reason: UNPK v6.6 client-safe fact attendance_makeup_other_group must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text
+  reason: UNPK v6.6 client-safe fact materials_handouts_default must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.study_pause_flexible_schedule_personal.client_safe_text
+  reason: UNPK v6.6 client-safe fact study_pause_flexible_schedule_personal must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text
+  reason: UNPK v6.6 client-safe fact annual_online_courses_math_physics_5_11_weekend_2026_27 must come from supervised staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text
+  reason: UNPK v6.6 client-safe fact annual_online_courses_math_physics_informatics_9_11_weekday_2026_27 must come from supervised
+    staging.
+- file: facts/facts_for_bot_UNPK.yaml
+  path: kb_v6_6_client_safe_facts_2026_06_08.offline_courses_seminar_format.client_safe_text
+  reason: UNPK v6.6 client-safe fact offline_courses_seminar_format must come from supervised staging.

@@ -172,6 +172,99 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     _clamp_float,
 )
 
+from mango_mvp.channels.subscription_llm_parts.direct_path import (
+    BOT_GOLD_REAL_PACK_ENV,
+    DIRECT_PATH_SCHEMA_VERSION,
+    DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
+    DIRECT_PATH_WIDE_FACT_LIMIT,
+    DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
+    DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH,
+    DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION,
+    DIRECT_PATH_MISSION_TEMPLATE,
+    DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT,
+    DIRECT_PATH_ROUTE_RUBRIC_BLOCK,
+    PRESALE_PROMPT_SAFE_SLOT_KEYS,
+    PRESALE_PROMPT_SENSITIVE_KEY_RE,
+    PRESALE_PROMPT_CHILD_NAME_KEY_RE,
+    PRESALE_PROMPT_PARENT_NAME_KEY_RE,
+    DIRECT_PATH_CATEGORY_ALIASES,
+    DIRECT_PATH_GOLD_TOPIC_KEYWORDS,
+    _PARTIAL_PHONE_CONTEXT_RE,
+    _CLIENT_CHILD_IDENTITY_PROMPT_RE,
+    _CLIENT_PARENT_IDENTITY_PROMPT_RE,
+    _direct_path_mission_text,
+    _direct_path_route_rubric_block,
+    _direct_path_enabled,
+    _llm_retrieve_enabled,
+    _route_rubric_enabled,
+    _template_from_kb_enabled,
+    _presale_safety_enabled,
+    _direct_path_brand_label,
+    _direct_path_snapshot_path_from_context,
+    _direct_path_load_snapshot,
+    _direct_path_snapshot_facts,
+    _direct_path_valid_until_ok,
+    _direct_path_client_safe_snapshot_fact,
+    _direct_path_snapshot_fact_key,
+    _direct_path_snapshot_fact_text,
+    _direct_path_fact_by_brand_key,
+    _direct_path_fact_value,
+    _direct_path_template_from_fact,
+    _template_from_kb_context_trace,
+    _template_from_kb_trace_event,
+    _direct_path_template_fact_text,
+    _direct_path_fact_text,
+    _direct_path_add_fact,
+    _direct_path_legacy_context_fact_allowed,
+    _direct_path_add_legacy_fact,
+    _direct_path_legacy_context_fact_items,
+    _direct_path_fact_categories,
+    _direct_path_category_from_hint,
+    _direct_path_selected_categories,
+    _direct_path_slot_scope,
+    _direct_path_format_scope,
+    _direct_path_grade_in_fact,
+    _direct_path_fact_conflicts_slots,
+    _direct_path_fact_relevance_score,
+    _direct_path_render_fact_line,
+    _direct_path_render_fact_block,
+    _direct_path_fact_pack_char_count,
+    _direct_path_core_fact,
+    _direct_path_empty_fact_pack,
+    _direct_path_records_to_fact_pack,
+    _direct_path_keyword_fact_pack_from_records,
+    _direct_path_retriever_candidate_summary,
+    build_direct_path_llm_retriever_prompt,
+    _direct_path_retriever_ids,
+    _direct_path_llm_retrieve_fact_pack,
+    _direct_path_wide_fact_pack,
+    _direct_path_context_fact_pack,
+    _direct_path_recent_messages,
+    _direct_path_known_slots,
+    _presale_prompt_safe_key,
+    _presale_prompt_safe_slot_value,
+    _presale_prompt_safe_mapping,
+    _presale_prompt_safe_value,
+    _direct_path_prompt_known_slots,
+    _direct_path_prompt_memory_view,
+    _presale_prompt_safe_dialogue_text,
+    _direct_path_gold_real_enabled,
+    _direct_path_gold_pack_path,
+    _load_direct_path_gold_real_examples,
+    _direct_path_topic_hints,
+    _direct_path_select_gold_real_examples,
+    _direct_path_gold_prompt_block,
+    _build_direct_path_prompt,
+    _direct_path_metadata,
+    _direct_path_merge_metadata,
+    _direct_path_route_rubric_should_regenerate,
+    _build_direct_path_route_rubric_regen_prompt,
+    _a2_extract_phone,
+    _replace_echoed_phone,
+    _client_clean_fact_text,
+    _active_brand,
+)
+
 ANSWER_QUALITY_LLM_REWRITE_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE"
 ANSWER_QUALITY_LLM_REWRITER_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITER"
 ANSWER_QUALITY_LLM_REWRITE_REASONING_ENV = "TELEGRAM_ANSWER_QUALITY_LLM_REWRITE_REASONING"
@@ -203,19 +296,6 @@ LLM_RETRIEVE_MODEL_ENV = "TELEGRAM_LLM_RETRIEVE_MODEL"
 LLM_RETRIEVE_REASONING_ENV = "TELEGRAM_LLM_RETRIEVE_REASONING"
 LLM_RETRIEVE_TIMEOUT_ENV = "TELEGRAM_LLM_RETRIEVE_TIMEOUT_SEC"
 NIGHT_HOURS_NOTE_ENV = "TELEGRAM_NIGHT_HOURS_NOTE"
-BOT_GOLD_REAL_PACK_ENV = "TELEGRAM_BOT_GOLD_REAL_PACK"
-DIRECT_PATH_SCHEMA_VERSION = "direct_path_v1_2026_06_08"
-DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION = "direct_path_wide_fact_pack_v1_2026_06_08"
-DIRECT_PATH_WIDE_FACT_LIMIT = 60
-DIRECT_PATH_WIDE_FACT_CHAR_LIMIT = 10_000
-DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
-    Path(__file__).resolve().parents[4]
-    / "product_data"
-    / "bot_improvement_candidates_20260523"
-    / "01_gold_and_few_shot"
-    / "real_manager_gold_2026-06-08.yaml"
-)
-DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION = "real_manager_gold_2026-06-08"
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 AUTHORITATIVE_OUTPUT_GATE_SCHEMA_VERSION = "authoritative_output_gate_v1_2026_06_02"
 SEMANTIC_OUTPUT_VERIFIER_SCHEMA_VERSION = "semantic_output_verifier_v1_2026_06_06"
@@ -1972,258 +2052,50 @@ def apply_dialogue_contract_v2_template_dispatcher(
     return result
 
 
-DIRECT_PATH_MISSION_TEMPLATE = (
-    "Ты — менеджер-консультант учебного центра {brand}. Тебе пишет родитель с задачей\n"
-    "про ребёнка. Твоя цель — реально помочь разобраться и довести до записи на\n"
-    "подходящий курс. Продажа — это помощь: польза с первого ответа, предугадывай\n"
-    "следующий вопрос, веди к понятному шагу. Не дави: честность важнее сделки.\n"
-    "Числа, даты и условия — только из фактов; чего нет в фактах — скажи честно\n"
-    "и предложи шаг. Если правило безопасности или передача менеджеру противоречат\n"
-    "записи — правило важнее. Не обещай действия и сроки от имени менеджера: можно\n"
-    "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»\n"
-    "или гарантировать действие. Не утверждай, что телефон или контакт уже есть у центра,\n"
-    "если это не подтверждено в памяти или фактах. Имя ребёнка можно использовать, если\n"
-    "клиент сам его назвал; телефон или ФИО целиком не дублируй."
-)
-DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT = (
-    "написать «менеджер свяжется» без срока только в черновике для менеджера, "
-    "но нельзя «свяжется завтра/утром/в течение N»"
-)
-DIRECT_PATH_ROUTE_RUBRIC_BLOCK = (
-    'Выбор маршрута:\n'
-    '- "bot_answer_self_for_pilot" — когда факты из блока «Факты по вашему вопросу» покрывают вопрос клиента '
-    'и не требуется действие менеджера. Отвечай по фактам уверенно и не обещай, что «менеджер свяжется», '
-    '— ты уже отвечаешь. Смежные факты покрытием НЕ считаются: на их основе самостоятельный ответ не выбирай.\n'
-    '- "draft_for_manager" — когда фактов не хватает, нужно ДЕЙСТВИЕ или проверка менеджера '
-    '(оформить запись, отправить документы, проверить оплату, персональные данные) или вопрос требует личной оценки. '
-    'Обязательно заполни missing_facts: какого факта или какой проверки не хватает. В черновике пиши содержательный '
-    'ответ по фактам для менеджера — а не «передам менеджеру» как весь текст.\n'
-    'Развилка по процессам: РАССКАЗАТЬ, как устроен процесс (как проходит запись, что после оплаты, есть лист ожидания), '
-    '— это самостоятельный ответ по факту процесса. ВЫПОЛНИТЬ действие по просьбе клиента («запишите меня», '
-    '«пришлите договор», «проверьте оплату») — это draft_for_manager.\n'
-    'Запрещено вычислять новые числа: не выводи проценты, скидки, суммы и итоги из других цен '
-    '(«за два предмета выйдет…», «это получается N%»). Называй только числа, которые есть в фактах дословно '
-    'или назвал сам клиент. Не подтверждай расчёты клиента («у меня выходит N, верно?») — точный расчёт '
-    'и итог по нескольким предметам или со скидками подтвердит менеджер.\n'
-    'Избегай сравнительных оценок форматов/программ без факта («очно удобнее…») — вместо этого предложи '
-    'признак выбора вопросом.\n'
-    'Запрещено: выбирать "draft_for_manager" на всякий случай при полных фактах.'
-)
-
-
-def _direct_path_mission_text(*, brand_label: str, context: Optional[Mapping[str, Any]]) -> str:
-    mission = DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)
-    if not _route_rubric_enabled(context):
-        return mission
-    return mission.replace(
-        "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»",
-        DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT,
-    )
-
-
-def _direct_path_route_rubric_block(context: Optional[Mapping[str, Any]]) -> str:
-    return f"{DIRECT_PATH_ROUTE_RUBRIC_BLOCK}\n\n" if _route_rubric_enabled(context) else ""
-
-
-def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (DIRECT_PATH_ENV, "direct_path_enabled"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    if DIRECT_PATH_ENV in os.environ:
-        return _truthy_value(os.getenv(DIRECT_PATH_ENV))
-    return _pilot_gold_profile_enabled(context)
-
-
-def _llm_retrieve_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _pilot_profile_flag_enabled(context, LLM_RETRIEVE_ENV, aliases=("llm_retrieve_enabled",))
-
-
-def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
-
-
-def _template_from_kb_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (TEMPLATE_FROM_KB_ENV, "template_from_kb"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    if TEMPLATE_FROM_KB_ENV in os.environ:
-        return _truthy_value(os.getenv(TEMPLATE_FROM_KB_ENV))
-    return _pilot_gold_profile_enabled(context)
 
 
 
 
-def _presale_safety_enabled(context: Optional[Mapping[str, Any]] = None, *, subflag: str = "") -> bool:
-    if isinstance(context, Mapping):
-        if subflag and subflag in context:
-            return _truthy_value(context.get(subflag))
-        if PRESALE_SAFETY_ENV in context:
-            return _truthy_value(context.get(PRESALE_SAFETY_ENV))
-    if subflag and subflag in os.environ:
-        return _truthy_value(os.getenv(subflag))
-    if PRESALE_SAFETY_ENV in os.environ:
-        return _truthy_value(os.getenv(PRESALE_SAFETY_ENV))
-    return _pilot_gold_profile_enabled(context)
 
 
-def _direct_path_brand_label(active_brand: str) -> str:
-    brand = str(active_brand or "").strip().casefold()
-    if brand == "foton":
-        return "Фотон"
-    if brand == "unpk":
-        return "УНПК МФТИ"
-    return "текущего учебного центра"
 
 
-def _direct_path_snapshot_path_from_context(context: Optional[Mapping[str, Any]]) -> str:
-    if not isinstance(context, Mapping):
-        return ""
-    for key in ("snapshot_path", "knowledge_snapshot_path", "kb_snapshot_path"):
-        value = context.get(key)
-        if value:
-            return str(value)
-    return ""
 
 
-@lru_cache(maxsize=8)
-def _direct_path_load_snapshot(path_text: str) -> Mapping[str, Any]:
-    if not path_text:
-        return {}
-    path = Path(path_text).expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, Mapping) else {}
 
 
-def _direct_path_snapshot_facts(snapshot: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
-    facts = snapshot.get("facts") if isinstance(snapshot, Mapping) else None
-    if not isinstance(facts, Sequence) or isinstance(facts, (str, bytes, bytearray)):
-        return ()
-    return tuple(item for item in facts if isinstance(item, Mapping))
 
 
-def _direct_path_valid_until_ok(value: Any, *, today: Optional[date] = None) -> bool:
-    raw = str(value or "").strip()
-    if not raw:
-        return True
-    try:
-        valid_until = date.fromisoformat(raw[:10])
-    except ValueError:
-        return False
-    return valid_until >= (today or date.today())
 
 
-def _direct_path_client_safe_snapshot_fact(fact: Mapping[str, Any], *, active_brand: str) -> bool:
-    brand = str(fact.get("brand") or fact.get("active_brand") or "").strip().casefold()
-    return (
-        brand == str(active_brand or "").strip().casefold()
-        and fact.get("allowed_for_client_answer") is True
-        and fact.get("forbidden_for_client") is not True
-        and fact.get("internal_only") is not True
-        and _direct_path_valid_until_ok(fact.get("valid_until"))
-        and bool(str(fact.get("client_safe_text") or fact.get("fact_text") or "").strip())
-    )
 
 
-def _direct_path_snapshot_fact_key(fact: Mapping[str, Any]) -> str:
-    return str(fact.get("fact_key") or fact.get("fact_id") or fact.get("id") or "").strip()
 
 
-def _direct_path_snapshot_fact_text(fact: Mapping[str, Any]) -> str:
-    for key in ("client_safe_text", "fact_text"):
-        text = str(fact.get(key) or "").strip()
-        if text:
-            return _client_clean_fact_text(text)
-    return ""
 
 
-def _direct_path_fact_by_brand_key(
-    snapshot: Mapping[str, Any],
-    *,
-    active_brand: str,
-    fact_key: str,
-) -> Optional[Mapping[str, Any]]:
-    key = str(fact_key or "").strip()
-    brand = str(active_brand or "").strip().casefold()
-    if not key or brand not in {"foton", "unpk"}:
-        return None
-    for fact in _direct_path_snapshot_facts(snapshot):
-        if str(fact.get("fact_key") or "") != key:
-            continue
-        if str(fact.get("brand") or "").casefold() != brand:
-            continue
-        if _direct_path_client_safe_snapshot_fact(fact, active_brand=brand):
-            return fact
-    return None
 
 
-def _direct_path_fact_value(text: str) -> str:
-    value = _client_clean_fact_text(text)
-    if "—" in value:
-        value = value.rsplit("—", 1)[-1].strip()
-    return value.rstrip(" .")
 
 
-def _direct_path_template_from_fact(
-    *,
-    active_brand: str,
-    fact_key: str,
-    literal_text: str,
-    neutral_fallback: str,
-    context: Optional[Mapping[str, Any]] = None,
-    render: Optional[Callable[[str], str]] = None,
-) -> str:
-    if not _template_from_kb_enabled(context):
-        return literal_text
-    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
-    fact = _direct_path_fact_by_brand_key(snapshot, active_brand=active_brand, fact_key=fact_key)
-    if not isinstance(fact, Mapping):
-        _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "fallback", "reason": "missing"})
-        return neutral_fallback
-    text = _direct_path_snapshot_fact_text(fact)
-    if render is not None:
-        text = render(text)
-    text = str(text or "").strip()
-    if text:
-        _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "hit"})
-        return text
-    _template_from_kb_trace_event(context, {"fact_key": fact_key, "outcome": "fallback", "reason": "empty"})
-    return neutral_fallback
 
 
-def _template_from_kb_context_trace(context: Optional[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
-    if not isinstance(context, Mapping):
-        return ()
-    value = context.get("template_from_kb_trace")
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return ()
-    return tuple(dict(item) for item in value if isinstance(item, Mapping))
 
 
-def _template_from_kb_trace_event(context: Optional[Mapping[str, Any]], payload: Mapping[str, Any]) -> None:
-    event = dict(payload)
-    trace_event(context, "template_from_kb", event)
-    if isinstance(context, dict):
-        existing = context.setdefault("template_from_kb_trace", [])
-        if isinstance(existing, list):
-            existing.append(event)
 
 
-def _direct_path_template_fact_text(
-    *,
-    active_brand: str,
-    fact_key: str,
-    context: Optional[Mapping[str, Any]],
-) -> str:
-    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
-    fact = _direct_path_fact_by_brand_key(snapshot, active_brand=active_brand, fact_key=fact_key)
-    return _direct_path_snapshot_fact_text(fact) if isinstance(fact, Mapping) else ""
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _foton_address_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
@@ -2311,1024 +2183,96 @@ def _unpk_contact_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
     return f"Телефоны: {phone} и {toll_free}. Email: {email}. График: Пн-Вс с 10:00 до 18:00."
 
 
-def _direct_path_fact_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return _client_clean_fact_text(value)
-    if isinstance(value, Mapping):
-        for key in ("client_safe_text", "fact_text", "manager_display_text", "text", "answer", "draft_text"):
-            text = str(value.get(key) or "").strip()
-            if text:
-                return _client_clean_fact_text(text)
-        return ""
-    return _client_clean_fact_text(str(value))
-
-
-def _direct_path_add_fact(items: dict[str, str], key: str, value: Any) -> None:
-    fact_key = str(key or "").strip()
-    text = _direct_path_fact_text(value)
-    if fact_key and text:
-        items.setdefault(fact_key, text)
-
-
-def _direct_path_legacy_context_fact_allowed(value: Any, *, active_brand: str) -> bool:
-    if not isinstance(value, Mapping):
-        return True
-    brand = str(value.get("brand") or value.get("active_brand") or "").strip().casefold()
-    if brand and brand != str(active_brand or "").strip().casefold():
-        return False
-    if "allowed_for_client_answer" in value and value.get("allowed_for_client_answer") is not True:
-        return False
-    if "client_safe" in value and value.get("client_safe") is not True:
-        return False
-    if value.get("forbidden_for_client") is True or value.get("internal_only") is True:
-        return False
-    if "valid_until" in value and not _direct_path_valid_until_ok(value.get("valid_until")):
-        return False
-    return True
-
-
-def _direct_path_add_legacy_fact(items: dict[str, str], key: str, value: Any, *, active_brand: str) -> None:
-    if _direct_path_legacy_context_fact_allowed(value, active_brand=active_brand):
-        _direct_path_add_fact(items, key, value)
-
-
-def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]], *, limit: int = 18) -> dict[str, str]:
-    items: dict[str, str] = {}
-    if not isinstance(context, Mapping):
-        return items
-    active_brand = _active_brand(context)
-    confirmed = context.get("confirmed_facts")
-    if isinstance(confirmed, Mapping):
-        for key, value in confirmed.items():
-            _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
-    facts_context = context.get("facts_context")
-    if isinstance(facts_context, Mapping):
-        confirmed_context = facts_context.get("confirmed_facts")
-        if isinstance(confirmed_context, Mapping):
-            for key, value in confirmed_context.items():
-                _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
-    pipeline = context.get("dialogue_contract_pipeline")
-    if isinstance(pipeline, Mapping) and isinstance(pipeline.get("retrieved_facts"), Mapping):
-        for key, value in pipeline["retrieved_facts"].items():
-            _direct_path_add_legacy_fact(items, str(key), value, active_brand=active_brand)
-    snippets = context.get("knowledge_snippets")
-    if isinstance(snippets, Mapping):
-        for key, value in snippets.items():
-            _direct_path_add_legacy_fact(items, f"snippet:{key}", value, active_brand=active_brand)
-    elif isinstance(snippets, Sequence) and not isinstance(snippets, (str, bytes, bytearray)):
-        for idx, value in enumerate(snippets, 1):
-            _direct_path_add_legacy_fact(items, f"snippet:{idx}", value, active_brand=active_brand)
-    return dict(list(items.items())[:limit])
-
-
-DIRECT_PATH_CATEGORY_ALIASES: Mapping[str, tuple[str, ...]] = {
-    "pricing": ("pricing", "price", "стоим", "цен", "дорог", "оплат", "рассроч", "долями", "скидк", "помесяч"),
-    "schedule": ("schedule", "распис", "дни", "время", "когда", "старт", "начал", "будни", "выходн"),
-    "camp": ("camp", "лагер", "летн", "смен", "лш", "лвш", "менделеево", "пацаева"),
-    "documents": ("document", "documents", "certificate", "tax", "matkap", "документ", "справк", "вычет", "маткап"),
-    "format": ("format", "platform", "recording", "онлайн", "очно", "платформ", "запис", "формат"),
-    "enrollment": ("enrollment", "trial", "запис", "оформ", "пробн", "вступ", "тест"),
-    "contact": ("contact", "contacts", "phone", "email", "e-mail", "mail", "контакт", "телефон", "номер", "почт", "связаться"),
-    "address": ("address", "location", "transport", "адрес", "где", "дорог", "добир", "трансфер"),
-    "course": ("teacher", "program", "homework", "materials", "level", "преподав", "программ", "дз", "материал", "уров"),
-}
-
-
-def _direct_path_fact_categories(fact: Mapping[str, Any]) -> frozenset[str]:
-    key = _direct_path_snapshot_fact_key(fact).casefold()
-    fact_type = str(fact.get("fact_type") or "").casefold()
-    product = str(fact.get("product") or "").casefold()
-    text = _normalize_fact_match_text(f"{key} {fact_type} {product} {_direct_path_snapshot_fact_text(fact)}")
-    haystack = f"{key} {fact_type} {product} {text}"
-    categories: set[str] = set()
-    if fact_type in {"price", "discount", "installment", "payment", "payment_method"} or re.search(r"₽|руб|%|скид|рассроч|долями|помесяч", haystack):
-        categories.add("pricing")
-    if fact_type in {"schedule", "deadline"} or re.search(r"распис|старт|начал|дни|время|будни|выходн|дедлайн", haystack):
-        categories.add("schedule")
-    if "camp" in fact_type or re.search(r"лагер|летн|смен|лш|лвш|менделеево|пацаева|city_camp", haystack):
-        categories.add("camp")
-    if fact_type in {"documents", "tax", "matkap", "certificate"} or re.search(r"документ|справк|вычет|маткап|лиценз", haystack):
-        categories.add("documents")
-    if fact_type in {"format", "platform", "recording"} or re.search(r"онлайн|очно|платформ|запис[ьи] занят|формат|методич", haystack):
-        categories.add("format")
-    if fact_type in {"trial", "enrollment"} or re.search(r"пробн|записат|записаться|оформ|вступительн|тест", haystack):
-        categories.add("enrollment")
-    if (
-        fact_type == "contact"
-        or "contacts_" in haystack
-        or re.search(r"контакт|телефон|phone|toll_free|email|e-mail|почт", haystack)
-    ):
-        categories.add("contact")
-    if fact_type in {"address", "location", "transport"} or re.search(r"адрес|локац|москва|долгопруд|дорог|добир|трансфер", haystack):
-        categories.add("address")
-    if fact_type in {"teacher", "program", "homework", "materials", "level", "course_parameter"} or re.search(r"программ|преподав|домашн|дз|материал|уров|заняти|ак\.ч", haystack):
-        categories.add("course")
-    return frozenset(categories or {"course"})
-
-
-def _direct_path_category_from_hint(value: Any) -> str:
-    text = _normalize_fact_match_text(value)
-    if not text:
-        return ""
-    if text in {"pricing", "price", "discount", "installment", "payment_method", "payment_status"}:
-        return "pricing"
-    if text in {"schedule", "start", "when_start"}:
-        return "schedule"
-    if text in {"camp", "camp_lvsh", "camp_city", "residential_lvsh"}:
-        return "camp"
-    if text in {"document", "documents", "tax", "matkap", "certificate"}:
-        return "documents"
-    if text in {"format", "platform", "recording", "materials"}:
-        return "format"
-    if text in {"enrollment", "trial", "readiness"}:
-        return "enrollment"
-    if text in {"contact", "contacts", "phone", "email", "mail"}:
-        return "contact"
-    if text in {"transport", "logistics", "travel_time", "route_logistics", "address"}:
-        return "address"
-    if text in {"teacher", "program", "homework", "level", "value", "course_pick"}:
-        return "course"
-    for category, aliases in DIRECT_PATH_CATEGORY_ALIASES.items():
-        if any(alias in text for alias in aliases):
-            return category
-    return ""
-
-
-def _direct_path_selected_categories(client_message: str, context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
-    values: list[Any] = []
-    if isinstance(context, Mapping):
-        for container_key in ("conversation_intent_plan", "dialogue_memory_view", "answer_contract", "facts_context"):
-            container = context.get(container_key)
-            if not isinstance(container, Mapping):
-                continue
-            for key in ("primary_intent", "topic_id", "question_kind", "fact_scope", "product_family"):
-                values.append(container.get(key))
-            for key in ("answer_topics", "topic_roles", "active_topics", "required_fact_keys"):
-                seq = container.get(key)
-                if isinstance(seq, Sequence) and not isinstance(seq, (str, bytes, bytearray)):
-                    values.extend(seq)
-            held = container.get("held_state") if isinstance(container.get("held_state"), Mapping) else {}
-            if held:
-                values.extend(held.get("active_topics") or ())
-                values.extend(held.get("required_fact_keys") or ())
-            focus = container.get("topic_focus") if isinstance(container.get("topic_focus"), Mapping) else {}
-            if focus:
-                values.extend(focus.values())
-    values.append(client_message)
-    categories: list[str] = []
-    for value in values:
-        category = _direct_path_category_from_hint(value)
-        if category and category not in categories:
-            categories.append(category)
-    client_category = _direct_path_category_from_hint(client_message)
-    if client_category in {"contact", "address"}:
-        categories = [client_category, *[item for item in categories if item != client_category]]
-    return tuple(categories[:2])
-
-
-def _direct_path_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
-    slots = _direct_path_known_slots(context)
-    focus: Mapping[str, Any] = {}
-    if isinstance(context, Mapping) and isinstance(context.get("dialogue_memory_view"), Mapping):
-        memory = context["dialogue_memory_view"]
-        if isinstance(memory.get("topic_focus"), Mapping):
-            focus = memory["topic_focus"]  # type: ignore[assignment]
-    merged = {**dict(focus), **slots}
-    result: dict[str, str] = {}
-    for key in ("format", "training_format", "grade", "class", "product", "product_family"):
-        value = str(merged.get(key) or "").strip()
-        if value:
-            result[key] = value
-    return result
-
-
-def _direct_path_format_scope(value: str) -> str:
-    text = _normalize_fact_match_text(value)
-    if "онлайн" in text or "online" in text:
-        return "online"
-    if "очно" in text or "offline" in text or "москва" in text or "долгопруд" in text:
-        return "offline"
-    return ""
-
-
-def _direct_path_grade_in_fact(grade: str, fact_text: str) -> bool:
-    if not grade.isdigit():
-        return True
-    value = int(grade)
-    text = _normalize_fact_match_text(fact_text)
-    ranges = [(int(a), int(b)) for a, b in re.findall(r"\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(?:класс|кл)", text)]
-    singles = [int(item) for item in re.findall(r"\b(\d{1,2})\s*(?:класс|кл)\b", text)]
-    if ranges:
-        return any(start <= value <= end for start, end in ranges)
-    if singles:
-        return value in singles
-    return True
-
-
-def _direct_path_fact_conflicts_slots(fact: Mapping[str, Any], slots: Mapping[str, str]) -> bool:
-    haystack = f"{_direct_path_snapshot_fact_key(fact)} {_direct_path_snapshot_fact_text(fact)} {fact.get('product') or ''}"
-    slot_format = _direct_path_format_scope(slots.get("format") or slots.get("training_format") or "")
-    fact_format = _direct_path_format_scope(haystack)
-    if slot_format and fact_format and slot_format != fact_format:
-        return True
-    grade = re.sub(r"\D+", "", str(slots.get("grade") or slots.get("class") or ""))
-    if grade and not _direct_path_grade_in_fact(grade, haystack):
-        return True
-    family = _normalize_fact_match_text(slots.get("product_family") or slots.get("product") or "")
-    fact_text = _normalize_fact_match_text(haystack)
-    fact_is_camp = bool(re.search(r"лагер|летн|смен|лш|лвш|camp", fact_text))
-    if family in {"regular_course", "regular"} and fact_is_camp:
-        return True
-    if family == "camp" and not fact_is_camp and any(marker in fact_text for marker in ("курс", "учебный год", "семестр")):
-        return True
-    return False
-
-
-def _direct_path_fact_relevance_score(fact: Mapping[str, Any], *, client_message: str, categories: Sequence[str], slots: Mapping[str, str]) -> int:
-    haystack = _normalize_fact_match_text(
-        f"{_direct_path_snapshot_fact_key(fact)} {fact.get('fact_type') or ''} {fact.get('product') or ''} {_direct_path_snapshot_fact_text(fact)}"
-    )
-    score = 0
-    if _direct_path_fact_categories(fact).intersection(categories):
-        score += 30
-    if not _direct_path_fact_conflicts_slots(fact, slots):
-        score += 20
-    for value in slots.values():
-        normalized = _normalize_fact_match_text(value)
-        if normalized and normalized in haystack:
-            score += 8
-    for token in re.findall(r"[a-zа-яё0-9]{4,}", _normalize_fact_match_text(client_message)):
-        if token in haystack:
-            score += 2
-    if str(fact.get("bot_template_required") or "").casefold() == "true":
-        score += 1
-    return score
-
-
-def _direct_path_render_fact_line(key: str, text: str, meta: Mapping[str, str]) -> str:
-    fact_type = str(meta.get("fact_type") or "").strip()
-    product = str(meta.get("product") or "").strip()
-    suffix = "; ".join(part for part in (f"fact_type={fact_type}" if fact_type else "", f"product={product}" if product else "") if part)
-    return f"- {key}" + (f" ({suffix})" if suffix else "") + f": {text}"
-
-
-def _direct_path_render_fact_block(
-    facts: Mapping[str, str],
-    *,
-    fact_metadata: Mapping[str, Mapping[str, str]],
-    keys: Sequence[str],
-) -> str:
-    lines = [
-        _direct_path_render_fact_line(str(key), str(facts.get(str(key)) or ""), fact_metadata.get(str(key), {}))
-        for key in keys
-        if str(key).strip() and str(facts.get(str(key)) or "").strip()
-    ]
-    return "\n".join(lines) or "(нет подтверждённых фактов в этом блоке)"
-
-
-def _direct_path_fact_pack_char_count(facts: Mapping[str, str], meta: Mapping[str, Mapping[str, str]], keys: Sequence[str]) -> int:
-    return sum(len(_direct_path_render_fact_line(key, facts.get(key, ""), meta.get(key, {}))) + 1 for key in keys)
-
-
-def _direct_path_core_fact(fact: Mapping[str, Any]) -> bool:
-    key = _direct_path_snapshot_fact_key(fact).casefold()
-    text = _normalize_fact_match_text(f"{key} {_direct_path_snapshot_fact_text(fact)} {fact.get('fact_type') or ''} {fact.get('product') or ''}")
-    return bool(
-        re.search(
-            r"цен|стоим|₽|руб|скид|рассроч|долями|формат|онлайн|очно|старт|адрес|пробн|запис|учебный год|заняти",
-            text,
-            re.I,
-        )
-    )
-
-
-def _direct_path_empty_fact_pack(active_brand: str, *, selected_category: str = "empty") -> Mapping[str, Any]:
-    return {
-        "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
-        "facts": {},
-        "exact_keys": [],
-        "adjacent_keys": [],
-        "selected_category": selected_category,
-        "fact_metadata": {},
-    }
-
-
-def _direct_path_records_to_fact_pack(
-    *,
-    active_brand: str,
-    legacy: Mapping[str, str],
-    exact_records: Sequence[Mapping[str, Any]],
-    adjacent_records: Sequence[Mapping[str, Any]],
-    selected_category: str,
-    max_facts: int,
-    max_chars: int,
-    extra_metadata: Optional[Mapping[str, Any]] = None,
-) -> Mapping[str, Any]:
-    facts: dict[str, str] = {}
-    meta: dict[str, dict[str, str]] = {}
-
-    def add_record(fact: Mapping[str, Any], *, fact_limit: int = max_facts, char_limit: int = max_chars) -> bool:
-        key = _direct_path_snapshot_fact_key(fact)
-        text = _direct_path_snapshot_fact_text(fact)
-        if not key or not text or key in facts:
-            return False
-        prospective = {**facts, key: text}
-        prospective_meta = {
-            **meta,
-            key: {
-                "brand": str(fact.get("brand") or ""),
-                "fact_type": str(fact.get("fact_type") or ""),
-                "product": str(fact.get("product") or ""),
-            },
-        }
-        if len(prospective) > fact_limit:
-            return False
-        if _direct_path_fact_pack_char_count(prospective, prospective_meta, list(prospective.keys())) > char_limit:
-            return False
-        facts[key] = text
-        meta[key] = prospective_meta[key]
-        return True
-
-    adjacent_reserve = min(8, len(adjacent_records)) if adjacent_records else 0
-    exact_fact_limit = max(1, max_facts - adjacent_reserve)
-    exact_char_limit = max(2000, max_chars - (1200 if adjacent_records else 0))
-    for fact in exact_records:
-        add_record(fact, fact_limit=exact_fact_limit, char_limit=exact_char_limit)
-    exact_keys = list(facts.keys())
-    for fact in adjacent_records:
-        add_record(fact)
-    adjacent_keys = [key for key in facts if key not in set(exact_keys)]
-
-    if not facts:
-        facts = dict(legacy)
-        exact_keys = list(facts.keys())
-        adjacent_keys = []
-        meta = {key: {"brand": active_brand, "fact_type": "", "product": ""} for key in facts}
-        selected_category = "legacy_context"
-
-    result: dict[str, Any] = {
-        "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
-        "facts": facts,
-        "exact_keys": exact_keys,
-        "adjacent_keys": adjacent_keys,
-        "selected_category": selected_category,
-        "fact_metadata": meta,
-    }
-    if extra_metadata:
-        result.update(dict(extra_metadata))
-    return result
-
-
-def _direct_path_keyword_fact_pack_from_records(
-    records: Sequence[Mapping[str, Any]],
-    *,
-    legacy: Mapping[str, str],
-    active_brand: str,
-    context: Optional[Mapping[str, Any]],
-    client_message: str,
-    max_facts: int,
-    max_chars: int,
-    extra_metadata: Optional[Mapping[str, Any]] = None,
-) -> Mapping[str, Any]:
-    categories = _direct_path_selected_categories(client_message, context)
-    selected_category = "+".join(categories) if categories else "fallback_core"
-    candidates = [
-        fact
-        for fact in records
-        if (_direct_path_core_fact(fact) if not categories else bool(_direct_path_fact_categories(fact).intersection(categories)))
-    ]
-    if not candidates:
-        candidates = [fact for fact in records if _direct_path_core_fact(fact)]
-        selected_category = "fallback_core"
-    if not candidates:
-        candidates = list(records)[:max_facts]
-        selected_category = "fallback_core"
-
-    slots = _direct_path_slot_scope(context)
-    scored = [
-        (
-            _direct_path_fact_relevance_score(
-                fact,
-                client_message=client_message,
-                categories=categories or ("pricing", "format", "schedule", "address", "course"),
-                slots=slots,
-            ),
-            idx,
-            fact,
-        )
-        for idx, fact in enumerate(candidates)
-    ]
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    ordered = [fact for _, _, fact in scored]
-
-    has_scope_slots = bool(slots)
-    exact_records: list[Mapping[str, Any]] = []
-    adjacent_records: list[Mapping[str, Any]] = []
-    for fact in ordered:
-        conflicts = _direct_path_fact_conflicts_slots(fact, slots)
-        if not has_scope_slots and selected_category == "pricing":
-            exact_records.append(fact)
-        elif conflicts:
-            adjacent_records.append(fact)
-        else:
-            exact_records.append(fact)
-    if not exact_records and ordered:
-        exact_records = [ordered[0]]
-        adjacent_records = ordered[1:]
-
-    return _direct_path_records_to_fact_pack(
-        active_brand=active_brand,
-        legacy=legacy,
-        exact_records=exact_records,
-        adjacent_records=adjacent_records,
-        selected_category=selected_category,
-        max_facts=max_facts,
-        max_chars=max_chars,
-        extra_metadata=extra_metadata,
-    )
-
-
-def _direct_path_retriever_candidate_summary(fact: Mapping[str, Any]) -> str:
-    text = _direct_path_snapshot_fact_text(fact)
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > 220:
-        text = text[:217].rstrip() + "..."
-    fact_type = str(fact.get("fact_type") or "").strip()
-    product = str(fact.get("product") or "").strip()
-    prefix = "; ".join(item for item in (f"fact_type={fact_type}" if fact_type else "", f"product={product}" if product else "") if item)
-    return f"{prefix}: {text}" if prefix else text
-
-
-def build_direct_path_llm_retriever_prompt(
-    client_message: str,
-    *,
-    context: Optional[Mapping[str, Any]],
-    candidates: Sequence[Mapping[str, Any]],
-) -> str:
-    recent = "\n".join(_direct_path_recent_messages(context, limit=6)) or "(нет истории)"
-    slots = json.dumps(_direct_path_known_slots(context), ensure_ascii=False, sort_keys=True)
-    plan = {}
-    if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping):
-        source_plan = context["conversation_intent_plan"]
-        plan = {
-            key: source_plan.get(key)
-            for key in ("primary_intent", "answer_topics", "required_fact_keys", "planner_slots", "planner_confidence")
-            if key in source_plan
-        }
-    plan_json = json.dumps(plan, ensure_ascii=False, sort_keys=True)
-    lines = []
-    for fact in candidates:
-        key = _direct_path_snapshot_fact_key(fact)
-        if not key:
-            continue
-        lines.append(f"- {key}: {_direct_path_retriever_candidate_summary(fact)}")
-    candidate_block = "\n".join(lines) or "(нет кандидатов)"
-    return (
-        "Ты выбираешь факты для черновика ответа учебного центра.\n"
-        "Твоя задача — выбрать id фактов из списка кандидатов. Не пиши клиентский текст.\n"
-        "Выбирай ВСЕ факты, которые могут помочь ответить на вопрос, включая смысловые связи и следующий шаг; "
-        "не ограничивайся дословными совпадениями.\n"
-        "Если текущий вопрос неполный («а по физике?», «а очно?») — восстанови его по последним репликам диалога "
-        "и подбирай факты для восстановленного вопроса.\n"
-        "exact_ids — факты, которые прямо отвечают на вопрос или его часть. adjacent_ids — смежные полезные факты.\n"
-        "Нельзя выдумывать id: используй только id из списка кандидатов.\n\n"
-        f"Вопрос клиента:\n{client_message}\n\n"
-        f"Последние реплики:\n{recent}\n\n"
-        f"Известные слоты: {slots}\n"
-        f"План/интент: {plan_json}\n\n"
-        f"Кандидаты:\n{candidate_block}\n\n"
-        'Верни строго JSON: {"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
-    )
-
-
-def _direct_path_retriever_ids(value: Any) -> tuple[str, ...]:
-    if isinstance(value, str):
-        seq: Sequence[Any] = [value]
-    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-        seq = value
-    else:
-        return ()
-    result: list[str] = []
-    for item in seq:
-        key = str(item or "").strip()
-        if key and key not in result:
-            result.append(key)
-    return tuple(result)
-
-
-def _direct_path_llm_retrieve_fact_pack(
-    records: Sequence[Mapping[str, Any]],
-    *,
-    legacy: Mapping[str, str],
-    active_brand: str,
-    context: Optional[Mapping[str, Any]],
-    client_message: str,
-    max_facts: int,
-    max_chars: int,
-    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]],
-) -> tuple[Optional[Mapping[str, Any]], Mapping[str, Any]]:
-    candidate_by_key = {
-        _direct_path_snapshot_fact_key(fact): fact
-        for fact in records
-        if _direct_path_snapshot_fact_key(fact)
-    }
-    metadata: dict[str, Any] = {
-        "enabled": True,
-        "used": False,
-        "fallback": False,
-        "fallback_reason": "",
-        "candidate_count": len(candidate_by_key),
-        "selected_exact_ids": [],
-        "selected_adjacent_ids": [],
-        "invalid_ids": [],
-        "active_brand": str(active_brand or ""),
-    }
-    if not candidate_by_key:
-        metadata.update({"fallback": True, "fallback_reason": "no_candidates"})
-        return None, metadata
-    if retriever_fn is None:
-        metadata.update({"fallback": True, "fallback_reason": "retriever_fn_missing"})
-        return None, metadata
-    prompt = build_direct_path_llm_retriever_prompt(client_message, context=context, candidates=records)
-    try:
-        raw_payload = retriever_fn(prompt)
-    except subprocess.TimeoutExpired:
-        metadata.update({"fallback": True, "fallback_reason": "timeout"})
-        return None, metadata
-    except Exception as exc:  # noqa: BLE001
-        metadata.update({"fallback": True, "fallback_reason": "runtime_error", "error": str(exc)[:300]})
-        return None, metadata
-    try:
-        payload = extract_json_object(raw_payload) if isinstance(raw_payload, str) else dict(raw_payload)
-    except Exception as exc:  # noqa: BLE001
-        metadata.update({"fallback": True, "fallback_reason": "invalid_json", "error": str(exc)[:300]})
-        return None, metadata
-    exact_raw = _direct_path_retriever_ids(payload.get("exact_ids") or payload.get("exact") or payload.get("exact_fact_ids"))
-    adjacent_raw = _direct_path_retriever_ids(payload.get("adjacent_ids") or payload.get("adjacent") or payload.get("adjacent_fact_ids"))
-    selected_exact: list[str] = []
-    selected_adjacent: list[str] = []
-    invalid: list[str] = []
-    for key in (*exact_raw, *adjacent_raw):
-        if key not in candidate_by_key:
-            if key not in invalid:
-                invalid.append(key)
-            continue
-        if key in selected_exact or key in selected_adjacent:
-            continue
-        if key in exact_raw:
-            selected_exact.append(key)
-        else:
-            selected_adjacent.append(key)
-    metadata["invalid_ids"] = invalid
-    if not selected_exact and not selected_adjacent:
-        metadata.update({"fallback": True, "fallback_reason": "empty_selection"})
-        return None, metadata
-
-    slots = _direct_path_slot_scope(context)
-    exact_records: list[Mapping[str, Any]] = []
-    adjacent_records: list[Mapping[str, Any]] = []
-    for key in selected_exact:
-        fact = candidate_by_key[key]
-        if _direct_path_fact_conflicts_slots(fact, slots):
-            adjacent_records.append(fact)
-        else:
-            exact_records.append(fact)
-    for key in selected_adjacent:
-        adjacent_records.append(candidate_by_key[key])
-    metadata.update(
-        {
-            "used": True,
-            "selected_exact_ids": list(selected_exact),
-            "selected_adjacent_ids": list(selected_adjacent),
-        }
-    )
-    pack = _direct_path_records_to_fact_pack(
-        active_brand=active_brand,
-        legacy=legacy,
-        exact_records=exact_records,
-        adjacent_records=adjacent_records,
-        selected_category="llm_retrieve",
-        max_facts=max_facts,
-        max_chars=max_chars,
-        extra_metadata={"llm_retrieve": metadata},
-    )
-    return pack, metadata
-
-
-def _direct_path_wide_fact_pack(
-    context: Optional[Mapping[str, Any]],
-    *,
-    client_message: str = "",
-    max_facts: int = DIRECT_PATH_WIDE_FACT_LIMIT,
-    max_chars: int = DIRECT_PATH_WIDE_FACT_CHAR_LIMIT,
-    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
-) -> Mapping[str, Any]:
-    legacy = _direct_path_legacy_context_fact_items(context, limit=18)
-    active_brand = _active_brand(context)
-    snapshot_path = _direct_path_snapshot_path_from_context(context)
-    snapshot = _direct_path_load_snapshot(snapshot_path)
-    records = [
-        fact
-        for fact in _direct_path_snapshot_facts(snapshot)
-        if _direct_path_client_safe_snapshot_fact(fact, active_brand=active_brand)
-    ]
-    if not records:
-        return {
-            "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
-            "facts": legacy,
-            "exact_keys": list(legacy.keys()),
-            "adjacent_keys": [],
-            "selected_category": "legacy_context",
-            "fact_metadata": {key: {"brand": active_brand, "fact_type": "", "product": ""} for key in legacy},
-        }
-
-    llm_retrieve_metadata: Optional[Mapping[str, Any]] = None
-    if _llm_retrieve_enabled(context):
-        llm_pack, llm_retrieve_metadata = _direct_path_llm_retrieve_fact_pack(
-            records,
-            legacy=legacy,
-            active_brand=active_brand,
-            context=context,
-            client_message=client_message,
-            max_facts=max_facts,
-            max_chars=max_chars,
-            retriever_fn=retriever_fn,
-        )
-        if llm_pack is not None:
-            return llm_pack
-
-    return _direct_path_keyword_fact_pack_from_records(
-        records,
-        legacy=legacy,
-        active_brand=active_brand,
-        context=context,
-        client_message=client_message,
-        max_facts=max_facts,
-        max_chars=max_chars,
-        extra_metadata={"llm_retrieve": llm_retrieve_metadata} if llm_retrieve_metadata is not None else None,
-    )
-
-
-def _direct_path_context_fact_pack(
-    context: Optional[Mapping[str, Any]],
-    *,
-    client_message: str = "",
-    limit: int = DIRECT_PATH_WIDE_FACT_LIMIT,
-    retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]] = None,
-) -> Mapping[str, Any]:
-    pack = _direct_path_wide_fact_pack(context, client_message=client_message, max_facts=limit, retriever_fn=retriever_fn)
-    facts = pack.get("facts")
-    if not isinstance(facts, Mapping):
-        return {
-            "schema_version": DIRECT_PATH_WIDE_FACT_PACK_SCHEMA_VERSION,
-            "facts": {},
-            "exact_keys": [],
-            "adjacent_keys": [],
-            "selected_category": "empty",
-            "fact_metadata": {},
-        }
-    return pack
-
-
-def _direct_path_recent_messages(context: Optional[Mapping[str, Any]], *, limit: int = 8) -> tuple[str, ...]:
-    if not isinstance(context, Mapping):
-        return ()
-    value = context.get("recent_messages")
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        return ()
-    return tuple(str(item or "").strip() for item in value[-limit:] if str(item or "").strip())
-
-
-def _direct_path_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    if not isinstance(context, Mapping):
-        return result
-    for key in ("known_slots", "known_dialog_fields"):
-        value = context.get(key)
-        if isinstance(value, Mapping):
-            result.update({str(k): v for k, v in value.items() if str(k).strip() and str(v).strip()})
-    memory = context.get("dialogue_memory_view")
-    if isinstance(memory, Mapping):
-        slots = memory.get("known_slots")
-        if isinstance(slots, Mapping):
-            result.update({str(k): v for k, v in slots.items() if str(k).strip() and str(v).strip()})
-    plan = context.get("conversation_intent_plan")
-    if isinstance(plan, Mapping):
-        slots = plan.get("slots")
-        if isinstance(slots, Mapping):
-            result.update({str(k): v for k, v in slots.items() if str(k).strip() and str(v).strip()})
-    return result
-
-
-PRESALE_PROMPT_SAFE_SLOT_KEYS = frozenset(
-    {
-        "active_brand",
-        "brand",
-        "campus",
-        "city",
-        "class",
-        "course",
-        "exam",
-        "format",
-        "grade",
-        "intent",
-        "level",
-        "learning_goal",
-        "message_type",
-        "modality",
-        "platform",
-        "primary_intent",
-        "product",
-        "schedule",
-        "subject",
-        "topic",
-        "topic_focus",
-        "topic_id",
-        "training_format",
-    }
-)
-PRESALE_PROMPT_SENSITIVE_KEY_RE = re.compile(
-    r"(?:phone|телефон|contact|контакт|email|mail|почт|name|имя|фио|fio|identity|client|parent|mother|father|мам|пап|родител|реб[её]н|child|student|ученик)",
-    re.I,
-)
-PRESALE_PROMPT_CHILD_NAME_KEY_RE = re.compile(r"(?:child|student|реб[её]н|ученик|доч|сын)", re.I)
-PRESALE_PROMPT_PARENT_NAME_KEY_RE = re.compile(r"(?:client|parent|mother|father|мам|пап|родител)", re.I)
-
-
-def _presale_prompt_safe_key(key: object) -> bool:
-    normalized = str(key or "").strip().casefold()
-    if not normalized or PRESALE_PROMPT_SENSITIVE_KEY_RE.search(normalized):
-        return False
-    return normalized in PRESALE_PROMPT_SAFE_SLOT_KEYS
-
-
-
-
-def _presale_prompt_safe_slot_value(key: object, value: Any) -> Any:
-    key_text = str(key or "")
-    if PRESALE_PROMPT_CHILD_NAME_KEY_RE.search(key_text):
-        return _presale_prompt_child_name_value(value)
-    if PRESALE_PROMPT_PARENT_NAME_KEY_RE.search(key_text):
-        return ""
-    if PRESALE_PROMPT_SENSITIVE_KEY_RE.search(key_text):
-        return ""
-    return _presale_prompt_safe_value(value)
-
-
-def _presale_prompt_safe_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
-    filtered = {
-        str(key): _presale_prompt_safe_slot_value(key, item)
-        for key, item in value.items()
-        if str(key or "").strip() and str(item or "").strip()
-    }
-    return {key: item for key, item in filtered.items() if item not in ("", {}, [])}
-
-
-def _presale_prompt_safe_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return _presale_prompt_safe_mapping(value)
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        items = [_presale_prompt_safe_value(item) for item in value[:8]]
-        return [item for item in items if item not in ("", {}, [])]
-    text = " ".join(str(value or "").split())
-    if not text or _A2_PHONE_RE.search(text) or _CLIENT_EMAIL_RE.search(text):
-        return ""
-    return text[:220]
-
-
-def _direct_path_prompt_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
-    slots = _direct_path_known_slots(context)
-    if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
-        return slots
-    return _presale_prompt_safe_mapping(slots)
-
-
-def _direct_path_prompt_memory_view(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
-    if not isinstance(context, Mapping) or not isinstance(context.get("dialogue_memory_view"), Mapping):
-        return {}
-    memory = context["dialogue_memory_view"]
-    if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
-        return memory
-    result: dict[str, Any] = {}
-    for key in ("known_slots", "client_confirmed_slots", "crm_known_slots", "topic_focus"):
-        value = memory.get(key)
-        if isinstance(value, Mapping):
-            filtered = _presale_prompt_safe_mapping(value)
-            if filtered:
-                result[key] = filtered
-    for key in ("topic", "topic_id", "primary_intent", "message_type"):
-        value = _presale_prompt_safe_value(memory.get(key))
-        if value:
-            result[key] = value
-    return result
-
-
-def _presale_prompt_safe_dialogue_text(text: str) -> str:
-    value = str(text or "")
-    if not value:
-        return ""
-    value = _replace_echoed_phone(value, _a2_extract_phone(value)) if _a2_extract_phone(value) else value
-    value = _CLIENT_EMAIL_RE.sub("[данные у менеджера]", value)
-    value = _PARTIAL_PHONE_CONTEXT_RE.sub(lambda m: f"{m.group('label')} [данные у менеджера]", value)
-    value = _CLIENT_CHILD_IDENTITY_PROMPT_RE.sub(
-        lambda m: f"{m.group('prefix')}{_presale_prompt_child_name_value(m.group('name')) or '[данные у менеджера]'}",
-        value,
-    )
-    value = _CLIENT_PARENT_IDENTITY_PROMPT_RE.sub(lambda m: f"{m.group('prefix')}[данные у менеджера]", value)
-    return _normalize_output_sanitizer_text(value)
-
-
-DIRECT_PATH_GOLD_TOPIC_KEYWORDS: Mapping[str, tuple[str, ...]] = {
-    "camp": ("лагер", "лш", "лвш", "смен", "летн"),
-    "close": ("спасибо", "подума", "понятно", "вернем", "вернём"),
-    "course_pick": ("курс", "заняти", "групп", "подготов", "услов"),
-    "docs": ("договор", "документ", "справк"),
-    "enrollment": ("запис", "брон", "оформ"),
-    "format": ("онлайн", "очно", "формат", "платформ", "программирован"),
-    "join_mid": ("присоедин", "войти", "середин", "идет", "идёт"),
-    "payment_flex": ("част", "доплат", "внес", "остаток", "сегодня"),
-    "price": ("стоим", "цен", "рассроч", "оплат", "дорог"),
-    "value": ("школ", "институт", "ценност", "уров", "польз"),
-}
-
-
-def _direct_path_gold_real_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    if isinstance(context, Mapping):
-        for key in (BOT_GOLD_REAL_ENV, "bot_gold_real", "direct_path_gold_real"):
-            if key in context:
-                return _truthy_value(context.get(key))
-    if BOT_GOLD_REAL_ENV in os.environ:
-        return _truthy_value(os.getenv(BOT_GOLD_REAL_ENV))
-    return _pilot_gold_profile_enabled(context)
-
-
-def _direct_path_gold_pack_path() -> Path:
-    override = os.getenv(BOT_GOLD_REAL_PACK_ENV)
-    if override:
-        return Path(override).expanduser()
-    return DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH
-
-
-def _load_direct_path_gold_real_examples(path: Optional[Path] = None) -> tuple[Mapping[str, Any], ...]:
-    pack_path = path or _direct_path_gold_pack_path()
-    if not pack_path.exists():
-        return ()
-    payload = yaml.safe_load(pack_path.read_text(encoding="utf-8")) or {}
-    examples = payload.get("examples") if isinstance(payload, Mapping) else None
-    if not isinstance(examples, Sequence) or isinstance(examples, (str, bytes, bytearray)):
-        return ()
-    result: list[Mapping[str, Any]] = []
-    for item in examples:
-        if not isinstance(item, Mapping):
-            continue
-        if not _truthy_value(item.get("mission_gold")):
-            continue
-        result.append(dict(item))
-    return tuple(result)
-
-
-def _direct_path_topic_hints(client_message: str, context: Optional[Mapping[str, Any]]) -> set[str]:
-    hints: set[str] = set()
-    if isinstance(context, Mapping):
-        for container_key in ("conversation_intent_plan", "planner_intent", "dialogue_contract_pipeline"):
-            container = context.get(container_key)
-            if not isinstance(container, Mapping):
-                continue
-            for key in ("primary_intent", "planner_intent", "intent", "topic", "subvariant"):
-                value = str(container.get(key) or "").strip().casefold()
-                if value:
-                    hints.add(value)
-            required = container.get("required_fact_keys")
-            if isinstance(required, Sequence) and not isinstance(required, (str, bytes, bytearray)):
-                hints.update(str(item or "").casefold() for item in required if str(item or "").strip())
-    lowered = str(client_message or "").casefold()
-    for topic, markers in DIRECT_PATH_GOLD_TOPIC_KEYWORDS.items():
-        if any(marker in lowered for marker in markers):
-            hints.add(topic)
-    return hints
-
-
-def _direct_path_select_gold_real_examples(
-    client_message: str,
-    *,
-    context: Optional[Mapping[str, Any]],
-    active_brand: str,
-    limit: int = 4,
-) -> tuple[Mapping[str, Any], ...]:
-    if not _direct_path_gold_real_enabled(context):
-        return ()
-    brand = str(active_brand or "").strip().casefold()
-    examples = [item for item in _load_direct_path_gold_real_examples() if str(item.get("brand") or "").casefold() == brand]
-    if not examples:
-        return ()
-    hints = _direct_path_topic_hints(client_message, context)
-    scored: list[tuple[int, str, Mapping[str, Any]]] = []
-    for item in examples:
-        topic = str(item.get("topic") or "").strip().casefold()
-        score = 2 if topic and topic in hints else 0
-        if topic == "course_pick" and any(hint in {"pricing", "schedule", "teacher"} for hint in hints):
-            score = max(score, 1)
-        scored.append((score, str(item.get("id") or ""), item))
-    scored.sort(key=lambda row: (-row[0], row[1]))
-    selected = [item for score, _, item in scored if score > 0][:limit]
-    if not selected:
-        selected = [item for _, _, item in scored[:2]]
-    elif len(selected) < min(2, limit):
-        selected_ids = {str(item.get("id") or "") for item in selected}
-        for _, _, item in scored:
-            if str(item.get("id") or "") in selected_ids:
-                continue
-            selected.append(item)
-            if len(selected) >= min(2, limit):
-                break
-    return tuple(selected)
-
-
-def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str:
-    if not examples:
-        return ""
-    lines = [
-        "Живые образцы менеджерского стиля. Это НЕ источник фактов: маски в квадратных скобках заменяй только подтверждёнными фактами текущего хода или опускай.",
-    ]
-    for idx, item in enumerate(examples, 1):
-        client = str(item.get("client") or "").strip()
-        answer = str(item.get("manager_response_masked") or "").strip()
-        note = str(item.get("prompt_example") or "").strip()
-        if not client or not answer:
-            continue
-        lines.append(f"{idx}. Тема: {item.get('topic')}.")
-        lines.append(f"   Клиент: {client}")
-        lines.append(f"   Хороший стиль: {answer}")
-        if note:
-            lines.append(f"   Принцип: {note}")
-    return "\n".join(lines)
-
-
-def _build_direct_path_prompt(
-    client_message: str,
-    *,
-    context: Optional[Mapping[str, Any]] = None,
-    facts: Optional[Mapping[str, str]] = None,
-    fact_pack: Optional[Mapping[str, Any]] = None,
-    gold_examples: Sequence[Mapping[str, Any]] = (),
-) -> str:
-    active_brand = _active_brand(context)
-    brand_label = _direct_path_brand_label(active_brand)
-    pack = fact_pack if isinstance(fact_pack, Mapping) else _direct_path_context_fact_pack(context, client_message=client_message)
-    fact_items = dict(facts or pack.get("facts") or {})
-    fact_metadata = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
-    exact_keys = [str(key) for key in (pack.get("exact_keys") or fact_items.keys()) if str(key).strip()]
-    adjacent_keys = [str(key) for key in (pack.get("adjacent_keys") or ()) if str(key).strip()]
-    exact_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=exact_keys)
-    adjacent_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=adjacent_keys)
-    gold_block = _direct_path_gold_prompt_block(gold_examples)
-    recent_messages = _direct_path_recent_messages(context)
-    if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
-        recent_messages = tuple(
-            item
-            for item in (_presale_prompt_safe_dialogue_text(message) for message in recent_messages)
-            if item
-        )
-    recent_block = "\n".join(recent_messages) or "(диалог только начался)"
-    prompt_client_message = (
-        _presale_prompt_safe_dialogue_text(client_message)
-        if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV)
-        else client_message
-    )
-    slots = _direct_path_prompt_known_slots(context)
-    slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
-    memory = _direct_path_prompt_memory_view(context)
-    memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
-    return (
-        f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
-        f"{_direct_path_route_rubric_block(context)}"
-        "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
-        "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
-        f"Активный бренд: {brand_label} ({active_brand}).\n"
-        f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
-        + (f"{gold_block}\n\n" if gold_block else "")
-        +
-        "Факты по вашему вопросу:\n"
-        f"{exact_block}\n\n"
-        "Смежные факты — используй только если вопрос реально про это:\n"
-        f"{adjacent_block}\n\n"
-        "Память диалога:\n"
-        f"{memory_block}\n\n"
-        "Известные слоты:\n"
-        f"{slots_block}\n\n"
-        "Последние реплики:\n"
-        f"{recent_block}\n\n"
-        "Верни только JSON без Markdown и без комментариев:\n"
-        "{\n"
-        '  "route": "bot_answer_self_for_pilot" | "draft_for_manager",\n'
-        '  "draft_text": "текст для клиента",\n'
-        '  "manager_checklist": [],\n'
-        '  "missing_facts": [],\n'
-        '  "context_used": []\n'
-        "}\n"
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _direct_path_p0_text(reason: str, context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
@@ -3342,70 +2286,6 @@ def _direct_path_p0_text(reason: str, context: Optional[Mapping[str, Any]]) -> t
     return _p0_text_with_antirepeat("legal", LEGAL_THREAT_SAFE_TEXT, context), "legal"
 
 
-def _direct_path_metadata(
-    *,
-    attempted: bool,
-    model_called: bool,
-    facts: Mapping[str, str],
-    fact_pack: Optional[Mapping[str, Any]] = None,
-    gold_examples: Sequence[Mapping[str, Any]] = (),
-    preblocked: bool = False,
-    preblock_reason: str = "",
-    reason_class: str = "",
-    reason_evidence: Optional[Mapping[str, Any]] = None,
-    pilot_config: str = "",
-    context: Optional[Mapping[str, Any]] = None,
-) -> dict[str, Any]:
-    gold_ids = [str(item.get("id") or "").strip() for item in gold_examples if str(item.get("id") or "").strip()]
-    pack = fact_pack if isinstance(fact_pack, Mapping) else {}
-    fact_meta = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
-    exact_keys = [str(key) for key in (pack.get("exact_keys") or ()) if str(key).strip()]
-    adjacent_keys = [str(key) for key in (pack.get("adjacent_keys") or ()) if str(key).strip()]
-    metadata = {
-        "schema_version": DIRECT_PATH_SCHEMA_VERSION,
-        "enabled": True,
-        "pilot_config": str(pilot_config or ""),
-        "pilot_config_version": DIRECT_PATH_PILOT_CONFIG_VERSION if str(pilot_config or "") == DIRECT_PATH_PILOT_CONFIG_VERSION else "",
-        "pilot_profile_overrides": _pilot_profile_overrides(context),
-        "attempted": bool(attempted),
-        "model_called": bool(model_called),
-        "preblocked": bool(preblocked),
-        "preblock_reason": str(preblock_reason or ""),
-        "retrieved_fact_keys": list(facts.keys()),
-        "retrieved_facts": dict(facts),
-        "wide_facts_count": len(facts),
-        "wide_fact_keys": list(facts.keys()),
-        "selected_category": str(pack.get("selected_category") or ""),
-        "wide_fact_exact_keys": exact_keys,
-        "wide_fact_adjacent_keys": adjacent_keys,
-        "wide_fact_metadata": {str(key): dict(value) for key, value in fact_meta.items() if str(key).strip() and isinstance(value, Mapping)},
-        "gold_real_enabled": bool(gold_ids),
-        "gold_pack_version": DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION if gold_ids else "",
-        "gold_real_example_ids": gold_ids,
-        "text_composition_source": "direct_path_model" if model_called else "deterministic_preblock",
-        "direct_path_attempted": bool(attempted),
-        "direct_path_downgraded": False,
-        "direct_path_regenerated": False,
-        "rubric_enabled": _route_rubric_enabled(context),
-        "rubric_regenerated": False,
-        "rubric_reason": "",
-        "reason_class": str(reason_class or ""),
-        "reason_evidence": dict(reason_evidence or {}),
-        "is_manager_deferral": bool(reason_class),
-    }
-    if _template_from_kb_enabled(context) and facts:
-        metadata["template_from_kb_trace"] = [
-            {
-                "fact_key": "direct_path.wide_fact_pack",
-                "outcome": "hit",
-                "selected_category": str(pack.get("selected_category") or ""),
-                "fact_count": len(facts),
-                "exact_keys": exact_keys[:20],
-            }
-        ]
-    if isinstance(pack.get("llm_retrieve"), Mapping):
-        metadata["llm_retrieve"] = dict(pack["llm_retrieve"])  # type: ignore[index]
-    return metadata
 
 
 def _direct_path_preblocked_result(
@@ -3518,14 +2398,6 @@ def _direct_path_preblocked_result(
     return None
 
 
-def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Mapping[str, Any]) -> SubscriptionDraftResult:
-    metadata = dict(result.metadata)
-    metadata["direct_path"] = dict(direct_meta)
-    metadata["text_composition_source"] = direct_meta.get("text_composition_source") or "direct_path_model"
-    if direct_meta.get("reason_class"):
-        metadata["reason_class"] = str(direct_meta.get("reason_class") or "")
-        metadata["is_manager_deferral"] = bool(direct_meta.get("is_manager_deferral"))
-    return replace(result, metadata=metadata)
 
 
 def _direct_path_prepare_model_result(result: SubscriptionDraftResult) -> SubscriptionDraftResult:
@@ -3536,33 +2408,8 @@ def _direct_path_prepare_model_result(result: SubscriptionDraftResult) -> Subscr
     )
 
 
-def _direct_path_route_rubric_should_regenerate(
-    result: SubscriptionDraftResult,
-    *,
-    context: Optional[Mapping[str, Any]],
-    facts: Mapping[str, str],
-    model_called: bool,
-) -> bool:
-    if not _route_rubric_enabled(context):
-        return False
-    if not model_called or result.route != "draft_for_manager":
-        return False
-    if result.missing_facts:
-        return False
-    return bool(facts)
 
 
-def _build_direct_path_route_rubric_regen_prompt(prompt: str, first_result: SubscriptionDraftResult) -> str:
-    previous_json = json.dumps(first_result.to_json_dict(include_raw_response=False), ensure_ascii=False, indent=2)
-    return (
-        f"{str(prompt or '').rstrip()}\n\n"
-        "Предыдущий JSON-ответ модели:\n"
-        f"{previous_json}\n\n"
-        'В предыдущем ответе выбран "draft_for_manager", но missing_facts пуст, хотя факты по вопросу есть. '
-        "Либо ответь самостоятельно по фактам, либо заполни missing_facts конкретным недостающим фактом "
-        "или нужной проверкой менеджера.\n"
-        "Верни только JSON без Markdown и без комментариев."
-    )
 
 
 def _direct_path_finalize_metadata(
@@ -5307,9 +4154,6 @@ def _a2_p0_or_high_risk(
     return bool(safety.p0_required and not safety.semantic_non_p0)
 
 
-def _a2_extract_phone(text: str) -> str:
-    match = _A2_PHONE_RE.search(str(text or ""))
-    return match.group(0).strip() if match else ""
 
 
 def _a2_has_time(text: str) -> bool:
@@ -5808,25 +4652,9 @@ def _sanitize_presale_source_id_text(text: str) -> tuple[str, tuple[str, ...]]:
 
 
 _CLIENT_NAME_PAIR_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2}\b")
-_PARTIAL_PHONE_CONTEXT_RE = re.compile(
-    r"(?P<label>\b(?:тел(?:ефон)?|номер|контакт)\b)\s*[:—-]?\s*(?P<value>(?:\+?7|8)?[\d\s().-]{3,}\.{0,3})",
-    re.I,
-)
 _CLIENT_NAME_MARKER_RE = re.compile(
     r"(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
     r"ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
-    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})",
-    re.I,
-)
-_CLIENT_CHILD_IDENTITY_PROMPT_RE = re.compile(
-    r"(?P<prefix>\b(?:записыва(?:й(?:те)?|ю|ем)|запиш(?:и(?:те)?|у|ем)(?:\s+нас)?|"
-    r"реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|ученик(?:а)?|ученица|фио|зовут|имя|"
-    r"справк\w*\s+на)\s*[:—-]?\s*)"
-    r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){1,2})",
-    re.I,
-)
-_CLIENT_PARENT_IDENTITY_PROMPT_RE = re.compile(
-    r"(?P<prefix>\b(?:родител[ья]|мама|папа|меня\s+зовут|я)\s*[:—-]?\s*)"
     r"(?P<name>[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2})",
     re.I,
 )
@@ -6222,20 +5050,6 @@ def _name_word_pattern(word: str) -> str:
     return escaped
 
 
-def _replace_echoed_phone(text: str, phone: str) -> str:
-    digits = re.sub(r"\D+", "", str(phone or ""))
-    if len(digits) < 7:
-        return str(text or "")
-    chunks: list[str] = []
-    last = 0
-    for match in _A2_PHONE_RE.finditer(str(text or "")):
-        candidate_digits = re.sub(r"\D+", "", match.group(0))
-        if candidate_digits and (candidate_digits in digits or digits in candidate_digits):
-            chunks.append(str(text or "")[last : match.start()])
-            chunks.append("[данные у менеджера]")
-            last = match.end()
-    chunks.append(str(text or "")[last:])
-    return "".join(chunks)
 
 
 def _sanitize_raw_detail_handoff_text(text: str) -> tuple[str, bool]:
@@ -11106,23 +9920,6 @@ def _confirmed_fact_texts(context: Optional[Mapping[str, Any]], *, limit: int = 
     return tuple(dict.fromkeys(texts[: max(1, limit)]))
 
 
-def _client_clean_fact_text(value: object) -> str:
-    cleaned = " ".join(str(value or "").split())
-    if not cleaned:
-        return ""
-    cleaned = re.sub(
-        r"^(?P<brand>[^:]{1,40}:\s*)?черновик\s+для\s+ситуации\s+«[^»]+»\s*:\s*",
-        lambda match: str(match.group("brand") or ""),
-        cleaned,
-        flags=re.I,
-    )
-    cleaned = re.sub(
-        r"^(?P<brand>[^:]{1,40}:\s*)?черновик\s+для\s+ситуации\s+\"[^\"]+\"\s*:\s*",
-        lambda match: str(match.group("brand") or ""),
-        cleaned,
-        flags=re.I,
-    )
-    return cleaned.strip()
 
 
 def _prefer_format_facts(facts: Sequence[str], *, query: str = "") -> tuple[str, ...]:
@@ -12471,18 +11268,6 @@ def _payment_guarded_result(result: SubscriptionDraftResult, *, reason: str, che
     )
 
 
-def _active_brand(context: Optional[Mapping[str, Any]]) -> str:
-    if not isinstance(context, Mapping):
-        return "unknown"
-    value = context.get("active_brand")
-    if not value and isinstance(context.get("facts_context"), Mapping):
-        value = context["facts_context"].get("active_brand")  # type: ignore[index]
-    text = str(value or "unknown").strip().casefold()
-    if text in {"foton", "фотон"}:
-        return "foton"
-    if text in {"unpk", "унпк", "унпк мфти"}:
-        return "unpk"
-    return "unknown"
 
 
 def _topic_id_from_context(context: Optional[Mapping[str, Any]]) -> str:

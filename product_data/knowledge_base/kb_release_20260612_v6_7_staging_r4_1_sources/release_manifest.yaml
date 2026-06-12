@@ -1860,21 +1860,102 @@ manual_decision_fact_overrides:
   structured_value:
     source_decision: 'owner_2026_06_12'
     client_allowed: false
-- fact_key: r4_1_owner_2026_06_12.foton.new_online_oge_ege_math_product_internal
+- fact_key: modular_courses_m9_m11.bot_behavior
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 owner update 2026-06-12 reopens M9/M11 as client-safe modular products'
+- fact_key: modular_courses_m9_m11.note
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 owner update 2026-06-12 reopens M9/M11 as client-safe modular products'
+- fact_key: team_answers.q11.modular_courses_m9_m11.discontinued
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 owner update 2026-06-12 reopens M9/M11 as client-safe modular products'
+- fact_key: team_answers.q11.modular_courses_m9_m11.old_price_range.max
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 owner update 2026-06-12 replaces old audit-only price range with current tariffs'
+- fact_key: team_answers.q11.modular_courses_m9_m11.old_price_range.min
+  brand: 'foton'
+  remove_from_release: true
+  reason: 'r4.1 owner update 2026-06-12 replaces old audit-only price range with current tariffs'
+- fact_key: r4_1_owner_2026_06_12.foton.m9_online_math_oge_product
   fact_type: 'program'
   brand: 'foton'
-  product: 'new_online_oge_ege_math'
-  fact_text: 'Новый онлайн-продукт Фотона по математике ОГЭ/ЕГЭ с 4 тарифами в клиентскую базу не вносить. Бот продукт не упоминает; на прямой вопрос передаёт менеджеру.'
-  client_safe_text: ''
+  product: 'm9_online_math_oge'
+  fact_text: 'М9 — онлайн-подготовка к ОГЭ по математике для 9 класса: курс из 6 модулей по 5-6 недель, всего 35 недель занятий. Цель — уверенная сдача ОГЭ на 5, включая задания 24-25, и развитие стратегического мышления. В составе: живые вебинары, видео-разборы, конспекты, банк задач, домашние задания с проверкой, входная и выходная диагностика, закрытый чат, наставник и куратор, психологическая поддержка. Модули: числа и выражения; уравнения и неравенства; функции и графики; геометрия; вероятность и статистика; синтез и стратегия.'
+  client_safe_text: 'М9 — онлайн-подготовка к ОГЭ по математике для 9 класса: 6 модулей по 5-6 недель, всего 35 недель занятий. Цель — уверенная сдача ОГЭ на 5, включая задания 24-25, и развитие стратегического мышления. В составе: живые вебинары, видео-разборы, конспекты, банк задач, домашние задания с проверкой, входная и выходная диагностика, закрытый чат, наставник и куратор, психологическая поддержка.'
   source_key: 'claude_layer_v3:changelog_team_answers'
   status: 'verified'
-  route_policy: 'manager_handoff_only'
+  route_policy: 'bot_answer_self_for_pilot'
   linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
-  internal_only: true
+  internal_only: false
   structured_value:
     source_decision: 'owner_2026_06_12'
-    client_allowed: false
-    anti_fact: true
+    modules_count: 6
+    weeks_total: 35
+    subject: 'math'
+    grade: 9
+    exam: 'oge'
+- fact_key: r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs
+  fact_type: 'price'
+  brand: 'foton'
+  product: 'm9_online_math_oge'
+  fact_text: 'Тарифы М9: «Основа» — 18 900 ₽ (записи вебинаров, конспекты, банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900 ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек); «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз в 2 недели). Помесячную цену в клиентских текстах не указывать. Внутренние описания тарифов можно давать менеджеру; ФИО преподавателей клиенту не называть.'
+  client_safe_text: 'Тарифы М9: «Основа» — 18 900 ₽ (записи вебинаров, конспекты, банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900 ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек); «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз в 2 недели).'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    monthly_payment_not_client_safe: true
+    raw_value: '18900 ₽; 47250 ₽; 59900 ₽; 94500 ₽; 35 вебинаров; до 20 человек; раз в 2 недели'
+    prices:
+      base: 18900
+      standard: 47250
+      advanced: 59900
+      full_immersion: 94500
+- fact_key: r4_1_owner_2026_06_12.foton.m11_online_math_ege_product
+  fact_type: 'program'
+  brand: 'foton'
+  product: 'm11_online_math_ege'
+  fact_text: 'М11 — онлайн-подготовка к ЕГЭ по математике для 11 класса: курс из 6 модулей по 5-6 недель, всего 35 недель занятий. Структура такая же, как у М9: живые вебинары, видео-разборы, конспекты, банк задач, домашние задания с проверкой, входная и выходная диагностика, закрытый чат, наставник и куратор, психологическая поддержка.'
+  client_safe_text: 'М11 — онлайн-подготовка к ЕГЭ по математике для 11 класса: 6 модулей по 5-6 недель, всего 35 недель занятий. В составе: живые вебинары, видео-разборы, конспекты, банк задач, домашние задания с проверкой, входная и выходная диагностика, закрытый чат, наставник и куратор, психологическая поддержка.'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    modules_count: 6
+    weeks_total: 35
+    subject: 'math'
+    grade: 11
+    exam: 'ege'
+- fact_key: r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs
+  fact_type: 'price'
+  brand: 'foton'
+  product: 'm11_online_math_ege'
+  fact_text: 'Тарифы М11 такие же, как у М9: «Основа» — 18 900 ₽ (записи вебинаров, конспекты, банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900 ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек); «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз в 2 недели). Помесячную цену в клиентских текстах не указывать. Внутренние описания тарифов можно давать менеджеру; ФИО преподавателей клиенту не называть.'
+  client_safe_text: 'Тарифы М11: «Основа» — 18 900 ₽ (записи вебинаров, конспекты, банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900 ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек); «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз в 2 недели).'
+  source_key: 'claude_layer_v3:changelog_team_answers'
+  status: 'verified'
+  route_policy: 'bot_answer_self_for_pilot'
+  linked_open_question: 'r4_1_owner_gap_answers_2026_06_12'
+  internal_only: false
+  structured_value:
+    source_decision: 'owner_2026_06_12'
+    monthly_payment_not_client_safe: true
+    raw_value: '18900 ₽; 47250 ₽; 59900 ₽; 94500 ₽; 35 вебинаров; до 20 человек; раз в 2 недели'
+    prices:
+      base: 18900
+      standard: 47250
+      advanced: 59900
+      full_immersion: 94500
 - fact_key: r4_1_owner_2026_06_12.foton.oge_ege_mock_exams_internal
   fact_type: 'program'
   brand: 'foton'
@@ -1923,6 +2004,16 @@ control_numbers:
   - '16900'
   - '27720'
   - '89900'
+  - '75000'
+  - '83800'
+  - '3900'
+  - '6900'
+  - '23000'
+  add:
+  - '18900'
+  - '47250'
+  - '59900'
+  - '94500'
   - '75000'
   - '83800'
   - '3900'

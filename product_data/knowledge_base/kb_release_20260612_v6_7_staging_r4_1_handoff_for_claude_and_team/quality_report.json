@@ -65,7 +65,7 @@
     ],
     "missing": []
   },
-  "created_at": "2026-06-11T23:32:29.498656+00:00",
+  "created_at": "2026-06-12T08:13:45.099016+00:00",
   "details": {
     "allowed_client_text_violations": [],
     "allowed_license_fact_ids": [],
@@ -194,15 +194,15 @@
       "policy": 19,
       "price": 48,
       "process": 66,
-      "program": 290,
+      "program": 288,
       "promocode": 13,
       "refund": 18,
       "tax": 40,
       "teacher": 13
     },
-    "approval_queue_items": 1055,
-    "client_allowed_facts": 695,
-    "facts_total": 1077,
+    "approval_queue_items": 1053,
+    "client_allowed_facts": 699,
+    "facts_total": 1075,
     "source_registry_total": 11
   }
 }

@@ -1,11 +1,11 @@
 {
   "bot_pack_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_bot_pack",
   "build_result": {
-    "approval_queue_items": 1055,
+    "approval_queue_items": 1053,
     "blocking_failures": [],
-    "client_allowed_facts": 695,
+    "client_allowed_facts": 699,
     "control_numbers_missing": [],
-    "facts_total": 1077,
+    "facts_total": 1075,
     "handoff_out_dir": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_handoff_for_claude_and_team",
     "out_dir": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1",
     "quality_passed": true,
@@ -13,7 +13,7 @@
     "snapshot_path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
     "source_registry_total": 11
   },
-  "created_at": "2026-06-11T23:32:34.289185+00:00",
+  "created_at": "2026-06-12T08:13:49.633998+00:00",
   "employee_pack_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_employee_pack",
   "handoff_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_handoff_for_claude_and_team",
   "pack_result": {
@@ -42,7 +42,7 @@
       "source_registry.json"
     ],
     "bot_pack": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_bot_pack",
-    "client_safe_facts": 695,
+    "client_safe_facts": 699,
     "employee_files": [
       "BRAND_ISOLATION.md",
       "CLIENT_SAFE_FACTS_FOTON.csv",
@@ -60,7 +60,7 @@
       "manifest.json"
     ],
     "employee_pack": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_employee_pack",
-    "facts_total": 1077,
+    "facts_total": 1075,
     "schema_version": "kb_distribution_packs_v1"
   },
   "release_out": "product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1",

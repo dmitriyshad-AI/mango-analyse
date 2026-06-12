@@ -17316,6 +17316,365 @@ items:
   notes: Импортировано из Claude v3 handoff.
   record_type: fact
 - schema_version: kb_release_v3_fact_v1
+  fact_id: fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_product:3b4266eb11
+  fact_key: r4_1_owner_2026_06_12.foton.m11_online_math_ege_product
+  fact_type: program
+  fact_types:
+  - program
+  title: r4 1 owner 2026 06 12 / foton / m11 online math ege product
+  fact_text: 'М11 — онлайн-подготовка к ЕГЭ по математике для 11 класса: курс из 6
+    модулей по 5-6 недель, всего 35 недель занятий. Структура такая же, как у М9:
+    живые вебинары, видео-разборы, конспекты, банк задач, домашние задания с проверкой,
+    входная и выходная диагностика, закрытый чат, наставник и куратор, психологическая
+    поддержка.'
+  short_fact: r4 1 owner 2026 06 12 / foton / m11 online math ege product
+  client_safe_text: 'М11 — онлайн-подготовка к ЕГЭ по математике для 11 класса: 6
+    модулей по 5-6 недель, всего 35 недель занятий. В составе: живые вебинары, видео-разборы,
+    конспекты, банк задач, домашние задания с проверкой, входная и выходная диагностика,
+    закрытый чат, наставник и куратор, психологическая поддержка.'
+  manager_check_text: 'М11 — онлайн-подготовка к ЕГЭ по математике для 11 класса:
+    курс из 6 модулей по 5-6 недель, всего 35 недель занятий. Структура такая же,
+    как у М9: живые вебинары, видео-разборы, конспекты, банк задач, домашние задания
+    с проверкой, входная и выходная диагностика, закрытый чат, наставник и куратор,
+    психологическая поддержка.'
+  manager_display_text: 'М11 — онлайн-подготовка к ЕГЭ по математике для 11 класса:
+    курс из 6 модулей по 5-6 недель, всего 35 недель занятий. Структура такая же,
+    как у М9: живые вебинары, видео-разборы, конспекты, банк задач, домашние задания
+    с проверкой, входная и выходная диагностика, закрытый чат, наставник и куратор,
+    психологическая поддержка.'
+  internal_text: ''
+  brand: foton
+  active_brand_scope: foton_bot
+  cross_brand_policy: active_brand_only
+  cross_brand_mixed: false
+  product: m11_online_math_ege
+  source_id: claude_layer_v3:changelog_team_answers
+  source_title: UPDATE_REPORT_2026-05-19.md (Claude layer v3)
+  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_REPORT_2026-05-19.md
+  source_url: ''
+  source_sha256: 37cbe5207f307f006f78c66ef3a08c62f9c3b5906c15bbfd9908129457cc6c91
+  source_status: read
+  freshness_status: document_verified
+  verification_status: verified
+  structured_value:
+    source_decision: owner_2026_06_12
+    modules_count: 6
+    weeks_total: 35
+    subject: math
+    grade: 11
+    exam: ege
+    path: r4_1_owner_2026_06_12.foton.m11_online_math_ege_product
+    freshness_check_date: '2026-06-12'
+    valid_until: '2026-12-31'
+  valid_from: ''
+  valid_until: '2026-12-31'
+  freshness_check_date: '2026-06-12'
+  verified_by: ''
+  verified_at: ''
+  owner_role: РОП/ответственный владелец факта
+  allowed_for_client_answer: true
+  usable_for_precise_answer: true
+  requires_manager_confirmation: false
+  requires_amo_check: false
+  requires_tallanto_check: false
+  route_policy: bot_answer_self_for_pilot
+  risk_level: low
+  related_theme_ids:
+  - theme:016_program_content
+  linked_open_question: r4_1_owner_gap_answers_2026_06_12
+  forbidden_promises:
+  - Не обещать условия вне утвержденного факта.
+  forbidden_client_mentions:
+  - УНПК
+  - АНО ДПО
+  - НОУ УНПК
+  - kmipt.ru
+  - '@unpk_mipt'
+  - '@unpkmfti'
+  - '@unpk mipt'
+  forbidden_for_client: false
+  internal_only: false
+  safety_block_reasons: []
+  notes: Импортировано из Claude v3 handoff.
+  record_type: fact
+- schema_version: kb_release_v3_fact_v1
+  fact_id: fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e
+  fact_key: r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs
+  fact_type: price
+  fact_types:
+  - price
+  title: r4 1 owner 2026 06 12 / foton / m11 online math ege tariffs
+  fact_text: 'Тарифы М11 такие же, как у М9: «Основа» — 18 900 ₽ (записи вебинаров,
+    конспекты, банк задач — для самостоятельной подготовки); «Стандартный» — 47 250
+    ₽ (35 живых вебинаров, общение с преподавателем в чате, все записи); «Продвинутый»
+    — 59 900 ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до
+    20 человек); «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные
+    занятия раз в 2 недели). Помесячную цену в клиентских текстах не указывать. Внутренние
+    описания тарифов можно давать менеджеру; ФИО преподавателей клиенту не называть.'
+  short_fact: r4 1 owner 2026 06 12 / foton / m11 online math ege tariffs
+  client_safe_text: 'Тарифы М11: «Основа» — 18 900 ₽ (записи вебинаров, конспекты,
+    банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых
+    вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900
+    ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек);
+    «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз
+    в 2 недели).'
+  manager_check_text: 'Тарифы М11 такие же, как у М9: «Основа» — 18 900 ₽ (записи
+    вебинаров, конспекты, банк задач — для самостоятельной подготовки); «Стандартный»
+    — 47 250 ₽ (35 живых вебинаров, общение с преподавателем в чате, все записи);
+    «Продвинутый» — 59 900 ₽ (всё из Стандартного + 35 живых практических вебинаров
+    в группах до 20 человек); «Полное погружение» — 94 500 ₽ (всё из Продвинутого
+    + индивидуальные занятия раз в 2 недели). Помесячную цену в клиентских текстах
+    не указывать. Внутренние описания тарифов можно давать менеджеру; ФИО преподавателей
+    клиенту не называть.'
+  manager_display_text: 'Тарифы М11 такие же, как у М9: «Основа» — 18 900 ₽ (записи
+    вебинаров, конспекты, банк задач — для самостоятельной подготовки); «Стандартный»
+    — 47 250 ₽ (35 живых вебинаров, общение с преподавателем в чате, все записи);
+    «Продвинутый» — 59 900 ₽ (всё из Стандартного + 35 живых практических вебинаров
+    в группах до 20 человек); «Полное погружение» — 94 500 ₽ (всё из Продвинутого
+    + индивидуальные занятия раз в 2 недели). Помесячную цену в клиентских текстах
+    не указывать. Внутренние описания тарифов можно давать менеджеру; ФИО преподавателей
+    клиенту не называть.'
+  internal_text: ''
+  brand: foton
+  active_brand_scope: foton_bot
+  cross_brand_policy: active_brand_only
+  cross_brand_mixed: false
+  product: m11_online_math_ege
+  source_id: claude_layer_v3:changelog_team_answers
+  source_title: UPDATE_REPORT_2026-05-19.md (Claude layer v3)
+  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_REPORT_2026-05-19.md
+  source_url: ''
+  source_sha256: 37cbe5207f307f006f78c66ef3a08c62f9c3b5906c15bbfd9908129457cc6c91
+  source_status: read
+  freshness_status: document_verified
+  verification_status: verified
+  structured_value:
+    source_decision: owner_2026_06_12
+    monthly_payment_not_client_safe: true
+    raw_value: 18900 ₽; 47250 ₽; 59900 ₽; 94500 ₽; 35 вебинаров; до 20 человек; раз
+      в 2 недели
+    prices:
+      base: 18900
+      standard: 47250
+      advanced: 59900
+      full_immersion: 94500
+    path: r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs
+    freshness_check_date: '2026-06-12'
+    valid_until: '2026-12-31'
+  valid_from: ''
+  valid_until: '2026-12-31'
+  freshness_check_date: '2026-06-12'
+  verified_by: ''
+  verified_at: ''
+  owner_role: РОП/бухгалтерия
+  allowed_for_client_answer: true
+  usable_for_precise_answer: true
+  requires_manager_confirmation: false
+  requires_amo_check: false
+  requires_tallanto_check: false
+  route_policy: bot_answer_self_for_pilot
+  risk_level: low
+  related_theme_ids:
+  - theme:001_pricing
+  linked_open_question: r4_1_owner_gap_answers_2026_06_12
+  forbidden_promises:
+  - Не обещать условия вне утвержденного факта.
+  forbidden_client_mentions:
+  - УНПК
+  - АНО ДПО
+  - НОУ УНПК
+  - kmipt.ru
+  - '@unpk_mipt'
+  - '@unpkmfti'
+  - '@unpk mipt'
+  forbidden_for_client: false
+  internal_only: false
+  safety_block_reasons: []
+  notes: Импортировано из Claude v3 handoff.
+  record_type: fact
+- schema_version: kb_release_v3_fact_v1
+  fact_id: fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_product:7885ee97d6
+  fact_key: r4_1_owner_2026_06_12.foton.m9_online_math_oge_product
+  fact_type: program
+  fact_types:
+  - program
+  title: r4 1 owner 2026 06 12 / foton / m9 online math oge product
+  fact_text: 'М9 — онлайн-подготовка к ОГЭ по математике для 9 класса: курс из 6 модулей
+    по 5-6 недель, всего 35 недель занятий. Цель — уверенная сдача ОГЭ на 5, включая
+    задания 24-25, и развитие стратегического мышления. В составе: живые вебинары,
+    видео-разборы, конспекты, банк задач, домашние задания с проверкой, входная и
+    выходная диагностика, закрытый чат, наставник и куратор, психологическая поддержка.
+    Модули: числа и выражения; уравнения и неравенства; функции и графики; геометрия;
+    вероятность и статистика; синтез и стратегия.'
+  short_fact: r4 1 owner 2026 06 12 / foton / m9 online math oge product
+  client_safe_text: 'М9 — онлайн-подготовка к ОГЭ по математике для 9 класса: 6 модулей
+    по 5-6 недель, всего 35 недель занятий. Цель — уверенная сдача ОГЭ на 5, включая
+    задания 24-25, и развитие стратегического мышления. В составе: живые вебинары,
+    видео-разборы, конспекты, банк задач, домашние задания с проверкой, входная и
+    выходная диагностика, закрытый чат, наставник и куратор, психологическая поддержка.'
+  manager_check_text: 'М9 — онлайн-подготовка к ОГЭ по математике для 9 класса: курс
+    из 6 модулей по 5-6 недель, всего 35 недель занятий. Цель — уверенная сдача ОГЭ
+    на 5, включая задания 24-25, и развитие стратегического мышления. В составе: живые
+    вебинары, видео-разборы, конспекты, банк задач, домашние задания с проверкой,
+    входная и выходная диагностика, закрытый чат, наставник и куратор, психологическая
+    поддержка. Модули: числа и выражения; уравнения и неравенства; функции и графики;
+    геометрия; вероятность и статистика; синтез и стратегия.'
+  manager_display_text: 'М9 — онлайн-подготовка к ОГЭ по математике для 9 класса:
+    курс из 6 модулей по 5-6 недель, всего 35 недель занятий. Цель — уверенная сдача
+    ОГЭ на 5, включая задания 24-25, и развитие стратегического мышления. В составе:
+    живые вебинары, видео-разборы, конспекты, банк задач, домашние задания с проверкой,
+    входная и выходная диагностика, закрытый чат, наставник и куратор, психологическая
+    поддержка. Модули: числа и выражения; уравнения и неравенства; функции и графики;
+    геометрия; вероятность и статистика; синтез и стратегия.'
+  internal_text: ''
+  brand: foton
+  active_brand_scope: foton_bot
+  cross_brand_policy: active_brand_only
+  cross_brand_mixed: false
+  product: m9_online_math_oge
+  source_id: claude_layer_v3:changelog_team_answers
+  source_title: UPDATE_REPORT_2026-05-19.md (Claude layer v3)
+  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_REPORT_2026-05-19.md
+  source_url: ''
+  source_sha256: 37cbe5207f307f006f78c66ef3a08c62f9c3b5906c15bbfd9908129457cc6c91
+  source_status: read
+  freshness_status: document_verified
+  verification_status: verified
+  structured_value:
+    source_decision: owner_2026_06_12
+    modules_count: 6
+    weeks_total: 35
+    subject: math
+    grade: 9
+    exam: oge
+    path: r4_1_owner_2026_06_12.foton.m9_online_math_oge_product
+    freshness_check_date: '2026-06-12'
+    valid_until: '2026-12-31'
+  valid_from: ''
+  valid_until: '2026-12-31'
+  freshness_check_date: '2026-06-12'
+  verified_by: ''
+  verified_at: ''
+  owner_role: РОП/ответственный владелец факта
+  allowed_for_client_answer: true
+  usable_for_precise_answer: true
+  requires_manager_confirmation: false
+  requires_amo_check: false
+  requires_tallanto_check: false
+  route_policy: bot_answer_self_for_pilot
+  risk_level: low
+  related_theme_ids:
+  - theme:016_program_content
+  linked_open_question: r4_1_owner_gap_answers_2026_06_12
+  forbidden_promises:
+  - Не обещать условия вне утвержденного факта.
+  forbidden_client_mentions:
+  - УНПК
+  - АНО ДПО
+  - НОУ УНПК
+  - kmipt.ru
+  - '@unpk_mipt'
+  - '@unpkmfti'
+  - '@unpk mipt'
+  forbidden_for_client: false
+  internal_only: false
+  safety_block_reasons: []
+  notes: Импортировано из Claude v3 handoff.
+  record_type: fact
+- schema_version: kb_release_v3_fact_v1
+  fact_id: fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1
+  fact_key: r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs
+  fact_type: price
+  fact_types:
+  - price
+  title: r4 1 owner 2026 06 12 / foton / m9 online math oge tariffs
+  fact_text: 'Тарифы М9: «Основа» — 18 900 ₽ (записи вебинаров, конспекты, банк задач
+    — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых вебинаров,
+    общение с преподавателем в чате, все записи); «Продвинутый» — 59 900 ₽ (всё из
+    Стандартного + 35 живых практических вебинаров в группах до 20 человек); «Полное
+    погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз в 2 недели).
+    Помесячную цену в клиентских текстах не указывать. Внутренние описания тарифов
+    можно давать менеджеру; ФИО преподавателей клиенту не называть.'
+  short_fact: r4 1 owner 2026 06 12 / foton / m9 online math oge tariffs
+  client_safe_text: 'Тарифы М9: «Основа» — 18 900 ₽ (записи вебинаров, конспекты,
+    банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых
+    вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900
+    ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек);
+    «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз
+    в 2 недели).'
+  manager_check_text: 'Тарифы М9: «Основа» — 18 900 ₽ (записи вебинаров, конспекты,
+    банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых
+    вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900
+    ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек);
+    «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз
+    в 2 недели). Помесячную цену в клиентских текстах не указывать. Внутренние описания
+    тарифов можно давать менеджеру; ФИО преподавателей клиенту не называть.'
+  manager_display_text: 'Тарифы М9: «Основа» — 18 900 ₽ (записи вебинаров, конспекты,
+    банк задач — для самостоятельной подготовки); «Стандартный» — 47 250 ₽ (35 живых
+    вебинаров, общение с преподавателем в чате, все записи); «Продвинутый» — 59 900
+    ₽ (всё из Стандартного + 35 живых практических вебинаров в группах до 20 человек);
+    «Полное погружение» — 94 500 ₽ (всё из Продвинутого + индивидуальные занятия раз
+    в 2 недели). Помесячную цену в клиентских текстах не указывать. Внутренние описания
+    тарифов можно давать менеджеру; ФИО преподавателей клиенту не называть.'
+  internal_text: ''
+  brand: foton
+  active_brand_scope: foton_bot
+  cross_brand_policy: active_brand_only
+  cross_brand_mixed: false
+  product: m9_online_math_oge
+  source_id: claude_layer_v3:changelog_team_answers
+  source_title: UPDATE_REPORT_2026-05-19.md (Claude layer v3)
+  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_REPORT_2026-05-19.md
+  source_url: ''
+  source_sha256: 37cbe5207f307f006f78c66ef3a08c62f9c3b5906c15bbfd9908129457cc6c91
+  source_status: read
+  freshness_status: document_verified
+  verification_status: verified
+  structured_value:
+    source_decision: owner_2026_06_12
+    monthly_payment_not_client_safe: true
+    raw_value: 18900 ₽; 47250 ₽; 59900 ₽; 94500 ₽; 35 вебинаров; до 20 человек; раз
+      в 2 недели
+    prices:
+      base: 18900
+      standard: 47250
+      advanced: 59900
+      full_immersion: 94500
+    path: r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs
+    freshness_check_date: '2026-06-12'
+    valid_until: '2026-12-31'
+  valid_from: ''
+  valid_until: '2026-12-31'
+  freshness_check_date: '2026-06-12'
+  verified_by: ''
+  verified_at: ''
+  owner_role: РОП/бухгалтерия
+  allowed_for_client_answer: true
+  usable_for_precise_answer: true
+  requires_manager_confirmation: false
+  requires_amo_check: false
+  requires_tallanto_check: false
+  route_policy: bot_answer_self_for_pilot
+  risk_level: low
+  related_theme_ids:
+  - theme:001_pricing
+  linked_open_question: r4_1_owner_gap_answers_2026_06_12
+  forbidden_promises:
+  - Не обещать условия вне утвержденного факта.
+  forbidden_client_mentions:
+  - УНПК
+  - АНО ДПО
+  - НОУ УНПК
+  - kmipt.ru
+  - '@unpk_mipt'
+  - '@unpkmfti'
+  - '@unpk mipt'
+  forbidden_for_client: false
+  internal_only: false
+  safety_block_reasons: []
+  notes: Импортировано из Claude v3 handoff.
+  record_type: fact
+- schema_version: kb_release_v3_fact_v1
   fact_id: fact:v3:foton:certificates_types_for_matkap_content:9dfc107ef4
   fact_key: certificates.types.for_matkap.content
   fact_type: matkap
@@ -18694,444 +19053,6 @@ items:
     source_decision: owner_2026_06_12
     client_allowed: false
     path: r4_1_owner_2026_06_12.foton.oge_ege_mock_exams_internal
-    freshness_check_date: '2026-06-12'
-    valid_until: '2026-12-31'
-  valid_from: ''
-  valid_until: '2026-12-31'
-  freshness_check_date: '2026-06-12'
-  verified_by: ''
-  verified_at: ''
-  owner_role: РОП/ответственный владелец факта
-  allowed_for_client_answer: false
-  usable_for_precise_answer: false
-  requires_manager_confirmation: false
-  requires_amo_check: false
-  requires_tallanto_check: false
-  route_policy: manager_handoff_only
-  risk_level: low
-  related_theme_ids:
-  - theme:016_program_content
-  linked_open_question: r4_1_owner_gap_answers_2026_06_12
-  forbidden_promises:
-  - Не обещать условия вне утвержденного факта.
-  forbidden_client_mentions:
-  - УНПК
-  - АНО ДПО
-  - НОУ УНПК
-  - kmipt.ru
-  - '@unpk_mipt'
-  - '@unpkmfti'
-  - '@unpk mipt'
-  forbidden_for_client: true
-  internal_only: true
-  safety_block_reasons:
-  - internal_only
-  - manager_only_route
-  notes: Импортировано из Claude v3 handoff. Перед клиентским использованием нужна
-    проверка менеджером/РОПом.
-  record_type: fact
-- schema_version: kb_release_v3_fact_v1
-  fact_id: fact:v3:foton:modular_courses_m9_m11_bot_behavior:86c780dbee
-  fact_key: modular_courses_m9_m11.bot_behavior
-  fact_type: program
-  fact_types:
-  - program
-  title: modular courses m9 m11 / bot behavior
-  fact_text: 'Фотон: modular courses m9 m11 , bot behavior — Не предлагать клиенту.
-    Если клиент сам спрашивает — handoff менеджеру: «По индивидуальной подготовке
-    менеджер пришлёт варианты».'
-  short_fact: modular courses m9 m11 / bot behavior
-  client_safe_text: ''
-  manager_check_text: 'Фотон: modular courses m9 m11 , bot behavior — Не предлагать
-    клиенту. Если клиент сам спрашивает — handoff менеджеру: «По индивидуальной подготовке
-    менеджер пришлёт варианты». [client_blocked: blocked_status:discontinued, discontinued_product,
-    manager_only_route, not_client_allowed_status:discontinued]'
-  manager_display_text: 'Фотон: modular courses m9 m11 , bot behavior — Не предлагать
-    клиенту. Если клиент сам спрашивает — handoff менеджеру: «По индивидуальной подготовке
-    менеджер пришлёт варианты».'
-  internal_text: ''
-  brand: foton
-  active_brand_scope: foton_bot
-  cross_brand_policy: active_brand_only
-  cross_brand_mixed: false
-  product: modular_courses_m9_m11
-  source_id: claude_layer_v3:facts_for_bot_FOTON
-  source_title: facts_for_bot_FOTON.yaml (Claude layer v3)
-  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/facts/facts_for_bot_FOTON.yaml
-  source_url: ''
-  source_sha256: 40e7753155f18daea66e56638103b9363417ff5e0a3d5fc7fe107add201399c2
-  source_status: read
-  freshness_status: discontinued
-  verification_status: discontinued
-  structured_value:
-    path: modular_courses_m9_m11.bot_behavior
-    raw_value: 'Не предлагать клиенту. Если клиент сам спрашивает — handoff менеджеру:
-      «По индивидуальной подготовке менеджер пришлёт варианты»'
-    valid_until: '2026-12-31'
-    freshness_check_date: '2026-06-12'
-  valid_from: ''
-  valid_until: '2026-12-31'
-  freshness_check_date: '2026-06-12'
-  verified_by: ''
-  verified_at: ''
-  owner_role: РОП/ответственный владелец факта
-  allowed_for_client_answer: false
-  usable_for_precise_answer: false
-  bot_template_required: false
-  requires_manager_confirmation: false
-  requires_amo_check: false
-  requires_tallanto_check: false
-  route_policy: manager_handoff_only
-  risk_level: low
-  related_theme_ids:
-  - theme:016_program_content
-  linked_open_question: q11_closed
-  forbidden_promises:
-  - Не обещать условия вне утвержденного факта.
-  forbidden_client_mentions:
-  - УНПК
-  - АНО ДПО
-  - НОУ УНПК
-  - kmipt.ru
-  - '@unpk_mipt'
-  - '@unpkmfti'
-  - '@unpk mipt'
-  forbidden_for_client: true
-  internal_only: false
-  safety_block_reasons:
-  - blocked_status:discontinued
-  - discontinued_product
-  - manager_only_route
-  - not_client_allowed_status:discontinued
-  notes: Импортировано из Claude v3 handoff. Продукт discontinued; старые цены только
-    для регрессии и аудита. Перед клиентским использованием нужна проверка менеджером/РОПом.
-  record_type: fact
-- schema_version: kb_release_v3_fact_v1
-  fact_id: fact:v3:foton:modular_courses_m9_m11_note:a955b58f41
-  fact_key: modular_courses_m9_m11.note
-  fact_type: program
-  fact_types:
-  - program
-  title: modular courses m9 m11 / note
-  fact_text: 'Фотон: modular courses m9 m11 , note — Продукта больше нет. РОП подтвердил
-    2026-05-17. Раньше это были интенсивы..'
-  short_fact: modular courses m9 m11 / note
-  client_safe_text: ''
-  manager_check_text: 'Фотон: modular courses m9 m11 , note — Продукта больше нет.
-    РОП подтвердил 2026-05-17. Раньше это были интенсивы.. [client_blocked: blocked_status:discontinued,
-    discontinued_product, manager_only_route, not_client_allowed_status:discontinued]'
-  manager_display_text: 'Фотон: modular courses m9 m11 , note — Продукта больше нет.
-    РОП подтвердил 2026-05-17. Раньше это были интенсивы..'
-  internal_text: ''
-  brand: foton
-  active_brand_scope: foton_bot
-  cross_brand_policy: active_brand_only
-  cross_brand_mixed: false
-  product: modular_courses_m9_m11
-  source_id: claude_layer_v3:facts_for_bot_FOTON
-  source_title: facts_for_bot_FOTON.yaml (Claude layer v3)
-  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/facts/facts_for_bot_FOTON.yaml
-  source_url: ''
-  source_sha256: 40e7753155f18daea66e56638103b9363417ff5e0a3d5fc7fe107add201399c2
-  source_status: read
-  freshness_status: discontinued
-  verification_status: discontinued
-  structured_value:
-    path: modular_courses_m9_m11.note
-    raw_value: Продукта больше нет. РОП подтвердил 2026-05-17. Раньше это были интенсивы.
-    number: 2026
-    valid_until: '2026-12-31'
-    freshness_check_date: '2026-06-12'
-  valid_from: ''
-  valid_until: '2026-12-31'
-  freshness_check_date: '2026-06-12'
-  verified_by: ''
-  verified_at: ''
-  owner_role: РОП/ответственный владелец факта
-  allowed_for_client_answer: false
-  usable_for_precise_answer: false
-  bot_template_required: false
-  requires_manager_confirmation: false
-  requires_amo_check: false
-  requires_tallanto_check: false
-  route_policy: manager_handoff_only
-  risk_level: low
-  related_theme_ids:
-  - theme:016_program_content
-  linked_open_question: q11_closed
-  forbidden_promises:
-  - Не обещать условия вне утвержденного факта.
-  forbidden_client_mentions:
-  - УНПК
-  - АНО ДПО
-  - НОУ УНПК
-  - kmipt.ru
-  - '@unpk_mipt'
-  - '@unpkmfti'
-  - '@unpk mipt'
-  forbidden_for_client: true
-  internal_only: false
-  safety_block_reasons:
-  - blocked_status:discontinued
-  - discontinued_product
-  - manager_only_route
-  - not_client_allowed_status:discontinued
-  notes: Импортировано из Claude v3 handoff. Продукт discontinued; старые цены только
-    для регрессии и аудита. Перед клиентским использованием нужна проверка менеджером/РОПом.
-  record_type: fact
-- schema_version: kb_release_v3_fact_v1
-  fact_id: fact:v3:foton:team_answers_q11_modular_courses_m9_m11_discontinued:a01149a4b4
-  fact_key: team_answers.q11.modular_courses_m9_m11.discontinued
-  fact_type: program
-  fact_types:
-  - program
-  title: team answers / q11 / modular courses m9 m11 / discontinued
-  fact_text: Модульных курсов М9/М11 сейчас нет; это были прошлые интенсивы. Не предлагать
-    как действующий продукт.
-  short_fact: team answers / q11 / modular courses m9 m11 / discontinued
-  client_safe_text: ''
-  manager_check_text: Модульных курсов М9/М11 сейчас нет; это были прошлые интенсивы.
-    Не предлагать как действующий продукт.
-  manager_display_text: Модульных курсов М9/М11 сейчас нет; это были прошлые интенсивы.
-    Не предлагать как действующий продукт.
-  internal_text: ''
-  brand: foton
-  active_brand_scope: foton_bot
-  cross_brand_policy: active_brand_only
-  cross_brand_mixed: false
-  product: modular_courses_m9_m11
-  source_id: claude_layer_v3:changelog_team_answers
-  source_title: UPDATE_REPORT_2026-05-19.md (Claude layer v3)
-  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_REPORT_2026-05-19.md
-  source_url: ''
-  source_sha256: 37cbe5207f307f006f78c66ef3a08c62f9c3b5906c15bbfd9908129457cc6c91
-  source_status: read
-  freshness_status: discontinued
-  verification_status: discontinued
-  structured_value:
-    path: team_answers.q11.modular_courses_m9_m11.discontinued
-    freshness_check_date: '2026-06-12'
-    valid_until: '2026-12-31'
-  valid_from: ''
-  valid_until: '2026-12-31'
-  freshness_check_date: '2026-06-12'
-  verified_by: ''
-  verified_at: ''
-  owner_role: РОП/ответственный владелец факта
-  allowed_for_client_answer: false
-  usable_for_precise_answer: false
-  requires_manager_confirmation: false
-  requires_amo_check: false
-  requires_tallanto_check: false
-  route_policy: manager_handoff_only
-  risk_level: low
-  related_theme_ids:
-  - theme:016_program_content
-  linked_open_question: q11_closed
-  forbidden_promises:
-  - Не обещать условия вне утвержденного факта.
-  forbidden_client_mentions:
-  - УНПК
-  - АНО ДПО
-  - НОУ УНПК
-  - kmipt.ru
-  - '@unpk_mipt'
-  - '@unpkmfti'
-  - '@unpk mipt'
-  forbidden_for_client: true
-  internal_only: false
-  safety_block_reasons:
-  - blocked_status:discontinued
-  - discontinued_product
-  - manager_only_route
-  - not_client_allowed_status:discontinued
-  notes: Импортировано из Claude v3 handoff. Продукт discontinued; старые цены только
-    для регрессии и аудита. Перед клиентским использованием нужна проверка менеджером/РОПом.
-  record_type: fact
-- schema_version: kb_release_v3_fact_v1
-  fact_id: fact:v3:foton:team_answers_q11_modular_courses_m9_m11_old_price_range_max:5a8abd9ae0
-  fact_key: team_answers.q11.modular_courses_m9_m11.old_price_range.max
-  fact_type: price
-  fact_types:
-  - price
-  title: team answers / q11 / modular courses m9 m11 / old price range / max
-  fact_text: 'Устаревший верхний край цены модульных М9/М11: 94 500 ₽. Не использовать
-    как клиентский факт.'
-  short_fact: q11 / modular courses m9 m11 / old price range / max
-  client_safe_text: ''
-  manager_check_text: 'Устаревший верхний край цены модульных М9/М11: 94 500 ₽. Не
-    использовать как клиентский факт.'
-  manager_display_text: 'Устаревший верхний край цены модульных М9/М11: 94 500 ₽.
-    Не использовать как клиентский факт.'
-  internal_text: ''
-  brand: foton
-  active_brand_scope: foton_bot
-  cross_brand_policy: active_brand_only
-  cross_brand_mixed: false
-  product: modular_courses_m9_m11
-  source_id: claude_layer_v3:rebuild_requirements
-  source_title: UPDATE_TASK_FOR_AGENT_2026-05-19.md (Claude layer v3)
-  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_TASK_FOR_AGENT_2026-05-19.md
-  source_url: ''
-  source_sha256: f10d9acaec4cbf6aa9be9cc1be168f491ddf029a49a0ce7d8146864150bde0d3
-  source_status: read
-  freshness_status: discontinued
-  verification_status: discontinued
-  structured_value:
-    amount: 94500
-    currency: RUB
-    range_bound: max
-    do_not_use_as_current_price: true
-    path: team_answers.q11.modular_courses_m9_m11.old_price_range.max
-    freshness_check_date: '2026-06-12'
-    valid_until: '2026-12-31'
-  valid_from: ''
-  valid_until: '2026-12-31'
-  freshness_check_date: '2026-06-12'
-  verified_by: ''
-  verified_at: ''
-  owner_role: РОП/бухгалтерия
-  allowed_for_client_answer: false
-  usable_for_precise_answer: false
-  requires_manager_confirmation: false
-  requires_amo_check: false
-  requires_tallanto_check: false
-  route_policy: manager_handoff_only
-  risk_level: low
-  related_theme_ids:
-  - theme:001_pricing
-  linked_open_question: q11_closed
-  forbidden_promises:
-  - Не обещать условия вне утвержденного факта.
-  forbidden_client_mentions:
-  - УНПК
-  - АНО ДПО
-  - НОУ УНПК
-  - kmipt.ru
-  - '@unpk_mipt'
-  - '@unpkmfti'
-  - '@unpk mipt'
-  forbidden_for_client: true
-  internal_only: false
-  safety_block_reasons:
-  - blocked_status:discontinued
-  - discontinued_product
-  - manager_only_route
-  - not_client_allowed_status:discontinued
-  notes: Импортировано из Claude v3 handoff. Продукт discontinued; старые цены только
-    для регрессии и аудита. Перед клиентским использованием нужна проверка менеджером/РОПом.
-  record_type: fact
-- schema_version: kb_release_v3_fact_v1
-  fact_id: fact:v3:foton:team_answers_q11_modular_courses_m9_m11_old_price_range_min:6c046d88b7
-  fact_key: team_answers.q11.modular_courses_m9_m11.old_price_range.min
-  fact_type: price
-  fact_types:
-  - price
-  title: team answers / q11 / modular courses m9 m11 / old price range / min
-  fact_text: 'Устаревший нижний край цены модульных М9/М11: 18 900 ₽. Не использовать
-    как клиентский факт.'
-  short_fact: q11 / modular courses m9 m11 / old price range / min
-  client_safe_text: ''
-  manager_check_text: 'Устаревший нижний край цены модульных М9/М11: 18 900 ₽. Не
-    использовать как клиентский факт.'
-  manager_display_text: 'Устаревший нижний край цены модульных М9/М11: 18 900 ₽. Не
-    использовать как клиентский факт.'
-  internal_text: ''
-  brand: foton
-  active_brand_scope: foton_bot
-  cross_brand_policy: active_brand_only
-  cross_brand_mixed: false
-  product: modular_courses_m9_m11
-  source_id: claude_layer_v3:rebuild_requirements
-  source_title: UPDATE_TASK_FOR_AGENT_2026-05-19.md (Claude layer v3)
-  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_TASK_FOR_AGENT_2026-05-19.md
-  source_url: ''
-  source_sha256: f10d9acaec4cbf6aa9be9cc1be168f491ddf029a49a0ce7d8146864150bde0d3
-  source_status: read
-  freshness_status: discontinued
-  verification_status: discontinued
-  structured_value:
-    amount: 18900
-    currency: RUB
-    range_bound: min
-    do_not_use_as_current_price: true
-    path: team_answers.q11.modular_courses_m9_m11.old_price_range.min
-    freshness_check_date: '2026-06-12'
-    valid_until: '2026-12-31'
-  valid_from: ''
-  valid_until: '2026-12-31'
-  freshness_check_date: '2026-06-12'
-  verified_by: ''
-  verified_at: ''
-  owner_role: РОП/бухгалтерия
-  allowed_for_client_answer: false
-  usable_for_precise_answer: false
-  requires_manager_confirmation: false
-  requires_amo_check: false
-  requires_tallanto_check: false
-  route_policy: manager_handoff_only
-  risk_level: low
-  related_theme_ids:
-  - theme:001_pricing
-  linked_open_question: q11_closed
-  forbidden_promises:
-  - Не обещать условия вне утвержденного факта.
-  forbidden_client_mentions:
-  - УНПК
-  - АНО ДПО
-  - НОУ УНПК
-  - kmipt.ru
-  - '@unpk_mipt'
-  - '@unpkmfti'
-  - '@unpk mipt'
-  forbidden_for_client: true
-  internal_only: false
-  safety_block_reasons:
-  - blocked_status:discontinued
-  - discontinued_product
-  - manager_only_route
-  - not_client_allowed_status:discontinued
-  notes: Импортировано из Claude v3 handoff. Продукт discontinued; старые цены только
-    для регрессии и аудита. Перед клиентским использованием нужна проверка менеджером/РОПом.
-  record_type: fact
-- schema_version: kb_release_v3_fact_v1
-  fact_id: fact:v3:foton:r4_1_owner_2026_06_12_foton_new_online_oge_ege_math_product_internal:e2413180a0
-  fact_key: r4_1_owner_2026_06_12.foton.new_online_oge_ege_math_product_internal
-  fact_type: program
-  fact_types:
-  - program
-  title: r4 1 owner 2026 06 12 / foton / new online oge ege math product internal
-  fact_text: Новый онлайн-продукт Фотона по математике ОГЭ/ЕГЭ с 4 тарифами в клиентскую
-    базу не вносить. Бот продукт не упоминает; на прямой вопрос передаёт менеджеру.
-  short_fact: r4 1 owner 2026 06 12 / foton / new online oge ege math product internal
-  client_safe_text: ''
-  manager_check_text: Новый онлайн-продукт Фотона по математике ОГЭ/ЕГЭ с 4 тарифами
-    в клиентскую базу не вносить. Бот продукт не упоминает; на прямой вопрос передаёт
-    менеджеру.
-  manager_display_text: Новый онлайн-продукт Фотона по математике ОГЭ/ЕГЭ с 4 тарифами
-    в клиентскую базу не вносить. Бот продукт не упоминает; на прямой вопрос передаёт
-    менеджеру.
-  internal_text: Новый онлайн-продукт Фотона по математике ОГЭ/ЕГЭ с 4 тарифами в
-    клиентскую базу не вносить. Бот продукт не упоминает; на прямой вопрос передаёт
-    менеджеру.
-  brand: foton
-  active_brand_scope: internal_only
-  cross_brand_policy: forbidden_for_client
-  cross_brand_mixed: false
-  product: new_online_oge_ege_math
-  source_id: claude_layer_v3:changelog_team_answers
-  source_title: UPDATE_REPORT_2026-05-19.md (Claude layer v3)
-  source_path: /Users/dmitrijfabarisov/Projects/Mango analyse/product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1_sources/UPDATE_REPORT_2026-05-19.md
-  source_url: ''
-  source_sha256: 37cbe5207f307f006f78c66ef3a08c62f9c3b5906c15bbfd9908129457cc6c91
-  source_status: read
-  freshness_status: document_verified
-  verification_status: verified
-  structured_value:
-    source_decision: owner_2026_06_12
-    client_allowed: false
-    anti_fact: true
-    path: r4_1_owner_2026_06_12.foton.new_online_oge_ege_math_product_internal
     freshness_check_date: '2026-06-12'
     valid_until: '2026-12-31'
   valid_from: ''

@@ -856,6 +856,11 @@ def build_manual_decision_facts(source_lookup: Mapping[str, Mapping[str, Any]]) 
         },
     ]
     specs_by_key = {str(spec.get("fact_key") or ""): dict(spec) for spec in manual_specs}
+    removed = manifest_removed_fact_keys()
+    for brand, fact_key in removed:
+        spec = specs_by_key.get(fact_key)
+        if spec and normalize_brand(str(spec.get("brand") or "")) == brand:
+            specs_by_key.pop(fact_key, None)
     for override in MANIFEST_MANUAL_DECISION_FACT_OVERRIDES:
         if not isinstance(override, Mapping):
             continue

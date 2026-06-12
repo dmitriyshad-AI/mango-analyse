@@ -101,6 +101,45 @@ def test_kb_r4_1_internal_owner_gap_facts_are_not_client_safe() -> None:
             assert fact["route_policy"] == "manager_handoff_only"
             assert fact.get("client_safe_text") == ""
 
-    product = facts[("foton", "r4_1_owner_2026_06_12.foton.new_online_oge_ege_math_product_internal")]
-    assert product["route_policy"] == "manager_handoff_only"
-    assert product.get("client_safe_text") == ""
+    assert ("foton", "r4_1_owner_2026_06_12.foton.new_online_oge_ege_math_product_internal") not in facts
+
+
+def test_kb_r4_1_m9_m11_are_client_safe_without_monthly_payment() -> None:
+    facts = _facts()
+    all_client_text = "\n".join(str(item.get("client_safe_text") or "") for item in facts.values())
+
+    assert "8 790" not in all_client_text
+    assert "8790" not in all_client_text
+    assert "помесяч" not in _client(facts, "foton", "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs").lower()
+    assert "помесяч" not in _client(facts, "foton", "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs").lower()
+
+    m9_product = _client(facts, "foton", "r4_1_owner_2026_06_12.foton.m9_online_math_oge_product")
+    assert "М9" in m9_product
+    assert "ОГЭ по математике" in m9_product
+    assert "6 модулей" in m9_product
+    assert "35 недель занятий" in m9_product
+
+    m11_product = _client(facts, "foton", "r4_1_owner_2026_06_12.foton.m11_online_math_ege_product")
+    assert "М11" in m11_product
+    assert "ЕГЭ по математике" in m11_product
+    assert "6 модулей" in m11_product
+    assert "35 недель занятий" in m11_product
+
+    for fact_key in (
+        "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+        "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+    ):
+        tariffs = _client(facts, "foton", fact_key)
+        assert "«Основа» — 18 900 ₽" in tariffs
+        assert "«Стандартный» — 47 250 ₽" in tariffs
+        assert "«Продвинутый» — 59 900 ₽" in tariffs
+        assert "«Полное погружение» — 94 500 ₽" in tariffs
+
+    for old_key in (
+        "modular_courses_m9_m11.bot_behavior",
+        "modular_courses_m9_m11.note",
+        "team_answers.q11.modular_courses_m9_m11.discontinued",
+        "team_answers.q11.modular_courses_m9_m11.old_price_range.max",
+        "team_answers.q11.modular_courses_m9_m11.old_price_range.min",
+    ):
+        assert ("foton", old_key) not in facts

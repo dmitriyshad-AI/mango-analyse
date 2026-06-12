@@ -4,7 +4,7 @@ V3 база знаний собрана из `claude_to_codex_v3_handoff_2026-05
 
 Главные правила: каждый числовой бизнес-факт развернут в отдельную запись, `forbidden_to_say` вынесен в post-filter, внутренние номера лицензий не попадают в `client_safe_text`.
 
-- facts_total: `1077`
-- client_allowed_facts: `695`
-- approval_queue_items: `1055`
+- facts_total: `1075`
+- client_allowed_facts: `699`
+- approval_queue_items: `1053`
 - quality_passed: `True`

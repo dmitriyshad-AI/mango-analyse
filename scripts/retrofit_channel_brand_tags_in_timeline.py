@@ -411,10 +411,12 @@ def retrofit_tags(tags: Sequence[str], *, channel: str, brand: str) -> list[str]
         normalized = str(tag or "").strip().lower()
         if not normalized or normalized in {"unknown", "brand:unknown"}:
             continue
-        if normalized.startswith("brand:") and channel == "telegram":
+        if normalized in {"foton", "unpk", "brand:foton", "brand:unpk"}:
+            continue
+        if channel == "whatsapp" and normalized == "channel_shared:true":
             continue
         cleaned.append(normalized)
-    cleaned.append(f"brand:{brand}" if channel == "telegram" else brand)
+    cleaned.append(f"brand:{brand}")
     if channel == "whatsapp":
         cleaned.append("channel_shared:true")
     return list(dict.fromkeys(cleaned))

@@ -225,7 +225,7 @@ class WhatsAppTimelineNormalizer:
             replace(
                 chunk,
                 customer_id=customer_id or chunk.customer_id,
-                relevance_tags=tuple(dict.fromkeys((*chunk.relevance_tags, brand, "channel_shared:true"))),
+                relevance_tags=tuple(dict.fromkeys((*chunk.relevance_tags, f"brand:{brand}", "channel_shared:true"))),
                 metadata={**chunk.metadata, "brand": brand, "channel": CHANNEL, "channel_shared": True},
             )
             for chunk in batch.bot_context_chunks

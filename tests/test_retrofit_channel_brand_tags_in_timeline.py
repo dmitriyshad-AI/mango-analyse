@@ -73,7 +73,8 @@ def test_retrofit_channel_brand_tags_is_scoped_and_idempotent(tmp_path: Path) ->
     assert whatsapp_event["record"]["message"]["brand_hint"] == "unpk"
     assert whatsapp_event["record"]["message"]["channel_shared"] is True
     assert whatsapp_chunk["metadata"]["channel_shared"] is True
-    assert "unpk" in whatsapp_chunk["relevance_tags"]
+    assert "brand:unpk" in whatsapp_chunk["relevance_tags"]
+    assert "unpk" not in whatsapp_chunk["relevance_tags"]
     assert "channel_shared:true" in whatsapp_chunk["relevance_tags"]
 
     assert max_event["metadata"]["brand"] == "unknown"

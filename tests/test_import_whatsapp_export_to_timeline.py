@@ -204,6 +204,8 @@ def test_apply_import_is_idempotent_and_adds_phone_identity_link(tmp_path: Path)
         phone_links = store.list_identity_links("foton", link_type="phone", link_value="+79991112233")
     finally:
         store.close()
+    with sqlite3.connect(timeline_db) as con:
+        chunk_payload = json.loads(con.execute("SELECT record_json FROM bot_context_chunks LIMIT 1").fetchone()[0])
     assert first["validation_ok"] is True
     assert second["validation_ok"] is True
     assert summary["counts"]["timeline_events"] == 9
@@ -211,6 +213,9 @@ def test_apply_import_is_idempotent_and_adds_phone_identity_link(tmp_path: Path)
     assert summary["counts"]["ingestion_runs"] == 1
     assert len(phone_links) == 4
     assert second["import_report"]["write_status_counts"]["duplicate"] >= 9
+    assert "brand:unknown" in chunk_payload["relevance_tags"]
+    assert "unknown" not in chunk_payload["relevance_tags"]
+    assert "channel_shared:true" in chunk_payload["relevance_tags"]
 
 
 def test_apply_import_links_phone_chat_to_existing_customer_without_duplicate_profile(tmp_path: Path) -> None:

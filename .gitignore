@@ -25,6 +25,7 @@ build/
 dist/
 
 .DS_Store
+.~lock*
 
 # Local office/export deliverables
 *.xls
@@ -42,6 +43,7 @@ audits/for_claude_*/
 # Local cleanup/workflow scratch
 _cleanup_quarantine_*/
 _external_handoffs/
+Claude Cowork Space/
 Claude Mango_Bot_Knowledge_Base_FINAL_*/
 Mango_Bot_KB_FINAL_*/
 mega_smoke_tests_v*/
@@ -52,8 +54,10 @@ tmp/
 .codex_local/
 .codex_workers/
 _local_archive_*/
+_bundles/
 benchmarks/
 logs/
+runs/
 transcripts/
 transcripts_*/
 transcripts_semi_prod_*/

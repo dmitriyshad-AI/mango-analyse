@@ -1,0 +1,3 @@
+﻿finance_id,date,amount,method,method_code,student_id,student_fio,student_events,name,description,abonement_id,invoice_id,ambiguous_reason
+b3f03383-0277-d2f0-de6e-6926b1f79ada,2025-11-25,75000.0,Альфа-банк,alfabank,4e36fe41-e2f4-e674-5810-68af0012b44a,Быстрякова Евангелина Дмитриевна,LVSH1_FOTON|LVSH3_UNPK,ЛВШ 2,,a947a556-3d28-8957-4b20-696754942f93,,"несколько ЛВШ-групп у ученика, название не дает надежной привязки"
+d144797a-c329-88e1-28c5-6926b1e293e1,2025-11-25,80910.0,Альфа-банк,alfabank,4e36fe41-e2f4-e674-5810-68af0012b44a,Быстрякова Евангелина Дмитриевна,LVSH1_FOTON|LVSH3_UNPK,ЛВШ 1,,27430e7e-c5f4-140a-c307-696754d6c6bb,,"несколько ЛВШ-групп у ученика, название не дает надежной привязки"

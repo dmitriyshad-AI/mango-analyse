@@ -1,0 +1,1386 @@
+[
+  {
+    "id": "18de4cc6-7e8d-650f-57fa-69fb3f4e6a40",
+    "name": "ЛШ 2026 Выездная 20.06-28.06 (Лист ожидания)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-06-20",
+    "date_finish": "2026-06-28",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "5f4805c0-9ed5-bd34-4a26-691856da3f13",
+    "name": "ЛШ 2026 Выездная 20.06-28.06 (ИТ) 7-10 кл (Не пишем)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-06-20",
+    "date_finish": "2026-06-28",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "7d31929b-063c-0841-9c39-69185688a84c",
+    "name": "ЛШ 2026 Выездная 20.06-28.06 (ФМ) 5-10 кл (Не пишем)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-06-20",
+    "date_finish": "2026-06-28",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "95592285-6023-eb97-1655-6a22b5e19163",
+    "name": "ЛШ 2026 Онлайн 22.06 – 03.07 (УНПК)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 онлайн",
+    "date_start": "2026-06-22",
+    "date_finish": "2026-07-03",
+    "program_name": "",
+    "filial": {
+      "onlajn": "Онлайн"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "bb4fc9bf-6544-5f02-9ede-69dca4bad805",
+    "name": "ЛШ 2026 Очно Москва 6.07 - 17.07 (УНПК)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-07-06",
+    "date_finish": "2026-07-17",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "c9f061ad-263a-d250-f653-6a22b5caab09",
+    "name": "ЛШ 2026 Онлайн 06.07 – 17.07 (УНПК)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 онлайн",
+    "date_start": "2026-07-06",
+    "date_finish": "2026-07-17",
+    "program_name": "",
+    "filial": {
+      "onlajn": "Онлайн"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "2bd1b4fc-7014-331a-dc1a-691857138323",
+    "name": "ЛШ 2026 Выездная 18.07-26.07 (ФМ) УНПК (Не пишем)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-07-18",
+    "date_finish": "2026-07-26",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "65c811ad-ee0f-aca0-3f56-69185635259c",
+    "name": "ЛШ 2026 Выездная 18.07-26.07 (ФМ) 5-10 кл ФОТОН (Не пишем)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-07-18",
+    "date_finish": "2026-07-26",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "cc220b78-d9cb-68c8-98c1-6a140fb11a32",
+    "name": "ЛШ 2026 Выездная 18.07-26.07 ФОТОН (Лист ожидания)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-07-18",
+    "date_finish": "2026-07-26",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "ee6b0895-db11-257c-f781-6a140fc92677",
+    "name": "ЛШ 2026 Выездная 18.07-26.07 УНПК (Лист ожидания)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-07-18",
+    "date_finish": "2026-07-26",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "1f6fa90d-62ac-1e68-3add-6a22b644ec43",
+    "name": "ЛШ 2026 Онлайн 20.07 – 31.07 (УНПК)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 онлайн",
+    "date_start": "2026-07-20",
+    "date_finish": "2026-07-31",
+    "program_name": "",
+    "filial": {
+      "onlajn": "Онлайн"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "23614378-0805-50a6-9420-6a1fe644bae2",
+    "name": "ЛШ 2026 Очно Москва 20.07 - 31.07 (УНПК) ФМ",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-07-20",
+    "date_finish": "2026-07-31",
+    "program_name": "",
+    "filial": "",
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "bbbddbb3-7a10-37b6-d559-69dca318f82b",
+    "name": "ЛШ 2026 Очно МФТИ 20.07 - 31.07 (УНПК)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-07-20",
+    "date_finish": "2026-07-31",
+    "program_name": "",
+    "filial": {
+      "mfti": "МФТИ"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "37649445-d1f4-812d-bb7d-6a22b728f66e",
+    "name": "ЛШ 2026 Онлайн 03.08 – 14.08 (УНПК)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 онлайн",
+    "date_start": "2026-08-03",
+    "date_finish": "2026-08-14",
+    "program_name": "",
+    "filial": {
+      "onlajn": "Онлайн"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "3fb8804b-fa57-8f10-2ae5-69dca4e663d8",
+    "name": "ЛШ 2026 Очно Москва 3.08 - 14.08 (ФОТОН)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-08-03",
+    "date_finish": "2026-08-14",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "57f49275-6a4b-7d31-5af3-6918568d6c18",
+    "name": "ЛШ 2026 Выездная УНПК 15.08 - 25.08 (ФМ) 5-10 кл (Не пишем)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-08-15",
+    "date_finish": "2026-08-25",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "c2990716-f688-c43f-043a-691856540d0f",
+    "name": "ЛШ 2026 Выездная УНПК 15.08 - 25.08 (ИТ) 7-10 кл (Не пишем)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-08-15",
+    "date_finish": "2026-08-25",
+    "program_name": "",
+    "filial": {
+      "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "d205a658-ae79-65f9-191d-69dca3ebe216",
+    "name": "ЛШ 2026 Очно МФТИ 17.08 - 28.08 (УНПК)",
+    "description": "",
+    "subject_name": "Сезонные школы 2025-2026 очно",
+    "date_start": "2026-08-17",
+    "date_finish": "2026-08-28",
+    "program_name": "",
+    "filial": {
+      "mfti": "МФТИ"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "1cd46f1c-2afb-d50e-c87e-6a1d572ecef7",
+    "name": "Мат 2026 Красносел 9 кл Сб 14.30-16.30 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "1dd2546d-7b88-8945-5fd1-6a1d563cfff0",
+    "name": "Рус 2026 Красносел ОГЭ 9 кл  Сб 12.15-14.15 ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "537b08d1-8cca-cf8d-9718-6a1d5648d07f",
+    "name": "Инф 2026 Красносел ОГЭ 9 кл Сб 12.15-14.15 ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "60e3e146-8824-eeca-5fc4-6a1d4e4c61cb",
+    "name": "Мат 2026 Красносел 11 кл Сб 10.00-12.00 Базовый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "71788d13-bf5d-0810-aa2b-6a1d4f9f1a5e",
+    "name": "Физ 2026 Красносел 9 кл Сб 10.00-12.00 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "7ab38582-28e3-bd06-c5c6-6a1d57e80d5a",
+    "name": "Инф 2026 Красносел 10-11 кл Сб 14.30-16.30 ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "8a24a245-32cd-953a-5af1-6a1d57bc6338",
+    "name": "Рус 2026 Красносел ЕГЭ 10-11 кл Сб 14.30-16.30 ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "a773e5e3-b329-6661-8ebc-6a1d4dd6170a",
+    "name": "Мат 2026 Красносел 11 кл Сб  10.00-12.00 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "ab8a94e8-0018-02c8-1b53-6a1d53d1a036",
+    "name": "Физ 2026 Красносел 11 кл Сб 12.15-14.15 Базовый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "b1d8c757-f386-f19f-8592-6a1d5862c8e4",
+    "name": "Физ 2026 Красносел 9 кл Сб 14.30-16.30 Базовый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "b590682d-096a-955c-aa81-6a1d4e699754",
+    "name": "Физ 2026 Красносел 10 кл Сб 10.00-12.00 Базовый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "baca097b-88f9-7b67-2150-6a1d530d0894",
+    "name": "Физ 2026 Красносел 11 кл Сб 12.15-14.15 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "c7d7479b-4da5-8778-341f-6a1d54956d87",
+    "name": "Мат 2026 Красносел 9 кл Сб 12.15-14.15 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "e9586845-e29f-66f3-ebe3-6a1d54533a96",
+    "name": "Мат 2026 Красносел 10 кл Сб 12.15-14.15 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-12",
+    "date_finish": "2027-05-22",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "13982ed3-ba87-c5c0-2a8a-6a1d65f62388",
+    "name": "Мат 2026 Красносел 5 кл Вс 12.15-14.15 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "17a74e1f-f157-a2b9-c68c-6a1d60648010",
+    "name": "Физ 2026 Срет 11 кл Вс 14.30-16.30 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "1a16006e-380f-d27a-3851-6a1d639786f7",
+    "name": "Физ 2026 Красносел 8 кл Вс 10.00-12.00 Базовый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "1ffa511a-7401-592c-7322-6a1d66e2ae98",
+    "name": "Мат 2026 Красносел 3-4 кл Вс 12.15-13.35 Олимпиадный ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "21b33afd-211d-778c-66c6-6a1d655d6ef7",
+    "name": "Физ 2026 Красносел 5-6 кл Вс 12.15-14.15 УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "226309c6-0507-6939-32b0-6a1d64e0fb47",
+    "name": "Инф 2026 Красносел 7 кл Вс 10.00-12.00 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "22e4a7d6-0826-bddd-49d2-6a1d66e6c959",
+    "name": "Инф 2026 Красносел 5-6 кл Вс 14.30-16.30  ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "25c7724e-226d-5448-d5a6-6a1d5f8c5a8f",
+    "name": "Физ 2026 Срет 9 кл Вс 12.15-14.15 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "34825673-654a-5a65-49cd-6a1d613c104b",
+    "name": "Физ 2026 Срет 10 кл Вс 16.45-18.45 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "37a6a441-2cd9-2a3b-d59f-6a1d6587710c",
+    "name": "Мат 2026 Красносел 7 кл Вс 12.15-14.15 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "37ebc047-6043-6dda-8a4e-6a1d64cdca06",
+    "name": "Инф 2026 Красносел 8 кл Вс 12.15-14.15 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "390f07d1-04be-98c1-65db-6a1d59844c10",
+    "name": "Мат 2026 Срет 11 кл Вс 10.00-12.00 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "42869719-63ba-3266-b964-6a1d61e89b61",
+    "name": "Физ 2026 Срет 9 кл Вс 14.30-16.30 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "50736c0c-ffa7-4706-1233-6a1d66f6db7c",
+    "name": "Мат 2026 Красносел 3-4 кл Вс 10.40-12.00 Базовый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "5a990160-f10f-c800-6279-6a1d66642798",
+    "name": "Мат 2026 Красносел 6 кл Вс 14.30-16.30 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "5e3003d6-7b02-86f7-5870-6a1d65fa8997",
+    "name": "Мат 2026 Красносел 8 кл Вс 14.30-16.30 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "69ea9122-dd7e-be64-0771-6a1d642f80e9",
+    "name": "Мат 2026 Красносел 5 кл Вс 10.00-12.00 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "710f6eaf-c466-da78-28d1-6a1d628c5d0d",
+    "name": "Мат 2026 Срет 9 кл Вс 16.45-18.45 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "7424aaf2-586e-a51f-022c-6a1d590f9a87",
+    "name": "Физ 2026 Срет 10 кл Вс 10.00-12.00 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "74f4e207-2048-5552-14d9-6a1d5e02f24d",
+    "name": "Инф 2026 Срет ОГЭ 9 кл Вс 10.00-12.00 УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "759b52ef-c605-9a00-532e-6a1d632be763",
+    "name": "Мат 2026 Красносел 7 кл Вс 10.00-12.00 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "77596f63-e460-eb7d-f0d9-6a1d6489b3f5",
+    "name": "Инф 2026 Красносел 8 кл Вс 12.15-14.15 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "800e2211-1e27-962d-2d1a-6a1d650945a5",
+    "name": "Физ 2026 Красносел 7 кл Вс 14.30-16.30 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "815e4b77-1df5-6b3f-bf60-6a1d618b8e63",
+    "name": "Мат 2026 Срет 11 кл Вс 16.45-18.45 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "82070fae-ebd3-a146-0217-6a1d67bed03d",
+    "name": "Мат 2026 Красносел 3-4 кл Вс 13.50-15.20 Олимпиадный ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "82c516f5-0e30-730e-682e-6a1d644813ec",
+    "name": "Мат 2026 Красносел 6 кл Вс 10.00-12.00 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "90c5525a-e9a0-a5de-4de6-6a1d665d138f",
+    "name": "Мат 2026 Красносел 5 кл Вс 14.30-16.30 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "91c0aa54-be29-020c-eb1b-6a1d64f9e534",
+    "name": "Инф 2026 Красносел 7 кл Вс 10.00-12.00 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "92bd0e67-0753-0f37-ce72-6a1d664cb5f9",
+    "name": "Инф 2026 Красносел 5-6 кл Вс 14.30-16.30  УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "9519bd7e-96c5-a71d-3d33-6a1d66796521",
+    "name": "Мат 2026 Красносел 3-4 кл Вс 12.15-13.35 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "96e5d448-5e13-9fcf-a478-6a1d5e5277d8",
+    "name": "Мат 2026 Срет 11 кл Вс 12.15-14.15 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "996c87dd-ead2-bcd2-0dd4-6a1d656f3f99",
+    "name": "Мат 2026 Красносел 7 кл Вс 12.15-14.15 Продвинутый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "998dc761-b31d-be2f-9ba7-6a1d65925f21",
+    "name": "Мат 2026 Красносел 8 кл Вс 14.30-16.30 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "a0d3ff1d-4a00-3f59-cf09-6a1d60ff0085",
+    "name": "Мат 2026 Срет 9 кл Вс 14.30-16.30 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "a78cfa5c-bf0f-8467-749c-6a1d607a117a",
+    "name": "Мат 2026 Срет 10 кл Вс 14.30-16.30 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "a8c1c19a-7f2e-b967-c0f8-6a1d65f2da00",
+    "name": "Физ 2026 Красносел 7 кл Вс 14.30-16.30 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "b1dfd7ee-f7b5-acd4-5c8a-6a1d5fd07834",
+    "name": "Мат 2026 Срет 10 кл Вс 12.15-14.15 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "b24c8eb4-e174-73be-da10-6a1d5eb4e7e5",
+    "name": "Физ 2026 Срет 11 кл Вс 12.15-14.15 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "c1564b07-74c8-052a-abb6-6a1d6476b25f",
+    "name": "Мат 2026 Красносел 8 кл Вс 12.15-14.15 Олимпиадный УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "c41412df-80d5-0ab1-217d-6a1d5f843fd7",
+    "name": "Инф 2026 Срет 10-11 кл Вс 12.15-14.15 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "c6dbe46c-b680-1555-0e6c-6a1d6416be46",
+    "name": "Мат 2026 Красносел 6 кл Вс 10.00-12.00 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "ccf1237b-bf1e-c6a1-de3d-6a1d638ebca2",
+    "name": "Физ 2026 Красносел 8 кл Вс 10.00-12.00 Базовый ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "d1841305-1131-a605-5195-6a1d591c5073",
+    "name": "Мат 2026 Срет 9 кл Вс 10.00-12.00 Продвинутый УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "e28065cd-b526-366c-29bb-6a1d6564678a",
+    "name": "Физ 2026 Красносел 5-6 кл Вс 12.15-14.15 ФОТОН",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "krasnoselskaya": "Красносельская"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  },
+  {
+    "id": "e85e8166-9c45-fc04-6dbe-6a1d609c1d93",
+    "name": "Инф 2026 Срет 10-11 кл ЕГЭ Вс 14.30-16.30 УНПК",
+    "description": "",
+    "subject_name": "2026-2027 очно",
+    "date_start": "2026-09-13",
+    "date_finish": "2027-05-23",
+    "program_name": "",
+    "filial": {
+      "sretenka": "Сретенка"
+    },
+    "status_translated": "Активно",
+    "status": "active",
+    "course_number_seats": 0,
+    "course_tags": "",
+    "course_type_translated": "",
+    "course_type": ""
+  }
+]

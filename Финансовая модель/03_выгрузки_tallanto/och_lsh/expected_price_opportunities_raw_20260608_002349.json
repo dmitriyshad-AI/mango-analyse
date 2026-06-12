@@ -1,0 +1,3836 @@
+{
+  "108241a0-dffb-b08e-c092-6658577b41e3": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "3562d9c8-d181-7398-fd25-66585868ecf8",
+        "name": "лш маткап",
+        "date_entered": "2024-05-30 13:43:12",
+        "date_modified": "2024-08-21 10:35:22",
+        "description": "МАТ КАП",
+        "contact_id": "108241a0-dffb-b08e-c092-6658577b41e3",
+        "amount": 49500,
+        "date_closed": "2024-08-01",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-08-21"
+      },
+      {
+        "id": "976ba1e1-4ed9-a541-d320-6a0daf6e5981",
+        "name": "ЛШ мск фотон",
+        "date_entered": "2026-05-20 15:55:34",
+        "date_modified": "2026-06-02 15:43:07",
+        "description": "",
+        "contact_id": "108241a0-dffb-b08e-c092-6658577b41e3",
+        "amount": 56050,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      },
+      {
+        "id": "9b7fe618-b4cb-ba43-455b-69d4b8803966",
+        "name": "Интенсивы УНПК физ точно мат, если оплатит",
+        "date_entered": "2026-04-07 10:55:50",
+        "date_modified": "2026-04-07 13:06:59",
+        "description": "",
+        "contact_id": "108241a0-dffb-b08e-c092-6658577b41e3",
+        "amount": 18800,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "c3cf04f5-0349-1b7d-c8e0-68638d76ce58",
+        "name": "лш мат кап",
+        "date_entered": "2025-07-01 10:26:27",
+        "date_modified": "2025-08-06 12:21:07",
+        "description": "мат кап\r\n3.07 пришлет доки сегодня",
+        "contact_id": "108241a0-dffb-b08e-c092-6658577b41e3",
+        "amount": 64600,
+        "date_closed": "2025-07-31",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-08-06"
+      }
+    ]
+  },
+  "16fbadad-0cea-bf71-f5b2-6a156a3d00de": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "bfa7826d-4157-7a4c-365b-6a156a73333c",
+        "name": "лш унпк",
+        "date_entered": "2026-05-26 12:38:28",
+        "date_modified": "2026-06-05 10:17:27",
+        "description": "",
+        "contact_id": "16fbadad-0cea-bf71-f5b2-6a156a3d00de",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "189710c4-3b47-894b-216a-6a1566f9e349": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "41f4a411-c8c3-8b36-66c0-6a156626714b",
+        "name": "лш фм мск база",
+        "date_entered": "2026-05-26 12:22:22",
+        "date_modified": "2026-06-03 14:20:47",
+        "description": "",
+        "contact_id": "189710c4-3b47-894b-216a-6a1566f9e349",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "194d293a-0391-6cf8-d781-6a241162cdbc": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "75c63ef6-73a9-aa61-5714-6a2411916d3e",
+        "name": "ЛШ МФТИ 20-31 фм база",
+        "date_entered": "2026-06-06 15:24:53",
+        "date_modified": "2026-06-06 15:25:24",
+        "description": "",
+        "contact_id": "194d293a-0391-6cf8-d781-6a241162cdbc",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "1b780e44-39fd-a5bc-1ace-6a1dad41f957": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "6a081084-7dcd-4491-37df-6a1dad1a85fb",
+        "name": "МФТИ ЛШ август",
+        "date_entered": "2026-06-01 19:05:05",
+        "date_modified": "2026-06-01 19:06:53",
+        "description": "",
+        "contact_id": "1b780e44-39fd-a5bc-1ace-6a1dad41f957",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "1bd39a37-ae02-c256-0fc1-69f9c0061a75": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "ecdd7625-f0d9-c53d-a92f-69f9c09e149f",
+        "name": "Лш москва",
+        "date_entered": "2026-05-05 13:05:03",
+        "date_modified": "2026-06-06 09:56:03",
+        "description": "",
+        "contact_id": "1bd39a37-ae02-c256-0fc1-69f9c0061a75",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "1ccc7606-5765-2954-fe41-6a1042feea78": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "fb17095b-a157-6aee-c915-6a1042675110",
+        "name": "ЛШ МФТИ 17-28 прем 10",
+        "date_entered": "2026-05-22 14:49:09",
+        "date_modified": "2026-06-07 11:39:54",
+        "description": "",
+        "contact_id": "1ccc7606-5765-2954-fe41-6a1042feea78",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "1de6fb2a-524f-12cb-76ab-6a201874bc3d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "2083e7c4-e2a1-4d82-353a-6a2018a8287e",
+        "name": "лш мск фм",
+        "date_entered": "2026-06-03 15:04:51",
+        "date_modified": "2026-06-03 15:07:10",
+        "description": "",
+        "contact_id": "1de6fb2a-524f-12cb-76ab-6a201874bc3d",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "216fe30f-a5a2-92e9-1f19-6a06ee9b0df2": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "98cf0221-fe9f-95a8-c197-6a06ee3eb76f",
+        "name": "ЛШ авугст фм",
+        "date_entered": "2026-05-15 12:57:36",
+        "date_modified": "2026-06-03 17:03:19",
+        "description": "",
+        "contact_id": "216fe30f-a5a2-92e9-1f19-6a06ee9b0df2",
+        "amount": 44100,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "22817ede-c984-fc3b-f098-6a1e76b9523d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e354566d-f6ef-b1bb-4ae4-6a1e763ee03d",
+        "name": "ЛШ МФТИ 20.07-31.07",
+        "date_entered": "2026-06-02 09:20:20",
+        "date_modified": "2026-06-03 08:59:40",
+        "description": "",
+        "contact_id": "22817ede-c984-fc3b-f098-6a1e76b9523d",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "23490cb2-9656-854b-b50a-6a19a93218f0": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "d0984bde-a8c8-2858-1d1a-6a19a94eff5e",
+        "name": "ЛШ москва ФМ",
+        "date_entered": "2026-05-29 17:58:20",
+        "date_modified": "2026-06-07 11:20:44",
+        "description": "",
+        "contact_id": "23490cb2-9656-854b-b50a-6a19a93218f0",
+        "amount": 119000,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "2abeaf2e-a901-e8d9-f0aa-69fb4c72a7d3": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "426708c9-30fe-f83a-dbbe-69fb4da7af7a",
+        "name": "лш в августе 17-28",
+        "date_entered": "2026-05-06 17:15:46",
+        "date_modified": "2026-05-21 10:55:47",
+        "description": "",
+        "contact_id": "2abeaf2e-a901-e8d9-f0aa-69fb4c72a7d3",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "a88a035d-6931-1244-7450-69fb4c46da41",
+        "name": "лш очная 6-17 июля, ИИ, премиум 10",
+        "date_entered": "2026-05-06 17:11:52",
+        "date_modified": "2026-05-21 13:31:30",
+        "description": "",
+        "contact_id": "2abeaf2e-a901-e8d9-f0aa-69fb4c72a7d3",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "2c191f84-d6a0-3c63-f3fc-6a06d26cc14f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "56be593f-1f95-b5d0-bde3-6a06d290e156",
+        "name": "Заявка с сайта cdpofoton.ru",
+        "date_entered": "2026-05-15 10:58:08",
+        "date_modified": "2026-06-02 08:54:59",
+        "description": "",
+        "contact_id": "2c191f84-d6a0-3c63-f3fc-6a06d26cc14f",
+        "amount": 83790,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-06-02"
+      },
+      {
+        "id": "c17d7d49-83c6-3339-5b18-6a1964c93264",
+        "name": "лш унпк фм мск",
+        "date_entered": "2026-05-29 13:03:50",
+        "date_modified": "2026-06-05 15:33:12",
+        "description": "",
+        "contact_id": "2c191f84-d6a0-3c63-f3fc-6a06d26cc14f",
+        "amount": 53550,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "2c3b8414-f4fc-36a6-7ef5-65d1e5a17500": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "140e6ab9-a228-46fc-5316-6a1e9938d8a5",
+        "name": "лш очно фотон",
+        "date_entered": "2026-06-02 11:52:45",
+        "date_modified": "2026-06-02 11:54:39",
+        "description": "",
+        "contact_id": "2c3b8414-f4fc-36a6-7ef5-65d1e5a17500",
+        "amount": 59000,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "8be112d6-cd01-f922-834a-6a215753ebbf",
+        "name": "ЛШ УНПК ИИ",
+        "date_entered": "2026-06-04 13:47:28",
+        "date_modified": "2026-06-04 13:47:38",
+        "description": "",
+        "contact_id": "2c3b8414-f4fc-36a6-7ef5-65d1e5a17500",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "b91308f3-e14a-68a3-231d-6630a35105d6",
+        "name": "ЛШ Москва",
+        "date_entered": "2024-04-30 10:53:51",
+        "date_modified": "2024-05-14 09:37:42",
+        "description": "оплатят до 15 мая\r\nчек на почте",
+        "contact_id": "2c3b8414-f4fc-36a6-7ef5-65d1e5a17500",
+        "amount": 44500,
+        "date_closed": "",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-05-14"
+      },
+      {
+        "id": "f8260925-31f0-cf78-43ed-65d1e6d4b6fe",
+        "name": "мат 6 кл",
+        "date_entered": "2024-02-18 14:14:14",
+        "date_modified": "2024-03-04 12:34:34",
+        "description": "сек от 23.02 на почте",
+        "contact_id": "2c3b8414-f4fc-36a6-7ef5-65d1e5a17500",
+        "amount": 7500,
+        "date_closed": "2024-02-22",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-03-04"
+      }
+    ]
+  },
+  "2cf72845-2b64-8950-8dc5-6a0db3143a7b": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "2ece4a0f-0ea4-c96e-5ff1-6a0db8d28958",
+        "name": "лвш 1 смена ЛО",
+        "date_entered": "2026-05-20 16:35:57",
+        "date_modified": "2026-06-02 13:08:09",
+        "description": "",
+        "contact_id": "2cf72845-2b64-8950-8dc5-6a0db3143a7b",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      },
+      {
+        "id": "b54f0048-9627-6b3c-7b14-6a0db396eb6f",
+        "name": "лвш август лист ожидания",
+        "date_entered": "2026-05-20 16:15:29",
+        "date_modified": "2026-05-20 16:16:15",
+        "description": "",
+        "contact_id": "2cf72845-2b64-8950-8dc5-6a0db3143a7b",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      },
+      {
+        "id": "ef9ddf67-2ab3-32a7-86f2-6a0dbe8626ac",
+        "name": "Заявка с сайта cdpofoton.ru",
+        "date_entered": "2026-05-20 17:02:17",
+        "date_modified": "2026-05-20 17:03:05",
+        "description": "",
+        "contact_id": "2cf72845-2b64-8950-8dc5-6a0db3143a7b",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "30fc0941-aefe-d202-c607-6a2029c811c3": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "d286f465-ab6f-71ff-a507-6a2029b5293d",
+        "name": "ЛШ МФТИ август 17-28 база",
+        "date_entered": "2026-06-03 16:19:41",
+        "date_modified": "2026-06-04 08:52:14",
+        "description": "",
+        "contact_id": "30fc0941-aefe-d202-c607-6a2029c811c3",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "33556a82-ac61-1c13-c91e-6a201126d1c1": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "9f42edde-9b24-0bce-b9f5-6a201113221d",
+        "name": "лш очно 6-17 июля физмат",
+        "date_entered": "2026-06-03 14:37:20",
+        "date_modified": "2026-06-03 14:55:12",
+        "description": "",
+        "contact_id": "33556a82-ac61-1c13-c91e-6a201126d1c1",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "34adea2a-e5f8-3c91-758d-6a0c26bfa5ed": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "22755d0b-58c3-8368-6433-6a0c26a7c50c",
+        "name": "лш очно фотон ИИ премиум 5",
+        "date_entered": "2026-05-19 12:01:39",
+        "date_modified": "2026-06-04 14:01:09",
+        "description": "",
+        "contact_id": "34adea2a-e5f8-3c91-758d-6a0c26bfa5ed",
+        "amount": 49000,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "35187b11-bd4b-87bf-a3a5-6a181337c0ce": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "1121b568-e474-78c1-1cc0-6a1813dd5bf2",
+        "name": "лш 6-17 июля физмат , база",
+        "date_entered": "2026-05-28 13:06:21",
+        "date_modified": "2026-06-04 13:51:17",
+        "description": "",
+        "contact_id": "35187b11-bd4b-87bf-a3a5-6a181337c0ce",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "36586187-7464-3502-8cf3-6a198242178a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "7a4b8581-09ee-f542-0b18-6a19822c33c1",
+        "name": "лш очно мск фото",
+        "date_entered": "2026-05-29 15:09:52",
+        "date_modified": "2026-06-02 09:11:56",
+        "description": "",
+        "contact_id": "36586187-7464-3502-8cf3-6a198242178a",
+        "amount": 59000,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "36940e67-77a4-1c3b-6a11-6a0da31114ee": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "23a962ec-4db1-04dc-de6a-6a0da301f79e",
+        "name": "ЛШ МФТИ 20-31 ФМ база",
+        "date_entered": "2026-05-20 15:05:14",
+        "date_modified": "2026-06-05 17:05:45",
+        "description": "",
+        "contact_id": "36940e67-77a4-1c3b-6a11-6a0da31114ee",
+        "amount": 33750,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "387e0e14-38a2-38d0-d8ab-6a0ad0319c5e": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e27f204c-a4b8-67a0-0994-6a0ad0862f72",
+        "name": "лш 6-17 июля москва",
+        "date_entered": "2026-05-18 11:40:34",
+        "date_modified": "2026-06-04 13:38:43",
+        "description": "",
+        "contact_id": "387e0e14-38a2-38d0-d8ab-6a0ad0319c5e",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "398bd952-3959-01a2-a96f-6a1d3f788cc9": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "56032697-d5d5-10b2-c33b-6a1d3fa1c474",
+        "name": "лш очно 6-17 июля, физмат, база",
+        "date_entered": "2026-06-01 11:12:55",
+        "date_modified": "2026-06-06 09:54:57",
+        "description": "",
+        "contact_id": "398bd952-3959-01a2-a96f-6a1d3f788cc9",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "3a9e73eb-1330-7ea9-7bf4-6a22b04e4ed2": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "780894ef-230f-0d3c-f689-6a22b0fb273e",
+        "name": "ЛШ МФТИ 20-31 база",
+        "date_entered": "2026-06-05 14:19:20",
+        "date_modified": "2026-06-05 14:20:11",
+        "description": "",
+        "contact_id": "3a9e73eb-1330-7ea9-7bf4-6a22b04e4ed2",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "3cc90346-38bb-0b6e-0580-69fdbb8f5a55": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "6419fd35-8815-ab51-4709-69fdbb90edeb",
+        "name": "лш мфти июль фм",
+        "date_entered": "2026-05-08 13:32:45",
+        "date_modified": "2026-06-06 16:42:38",
+        "description": "",
+        "contact_id": "3cc90346-38bb-0b6e-0580-69fdbb8f5a55",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "40626337-af5b-76e7-3372-5f575b2c39cf": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "7090ea15-7528-d5fd-2f93-69f0b0bfafef",
+        "name": "ЛШ Июль",
+        "date_entered": "2026-04-28 16:03:48",
+        "date_modified": "2026-05-24 21:01:47",
+        "description": "",
+        "contact_id": "40626337-af5b-76e7-3372-5f575b2c39cf",
+        "amount": 53550,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "80d316fa-3886-3076-cd67-64d26d1ef5a3",
+        "name": "мат 5 класс онлайн",
+        "date_entered": "2023-08-08 19:30:30",
+        "date_modified": "2023-08-18 10:16:50",
+        "description": "8.08 в течение недели оплатит\r\n18.08 забыла про нас. сейчас оплатит",
+        "contact_id": "40626337-af5b-76e7-3372-5f575b2c39cf",
+        "amount": 16750,
+        "date_closed": "2023-08-18",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-08-18"
+      },
+      {
+        "id": "f1510ec4-31bc-8ec9-16a8-69ea334bd184",
+        "name": "лш АВГУСТ",
+        "date_entered": "2026-04-23 17:58:55",
+        "date_modified": "2026-05-05 17:39:16",
+        "description": "",
+        "contact_id": "40626337-af5b-76e7-3372-5f575b2c39cf",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "42180fdf-0676-d14f-079b-6a216979277a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "95860173-ed63-762a-4c85-6a2169234806",
+        "name": "Лш москва 6-17 ИИ",
+        "date_entered": "2026-06-04 15:02:47",
+        "date_modified": "2026-06-06 09:58:23",
+        "description": "",
+        "contact_id": "42180fdf-0676-d14f-079b-6a216979277a",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "444f0989-6dd5-9173-be97-69e88f3a838f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "11379a54-af6c-066d-95f8-69e88f7294bc",
+        "name": "ЛШ москва УНПК",
+        "date_entered": "2026-04-22 12:04:25",
+        "date_modified": "2026-05-05 18:16:19",
+        "description": "",
+        "contact_id": "444f0989-6dd5-9173-be97-69e88f3a838f",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "46320d62-d6c9-205f-47b2-6a17ec7c70a5": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "b1ae8ee5-457d-127c-2e4e-6a17ecdd646b",
+        "name": "лш 6-17 июля , физмат, премиум, мат.кап",
+        "date_entered": "2026-05-28 10:21:35",
+        "date_modified": "2026-06-03 15:52:51",
+        "description": "",
+        "contact_id": "46320d62-d6c9-205f-47b2-6a17ec7c70a5",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "4b39f542-c27d-e076-46fc-6a1fccb360cc": {
+    "ok": false,
+    "error": "HTTP 429 from Tallanto: Too Many Requests",
+    "opportunities": []
+  },
+  "4ba5c9f7-05b5-7216-74dd-69fb392a6b0a": {
+    "ok": false,
+    "error": "HTTP 429 from Tallanto: Too Many Requests",
+    "opportunities": []
+  },
+  "4c451c2e-c5a0-f3ab-7512-6a1e9984e479": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "83f79317-06ea-cc2b-a6d7-6a1e997003ed",
+        "name": "лш очно 6-17 июля физмат база",
+        "date_entered": "2026-06-02 11:52:49",
+        "date_modified": "2026-06-06 19:20:00",
+        "description": "",
+        "contact_id": "4c451c2e-c5a0-f3ab-7512-6a1e9984e479",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "4c560397-2ff1-d901-c583-69fdc11809af": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "13901486-3b14-5321-924e-69fdc13486c6",
+        "name": "лш ии унпк",
+        "date_entered": "2026-05-08 13:58:00",
+        "date_modified": "2026-06-02 12:39:01",
+        "description": "",
+        "contact_id": "4c560397-2ff1-d901-c583-69fdc11809af",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "4d9f003c-a3d6-184b-bacc-6a2159166ff3": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e4f1c2b7-ddc1-60a5-f457-6a2159f9230d",
+        "name": "лш думают",
+        "date_entered": "2026-06-04 13:55:39",
+        "date_modified": "2026-06-04 13:57:16",
+        "description": "",
+        "contact_id": "4d9f003c-a3d6-184b-bacc-6a2159166ff3",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "4de0be52-beaa-c2b4-3f4e-6a0c4ceaa37c": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "63942f2d-b494-af21-decd-6a0c4cca8f4a",
+        "name": "ЛШ москва 59500",
+        "date_entered": "2026-05-19 14:40:14",
+        "date_modified": "2026-06-04 12:30:14",
+        "description": "",
+        "contact_id": "4de0be52-beaa-c2b4-3f4e-6a0c4ceaa37c",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "4eccdb37-086e-eeab-6b5f-6a1176522d6d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "447958b4-9047-48ce-1872-6a1176e62d67",
+        "name": "Заявка с сайта kmipt.ru",
+        "date_entered": "2026-05-23 12:43:46",
+        "date_modified": "2026-05-23 12:44:06",
+        "description": "",
+        "contact_id": "4eccdb37-086e-eeab-6b5f-6a1176522d6d",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Запись в группу",
+        "sales_stage": "InvoiceCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "4fd0b41b-8779-5793-4193-6819f37e4308": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "508986e7-d016-c47a-6853-69d51aee3760",
+        "name": "ОС от родителя + предложить 26/27 уч.г.",
+        "date_entered": "2026-04-07 17:52:35",
+        "date_modified": "2026-04-07 17:52:52",
+        "description": "",
+        "contact_id": "4fd0b41b-8779-5793-4193-6819f37e4308",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      },
+      {
+        "id": "62752168-c69f-2803-29df-68aed9ef3928",
+        "name": "мат 6 кл онлайн Мат капитал",
+        "date_entered": "2025-08-27 13:11:08",
+        "date_modified": "2025-10-03 10:22:07",
+        "description": "Скидка 10 % по многодетности, оплата мат капиталом\r\n02.10 сказала подала документы, но пока тишина",
+        "contact_id": "4fd0b41b-8779-5793-4193-6819f37e4308",
+        "amount": 55350,
+        "date_closed": "2025-10-10",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-10-03"
+      },
+      {
+        "id": "979800a0-6bc3-f969-e46c-69e9e8f77221",
+        "name": "лш мфти",
+        "date_entered": "2026-04-23 12:36:54",
+        "date_modified": "2026-05-12 13:32:01",
+        "description": "",
+        "contact_id": "4fd0b41b-8779-5793-4193-6819f37e4308",
+        "amount": 56525,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "c3d25125-da1c-ea20-e316-6846e749882f",
+        "name": "ЛШ 2025 МФТИ 30.06- 11.07 ФМ 5-6 класс",
+        "date_entered": "2025-06-09 16:54:55",
+        "date_modified": "2025-06-09 16:54:55",
+        "description": "",
+        "contact_id": "4fd0b41b-8779-5793-4193-6819f37e4308",
+        "amount": 59900,
+        "date_closed": "",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-06-09"
+      }
+    ]
+  },
+  "509bcce7-2a10-a4fb-bd0e-6a18092e08e1": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "859e9bfc-e36c-911f-d6de-6a18097ab5e3",
+        "name": "лш 17-28 августа, физмат, база",
+        "date_entered": "2026-05-28 12:24:53",
+        "date_modified": "2026-06-03 09:00:52",
+        "description": "",
+        "contact_id": "509bcce7-2a10-a4fb-bd0e-6a18092e08e1",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "520eaa2e-f800-6cbb-b18b-69f1d4967f00": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "32f95eb0-cc70-89b9-95b3-69f1d42d3102",
+        "name": "лш июль 6-17 москва",
+        "date_entered": "2026-04-29 12:49:52",
+        "date_modified": "2026-06-04 13:59:24",
+        "description": "",
+        "contact_id": "520eaa2e-f800-6cbb-b18b-69f1d4967f00",
+        "amount": 44531,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      },
+      {
+        "id": "4e7ca9a4-178d-5a5b-ac5e-6a1544e602c8",
+        "name": "лш очно доплата из личных средств",
+        "date_entered": "2026-05-26 09:59:02",
+        "date_modified": "2026-05-26 12:32:22",
+        "description": "",
+        "contact_id": "520eaa2e-f800-6cbb-b18b-69f1d4967f00",
+        "amount": 14968,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "527edab2-1856-de20-3273-661bbc4bd4c4": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "2320552c-47b5-acdc-a3b6-682c2ee462c9",
+        "name": "мат 7 кл 25-26",
+        "date_entered": "2025-05-20 10:26:31",
+        "date_modified": "2025-08-29 17:43:26",
+        "description": "2.07 мат вс 12.15\r\n19.08 оплатят до 25.08 семестр\r\n26.08 оплатит в пятницу\r\nчек 29.08",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 11400,
+        "date_closed": "2025-08-31",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-08-29"
+      },
+      {
+        "id": "2948b5c9-51f6-e9f0-00e7-69eefe23a4b7",
+        "name": "26-27 мат мск",
+        "date_entered": "2026-04-27 09:12:45",
+        "date_modified": "2026-04-27 09:12:59",
+        "description": "",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 1,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      },
+      {
+        "id": "49659792-c09b-ca8d-6f6f-69a14eebb882",
+        "name": "Заявка с сайта kmipt.ru",
+        "date_entered": "2026-02-27 10:57:34",
+        "date_modified": "2026-03-30 12:17:00",
+        "description": "",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 11400,
+        "date_closed": "",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2026-03-30"
+      },
+      {
+        "id": "5153227f-c25e-e15c-8e8d-67bc0d7f380d",
+        "name": "лш очно мск",
+        "date_entered": "2025-02-24 09:10:09",
+        "date_modified": "2025-06-02 08:57:01",
+        "description": "",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 1,
+        "date_closed": "2025-05-28",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-06-02"
+      },
+      {
+        "id": "62085912-2d4e-ccba-e8bf-661bbce48ce3",
+        "name": "мат 5кл",
+        "date_entered": "2024-04-14 14:23:59",
+        "date_modified": "2024-04-14 15:06:55",
+        "description": "внесли 7000 чек на почте 14.04\r\nдоплата 500 14.04",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 7500,
+        "date_closed": "2024-04-19",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-04-14"
+      },
+      {
+        "id": "902fcf04-fb1c-d002-2d70-691afcd44bf1",
+        "name": "ЛШ 2026 Выездная УНПК 15.08 - 25.08",
+        "date_entered": "2025-11-17 13:46:16",
+        "date_modified": "2026-04-09 11:39:48",
+        "description": "15.11 не отв (звоно по табл бронь на лвш август)\r\n17.11.25 не отв, отпр письмо на почту -  до лета еще далеко, инфо получила, еще подумает и сама напишет \r\nДо 1.03.2026 (Скидка 17%) 99600\r\n17.02.26 скинула акт предлож+ договор/ ответит о решении на почте\r\nЕСЛИ АКТУАЛЬНО , НУЖНО БУДЕТ ВЫБРАТЬ НАПРАВЛЕНИЕ\r\n17.03.26 связаться на днях, подумает /выслала актуальную инфо на почте\r\n23.03.26 набрать позже \r\n30.03.26 еще думает, набрать через недельку\r\n09.04.26 отказ, ребенок не хочет ехать , если надумают, сами сообщат",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 114000,
+        "date_closed": "2026-04-09",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-04-09"
+      },
+      {
+        "id": "b297da0a-d406-88a3-dcbf-6a12c2d165d7",
+        "name": "Лш Москва",
+        "date_entered": "2026-05-24 12:17:59",
+        "date_modified": "2026-06-05 11:53:43",
+        "description": "",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "d6290ecf-f10e-499e-c6eb-66c5a276bc6b",
+        "name": "мат 24 6 кл",
+        "date_entered": "2024-08-21 11:17:14",
+        "date_modified": "2024-09-19 13:48:52",
+        "description": "4.09  оплатит 4 занятия, потом будут смотреть. Можно будет в дальнейшем перевести на семестр/год\r\n9.09 оплатит завтра\r\n10.09 опл сегодня",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 9900,
+        "date_closed": "2024-09-12",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-09-19"
+      },
+      {
+        "id": "da9c7237-5852-de2c-ad65-68307d0cf9c5",
+        "name": "лвш 1 смена фм",
+        "date_entered": "2025-05-23 16:50:01",
+        "date_modified": "2025-06-02 08:56:48",
+        "description": "предварительно, думает в течение 2-х дней. если друг поедет то точно да. так же скорей всего заедут 22 или 23 июня (будут в отпуске возвращаются 22 июня)\r\n28.05. думают в течение 2-х дней\r\nточно скажет 1.06\r\n2.06 не получается",
+        "contact_id": "527edab2-1856-de20-3273-661bbc4bd4c4",
+        "amount": 86583,
+        "date_closed": "2025-06-01",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-06-02"
+      }
+    ]
+  },
+  "53d407f4-803f-e3a7-9992-6a1e8f0ac130": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "dbba7abe-fae1-ad97-5a20-6a1e8fba90ff",
+        "name": "ЛШ москва 6-17",
+        "date_entered": "2026-06-02 11:09:59",
+        "date_modified": "2026-06-05 11:27:47",
+        "description": "",
+        "contact_id": "53d407f4-803f-e3a7-9992-6a1e8f0ac130",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "541a0a51-7732-556a-0deb-6a155fb6c176": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "787b56b1-588f-e4e2-50d8-6a155f139aed",
+        "name": "лш очно 6-17 июля, физмат, база",
+        "date_entered": "2026-05-26 11:52:03",
+        "date_modified": "2026-06-02 12:06:22",
+        "description": "",
+        "contact_id": "541a0a51-7732-556a-0deb-6a155fb6c176",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "545bd502-cdee-2ae8-45e2-65fbe1163ee3": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "89e0b5c7-caac-192d-280b-69fc4d2f40ef",
+        "name": "17-28 августа, физмат,премиум 10",
+        "date_entered": "2026-05-07 11:30:11",
+        "date_modified": "2026-06-03 10:46:55",
+        "description": "",
+        "contact_id": "545bd502-cdee-2ae8-45e2-65fbe1163ee3",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "55de3e26-8a2e-eaa2-12c5-6a1038a3a78a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "bfacaa54-859d-f8a4-fbe6-6a1038a70228",
+        "name": "ЛШ москва ФМ прем 10",
+        "date_entered": "2026-05-22 14:04:38",
+        "date_modified": "2026-06-07 13:55:19",
+        "description": "",
+        "contact_id": "55de3e26-8a2e-eaa2-12c5-6a1038a3a78a",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "571a2bfb-80cc-7687-bd8a-6a0d85b0698a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "788c0f34-2766-3f75-8614-6a0d85f4adfe",
+        "name": "лш Москва",
+        "date_entered": "2026-05-20 12:57:47",
+        "date_modified": "2026-06-03 15:17:44",
+        "description": "",
+        "contact_id": "571a2bfb-80cc-7687-bd8a-6a0d85b0698a",
+        "amount": 49000,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "5bb5a1f7-89fd-bab5-6d1e-66cc52c83eb1": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "199e0ce3-6924-0b70-bc5e-6a1581ac1138",
+        "name": "лш Москва",
+        "date_entered": "2026-05-26 14:16:22",
+        "date_modified": "2026-06-04 17:54:09",
+        "description": "",
+        "contact_id": "5bb5a1f7-89fd-bab5-6d1e-66cc52c83eb1",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "507d59a7-f7ca-b326-f91d-68a6e68ab9ee",
+        "name": "онл 7 кл",
+        "date_entered": "2025-08-21 12:26:23",
+        "date_modified": "2025-08-29 13:54:34",
+        "description": "21.08 думают насчет онл 7 кл, отпр распиание ватсап\r\n23.08 ответили ватсап, отказ тренировки, в этом году не получится",
+        "contact_id": "5bb5a1f7-89fd-bab5-6d1e-66cc52c83eb1",
+        "amount": 1,
+        "date_closed": "2025-08-24",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-08-29"
+      },
+      {
+        "id": "c312b1f9-78bb-a28a-9412-66ce2b23561d",
+        "name": "инф мат скорн",
+        "date_entered": "2024-08-27 22:39:26",
+        "date_modified": "2024-09-19 14:22:17",
+        "description": "28.08. мат точно, физ вс 14.30 под вопросам оплатят до 10 сентября\r\n11.09. думают насчет перехода на онл мат 6 кл - попросили счет на онл занятия чек 19.09",
+        "contact_id": "5bb5a1f7-89fd-bab5-6d1e-66cc52c83eb1",
+        "amount": 27000,
+        "date_closed": "2024-09-27",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-09-19"
+      }
+    ]
+  },
+  "5e4cb816-d256-f7a3-4ab4-6a1d55aae619": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "7eed5252-07dd-e17b-6fb5-6a1d55454543",
+        "name": "6-17 июля, физмат, премиум 10",
+        "date_entered": "2026-06-01 12:46:54",
+        "date_modified": "2026-06-06 19:34:36",
+        "description": "",
+        "contact_id": "5e4cb816-d256-f7a3-4ab4-6a1d55aae619",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "5eafaed7-c194-b3a2-c02a-6a16cd01ddcd": {
+    "ok": true,
+    "opportunities": []
+  },
+  "5f5da594-1ce6-9a93-e1ad-63bfb64a2461": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "60409eb7-9c9c-babe-8f38-6a22820afe40",
+        "name": "ЛШ москва 6-17 ИИ",
+        "date_entered": "2026-06-05 11:03:41",
+        "date_modified": "2026-06-05 11:04:00",
+        "description": "",
+        "contact_id": "5f5da594-1ce6-9a93-e1ad-63bfb64a2461",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "b63fcd30-3a1d-779c-3624-64e371708e93",
+        "name": "мат физ скорн",
+        "date_entered": "2023-08-21 17:13:52",
+        "date_modified": "2023-08-27 13:39:35",
+        "description": "мат физ скорняжка оплатят по ссылке, Арине отправлена инф-я\r\n22.08 Пришлет подтверждение платежа на ватс, ее почта выдает ошибку при прикреплении файла (Паша)",
+        "contact_id": "5f5da594-1ce6-9a93-e1ad-63bfb64a2461",
+        "amount": 112100,
+        "date_closed": "2023-08-27",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-08-27"
+      }
+    ]
+  },
+  "60fe13b7-3848-b125-e64c-6a0eb991ca47": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "92b55de5-abe5-b563-448f-6a0eb9ef0052",
+        "name": "лвш август фотон ЛО",
+        "date_entered": "2026-05-21 10:49:38",
+        "date_modified": "2026-05-28 17:13:12",
+        "description": "",
+        "contact_id": "60fe13b7-3848-b125-e64c-6a0eb991ca47",
+        "amount": 49000,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "61107d2f-2299-a79f-87a3-69e23cb8155f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "65f20f9b-4c6a-a178-4037-6a1018fcf56e",
+        "name": "ЛШ",
+        "date_entered": "2026-05-22 11:50:51",
+        "date_modified": "2026-05-26 17:36:15",
+        "description": "",
+        "contact_id": "61107d2f-2299-a79f-87a3-69e23cb8155f",
+        "amount": 114000,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-05-26"
+      },
+      {
+        "id": "a3f64f6f-5ea5-92f9-361f-69e23c31165a",
+        "name": "лш мск унпк",
+        "date_entered": "2026-04-17 16:59:00",
+        "date_modified": "2026-06-03 09:28:05",
+        "description": "",
+        "contact_id": "61107d2f-2299-a79f-87a3-69e23cb8155f",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "627ae97d-a7cc-8589-9f60-6a18666da02c": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "19129b61-94b4-3c57-6188-6a1866f7aa8a",
+        "name": "лш унпК",
+        "date_entered": "2026-05-28 19:00:53",
+        "date_modified": "2026-06-06 17:08:54",
+        "description": "",
+        "contact_id": "627ae97d-a7cc-8589-9f60-6a18666da02c",
+        "amount": 99500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "662c563a-8558-41c0-89ae-6a1c3895a191": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "dbed887f-7afa-ecab-47ac-6a1c3876284a",
+        "name": "ЛШ москва 6-17 ФМ",
+        "date_entered": "2026-05-31 16:31:54",
+        "date_modified": "2026-06-07 11:22:35",
+        "description": "",
+        "contact_id": "662c563a-8558-41c0-89ae-6a1c3895a191",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "675b8aa0-559f-74c5-aa09-671643512065": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "61080be9-66af-2146-5de5-68f9ec9663af",
+        "name": "продление физика",
+        "date_entered": "2025-10-23 11:52:48",
+        "date_modified": "2025-11-21 13:26:12",
+        "description": "23.10 не отв., звонила уточнить будут ли продлевать абонемент. написала на вотсап\r\n24.10 не отв, попросила перезаписать в другую группу по одному предмету, от второго предмета отказ, выслала письмо на почту\r\n27.10 не отв, нужно закрыть долг в одно занятие по матем и уточнить продление второго предмета \r\n28.10 не отв\r\n29.10 не отв\r\n30.10 не отв\r\n31.10 не отв\r\n05.11 не отв\r\n06.11 не знает будут ли на занятиях 09.11 , сильно болеет ребенок. Умер отец, решают вопросы с продажи дачи, чтобы квитанцию разрешил перечислить эти деньги на обучение. Поэтому вернутся к нам после решения, долг за математику погасит самостоятельно. Отправила квитанцию на почту.\r\n14.11 не отв \r\n20.11 не отв\r\n21.11 не отв",
+        "contact_id": "675b8aa0-559f-74c5-aa09-671643512065",
+        "amount": 1,
+        "date_closed": "2025-11-21",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-11-21"
+      },
+      {
+        "id": "67ff13d8-e37c-968f-2646-68c7f9cf0e18",
+        "name": "физ  8 кл МФТИ вс 14.00 25-26уч г",
+        "date_entered": "2025-09-15 14:33:30",
+        "date_modified": "2025-09-21 10:52:57",
+        "description": "15.09 записала на мат и физ МФТИ, отпр на почту, жду оплату\r\n17.09 но\r\n18.09 но, продублировала письмо",
+        "contact_id": "675b8aa0-559f-74c5-aa09-671643512065",
+        "amount": 9900,
+        "date_closed": "2025-09-21",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-09-21"
+      },
+      {
+        "id": "6b4f1880-7a2c-f92f-8fa2-68fb73c7f53f",
+        "name": "долг по математике",
+        "date_entered": "2025-10-24 15:38:04",
+        "date_modified": "2025-12-02 10:33:54",
+        "description": "24.10 ждем долг за математику\r\n28.10 не отв\r\n29.10 не отв\r\n30.10 не отв\r\n31.10 не отв\r\n05.11 не отв\r\n06.11 отправила на почту квитарцию для оплаты долга \r\n14.11 не отв \r\n20.11 не отв\r\n21.11 не отв\r\n24.11 не отв, отправила письмо на почту \r\n02.12 не отв ",
+        "contact_id": "675b8aa0-559f-74c5-aa09-671643512065",
+        "amount": 2725,
+        "date_closed": "2025-12-02",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-12-02"
+      },
+      {
+        "id": "86bcda81-7353-51bf-daca-68c7f9f642e3",
+        "name": "мат  8 кл МФТИ вс 14.00 25-26уч г",
+        "date_entered": "2025-09-15 14:33:52",
+        "date_modified": "2025-09-21 10:53:25",
+        "description": "15.09 записала на мат и физ МФТИ, отпр на почту, жду оплату\r\n18.09 но, продублировала письмо",
+        "contact_id": "675b8aa0-559f-74c5-aa09-671643512065",
+        "amount": 8910,
+        "date_closed": "2025-09-21",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-09-21"
+      },
+      {
+        "id": "d94b4fb2-8f1f-1aed-074e-671643290b19",
+        "name": "мат физ",
+        "date_entered": "2024-10-21 15:06:52",
+        "date_modified": "2024-11-06 12:22:39",
+        "description": "29.10. пока все в силе, собираются прийти в вс\r\nне получается пока ходить, ребенка посадили на карантин из за случая мененгита, если вдуг соберутся к нам, сама свяжется с нами",
+        "contact_id": "675b8aa0-559f-74c5-aa09-671643512065",
+        "amount": 19800,
+        "date_closed": "2024-11-02",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2024-11-06"
+      },
+      {
+        "id": "e4040f5a-625c-427a-ac81-6a16dd7191b5",
+        "name": "лш август выбирают тариф",
+        "date_entered": "2026-05-27 15:01:21",
+        "date_modified": "2026-06-06 15:34:43",
+        "description": "",
+        "contact_id": "675b8aa0-559f-74c5-aa09-671643512065",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "68b3699b-2929-2bc0-8ce1-685e704e583a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "16dff592-e92a-cfaa-0baa-69d371fdb67e",
+        "name": "МФТИ 26-27 уч.г",
+        "date_entered": "2026-04-06 11:40:26",
+        "date_modified": "2026-06-02 14:54:14",
+        "description": "",
+        "contact_id": "68b3699b-2929-2bc0-8ce1-685e704e583a",
+        "amount": 191880,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      },
+      {
+        "id": "2714521d-b744-9f15-0151-69e382b6375b",
+        "name": "лш август мфти ФМ",
+        "date_entered": "2026-04-18 16:08:25",
+        "date_modified": "2026-06-02 11:47:31",
+        "description": "",
+        "contact_id": "68b3699b-2929-2bc0-8ce1-685e704e583a",
+        "amount": 53550,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      },
+      {
+        "id": "2c5dadbd-9998-4b4a-94cb-685e71c0eaf6",
+        "name": "мат и инф маткап",
+        "date_entered": "2025-06-27 13:23:23",
+        "date_modified": "2025-09-15 16:37:43",
+        "description": "Уточнить по сумме оплаты, если 1 предмет и два. Мат.кап\r\nГод по двум предметам + скидка по многодетности  10%\r\n23.07 не отв/завтра приедут за доками/27.08 сегодня подадут доки через госуслуги \r\n10.09 получили оплату ",
+        "contact_id": "68b3699b-2929-2bc0-8ce1-685e704e583a",
+        "amount": 134100,
+        "date_closed": "2025-09-21",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-09-15"
+      },
+      {
+        "id": "c3ffd656-9a35-45f2-5a3a-6919e1cf8b10",
+        "name": "ЛВШ  август",
+        "date_entered": "2025-11-16 17:35:41",
+        "date_modified": "2026-03-31 15:18:45",
+        "description": "уточнить после 14.00\r\n17.11.25 оплата мат капиталом , физмат \r\n22.12 нужны доки на мат кап, не отв\r\n23.12 не отв\r\n24.12 нд\r\n29.12 нд\r\n30.12 не отв\r\n19.01 отправил список документов\r\n02.02 не отв\r\n05.02 не отв\r\n08.02 не отв\r\n09.02 не отв\r\n15.02 не отв\r\n19.02, если не выйдет на связь до 31.03 закрыть",
+        "contact_id": "68b3699b-2929-2bc0-8ce1-685e704e583a",
+        "amount": 95900,
+        "date_closed": "2026-03-31",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-03-31"
+      },
+      {
+        "id": "deb6c0bb-4439-9858-8b1b-69e3827d8a29",
+        "name": "лш июль мфти ИИ",
+        "date_entered": "2026-04-18 16:07:35",
+        "date_modified": "2026-06-02 11:48:30",
+        "description": "",
+        "contact_id": "68b3699b-2929-2bc0-8ce1-685e704e583a",
+        "amount": 33750,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "693d6b48-1f8b-4ff0-aa43-6a199629fe79": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "711986d6-388f-22f1-3a80-6a1996fc4f51",
+        "name": "лш или лвш",
+        "date_entered": "2026-05-29 16:38:33",
+        "date_modified": "2026-06-03 16:33:24",
+        "description": "",
+        "contact_id": "693d6b48-1f8b-4ff0-aa43-6a199629fe79",
+        "amount": 49000,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "6a64b2ed-71ef-8d56-24bb-663610f689bd": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4122ba23-1d10-c835-7878-67bf070c1489",
+        "name": "лш мат.капитал",
+        "date_entered": "2025-02-26 15:21:12",
+        "date_modified": "2025-04-16 12:25:05",
+        "description": "26.02 предварительно 2 смена в мск оплата мат.капиталом, но может изменится, оплата мат капиталом 64600 (доп скидка 5%)\r\n4.03. все в силе, выбрали 2 смену, пришлет документы на оформление мат.капиталом\r\n13.03. в сб приедут за доками",
+        "contact_id": "6a64b2ed-71ef-8d56-24bb-663610f689bd",
+        "amount": 64600,
+        "date_closed": "2025-03-30",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-04-16"
+      },
+      {
+        "id": "cd0ee2ea-bcfe-6ad4-f599-663611318ce9",
+        "name": "лш мат кап",
+        "date_entered": "2024-05-04 13:43:59",
+        "date_modified": "2024-07-03 10:28:44",
+        "description": "",
+        "contact_id": "6a64b2ed-71ef-8d56-24bb-663610f689bd",
+        "amount": 44500,
+        "date_closed": "2024-07-03",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-07-03"
+      },
+      {
+        "id": "f0620a41-5da6-8866-2010-69a6c3b2c968",
+        "name": "лш в мск",
+        "date_entered": "2026-03-03 14:20:06",
+        "date_modified": "2026-06-06 17:13:26",
+        "description": "",
+        "contact_id": "6a64b2ed-71ef-8d56-24bb-663610f689bd",
+        "amount": 49000,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "6aef45aa-7045-ecd2-b3fe-6a09a1852ebe": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4e4d4311-62dc-8608-c119-6a09a12e8211",
+        "name": "Лш Москва фотон",
+        "date_entered": "2026-05-17 14:08:15",
+        "date_modified": "2026-06-04 12:20:58",
+        "description": "",
+        "contact_id": "6aef45aa-7045-ecd2-b3fe-6a09a1852ebe",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "6b548a3d-79a4-f39d-eacc-6a1fd631d8d4": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "bdab2198-ab74-a38e-e235-6a1fd6ecf777",
+        "name": "ЛШ МФТИ",
+        "date_entered": "2026-06-03 10:25:34",
+        "date_modified": "2026-06-05 08:59:07",
+        "description": "",
+        "contact_id": "6b548a3d-79a4-f39d-eacc-6a1fd631d8d4",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "6c205bfb-b311-4baf-4e77-6a17f130cb7f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "9e0d618d-7528-4fa9-d537-6a17f16c38a3",
+        "name": "6-17 июля, Ии, премиум 10",
+        "date_entered": "2026-05-28 10:41:37",
+        "date_modified": "2026-06-07 12:46:45",
+        "description": "",
+        "contact_id": "6c205bfb-b311-4baf-4e77-6a17f130cb7f",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "6e8264a8-8feb-647c-4079-6a1ea5863b31": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "93e8026f-45c5-3ab7-68bb-6a1ea51abcda",
+        "name": "ЛШ",
+        "date_entered": "2026-06-02 12:41:40",
+        "date_modified": "2026-06-05 19:27:14",
+        "description": "",
+        "contact_id": "6e8264a8-8feb-647c-4079-6a1ea5863b31",
+        "amount": 33750,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "6ef506b4-0b16-d026-01a8-688495d04c38": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "348fa21a-65dd-3db5-f0cb-6a144824e3db",
+        "name": "лш мск фотон фм",
+        "date_entered": "2026-05-25 16:03:48",
+        "date_modified": "2026-06-06 16:36:53",
+        "description": "",
+        "contact_id": "6ef506b4-0b16-d026-01a8-688495d04c38",
+        "amount": 53100,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "9d8b5f72-64d6-5a0f-80a8-6884964437e1",
+        "name": "ЛШ 2 смена фм",
+        "date_entered": "2025-07-26 11:49:32",
+        "date_modified": "2025-07-28 10:17:10",
+        "description": "чек на почте",
+        "contact_id": "6ef506b4-0b16-d026-01a8-688495d04c38",
+        "amount": 68000,
+        "date_closed": "2025-07-28",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-07-28"
+      }
+    ]
+  },
+  "6fcc07cd-e692-9ffd-a263-6a15745eb0dd": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4f67cf97-f2af-76dd-fbb9-6a15743fb17f",
+        "name": "Лш фмти 17-28 августа ИИ",
+        "date_entered": "2026-05-26 13:24:48",
+        "date_modified": "2026-06-03 13:30:30",
+        "description": "",
+        "contact_id": "6fcc07cd-e692-9ffd-a263-6a15745eb0dd",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "709bb50b-927d-23d8-d433-692c3034e046": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4245ff67-bdfe-1fb5-a5f6-69676efb6c5b",
+        "name": "ЛВШ АНО",
+        "date_entered": "2026-01-14 13:23:51",
+        "date_modified": "2026-01-31 10:29:15",
+        "description": "пробная неделя\r\n21.01 не подошли годовые. рассмотрят лвш\r\n\r\n29.01.2026\r\nзапись из тг на август\r\n29.01 заказала ссылку для оплаты\r\nчек 31.01.",
+        "contact_id": "709bb50b-927d-23d8-d433-692c3034e046",
+        "amount": 95900,
+        "date_closed": "2026-02-04",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2026-01-31"
+      },
+      {
+        "id": "7252a8d3-6a56-799b-d2a1-69e5e8377651",
+        "name": "ЛШ",
+        "date_entered": "2026-04-20 11:47:52",
+        "date_modified": "2026-06-03 11:32:42",
+        "description": "",
+        "contact_id": "709bb50b-927d-23d8-d433-692c3034e046",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "807b0400-a554-9d3f-854e-692c31bb624d",
+        "name": "ЗВШ",
+        "date_entered": "2025-11-30 14:59:35",
+        "date_modified": "2025-12-03 11:30:19",
+        "description": "попросила ссылку на оплату чек 3.12",
+        "contact_id": "709bb50b-927d-23d8-d433-692c3034e046",
+        "amount": 88200,
+        "date_closed": "2025-12-03",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-12-03"
+      }
+    ]
+  },
+  "70b391d7-4294-ef0b-c5dd-6a1c5fdaeb5d": {
+    "ok": true,
+    "opportunities": []
+  },
+  "738a224a-22da-c336-c0e7-6a086ae45497": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "46c729dd-ed99-f31a-14aa-6a086a51a0cf",
+        "name": "лш унпк мск",
+        "date_entered": "2026-05-16 15:59:54",
+        "date_modified": "2026-06-04 13:04:59",
+        "description": "",
+        "contact_id": "738a224a-22da-c336-c0e7-6a086ae45497",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "74660a2a-729f-a660-5d0e-69e72fb1ba6c": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "203d6509-e800-3238-4eec-6a1ec06d3dad",
+        "name": "Заявка с сайта cdpofoton.ru лш очно фотон ИИ база",
+        "date_entered": "2026-06-02 14:35:34",
+        "date_modified": "2026-06-02 14:37:28",
+        "description": "",
+        "contact_id": "74660a2a-729f-a660-5d0e-69e72fb1ba6c",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "cf915da0-5af3-ea3c-b3e3-69e72f276074",
+        "name": "Заявка с сайта cdpofoton.ru 26-27",
+        "date_entered": "2026-04-21 11:02:55",
+        "date_modified": "2026-05-25 14:14:57",
+        "description": "",
+        "contact_id": "74660a2a-729f-a660-5d0e-69e72fb1ba6c",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "74a0927f-9a4a-4807-5b40-69ef15b0b2eb": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "29777a03-36ab-eb8b-9886-69ef15a57988",
+        "name": "Сделка 79187876408",
+        "date_entered": "2026-04-27 10:52:50",
+        "date_modified": "2026-05-10 14:26:11",
+        "description": "",
+        "contact_id": "74a0927f-9a4a-4807-5b40-69ef15b0b2eb",
+        "amount": 114000,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-05-10"
+      },
+      {
+        "id": "b9b398d4-6f0b-d3eb-f223-6a006b3f84fd",
+        "name": "ЛШ москва",
+        "date_entered": "2026-05-10 14:26:47",
+        "date_modified": "2026-06-03 09:03:52",
+        "description": "",
+        "contact_id": "74a0927f-9a4a-4807-5b40-69ef15b0b2eb",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "7bdc94e0-9442-fcec-438f-6a108c76be8a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "a2e569de-ad10-7f6c-ba37-6a108c65fb82",
+        "name": "ЛШ москва",
+        "date_entered": "2026-05-22 20:03:07",
+        "date_modified": "2026-06-05 11:52:15",
+        "description": "",
+        "contact_id": "7bdc94e0-9442-fcec-438f-6a108c76be8a",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "7c0064c5-dafa-39dd-a4bb-6a21877291ce": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "1db35d5a-db59-b422-42b4-6a2187ea5778",
+        "name": "лш очно 20-31 июля москва, физмат, премиум 10",
+        "date_entered": "2026-06-04 17:12:48",
+        "date_modified": "2026-06-06 19:50:01",
+        "description": "",
+        "contact_id": "7c0064c5-dafa-39dd-a4bb-6a21877291ce",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "7c04d620-d3ca-7e72-ba27-6a15ce12a94c": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "118466ac-0f64-064e-4842-6a15cf2bf636",
+        "name": "лш август ии",
+        "date_entered": "2026-05-26 19:50:38",
+        "date_modified": "2026-06-03 12:48:50",
+        "description": "",
+        "contact_id": "7c04d620-d3ca-7e72-ba27-6a15ce12a94c",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "7d499188-43e7-71b1-8517-6a229ae5192b": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "adb0c6b8-54cd-51c7-d397-6a229a313d0c",
+        "name": "ЛШ Москва",
+        "date_entered": "2026-06-05 12:42:35",
+        "date_modified": "2026-06-05 12:50:23",
+        "description": "",
+        "contact_id": "7d499188-43e7-71b1-8517-6a229ae5192b",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "805956a6-c7b6-84f2-ecaf-64f45586348b": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "c2d49da3-d89f-90a7-6d68-64f4553e439e",
+        "name": "инф мфти 23-24",
+        "date_entered": "2023-09-03 12:45:10",
+        "date_modified": "2023-09-14 14:59:43",
+        "description": "11.09 решили попробовать 4 занятия + дополнительно думают про курс математика 5 класс МФТИ, позвонить 13.09",
+        "contact_id": "805956a6-c7b6-84f2-ecaf-64f45586348b",
+        "amount": 6750,
+        "date_closed": "2023-09-13",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-09-13"
+      },
+      {
+        "id": "ec23752c-6ac0-e6d7-74b7-69f36dc8e17a",
+        "name": "ЛШ мфти",
+        "date_entered": "2026-04-30 17:55:51",
+        "date_modified": "2026-06-04 12:26:39",
+        "description": "",
+        "contact_id": "805956a6-c7b6-84f2-ecaf-64f45586348b",
+        "amount": 53550,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "80f974d4-44da-d810-a93d-6a132c8c57fe": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "29cf7c93-13fe-899f-acf7-6a132c49aca7",
+        "name": "ЛШ москва база",
+        "date_entered": "2026-05-24 19:52:59",
+        "date_modified": "2026-06-07 13:53:10",
+        "description": "",
+        "contact_id": "80f974d4-44da-d810-a93d-6a132c8c57fe",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "830a6f28-af06-18e1-e0bb-6a22c58cd7a5": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "548b1455-b090-2cc7-fa4a-6a22c5204ffa",
+        "name": "ЛШ мфти 20-31 ФМ + проект ИИ",
+        "date_entered": "2026-06-05 15:47:44",
+        "date_modified": "2026-06-05 16:18:13",
+        "description": "",
+        "contact_id": "830a6f28-af06-18e1-e0bb-6a22c58cd7a5",
+        "amount": 53550,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "59d37da6-835c-c5bf-f127-6a22caeefb9c",
+        "name": "Мат+инф 6 класс 26-27 МФТИ",
+        "date_entered": "2026-06-05 16:07:47",
+        "date_modified": "2026-06-05 16:08:10",
+        "description": "",
+        "contact_id": "830a6f28-af06-18e1-e0bb-6a22c58cd7a5",
+        "amount": 147600,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "85b0e0db-66d5-31c2-ed92-6a11cf7a13a7": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "70b1d2bc-f506-dd45-45a0-6a11cf1fd95f",
+        "name": "ЛШ Москва прем 10",
+        "date_entered": "2026-05-23 19:00:06",
+        "date_modified": "2026-06-03 09:02:03",
+        "description": "",
+        "contact_id": "85b0e0db-66d5-31c2-ed92-6a11cf7a13a7",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "8621bb4b-a776-c09e-488f-608a94f0ef45": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "60d8f3b7-7f05-c9ba-c19e-6a1eb7eaec1a",
+        "name": "ЛШ мфти 20-31 июля",
+        "date_entered": "2026-06-02 13:57:43",
+        "date_modified": "2026-06-06 13:12:42",
+        "description": "",
+        "contact_id": "8621bb4b-a776-c09e-488f-608a94f0ef45",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "869c9a5f-4d9f-0f1b-faf2-6a097c3a0314": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e3014b8a-b893-e740-9822-6a097cf3127d",
+        "name": "ЛШ Москва",
+        "date_entered": "2026-05-17 11:28:05",
+        "date_modified": "2026-06-02 15:43:48",
+        "description": "",
+        "contact_id": "869c9a5f-4d9f-0f1b-faf2-6a097c3a0314",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "8740961c-e3cf-7d11-5768-6a1d2f4e4fa5": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "92c769e9-32a9-89ec-40f7-6a1d649ae358",
+        "name": "лш очно унпк мск база",
+        "date_entered": "2026-06-01 13:53:29",
+        "date_modified": "2026-06-05 11:30:04",
+        "description": "",
+        "contact_id": "8740961c-e3cf-7d11-5768-6a1d2f4e4fa5",
+        "amount": 35625,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "a066d9fe-095c-d401-35a6-6a1d2f134986",
+        "name": "Заявка с сайта cdpofoton.ru",
+        "date_entered": "2026-06-01 10:08:44",
+        "date_modified": "2026-06-05 11:10:42",
+        "description": "",
+        "contact_id": "8740961c-e3cf-7d11-5768-6a1d2f4e4fa5",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "87aad076-16cb-d772-09c5-6a1d7df0e0b6": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e5b2f0ff-3815-4033-5fca-6a1d7d16baf6",
+        "name": "Заявка с сайта cdpofoton.ru",
+        "date_entered": "2026-06-01 15:38:28",
+        "date_modified": "2026-06-02 09:08:12",
+        "description": "",
+        "contact_id": "87aad076-16cb-d772-09c5-6a1d7df0e0b6",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "87e6807a-2a68-5053-632d-69fc8de14151": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "3d56f432-ebc7-144f-753c-69fc8da0adbb",
+        "name": "Лш москва",
+        "date_entered": "2026-05-07 16:01:31",
+        "date_modified": "2026-05-28 17:54:29",
+        "description": "",
+        "contact_id": "87e6807a-2a68-5053-632d-69fc8de14151",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "8e4518e7-1546-d038-99ad-6a216a77953d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "6137863a-f9f8-ae63-10bd-6a216a1237d4",
+        "name": "ЛШ Москва 6-17",
+        "date_entered": "2026-06-04 15:06:56",
+        "date_modified": "2026-06-04 15:07:50",
+        "description": "",
+        "contact_id": "8e4518e7-1546-d038-99ad-6a216a77953d",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "640f8d06-9d32-79a2-003c-6a25774b1043",
+        "name": "след уч год очно москва олимп матем, физика",
+        "date_entered": "2026-06-07 16:53:30",
+        "date_modified": "2026-06-07 16:56:36",
+        "description": "",
+        "contact_id": "8e4518e7-1546-d038-99ad-6a216a77953d",
+        "amount": 88200,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "92ef27d0-5c7b-bf7e-a783-6a1946374a72": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "a6a89f5a-317d-b4d6-bbb1-6a1946d1bd0e",
+        "name": "ЛШ очная москва",
+        "date_entered": "2026-05-29 10:53:54",
+        "date_modified": "2026-06-01 15:11:37",
+        "description": "",
+        "contact_id": "92ef27d0-5c7b-bf7e-a783-6a1946374a72",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-06-01"
+      }
+    ]
+  },
+  "942ed467-3b4c-12f2-21c8-6a0338b077f2": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "6db07c3a-2719-9c23-8294-6a0338be774a",
+        "name": "лвш июнь",
+        "date_entered": "2026-05-12 17:26:48",
+        "date_modified": "2026-06-05 17:32:41",
+        "description": "",
+        "contact_id": "942ed467-3b4c-12f2-21c8-6a0338b077f2",
+        "amount": 93100,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "965debd8-8782-302a-db5c-69997620db1a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "39ca40e0-3cf4-d67c-5ee0-69a6c3067b65",
+        "name": "лш без проживания",
+        "date_entered": "2026-03-03 14:19:29",
+        "date_modified": "2026-06-06 16:31:08",
+        "description": "",
+        "contact_id": "965debd8-8782-302a-db5c-69997620db1a",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "9685fe4e-a9ca-3b17-994f-699af7738150": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "951e2f98-4a83-f973-8a0c-69afda2945d7",
+        "name": "Сделка #47710347",
+        "date_entered": "2026-03-10 11:47:58",
+        "date_modified": "2026-05-18 15:39:24",
+        "description": "",
+        "contact_id": "9685fe4e-a9ca-3b17-994f-699af7738150",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-03-10"
+      },
+      {
+        "id": "da38aa3e-7b94-7ecf-eab9-6a06fd99cc41",
+        "name": "лш август унпк",
+        "date_entered": "2026-05-15 14:02:16",
+        "date_modified": "2026-05-19 17:41:25",
+        "description": "",
+        "contact_id": "9685fe4e-a9ca-3b17-994f-699af7738150",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "9a942ac9-fc0e-ea65-9632-6a1802ecc1d2": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "736bd9f2-8bb4-4f09-b9b5-6a1804e025d2",
+        "name": "Онлайн 7 класс",
+        "date_entered": "2026-05-28 12:01:30",
+        "date_modified": "2026-06-07 13:05:33",
+        "description": "",
+        "contact_id": "9a942ac9-fc0e-ea65-9632-6a1802ecc1d2",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "8362dc9d-7cee-b7cb-c0e1-6a18022fbe61",
+        "name": "Заявка с сайта cdpofoton.ru",
+        "date_entered": "2026-05-28 11:52:20",
+        "date_modified": "2026-06-05 10:31:04",
+        "description": "",
+        "contact_id": "9a942ac9-fc0e-ea65-9632-6a1802ecc1d2",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "9cd5cad9-f337-6160-0cd9-6a19724c95c7": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "62351993-581a-1ab5-6df2-6a197257bf79",
+        "name": "ЛШ мфти август база",
+        "date_entered": "2026-05-29 14:03:56",
+        "date_modified": "2026-05-29 14:04:23",
+        "description": "",
+        "contact_id": "9cd5cad9-f337-6160-0cd9-6a19724c95c7",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "9e322c05-4785-1458-456f-6a1feabe2679": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "54290664-dd24-3cd3-641a-6a1fea807bfb",
+        "name": "лш унпк мск",
+        "date_entered": "2026-06-03 11:50:47",
+        "date_modified": "2026-06-06 16:04:32",
+        "description": "",
+        "contact_id": "9e322c05-4785-1458-456f-6a1feabe2679",
+        "amount": 33750,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "9e323f63-19e3-f330-dbad-6a2270594af1": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e90a05ac-259b-8dad-c472-6a227002b10a",
+        "name": "ЛШ 6.07-17.07",
+        "date_entered": "2026-06-05 09:45:30",
+        "date_modified": "2026-06-05 09:46:36",
+        "description": "",
+        "contact_id": "9e323f63-19e3-f330-dbad-6a2270594af1",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Запись в группу",
+        "sales_stage": "InvoiceCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "9fbd742a-ce9a-e7bc-549b-6a218b3b7174": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "ab555641-333a-7129-1a75-6a218b050aae",
+        "name": "лш очно 6-17 июля, физмат, база",
+        "date_entered": "2026-06-04 17:29:09",
+        "date_modified": "2026-06-04 17:31:33",
+        "description": "",
+        "contact_id": "9fbd742a-ce9a-e7bc-549b-6a218b3b7174",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "a6b7cbd6-2bbe-86a5-ff7f-6a12ef5986f9": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "afceeae5-9336-c387-eed5-6a12ef31332c",
+        "name": "ЛШ МФТИ",
+        "date_entered": "2026-05-24 15:30:27",
+        "date_modified": "2026-06-04 12:02:35",
+        "description": "",
+        "contact_id": "a6b7cbd6-2bbe-86a5-ff7f-6a12ef5986f9",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "a6ce097a-9384-9b08-7723-69ff0852ef18": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "37c85fe5-6733-c6fd-9497-69ff088c34c9",
+        "name": "лш унпк июль фм",
+        "date_entered": "2026-05-09 13:12:47",
+        "date_modified": "2026-06-05 14:09:00",
+        "description": "",
+        "contact_id": "a6ce097a-9384-9b08-7723-69ff0852ef18",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "a6db1b45-b0c3-5a0a-ef35-6a0c64537250": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "48cff99b-3870-79ce-69af-6a0c6476ff88",
+        "name": "лш очно фотон фм база",
+        "date_entered": "2026-05-19 16:24:39",
+        "date_modified": "2026-06-01 14:06:28",
+        "description": "",
+        "contact_id": "a6db1b45-b0c3-5a0a-ef35-6a0c64537250",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "a745b7f6-037d-eaaf-54b4-6a05cb36ddd1": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "5863459c-932c-4333-d17a-6a1819b19e06",
+        "name": "ЛШ москва 6-17 база",
+        "date_entered": "2026-05-28 13:31:56",
+        "date_modified": "2026-06-04 16:27:32",
+        "description": "",
+        "contact_id": "a745b7f6-037d-eaaf-54b4-6a05cb36ddd1",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "e90cc639-bb86-d13f-5b29-6a05cb23ee8d",
+        "name": "ЛВШ июль",
+        "date_entered": "2026-05-14 16:18:00",
+        "date_modified": "2026-06-04 16:31:13",
+        "description": "",
+        "contact_id": "a745b7f6-037d-eaaf-54b4-6a05cb36ddd1",
+        "amount": 102600,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "a7555c21-8637-a775-3836-6a0999e98754": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "3db5e7e0-bd48-3e09-c201-6a09991b5677",
+        "name": "ЛШ МФТИ",
+        "date_entered": "2026-05-17 13:33:40",
+        "date_modified": "2026-06-04 10:50:33",
+        "description": "",
+        "contact_id": "a7555c21-8637-a775-3836-6a0999e98754",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "a81f0d84-5a81-3745-ad92-6a047710fd8a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "c8ae71fb-5ba1-a35a-ebde-6a0477577748",
+        "name": "лш 17-28 августа, физмат, база",
+        "date_entered": "2026-05-13 16:08:10",
+        "date_modified": "2026-06-02 09:04:24",
+        "description": "",
+        "contact_id": "a81f0d84-5a81-3745-ad92-6a047710fd8a",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "aa33c715-0101-a6ef-15ff-6a1849e88955": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "99df3a05-a20d-f830-5378-6a1849b4591b",
+        "name": "лш очно 20-31 июля Москва фм, база",
+        "date_entered": "2026-05-28 16:54:32",
+        "date_modified": "2026-06-03 13:41:49",
+        "description": "",
+        "contact_id": "aa33c715-0101-a6ef-15ff-6a1849e88955",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "abaaba4a-b7ac-d416-369c-6a1e94e9ec28": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "9b78fd02-c6ca-72b1-7e6b-6a1e947be0c4",
+        "name": "ЛШ Москва 6-17 Фм",
+        "date_entered": "2026-06-02 11:28:33",
+        "date_modified": "2026-06-02 11:29:53",
+        "description": "",
+        "contact_id": "abaaba4a-b7ac-d416-369c-6a1e94e9ec28",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "ac568998-785b-a4d2-21b3-6a1fddb12690": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "8beaf6a5-99b4-bd19-28bd-6a1fddc8f77f",
+        "name": "ЛШ мфти 17-28",
+        "date_entered": "2026-06-03 10:54:38",
+        "date_modified": "2026-06-03 11:03:05",
+        "description": "",
+        "contact_id": "ac568998-785b-a4d2-21b3-6a1fddb12690",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "ad18d305-a540-4de8-8817-66865b96a05f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "1a1e014b-73c9-0e01-2d4c-68b027bd4217",
+        "name": "Физ продв скор вс",
+        "date_entered": "2025-08-28 12:56:11",
+        "date_modified": "2025-09-08 09:25:57",
+        "description": "27.08 отправила инфо, будут обсуждать с ребенком, перезвонить 29.08\r\n04.09.25 - ждем оплату в тч недели чек 8.09",
+        "contact_id": "ad18d305-a540-4de8-8817-66865b96a05f",
+        "amount": 74500,
+        "date_closed": "2025-09-09",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-09-08"
+      },
+      {
+        "id": "84c2dc9c-8e44-60fc-1603-68024be45119",
+        "name": "лш мск",
+        "date_entered": "2025-04-18 15:53:55",
+        "date_modified": "2025-05-29 13:31:46",
+        "description": "18.04. думают, скорей всего айти направление\r\n 22.04 не отв\r\n24.04. не отв\r\n29.04 не отв\r\n 30.04 перезвонит сама не удобно говорить\r\n13.05. не увидела письмо, отпр еще раз посмотрят\r\n17.05. смена с 30.06 айти\r\n28.05. ао чек на почте",
+        "contact_id": "ad18d305-a540-4de8-8817-66865b96a05f",
+        "amount": 64600,
+        "date_closed": "2025-05-24",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-05-29"
+      },
+      {
+        "id": "88f293c0-235b-91ca-d7bb-66865b7193b2",
+        "name": "лш 2 смена фм",
+        "date_entered": "2024-07-04 11:21:04",
+        "date_modified": "2024-07-12 16:17:08",
+        "description": "чек 12.07",
+        "contact_id": "ad18d305-a540-4de8-8817-66865b96a05f",
+        "amount": 49500,
+        "date_closed": "2024-07-18",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-07-12"
+      }
+    ]
+  },
+  "aec470cc-67b3-7461-b0a7-6a15ce737066": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "c2df71a2-ac5a-265b-5879-6a15ce5939c5",
+        "name": "лш август ии",
+        "date_entered": "2026-05-26 19:46:43",
+        "date_modified": "2026-06-03 12:49:08",
+        "description": "",
+        "contact_id": "aec470cc-67b3-7461-b0a7-6a15ce737066",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "b49695a2-e0a2-0b7e-f7c4-69d4cf2569fe": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "6eb29cb6-3c19-891d-0d71-69d4cf1fd5c2",
+        "name": "ЛВШ июль",
+        "date_entered": "2026-04-07 12:35:49",
+        "date_modified": "2026-05-05 09:22:50",
+        "description": "",
+        "contact_id": "b49695a2-e0a2-0b7e-f7c4-69d4cf2569fe",
+        "amount": 93100,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-05-05"
+      },
+      {
+        "id": "7adcb772-9c91-1e3e-9da6-69fb1d77202e",
+        "name": "Лш москва",
+        "date_entered": "2026-05-06 13:54:40",
+        "date_modified": "2026-05-27 13:49:56",
+        "description": "",
+        "contact_id": "b49695a2-e0a2-0b7e-f7c4-69d4cf2569fe",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "e7f2d46f-e15e-6d2a-ff42-69fc3dddde22",
+        "name": "лш 6-17 июля физмат, премиум 10",
+        "date_entered": "2026-05-07 10:20:12",
+        "date_modified": "2026-05-07 10:23:41",
+        "description": "",
+        "contact_id": "b49695a2-e0a2-0b7e-f7c4-69d4cf2569fe",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-05-07"
+      }
+    ]
+  },
+  "b5001b5a-14fa-075c-db64-6a16fb105da2": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "9ef88130-2be7-11b7-fc36-6a16fbe6da63",
+        "name": "лш очно 6-17 июля, физмат, база",
+        "date_entered": "2026-05-27 17:10:33",
+        "date_modified": "2026-06-04 11:27:21",
+        "description": "",
+        "contact_id": "b5001b5a-14fa-075c-db64-6a16fb105da2",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "b61a1b15-038b-99f2-f1bb-69f0a496678f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "600b95c0-e9f5-150a-b6ab-69f0a4d6ae05",
+        "name": "лш унпк",
+        "date_entered": "2026-04-28 15:15:35",
+        "date_modified": "2026-06-02 18:00:43",
+        "description": "",
+        "contact_id": "b61a1b15-038b-99f2-f1bb-69f0a496678f",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "b6a594d1-d162-5778-a8b7-69f0a4876d06",
+        "name": "курсы 26/27 физ",
+        "date_entered": "2026-04-28 15:14:44",
+        "date_modified": "2026-06-02 18:01:18",
+        "description": "",
+        "contact_id": "b61a1b15-038b-99f2-f1bb-69f0a496678f",
+        "amount": 49000,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "b81b7aa5-1d51-6b15-062f-69f3408c284b": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e36b6f2c-dbe5-ddd7-c933-69f3406b0956",
+        "name": "6-17 июля ,ИИ",
+        "date_entered": "2026-04-30 14:43:20",
+        "date_modified": "2026-06-02 14:15:20",
+        "description": "",
+        "contact_id": "b81b7aa5-1d51-6b15-062f-69f3408c284b",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "b938595a-aea5-3ec2-e5b1-6a0c7bc05c57": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "12c73a08-63ac-b40f-4e37-6a0c7b0481ee",
+        "name": "Лш мфти",
+        "date_entered": "2026-05-19 18:03:44",
+        "date_modified": "2026-06-03 15:06:22",
+        "description": "",
+        "contact_id": "b938595a-aea5-3ec2-e5b1-6a0c7bc05c57",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "bae3e007-383a-a4df-9ba8-6a0db33007f1": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "d173aeb9-898c-a901-e453-6a0db452aab0",
+        "name": "ЛШ МФТИ август",
+        "date_entered": "2026-05-20 16:15:55",
+        "date_modified": "2026-05-28 15:45:03",
+        "description": "",
+        "contact_id": "bae3e007-383a-a4df-9ba8-6a0db33007f1",
+        "amount": 33750,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "e2fde25c-3642-bca6-cff5-6a0db3332d01",
+        "name": "ЛВШ",
+        "date_entered": "2026-05-20 16:15:28",
+        "date_modified": "2026-06-01 14:21:51",
+        "description": "",
+        "contact_id": "bae3e007-383a-a4df-9ba8-6a0db33007f1",
+        "amount": 102600,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "bc79cd63-6245-0a98-9a54-6a1c5fd74e08": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "5897a68d-5de8-2a21-dace-6a1c5fe54f94",
+        "name": "ЛШ Москва ФМ",
+        "date_entered": "2026-05-31 19:21:01",
+        "date_modified": "2026-06-03 15:52:38",
+        "description": "",
+        "contact_id": "bc79cd63-6245-0a98-9a54-6a1c5fd74e08",
+        "amount": 75000,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "bd0c995c-d1e9-2d30-a102-6a1b0c5b177e": {
+    "ok": false,
+    "error": "HTTP 429 from Tallanto: Too Many Requests",
+    "opportunities": []
+  },
+  "bd14ad20-1276-dca9-6d7b-6a2287b9e2de": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "147cef4d-225b-89a3-1a9c-6a22875744c4",
+        "name": "ЛШ москва 20-31",
+        "date_entered": "2026-06-05 11:22:52",
+        "date_modified": "2026-06-05 13:45:34",
+        "description": "",
+        "contact_id": "bd14ad20-1276-dca9-6d7b-6a2287b9e2de",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "bd60f8f8-82a8-8f26-131a-6a17ff7509d0": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "b2f1a064-d1f8-2630-4d6b-6a17ff39677f",
+        "name": "лш 6-17 июля, Ии, премиум 10",
+        "date_entered": "2026-05-28 11:39:05",
+        "date_modified": "2026-06-03 14:49:07",
+        "description": "",
+        "contact_id": "bd60f8f8-82a8-8f26-131a-6a17ff7509d0",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "be295c6c-b962-1e37-13af-6a218dd94035": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "5735aabe-19bc-fd51-7f76-6a218d4095ae",
+        "name": "ЛШ МФТИ ФМ база",
+        "date_entered": "2026-06-04 17:37:03",
+        "date_modified": "2026-06-04 17:49:11",
+        "description": "",
+        "contact_id": "be295c6c-b962-1e37-13af-6a218dd94035",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "e592b46c-36ef-fa91-a41f-6a2190dcb940",
+        "name": "26-27 мат + русский МФТИ 9 класс",
+        "date_entered": "2026-06-04 17:49:44",
+        "date_modified": "2026-06-04 17:50:13",
+        "description": "",
+        "contact_id": "be295c6c-b962-1e37-13af-6a218dd94035",
+        "amount": 88200,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "be743147-4420-3869-54b0-6a16de78cf13": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "9087dfe7-29cb-872e-4a07-6a16de0ba6f9",
+        "name": "Заявка с сайта kmipt.ru лш очно мск",
+        "date_entered": "2026-05-27 15:07:11",
+        "date_modified": "2026-06-03 11:34:40",
+        "description": "",
+        "contact_id": "be743147-4420-3869-54b0-6a16de78cf13",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "c1fefba6-688a-5ee9-802d-6a0308bbe2f6": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4e3cb04e-ea3f-926d-5b8a-6a1fdefcb597",
+        "name": "онлайн на след уч год для 7кл матем, физика",
+        "date_entered": "2026-06-03 10:56:39",
+        "date_modified": "2026-06-03 11:43:20",
+        "description": "",
+        "contact_id": "c1fefba6-688a-5ee9-802d-6a0308bbe2f6",
+        "amount": 96200,
+        "date_closed": "",
+        "sales_stage_translated": "Запись в группу",
+        "sales_stage": "InvoiceCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "b9735e5e-a336-407f-2c7e-6a0308b4aa17",
+        "name": "онлайн 26/27 мат",
+        "date_entered": "2026-05-12 14:02:29",
+        "date_modified": "2026-06-04 17:37:49",
+        "description": "",
+        "contact_id": "c1fefba6-688a-5ee9-802d-6a0308bbe2f6",
+        "amount": 47250,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "f17ab0d6-b521-3b7b-a673-6a048b9b55f2",
+        "name": "лш унпк",
+        "date_entered": "2026-05-13 17:33:39",
+        "date_modified": "2026-06-04 15:09:48",
+        "description": "",
+        "contact_id": "c1fefba6-688a-5ee9-802d-6a0308bbe2f6",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "c419e745-fd3b-2be2-e788-6a196aac5d53": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "bc2e0fb6-7f3c-0110-2fa8-6a196a93bc50",
+        "name": "ЛШ москва",
+        "date_entered": "2026-05-29 13:31:13",
+        "date_modified": "2026-06-07 13:56:41",
+        "description": "",
+        "contact_id": "c419e745-fd3b-2be2-e788-6a196aac5d53",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "c5e10469-f6d6-17a6-1efb-6a1ff9a8a65d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4a0d772a-f8b0-8af6-bf04-6a1ff92f451a",
+        "name": "ЛШ очно 6-17 июля",
+        "date_entered": "2026-06-03 12:52:42",
+        "date_modified": "2026-06-03 12:53:18",
+        "description": "",
+        "contact_id": "c5e10469-f6d6-17a6-1efb-6a1ff9a8a65d",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "c60f3360-8467-b1ea-f2d1-6a16c5717a07": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "3fe0942a-c9b1-6cdb-54f4-6a16c5fec476",
+        "name": "лш очно 6-17 июля , физмат, премиум 10",
+        "date_entered": "2026-05-27 13:20:07",
+        "date_modified": "2026-06-07 11:24:14",
+        "description": "",
+        "contact_id": "c60f3360-8467-b1ea-f2d1-6a16c5717a07",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "c6965f28-4a3f-50d7-04f1-65698e11fee5": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "1ddbc43b-fa0e-b74b-7f4d-68614397a75a",
+        "name": "ЛШ 2025 МФТИ 28.07- 8.08 ФМ 5-6 класс",
+        "date_entered": "2025-06-29 16:45:28",
+        "date_modified": "2025-07-16 16:13:52",
+        "description": "еще думают",
+        "contact_id": "c6965f28-4a3f-50d7-04f1-65698e11fee5",
+        "amount": 1,
+        "date_closed": "2025-07-20",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-07-16"
+      },
+      {
+        "id": "3ea7fc67-7684-9cb0-bcfd-67023b2bd226",
+        "name": "мат",
+        "date_entered": "2024-10-06 10:25:48",
+        "date_modified": "2024-10-06 14:29:00",
+        "description": "придут сегодня на занятие, оплатят чек на почте",
+        "contact_id": "c6965f28-4a3f-50d7-04f1-65698e11fee5",
+        "amount": 9900,
+        "date_closed": "2024-10-09",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-10-06"
+      },
+      {
+        "id": "49a10c9a-c700-68cc-e83c-6a200eb69e27",
+        "name": "ЛШ мфти август прем 10",
+        "date_entered": "2026-06-03 14:22:39",
+        "date_modified": "2026-06-04 18:56:47",
+        "description": "",
+        "contact_id": "c6965f28-4a3f-50d7-04f1-65698e11fee5",
+        "amount": 53550,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "4bbfb70e-7544-d059-b050-69cd24949f7e",
+        "name": "Предложение курсов на 26-27 уч.г",
+        "date_entered": "2026-04-01 16:58:43",
+        "date_modified": "2026-06-03 14:36:09",
+        "description": "",
+        "contact_id": "c6965f28-4a3f-50d7-04f1-65698e11fee5",
+        "amount": 44100,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "4d26c6b7-5efc-8346-3f81-65698e9537eb",
+        "name": "мат",
+        "date_entered": "2023-12-01 10:44:03",
+        "date_modified": "2023-12-01 13:12:38",
+        "description": "чек 1.12",
+        "contact_id": "c6965f28-4a3f-50d7-04f1-65698e11fee5",
+        "amount": 5950,
+        "date_closed": "2023-12-04",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-12-01"
+      },
+      {
+        "id": "6e43e044-88a9-4d43-56f7-694bb7cd9b47",
+        "name": "2 семестра",
+        "date_entered": "2025-12-24 12:52:48",
+        "date_modified": "2026-01-19 10:23:23",
+        "description": "24.12.25 проинфомировала , что если оплатят второй семестр до нового года, цена им будет со скидкой 10% = 33 000 руб, если после нг , будет цена = 36900 руб. \r\nОбсудят и сообщат. \r\n26.12 у них на счету УЖЕ есть деньги, осталось доплатить 15 450 руб. , отпр на почту ",
+        "contact_id": "c6965f28-4a3f-50d7-04f1-65698e11fee5",
+        "amount": 15450,
+        "date_closed": "2026-01-19",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2026-01-19"
+      },
+      {
+        "id": "a4bde346-bd72-9bc8-1a6f-686143f63be7",
+        "name": "Мат 2025 МФТИ 6 кл Слаб Вс 11.45-13.45",
+        "date_entered": "2025-06-29 16:44:28",
+        "date_modified": "2025-08-18 15:34:30",
+        "description": "еще думают/позвонят сами до 10.08, хотят семестр оплатить/18.08 оплата за семестр, остаток на балансе в счет будущей оплаты ",
+        "contact_id": "c6965f28-4a3f-50d7-04f1-65698e11fee5",
+        "amount": 49000,
+        "date_closed": "2025-08-31",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-08-18"
+      }
+    ]
+  },
+  "c761e3f5-813a-9ea0-9839-6a2175209469": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "bddba4ea-fedb-45c4-d57a-6a2175fa76fb",
+        "name": "лш очно москва 20-31 июля физмат , база",
+        "date_entered": "2026-06-04 15:53:05",
+        "date_modified": "2026-06-04 15:54:05",
+        "description": "",
+        "contact_id": "c761e3f5-813a-9ea0-9839-6a2175209469",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "c7fc2dce-b01e-2722-edd8-6a0d573aa0a9": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "a8dd58d3-4a1a-a06f-e358-6a0d57ec512e",
+        "name": "Летняя школа ИИ",
+        "date_entered": "2026-05-20 09:41:29",
+        "date_modified": "2026-06-04 16:21:21",
+        "description": "",
+        "contact_id": "c7fc2dce-b01e-2722-edd8-6a0d573aa0a9",
+        "amount": 99500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "c867fdee-d972-ee8a-516c-686f7e82e618": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "14b87058-f0c7-907b-e426-691ffde8c92f",
+        "name": "лвш 1 смена фм",
+        "date_entered": "2025-11-21 08:51:04",
+        "date_modified": "2026-03-02 08:50:15",
+        "description": "жду ответ на почте 21.11 подтвердила\r\n2.02 запись подтвердила, оплатит\r\n27.02 написала запрос на почту\r\nчек 2.03",
+        "contact_id": "c867fdee-d972-ee8a-516c-686f7e82e618",
+        "amount": 79135,
+        "date_closed": "2026-03-03",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2026-03-02"
+      },
+      {
+        "id": "32ea6271-8048-0b35-1463-686f7e37e5c0",
+        "name": "лш 2 смена фм",
+        "date_entered": "2025-07-10 11:47:54",
+        "date_modified": "2025-07-14 16:09:37",
+        "description": "чек 14.07",
+        "contact_id": "c867fdee-d972-ee8a-516c-686f7e82e618",
+        "amount": 61200,
+        "date_closed": "2025-07-25",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-07-14"
+      },
+      {
+        "id": "6091b528-eb34-c836-273e-68d672273cd6",
+        "name": "звш 2026",
+        "date_entered": "2025-09-26 14:01:19",
+        "date_modified": "2025-10-27 15:40:55",
+        "description": "26.09 скидки 10% так как были в лвш 2 раза\r\nотправила письмо на почту\r\n26.09 отп договор\r\n30.09 автоотв\r\n6.10 скинула, будто не слышит\r\n8.10 автоотв\r\n21.10 отпр письмо на востап\r\n27.10 неудобно говорить и сбросила,  гасится",
+        "contact_id": "c867fdee-d972-ee8a-516c-686f7e82e618",
+        "amount": 70560,
+        "date_closed": "2025-10-27",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-10-27"
+      },
+      {
+        "id": "9c381f74-1076-a033-5c59-6a1446c9252a",
+        "name": "лш очно фотон фм база",
+        "date_entered": "2026-05-25 15:52:51",
+        "date_modified": "2026-06-05 09:26:59",
+        "description": "",
+        "contact_id": "c867fdee-d972-ee8a-516c-686f7e82e618",
+        "amount": 32585,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "b2992709-ca1a-1d73-6ad4-686f876365f5",
+        "name": "лвш 3 смена фм",
+        "date_entered": "2025-07-10 12:29:16",
+        "date_modified": "2025-07-14 16:10:11",
+        "description": "многодет чек 14.07",
+        "contact_id": "c867fdee-d972-ee8a-516c-686f7e82e618",
+        "amount": 83790,
+        "date_closed": "2025-07-31",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-07-14"
+      },
+      {
+        "id": "d44c57f0-59ad-e716-48b8-68aed569dfa0",
+        "name": "мат физ инф 2025-26",
+        "date_entered": "2025-08-27 12:54:17",
+        "date_modified": "2025-09-06 16:16:27",
+        "description": "27.08 отправила инфо на почту, перезвонить",
+        "contact_id": "c867fdee-d972-ee8a-516c-686f7e82e618",
+        "amount": 1,
+        "date_closed": "2025-09-09",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-09-06"
+      }
+    ]
+  },
+  "c8997e4b-0bfa-709a-4fe7-6a22ae2db018": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "adfcc051-e14c-350a-b63a-6a22aed6d3c6",
+        "name": "Лш 20-31 МФТИ прем 10",
+        "date_entered": "2026-06-05 14:09:58",
+        "date_modified": "2026-06-05 14:11:11",
+        "description": "",
+        "contact_id": "c8997e4b-0bfa-709a-4fe7-6a22ae2db018",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "cb33f27c-d20a-ea1a-bab8-6a193d589933": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "6bf19d50-b212-cb2a-10cd-6a193d73d14e",
+        "name": "лш очно мск фотон",
+        "date_entered": "2026-05-29 10:17:30",
+        "date_modified": "2026-06-03 09:25:07",
+        "description": "",
+        "contact_id": "cb33f27c-d20a-ea1a-bab8-6a193d589933",
+        "amount": 34300,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "ce157c64-fbba-1a9d-228e-6a1fe62bb427": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "191c2e83-5236-c4b4-d4ca-6a1fe6dcb180",
+        "name": "лш унпк мск",
+        "date_entered": "2026-06-03 11:30:02",
+        "date_modified": "2026-06-04 15:32:26",
+        "description": "",
+        "contact_id": "ce157c64-fbba-1a9d-228e-6a1fe62bb427",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "cf24db14-0aa7-a6a3-14b3-6a0c47732eb7": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "75643955-8055-f25d-e33f-6a0c4710fcc0",
+        "name": "ЛШ мфти фм + проект ИИ",
+        "date_entered": "2026-05-19 14:18:55",
+        "date_modified": "2026-06-04 18:56:16",
+        "description": "",
+        "contact_id": "cf24db14-0aa7-a6a3-14b3-6a0c47732eb7",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "cfa1d69e-feb3-9398-b4cb-610679d8e83f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "12925e85-4425-c38a-d670-6662ab112ec3",
+        "name": "лш 2 смена айти мфти",
+        "date_entered": "2024-06-07 09:38:56",
+        "date_modified": "2024-06-19 14:32:25",
+        "description": "",
+        "contact_id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+        "amount": 49500,
+        "date_closed": "2024-06-16",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-06-19"
+      },
+      {
+        "id": "5f61761c-9ce7-9d60-0348-687b7e791499",
+        "name": "мат/физ 7 класс",
+        "date_entered": "2025-07-19 14:16:44",
+        "date_modified": "2025-07-19 14:16:44",
+        "description": "",
+        "contact_id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+        "amount": 141550,
+        "date_closed": "2025-07-16",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-07-19"
+      },
+      {
+        "id": "7540d878-8cf9-794f-093f-64d4a7dcd6e0",
+        "name": "мат мфти 23-24",
+        "date_entered": "2023-08-10 12:03:04",
+        "date_modified": "2023-08-20 15:18:36",
+        "description": "",
+        "contact_id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+        "amount": 54750,
+        "date_closed": "2023-08-21",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-08-20"
+      },
+      {
+        "id": "82ee3711-54bd-4dcc-7cfb-69ea1253544d",
+        "name": "лш 2027",
+        "date_entered": "2026-04-23 15:38:30",
+        "date_modified": "2026-04-23 15:39:18",
+        "description": "",
+        "contact_id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+        "amount": 0,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      },
+      {
+        "id": "ada017ca-75bd-6488-df4d-66c324b2228b",
+        "name": "мат 6 кл мфти",
+        "date_entered": "2024-08-19 13:56:59",
+        "date_modified": "2024-08-26 15:12:12",
+        "description": "чек 26.08",
+        "contact_id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+        "amount": 74500,
+        "date_closed": "2024-08-30",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-08-26"
+      },
+      {
+        "id": "b3408516-6132-8c0a-54f4-64da1e8d1561",
+        "name": "инф мфти",
+        "date_entered": "2023-08-14 15:31:32",
+        "date_modified": "2023-08-20 15:19:00",
+        "description": "второй предмет, программирование уже изучали питон и с++, записались на инф-ку с 6 классом",
+        "contact_id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+        "amount": 49275,
+        "date_closed": "",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-08-20"
+      },
+      {
+        "id": "b955971e-9915-9f13-8ce4-687b7e951aa3",
+        "name": "ЛШ 2 смена",
+        "date_entered": "2025-07-19 14:17:55",
+        "date_modified": "2025-07-22 21:07:26",
+        "description": "Оплатили в мае",
+        "contact_id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+        "amount": 59900,
+        "date_closed": "2025-07-10",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-07-19"
+      }
+    ]
+  },
+  "cfddb98f-a2de-e364-cfee-6a216ad368b5": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4835949d-4086-2ed8-c37d-6a216a6f803e",
+        "name": "лш очно 20-31 М, физмат/премиум 10",
+        "date_entered": "2026-06-04 15:08:15",
+        "date_modified": "2026-06-04 15:18:15",
+        "description": "",
+        "contact_id": "cfddb98f-a2de-e364-cfee-6a216ad368b5",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "d0317eee-e48a-77a3-67b9-6a0f3e346a2d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "d4f2cdfd-238e-81df-277f-6a0f4089f2cb",
+        "name": "ЛШ москва",
+        "date_entered": "2026-05-21 20:25:55",
+        "date_modified": "2026-06-07 12:04:30",
+        "description": "",
+        "contact_id": "d0317eee-e48a-77a3-67b9-6a0f3e346a2d",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "d08f44cd-5e70-32ff-e6c9-64feefacbb4d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "201f1aa2-2afa-162d-e9ce-6a10135b1828",
+        "name": "Лш Москва",
+        "date_entered": "2026-05-22 11:26:52",
+        "date_modified": "2026-06-06 14:27:49",
+        "description": "",
+        "contact_id": "d08f44cd-5e70-32ff-e6c9-64feefacbb4d",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "53825487-bcb6-dec8-b3d7-66dabdbb28a0",
+        "name": "мат 9 кл",
+        "date_entered": "2024-09-06 11:30:43",
+        "date_modified": "2024-09-13 14:53:48",
+        "description": "записалсиь через почту мат 9 кл сб 14.30 продвинутая перешли на вс\r\n12.09. завтра оплатят, пришлет чек, заболел скорей всего 15.09. пропустил=т отправить тест если не придет на почту чек 13.09",
+        "contact_id": "d08f44cd-5e70-32ff-e6c9-64feefacbb4d",
+        "amount": 44600,
+        "date_closed": "2024-09-13",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-09-13"
+      },
+      {
+        "id": "ca5ec7cd-2b2b-36e9-2d8d-689dcb5221db",
+        "name": "25-26 думает, отпр расписание",
+        "date_entered": "2025-08-14 14:42:57",
+        "date_modified": "2025-09-11 15:14:32",
+        "description": "",
+        "contact_id": "d08f44cd-5e70-32ff-e6c9-64feefacbb4d",
+        "amount": 1,
+        "date_closed": "2025-09-13",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2025-09-11"
+      },
+      {
+        "id": "d5faed26-6e0c-6421-b59f-64feefaeb3c8",
+        "name": "мат 8 кл мск",
+        "date_entered": "2023-09-11 13:46:16",
+        "date_modified": "2023-09-12 15:49:42",
+        "description": "",
+        "contact_id": "d08f44cd-5e70-32ff-e6c9-64feefacbb4d",
+        "amount": 35500,
+        "date_closed": "2023-09-18",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-09-12"
+      }
+    ]
+  },
+  "d55ed6d4-a29e-60cc-9c37-6a12cf3851f3": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "aba62b26-6b9b-94b5-eff9-6a12cf4e21ae",
+        "name": "ЛШ Москва прем 10",
+        "date_entered": "2026-05-24 13:13:39",
+        "date_modified": "2026-06-05 11:54:15",
+        "description": "",
+        "contact_id": "d55ed6d4-a29e-60cc-9c37-6a12cf3851f3",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "d6e1a247-cf62-42e5-c672-69f89695978e": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "8192675e-34d8-f1ed-0929-69f896eaf234",
+        "name": "лш 6-17 июля физмат премиум",
+        "date_entered": "2026-05-04 15:50:48",
+        "date_modified": "2026-06-04 14:26:31",
+        "description": "",
+        "contact_id": "d6e1a247-cf62-42e5-c672-69f89695978e",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "d6f2243d-28c1-3a25-de53-6a16d255d45c": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "9f79bee2-e82a-2fb3-cf0f-6a16d2e34bc3",
+        "name": "лш очно 6-17 июля, физмат, премиум 10",
+        "date_entered": "2026-05-27 14:17:45",
+        "date_modified": "2026-06-03 16:37:57",
+        "description": "",
+        "contact_id": "d6f2243d-28c1-3a25-de53-6a16d255d45c",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "d779ab42-c91b-23df-87bc-69df39b940f6": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "508bfef8-36bc-e658-b30a-69df393aadbe",
+        "name": "лш + курсы",
+        "date_entered": "2026-04-15 10:09:42",
+        "date_modified": "2026-06-05 11:54:51",
+        "description": "",
+        "contact_id": "d779ab42-c91b-23df-87bc-69df39b940f6",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "d94c7c40-8b45-70a7-0348-6a1fee43e3d5": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "3a5ee560-b664-7297-e9f9-6a1feec7a42f",
+        "name": "лш очно 6-17 июля физмат",
+        "date_entered": "2026-06-03 12:08:08",
+        "date_modified": "2026-06-05 13:34:13",
+        "description": "",
+        "contact_id": "d94c7c40-8b45-70a7-0348-6a1fee43e3d5",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "da5db616-05a2-f1bb-f816-5b6ed4d5d045": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "af86c0ce-5214-66cf-3dd5-69f84711b4c1",
+        "name": "лш 20-31 июля ИИ",
+        "date_entered": "2026-05-04 10:13:41",
+        "date_modified": "2026-05-04 10:51:07",
+        "description": "",
+        "contact_id": "da5db616-05a2-f1bb-f816-5b6ed4d5d045",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "c4b14653-3ccc-a779-4f69-695242ceec77",
+        "name": "добавили еще 1 предмет",
+        "date_entered": "2025-12-29 11:59:11",
+        "date_modified": "2025-12-29 13:14:41",
+        "description": "29.12.25 дала ОС по ученику , будут учится во 2 семестре, добавили еще 1 предмет, выслала письмо на почту/ реквизиты. чек 29.12",
+        "contact_id": "da5db616-05a2-f1bb-f816-5b6ed4d5d045",
+        "amount": 31350,
+        "date_closed": "2025-12-30",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-12-29"
+      },
+      {
+        "id": "c91b0f50-8219-addf-540e-68a851033736",
+        "name": "Мат 2025 МФТИ 6кл Сил Вс 11.45-13.45",
+        "date_entered": "2025-08-22 14:17:54",
+        "date_modified": "2025-09-08 11:59:40",
+        "description": "контроль оплаты*\r\nоплатят 6.09 \r\n07.09 ссылка устарела, заказала новую\r\n08.09 перезаписала в 7кл на два предмета , отпр на почту запись + квитанцию  чек 8.09",
+        "contact_id": "da5db616-05a2-f1bb-f816-5b6ed4d5d045",
+        "amount": 88200,
+        "date_closed": "2025-09-08",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-09-08"
+      },
+      {
+        "id": "cd3cad26-c11d-45bb-068c-64df56c34ae0",
+        "name": "физ мат 4 кл пац",
+        "date_entered": "2023-08-18 14:31:23",
+        "date_modified": "2023-09-04 15:38:19",
+        "description": "4.09 оплатили чек на почте ",
+        "contact_id": "da5db616-05a2-f1bb-f816-5b6ed4d5d045",
+        "amount": 56500,
+        "date_closed": "2023-09-04",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2023-09-04"
+      },
+      {
+        "id": "e0e14afc-ba5b-1d97-58b9-69f84a73811b",
+        "name": "лш 17-28 августа физмат база",
+        "date_entered": "2026-05-04 10:26:59",
+        "date_modified": "2026-05-04 12:48:49",
+        "description": "",
+        "contact_id": "da5db616-05a2-f1bb-f816-5b6ed4d5d045",
+        "amount": 35625,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "ed4c4dc6-4125-80a2-29d3-6943d6de8f72",
+        "name": "2 семестр",
+        "date_entered": "2025-12-18 13:26:32",
+        "date_modified": "2025-12-29 13:14:26",
+        "description": "Отпр инф-я по оплате чек 29.12",
+        "contact_id": "da5db616-05a2-f1bb-f816-5b6ed4d5d045",
+        "amount": 66000,
+        "date_closed": "2025-12-30",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-12-29"
+      }
+    ]
+  },
+  "dc45acfd-7cce-2988-0236-69fdc21b5685": {
+    "ok": false,
+    "error": "HTTP 429 from Tallanto: Too Many Requests",
+    "opportunities": []
+  },
+  "e02204e1-cc93-1c4d-9fe7-6a087f850738": {
+    "ok": false,
+    "error": "HTTP 429 from Tallanto: Too Many Requests",
+    "opportunities": []
+  },
+  "e0b079f2-c5b7-0aa4-4dc7-6a19c31cc2c9": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "388a7813-ac52-0f00-4e40-6a19c353ee9c",
+        "name": "ЛШ Москва",
+        "date_entered": "2026-05-29 19:47:59",
+        "date_modified": "2026-05-30 10:36:16",
+        "description": "",
+        "contact_id": "e0b079f2-c5b7-0aa4-4dc7-6a19c31cc2c9",
+        "amount": 59000,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "e63099f8-5b0a-b6d7-8b20-6a22867acc9c": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "cfdcdbd5-ceb4-dbec-a209-6a2286669efb",
+        "name": "Заявка с сайта kmipt.ru",
+        "date_entered": "2026-06-05 11:18:53",
+        "date_modified": "2026-06-05 11:20:10",
+        "description": "",
+        "contact_id": "e63099f8-5b0a-b6d7-8b20-6a22867acc9c",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "e63dddaa-26f2-aa84-62c1-6a2048a1f534": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4a823fc2-0953-9e40-82cc-6a2049569f07",
+        "name": "ЛШ москва 6-17 ИИ",
+        "date_entered": "2026-06-03 18:32:15",
+        "date_modified": "2026-06-03 18:32:55",
+        "description": "",
+        "contact_id": "e63dddaa-26f2-aa84-62c1-6a2048a1f534",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "e7de7f7d-884a-3925-dd04-66221cfedd85": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "123c3aca-00e6-d276-fb6b-69c7b69d2c7a",
+        "name": "Предложение курсов на 26-27 уч.г",
+        "date_entered": "2026-03-28 14:08:44",
+        "date_modified": "2026-03-28 14:10:17",
+        "description": "",
+        "contact_id": "e7de7f7d-884a-3925-dd04-66221cfedd85",
+        "amount": 74500,
+        "date_closed": "",
+        "sales_stage_translated": "Запись в группу",
+        "sales_stage": "InvoiceCreated",
+        "system_date_closed": ""
+      },
+      {
+        "id": "783810b9-ee6d-138f-640a-68a4771f3f38",
+        "name": "26/27",
+        "date_entered": "2025-08-19 16:07:14",
+        "date_modified": "2026-02-19 16:35:53",
+        "description": "Позвонить 23.08. Думают по расписанию и предметам (один или два)\r\n11.09 поменялось опять расписание, помнит про нас, позвонит сама 3.10 не отв\r\n13.10 Пока, к сожалению, со временем у нас не очень. Очень хочется, но, уже думаю до следующего года.",
+        "contact_id": "e7de7f7d-884a-3925-dd04-66221cfedd85",
+        "amount": 49500,
+        "date_closed": "2026-06-30",
+        "sales_stage_translated": "Заключение договора",
+        "sales_stage": "zaklyuchenie_dogovora",
+        "system_date_closed": ""
+      },
+      {
+        "id": "ab293e92-335c-be7e-cbb9-66221e64318b",
+        "name": "ЛШ очно",
+        "date_entered": "2024-04-19 10:34:30",
+        "date_modified": "2024-06-20 12:08:00",
+        "description": "о повышении стоимости в курсе\r\nоплатит в ближ.дни",
+        "contact_id": "e7de7f7d-884a-3925-dd04-66221cfedd85",
+        "amount": 49500,
+        "date_closed": "2024-07-04",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2024-06-20"
+      },
+      {
+        "id": "b45d262c-a385-dd33-7203-6673f14d2462",
+        "name": "мск 24-25 мат.капитал",
+        "date_entered": "2024-06-20 12:08:30",
+        "date_modified": "2025-05-20 16:37:23",
+        "description": "запислись на след год, думают насчет предметов\r\n27.06. пока еще не решили касательно предметов, проинформаированы об изменении стоимости с 1..07.\r\n11.07. соглас распиание мат физ, оплата мат.кап\r\n30.07. все в силе, доки пришлет завтра.\r\n5.09 волнуются на счет договора, ждут ну когда когда,уточнить завтра подписан он или нет",
+        "contact_id": "e7de7f7d-884a-3925-dd04-66221cfedd85",
+        "amount": 70022,
+        "date_closed": "2024-12-31",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-05-20"
+      },
+      {
+        "id": "e18360f2-cae1-7b0a-ddf0-69eb33389256",
+        "name": "ЛШ очно фм",
+        "date_entered": "2026-04-24 12:11:54",
+        "date_modified": "2026-06-04 16:10:25",
+        "description": "",
+        "contact_id": "e7de7f7d-884a-3925-dd04-66221cfedd85",
+        "amount": 59000,
+        "date_closed": "",
+        "sales_stage_translated": "Перспектива",
+        "sales_stage": "InitialContact",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "e8271f5f-683e-47d9-a9d2-6a18613f575a": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "7f80af54-7fe2-ee80-a9cd-6a18618bd1a2",
+        "name": "Лш МФТИ август ФМ 59500",
+        "date_entered": "2026-05-28 18:37:57",
+        "date_modified": "2026-05-28 18:39:53",
+        "description": "",
+        "contact_id": "e8271f5f-683e-47d9-a9d2-6a18613f575a",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "e836ea2f-8706-3712-55ec-69fdb9e86c72": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "cba3c04b-506a-4685-8920-6a0c6cfbec6f",
+        "name": "Лш мфти",
+        "date_entered": "2026-05-19 16:56:57",
+        "date_modified": "2026-06-03 15:02:04",
+        "description": "",
+        "contact_id": "e836ea2f-8706-3712-55ec-69fdb9e86c72",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "e345558e-232e-ea38-eca1-69fdb9e12e30",
+        "name": "Заявка с сайта kmipt.ru",
+        "date_entered": "2026-05-08 13:23:49",
+        "date_modified": "2026-05-19 16:58:39",
+        "description": "",
+        "contact_id": "e836ea2f-8706-3712-55ec-69fdb9e86c72",
+        "amount": 114000,
+        "date_closed": "",
+        "sales_stage_translated": "Потрачены деньги на заявку. - Отказ",
+        "sales_stage": "ClosedLost",
+        "system_date_closed": "2026-05-19"
+      }
+    ]
+  },
+  "e8f4454d-e048-1fff-eee1-6a0eab8c8f3d": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "5011c4e2-4d59-2da6-16ae-6a0eab4ec52d",
+        "name": "лш очно мфти август премиум 10",
+        "date_entered": "2026-05-21 09:52:45",
+        "date_modified": "2026-06-02 13:33:28",
+        "description": "",
+        "contact_id": "e8f4454d-e048-1fff-eee1-6a0eab8c8f3d",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Принимают решение",
+        "sales_stage": "dogovorilis_o_zapisi_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "eae7a5ca-bdc6-0e2b-0cb0-6694fd1f7d77": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "2a860214-0480-4b9c-1276-6694fec51bb6",
+        "name": "лш",
+        "date_entered": "2024-07-15 13:47:31",
+        "date_modified": "2024-07-22 12:57:47",
+        "description": "оплатят до 22 июля",
+        "contact_id": "eae7a5ca-bdc6-0e2b-0cb0-6694fd1f7d77",
+        "amount": 49500,
+        "date_closed": "2024-07-23",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2024-07-22"
+      },
+      {
+        "id": "4a040d05-aa95-8d95-e7ee-6a0b25caa1de",
+        "name": "ЛШ москва ФМ база",
+        "date_entered": "2026-05-18 17:41:22",
+        "date_modified": "2026-06-07 11:33:52",
+        "description": "",
+        "contact_id": "eae7a5ca-bdc6-0e2b-0cb0-6694fd1f7d77",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "57a6c9b6-161c-360a-6af3-6853c2d319a4",
+        "name": "ЛШ 2 смена фм",
+        "date_entered": "2025-06-19 10:56:04",
+        "date_modified": "2025-07-03 10:07:41",
+        "description": "скидка 5% участник школ\r\nчек на почте",
+        "contact_id": "eae7a5ca-bdc6-0e2b-0cb0-6694fd1f7d77",
+        "amount": 64600,
+        "date_closed": "2025-07-01",
+        "sales_stage_translated": "Успешно завершена - Есть оплата",
+        "sales_stage": "ClosedWon",
+        "system_date_closed": "2025-07-03"
+      }
+    ]
+  },
+  "eb4f06c1-eadc-6856-c85a-6a0d895c5057": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "efffd7b9-c7fe-1ed9-e0b2-6a0d89717264",
+        "name": "лш унпк август",
+        "date_entered": "2026-05-20 13:15:22",
+        "date_modified": "2026-06-02 11:31:16",
+        "description": "",
+        "contact_id": "eb4f06c1-eadc-6856-c85a-6a0d895c5057",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "ec34ec88-8ba8-1f9f-3f5b-6a12c4dcae74": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "b4bf21a3-7ba4-7698-6734-6a12c4b2fd76",
+        "name": "Лш МФТИ август",
+        "date_entered": "2026-05-24 12:28:47",
+        "date_modified": "2026-05-28 16:23:34",
+        "description": "",
+        "contact_id": "ec34ec88-8ba8-1f9f-3f5b-6a12c4dcae74",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "eeb9a57f-013a-692e-3133-6a216e6eefed": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "e615482b-8aa4-4b3e-a26a-6a216edcce50",
+        "name": "лш очно москва 20-31 июля , физмат, база",
+        "date_entered": "2026-06-04 15:26:05",
+        "date_modified": "2026-06-04 15:31:05",
+        "description": "",
+        "contact_id": "eeb9a57f-013a-692e-3133-6a216e6eefed",
+        "amount": 39500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "f01b0ad0-b1cd-47cf-682d-69f483675ccb": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "6dbd6cc2-4ebd-5459-c48d-69f483c47459",
+        "name": "лш унпк август ИИ база",
+        "date_entered": "2026-05-01 13:40:35",
+        "date_modified": "2026-06-03 16:54:41",
+        "description": "",
+        "contact_id": "f01b0ad0-b1cd-47cf-682d-69f483675ccb",
+        "amount": 37500,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  },
+  "f2a4431e-25fa-ea85-d0f4-69d4aa141a0f": {
+    "ok": true,
+    "opportunities": [
+      {
+        "id": "4bf69e18-83f5-003a-10e4-69f873545aec",
+        "name": "лш с 20.07 мфти",
+        "date_entered": "2026-05-04 13:24:40",
+        "date_modified": "2026-06-04 14:20:00",
+        "description": "",
+        "contact_id": "f2a4431e-25fa-ea85-d0f4-69d4aa141a0f",
+        "amount": 59500,
+        "date_closed": "",
+        "sales_stage_translated": "Ожидание оплаты",
+        "sales_stage": "dogovorilis_ob_oplate_k_date",
+        "system_date_closed": ""
+      },
+      {
+        "id": "7a6a1c9f-4480-5dad-242a-69d4aa7779c3",
+        "name": "ЛВШ-26 август",
+        "date_entered": "2026-04-07 09:57:24",
+        "date_modified": "2026-04-27 11:12:25",
+        "description": "",
+        "contact_id": "f2a4431e-25fa-ea85-d0f4-69d4aa141a0f",
+        "amount": 114000,
+        "date_closed": "",
+        "sales_stage_translated": "Оплата получена",
+        "sales_stage": "PrepaidCreated",
+        "system_date_closed": ""
+      }
+    ]
+  }
+}

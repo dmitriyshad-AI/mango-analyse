@@ -1,0 +1,33 @@
+{
+  "confirmed_payments": 579,
+  "confirmed_sum": 46761749.5,
+  "ambiguous_payments": 2,
+  "participants": 559,
+  "participants_by_event": {
+    "LVSH1_FOTON": 124,
+    "LVSH2_FOTON": 117,
+    "LVSH2_UNPK": 93,
+    "LVSH3_UNPK": 225
+  },
+  "payments_by_event": {
+    "LVSH1_FOTON": 130,
+    "LVSH2_FOTON": 116,
+    "LVSH2_UNPK": 75,
+    "LVSH3_UNPK": 258
+  },
+  "sum_by_event": {
+    "LVSH1_FOTON": 9500217.0,
+    "LVSH2_FOTON": 7742125.0,
+    "LVSH2_UNPK": 7886500.0,
+    "LVSH3_UNPK": 21632907.5
+  },
+  "payments_by_method": {
+    "Webmoney": 233,
+    "Альфа-банк": 317,
+    "Единая касса": 13,
+    "СБП": 15,
+    "Наличные": 1
+  },
+  "no_payment_participants": 70,
+  "partial_or_discount_participants": 345
+}

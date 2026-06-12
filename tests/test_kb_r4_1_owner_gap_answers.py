@@ -19,7 +19,7 @@ def _client(facts: dict[tuple[str, str], dict], brand: str, fact_key: str) -> st
     return str(facts[(brand, fact_key)].get("client_safe_text") or "")
 
 
-def test_kb_r4_1_owner_gap_release_is_built_but_not_default() -> None:
+def test_kb_r4_1_owner_gap_release_is_built_and_default() -> None:
     build_result = json.loads((R4_1_RELEASE / "v6_1_build_result.json").read_text(encoding="utf-8"))
     assert build_result["build_result"]["quality_passed"] is True
     assert build_result["semantic_pass"] is True
@@ -28,10 +28,10 @@ def test_kb_r4_1_owner_gap_release_is_built_but_not_default() -> None:
         encoding="utf-8"
     )
     runner = (PROJECT_ROOT / "scripts" / "run_telegram_dynamic_client_sim.py").read_text(encoding="utf-8")
-    assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" in pipeline
-    assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" in runner
-    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" not in pipeline
-    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" not in runner
+    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" in pipeline
+    assert "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json" in runner
+    assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" not in pipeline
+    assert "kb_release_20260611_v6_7_staging_r4/kb_release_v3_snapshot.json" not in runner
 
 
 def test_kb_r4_1_owner_gap_client_facts_for_both_brands() -> None:

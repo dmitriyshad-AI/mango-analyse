@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from difflib import SequenceMatcher
@@ -69,12 +70,18 @@ class DraftLoopPair:
     key: DraftLoopKey
     lead_id: str
     expected_brand: str
+    not_before_ts: int = 0
+    source: str = "manual"
+    match_key: str = ""
+    contact_id: str = ""
+    auto_note: str = ""
 
 
 @dataclass(frozen=True)
 class DraftLoopConfig:
     profiles: Mapping[str, DraftLoopProfile]
     pairs: Mapping[DraftLoopKey, DraftLoopPair] = field(default_factory=dict)
+    auto_pairs_path: Path | None = None
     allowed_test_lead_ids: frozenset[str] = field(default_factory=frozenset)
     state_path: Path = DEFAULT_DRAFT_LOOP_DIR / "state.json"
     journal_path: Path = DEFAULT_DRAFT_LOOP_DIR / "journal.jsonl"
@@ -83,6 +90,7 @@ class DraftLoopConfig:
     stop_path: Path = DEFAULT_STOP_PATH
     debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS
     history_limit: int = DEFAULT_HISTORY_LIMIT
+    chat_limit: int = 50
     auth_error_limit: int = DEFAULT_AUTH_ERROR_LIMIT
     manager_outgoing_visible: bool | None = None
     config_fingerprint: Mapping[str, str] = field(default_factory=dict)
@@ -94,12 +102,22 @@ class DraftLoopConfig:
         return profile.brand
 
     def pair_for(self, key: DraftLoopKey) -> DraftLoopPair | None:
-        return self.pairs.get(key)
+        return self.pairs_snapshot().get(key)
+
+    def pairs_snapshot(self) -> dict[DraftLoopKey, DraftLoopPair]:
+        result = dict(self.pairs)
+        if self.auto_pairs_path is not None:
+            path = self.auto_pairs_path.expanduser()
+            if path.exists():
+                result.update(load_pairs_file(path, default_source="auto"))
+        return result
 
     def phase1_config(self) -> AmoWappiPhase1Config:
+        allowed = {str(item) for item in self.allowed_test_lead_ids}
+        allowed.update(str(pair.lead_id) for pair in self.pairs_snapshot().values())
         return AmoWappiPhase1Config(
             profile_brand_map={profile_id: profile.brand for profile_id, profile in self.profiles.items()},
-            allowed_test_lead_ids=frozenset(str(item) for item in self.allowed_test_lead_ids),
+            allowed_test_lead_ids=frozenset(allowed),
             manager_edit_log_path=self.manager_edit_log_path,
         )
 
@@ -167,7 +185,7 @@ class AmoDraftNoteClient(Protocol):
 
 
 ContextBuilder = Callable[..., Mapping[str, Any]]
-AutoResolver = Callable[[DraftLoopKey, WappiHistoryMessage], Optional[Mapping[str, Any]]]
+AutoResolver = Callable[..., Optional[Mapping[str, Any]]]
 
 
 class DraftLoopJournal:
@@ -216,7 +234,14 @@ class DraftLoopState:
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"processed": [], "pending_notes": {}, "dialogue_memory": {}, "manager_edit_matches": [], "auth_error_count": 0}
+            return {
+                "processed": [],
+                "pending_notes": {},
+                "dialogue_memory": {},
+                "manager_edit_matches": [],
+                "auth_error_count": 0,
+                "quarantined_pairs": {},
+            }
         try:
             decoded = json.loads(self.path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
@@ -228,6 +253,7 @@ class DraftLoopState:
         decoded.setdefault("dialogue_memory", {})
         decoded.setdefault("manager_edit_matches", [])
         decoded.setdefault("auth_error_count", 0)
+        decoded.setdefault("quarantined_pairs", {})
         return decoded
 
     def processed_keys(self) -> set[tuple[str, str, str]]:
@@ -299,6 +325,25 @@ class DraftLoopState:
     def set_auth_error_count(self, value: int) -> None:
         self.payload["auth_error_count"] = max(0, int(value))
 
+    def quarantined_pairs(self) -> dict[str, Mapping[str, Any]]:
+        raw = self.payload.get("quarantined_pairs")
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def is_pair_quarantined(self, key: DraftLoopKey) -> bool:
+        return key.value in self.quarantined_pairs()
+
+    def quarantine_pair(self, key: DraftLoopKey, *, reason: str, lead_id: str = "", detail: str = "") -> None:
+        rows = dict(self.payload.get("quarantined_pairs") or {})
+        rows[key.value] = {
+            "profile_id": key.profile_id,
+            "chat_id": key.chat_id,
+            "lead_id": str(lead_id or ""),
+            "reason": str(reason or ""),
+            "detail": str(detail or "")[:300],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.payload["quarantined_pairs"] = rows
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = json.dumps(self.payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -316,6 +361,16 @@ def _message_state_key(message: WappiHistoryMessage) -> str:
 def _is_auth_error_exception(exc: BaseException) -> bool:
     text = str(exc).casefold()
     return any(marker in text for marker in ("401", "403", "unauthorized", "forbidden", "auth"))
+
+
+def _is_allowlist_desync_exception(exc: BaseException) -> bool:
+    text = str(exc).casefold()
+    return (
+        "not in allowlist" in text
+        or "write blocked" in text
+        or "draft-note write blocked" in text
+        or ("lead_id" in text and ("403" in text or "forbidden" in text))
+    )
 
 
 def _draft_log_priority(row: Mapping[str, Any]) -> int:
@@ -379,6 +434,8 @@ def wappi_message_from_raw(profile_id: str, raw: Mapping[str, Any]) -> WappiHist
         timestamp = int(float(timestamp_raw))
     except (TypeError, ValueError):
         timestamp = 0
+    while timestamp > 4_102_444_800:
+        timestamp = int(timestamp / 1000)
     return WappiHistoryMessage(
         profile_id=str(profile_id),
         chat_id=chat_id,
@@ -440,11 +497,16 @@ class AmoWappiDraftLoop:
         skipped_count = 0
         bot_calls = 0
         manager_edit_count = 0
+        auto_resolver_counts: Counter[str] = Counter()
         now_epoch = int(self.now_fn().timestamp())
         seen_processed = self.state.processed_keys() | self.journal.processed_message_keys()
         try:
             for profile in self.config.profiles.values():
-                dialogs_payload = self.wappi_client.list_chats(channel=profile.channel, profile_id=profile.profile_id, limit=50)
+                dialogs_payload = self.wappi_client.list_chats(
+                    channel=profile.channel,
+                    profile_id=profile.profile_id,
+                    limit=max(1, min(int(self.config.chat_limit), 100)),
+                )
                 dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
                 for dialog in dialogs if isinstance(dialogs, Sequence) else []:
                     if not isinstance(dialog, Mapping):
@@ -472,10 +534,13 @@ class AmoWappiDraftLoop:
                         for item in inbound_new:
                             self.journal.append(_message_event("stop_raw_inbound", item, status="stop_not_processed"))
                         continue
-                    result = self._process_chat_messages(profile, messages, inbound_new, dry_run=dry_run)
+                    result = self._process_chat_messages(profile, dialog, messages, inbound_new, dry_run=dry_run)
                     processed_count += int(result.get("processed", 0))
                     skipped_count += int(result.get("skipped", 0))
                     bot_calls += int(result.get("bot_calls", 0))
+                    auto_reason = str(result.get("auto_resolver_reason") or "")
+                    if auto_reason:
+                        auto_resolver_counts[auto_reason] += 1
         except Exception as exc:  # noqa: BLE001
             if not _is_auth_error_exception(exc):
                 raise
@@ -491,6 +556,7 @@ class AmoWappiDraftLoop:
                 "stop_active": stop_active,
                 "dry_run": dry_run,
                 "manager_edits_classified": manager_edit_count,
+                "auto_resolver_counts": dict(auto_resolver_counts),
                 "auth_error": True,
                 "auth_error_count": auth_error_count,
                 "stopped": auth_error_count >= max(1, int(self.config.auth_error_limit)),
@@ -509,6 +575,7 @@ class AmoWappiDraftLoop:
             "stop_active": stop_active,
             "dry_run": dry_run,
             "manager_edits_classified": manager_edit_count,
+            "auto_resolver_counts": dict(auto_resolver_counts),
             "auth_error": False,
             "auth_error_count": 0,
         }
@@ -636,6 +703,7 @@ class AmoWappiDraftLoop:
     def _process_chat_messages(
         self,
         profile: DraftLoopProfile,
+        dialog: Mapping[str, Any],
         messages: Sequence[WappiHistoryMessage],
         inbound_new: Sequence[WappiHistoryMessage],
         *,
@@ -644,14 +712,92 @@ class AmoWappiDraftLoop:
         key = DraftLoopKey(profile.profile_id, inbound_new[-1].chat_id)
         pair = self.config.pair_for(key)
         if pair is None:
-            candidate = self.auto_resolver(key, inbound_new[-1]) if self.auto_resolver else None
+            candidate = self._resolve_auto_candidate(key, profile, dialog, messages, inbound_new[-1])
+            if (
+                not dry_run
+                and candidate
+                and str(candidate.get("status") or "") == "matched"
+                and self.config.auto_pairs_path is not None
+            ):
+                now_ts = int(self.now_fn().timestamp())
+                pair = DraftLoopPair(
+                    key=key,
+                    lead_id=str(candidate.get("lead_id") or ""),
+                    expected_brand=profile.brand,
+                    not_before_ts=now_ts,
+                    source="auto",
+                    match_key=str(candidate.get("match_key") or ""),
+                    contact_id=str(candidate.get("contact_id") or ""),
+                    auto_note=_auto_pair_note(profile=profile, candidate=candidate),
+                )
+                created = persist_auto_pair(self.config.auto_pairs_path, pair)
+                if created:
+                    self.journal.append(
+                        {
+                            "event": "auto_pair_created",
+                            "status": "created",
+                            "profile_id": key.profile_id,
+                            "chat_id": key.chat_id,
+                            "lead_id": pair.lead_id,
+                            "contact_id": pair.contact_id,
+                            "match_key": pair.match_key,
+                            "not_before_ts": pair.not_before_ts,
+                            "lead_snapshot": dict(candidate.get("lead_snapshot") or {}),
+                        }
+                    )
+                for item in inbound_new:
+                    self.journal.append(
+                        {
+                            **_message_event("not_before_skipped", item, status="skipped"),
+                            "lead_id": pair.lead_id,
+                            "not_before_ts": pair.not_before_ts,
+                            "reason": "auto_pair_created_watermark",
+                        }
+                    )
+                    self.state.mark_processed(item)
+                self.state.save()
+                return {
+                    "processed": 0,
+                    "skipped": len(inbound_new),
+                    "bot_calls": 0,
+                    "auto_resolver_reason": "matched",
+                }
             self.journal.append(
                 {
                     **_message_event("pair_missing", inbound_new[-1], status="skipped"),
                     "auto_candidate": dict(candidate or {}),
                 }
             )
+            reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
+            return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
+        if self.state.is_pair_quarantined(key):
+            for item in inbound_new:
+                self.journal.append(
+                    {
+                        **_message_event("pair_quarantined", item, status="skipped"),
+                        "lead_id": pair.lead_id,
+                        "quarantine": dict(self.state.quarantined_pairs().get(key.value) or {}),
+                    }
+                )
+                self.state.mark_processed(item)
+            self.state.save()
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
+        too_old = [item for item in inbound_new if item.timestamp <= 0 or item.timestamp <= pair.not_before_ts]
+        skipped_before = len(too_old)
+        if too_old:
+            for item in too_old:
+                self.journal.append(
+                    {
+                        **_message_event("not_before_skipped", item, status="skipped"),
+                        "lead_id": pair.lead_id,
+                        "not_before_ts": pair.not_before_ts,
+                    }
+                )
+                self.state.mark_processed(item)
+            inbound_new = [item for item in inbound_new if item not in too_old]
+            if not inbound_new:
+                self.state.save()
+                return {"processed": 0, "skipped": len(too_old), "bot_calls": 0}
         brand = self.config.brand_for_profile(profile.profile_id)
         if brand != pair.expected_brand:
             self.journal.append(
@@ -704,6 +850,7 @@ class AmoWappiDraftLoop:
             "route": route,
             "safety_flags": list(safety_flags),
             "bot_draft_text": draft_text,
+            "auto_note": pair.auto_note,
             "config_fingerprint": dict(self.config.config_fingerprint or {}),
             "status": "note_pending",
         }
@@ -712,12 +859,30 @@ class AmoWappiDraftLoop:
             return {"processed": 0, "skipped": 0, "bot_calls": 1}
         self.state.set_pending(last_message, pending_payload)
         self.state.save()
-        self._write_note(pending_payload, retry=False)
+        try:
+            self._write_note(pending_payload, retry=False)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_allowlist_desync_exception(exc):
+                raise
+            self.state.quarantine_pair(key, reason="allowlist_desync", lead_id=pair.lead_id, detail=str(exc))
+            self.state.clear_pending(_message_state_key(last_message))
+            for item in inbound_new:
+                self.state.mark_processed(item)
+            self.state.save()
+            self.journal.append(
+                {
+                    **pending_payload,
+                    "event": "allowlist_desync",
+                    "status": "quarantined",
+                    "error": str(exc)[:300],
+                }
+            )
+            return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
         self.state.clear_pending(_message_state_key(last_message))
         for item in inbound_new:
             self.state.mark_processed(item)
         self.journal.append({**pending_payload, "event": "note_written", "status": "note_written"})
-        return {"processed": len(inbound_new), "skipped": 0, "bot_calls": 1}
+        return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
 
     def _build_context(
         self,
@@ -753,6 +918,27 @@ class AmoWappiDraftLoop:
             except TypeError:
                 return self.context_builder(key, history, client_message, brand)
 
+    def _resolve_auto_candidate(
+        self,
+        key: DraftLoopKey,
+        profile: DraftLoopProfile,
+        dialog: Mapping[str, Any],
+        messages: Sequence[WappiHistoryMessage],
+        message: WappiHistoryMessage,
+    ) -> Mapping[str, Any] | None:
+        if self.auto_resolver is None:
+            return None
+        try:
+            candidate = self.auto_resolver(key=key, profile=profile, dialog=dialog, messages=messages, message=message)
+        except TypeError:
+            try:
+                candidate = self.auto_resolver(key, message)
+            except Exception as exc:  # noqa: BLE001
+                return {"status": "rejected", "reason": "auto_resolver_unavailable", "error": str(exc)[:300]}
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "rejected", "reason": "auto_resolver_unavailable", "error": str(exc)[:300]}
+        return dict(candidate) if isinstance(candidate, Mapping) else None
+
     def retry_pending_notes(self) -> int:
         retries = 0
         for state_key, payload in list(self.state.pending_notes().items()):
@@ -768,6 +954,24 @@ class AmoWappiDraftLoop:
             try:
                 self._write_note(payload, retry=True)
             except Exception as exc:  # noqa: BLE001
+                if _is_allowlist_desync_exception(exc):
+                    key = DraftLoopKey(str(payload.get("profile_id") or ""), str(payload.get("chat_id") or ""))
+                    self.state.quarantine_pair(
+                        key,
+                        reason="allowlist_desync",
+                        lead_id=str(payload.get("lead_id") or ""),
+                        detail=str(exc),
+                    )
+                    self.state.clear_pending(state_key)
+                    self.journal.append(
+                        {
+                            **dict(payload),
+                            "event": "allowlist_desync",
+                            "status": "quarantined",
+                            "error": str(exc)[:300],
+                        }
+                    )
+                    continue
                 self.state.payload["pending_notes"][state_key] = {
                     **dict(payload),
                     "retry_attempted": True,
@@ -783,11 +987,90 @@ class AmoWappiDraftLoop:
             self.state.save()
         return retries
 
+    def build_retro_report(self, *, lookback_hours: int = 48, limit: int = 30) -> Mapping[str, Any]:
+        rows: list[dict[str, Any]] = []
+        bot_calls = 0
+        now_ts = int(self.now_fn().timestamp())
+        max_rows = max(1, int(limit))
+        lookback_seconds = max(1, int(lookback_hours)) * 3600
+        for pair in self.config.pairs_snapshot().values():
+            profile = self.config.profiles.get(pair.key.profile_id)
+            if profile is None:
+                continue
+            watermark = int(pair.not_before_ts or now_ts)
+            start_ts = max(0, watermark - lookback_seconds)
+            messages = self._fetch_messages(profile, pair.key.chat_id)
+            inbound = [
+                item
+                for item in messages
+                if item.is_inbound_text and start_ts <= item.timestamp < watermark
+            ]
+            for item in inbound:
+                history_before = [candidate for candidate in messages if candidate.timestamp <= item.timestamp]
+                next_outgoing = next(
+                    (
+                        candidate
+                        for candidate in messages
+                        if candidate.from_me
+                        and candidate.message_type == "text"
+                        and candidate.text.strip()
+                        and candidate.timestamp >= item.timestamp
+                    ),
+                    None,
+                )
+                brand = self.config.brand_for_profile(pair.key.profile_id)
+                previous_memory = self.state.dialogue_memory_for(pair.key)
+                context = self._build_context(
+                    pair.key,
+                    _history_lines(history_before[-self.config.history_limit :]),
+                    item.text,
+                    brand,
+                    channel=profile.channel,
+                    dialogue_memory=previous_memory,
+                    current_message_id=item.message_id,
+                )
+                result = self.bot_provider.build_draft(item.text, context=context)
+                bot_calls += 1
+                rows.append(
+                    {
+                        "profile_id": pair.key.profile_id,
+                        "chat_id": pair.key.chat_id,
+                        "lead_id": pair.lead_id,
+                        "brand": brand,
+                        "message_id": item.message_id,
+                        "timestamp": item.timestamp,
+                        "client_text": item.text,
+                        "bot_route": str(getattr(result, "route", "") or ""),
+                        "bot_draft_text": str(getattr(result, "draft_text", "") or ""),
+                        "employee_message_id": next_outgoing.message_id if next_outgoing else "",
+                        "employee_text": next_outgoing.text if next_outgoing else "",
+                        "employee_timestamp": next_outgoing.timestamp if next_outgoing else 0,
+                    }
+                )
+                if len(rows) >= max_rows:
+                    return {
+                        "schema_version": "draft_loop_retro_compare_v1_2026_06_12",
+                        "lookback_hours": int(lookback_hours),
+                        "limit": max_rows,
+                        "rows": rows,
+                        "summary": {"rows": len(rows), "bot_calls": bot_calls},
+                    }
+        return {
+            "schema_version": "draft_loop_retro_compare_v1_2026_06_12",
+            "lookback_hours": int(lookback_hours),
+            "limit": max_rows,
+            "rows": rows,
+            "summary": {"rows": len(rows), "bot_calls": bot_calls},
+        }
+
     def _write_note(self, payload: Mapping[str, Any], *, retry: bool) -> None:
         del retry
         outgoing_note = ""
         if self.config.manager_outgoing_visible is False:
             outgoing_note = "Важно: бот не видит ответы менеджера в Wappi-истории."
+        auto_note = str(payload.get("auto_note") or "").strip()
+        if auto_note:
+            outgoing_note = "\n".join(item for item in (auto_note, outgoing_note) if item)
         self.amo_client.add_draft_note_to_test_lead(
             str(payload.get("lead_id") or ""),
             config=self.config.phase1_config(),
@@ -811,6 +1094,14 @@ def _message_event(event: str, message: WappiHistoryMessage, *, status: str) -> 
         "timestamp": message.timestamp,
         "from_me": message.from_me,
     }
+
+
+def _auto_pair_note(*, profile: DraftLoopProfile, candidate: Mapping[str, Any]) -> str:
+    match_key = str(candidate.get("match_key") or "auto").strip()
+    return (
+        f"Привязка автоматическая ({match_key}). Канал: {profile.brand} ({profile.channel}). "
+        "Если сделка по другому учебному центру — черновик НЕ использовать, сообщите архитектору."
+    )
 
 
 def _history_lines(messages: Sequence[WappiHistoryMessage]) -> tuple[str, ...]:
@@ -952,7 +1243,7 @@ def load_profiles_file(path: Path | str) -> dict[str, DraftLoopProfile]:
     return result
 
 
-def load_pairs_file(path: Path | str) -> dict[DraftLoopKey, DraftLoopPair]:
+def load_pairs_file(path: Path | str, *, default_source: str = "manual") -> dict[DraftLoopKey, DraftLoopPair]:
     payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
     rows: Iterable[Any]
     if isinstance(payload, Mapping) and isinstance(payload.get("pairs"), Sequence):
@@ -972,8 +1263,58 @@ def load_pairs_file(path: Path | str) -> dict[DraftLoopKey, DraftLoopPair]:
             key=key,
             lead_id=str(row.get("lead_id") or "").strip(),
             expected_brand=str(row.get("expected_brand") or "").strip().casefold(),
+            not_before_ts=_safe_int(row.get("not_before_ts")),
+            source=str(row.get("source") or default_source or "manual").strip() or "manual",
+            match_key=str(row.get("match_key") or "").strip(),
+            contact_id=str(row.get("contact_id") or "").strip(),
+            auto_note=str(row.get("auto_note") or "").strip(),
         )
         if not pair.lead_id or pair.expected_brand not in {"foton", "unpk"}:
             raise DraftLoopConfigError("draft_loop_pairs entries require lead_id and expected_brand.")
         result[key] = pair
     return result
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pair_to_json(pair: DraftLoopPair) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "profile_id": pair.key.profile_id,
+        "chat_id": pair.key.chat_id,
+        "lead_id": str(pair.lead_id),
+        "expected_brand": str(pair.expected_brand),
+    }
+    if pair.not_before_ts:
+        row["not_before_ts"] = int(pair.not_before_ts)
+    if pair.source:
+        row["source"] = pair.source
+    if pair.match_key:
+        row["match_key"] = pair.match_key
+    if pair.contact_id:
+        row["contact_id"] = pair.contact_id
+    if pair.auto_note:
+        row["auto_note"] = pair.auto_note
+    return row
+
+
+def persist_auto_pair(path: Path | str, pair: DraftLoopPair) -> bool:
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    current = load_pairs_file(target, default_source="auto") if target.exists() else {}
+    existing = current.get(pair.key)
+    if existing is not None:
+        return False
+    current[pair.key] = pair
+    rows = [_pair_to_json(item) for item in sorted(current.values(), key=lambda value: value.key)]
+    data = json.dumps({"pairs": rows}, ensure_ascii=False, indent=2, sort_keys=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(data)
+        handle.write("\n")
+    os.replace(tmp_name, target)
+    return True

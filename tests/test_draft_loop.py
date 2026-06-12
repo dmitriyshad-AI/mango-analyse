@@ -23,6 +23,7 @@ from mango_mvp.integrations.draft_loop import (
     classify_manager_edit_windows,
     load_pairs_file,
     load_profiles_file,
+    persist_auto_pair,
 )
 
 
@@ -139,6 +140,158 @@ def test_draft_loop_uses_composite_key_and_writes_single_note(tmp_path: Path) ->
     assert amo.notes[0]["route"] == "bot_answer_self"
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert {item["message_id"] for item in state["processed"]} == {"m1", "m2"}
+
+
+def test_draft_loop_skips_messages_at_or_before_not_before_ts_and_zero_timestamp(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton", not_before_ts=1000)
+    bot = FakeBot()
+    loop = _loop(
+        tmp_path,
+        messages=[
+            _message("m0", ts=0, text="битое время"),
+            _message("m1", ts=1000, text="старое"),
+            _message("m2", ts=1010, text="новое"),
+        ],
+        pairs={key: pair},
+        bot=bot,
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["processed"] == 1
+    assert summary["skipped"] == 2
+    assert summary["bot_calls"] == 1
+    assert bot.calls[0]["client_message"] == "новое"
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    skipped = [row for row in rows if row["event"] == "not_before_skipped"]
+    assert {row["message_id"] for row in skipped} == {"m0", "m1"}
+
+
+def test_draft_loop_auto_pair_is_persisted_once_and_watermarks_current_message(tmp_path: Path) -> None:
+    auto_pairs = tmp_path / "auto_pairs.json"
+    cfg = _config(tmp_path)
+    cfg = DraftLoopConfig(
+        profiles=cfg.profiles,
+        pairs=cfg.pairs,
+        auto_pairs_path=auto_pairs,
+        allowed_test_lead_ids=cfg.allowed_test_lead_ids,
+        state_path=cfg.state_path,
+        journal_path=cfg.journal_path,
+        manager_edit_log_path=cfg.manager_edit_log_path,
+        heartbeat_path=cfg.heartbeat_path,
+        stop_path=cfg.stop_path,
+        debounce_seconds=cfg.debounce_seconds,
+    )
+    wappi = FakeWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [_message("m1")]})
+    bot = FakeBot()
+
+    def resolver(**kwargs):
+        return {"status": "matched", "lead_id": "49762441", "contact_id": "111", "match_key": "Telegram ID"}
+
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        auto_resolver=resolver,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=False)
+    summary_second = loop.run_once(dry_run=False)
+
+    assert summary["skipped"] == 1
+    assert summary["bot_calls"] == 0
+    assert summary_second["bot_calls"] == 0
+    loaded = load_pairs_file(auto_pairs, default_source="auto")
+    pair = loaded[DraftLoopKey("profile-foton", "chat-1")]
+    assert pair.lead_id == "49762441"
+    assert pair.not_before_ts == 1200
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for row in rows if row["event"] == "auto_pair_created") == 1
+
+
+def test_draft_loop_auto_resolver_failure_is_manual_review_not_crash(tmp_path: Path) -> None:
+    def resolver(**kwargs):
+        raise RuntimeError("MCP HTTP 429: rate limit")
+
+    loop = _loop(tmp_path, messages=[_message("m1")], auto_resolver=resolver)
+
+    summary = loop.run_once(dry_run=True)
+
+    assert summary["skipped"] == 1
+    assert summary["bot_calls"] == 0
+    assert summary["auto_resolver_counts"] == {"auto_resolver_unavailable": 1}
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["event"] == "pair_missing"
+    assert rows[-1]["auto_candidate"]["reason"] == "auto_resolver_unavailable"
+
+
+def test_persist_auto_pair_does_not_duplicate_or_move_watermark(tmp_path: Path) -> None:
+    path = tmp_path / "auto_pairs.json"
+    key = DraftLoopKey("profile-foton", "chat-1")
+    first = DraftLoopPair(key=key, lead_id="49762441", expected_brand="foton", not_before_ts=1200, source="auto")
+    second = DraftLoopPair(key=key, lead_id="49762441", expected_brand="foton", not_before_ts=1300, source="auto")
+
+    assert persist_auto_pair(path, first) is True
+    assert persist_auto_pair(path, second) is False
+
+    loaded = load_pairs_file(path, default_source="auto")
+    assert loaded[key].not_before_ts == 1200
+
+
+def test_draft_loop_quarantines_one_pair_on_allowlist_403_and_continues(tmp_path: Path) -> None:
+    profile = DraftLoopProfile(profile_id="profile-foton", brand="foton", channel="telegram")
+    key_bad = DraftLoopKey(profile.profile_id, "chat-bad")
+    key_ok = DraftLoopKey(profile.profile_id, "chat-ok")
+    cfg = DraftLoopConfig(
+        profiles={profile.profile_id: profile},
+        pairs={
+            key_bad: DraftLoopPair(key=key_bad, lead_id="49762441", expected_brand="foton"),
+            key_ok: DraftLoopPair(key=key_ok, lead_id="49832125", expected_brand="foton"),
+        },
+        state_path=tmp_path / "state.json",
+        journal_path=tmp_path / "journal.jsonl",
+        manager_edit_log_path=tmp_path / "manager_edits.jsonl",
+        heartbeat_path=tmp_path / "heartbeat.json",
+        stop_path=tmp_path / "STOP_DRAFT_LOOP",
+        debounce_seconds=60,
+    )
+
+    class AllowlistAmo(FakeAmo):
+        def add_draft_note_to_test_lead(self, lead_id, **kwargs):
+            if str(lead_id) == "49762441":
+                raise RuntimeError("HTTP 403: lead_id 49762441 is not in allowlist")
+            return super().add_draft_note_to_test_lead(lead_id, **kwargs)
+
+    amo = AllowlistAmo()
+    wappi = FakeWappi(
+        {profile.profile_id: [{"id": "chat-bad", "type": "user"}, {"id": "chat-ok", "type": "user"}]},
+        {
+            (profile.profile_id, "chat-bad"): [_message("bad1", chat_id="chat-bad")],
+            (profile.profile_id, "chat-ok"): [_message("ok1", chat_id="chat-ok")],
+        },
+    )
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["auth_error"] is False
+    assert summary["bot_calls"] == 2
+    assert [note["lead_id"] for note in amo.notes] == ["49832125"]
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state["quarantined_pairs"][key_bad.value]["reason"] == "allowlist_desync"
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(row["event"] == "allowlist_desync" and row["status"] == "quarantined" for row in rows)
 
 
 def test_draft_loop_processes_max_profile_with_explicit_pair(tmp_path: Path) -> None:

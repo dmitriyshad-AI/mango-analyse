@@ -501,14 +501,24 @@ def _children_note_text(fields: Sequence[Mapping[str, Any]]) -> str:
         subject = _latest_value(fields, "subject", child_key=child_key)
         brand = _latest_brand(fields, child_key=child_key)
         parts = [name]
-        if grade:
-            parts.append(f"{grade} кл")
+        formatted_grade = _format_grade(grade)
+        if formatted_grade:
+            parts.append(formatted_grade)
         if subject:
             parts.append(subject)
         if brand:
             parts.append(brand)
         children.append(" ".join(parts))
     return "; ".join(children[:4]) if children else "нет активных данных"
+
+
+def _format_grade(value: str) -> str:
+    grade = re.sub(r"\s+", " ", _safe_text(value)).strip()
+    if not grade:
+        return ""
+    if re.search(r"(^|\s)(кл\.?|класс)(\s|$)", grade, flags=re.IGNORECASE):
+        return grade
+    return f"{grade} класс"
 
 
 def _latest_value(fields: Sequence[Mapping[str, Any]], field: str, *, child_key: str | None = None) -> str:

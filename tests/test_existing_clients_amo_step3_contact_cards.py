@@ -58,6 +58,7 @@ def test_step3_builds_stage_a_dry_run_cards(tmp_path: Path) -> None:
     assert "Договоренность семьи:" in rows[0]["card_text"]
     assert "Возражения:" in rows[0]["card_text"]
     assert "Tallanto-статус:" in rows[0]["card_text"]
+    assert "8 класс" in rows[0]["card_text"]
     assert "+7" not in rows[0]["card_text"]
 
 
@@ -93,6 +94,20 @@ def test_contact_card_field_wrong_type_is_reported() -> None:
             return {"_embedded": {"custom_fields": [{"id": 99, "name": "ИИ: профиль клиента", "type": "numeric"}]}}
 
     assert step3.check_contact_card_field(WrongTypeClient())["status"] == "wrong_type"
+
+
+def test_step3_grade_text_does_not_duplicate_class_suffix() -> None:
+    fields = [
+        field_row("child_name", "Аня"),
+        field_row("grade", "7 класс"),
+        field_row("subject", "математика"),
+    ]
+
+    text = step3._children_line(fields)
+
+    assert "7 класс" in text
+    assert "класс кл" not in text
+    assert "класс класс" not in text
 
 
 def make_profiles_db(path: Path, *, duplicate_phone: bool = False) -> Path:
@@ -153,6 +168,16 @@ def insert_profile(con: sqlite3.Connection, profile_id: str, phone: str, parent:
             "INSERT INTO profile_fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (f"{profile_id}-{idx}", profile_id, field, value, child_key, field_brand, "test", "fixture", NOW.isoformat(), "", ""),
         )
+
+
+def field_row(field: str, value: str, *, child_key: str = "child_1", brand: str = "unpk") -> dict[str, str]:
+    return {
+        "field": field,
+        "value": value,
+        "child_key": child_key,
+        "brand": brand,
+        "event_at": NOW.isoformat(),
+    }
 
 
 def make_amo_snapshot_db(path: Path) -> Path:

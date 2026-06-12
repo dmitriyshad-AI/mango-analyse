@@ -57,6 +57,7 @@ def test_step2_builds_known_family_note_and_is_idempotent(tmp_path: Path) -> Non
     assert notes[0]["review_class"] == "known_family"
     assert "Телефон известен" in notes[0]["note_text"]
     assert "Уточните, о ком разговор" in notes[0]["note_text"]
+    assert "8 класс" in notes[0]["note_text"]
 
     second = step2.build_step2_scan(
         step2.NewLeadScanOptions(
@@ -245,6 +246,20 @@ def test_step2_live_write_flags_fail_closed(tmp_path: Path) -> None:
         )
 
 
+def test_step2_grade_text_does_not_duplicate_class_suffix() -> None:
+    fields = [
+        field_row("child_name", "Аня"),
+        field_row("grade", "7 класс"),
+        field_row("subject", "математика"),
+    ]
+
+    text = step2._children_note_text(fields)
+
+    assert "7 класс" in text
+    assert "класс кл" not in text
+    assert "класс класс" not in text
+
+
 def make_profiles_db(path: Path, *, duplicate_phone: bool = False) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
@@ -303,6 +318,16 @@ def insert_profile(con: sqlite3.Connection, profile_id: str, phone: str, parent:
             "INSERT INTO profile_fields VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (f"{profile_id}-{idx}", profile_id, field, value, "child_1", brand, "test", "fixture", NOW.isoformat(), "", ""),
         )
+
+
+def field_row(field: str, value: str, *, child_key: str = "child_1", brand: str = "unpk") -> dict[str, str]:
+    return {
+        "field": field,
+        "value": value,
+        "child_key": child_key,
+        "brand": brand,
+        "event_at": NOW.isoformat(),
+    }
 
 
 def lead_payload(lead_id: int, contacts: list[int]) -> dict:

@@ -317,14 +317,24 @@ def _children_line(fields: Sequence[Mapping[str, Any]]) -> str:
         subject = _latest_value(fields, "subject", child_key=child_key) or _latest_value(fields, "target_product", child_key=child_key)
         brand = _latest_brand(fields, child_key=child_key)
         parts = [name]
-        if grade:
-            parts.append(f"{grade} кл")
+        formatted_grade = _format_grade(grade)
+        if formatted_grade:
+            parts.append(formatted_grade)
         if subject:
             parts.append(subject)
         if brand:
             parts.append(brand)
         children.append(" - ".join(parts))
     return "; ".join(children)
+
+
+def _format_grade(value: str) -> str:
+    grade = re.sub(r"\s+", " ", _safe_text(value)).strip()
+    if not grade:
+        return ""
+    if re.search(r"(^|\s)(кл\.?|класс)(\s|$)", grade, flags=re.IGNORECASE):
+        return grade
+    return f"{grade} класс"
 
 
 def _tallanto_status(fields: Sequence[Mapping[str, Any]]) -> str:

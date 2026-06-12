@@ -43,11 +43,30 @@ Targeted tests:
 tests/test_check_public_bot_live.py: 6 passed
 ```
 
+Full pytest:
+
+```text
+3072 passed, 2 skipped, 1 warning
+```
+
 Public bot dry-run checks on r4.1:
 
 ```text
 Foton: ok=true, failures=[]
 UNPK: ok=true, failures=[]
+```
+
+History checks before push:
+
+```text
+Postman export path in origin/main..HEAD: 0 commits
+Sensitive value scan over new patch lines: clean
+```
+
+Push:
+
+```text
+origin/main updated to main
 ```
 
 ## Notes

@@ -506,6 +506,43 @@ class TallantoApiClient:
             max_records=max_records,
         )
 
+    def abonements_by_contact(
+        self,
+        contact_id: str,
+        *,
+        max_records: int = 50,
+    ) -> list[dict[str, Any]]:
+        return self.iter_entry_list(
+            module="most_abonements",
+            field_values={"contact_id": contact_id},
+            max_records=max_records,
+        )
+
+    def classes_by_ids(
+        self,
+        class_ids: Iterable[str],
+        *,
+        max_records: int = 50,
+    ) -> list[dict[str, Any]]:
+        classes: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for class_id in class_ids:
+            value = str(class_id or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            try:
+                payload = self.get_entry_by_id(module="most_class", entry_id=value)
+            except TallantoApiError as exc:
+                if _is_not_found_error(exc):
+                    continue
+                raise
+            records = _extract_record_list(payload)
+            classes.extend(records)
+            if len(classes) >= max_records:
+                return classes[:max_records]
+        return classes
+
     def build_contact_context(
         self,
         phone: str,
@@ -519,6 +556,7 @@ class TallantoApiClient:
             contact_id = str(contact.get("id") or "").strip()
             if not contact_id:
                 continue
+            class_relations = self.class_relations_by_contact(contact_id, max_records=max_related_records)
             contexts.append(
                 {
                     "contact": contact,
@@ -526,7 +564,12 @@ class TallantoApiClient:
                     "requests": self.requests_by_contact(contact_id, max_records=max_related_records),
                     "finances": self.finances_by_contact(contact_id, max_records=max_related_records),
                     "course_relations": self.course_relations_by_contact(contact_id, max_records=max_related_records),
-                    "class_relations": self.class_relations_by_contact(contact_id, max_records=max_related_records),
+                    "class_relations": class_relations,
+                    "abonements": self.abonements_by_contact(contact_id, max_records=max_related_records),
+                    "classes": self.classes_by_ids(
+                        _class_ids_from_relations(class_relations),
+                        max_records=max_related_records,
+                    ),
                 }
             )
         return {
@@ -553,6 +596,7 @@ class TallantoApiClient:
                 "contexts": [],
             }
         resolved_contact_id = str(contact.get("id") or contact_id).strip()
+        class_relations = self.class_relations_by_contact(resolved_contact_id, max_records=max_related_records)
         return {
             "generated_at": _iso_now(),
             "base_url": self.config.base_url,
@@ -565,7 +609,12 @@ class TallantoApiClient:
                     "requests": self.requests_by_contact(resolved_contact_id, max_records=max_related_records),
                     "finances": self.finances_by_contact(resolved_contact_id, max_records=max_related_records),
                     "course_relations": self.course_relations_by_contact(resolved_contact_id, max_records=max_related_records),
-                    "class_relations": self.class_relations_by_contact(resolved_contact_id, max_records=max_related_records),
+                    "class_relations": class_relations,
+                    "abonements": self.abonements_by_contact(resolved_contact_id, max_records=max_related_records),
+                    "classes": self.classes_by_ids(
+                        _class_ids_from_relations(class_relations),
+                        max_records=max_related_records,
+                    ),
                 }
             ],
         }
@@ -577,6 +626,16 @@ class TallantoApiClient:
             "generated_at": _iso_now(),
             "modules": self.list_possible_modules(),
         }
+
+
+def _class_ids_from_relations(relations: Iterable[dict[str, Any]]) -> list[str]:
+    result: list[str] = []
+    for relation in relations:
+        for key in ("class_id", "most_class_id", "most_classes_id"):
+            value = str(relation.get(key) or "").strip()
+            if value and value not in result:
+                result.append(value)
+    return result
 
 
 __all__ = [

@@ -58,6 +58,8 @@ def test_build_contact_context_by_contact_id(monkeypatch):
     monkeypatch.setattr(client, "finances_by_contact", lambda contact_id, max_records=100: [{"id": "F-1"}])
     monkeypatch.setattr(client, "course_relations_by_contact", lambda contact_id, max_records=100: [{"id": "C-1"}])
     monkeypatch.setattr(client, "class_relations_by_contact", lambda contact_id, max_records=100: [{"id": "CL-1"}])
+    monkeypatch.setattr(client, "abonements_by_contact", lambda contact_id, max_records=100: [{"id": "A-1"}])
+    monkeypatch.setattr(client, "classes_by_ids", lambda class_ids, max_records=100: [{"id": "MC-1"}])
 
     payload = client.build_contact_context_by_contact_id("123")
     assert payload["contacts_found"] == 1
@@ -77,6 +79,19 @@ def test_search_contacts_by_phone_skips_not_found_errors(monkeypatch):
     records = client.search_contacts_by_phone("+79000000000")
     assert len(records) == 1
     assert records[0]["id"] == "123"
+
+
+def test_classes_by_ids_skips_not_found_errors(monkeypatch):
+    client = TallantoApiClient(TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"))
+
+    def fake_get_entry_by_id(*, module, entry_id, select_fields=None):
+        if entry_id == "missing":
+            raise TallantoApiError('HTTP 400 from Tallanto: {"name":"Not find by id","description":"Entry does not exist"}')
+        return {"entry_list": [{"id": entry_id, "status": "active"}]}
+
+    monkeypatch.setattr(client, "get_entry_by_id", fake_get_entry_by_id)
+
+    assert client.classes_by_ids(["missing", "ok"]) == [{"id": "ok", "status": "active"}]
 
 
 def test_tallanto_http_json_request_retries_rate_limit(monkeypatch):

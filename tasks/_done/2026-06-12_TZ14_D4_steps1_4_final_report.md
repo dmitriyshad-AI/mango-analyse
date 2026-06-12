@@ -52,6 +52,8 @@ Counters:
 - multi-child family groups: 537
 - ambiguous missing-parent groups: 6
 
+`page_limit=10` was an operator safety choice for connector response size, not an AMO API cap; confirmation: the completed run fetched 1,390 contact pages and 801 lead pages without partial-output rejection.
+
 Audit pack:
 
 `audits/_inbox/tz14_step1_amo_20260612/`

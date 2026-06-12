@@ -96,4 +96,6 @@ Audit pack:
 
 The final full run used `limit=10` because larger connector responses previously caused timeout or truncation behavior. This increased runtime but avoided partial output.
 
+`page_limit=10` was an operator safety choice for connector response size, not an AMO API cap; confirmation: the completed run fetched 1,390 contact pages and 801 lead pages without partial-output rejection.
+
 The `live_candidate` marker is a review hint only. It means at least one record in the duplicate group has an active AMO lead or Tallanto link; it is not permission to merge records.

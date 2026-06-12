@@ -24,6 +24,13 @@ class AnalyzeServiceTest(unittest.TestCase):
         self.assertIn("dense CRM note", AnalyzeService(make_settings())._analysis_system_prompt("compact"))
         self.assertIn("what the manager clarified/offered/explained", AnalyzeService(make_settings())._analysis_system_prompt("compact"))
 
+    def test_full_prompt_blocks_long_dialogue_as_autoresponder_shortcut(self) -> None:
+        prompt = AnalyzeService(make_settings())._analysis_system_prompt("full")
+
+        self.assertIn("long transcripts", prompt)
+        self.assertIn("multi-turn MANAGER/CLIENT dialogue", prompt)
+        self.assertIn("client side is exclusively a system/IVR/voicemail/no-live message", prompt)
+
     def test_claim_batch_assigns_distinct_calls_per_worker(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_analyze_claim_") as td:
             db_path = Path(td) / "claim.db"
@@ -158,6 +165,22 @@ class AnalyzeServiceTest(unittest.TestCase):
             "CLIENT:\n"
             "Да, оплату внесем завтра, а одно занятие нужно перенести."
         )
+        self.assertEqual(service._detect_call_type(text), "service_call")
+        self.assertFalse(service._is_non_conversation(text))
+
+    def test_detect_call_type_keeps_third_party_live_dialogue_contentful(self) -> None:
+        service = AnalyzeService(make_settings())
+        text = (
+            "MANAGER:\n"
+            "Добрый день. На наш учебный центр несколько раз поступают обратные звонки, "
+            "хотим понять, почему ваш номер отображается в пропущенных и можно ли убрать его из базы. "
+            "Я перечислю номера, которые видим у себя, а вы проверьте, пожалуйста.\n\n"
+            "CLIENT:\n"
+            "Здравствуйте, ООО ПКО Актив Бизнес Консалт, я вас слышу. По указанным номерам данных в базе нет. "
+            "Назовите еще раз последние цифры, мы проверим обращение и передадим ответственному сотруднику. "
+            "Если звонки повторятся, попросите клиента обратиться с того номера, на который они приходят."
+        )
+
         self.assertEqual(service._detect_call_type(text), "service_call")
         self.assertFalse(service._is_non_conversation(text))
 

@@ -32,6 +32,7 @@ Rules:
 - history_summary: 3-5 factual sentences, dense CRM note, no dialogue dump, no MANAGER/CLIENT prefixes, no date/time or manager preamble.
 - For meaningful calls mention: request/topic, what the manager clarified/offered/explained, student data (grade/subject/product) when available, key constraint/objection when available, and the agreed next step when available.
 - Do not collapse a meaningful call into one generic sentence.
+- For long transcripts or multi-turn MANAGER/CLIENT dialogue, do not classify as non_conversation/voicemail/IVR just because words like "абонент", "секретарь", "коллекторская организация", "перезвонить", or company auto-greeting markers appear. Use non_conversation only when the client side is exclusively a system/IVR/voicemail/no-live message and there is no human response.
 - next_step.action must be in Russian.
 - target_product must be one of: "годовые курсы", "летний лагерь", "интенсив", "индивидуальные занятия", null.
 - Use non_conversation only for unanswered/voicemail/wrong-number/no meaningful human dialogue.
@@ -65,6 +66,7 @@ Rules:
 - history_summary: 3-5 factual sentences, dense CRM note, no dialogue dump, no date/time or manager preamble.
 - For meaningful calls mention: request/topic, what the manager clarified/offered/explained, student data (grade/subject/product) when available, key constraint/objection when available, and the agreed next step when available.
 - Do not collapse a meaningful call into one generic sentence.
+- For long transcripts or multi-turn MANAGER/CLIENT dialogue, do not use tag non_conversation just because words like "абонент", "секретарь", "коллекторская организация", "перезвонить", or company auto-greeting markers appear. Use non_conversation only when the client side is exclusively a system/IVR/voicemail/no-live message and there is no human response.
 - next_step.action must be in Russian.
 - target_product must be one of: "годовые курсы", "летний лагерь", "интенсив", "индивидуальные занятия", null.
 - Use tag non_conversation only for unanswered/voicemail/wrong-number/no meaningful human dialogue.
@@ -1041,6 +1043,10 @@ class AnalyzeService:
         signals = detect_non_conversation_signals(transcript_text=raw)
         if signals.should_force_non_conversation:
             return "non_conversation"
+        if signals.label == "manual_review_borderline_live_context" and any(
+            str(reason).startswith("safeguard_") for reason in signals.reason_codes
+        ):
+            return "service_call"
         lowered = raw.lower()
         semantic_tags = {str(item).strip().lower() for item in (tags or []) if str(item).strip()}
         raw_sales_signal = self._has_meaningful_sales_signal(raw)

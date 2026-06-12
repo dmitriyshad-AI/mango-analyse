@@ -15,6 +15,7 @@ from mango_mvp.existing_clients.amo_step3_contact_cards import (
     ContactCardOptions,
     build_contact_card_stage_a,
 )
+from mango_mvp.existing_clients.run_roots import cli_run_out_root
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    generated_at = datetime.now(timezone.utc)
     client = None
     if not args.skip_live_field_check:
         config = read_mcp_env(args.mcp_env)
@@ -45,12 +47,12 @@ def main(argv: list[str] | None = None) -> int:
     summary = build_contact_card_stage_a(
         ContactCardOptions(
             project_root=args.project_root,
-            out_root=args.out_root,
+            out_root=cli_run_out_root(project_root=args.project_root, out_root=args.out_root, generated_at=generated_at),
             profiles_db=args.profiles_db,
             amo_snapshot_db=args.amo_snapshot_db,
             client=client,
             stage_a_families=args.stage_a_families,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=generated_at,
         )
     )
     print(json.dumps({"status": "ok", "summary": summary}, ensure_ascii=False, indent=2, sort_keys=True))

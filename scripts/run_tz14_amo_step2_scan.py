@@ -21,6 +21,7 @@ from mango_mvp.existing_clients.amo_step2_scan import (
     build_step2_scan,
     parse_datetime,
 )
+from mango_mvp.existing_clients.run_roots import cli_run_out_root
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     since = parse_datetime(args.since) if args.since else None
     if args.since and since is None:
         raise SystemExit("--since must be an ISO datetime or epoch timestamp")
+    generated_at = datetime.now(timezone.utc)
     config = read_mcp_env(args.mcp_env)
     config = replace(
         config,
@@ -56,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = build_step2_scan(
         NewLeadScanOptions(
             project_root=args.project_root,
-            out_root=args.out_root,
+            out_root=cli_run_out_root(project_root=args.project_root, out_root=args.out_root, generated_at=generated_at),
             profiles_db=args.profiles_db,
             since=since,
             client=AmoMcpClient(config),
@@ -67,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             callback_requests_path=args.callback_requests,
             enable_amo_notes=args.enable_amo_notes,
             enable_amo_tasks=args.enable_amo_tasks,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=generated_at,
         )
     )
     print(json.dumps({"status": "ok", "summary": summary}, ensure_ascii=False, indent=2, sort_keys=True))

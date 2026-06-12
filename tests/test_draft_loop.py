@@ -8,6 +8,7 @@ import pytest
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV
+from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiHttpError
 from mango_mvp.integrations.draft_loop import (
     AmoWappiDraftLoop,
     DraftLoopConfig,
@@ -529,6 +530,74 @@ def test_draft_loop_filters_non_text_and_recent_debounce(tmp_path: Path) -> None
     assert summary["deferred"] == 1
     assert summary["bot_calls"] == 0
     assert bot.calls == []
+
+
+def test_draft_loop_defers_wappi_fetch_messages_queued_400_and_retries_next_cycle(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+
+    class DeferredOnceWappi(FakeWappi):
+        def __init__(self) -> None:
+            super().__init__({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [_message("m1")]})
+            self.fetch_calls = 0
+
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            self.fetch_calls += 1
+            if self.fetch_calls == 1:
+                raise AmoWappiHttpError(
+                    'HTTP 400: {"status":"error","detail":"Команда fetchMessages сохранена для повторной отправки. TaskID: abc"}'
+                )
+            return super().get_chat_messages(channel=channel, profile_id=profile_id, chat_id=chat_id, **kwargs)
+
+    wappi = DeferredOnceWappi()
+    bot = FakeBot()
+    cfg = _config(tmp_path, pairs={key: pair})
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    first = loop.run_once(dry_run=False)
+    first_heartbeat = json.loads((tmp_path / "heartbeat.json").read_text(encoding="utf-8"))
+    second = loop.run_once(dry_run=False)
+
+    assert first["auth_error"] is False
+    assert first["auth_error_count"] == 0
+    assert first["deferred_fetch"] == 1
+    assert first["bot_calls"] == 0
+    assert first_heartbeat["status"] == "ok"
+    assert first_heartbeat["summary"]["deferred_fetch"] == 1
+    assert second["processed"] == 1
+    assert second["bot_calls"] == 1
+    assert bot.calls[0]["client_message"] == "Цена?"
+    heartbeat = json.loads((tmp_path / "heartbeat.json").read_text(encoding="utf-8"))
+    assert heartbeat["status"] == "ok"
+    assert heartbeat["summary"]["deferred_fetch"] == 0
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(row["event"] == "deferred_fetch" and row["chat_id"] == "chat-1" for row in rows)
+
+
+def test_draft_loop_regular_wappi_400_still_raises(tmp_path: Path) -> None:
+    class BadRequestWappi(FakeWappi):
+        def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+            raise AmoWappiHttpError('HTTP 400: {"status":"error","detail":"bad request"}')
+
+    cfg = _config(tmp_path)
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=BadRequestWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {}),
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    with pytest.raises(AmoWappiHttpError, match="bad request"):
+        loop.run_once(dry_run=False)
 
 
 def test_draft_loop_state_loss_does_not_duplicate_written_note_from_journal(tmp_path: Path) -> None:

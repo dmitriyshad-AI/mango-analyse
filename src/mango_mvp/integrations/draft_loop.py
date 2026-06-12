@@ -15,7 +15,13 @@ from zoneinfo import ZoneInfo
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, update_dialogue_memory_after_answer
-from mango_mvp.integrations.amo_wappi_phase1 import AmoWappiPhase1Config, ManagerEditLogRecord, WappiPhase1Client, append_manager_edit_log
+from mango_mvp.integrations.amo_wappi_phase1 import (
+    AmoWappiHttpError,
+    AmoWappiPhase1Config,
+    ManagerEditLogRecord,
+    WappiPhase1Client,
+    append_manager_edit_log,
+)
 
 
 DEFAULT_DRAFT_LOOP_DIR = Path.home() / ".mango_local" / "draft_loop"
@@ -33,6 +39,11 @@ class DraftLoopError(RuntimeError):
 
 class DraftLoopConfigError(DraftLoopError):
     pass
+
+
+def _is_deferred_fetch_exception(exc: BaseException) -> bool:
+    message = str(exc).casefold()
+    return isinstance(exc, AmoWappiHttpError) and "http 400" in message and "сохранена для повторной отправки" in message
 
 
 def _memory_provenance_enabled() -> bool:
@@ -480,6 +491,7 @@ class AmoWappiDraftLoop:
             summary = {
                 "processed": 0,
                 "deferred": 0,
+                "deferred_fetch": 0,
                 "skipped": 0,
                 "bot_calls": 0,
                 "retried_pending": 0,
@@ -494,6 +506,7 @@ class AmoWappiDraftLoop:
         retried = 0 if dry_run or stop_active else self.retry_pending_notes()
         processed_count = 0
         deferred_count = 0
+        deferred_fetch_count = 0
         skipped_count = 0
         bot_calls = 0
         manager_edit_count = 0
@@ -512,7 +525,24 @@ class AmoWappiDraftLoop:
                         self.journal.append({"event": "chat_skipped", "profile_id": profile.profile_id, "chat_id": chat_id, "reason": "non_private"})
                         skipped_count += 1
                         continue
-                    messages = self._fetch_messages(profile, chat_id)
+                    try:
+                        messages = self._fetch_messages(profile, chat_id)
+                    except Exception as exc:  # noqa: BLE001
+                        if not _is_deferred_fetch_exception(exc):
+                            raise
+                        deferred_fetch_count += 1
+                        self.journal.append(
+                            {
+                                "event": "deferred_fetch",
+                                "profile_id": profile.profile_id,
+                                "chat_id": chat_id,
+                                "channel": profile.channel,
+                                "reason": "wappi_fetch_messages_deferred",
+                                "error": str(exc)[:500],
+                                "created_at": self.now_fn().astimezone(timezone.utc).isoformat(),
+                            }
+                        )
+                        continue
                     manager_edit_count += self._classify_manager_edits(profile, chat_id, messages)
                     inbound_new = [
                         item
@@ -544,6 +574,7 @@ class AmoWappiDraftLoop:
             summary = {
                 "processed": processed_count,
                 "deferred": deferred_count,
+                "deferred_fetch": deferred_fetch_count,
                 "skipped": skipped_count,
                 "bot_calls": bot_calls,
                 "retried_pending": retried,
@@ -563,6 +594,7 @@ class AmoWappiDraftLoop:
         summary = {
             "processed": processed_count,
             "deferred": deferred_count,
+            "deferred_fetch": deferred_fetch_count,
             "skipped": skipped_count,
             "bot_calls": bot_calls,
             "retried_pending": retried,

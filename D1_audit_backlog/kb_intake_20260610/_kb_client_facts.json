@@ -1,0 +1,4010 @@
+[
+ {
+  "fact_key": "academic_year_2026_27.daily_hours",
+  "brand": "foton",
+  "text": "Фотон: учебный год 2026/27, длительность занятия — 2 ак.ч.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.semester_1_weeks",
+  "brand": "foton",
+  "text": "Фотон: в первом семестре 2026/27 учебного года 20 недель.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.semester_2_weeks",
+  "brand": "foton",
+  "text": "Фотон: во втором семестре 2026/27 учебного года 15 недель.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start",
+  "brand": "foton",
+  "text": "Фотон: учебный год 2026/27, старт занятий — 12-20 сентября 2026 в зависимости от формата.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start_by_location.moscow",
+  "brand": "foton",
+  "text": "Фотон: учебный год 2026/27, Москва — 12-13 сентября 2026.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start_by_location.online",
+  "brand": "foton",
+  "text": "Фотон: учебный год 2026/27, онлайн — 19-20 сентября 2026.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.total_lessons",
+  "brand": "foton",
+  "text": "Фотон: учебный год 2026/27, количество занятий за год — 35 занятий.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.weekly_lessons",
+  "brand": "foton",
+  "text": "Фотон: в учебном году 2026/27 занятия проходят 1 раз в неделю.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "brand_rules.approved_brand_relationship_answer.foton",
+  "brand": "foton",
+  "text": "Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра.",
+  "fact_type": "policy"
+ },
+ {
+  "fact_key": "certificates.types.course_attendance.form",
+  "brand": "foton",
+  "text": "Фотон: справки и документы — Свободная форма.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.discounts.already_paid_2026_27",
+  "brand": "foton",
+  "text": "Фотон: для городского летнего лагеря действует скидка 10% для семей, уже оплативших обучение на 2026/27 год.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.discounts.former_student_same_brand",
+  "brand": "foton",
+  "text": "Фотон: для городского летнего лагеря действует скидка 5% для учеников, которые ранее учились в этом же учебном центре.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.discounts.multichild",
+  "brand": "foton",
+  "text": "Фотон: для городского летнего лагеря действует скидка 10% для многодетных семей.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.discounts.refer_a_friend.advanced",
+  "brand": "foton",
+  "text": "Фотон: для городского летнего лагеря по программе «приведи друга», расширенный тариф, кэшбэк 5 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.discounts.refer_a_friend.base",
+  "brand": "foton",
+  "text": "Фотон: для городского летнего лагеря по программе «приведи друга», базовый тариф, кэшбэк 3 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.format",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь — Очная городская школа, без проживания.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.free_morning_club.cost",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь — полностью бесплатно.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.free_morning_club.description_for_client",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь — Предлёнка начинается со второго дня занятий в летней городской школе Фотона. Предлёнка полностью бесплатно.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.free_morning_club.from_day",
+  "brand": "foton",
+  "text": "Фотон: утренний клуб в городском летнем лагере доступен со 2-го дня смены.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.free_morning_club.name",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь, название — Утренний клуб Предлёнка.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.free_morning_club.time",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь — 09:45-11:45.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.meals",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь — Обед (первое, второе, салат, булочка) + полдник.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.moscow_foton.dates",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь, Москва, даты — 3-14 августа.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.moscow_foton.location",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь, Москва — Верхняя Красносельская ул., 30.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.moscow_foton.prices.base",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь, Москва, базовый вариант — 34 300 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.moscow_foton.prices.plus_full",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь, Москва, расширенный вариант на полный день — 59 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.moscow_foton.prices.plus_half",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь, Москва, расширенный вариант на полдня — 49 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_foton.not_to_confuse_with",
+  "brand": "foton",
+  "text": "Фотон: городской летний лагерь — ЛВШ выездная — другой продукт.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "contacts_foton.contact_hours.client_safe_text",
+  "brand": "foton",
+  "text": "Связаться с Фотоном можно ежедневно с 10:00 до 18:00. Это часы связи, а не расписание занятий групп.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_foton.email",
+  "brand": "foton",
+  "text": "Фотон: контакты — edu@cdpofoton.ru.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_foton.phone",
+  "brand": "foton",
+  "text": "Фотон: контакты — 8 (495) 500-25-88.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_foton.telegram",
+  "brand": "foton",
+  "text": "Фотон: контакты — @cdpoFoton.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_foton.toll_free",
+  "brand": "foton",
+  "text": "Фотон: контакты — 8 (800) 550-25-88.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_foton.vk",
+  "brand": "foton",
+  "text": "Фотон: контакты — vk.ru/foton_edu.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_foton.website",
+  "brand": "foton",
+  "text": "Фотон: контакты — cdpofoton.ru.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_foton.whatsapp",
+  "brand": "foton",
+  "text": "Фотон: контакты — +7 925 500 25 88.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.absences_materials",
+  "brand": "foton",
+  "text": "Если занятие пропущено, предупредите нас заранее. Онлайн-записи и материалы помогают нагнать тему; по очным занятиям материалы можно уточнить в чате группы или у администратора.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.after_payment_access",
+  "brand": "foton",
+  "text": "После оплаты пришлите чек или квитанцию в чат или на почту. После подтверждения оплаты для онлайн-занятий на почту придёт приглашение на учебную платформу SohoLMS и инструкция по подключению; для очных занятий пришлём информацию о центре, группе и расписании.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.camp_contents",
+  "brand": "foton",
+  "text": "По сменам заранее отправляем документы и организационные детали. В программу входят занятия, материалы и мероприятия; точный состав зависит от выбранной смены.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.camp_enrollment",
+  "brand": "foton",
+  "text": "По ЛВШ места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа, по ней менеджер подскажет доступные варианты.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.completion_certificate",
+  "brand": "foton",
+  "text": "По итогам курса можно получить документ о прохождении обучения. Формат и срок выдачи зависят от программы; менеджер подскажет, как получить документ.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.contact_channels",
+  "brand": "foton",
+  "text": "Писать можно в этот чат, на почту edu@cdpofoton.ru или в Telegram @cdpoFoton. Телефон центра: 8 (495) 500-25-88.",
+  "fact_type": "contacts"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.contract_documents",
+  "brand": "foton",
+  "text": "Договор идёт через договор-оферту: оплата означает согласие с условиями. Отдельный подписанный договор обычно не нужен, кроме отдельных случаев вроде маткапитала.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.document_correction",
+  "brand": "foton",
+  "text": "Если в договоре, квитанции или письме ошибка, напишите, что именно нужно исправить. Менеджер подготовит корректный документ и пришлёт его на почту.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.enrollment_signup_steps",
+  "brand": "foton",
+  "text": "Для записи пришлите ФИО ученика и класс, ФИО родителя, почту для связи и выбранное направление. После записи на почту придут подтверждение, договорные документы и способ оплаты.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.freeze_or_transfer",
+  "brand": "foton",
+  "text": "При личных обстоятельствах можно обсудить перенос обучения, смену группы или более гибкий график. Точные условия зависят от курса и ситуации, их подтвердит менеджер.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.group_level_transfer",
+  "brand": "foton",
+  "text": "Если ребёнку слишком легко или сложно, можно обсудить перевод в другую группу по уровню. Обычно учитываются рекомендация преподавателя и пожелания семьи.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.homework_feedback",
+  "brand": "foton",
+  "text": "Домашние задания проверяются. Обратную связь по успеваемости можно запросить: менеджер передаст вопрос преподавателю или куратору.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.installment_options",
+  "brand": "foton",
+  "text": "В Фотоне можно оплатить обучение частями: доступны варианты на 6, 10 или 12 месяцев, а также сервис Долями. Условия и оформление зависят от выбранного способа оплаты.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.marketing_codes_absent",
+  "brand": "foton",
+  "text": "Промокодов сейчас нет. Из реальных выгод: при оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.online_access_platform",
+  "brand": "foton",
+  "text": "Для онлайн-занятий доступ приходит на почту: приглашение, ссылка на SohoLMS и инструкция по подключению. В письме будет понятно, как войти на занятие. Для очных занятий пришлём информацию о центре, группе и расписании.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.parent_feedback",
+  "brand": "foton",
+  "text": "Родитель может запросить обратную связь по занятиям и прогрессу. Менеджер передаст запрос преподавателю или куратору и вернётся с ответом.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.payment_confirmation_receipt",
+  "brand": "foton",
+  "text": "После оплаты пришлите чек или квитанцию. Если платёж был, но доступ не пришёл, менеджер проверит оплату по ФИО ученика и выбранному курсу.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.payment_general",
+  "brand": "foton",
+  "text": "Оплатить можно по QR-коду, квитанции или ссылке на оплату. Если нужно оплатить бизнес-картой, можем прислать ссылку через эквайринг Альфа-Банка.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.payment_semester_year_price",
+  "brand": "foton",
+  "text": "При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.personal_cabinet",
+  "brand": "foton",
+  "text": "В личном кабинете на SohoLMS доступны занятия, материалы и записи онлайн-уроков. Если пароль забыт, его восстанавливают через форму восстановления.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.recordings_materials",
+  "brand": "foton",
+  "text": "Записи онлайн-занятий сохраняются в личном кабинете для пересмотра. Домашние задания и материалы доступны на платформе или в чате группы, в зависимости от формата курса.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.refund_process_manager_check",
+  "brand": "foton",
+  "text": "До оплаты можно спокойно уточнить порядок возврата: при досрочном отказе возвращается остаток неистраченных средств. После оплаты точную сумму и документы проверяет менеджер.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.schedule_final",
+  "brand": "foton",
+  "text": "Финальное расписание уже есть. Напишите класс, предмет, формат и удобное время — подберём группу и пришлём актуальные варианты.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.schedule_reason",
+  "brand": "foton",
+  "text": "Точные слоты пришлём после распределения по уровню группы. Стараемся учитывать класс, формат и пожелания по времени.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.teacher_change",
+  "brand": "foton",
+  "text": "Если преподаватель или группа не подошли, можно обсудить другую группу или другого преподавателя. Методика и программа сохраняются, а переход согласуют по уровню и расписанию.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.technical_problem",
+  "brand": "foton",
+  "text": "Если письмо, квитанция или ссылка не пришли, проверьте папку «Спам» и напишите нам. Менеджер проверит группу и отправит актуальную ссылку или письмо повторно.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.testing_intro",
+  "brand": "foton",
+  "text": "Вступительное тестирование помогает подобрать подходящую группу по уровню. Обычно ребёнок проходит тест и заполняет анкету до старта занятий.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.testing_results",
+  "brand": "foton",
+  "text": "Результаты тестирования используют для распределения по уровню и группе. Итоговое распределение сообщит менеджер.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.trial_fragment_or_first_lessons",
+  "brand": "foton",
+  "text": "Отдельного бесплатного пробного занятия сейчас нет. Для знакомства с форматом можем прислать фрагмент онлайн-занятия; первые занятия можно использовать, чтобы понять, подходит ли курс.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.foton.waitlist_when_no_places",
+  "brand": "foton",
+  "text": "Если подходящей группы, времени или места сейчас нет, можно записаться в лист ожидания. Укажем приоритетные предметы и формат, а менеджер подскажет ближайшую альтернативу.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "discounts.active_student_to_summer_camp.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: для действующих учеников этого учебного центра доступна скидка действующим и бывшим ученикам Фотона на смены Фотона на любой летний лагерь.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.active_student_to_summer_camp.pct",
+  "brand": "foton",
+  "text": "Фотон: для действующих учеников этого учебного центра доступна скидка 5% на любой летний лагерь.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.applies_to.1",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ применяется к продукту «ЛВШ Менделеево».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ действует при условии: постоянным гостям ЛВШ Менделеево, посетившим смены в предыдущие годы.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.1",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ не применяется к продукту «ЛШ городская».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.2",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ не применяется к продукту «регулярные курсы».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.3",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ не применяется к продукту «интенсивы».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.4",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ не применяется к продукту «индивидуальные».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_10",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ — 10%; условие: после 2 смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_15",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ — 15%; условие: после 3-4 смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_20",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ — 20%; условие: после 5 смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_30",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ — 30%; условие: после 6 и более смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_5",
+  "brand": "foton",
+  "text": "Фотон: скидка постоянным участникам ЛВШ — 5%; условие: после 1 посещённой смены ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.multichild.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: скидка — детям из многодетной семьи при предъявлении удостоверения многодетной семьи (даже если из семьи учится только один ребёнок).",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.multichild.note",
+  "brand": "foton",
+  "text": "Фотон: скидка для многодетных семей действует по статусу семьи, а не по количеству детей на оплате; условие: подтвердить статус многодетной семьи. Скидки не суммируются, применяется наибольшая доступная скидка.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.multichild.pct",
+  "brand": "foton",
+  "text": "Фотон: скидка для многодетных семей — 10%; условие: подтвердить статус многодетной семьи.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_advanced_tariff.cashback",
+  "brand": "foton",
+  "text": "Фотон: по программе «приведи друга» кэшбэк 5 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_advanced_tariff.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: скидка, программа «приведи друга» — после того как приглашённый друг отучится на смене летнего лагеря по продвинутому тарифу.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_base_tariff.cashback",
+  "brand": "foton",
+  "text": "Фотон: по программе «приведи друга» кэшбэк 3 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_base_tariff.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: скидка, программа «приведи друга» — после того как приглашённый друг отучится на смене летнего лагеря по базовому тарифу.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.offline.cashback",
+  "brand": "foton",
+  "text": "Фотон: по программе «приведи друга» кэшбэк 10 000 ₽; условие: после 5 занятий друга.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.offline.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: скидка, очно, программа «приведи друга» — после того как приглашённый друг посетит 5 занятий очного курса.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.online.cashback",
+  "brand": "foton",
+  "text": "Фотон: по программе «приведи друга» кэшбэк 10 000 ₽; условие: после семестра обучения друга.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.online.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: скидка, онлайн, программа «приведи друга» — после того как приглашённый друг оплатит и пройдёт семестр онлайн-курса.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.client_safe_text",
+  "brand": "foton",
+  "text": "Скидка на второй предмет очно — 20% на того же ребёнка; скидки не суммируются, применяется наибольшая.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: при очном обучении скидка на второй предмет составляет на второй и последующий предмет одного и того же ребёнка при оплате очного формата.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.example",
+  "brand": "foton",
+  "text": "Фотон: при очном обучении на второй предмет действует скидка 20%; условие: ученик добавляет второй предмет.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.pct",
+  "brand": "foton",
+  "text": "Фотон: при очном обучении скидка на второй предмет составляет 20%.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.online.condition_client_text",
+  "brand": "foton",
+  "text": "Фотон: при онлайн-обучении скидка на второй предмет составляет на второй и последующий предмет одного и того же ребёнка при оплате онлайн-формата.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.online.example",
+  "brand": "foton",
+  "text": "Фотон: при онлайн-обучении на второй предмет действует скидка 30%; условие: ученик добавляет второй предмет.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.online.pct",
+  "brand": "foton",
+  "text": "Фотон: при онлайн-обучении скидка на второй предмет составляет 30%.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.stacking_rule",
+  "brand": "foton",
+  "text": "Фотон: если клиенту доступно несколько скидок, они не суммируются; применяется наибольшая доступная скидка.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.stacking_rule_text",
+  "brand": "foton",
+  "text": "Фотон: если клиенту доступно несколько скидок, они не суммируются; применяется наибольшая доступная скидка.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "installment.client_confirmed_terms.client_safe_text",
+  "brand": "foton",
+  "text": "В Фотоне можно оплатить обучение частями: доступны варианты на 6, 10 или 12 месяцев, а также сервис Долями. Это относится к очным и онлайн-курсам, ЛВШ, ЛШ и другим программам Фотона. Конкретные условия и оформление зависят от выбранного способа оплаты; менеджер поможет подобрать удобный вариант.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.client_safe_text.when_asked",
+  "brand": "foton",
+  "text": "В Фотоне можно оплатить обучение частями: доступны варианты на 6, 10 или 12 месяцев, а также сервис Долями. Это относится к очным и онлайн-курсам, ЛВШ, ЛШ и другим программам Фотона. Конкретные условия и оформление зависят от выбранного способа оплаты; менеджер поможет подобрать удобный вариант.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.provider",
+  "brand": "foton",
+  "text": "Фотон: рассрочка оформляется через Т-Банк; перед ответом клиенту менеджер проверяет актуальные условия.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.refresh_frequency",
+  "brand": "foton",
+  "text": "Фотон: условия рассрочки через Т-Банк нужно обновлять и перепроверять минимум раз в квартал.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.services.dolyami.applies_to_all_foton_products",
+  "brand": "foton",
+  "text": "Фотон: рассрочка и оплата — Долями можно рассмотреть для продуктов Фотона; менеджер проверит условия по выбранной программе.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.services.dolyami.available",
+  "brand": "foton",
+  "text": "Фотон: рассрочка и оплата — Сервис Долями доступен как вариант оплаты; условия и оформление проверяет менеджер.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.services.dolyami.products_scope_client_safe",
+  "brand": "foton",
+  "text": "Фотон: рассрочка и оплата — Долями и оплату частями можно рассмотреть для очных и онлайн-курсов, ЛВШ, ЛШ и других программ Фотона; условия оформляет менеджер.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.services.rassrochka.applies_to_all_foton_products",
+  "brand": "foton",
+  "text": "Фотон: рассрочка и оплата — Оплата частями доступна для очных и онлайн-курсов, ЛВШ, ЛШ и других программ Фотона; конкретные условия и оформление проверяет менеджер.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.services.rassrochka.decision_time",
+  "brand": "foton",
+  "text": "Фотон: предварительное решение по рассрочке обычно занимает 1-2 минуты; перед обещанием срока нужна проверка.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.services.rassrochka.no_interest_for_client",
+  "brand": "foton",
+  "text": "Фотон: рассрочка указана как вариант без переплаты для клиента, но условия нужно проверить перед оформлением.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "installment.services.rassrochka.signing",
+  "brand": "foton",
+  "text": "Фотон: подписание документов по рассрочке проходит по СМС.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "intensives_2026.ege_intensive.available_in_foton",
+  "brand": "foton",
+  "text": "Фотон: этот интенсив в текущем бренде не проводится.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_intensive.bot_behavior_when_asked",
+  "brand": "foton",
+  "text": "Фотон: по вопросу об интенсиве менеджер подберёт подходящие варианты и свяжется в течение рабочего дня.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.classes",
+  "brand": "foton",
+  "text": "Фотон: интенсив 2026 рассчитан на 8-9 классы.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.duration_weeks",
+  "brand": "foton",
+  "text": "Фотон: длительность интенсива 2026 — 7 недель.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.format",
+  "brand": "foton",
+  "text": "Фотон: интенсивы 2026 — онлайн, 2 занятия/нед после 18:00.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.group_size",
+  "brand": "foton",
+  "text": "Фотон: размер группы на интенсиве 2026 — 10-15 человек.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.includes.1",
+  "brand": "foton",
+  "text": "Фотон: в интенсив 2026 входит: 14 вебинаров.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.includes.2",
+  "brand": "foton",
+  "text": "Фотон: в интенсив 2026 входит: Проверка ДЗ куратором.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.includes.3",
+  "brand": "foton",
+  "text": "Фотон: в интенсив 2026 входит: Конспекты.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.includes.4",
+  "brand": "foton",
+  "text": "Фотон: в интенсив 2026 входит: 3 пробника.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.includes.5",
+  "brand": "foton",
+  "text": "Фотон: в интенсив 2026 входит: Чат.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.includes.6",
+  "brand": "foton",
+  "text": "Фотон: в интенсив 2026 входит: Психподдержка.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.includes.7",
+  "brand": "foton",
+  "text": "Фотон: в интенсив 2026 входит: Записи до конца июня.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.links.math",
+  "brand": "foton",
+  "text": "Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2018411.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.links.physics",
+  "brand": "foton",
+  "text": "Фотон: интенсивы 2026 — https://my.mts-link.ru/course-info/2019323.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.start_date",
+  "brand": "foton",
+  "text": "Фотон: интенсивы 2026, дата старта — 13 апреля 2026.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.subjects.1",
+  "brand": "foton",
+  "text": "Фотон: среди предметов интенсива 2026 есть математика.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.subjects.2",
+  "brand": "foton",
+  "text": "Фотон: среди предметов интенсива 2026 есть физика.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_foton.vk_chat_9",
+  "brand": "foton",
+  "text": "Фотон: интенсивы 2026 — https://vk.me/join/3nehyHq4QR7_Lvm89Iymtzn1NEZP51CDLYY=.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text",
+  "brand": "foton",
+  "text": "Скидки на летнюю школу: многодетным семьям — 10% (по статусу семьи, нужно удостоверение); действующим/бывшим ученикам — 5% (на смены того же учебного центра, где учились); тем, кто записался и оплатил следующий учебный год — 10%. По акции «приведи друга» кэшбэк за нового ученика, ранее не посещавшего летнюю школу: на тариф «База» — 3 000 ₽, на тарифы с факультативом/премиум — 5 000 ₽. Скидки не су",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+  "brand": "foton",
+  "text": "Городская летняя школа Фотон — очно в Москве (Верхняя Красносельская ул., 30, м. Красносельская), без проживания. Смена 3–14 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, занятия пн–пт, сб–вс выходные. Утренний клуб «Предлёнка» — бесплатно, 09:45–11:45, со 2-го дня обучения.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_tariffs.client_safe_text",
+  "brand": "foton",
+  "text": "Тарифы городской летней школы Фотон: «База» — 34 300 ₽; «База + половина факультативного блока» — 49 000 ₽; «База + полный факультативный блок» — 59 000 ₽. Факультативный блок — индивидуальная или малогрупповая работа после основной программы (16:30–18:00): разбор трудных тем, помощь с проектом, углублённое изучение.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.lesson_format.client_safe_text",
+  "brand": "foton",
+  "text": "Занятия проходят в формате семинара: теория и практика вместе. Преподаватель в мини-группе разбирает задачи с учениками, есть интерактив с вопросами. Бывает этап индивидуальной работы: пока все решают свои задания, преподаватель подходит к каждому на несколько минут.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.attendance_makeup_other_group.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: пропущенное занятие можно отработать в другой группе, подходящей по времени и уровню; тема занятия может отличаться. Справка для отработки не обязательна.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.attendance_online_instead_offline_exception_2026_27.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: подключиться к онлайн-занятию вместо очного нельзя; исключение — пропуск 4 и более занятий подряд по болезни.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.entrance_test_results_delivery.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: результаты вступительного теста появляются в той же тестовой форме в течение недели; по запросу вышлем их вручную.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.homework_check_always_checked.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: домашние задания всегда проверяются.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: раздаточных конспектов по умолчанию нет: есть чат с преподавателем для домашних заданий и материалов, на части курсов — методички.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.offline_first_lesson_diagnostic_check.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: на первом очном занятии возможна устная беседа или небольшая контрольная; с собой лучше взять решения вступительного теста.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.offline_groups_levels.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: очные группы делятся по уровням: базовый, продвинутый и олимпиадный. Разница — в темпе, сложности задач и времени на повторение.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.offline_phys_tech_no_separate_groups_foton_2026_27.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: отдельных очных групп «Физтех» нет — олимпиадные группы идут внутри общего расписания. Продвинутые и базовые группы отличаются темпом, сложностью задач и временем на повторение; планы по темам почти одинаковые.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.schedule_level_split_parallel_groups.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: если по расписанию написано «уточняется», это потому что группы делятся по уровню знаний. Возможно, предложим другую группу; постараемся сохранить удобное время, потому что групп в параллели много.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.study_pause_flexible_schedule_personal.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: при личных обстоятельствах можно заморозить обучение или подобрать гибкий график.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.trial_other_group_free_trial.client_safe_text",
+  "brand": "foton",
+  "text": "Фотон: при сомнениях можно бесплатно посетить пробное занятие в другой группе.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "licenses.client_safe_summary",
+  "brand": "foton",
+  "text": "Фотон: у учебного центра есть лицензия на образовательную деятельность.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "locations_foton.addresses.1.address",
+  "brand": "foton",
+  "text": "Фотон: адрес и место занятий — Верхняя Красносельская ул., 30.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_foton.addresses.1.city",
+  "brand": "foton",
+  "text": "Фотон: адрес и место занятий — Москва.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_foton.addresses.1.metro",
+  "brand": "foton",
+  "text": "Фотон: адрес и место занятий — Красносельская.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_foton.free_trial_offline.client_safe_text",
+  "brand": "foton",
+  "text": "Отдельного бесплатного пробного очного по умолчанию нет; менеджер при записи подскажет, как познакомиться с форматом.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_foton.free_trial_offline_currently_unavailable_in_foton",
+  "brand": "foton",
+  "text": "Фотон: адрес и место занятий, очно — да.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.air_conditioning",
+  "brand": "foton",
+  "text": "Фотон: в ЛВШ Менделеево по текущим данным есть кондиционирование.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.meals_description",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — Шведский стол, ресторанный уровень.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.meals_per_day",
+  "brand": "foton",
+  "text": "Фотон: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.room_capacity",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — 2-3 человека.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.security_24_7",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — да.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.audience",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — 5-10 класс.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.availability_2026.client_safe_text",
+  "brand": "foton",
+  "text": "По ЛВШ Фотона места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.subjects.1",
+  "brand": "foton",
+  "text": "Фотон: в ЛВШ Менделеево для физико-математического направления есть предмет «физика».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.subjects.2",
+  "brand": "foton",
+  "text": "Фотон: в ЛВШ Менделеево для физико-математического направления есть предмет «математика».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.it.classes",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.it.subjects.1",
+  "brand": "foton",
+  "text": "Фотон: в ЛВШ Менделеево для IT-направления есть предмет «Python».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.it.subjects.2",
+  "brand": "foton",
+  "text": "Фотон: в ЛВШ Менделеево для IT-направления есть предмет «проектная деятельность».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.documents_for_shift.client_safe_text",
+  "brand": "foton",
+  "text": "Перед сменой понадобятся договор, анкета и согласия, копия документа ребёнка, копия полиса, медицинская справка 079У и справка о санэпидокружении.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.documents_for_shift.manager_should_send_full_list",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — да.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.location.address",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — Московская область, Солнечногорский район, посёлок Красный Воин, Льяловское шоссе, 1.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.location.name",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево, название — УСК «Менделеево».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.parent_visit_and_communication.client_safe_text",
+  "brand": "foton",
+  "text": "Связаться с ребёнком можно; для 5-6 классов телефоны забирают с 23:00 до 14:00. Фото и видео со смены публикуются в Telegram-канале смены.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.payment_options_2026.client_safe_text",
+  "brand": "foton",
+  "text": "Для ЛВШ Фотона доступны варианты оплаты частями на 6, 10 или 12 месяцев, а также сервис Долями. Менеджер поможет выбрать способ оплаты и оформить его дистанционно.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.pricing_2026.client_safe_text_when_price_asked",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — ЛВШ Менделеево у Фотона сейчас стоит 93 100 ₽. Полная стоимость — 98 000 ₽. Места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.pricing_2026.current_price",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — 93 100 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.pricing_2026.main_full",
+  "brand": "foton",
+  "text": "Фотон: полная стоимость ЛВШ Менделеево — 98 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.daily_pairs",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево, пар в день — 3 пары.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.group_size",
+  "brand": "foton",
+  "text": "Фотон: размер группы в ЛВШ Менделеево — 12-15 человек.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.pair_duration_minutes",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево, длительность пары — 110 минут.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.total_academic_hours",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево — 72+.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.available",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево, Москва — да.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.client_safe_text",
+  "brand": "foton",
+  "text": "Трансфер до ЛВШ Фотона включён в стоимость; ориентир места сбора — метро Ховрино, точные детали отправляем перед сменой.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.included_in_price",
+  "brand": "foton",
+  "text": "Фотон: ЛВШ Менделеево, Москва — да.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "certificates.types.for_matkap.content",
+  "brand": "foton",
+  "text": "Фотон: материнский капитал — Договор + лицензия + реквизиты.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.child_age.sertificate_owner_min",
+  "brand": "foton",
+  "text": "Фотон: материнский капитал можно использовать, если ребёнку, на которого оформлен сертификат, исполнилось 3 года.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.child_age.student_max",
+  "brand": "foton",
+  "text": "Фотон: обучение с оплатой материнским капиталом возможно для ученика до 18 лет.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_age_over_18",
+  "brand": "foton",
+  "text": "Если ученику уже 18 лет или больше, по возрастным условиям маткапитала есть ограничения. Уточню у менеджера, подходит ли ваш случай — он свяжется в течение рабочего дня.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_asked",
+  "brand": "foton",
+  "text": "Да, оплата материнским капиталом возможна. Работаем с федеральным маткапиталом. Менеджер пришлёт перечень документов и поможет с оформлением через СФР. Подскажите ФИО ребёнка и какой курс рассматриваете.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_regional",
+  "brand": "foton",
+  "text": "К сожалению, региональный маткапитал не принимаем. Если у вас федеральный — менеджер подскажет порядок оформления.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_timeline",
+  "brand": "foton",
+  "text": "Срок рассмотрения в СФР — до 10 рабочих дней, плюс ещё до 5 дней на перевод. Итого до 15 дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.rule_federal_only",
+  "brand": "foton",
+  "text": "Фотон: по текущим правилам можно использовать федеральный материнский капитал.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.timeline.sfr_review_days",
+  "brand": "foton",
+  "text": "Фотон: СФР рассматривает заявление на оплату материнским капиталом до 10 рабочих дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.timeline.total_max_days",
+  "brand": "foton",
+  "text": "Фотон: весь цикл проверки и перевода материнского капитала может занимать до 15 рабочих дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.timeline.transfer_days",
+  "brand": "foton",
+  "text": "Фотон: после одобрения СФР перевод средств обычно занимает до 5 рабочих дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "objection_responses.brand_link_question.approved_response",
+  "brand": "foton",
+  "text": "Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.brand_link_question.followup_phrase",
+  "brand": "foton",
+  "text": "Я могу подсказать только про ЦДПО Фотон и, к сожалению, не владею информацией про другие организации.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.inconvenient_time.1",
+  "brand": "foton",
+  "text": "Разные слоты выходных.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.inconvenient_time.2",
+  "brand": "foton",
+  "text": "Онлайн с записью.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.is_it_bot",
+  "brand": "foton",
+  "text": "Я помощник менеджера, помогу с вопросом или передам коллеге.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_camp.1",
+  "brand": "foton",
+  "text": "Предоплата 15 000 ₽ фиксирует цену.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_camp.2",
+  "brand": "foton",
+  "text": "Применяется наибольшая из доступных скидок.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_camp.3",
+  "brand": "foton",
+  "text": "Рассрочка Т-Банк.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.1",
+  "brand": "foton",
+  "text": "20% на 2-й предмет очно или 30% онлайн.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.2",
+  "brand": "foton",
+  "text": "Многодетным 10%.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.3",
+  "brand": "foton",
+  "text": "Приведи друга — кэшбек 10 000 ₽; условие: проверить по программе «приведи друга» перед отправкой.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.4",
+  "brand": "foton",
+  "text": "Можно рассрочка через Т-Банк.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.levels.1",
+  "brand": "foton",
+  "text": "Фотон: на онлайн-платформе есть уровень обучения: базовый.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.levels.2",
+  "brand": "foton",
+  "text": "Фотон: на онлайн-платформе есть уровень обучения: продвинутый.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.levels.3",
+  "brand": "foton",
+  "text": "Фотон: на онлайн-платформе есть уровень обучения: олимпиадный.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.name",
+  "brand": "foton",
+  "text": "Фотон: онлайн-платформа, онлайн, название — SohoLMS.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.offline_group_size",
+  "brand": "foton",
+  "text": "Фотон: онлайн-платформа, очно — 6-12 человек.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.recording",
+  "brand": "foton",
+  "text": "Фотон: на онлайн-платформе доступны записи занятий.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.recording_client_safe_text",
+  "brand": "foton",
+  "text": "Онлайн-записи занятий сохраняются и доступны для пересмотра.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.trial_fragment_client_safe_text",
+  "brand": "foton",
+  "text": "По онлайн-формату можем прислать вам фрагмент занятия — посмотреть подачу и уровень; условия просмотра подтвердит менеджер.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.age_goals.client_safe_text",
+  "brand": "foton",
+  "text": "Цели по возрастам разные: в 3-4 классах — интерес к предмету и логика; в 5-6 — математическая культура, сильные школы и элементы олимпиад; в 7-8 — глубокая проработка и поступление в сильные школы; в 9-11 — подготовка к ОГЭ/ЕГЭ; олимпиадные группы готовят к перечневым олимпиадам.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.attendance_tracking.client_safe_text",
+  "brand": "foton",
+  "text": "По очным занятиям следят за посещаемостью: если ребёнок пропускает 2 занятия подряд без предупреждения, администратор связывается с родителями.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.course_rules_safe.client_safe_text",
+  "brand": "foton",
+  "text": "На онлайн- и очных занятиях есть правила поведения и цифровой этикет. Это нужно, чтобы детям было комфортно учиться, задавать вопросы и не отвлекаться.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.knowledge_control.client_safe_text",
+  "brand": "foton",
+  "text": "Контроль знаний строится не только на занятиях: есть вступительное и финальное тестирование, контрольные срезы примерно раз в 2-3 месяца, обратная связь от преподавателя в личном кабинете в течение 2 недель. Для 9-11 классов предусмотрены пробные экзамены 2 раза в год, для 3-8 классов — олимпиадные активности.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.lesson_load_by_age.client_safe_text",
+  "brand": "foton",
+  "text": "В Фотоне нагрузка зависит от класса и формата: для 5-11 классов обычно 1 занятие в неделю по 3 академических часа (очное занятие длится около 2 часов); для младших очных групп и онлайн-групп 3-4 классов — по 2 академических часа.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.levels_explained.client_safe_text",
+  "brand": "foton",
+  "text": "В Фотоне есть три уровня подготовки: базовый — закрыть пробелы и уверенно идти по школьной программе; продвинутый — углублённая программа и темы за пределами школы с элементами олимпиад; олимпиадный — подготовка к перечневым олимпиадам и более сложным задачам. Уровень группы можно поменять, если ребёнку будет слишком легко или сложно.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.offline_lesson_format.client_safe_text",
+  "brand": "foton",
+  "text": "Очные занятия проходят как семинары: теория и практика, разбор у доски, самостоятельная работа, конспекты. Домашнее задание задаётся не всегда, а когда оно действительно нужно для закрепления материала.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.offline_organization.client_safe_text",
+  "brand": "foton",
+  "text": "Перед очным стартом дату, время, адрес и кабинет присылают отдельным письмом. Основной канал информирования — email; Telegram-чаты с преподавателем и администратором обычно подключают на 2-м занятии. С собой нужны письменные принадлежности и тетрадь.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.online_lesson_format.client_safe_text",
+  "brand": "foton",
+  "text": "Онлайн-занятия проходят в формате вебинаров на SohoLMS: ученики задают вопросы в чате, преподаватель может вызвать в голосовой или видео-чат, а записи уроков доступны для пересмотра.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.online_technical_requirements.client_safe_text",
+  "brand": "foton",
+  "text": "Для онлайн-занятий нужен стабильный интернет от 2,5 Мбит/с. Можно подключаться с телефона или планшета через платформу SohoLMS, но полный функционал удобнее на компьютере в Chrome. Если есть техническая проблема, можно написать @support в чате занятия.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.parent_access_offline.client_safe_text",
+  "brand": "foton",
+  "text": "Вход родителей в здание школы может быть ограничен правилами площадки, поэтому ожидание обычно организуют рядом с площадкой.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.placement_and_first_feedback.client_safe_text",
+  "brand": "foton",
+  "text": "До старта ребёнок проходит вступительное тестирование и заполняет анкету — это помогает подобрать группу и адаптировать программу. Первые 3-4 занятия преподаватель оценивает уровень и мотивацию, после чего можно дать первую обратную связь и при необходимости обсудить переход в другую группу.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.student_account_access.client_safe_text",
+  "brand": "foton",
+  "text": "У ученика есть личный кабинет на учебной платформе. Если пароль забыт, его восстанавливают через кнопку «Забыли пароль»; центр не видит пароли учеников и не может назвать старый пароль.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_facts.subjects_by_class.client_safe_text",
+  "brand": "foton",
+  "text": "По предметам в Фотоне: онлайн есть математика для 3-11 классов, информатика для 5-11 классов, физика для 7-11 классов; очно есть математика для 3-11 классов, информатика для 5-11 классов, физика для 5-11 классов и русский язык для 9-11 классов.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_safe_facts.refund_post_payment.client_safe_text",
+  "brand": "foton",
+  "text": "По возврату средств после оплаты — здесь нужен расчёт от менеджера: он посмотрит, какая часть курса уже пройдена, и пришлёт точную сумму к возврату. Я уже передал ему ваш запрос — он свяжется с вами в рабочее время.",
+  "fact_type": "policy"
+ },
+ {
+  "fact_key": "presentation_format_facts_2026_05_21.client_safe_facts.refund_presale_policy.client_safe_text",
+  "brand": "foton",
+  "text": "Если клиент заранее спрашивает про возврат до оплаты, можно спокойно ответить, что при досрочном отказе возвращается остаток неистраченных средств; можно не переживать. Конкретный порядок оформления менеджер подтвердит по выбранному курсу и договору.",
+  "fact_type": "policy"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_3_4_class.before_2026_07_01.semester",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 3-4 класс, очно, семестр — 28 250 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_3_4_class.before_2026_07_01.year",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 3-4 класс, очно, год — 47 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.online_3_4_class.before_2026_08_01.semester",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 3-4 класс, онлайн, семестр — 19 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.online_3_4_class.before_2026_08_01.year_range",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 3-4 класс, онлайн, год — диапазон от 29 900 ₽ до 33 300 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year",
+  "brand": "foton",
+  "text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "results_social_proof.ege_avg_above_country_pts",
+  "brand": "foton",
+  "text": "Фотон: средний результат ЕГЭ у учеников выше среднего по стране на 25 баллов.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.industry_rating_2025",
+  "brand": "foton",
+  "text": "Фотон: в рейтинге 2025 года указан статус «Лидер отрасли 2025».",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.industry_rating_2025_confirmation",
+  "brand": "foton",
+  "text": "Фотон: в рейтинге 2025 года указан статус «Подтверждено Дмитрием 2026-05-20».",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.oge_grade_5_pct",
+  "brand": "foton",
+  "text": "Фотон: по текущим данным 92% учеников получили оценку 5 на ОГЭ.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.total_students_currently",
+  "brand": "foton",
+  "text": "Фотон: по текущим данным сейчас обучается более 26 000 учеников.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.university_admission_pct",
+  "brand": "foton",
+  "text": "Фотон: по текущим данным 97% выпускников поступили в вузы.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_c13_krasnoselskaya_sat_1000_1200_math_11_advanced_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 11 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_c18_krasnoselskaya_sat_1000_1200_math_11_base_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 11 класс, базовая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_c29_krasnoselskaya_sat_1000_1200_physics_10_base_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 10 класс, базовая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_c51_krasnoselskaya_sat_1000_1200_physics_9_advanced_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 9 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 10:00-12:00, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_d13_krasnoselskaya_sat_1215_1415_physics_11_advanced_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 11 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 12:15-14:15, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_d18_krasnoselskaya_sat_1215_1415_physics_11_base_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 11 класс, базовая группа, очно, Верхняя Красносельская, 30: суббота 12:15-14:15, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_d29_krasnoselskaya_sat_1215_1415_math_10_advanced_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 10 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 12:15-14:15, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_d46_krasnoselskaya_sat_1215_1415_math_9_advanced_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 9 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 12:15-14:15, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_d56_krasnoselskaya_sat_1215_1415_informatics_9_oge_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Информатика, 9 класс, ОГЭ, очно, Верхняя Красносельская, 30: суббота 12:15-14:15, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_d61_krasnoselskaya_sat_1215_1415_russian_9_oge_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Русский язык, 9 класс, ОГЭ, очно, Верхняя Красносельская, 30: суббота 12:15-14:15, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_e13_krasnoselskaya_sat_1430_1630_russian_10_11_ege_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Русский язык, 10-11 класс, ЕГЭ, очно, Верхняя Красносельская, 30: суббота 14:30-16:30, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_e23_krasnoselskaya_sat_1430_1630_informatics_10_11_regular_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Информатика, 10-11 класс, обычная группа, очно, Верхняя Красносельская, 30: суббота 14:30-16:30, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_e46_krasnoselskaya_sat_1430_1630_math_9_advanced_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 9 класс, продвинутая группа, очно, Верхняя Красносельская, 30: суббота 14:30-16:30, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_e51_krasnoselskaya_sat_1430_1630_physics_9_base_before_2027_05_22.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 9 класс, базовая группа, очно, Верхняя Красносельская, 30: суббота 14:30-16:30, старт 12.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h103_krasnoselskaya_sun_1000_1200_informatics_7_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Информатика, 7 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h115_krasnoselskaya_sun_1000_1200_math_6_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 6 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h133_krasnoselskaya_sun_1040_1200_math_3_4_base_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 3-4 класс, базовая группа, очно, Верхняя Красносельская, 30: воскресенье 10:40-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h83_krasnoselskaya_sun_1000_1200_physics_8_base_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 8 класс, базовая группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i119_krasnoselskaya_sun_1215_1415_physics_5_6_regular_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 5-6 класс, обычная группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i125_krasnoselskaya_sun_1215_1415_math_5_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 5 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i133_krasnoselskaya_sun_1215_1335_math_3_4_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 3-4 класс, олимпиадная группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-13:35, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i138_krasnoselskaya_sun_1215_1335_math_3_4_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 3-4 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-13:35, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i83_krasnoselskaya_sun_1215_1415_informatics_8_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Информатика, 8 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i89_krasnoselskaya_sun_1215_1415_math_7_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 7 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j103_krasnoselskaya_sun_1430_1630_physics_7_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 7 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j119_krasnoselskaya_sun_1430_1630_informatics_5_6_regular_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Информатика, 5-6 класс, обычная группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j138_krasnoselskaya_sun_1350_1520_math_3_4_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 3-4 класс, олимпиадная группа, очно, Верхняя Красносельская, 30: воскресенье 13:50-15:20, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j69_krasnoselskaya_sun_1430_1630_math_8_advanced_before_2027_05_23.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 8 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_p52_onlajn_sat_1000_1200_informatics_9_oge_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Информатика, 9 класс, ОГЭ, онлайн, Онлайн: суббота 10:00-12:00, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_p81_onlajn_sat_1000_1120_math_3_regular_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 3 класс, обычная группа, онлайн, Онлайн: суббота 10:00-11:20, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_q52_onlajn_sat_1215_1415_math_9_oge_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 9 класс, ОГЭ, онлайн, Онлайн: суббота 12:15-14:15, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_q68_onlajn_sat_1215_1415_math_7_advanced_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 7 класс, продвинутая группа, онлайн, Онлайн: суббота 12:15-14:15, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_q81_onlajn_sat_1135_1255_math_4_regular_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 4 класс, обычная группа, онлайн, Онлайн: суббота 11:35-12:55, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_r52_onlajn_sat_1430_1630_physics_9_oge_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 9 класс, ОГЭ, онлайн, Онлайн: суббота 14:30-16:30, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_r68_onlajn_sat_1430_1630_math_8_advanced_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 8 класс, продвинутая группа, онлайн, Онлайн: суббота 14:30-16:30, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_u4_onlajn_sun_1000_1200_physics_11_ege_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 11 класс, ЕГЭ, онлайн, Онлайн: воскресенье 10:00-12:00, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_u99_onlajn_sun_1000_1200_math_6_advanced_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 6 класс, продвинутая группа, онлайн, Онлайн: воскресенье 10:00-12:00, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v26_onlajn_sun_1215_1415_physics_10_regular_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 10 класс, обычная группа, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v4_onlajn_sun_1215_1415_math_11_ege_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 11 класс, ЕГЭ, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v99_onlajn_sun_1215_1415_math_5_advanced_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 5 класс, продвинутая группа, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w26_onlajn_sun_1430_1630_math_10_regular_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Математика, 10 класс, обычная группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w4_onlajn_sun_1430_1630_russian_10_11_ege_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Русский язык, 10-11 класс, ЕГЭ, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w73_onlajn_sun_1430_1630_physics_8_regular_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Физика, 8 класс, обычная группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_x4_onlajn_sun_1645_1845_informatics_10_11_ege_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Информатика, 10-11 класс, ЕГЭ, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_x52_onlajn_sun_1645_1845_russian_9_oge_before_2027_05_30.client_safe_text",
+  "brand": "foton",
+  "text": "Русский язык, 9 класс, ОГЭ, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "certificates.types.payment_for_tax_deduction.form",
+  "brand": "foton",
+  "text": "Фотон: налоговый вычет — КНД 1151158.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.available",
+  "brand": "foton",
+  "text": "Фотон: налоговый вычет — да.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.certificate_form",
+  "brand": "foton",
+  "text": "Фотон: для налогового вычета используется справка по форме КНД 1151158 (Приказ Минфина 18.10.2023 № 165н).",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_asked",
+  "brand": "foton",
+  "text": "Налоговый вычет за обучение возможен — у нас есть лицензия. За обучение ребёнка можно вернуть до 14 300 ₽ в год. Менеджер подготовит и пришлёт справку в течение 10 рабочих дней (постараемся быстрее) — её приложите к декларации в налоговую.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_multiple_years",
+  "brand": "foton",
+  "text": "Можно подать вычет за последние 3 года. Для каждого года нужна отдельная справка от нас и отдельная декларация 3-НДФЛ. Менеджер подготовит справки.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_online_question",
+  "brand": "foton",
+  "text": "По онлайн-курсам — это вопрос трактовки конкретной налоговой инспекции. Передам уточнение нашему специалисту.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_two_children",
+  "brand": "foton",
+  "text": "Лимит на каждого ребёнка отдельный — 110 000 ₽. Если за двоих детей вы потратили по 110 000 ₽, можно вернуть до 28 600 ₽ суммарно. Менеджер пришлёт две справки.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.fns_review_months",
+  "brand": "foton",
+  "text": "Фотон: налоговая обычно рассматривает декларацию до 3 месяцев.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2023_and_earlier.max_expenses_per_child",
+  "brand": "foton",
+  "text": "Фотон: по расходам за 2023 год и раньше лимит расходов на обучение ребёнка для налогового вычета — 50 000 ₽.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2023_and_earlier.max_return_per_child",
+  "brand": "foton",
+  "text": "Фотон: по расходам за 2023 год и раньше можно вернуть до 6 500 ₽ за ребёнка в год.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2024_and_later.max_expenses_per_child",
+  "brand": "foton",
+  "text": "Фотон: по расходам с 2024 года лимит расходов на обучение ребёнка для налогового вычета — 110 000 ₽.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2024_and_later.max_return_per_child",
+  "brand": "foton",
+  "text": "Фотон: по расходам с 2024 года можно вернуть до 14 300 ₽ за ребёнка в год.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.payment_after_approval_months",
+  "brand": "foton",
+  "text": "Фотон: после одобрения налоговой выплата обычно занимает до 1 месяца.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.retroactive_years",
+  "brand": "foton",
+  "text": "Фотон: налоговый вычет можно оформить за последние 3 года.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "bot_policy.approved_phrases.theme_11_contract.foton",
+  "brand": "foton",
+  "text": "Договор-оферта придёт на почту вместе с квитанцией после записи; оплата означает согласие. Подскажите, пожалуйста, email для отправки.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "bot_policy.approved_phrases.theme_12_certificate.foton",
+  "brand": "foton",
+  "text": "Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "bot_policy.approved_phrases.theme_17_teachers.foton",
+  "brand": "foton",
+  "text": "Преподаватели — из МФТИ, МГУ, ВШЭ, МГТУ им. Баумана, МИФИ. Эксперты ЕГЭ, члены жюри олимпиад. Если ребёнку не подойдёт педагог — переведём в другую группу.",
+  "fact_type": "teacher"
+ },
+ {
+  "fact_key": "academic_year_2026_27.daily_hours",
+  "brand": "unpk",
+  "text": "УНПК: учебный год 2026/27, длительность занятия — 2 ак.ч.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.semester_1_weeks",
+  "brand": "unpk",
+  "text": "УНПК: в первом семестре 2026/27 учебного года 20 недель.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.semester_2_weeks",
+  "brand": "unpk",
+  "text": "УНПК: во втором семестре 2026/27 учебного года 15 недель.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start",
+  "brand": "unpk",
+  "text": "УНПК: учебный год 2026/27, старт занятий — 12-27 сентября 2026 в зависимости от площадки.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start_by_location.mfti_institutsky_9",
+  "brand": "unpk",
+  "text": "УНПК: учебный год 2026/27 — 20 сентября 2026.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start_by_location.moscow",
+  "brand": "unpk",
+  "text": "УНПК: учебный год 2026/27, Москва — 12-13 сентября 2026.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start_by_location.online",
+  "brand": "unpk",
+  "text": "УНПК: учебный год 2026/27, онлайн — 19-20 сентября 2026.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.start_by_location.patsayeva",
+  "brand": "unpk",
+  "text": "УНПК: учебный год 2026/27 — 26-27 сентября 2026.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.total_lessons",
+  "brand": "unpk",
+  "text": "УНПК: учебный год 2026/27, количество занятий за год — 35 занятий.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "academic_year_2026_27.weekly_lessons",
+  "brand": "unpk",
+  "text": "УНПК: в учебном году 2026/27 занятия проходят 1 раз в неделю.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "brand_rules.approved_brand_relationship_answer.unpk",
+  "brand": "unpk",
+  "text": "Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра.",
+  "fact_type": "policy"
+ },
+ {
+  "fact_key": "certificates.types.course_attendance.form",
+  "brand": "unpk",
+  "text": "УНПК: справки и документы — Свободная форма.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.attendance_certificate.client_safe_text",
+  "brand": "unpk",
+  "text": "Справку об очном обучении можно подготовить на бланке организации по запросу.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.discounts.already_paid_2026_27",
+  "brand": "unpk",
+  "text": "УНПК: для городского летнего лагеря действует скидка 10% для семей, уже оплативших обучение на 2026/27 год.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.discounts.former_student_same_brand",
+  "brand": "unpk",
+  "text": "УНПК: для городского летнего лагеря действует скидка 5% для учеников, которые ранее учились в этом же учебном центре.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.discounts.mfti_employees",
+  "brand": "unpk",
+  "text": "УНПК: для городского летнего лагеря действует скидка 10% для сотрудников МФТИ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.discounts.multichild",
+  "brand": "unpk",
+  "text": "УНПК: для городского летнего лагеря действует скидка 10% для многодетных семей.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.discounts.refer_a_friend.advanced",
+  "brand": "unpk",
+  "text": "УНПК: для городского летнего лагеря по программе «приведи друга», расширенный тариф, кэшбэк 5 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.discounts.refer_a_friend.base",
+  "brand": "unpk",
+  "text": "УНПК: для городского летнего лагеря по программе «приведи друга», базовый тариф, кэшбэк 3 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.dolgoprudny.location",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Долгопрудный — Долгопрудный, Институтский пер., 9 (Главный корпус МФТИ).",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.dolgoprudny.prices.base",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Долгопрудный, базовый вариант — 39 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.dolgoprudny.prices.plus_factultative",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Долгопрудный, вариант с факультативом — 59 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.dolgoprudny.prices.plus_individual",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Долгопрудный, вариант с индивидуальными занятиями — 99 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.dolgoprudny.smeny.1",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Долгопрудный — 20-31 июля.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.dolgoprudny.smeny.2",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Долгопрудный — 17-28 августа.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.free_morning_club.from_day",
+  "brand": "unpk",
+  "text": "УНПК: утренний клуб в городском летнем лагере доступен со 2-го дня смены.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.free_morning_club.name",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, название — Утренний клуб Предлёнка.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.free_morning_club.time",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь — 09:45-11:45.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.meals",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь — Обед (первое, второе, салат, булочка) + полдник.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.moscow.dates",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Москва, даты — 6-17 июля; 20-31 июля.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.moscow.location",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Москва — Москва, Верхняя Красносельская ул., 30.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.moscow.prices.base",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Москва, базовый вариант — 39 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.moscow.prices.plus_factultative",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Москва, вариант с факультативом — 59 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.moscow.prices.plus_individual",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь, Москва, вариант с индивидуальными занятиями — 99 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.not_to_confuse_with",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь — ЛВШ выездная — другой продукт.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "ls_city_2026_unpk.patsayeva.available",
+  "brand": "unpk",
+  "text": "УНПК: городской летний лагерь — по предзаписи для 1-4 классов.",
+  "fact_type": "camp_city"
+ },
+ {
+  "fact_key": "contacts_unpk.contact_hours.client_safe_text",
+  "brand": "unpk",
+  "text": "Связаться с УНПК можно ежедневно с 10:00 до 18:00. Это часы связи, а не расписание занятий групп.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_unpk.email",
+  "brand": "unpk",
+  "text": "УНПК: контакты — edu@kmipt.ru.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_unpk.phone",
+  "brand": "unpk",
+  "text": "УНПК: контакты — +7 (495) 150-81-51.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_unpk.telegram",
+  "brand": "unpk",
+  "text": "УНПК: контакты — @unpk_mipt.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_unpk.toll_free",
+  "brand": "unpk",
+  "text": "УНПК: контакты — 8 (800) 500-81-51.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "contacts_unpk.website",
+  "brand": "unpk",
+  "text": "УНПК: контакты — kmipt.ru.",
+  "fact_type": "contact"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.absences_materials",
+  "brand": "unpk",
+  "text": "Если занятие пропущено, предупредите нас заранее. Онлайн-записи и материалы помогают нагнать тему; по очным занятиям материалы можно уточнить в чате группы или у администратора.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.after_payment_access",
+  "brand": "unpk",
+  "text": "После оплаты пришлите чек или квитанцию в чат или на почту. После подтверждения оплаты для онлайн-занятий на почту придёт приглашение на учебную платформу SohoLMS и инструкция по подключению; для очных занятий пришлём информацию о центре, группе и расписании.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.camp_contents",
+  "brand": "unpk",
+  "text": "По сменам заранее отправляем документы и организационные детали. В программу входят занятия, материалы и мероприятия; точный состав зависит от выбранной смены.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.camp_enrollment",
+  "brand": "unpk",
+  "text": "По ЛВШ места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа, по ней менеджер подскажет доступные варианты.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.completion_certificate",
+  "brand": "unpk",
+  "text": "По итогам курса можно получить документ о прохождении обучения. Формат и срок выдачи зависят от программы; менеджер подскажет, как получить документ.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.contact_channels",
+  "brand": "unpk",
+  "text": "Писать можно в этот чат, на почту edu@kmipt.ru или в Telegram @unpk_mipt. Горячая линия: 8 (800) 500-81-51 и 8 (495) 150-81-51.",
+  "fact_type": "contacts"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.contract_documents",
+  "brand": "unpk",
+  "text": "Договор идёт через договор-оферту: оплата означает согласие с условиями. Отдельный подписанный договор обычно не нужен, кроме отдельных случаев вроде маткапитала.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.document_correction",
+  "brand": "unpk",
+  "text": "Если в договоре, квитанции или письме ошибка, напишите, что именно нужно исправить. Менеджер подготовит корректный документ и пришлёт его на почту.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.enrollment_signup_steps",
+  "brand": "unpk",
+  "text": "Для записи пришлите ФИО ученика и класс, ФИО родителя, почту для связи и выбранное направление. После записи на почту придут подтверждение, договорные документы и способ оплаты.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.freeze_or_transfer",
+  "brand": "unpk",
+  "text": "При личных обстоятельствах можно обсудить перенос обучения, смену группы или более гибкий график. Точные условия зависят от курса и ситуации, их подтвердит менеджер.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.group_level_transfer",
+  "brand": "unpk",
+  "text": "Если ребёнку слишком легко или сложно, можно обсудить перевод в другую группу по уровню. Обычно учитываются рекомендация преподавателя и пожелания семьи.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.homework_feedback",
+  "brand": "unpk",
+  "text": "Домашние задания проверяются. Обратную связь по успеваемости можно запросить: менеджер передаст вопрос преподавателю или куратору.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.marketing_codes_absent",
+  "brand": "unpk",
+  "text": "Промокодов сейчас нет. Из реальных выгод: при оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.online_access_platform",
+  "brand": "unpk",
+  "text": "Для онлайн-занятий доступ приходит на почту: приглашение, ссылка на SohoLMS и инструкция по подключению. В письме будет понятно, как войти на занятие. Для очных занятий пришлём информацию о центре, группе и расписании.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.parent_feedback",
+  "brand": "unpk",
+  "text": "Родитель может запросить обратную связь по занятиям и прогрессу. Менеджер передаст запрос преподавателю или куратору и вернётся с ответом.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.payment_confirmation_receipt",
+  "brand": "unpk",
+  "text": "После оплаты пришлите чек или квитанцию. Если платёж был, но доступ не пришёл, менеджер проверит оплату по ФИО ученика и выбранному курсу.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.payment_general",
+  "brand": "unpk",
+  "text": "Оплатить можно по QR-коду, квитанции или ссылке на оплату. Если нужно оплатить бизнес-картой, можем прислать ссылку через эквайринг Альфа-Банка.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.payment_schedules_without_bank_installment",
+  "brand": "unpk",
+  "text": "В УНПК доступна помесячная оплата, оплата за семестр или за год. Отдельной банковской рассрочки нет; при оплате за семестр или за год выгода уже учтена в прайсе.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.payment_semester_year_price",
+  "brand": "unpk",
+  "text": "При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.personal_cabinet",
+  "brand": "unpk",
+  "text": "В личном кабинете на SohoLMS доступны занятия, материалы и записи онлайн-уроков. Если пароль забыт, его восстанавливают через форму восстановления.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.recordings_materials",
+  "brand": "unpk",
+  "text": "Записи онлайн-занятий сохраняются в личном кабинете для пересмотра. Домашние задания и материалы доступны на платформе или в чате группы, в зависимости от формата курса.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.refund_process_manager_check",
+  "brand": "unpk",
+  "text": "До оплаты можно спокойно уточнить порядок возврата: при досрочном отказе возвращается остаток неистраченных средств. После оплаты точную сумму и документы проверяет менеджер.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.schedule_final",
+  "brand": "unpk",
+  "text": "Финальное расписание уже есть. Напишите класс, предмет, формат и удобное время — подберём группу и пришлём актуальные варианты.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.schedule_reason",
+  "brand": "unpk",
+  "text": "Точные слоты пришлём после распределения по уровню группы. Стараемся учитывать класс, формат и пожелания по времени.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.teacher_change",
+  "brand": "unpk",
+  "text": "Если преподаватель или группа не подошли, можно обсудить другую группу или другого преподавателя. Методика и программа сохраняются, а переход согласуют по уровню и расписанию.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.technical_problem",
+  "brand": "unpk",
+  "text": "Если письмо, квитанция или ссылка не пришли, проверьте папку «Спам» и напишите нам. Менеджер проверит группу и отправит актуальную ссылку или письмо повторно.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.testing_intro",
+  "brand": "unpk",
+  "text": "Вступительное тестирование помогает подобрать подходящую группу по уровню. Обычно ребёнок проходит тест и заполняет анкету до старта занятий.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.testing_results",
+  "brand": "unpk",
+  "text": "Результаты тестирования используют для распределения по уровню и группе. Итоговое распределение сообщит менеджер.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.trial_fragment_or_first_lessons",
+  "brand": "unpk",
+  "text": "Отдельного бесплатного пробного занятия сейчас нет. Для знакомства с форматом можем прислать фрагмент онлайн-занятия; первые занятия можно использовать, чтобы понять, подходит ли курс.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "processes_2026_06_10.unpk.waitlist_when_no_places",
+  "brand": "unpk",
+  "text": "Если подходящей группы, времени или места сейчас нет, можно записаться в лист ожидания. Укажем приоритетные предметы и формат, а менеджер подскажет ближайшую альтернативу.",
+  "fact_type": "process"
+ },
+ {
+  "fact_key": "discounts.active_student_to_summer_camp.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: для действующих учеников этого учебного центра доступна скидка действующим и бывшим ученикам УНПК на смены УНПК на любой летний лагерь.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.active_student_to_summer_camp.pct",
+  "brand": "unpk",
+  "text": "УНПК: для действующих учеников этого учебного центра доступна скидка 5% на любой летний лагерь.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.applies_to.1",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ применяется к продукту «ЛВШ Менделеево».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ действует при условии: постоянным гостям ЛВШ Менделеево, посетившим смены в предыдущие годы.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.1",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ не применяется к продукту «ЛШ городская».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.2",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ не применяется к продукту «регулярные курсы».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.3",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ не применяется к продукту «интенсивы».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.not_applies_to.4",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ не применяется к продукту «индивидуальные».",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_10",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ — 10%; условие: после 2 смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_15",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ — 15%; условие: после 3-4 смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_20",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ — 20%; условие: после 5 смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_30",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ — 30%; условие: после 6 и более смен ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.loyal_customers_lvsh_only.tiers.pct_5",
+  "brand": "unpk",
+  "text": "УНПК: скидка постоянным участникам ЛВШ — 5%; условие: после 1 посещённой смены ЛВШ.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.mfti_employees.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: скидка, для сотрудников МФТИ — сотрудникам МФТИ при предъявлении подтверждающего документа с места работы.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.mfti_employees.note",
+  "brand": "unpk",
+  "text": "УНПК: для сотрудников МФТИ действует скидка 10%; другие значения перед ответом нужно проверить у ответственного менеджера.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.mfti_employees.pct",
+  "brand": "unpk",
+  "text": "УНПК: для сотрудников МФТИ действует скидка 10%.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.monthly_payment.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: при помесячной оплате действует скидка при оплате обучения сразу за семестр (вместо помесячной оплаты).",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.monthly_payment.pct",
+  "brand": "unpk",
+  "text": "УНПК: при помесячной оплате действует скидка 10%.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.multichild.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: скидка — детям из многодетной семьи при предъявлении удостоверения многодетной семьи (даже если из семьи учится только один ребёнок).",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.multichild.note",
+  "brand": "unpk",
+  "text": "УНПК: скидка для многодетных семей действует по статусу семьи, а не по количеству детей на оплате; условие: подтвердить статус многодетной семьи. Скидки не суммируются, применяется наибольшая доступная скидка.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.multichild.pct",
+  "brand": "unpk",
+  "text": "УНПК: скидка для многодетных семей — 10%; условие: подтвердить статус многодетной семьи.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_advanced_tariff.cashback",
+  "brand": "unpk",
+  "text": "УНПК: по программе «приведи друга» кэшбэк 5 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_advanced_tariff.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: скидка, программа «приведи друга» — после того как приглашённый друг отучится на смене летнего лагеря по продвинутому тарифу.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_base_tariff.cashback",
+  "brand": "unpk",
+  "text": "УНПК: по программе «приведи друга» кэшбэк 3 000 ₽; условие: после завершения смены другом.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.camp_base_tariff.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: скидка, программа «приведи друга» — после того как приглашённый друг отучится на смене летнего лагеря по базовому тарифу.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.offline.cashback",
+  "brand": "unpk",
+  "text": "УНПК: по программе «приведи друга» кэшбэк 10 000 ₽; условие: после 1 семестра обучения друга.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.offline.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: скидка, очно, программа «приведи друга» — после того как приглашённый друг посетит 5 занятий очного курса.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.online.cashback",
+  "brand": "unpk",
+  "text": "УНПК: по программе «приведи друга» кэшбэк 5 000 ₽; условие: после 1 семестра обучения друга.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.refer_a_friend.online.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: скидка, онлайн, программа «приведи друга» — после того как приглашённый друг посетит 5 занятий онлайн-курса.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.client_safe_text",
+  "brand": "unpk",
+  "text": "Скидка на второй предмет очно — 20% на того же ребёнка; скидки не суммируются, применяется наибольшая.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: при очном обучении скидка на второй предмет составляет на второй и последующий предмет одного и того же ребёнка при оплате очного формата.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.example",
+  "brand": "unpk",
+  "text": "УНПК: при очном обучении на второй предмет действует скидка 20%; условие: ученик добавляет второй предмет.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.offline.pct",
+  "brand": "unpk",
+  "text": "УНПК: при очном обучении скидка на второй предмет составляет 20%.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.online.condition_client_text",
+  "brand": "unpk",
+  "text": "УНПК: при онлайн-обучении скидка на второй предмет составляет на второй и последующий предмет одного и того же ребёнка при оплате онлайн-формата.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.second_subject.online.pct",
+  "brand": "unpk",
+  "text": "УНПК: при онлайн-обучении скидка на второй предмет составляет 20%.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.stacking_rule",
+  "brand": "unpk",
+  "text": "УНПК: если клиенту доступно несколько скидок, они не суммируются; применяется наибольшая доступная скидка.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "discounts.stacking_rule_text",
+  "brand": "unpk",
+  "text": "УНПК: если клиенту доступно несколько скидок, они не суммируются; применяется наибольшая доступная скидка.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "payment_options.available_schedules.1.monthly.discount_extra",
+  "brand": "unpk",
+  "text": "УНПК: при помесячной оплате дополнительная скидка не применяется.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "payment_options.available_schedules.2.semester.discount_extra",
+  "brand": "unpk",
+  "text": "УНПК: при оплате за семестр действует дополнительная скидка 10%.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "payment_options.available_schedules.3.year.discount_extra",
+  "brand": "unpk",
+  "text": "УНПК: при оплате за год действует дополнительная скидка 14%.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "payment_options.bank_installment.absent.client_safe_text",
+  "brand": "unpk",
+  "text": "В УНПК отдельной банковской рассрочки нет. Оплату можно обсудить с менеджером; доступны помесячная оплата, оплата за семестр или за год. При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "payment_options.client_safe_text.when_asked_about_installment",
+  "brand": "unpk",
+  "text": "У нас оплата возможна помесячно, за семестр или за год. При оплате за семестр или за год выходит выгоднее — это уже учтено в прайсе. Если нужно растянуть оплату — менеджер подскажет варианты под вашу ситуацию.",
+  "fact_type": "installment"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.classes",
+  "brand": "unpk",
+  "text": "УНПК: интенсив 2026 рассчитан на 10-11 классы.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.duration_weeks",
+  "brand": "unpk",
+  "text": "УНПК: длительность интенсива 2026 — 8 недель.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.format",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026 — онлайн, 2 занятия/нед.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.group_size",
+  "brand": "unpk",
+  "text": "УНПК: размер группы на интенсиве 2026 — 10-15 человек.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.includes.1",
+  "brand": "unpk",
+  "text": "УНПК: в интенсив 2026 входит: 14 живых вебинаров (90 мин).",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.includes.2",
+  "brand": "unpk",
+  "text": "УНПК: в интенсив 2026 входит: 7 практических занятий.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.includes.3",
+  "brand": "unpk",
+  "text": "УНПК: в интенсив 2026 входит: ДЗ и конспекты.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.includes.4",
+  "brand": "unpk",
+  "text": "УНПК: в интенсив 2026 входит: 3 пробника.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.includes.5",
+  "brand": "unpk",
+  "text": "УНПК: в интенсив 2026 входит: Ручная проверка второй части ЕГЭ.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.includes.6",
+  "brand": "unpk",
+  "text": "УНПК: в интенсив 2026 входит: Закрытый чат.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.includes.7",
+  "brand": "unpk",
+  "text": "УНПК: в интенсив 2026 входит: Психподдержка.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.links.math",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022195.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.links.physics",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026 — https://my.mts-link.ru/course-info/2022205.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.prices.one_block",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026, один блок — 9 400 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.prices.one_subject",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026, один предмет — 18 800 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.prices.two_subjects",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026, два предмета — 34 400 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.start_dates.math",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026 — 15 апреля 2026.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.start_dates.physics",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026 — 14 апреля 2026.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.subjects.1",
+  "brand": "unpk",
+  "text": "УНПК: среди предметов интенсива 2026 есть математика (профиль).",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.subjects.2",
+  "brand": "unpk",
+  "text": "УНПК: среди предметов интенсива 2026 есть физика.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.ege_unpk.vk_chat_11",
+  "brand": "unpk",
+  "text": "УНПК: интенсивы 2026 — https://vk.me/join/SIL/XNtbEwYrLf9xVI/BdD/2drF1z1umzfA=.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_intensive.available_in_unpk",
+  "brand": "unpk",
+  "text": "УНПК: этот интенсив в текущем бренде не проводится.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "intensives_2026.oge_intensive.bot_behavior_when_asked",
+  "brand": "unpk",
+  "text": "УНПК: по вопросу об интенсиве менеджер подберёт подходящие варианты и свяжется в течение рабочего дня.",
+  "fact_type": "intensive"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_discounts.client_safe_text",
+  "brand": "unpk",
+  "text": "Скидки на летнюю школу: многодетным семьям — 10% (по статусу семьи, нужно удостоверение); действующим/бывшим ученикам — 5% (на смены того же учебного центра, где учились); тем, кто записался и оплатил следующий учебный год — 10%. По акции «приведи друга» кэшбэк за нового ученика, ранее не посещавшего летнюю школу: на тариф «База» — 3 000 ₽, на тарифы с факультативом/премиум — 5 000 ₽. Скидки не су",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny.client_safe_text",
+  "brand": "unpk",
+  "text": "Городская летняя школа УНПК в Долгопрудном — очно, без проживания. Смены 20–31 июля и 17–28 августа. Классы 5–10. Направления: ФизМат (программа «Формула Физтеха») и ИИ (программа «AI Lab»). Режим: 2 недели = 10 учебных дней, пн–пт, сб–вс выходные. Утренний клуб «Предлёнка» — бесплатно, 09:45–11:45, со 2-го дня. Питание: обед (первое, второе, салат, булочка) и полдник (булочка и сок).",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_dolgoprudny_tariffs.client_safe_text",
+  "brand": "unpk",
+  "text": "Тарифы (Долгопрудный): «База» — 39 500 ₽ (обязательный блок 12:00–16:45); «База + факультативный блок» — 59 500 ₽ (менторская группа 3–4 человека 16:30–18:00 для подготовки проекта); «База + факультатив с индивидуальным обучением» — 99 500 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_mfti_discount.client_safe_text",
+  "brand": "unpk",
+  "text": "Сотрудникам МФТИ — скидка 10% на летнюю школу (по подтверждающему документу с места работы).",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_moscow.client_safe_text",
+  "brand": "unpk",
+  "text": "Городская летняя школа УНПК в Москве (Верхняя Красносельская ул., 30) — очно, без проживания. Смены 6–17 июля (ФизМат «Формула Физтеха» и ИИ «AI Lab») и 20–31 июля (только ФизМат «Формула Физтеха»). Тарифы: «База» — 39 500 ₽; «База + факультативный блок» — 59 500 ₽; «База + факультатив с индивидуальным обучением» — 99 500 ₽.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.city_summer_school_primary_patsayeva.client_safe_text",
+  "brand": "unpk",
+  "text": "Для 1–4 классов городская летняя школа УНПК идёт по предзаписи (площадка на ул. Пацаева, Долгопрудный) — менеджер подскажет условия и запишет.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_5_client_safe_facts_2026_06_03.lesson_format.client_safe_text",
+  "brand": "unpk",
+  "text": "Занятия проходят в формате семинара: теория и практика вместе. Преподаватель в мини-группе разбирает задачи с учениками, есть интерактив с вопросами. Бывает этап индивидуальной работы: пока все решают свои задания, преподаватель подходит к каждому на несколько минут.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: годовые онлайн-курсы по математике и физике для 5–11 классов проходят по выходным: 35 занятий в год, 1 занятие в неделю по 3 ак.ч. Стоимость: семестр — 37 000 ₽, год — 59 000 ₽.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: онлайн-курсы для 9 и 11 классов по будням (математика, физика, информатика), 2 занятия в неделю по 2 ак.ч. Стоимость на 2026/27: семестр — 41 800 ₽, год — 69 900 ₽.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.attendance_makeup_other_group.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: пропущенное занятие можно отработать в другой группе, подходящей по времени и уровню; тема занятия может отличаться. Справка для отработки не обязательна.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.attendance_online_instead_offline_exception_2026_27.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: подключиться к онлайн-занятию вместо очного нельзя; исключение — пропуск 4 и более занятий подряд по болезни.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.homework_check_always_checked.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: домашние задания всегда проверяются.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.materials_handouts_default.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: раздаточных конспектов по умолчанию нет: есть чат с преподавателем для домашних заданий и материалов, на части курсов — методички.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.offline_courses_seminar_format.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: очные занятия проходят в семинарском формате — теория и практика вместе, разбор задач у доски, самостоятельная работа.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.offline_groups_levels.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: очные группы делятся по уровням: базовый, продвинутый и олимпиадный. Разница — в темпе, сложности задач и времени на повторение.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.offline_phys_tech_level_default.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: очная подготовка к Физтеху отдельных уровней не имеет — это олимпиадный уровень по умолчанию.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.schedule_level_split_parallel_groups.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: если по расписанию написано «уточняется», это потому что группы делятся по уровню знаний. Возможно, предложим другую группу; постараемся сохранить удобное время, потому что групп в параллели много.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "kb_v6_6_client_safe_facts_2026_06_08.study_pause_flexible_schedule_personal.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ: при личных обстоятельствах можно заморозить обучение или подобрать гибкий график.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "licenses.client_safe_summary",
+  "brand": "unpk",
+  "text": "УНПК: у учебного центра есть лицензия на образовательную деятельность.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.1.address",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Сретенка, 20.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.1.city",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Москва.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.1.metro",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Чистые Пруды.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.2.address",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Институтский пер., 9 (МФТИ).",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.2.city",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Долгопрудный.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.3.address",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Проспект Пацаева, 7к1.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.3.city",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Долгопрудный.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.4.address",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Льяловское шоссе, 1, посёлок Красный Воин.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.addresses.4.city",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий — Менделеево (ЛВШ).",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.online_trial_fragment.available",
+  "brand": "unpk",
+  "text": "УНПК: адрес и место занятий, онлайн — да.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "locations_unpk.online_trial_fragment.client_safe_text",
+  "brand": "unpk",
+  "text": "По онлайн-формату можем прислать вам фрагмент занятия — посмотреть подачу и уровень.",
+  "fact_type": "location"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.air_conditioning",
+  "brand": "unpk",
+  "text": "УНПК: в ЛВШ Менделеево по текущим данным есть кондиционирование.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.meals_per_day",
+  "brand": "unpk",
+  "text": "УНПК: в ЛВШ Менделеево предусмотрено 5 приёмов пищи в день.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.accommodation.room_capacity",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево — 2-3 человека.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.audience",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево — 5-10 класс (окончившие).",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.availability_2026.client_safe_text",
+  "brand": "unpk",
+  "text": "По ЛВШ УНПК места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.booking_policy.client_safe_text",
+  "brand": "unpk",
+  "text": "По ЛВШ УНПК можно записаться в лист ожидания; менеджер подскажет альтернативу по городской очной школе.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.classes",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево для физико-математического направления рассчитана на 5-10 классы.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.subjects.1",
+  "brand": "unpk",
+  "text": "УНПК: в ЛВШ Менделеево для физико-математического направления есть предмет «физика».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.fizmat.subjects.2",
+  "brand": "unpk",
+  "text": "УНПК: в ЛВШ Менделеево для физико-математического направления есть предмет «математика».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.it.classes",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево для IT-направления рассчитана на 7-10 классы.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.it.subjects.1",
+  "brand": "unpk",
+  "text": "УНПК: в ЛВШ Менделеево для IT-направления есть предмет «Python».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.directions.it.subjects.2",
+  "brand": "unpk",
+  "text": "УНПК: в ЛВШ Менделеево для IT-направления есть предмет «проектная деятельность».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.location.address",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево — Московская область, Солнечногорский район, посёлок Красный Воин, Льяловское шоссе, 1.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.location.name",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево, название — УСК «Менделеево».",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.pricing_2026.client_safe_text_when_price_asked",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево — ЛВШ Менделеево в УНПК сейчас стоит 114 000 ₽. Полная стоимость — 120 000 ₽. Места распроданы; можно записаться в лист ожидания. Как альтернатива — городская очная школа.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.pricing_2026.current_price",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево — 114 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.pricing_2026.main_full",
+  "brand": "unpk",
+  "text": "УНПК: полная стоимость ЛВШ Менделеево — 120 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.daily_pairs",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево, пар в день — 3 пары.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.group_size",
+  "brand": "unpk",
+  "text": "УНПК: размер группы в ЛВШ Менделеево — 12-15 человек.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.pair_duration_minutes",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево, длительность пары — 110 минут.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.program.total_academic_hours",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево — 72+.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.available",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево, Москва — да.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.confirmed_by_team",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево, Москва — 2026-05-20.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "lvsh_mendeleevo_2026.transfer_from_moscow.cost",
+  "brand": "unpk",
+  "text": "УНПК: ЛВШ Менделеево, Москва — бесплатно.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "certificates.types.for_matkap.content",
+  "brand": "unpk",
+  "text": "УНПК: материнский капитал — Договор + лицензия + реквизиты.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.child_age.sertificate_owner_min",
+  "brand": "unpk",
+  "text": "УНПК: материнский капитал можно использовать, если ребёнку, на которого оформлен сертификат, исполнилось 3 года.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.child_age.student_max",
+  "brand": "unpk",
+  "text": "УНПК: обучение с оплатой материнским капиталом возможно для ученика до 18 лет.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_age_over_18",
+  "brand": "unpk",
+  "text": "Если ученику уже 18 лет или больше, по возрастным условиям маткапитала есть ограничения. Уточню у менеджера, подходит ли ваш случай — он свяжется в течение рабочего дня.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_asked",
+  "brand": "unpk",
+  "text": "Да, оплата материнским капиталом возможна. Работаем с федеральным маткапиталом. Менеджер пришлёт перечень документов и поможет с оформлением через СФР. Подскажите ФИО ребёнка и какой курс рассматриваете.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_regional",
+  "brand": "unpk",
+  "text": "К сожалению, региональный маткапитал не принимаем. Если у вас федеральный — менеджер подскажет порядок оформления.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.client_safe_text.when_timeline",
+  "brand": "unpk",
+  "text": "Срок рассмотрения в СФР — до 10 рабочих дней, плюс ещё до 5 дней на перевод. Итого до 15 дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.rule_federal_only",
+  "brand": "unpk",
+  "text": "УНПК: по текущим правилам можно использовать федеральный материнский капитал.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.timeline.sfr_review_days",
+  "brand": "unpk",
+  "text": "УНПК: СФР рассматривает заявление на оплату материнским капиталом до 10 рабочих дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.timeline.total_max_days",
+  "brand": "unpk",
+  "text": "УНПК: весь цикл проверки и перевода материнского капитала может занимать до 15 рабочих дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "matkap.timeline.transfer_days",
+  "brand": "unpk",
+  "text": "УНПК: после одобрения СФР перевод средств обычно занимает до 5 рабочих дней.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.matkap_camps.client_safe_text",
+  "brand": "unpk",
+  "text": "Маткапиталом можно оплатить зимнюю и летнюю выездную школу; подтверждение одобрения СФР клиент передаёт менеджеру.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.matkap_documents.client_safe_text",
+  "brand": "unpk",
+  "text": "Для оформления маткапитала нужны паспорт родителя, свидетельство о рождении ученика, сертификат маткапитала, выписка об остатке и карточка предприятия; менеджер пришлёт точный перечень и поможет с оформлением.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.matkap_federal_only.client_safe_text",
+  "brand": "unpk",
+  "text": "Принимаем федеральный материнский капитал; региональный маткапитал не принимаем. Младшему ребёнку в семье должно быть больше 3 лет.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.matkap_submission.client_safe_text",
+  "brand": "unpk",
+  "text": "Документы по маткапиталу можно подать на edu@kmipt.ru или лично в офисе в Долгопрудном: ул. Первомайская, д. 3, 4 этаж, каб. 401. Для иногородних возможна отправка Почтой России.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.matkap_two_children.client_safe_text",
+  "brand": "unpk",
+  "text": "Маткапитал можно оформить на двоих детей из одной семьи отдельными договорами; для продления нужна обновлённая выписка об остатке.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.matkap_year_subscription.client_safe_text",
+  "brand": "unpk",
+  "text": "Маткапиталом можно закрыть весь годовой абонемент; если оформление не пройдёт, оплату нужно будет внести другим способом.",
+  "fact_type": "matkap"
+ },
+ {
+  "fact_key": "objection_responses.brand_link_question.approved_response",
+  "brand": "unpk",
+  "text": "Это отдельные организации, по вашему вопросу сориентирую в рамках текущего учебного центра.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.brand_link_question.followup_phrase",
+  "brand": "unpk",
+  "text": "Я могу подсказать только про УНПК МФТИ и, к сожалению, не владею информацией про другие организации.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.inconvenient_time.1",
+  "brand": "unpk",
+  "text": "Разные слоты по выходным.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.inconvenient_time.2",
+  "brand": "unpk",
+  "text": "Онлайн с записью.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.is_it_bot",
+  "brand": "unpk",
+  "text": "Я помощник менеджера, помогу с вопросом или передам коллеге.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_camp.1",
+  "brand": "unpk",
+  "text": "Предоплата 15 000 ₽ фиксирует цену.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_camp.2",
+  "brand": "unpk",
+  "text": "Применяется наибольшая из доступных скидок.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.1",
+  "brand": "unpk",
+  "text": "20% на 2-й и последующие предметы.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.2",
+  "brand": "unpk",
+  "text": "Многодетным 10%.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.3",
+  "brand": "unpk",
+  "text": "Сотрудникам МФТИ 10%.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.4",
+  "brand": "unpk",
+  "text": "Семестр/год скидки 10-14%.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "objection_responses.too_expensive_course.5",
+  "brand": "unpk",
+  "text": "Приведи друга — кэшбек 10 000 ₽ очно или 5 000 ₽ онлайн; условие: проверить по программе «приведи друга» перед отправкой.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.levels.1",
+  "brand": "unpk",
+  "text": "УНПК: на онлайн-платформе есть уровень обучения: базовый.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.levels.2",
+  "brand": "unpk",
+  "text": "УНПК: на онлайн-платформе есть уровень обучения: продвинутый.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.levels.3",
+  "brand": "unpk",
+  "text": "УНПК: на онлайн-платформе есть уровень обучения: олимпиадный.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.name",
+  "brand": "unpk",
+  "text": "УНПК: онлайн-платформа, онлайн, название — SohoLMS.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.offline_group_size",
+  "brand": "unpk",
+  "text": "УНПК: онлайн-платформа, очно — 6-12 человек.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "online_platform.recording",
+  "brand": "unpk",
+  "text": "УНПК: на онлайн-платформе доступны записи занятий.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_1_4_class.before_2026_07_01.semester",
+  "brand": "unpk",
+  "text": "УНПК: цены на 2026/27 учебный год, 1-4 класс, очно, семестр — 31 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_1_4_class.before_2026_07_01.year",
+  "brand": "unpk",
+  "text": "УНПК: цены на 2026/27 учебный год, 1-4 класс, очно, год — 51 700 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+  "brand": "unpk",
+  "text": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+  "brand": "unpk",
+  "text": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽.",
+  "fact_type": "price"
+ },
+ {
+  "fact_key": "team_answers.q15.unpk_online_other_classes.manager_handoff",
+  "brand": "unpk",
+  "text": "Вне двух подтверждённых онлайн-тарифов УНПК точные условия проверяет менеджер.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.ege_avg_above_country_pts",
+  "brand": "unpk",
+  "text": "УНПК: средний результат ЕГЭ у учеников выше среднего по стране на 25 баллов.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.oge_grade_5_pct",
+  "brand": "unpk",
+  "text": "УНПК: по текущим данным 92% учеников получили оценку 5 на ОГЭ.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.olymp_fiztech_2024_winners",
+  "brand": "unpk",
+  "text": "УНПК: в 2024 году указано 14 победителей и призёров олимпиады «Физтех».",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.total_alumni",
+  "brand": "unpk",
+  "text": "УНПК: по текущим данным через обучение прошло более 100 000 учеников.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.total_alumni_confirmation",
+  "brand": "unpk",
+  "text": "УНПК: по текущим данным через обучение прошло более 2 026 учеников.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "results_social_proof.university_admission_pct",
+  "brand": "unpk",
+  "text": "УНПК: по текущим данным 97% выпускников поступили в вузы.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_ab3_onlajn_ano_tue_thu_1800_1930_math_11_ege_before_2027_05_27.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 11 класс, ЕГЭ, онлайн, Онлайн: вторник и четверг 18:00-19:30, старт 22.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_ab8_onlajn_ano_tue_thu_1800_1930_math_9_oge_before_2027_05_27.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 9 класс, ОГЭ, онлайн, Онлайн: вторник и четверг 18:00-19:30, старт 22.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h110_krasnoselskaya_sun_1000_1200_math_6_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 6 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h125_krasnoselskaya_sun_1000_1200_math_5_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 5 класс, олимпиадная группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h18_sretenka_sun_1000_1200_math_11_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 11 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h34_sretenka_sun_1000_1200_physics_10_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 10 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h46_sretenka_sun_1000_1200_math_9_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 9 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h51_sretenka_sun_1000_1200_informatics_9_oge_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 9 класс, ОГЭ, очно, Сретенка, 20: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h79_krasnoselskaya_sun_1000_1200_physics_8_base_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 8 класс, базовая группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h89_krasnoselskaya_sun_1000_1200_math_7_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 7 класс, олимпиадная группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_h99_krasnoselskaya_sun_1000_1200_informatics_7_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 7 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 10:00-12:00, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i115_krasnoselskaya_sun_1215_1415_physics_5_6_regular_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 5-6 класс, обычная группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i13_sretenka_sun_1215_1415_math_11_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 11 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i18_sretenka_sun_1215_1415_physics_11_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 11 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i23_sretenka_sun_1215_1415_informatics_10_11_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 10-11 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i29_sretenka_sun_1215_1415_math_10_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 10 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i51_sretenka_sun_1215_1415_physics_9_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 9 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i74_krasnoselskaya_sun_1215_1415_math_8_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 8 класс, олимпиадная группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i79_krasnoselskaya_sun_1215_1415_informatics_8_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 8 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_i94_krasnoselskaya_sun_1215_1415_math_7_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 7 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 12:15-14:15, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j110_krasnoselskaya_sun_1430_1630_math_6_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 6 класс, олимпиадная группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j115_krasnoselskaya_sun_1430_1630_informatics_5_6_regular_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 5-6 класс, обычная группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j125_krasnoselskaya_sun_1430_1630_math_5_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 5 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j18_sretenka_sun_1430_1630_physics_11_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 11 класс, олимпиадная группа, очно, Сретенка, 20: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j23_sretenka_sun_1430_1630_informatics_10_11_ege_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 10-11 класс, ЕГЭ, очно, Сретенка, 20: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j29_sretenka_sun_1430_1630_math_10_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 10 класс, олимпиадная группа, очно, Сретенка, 20: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j46_sretenka_sun_1430_1630_math_9_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 9 класс, продвинутая группа, очно, Сретенка, 20: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j51_sretenka_sun_1430_1630_physics_9_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 9 класс, олимпиадная группа, очно, Сретенка, 20: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j74_krasnoselskaya_sun_1430_1630_math_8_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 8 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_j99_krasnoselskaya_sun_1430_1630_physics_7_advanced_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 7 класс, продвинутая группа, очно, Верхняя Красносельская, 30: воскресенье 14:30-16:30, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_k13_sretenka_sun_1645_1845_math_11_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 11 класс, олимпиадная группа, очно, Сретенка, 20: воскресенье 16:45-18:45, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_k34_sretenka_sun_1645_1845_physics_10_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 10 класс, олимпиадная группа, очно, Сретенка, 20: воскресенье 16:45-18:45, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_k46_sretenka_sun_1645_1845_math_9_olympiad_before_2027_05_23.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 9 класс, олимпиадная группа, очно, Сретенка, 20: воскресенье 16:45-18:45, старт 13.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_p26_onlajn_ano_sat_1000_1200_math_10_regular_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 10 класс, обычная группа, онлайн, Онлайн: суббота 10:00-12:00, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_p4_onlajn_ano_sat_1000_1200_physics_11_ege_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 11 класс, ЕГЭ, онлайн, Онлайн: суббота 10:00-12:00, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_q26_onlajn_ano_sat_1215_1415_physics_10_regular_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 10 класс, обычная группа, онлайн, Онлайн: суббота 12:15-14:15, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_q47_onlajn_ano_sat_1215_1415_informatics_9_oge_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 9 класс, ОГЭ, онлайн, Онлайн: суббота 12:15-14:15, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_q4_onlajn_ano_sat_1215_1415_math_11_ege_before_2027_05_29.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 11 класс, ЕГЭ, онлайн, Онлайн: суббота 12:15-14:15, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_r26_onlajn_ano_sat_1430_1630_math_10_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 10 класс, олимпиадная группа, онлайн, Онлайн: суббота 14:30-16:30, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_r4_onlajn_ano_sat_1430_1630_informatics_11_ege_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 11 класс, ЕГЭ, онлайн, Онлайн: суббота 14:30-16:30, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_s47_onlajn_ano_sat_1645_1845_physics_9_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 9 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_s9_onlajn_ano_sat_1645_1845_math_11_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 11 класс, олимпиадная группа, онлайн, Онлайн: суббота 16:45-18:45, старт 19.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_u47_onlajn_ano_sun_1000_1200_math_9_oge_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 9 класс, ОГЭ, онлайн, Онлайн: воскресенье 10:00-12:00, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_u83_onlajn_ano_sun_1000_1200_informatics_7_8_regular_before_2027_05_20.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 7-8 класс, обычная группа, онлайн, Онлайн: воскресенье 10:00-12:00, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_u89_onlajn_ano_sun_1000_1200_math_6_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 6 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 10:00-12:00, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_u94_onlajn_ano_sun_1000_1200_math_6_advanced_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 6 класс, продвинутая группа, онлайн, Онлайн: воскресенье 10:00-12:00, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v47_onlajn_ano_sun_1215_1415_physics_9_oge_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 9 класс, ОГЭ, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v68_onlajn_ano_sun_1215_1415_math_8_advanced_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 8 класс, продвинутая группа, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v78_onlajn_ano_sun_1215_1415_physics_7_regular_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 7 класс, обычная группа, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v83_onlajn_ano_sun_1215_1415_informatics_6_regular_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 6 класс, обычная группа, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v89_onlajn_ano_sun_1215_1415_math_5_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 5 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_v94_onlajn_ano_sun_1215_1415_math_5_advanced_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 5 класс, продвинутая группа, онлайн, Онлайн: воскресенье 12:15-14:15, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w31_onlajn_ano_sun_1430_1630_physics_10_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 10 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w36_onlajn_ano_sun_1430_1630_informatics_10_regular_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 10 класс, обычная группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w68_onlajn_ano_sun_1430_1630_physics_8_regular_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 8 класс, обычная группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w78_onlajn_ano_sun_1430_1630_math_7_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 7 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_w83_onlajn_ano_sun_1430_1630_math_7_advanced_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 7 класс, продвинутая группа, онлайн, Онлайн: воскресенье 14:30-16:30, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_x47_onlajn_ano_sun_1645_1845_math_9_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Математика, 9 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_x9_onlajn_ano_sun_1645_1845_physics_11_olympiad_before_2027_05_30.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 11 класс, олимпиадная группа, онлайн, Онлайн: воскресенье 16:45-18:45, старт 20.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_z13_onlajn_ano_mon_wed_1800_1930_informatics_11_ege_before_2027_05_26.client_safe_text",
+  "brand": "unpk",
+  "text": "Информатика, 11 класс, ЕГЭ, онлайн, Онлайн: понедельник и среда 18:00-19:30, старт 21.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_z3_onlajn_ano_mon_wed_1800_1930_physics_11_ege_before_2027_05_26.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 11 класс, ЕГЭ, онлайн, Онлайн: понедельник и среда 18:00-19:30, старт 21.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "schedule_2026_27.groups.group_start_date_z8_onlajn_ano_mon_wed_1800_1930_physics_9_oge_before_2027_05_26.client_safe_text",
+  "brand": "unpk",
+  "text": "Физика, 9 класс, ОГЭ, онлайн, Онлайн: понедельник и среда 18:00-19:30, старт 21.09.2026. Точное расписание конкретной группы уточняется.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "certificates.types.payment_for_tax_deduction.form",
+  "brand": "unpk",
+  "text": "УНПК: налоговый вычет — КНД 1151158.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.available",
+  "brand": "unpk",
+  "text": "УНПК: налоговый вычет — да.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.certificate_form",
+  "brand": "unpk",
+  "text": "УНПК: для налогового вычета используется справка по форме КНД 1151158 (Приказ Минфина 18.10.2023 № 165н).",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_asked",
+  "brand": "unpk",
+  "text": "Налоговый вычет за обучение возможен — у нас есть лицензия. За обучение ребёнка можно вернуть до 14 300 ₽ в год. Менеджер подготовит и пришлёт справку в течение 10 рабочих дней (постараемся быстрее) — её приложите к декларации в налоговую.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_multiple_years",
+  "brand": "unpk",
+  "text": "Можно подать вычет за последние 3 года. Для каждого года нужна отдельная справка от нас и отдельная декларация 3-НДФЛ. Менеджер подготовит справки.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_online_question",
+  "brand": "unpk",
+  "text": "По онлайн-курсам — это вопрос трактовки конкретной налоговой инспекции. Передам уточнение нашему специалисту.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.client_safe_text.when_two_children",
+  "brand": "unpk",
+  "text": "Лимит на каждого ребёнка отдельный — 110 000 ₽. Если за двоих детей вы потратили по 110 000 ₽, можно вернуть до 28 600 ₽ суммарно. Менеджер пришлёт две справки.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.fns_review_months",
+  "brand": "unpk",
+  "text": "УНПК: налоговая обычно рассматривает декларацию до 3 месяцев.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2023_and_earlier.max_expenses_per_child",
+  "brand": "unpk",
+  "text": "УНПК: по расходам за 2023 год и раньше лимит расходов на обучение ребёнка для налогового вычета — 50 000 ₽.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2023_and_earlier.max_return_per_child",
+  "brand": "unpk",
+  "text": "УНПК: по расходам за 2023 год и раньше можно вернуть до 6 500 ₽ за ребёнка в год.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2024_and_later.max_expenses_per_child",
+  "brand": "unpk",
+  "text": "УНПК: по расходам с 2024 года лимит расходов на обучение ребёнка для налогового вычета — 110 000 ₽.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.limits.2024_and_later.max_return_per_child",
+  "brand": "unpk",
+  "text": "УНПК: по расходам с 2024 года можно вернуть до 14 300 ₽ за ребёнка в год.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.payment_after_approval_months",
+  "brand": "unpk",
+  "text": "УНПК: после одобрения налоговой выплата обычно занимает до 1 месяца.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tax_deduction.retroactive_years",
+  "brand": "unpk",
+  "text": "УНПК: налоговый вычет можно оформить за последние 3 года.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.tax_application.client_safe_text",
+  "brand": "unpk",
+  "text": "Для налогового вычета менеджер пришлёт шаблон заявления на email; справка готовится после подачи заявления.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.blind_children_programs.client_safe_text",
+  "brand": "unpk",
+  "text": "Специализированных программ для незрячих детей сейчас нет.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.bring_friend_cashback.client_safe_text",
+  "brand": "unpk",
+  "text": "Кэшбек «Приведи друга» выплачивается после успешного начала обучения друга; для лагеря — в конце смены.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.city_school_discounts.client_safe_text",
+  "brand": "unpk",
+  "text": "В городской летней школе возможны скидки для многодетных семей, сотрудников МФТИ и участников предыдущих смен.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.city_school_formats.client_safe_text",
+  "brand": "unpk",
+  "text": "В городской летней школе есть формат «База» с 2 занятиями в день по 90 минут, предлёнкой 9:45-11:45, обедом, сертификатом и рекомендациями. В «Премиум 10» добавляются 10 занятий в мини-группах 3-4 человека, разбор ошибок с наставником, полдник и связь родителя с наставником. В «Премиум+» добавляются индивидуальные занятия, персональный трек и расширенное письмо родителю.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.city_school_overview.client_safe_text",
+  "brand": "unpk",
+  "text": "Городская летняя школа «Формула Физтеха» — дневная программа без проживания. Есть направления ФизМат и ИИ для 5-10 классов; занятия проходят с понедельника по пятницу, выходные свободны, пребывание обычно с 10:00 до 18:00.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.city_school_shifts.client_safe_text",
+  "brand": "unpk",
+  "text": "Городская летняя школа «Формула Физтеха»: 6-17 июля — Москва, Верхняя Красносельская, д. 30; 20-31 июля — Главный корпус МФТИ; 17-28 августа — Главный корпус МФТИ.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.documents_office.client_safe_text",
+  "brand": "unpk",
+  "text": "Офис приёма документов, в том числе по маткапиталу: Долгопрудный, ул. Первомайская, д. 3, 4 этаж, каб. 401.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.electronic_document_flow.client_safe_text",
+  "brand": "unpk",
+  "text": "Договор обычно оформляется как оферта — она приходит на почту вместе с квитанцией, а оплата означает согласие. Бумажный договор оформляем по желанию клиента или при оплате маткапиталом.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.first_offline_day.client_safe_text",
+  "brand": "unpk",
+  "text": "В первый день очных занятий в корпусе МФТИ внизу встречает администратор; с собой нужна копия паспорта или свидетельства о рождении.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.hotline.client_safe_text",
+  "brand": "unpk",
+  "text": "Горячая линия УНПК МФТИ: 8 (800) 500-81-51 и 8 (495) 150-81-51, почта edu@kmipt.ru.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.level_transfer.client_safe_text",
+  "brand": "unpk",
+  "text": "Перевод между группами по уровню возможен по инициативе ученика или по рекомендации педагога; олимпиадных задач обычно больше в сильной группе.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_accommodation.client_safe_text",
+  "brand": "unpk",
+  "text": "В выездной школе дети живут в номерах-студиях на 2-3 человека; в каждом номере есть своя ванная и туалет. Питание 5-разовое, шведский стол; спецменю возможно по запросу.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_age_rule.client_safe_text",
+  "brand": "unpk",
+  "text": "На выездную школу берём детей, которые окончили 5 класс. Детей 9-10 лет обычно не берём без отдельного согласования; исключения обсуждаются с руководством.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_clubs.client_safe_text",
+  "brand": "unpk",
+  "text": "Кружки входят в стоимость смены.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_contract.client_safe_text",
+  "brand": "unpk",
+  "text": "Договор на лагерь — также договор-оферта: придёт на почту с квитанцией, оплата означает согласие. Бумажный договор оформляем по желанию или при оплате маткапиталом.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_day_schedule.client_safe_text",
+  "brand": "unpk",
+  "text": "Распорядок дня на выездной школе: подъём 8:20, зарядка 8:50, завтрак 9:30, занятия 10:00-14:00, обед 14:00, третья пара 14:40-16:40, полдник 16:50, кружки и время с вожатыми 17:00-19:00, ужин 19:00, вечернее мероприятие 20:00-22:00, свечка 22:00, отбой 23:00.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_directions.client_safe_text",
+  "brand": "unpk",
+  "text": "В выездной школе есть направления ФизМат для 5-10 класса и ИТ для 7-10 класса. На ИТ-направлении группы делятся по уровню владения Python; все группы по информатике работают на Python. Отдельного направления только по математике на выездной школе нет.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_documents_package.client_safe_text",
+  "brand": "unpk",
+  "text": "Для выездной школы нужны договор в 2 экземплярах, анкета, согласие на персональные данные, согласие на трансфер или самостоятельный заезд, копия паспорта или свидетельства о рождении, полис ОМС, медсправка 079У, справка об эпидокружении и сведения об аллергии или лекарствах.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_it_equipment.client_safe_text",
+  "brand": "unpk",
+  "text": "На ИТ-направлении ноутбук с собой не обязателен: оборудование предоставляет организатор. Ночью компьютерный класс ставится на сигнализацию.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_learning_load.client_safe_text",
+  "brand": "unpk",
+  "text": "В выездной школе обычно 3 занятия в день по 3 академических часа, то есть около 6 часов занятий. Группы 12-15 человек, формируются по классу и уровню; за каждой группой закреплён вожатый.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_medical_docs_validity.client_safe_text",
+  "brand": "unpk",
+  "text": "Для выездной школы медсправка 079У действует 3 месяца, справка об эпидокружении — 3 дня.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_medical_support.client_safe_text",
+  "brand": "unpk",
+  "text": "На смене есть медсестра.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_multichild_discount.client_safe_text",
+  "brand": "unpk",
+  "text": "На выездной лагерь для многодетных действует дополнительная скидка 10% при подтверждающем документе.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_placement_test.client_safe_text",
+  "brand": "unpk",
+  "text": "Тестирование для распределения по группам проходит онлайн и обычно приходит на почту за 2-3 недели до смены. Оно помогает распределить детей на базовые, профильные и олимпиадные группы.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.lvsh_transfer.client_safe_text",
+  "brand": "unpk",
+  "text": "Трансфер на выездную школу включён в стоимость: сбор у метро Ховрино, отъезд в 11:00; обратно отъезд с базы в 15:30, прибытие к Ховрино примерно в 16:30. До метро семьи добираются самостоятельно.",
+  "fact_type": "camp_lvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.mfti_relation.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК МФТИ — подразделение МФТИ, основанное в 1991 году.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.missed_lessons.client_safe_text",
+  "brand": "unpk",
+  "text": "Если пропуск подтверждён справкой о болезни по форме 095У или документом об участии в олимпиаде, занятие не списывается; также возможна отработка в другой группе.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.offer_contract.client_safe_text",
+  "brand": "unpk",
+  "text": "Договор-оферта размещён на сайте; оплата означает согласие с офертой. Отдельный подписанный договор обычно не требуется, кроме случаев оплаты маткапиталом. Оферта подходит для налогового вычета.",
+  "fact_type": "tax"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.offline_recordings.client_safe_text",
+  "brand": "unpk",
+  "text": "Запись очных занятий не ведётся; пропущенные материалы можно запросить в чате группы.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.olympiad_absence_discount.client_safe_text",
+  "brand": "unpk",
+  "text": "Пропуск из-за участия в олимпиаде не списывается с абонемента при подтверждающем документе; также можно перенести занятие на следующий год.",
+  "fact_type": "discount"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.olympiad_not_targeted.client_safe_text",
+  "brand": "unpk",
+  "text": "УНПК не готовит отдельно к ВСОШ, «Высшей пробе» и ПВГ.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.olympiad_targets.client_safe_text",
+  "brand": "unpk",
+  "text": "Олимпиадная подготовка УНПК нацелена на перечневые олимпиады РСОШ: Физтех, Росатом, Курчатов, Ломоносов и ОММО.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.online_courses_format.client_safe_text",
+  "brand": "unpk",
+  "text": "Онлайн-курсы УНПК проходят на платформе SohoLMS. Обычно это группы до 20 человек, занятия 2 раза в неделю по 90 минут; после каждого урока доступны записи. Есть домашние задания и контрольные срезы, обычно 5-6 раз в год.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.online_trial_fragment.client_safe_text",
+  "brand": "unpk",
+  "text": "По онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.payment_deadline_after_registration.client_safe_text",
+  "brand": "unpk",
+  "text": "После записи срок оплаты: для выездной школы — 5 дней, для городской летней школы — неделя.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.payment_methods.client_safe_text",
+  "brand": "unpk",
+  "text": "Оплатить можно по QR-коду или по квитанции/реквизитам в банке. Ссылку формирует бухгалтерия и присылает на email или по СМС. Терминала на месте нет; если нужно оплатить бизнес-картой, можем прислать ссылку через эквайринг Альфа-Банка.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.payment_purpose.client_safe_text",
+  "brand": "unpk",
+  "text": "В назначении платежа нужно указать ФИО учащегося и предмет или курс; для лагеря — ФИО и «ЛВШ» или «ЛШ».",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.regular_courses_schedule_publication.client_safe_text",
+  "brand": "unpk",
+  "text": "По курсам 2026/27 есть опубликованные группы с днями и временем; конкретный вариант зависит от класса, предмета, формата и площадки.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.senior_school_dolgoprudny.client_safe_text",
+  "brand": "unpk",
+  "text": "Старшая школа 10-11 классов в Долгопрудном проходит в Главном корпусе МФТИ по адресу Институтский пер., 9; занятия там только по воскресеньям.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.unavailable_chemistry_robotics.client_safe_text",
+  "brand": "unpk",
+  "text": "Химии сейчас нет ни в каком формате. Робототехника заявлена на сайте, но в этом году группы нет; возможно, она откроется позже.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_facts.zvsh_subject_hours.client_safe_text",
+  "brand": "unpk",
+  "text": "В зимней выездной школе в Менделеево ориентир программы — около 21 часа физики и около 21 часа математики; дни физики и математики чередуются.",
+  "fact_type": "camp_zvsh"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_safe_facts.online_trial_fragment.client_safe_text",
+  "brand": "unpk",
+  "text": "По онлайн-формату можно прислать фрагмент занятия для знакомства с подачей и уровнем.",
+  "fact_type": "program"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_safe_facts.refund_post_payment.client_safe_text",
+  "brand": "unpk",
+  "text": "По возврату средств после оплаты — здесь нужен расчёт от менеджера: он посмотрит, какая часть курса уже пройдена, и пришлёт точную сумму к возврату. Я уже передал ему ваш запрос — он свяжется с вами в рабочее время.",
+  "fact_type": "policy"
+ },
+ {
+  "fact_key": "tg_unpk_verified_2026_05_21.client_safe_facts.refund_presale_policy.client_safe_text",
+  "brand": "unpk",
+  "text": "Если клиент заранее спрашивает про возврат до оплаты, можно спокойно ответить, что при досрочном отказе возвращается остаток неистраченных средств; можно не переживать. Конкретный порядок оформления менеджер подтвердит по выбранному курсу и договору.",
+  "fact_type": "policy"
+ },
+ {
+  "fact_key": "bot_policy.approved_phrases.theme_11_contract.unpk",
+  "brand": "unpk",
+  "text": "Договор-оферта придёт на почту вместе с квитанцией после записи; оплата означает согласие. Подскажите, пожалуйста, email для отправки.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "bot_policy.approved_phrases.theme_12_certificate.unpk",
+  "brand": "unpk",
+  "text": "Менеджер подготовит справку и пришлёт в течение 10 дней, постараемся раньше.",
+  "fact_type": "documents"
+ },
+ {
+  "fact_key": "bot_policy.approved_phrases.theme_17_teachers.unpk",
+  "brand": "unpk",
+  "text": "Преподаватели — из МФТИ, МГУ, ВШЭ, МГТУ им. Баумана, МИФИ. Эксперты ЕГЭ, члены жюри олимпиад. Если ребёнку не подойдёт педагог — переведём в другую группу.",
+  "fact_type": "teacher"
+ },
+ {
+  "fact_key": "unavailable_programs_2026_27.client_safe_text",
+  "brand": "unpk",
+  "text": "Химия 10-11 и английский 1-4 в УНПК на 2026/27 не запускаются.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "zvsh_mendeleevo.client_safe_text.when_asked",
+  "brand": "unpk",
+  "text": "Зимняя выездная школа в Менделеево — ждём расписание на новый учебный год. Записаться в лист ожидания можно прямо сейчас — менеджер свяжется, как только откроются продажи.",
+  "fact_type": "camp_zvsh"
+ },
+ {
+  "fact_key": "zvsh_mendeleevo.dates_2026_27",
+  "brand": "unpk",
+  "text": "УНПК: даты ЗВШ Менделеево на 2026/27 учебный год пока не определены.",
+  "fact_type": "deadline"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.online_olympiad_phystech_classes.client_safe_text",
+  "brand": "unpk",
+  "text": "Олимпиадная подготовка онлайн идёт в рамках обычных онлайн-курсов, в группах олимпиадного уровня; отдельного продукта нет.",
+  "fact_type": "course_parameter"
+ },
+ {
+  "fact_key": "prices_regular_2026_27.online_olympiad_phystech_classes.product",
+  "brand": "unpk",
+  "text": "УНПК: цены на 2026/27 учебный год, онлайн, продукт — Олимпиадный уровень внутри обычных онлайн-курсов.",
+  "fact_type": "course_parameter"
+ }
+]

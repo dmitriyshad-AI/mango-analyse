@@ -185,6 +185,26 @@ def test_detects_bank_collector_and_mts_ivr_even_with_business_words() -> None:
     assert third_party_hits >= 2
 
 
+def test_third_party_business_dialogue_is_not_forced_as_ivr() -> None:
+    text = (
+        "MANAGER:\n"
+        "Добрый день. На наш учебный центр несколько раз поступают обратные звонки, "
+        "хотим понять, почему ваш номер отображается в пропущенных и можно ли убрать его из базы. "
+        "Я перечислю номера, которые видим у себя, а вы проверьте, пожалуйста.\n\n"
+        "CLIENT:\n"
+        "Здравствуйте, ООО ПКО Актив Бизнес Консалт, я вас слышу. По указанным номерам данных в базе нет. "
+        "Назовите еще раз последние цифры, мы проверим обращение и передадим ответственному сотруднику. "
+        "Если звонки повторятся, попросите клиента обратиться с того номера, на который они приходят."
+    )
+
+    result = detect_non_conversation_signals(text, call_type="service_call", duration_sec=150)
+
+    assert result.should_force_non_conversation is False
+    assert result.label != LABEL_NON_CONVERSATION_HIGH_CONFIDENCE
+    assert "third_party_ivr" not in result.reason_codes
+    assert "safeguard_third_party_business_dialogue" in result.reason_codes
+
+
 def test_bank_payment_mentions_inside_live_dialogue_are_not_third_party_ivr() -> None:
     text = (
         "MANAGER:\n"

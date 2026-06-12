@@ -292,6 +292,7 @@ def detect_non_conversation_signals(
 
     third_party_ivr_raw = bool(THIRD_PARTY_IVR_RE.search(combined))
     virtual_secretary = bool(VIRTUAL_SECRETARY_RE.search(client_text))
+    hard_no_live = bool(HARD_NO_LIVE_RE.search(combined))
     live_payment_context = (
         third_party_ivr_raw
         and bool(re.search(r"оплат|ссылк|реквизит|договор|чек|налогов\w+\s+вычет", combined, re.I))
@@ -300,10 +301,32 @@ def detect_non_conversation_signals(
         and not bool(re.search(r"вас\s+приветствует|голосов\w+\s+помощник|нажмите|кредитн\w+|коллекторск\w+", client_text, re.I))
     )
     live_education_context = third_party_ivr_raw and _has_live_education_context(combined, client_text)
-    third_party_ivr = third_party_ivr_raw and not (live_payment_context or live_education_context)
+    third_party_business_dialogue = (
+        third_party_ivr_raw
+        and ((duration_sec is not None and _safe_float(duration_sec) >= 60) or (duration_sec is None and transcript_chars >= 500))
+        and manager_chars >= 120
+        and client_chars >= 120
+        and not hard_no_live
+        and not virtual_secretary
+        and not bool(
+            re.search(
+                r"голосов\w+\s+(?:помощник|ассистент)|"
+                r"после\s+звуков(?:ого)?\s+сигнал|остав(?:ить|ьте)\s+сообщени|"
+                r"абонент\s+(?:не\s+может|недоступен|не\s+отвечает)",
+                client_text,
+                re.I,
+            )
+        )
+        and bool(
+            CLIENT_HUMAN_RESPONSE_RE.search(client_text)
+            or re.search(r"номер|баз[аеуы]|данн\w*|провер|звонк|обращени|удал|почему|не\s+подтверд", client_text, re.I)
+        )
+    )
+    third_party_ivr = third_party_ivr_raw and not (
+        live_payment_context or live_education_context or third_party_business_dialogue
+    )
     repeated_loop = _has_repeated_phrase_loop(transcript)
     strong_no_live = bool(NO_LIVE_RE.search(combined))
-    hard_no_live = bool(HARD_NO_LIVE_RE.search(combined))
     bridge_system = bool(BRIDGE_SYSTEM_RE.search(combined))
     system_no_dialogue = bool(SYSTEM_NO_DIALOGUE_RE.search(combined))
     asr_artifact = bool(ASR_ARTIFACT_RE.search(combined)) or repeated_loop
@@ -412,8 +435,7 @@ def detect_non_conversation_signals(
         and client_chars >= 20
     )
     long_client_live_safeguard = (
-        duration is not None
-        and duration > 60
+        ((duration is not None and duration > 60) or (duration is None and transcript_chars >= 500))
         and client_chars > 150
         and (
             live_client_signal
@@ -448,7 +470,7 @@ def detect_non_conversation_signals(
         and not (client_has_system_text and not client_has_business_terms)
     )
     third_party_ivr_after_live_safeguard = (
-        third_party_ivr
+        (third_party_ivr or third_party_business_dialogue)
         and history_has_live_evidence
         and duration is not None
         and duration > 60
@@ -483,6 +505,7 @@ def detect_non_conversation_signals(
             proxy_parent_safeguard,
             sales_live_safeguard,
             third_party_ivr_after_live_safeguard,
+            third_party_business_dialogue,
             live_opt_out_safeguard,
             ambiguous_service_attempt_safeguard,
         )
@@ -491,6 +514,7 @@ def detect_non_conversation_signals(
         (
             transfer_after_live_dialogue,
             third_party_ivr_after_live_safeguard,
+            third_party_business_dialogue,
             live_opt_out_safeguard,
             ambiguous_service_attempt_safeguard,
         )
@@ -507,6 +531,8 @@ def detect_non_conversation_signals(
         reasons.append("safeguard_sales_live_turn")
     if third_party_ivr_after_live_safeguard:
         reasons.append("safeguard_third_party_ivr_after_live")
+    if third_party_business_dialogue:
+        reasons.append("safeguard_third_party_business_dialogue")
     if live_opt_out_safeguard:
         reasons.append("safeguard_live_opt_out")
     if ambiguous_service_attempt_safeguard:

@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
 from scripts.check_public_bot_live import (
+    ExpectedOnlinePrices,
     LiveCheckTurn,
+    expected_online_prices_from_snapshot,
     llm_fallback_detected,
     retrieved_fact_keys,
     validate_turns,
@@ -122,7 +124,49 @@ def test_live_check_validation_accepts_required_public_bot_behaviour() -> None:
         ),
     ]
 
-    assert validate_turns(turns) == ()
+    assert validate_turns(turns, expected_online_prices=ExpectedOnlinePrices(("29 750", "29750"), ("47 250", "47250"))) == ()
+
+
+def test_live_check_validation_uses_brand_prices_from_snapshot(tmp_path) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(
+        """
+        {
+          "facts": [
+            {
+              "brand": "unpk",
+              "allowed_for_client_answer": true,
+              "client_safe_text": "УНПК МФТИ: годовые онлайн-курсы по математике и физике для 5–11 классов проходят по выходным. Стоимость: семестр — 37 000 ₽, год — 59 000 ₽.",
+              "structured_value": {"format": "online", "classes": "5-11"}
+            },
+            {
+              "brand": "foton",
+              "allowed_for_client_answer": true,
+              "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+              "structured_value": {"format": "online", "classes": "5-11"}
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    prices = expected_online_prices_from_snapshot(snapshot, "unpk")
+    turns = [
+        LiveCheckTurn(
+            name="physics_online",
+            input_text="онлайн",
+            answer_text="Онлайн-группа: воскресенье 14:30-16:30, старт 20.09. Семестр — 37 000 ₽, год — 59 000 ₽.",
+            route="bot_answer_self_for_pilot",
+            safety_flags=(),
+            error="",
+            llm_fallback=False,
+            retrieved_fact_keys=("schedule", "price"),
+            known_slots={"grade": "8", "subject": "физика"},
+        )
+    ]
+
+    assert prices == ExpectedOnlinePrices(("37 000", "37000"), ("59 000", "59000"))
+    assert validate_turns(turns, expected_online_prices=prices) == ()
 
 
 def test_llm_fallback_detected_uses_flags_error_and_text() -> None:

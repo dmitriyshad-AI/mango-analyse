@@ -48,6 +48,16 @@ NON_RUNTIME_RESULT_ERRORS = {
 }
 REASK_GRADE_RE = re.compile(r"\b(какой|каком|какого)\s+класс", re.I)
 PHONE_ECHO_RE = re.compile(r"(?:\+?7|8)?[\s(\\-]*900[\s)\\-]*123[\s\\-]*45[\s\\-]*67")
+PRICE_LABEL_RE = re.compile(r"\b(?P<label>семестр|год)\s*[—:,-]\s*(?P<amount>\d[\d\s]{2,})\s*₽", re.I)
+
+
+@dataclass(frozen=True)
+class ExpectedOnlinePrices:
+    semester: tuple[str, ...] = ()
+    year: tuple[str, ...] = ()
+
+    def to_json_dict(self) -> Mapping[str, Any]:
+        return {"semester": list(self.semester), "year": list(self.year)}
 
 
 @dataclass(frozen=True)
@@ -112,7 +122,71 @@ def llm_fallback_detected(result: SubscriptionDraftResult, answer_text: str) -> 
     return bool("llm_fallback" in flags or runtime_error)
 
 
-def validate_turns(turns: Sequence[LiveCheckTurn]) -> tuple[Mapping[str, Any], ...]:
+def _price_variants(amount_text: str) -> tuple[str, ...]:
+    compact = re.sub(r"\D+", "", amount_text)
+    if not compact:
+        return ()
+    grouped = f"{int(compact):,}".replace(",", " ")
+    return tuple(dict.fromkeys((grouped, compact)))
+
+
+def _contains_price(text: str, variants: Sequence[str]) -> bool:
+    compact_text = re.sub(r"\s+", "", text)
+    for variant in variants:
+        if variant in text or re.sub(r"\s+", "", variant) in compact_text:
+            return True
+    return False
+
+
+def _classes_cover_live_check_grade(value: Any) -> bool:
+    text = str(value or "").replace("–", "-").casefold()
+    return bool("5-11" in text or re.search(r"(?<!\d)8(?!\d)", text))
+
+
+def _fact_client_text(fact: Mapping[str, Any]) -> str:
+    return str(fact.get("client_safe_text") or fact.get("fact_text") or "")
+
+
+def _fact_is_client_visible(fact: Mapping[str, Any], text: str) -> bool:
+    if fact.get("brand") not in {"foton", "unpk"}:
+        return False
+    if fact.get("allowed_for_client_answer") is False:
+        return False
+    if fact.get("forbidden_for_client") is True or fact.get("internal_only") is True:
+        return False
+    lowered = text.casefold()
+    return "client_blocked" not in lowered and "do_not_use" not in lowered
+
+
+def expected_online_prices_from_snapshot(snapshot_path: Path, brand: str) -> ExpectedOnlinePrices:
+    data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    prices: dict[str, list[str]] = {"semester": [], "year": []}
+    for fact in data.get("facts") or ():
+        if not isinstance(fact, Mapping) or fact.get("brand") != brand:
+            continue
+        text = _fact_client_text(fact)
+        if not text or not _fact_is_client_visible(fact, text):
+            continue
+        structured = fact.get("structured_value") if isinstance(fact.get("structured_value"), Mapping) else {}
+        format_text = " ".join(str(item or "") for item in (structured.get("format"), text)).casefold()
+        if "online" not in format_text and "онлайн" not in format_text:
+            continue
+        classes_text = structured.get("classes") or structured.get("classes_raw") or text
+        if not _classes_cover_live_check_grade(classes_text):
+            continue
+        for match in PRICE_LABEL_RE.finditer(text):
+            period = "semester" if match.group("label").casefold() == "семестр" else "year"
+            for variant in _price_variants(match.group("amount")):
+                if variant not in prices[period]:
+                    prices[period].append(variant)
+    return ExpectedOnlinePrices(semester=tuple(prices["semester"]), year=tuple(prices["year"]))
+
+
+def validate_turns(
+    turns: Sequence[LiveCheckTurn],
+    *,
+    expected_online_prices: ExpectedOnlinePrices | None = None,
+) -> tuple[Mapping[str, Any], ...]:
     by_name = {turn.name: turn for turn in turns}
     failures: list[Mapping[str, Any]] = []
 
@@ -131,10 +205,14 @@ def validate_turns(turns: Sequence[LiveCheckTurn]) -> tuple[Mapping[str, Any], .
             "memory_known_slots": bool(second.known_slots),
             "group_time": "14:30" in text and "16:30" in text,
             "start_date": "20.09" in text or "20 сентября" in text,
-            "semester_price": "29 750" in text or "29750" in text,
-            "year_price": "47 250" in text or "47250" in text,
             "no_grade_reask": not REASK_GRADE_RE.search(text),
         }
+        if expected_online_prices is not None:
+            checks["semester_price"] = bool(expected_online_prices.semester) and _contains_price(
+                text,
+                expected_online_prices.semester,
+            )
+            checks["year_price"] = bool(expected_online_prices.year) and _contains_price(text, expected_online_prices.year)
         for key, ok in checks.items():
             if not ok:
                 failures.append({"name": "physics_online", "reason": key})
@@ -310,8 +388,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(configs) != 1:
         raise RuntimeError(f"expected one config for {args.brand}, got {len(configs)}")
     config = configs[0]
+    expected_online_prices = expected_online_prices_from_snapshot(config.snapshot_path, config.brand)
     turns = asyncio.run(run_checks(config, debug_clients=load_debug_clients(dict(os.environ))))
-    failures = validate_turns(turns)
+    failures = validate_turns(turns, expected_online_prices=expected_online_prices)
     zero_alert = zero_drafts_alert(Path(os.environ.get(PILOT_STORE_PATH_ENV) or config.store_path), now=datetime.now(timezone.utc))
     ok = not failures and not (args.fail_on_zero_drafts and zero_alert["alert"])
     payload = {
@@ -320,6 +399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ok": ok,
         "brand": config.brand,
         "snapshot_path": str(config.snapshot_path),
+        "expected_online_prices": dict(expected_online_prices.to_json_dict()),
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
         "code_home": os.environ.get("CODEX_HOME", ""),

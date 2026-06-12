@@ -214,3 +214,36 @@ def test_auto_resolver_rejects_brand_mismatch_and_accepts_empty_organization() -
     result = ok(key=key, profile=profile, dialog={}, messages=[], message=None)
     assert result["status"] == "matched"
     assert result["lead_id"] == "1"
+
+
+def test_auto_resolver_includes_organization_snapshot_for_review() -> None:
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+    key = DraftLoopKey("profile-foton", "123456")
+    resolver = _resolver(
+        contacts=[_contact(telegram_id="123456", leads=("1",))],
+        leads=[_lead("1", org="Фотон")],
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[], message=None)
+
+    assert result["status"] == "matched"
+    assert result["lead_snapshot"]["organization_brand"] == "foton"
+    assert result["lead_snapshot"]["organization_values"] == ["Фотон"]
+
+
+def test_load_phone_stoplist_uses_plural_default_and_legacy_fallback(tmp_path: Path, monkeypatch) -> None:
+    fake_home = tmp_path / "home"
+    secrets = fake_home / ".mango_secrets"
+    secrets.mkdir(parents=True)
+    monkeypatch.setattr(runner, "DEFAULT_STOPLIST_PATH", secrets / "shared_phones_stoplist.json")
+    monkeypatch.setattr(runner, "LEGACY_STOPLIST_PATH", secrets / "shared_phone_stoplist.json")
+
+    (secrets / "shared_phone_stoplist.json").write_text(json.dumps({"phones": ["+7 999 000-00-00"]}), encoding="utf-8")
+    phones, error = runner._load_phone_stoplist(runner.DEFAULT_STOPLIST_PATH)
+    assert phones == {"+79990000000"}
+    assert error == ""
+
+    (secrets / "shared_phones_stoplist.json").write_text(json.dumps({"phones": ["+7 999 000-00-01"]}), encoding="utf-8")
+    phones, error = runner._load_phone_stoplist(runner.DEFAULT_STOPLIST_PATH)
+    assert phones == {"+79990000001"}
+    assert error == ""

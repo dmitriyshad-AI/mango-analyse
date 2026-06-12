@@ -40,9 +40,9 @@ class FakeWappi:
     def get_telegram_chat_messages(self, *, profile_id: str, chat_id: str, **kwargs):
         return {"messages": self.messages_by_chat.get((profile_id, chat_id), [])}
 
-    def list_chats(self, *, channel: str, profile_id: str, limit: int = 50):
+    def list_chats(self, *, channel: str, profile_id: str, limit: int = 50, offset: int = 0):
         self.list_calls += 1
-        return {"dialogs": self.dialogs.get(profile_id, [])}
+        return {"dialogs": self.dialogs.get(profile_id, [])[offset : offset + limit]}
 
     def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
         return {"messages": self.messages_by_chat.get((profile_id, chat_id), [])}
@@ -479,6 +479,35 @@ def test_draft_loop_stop_fetches_but_does_not_call_bot_or_mark_processed(tmp_pat
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert rows[0]["event"] == "stop_raw_inbound"
     assert rows[0]["status"] == "stop_not_processed"
+
+
+def test_draft_loop_chat_limit_zero_pages_all_dialogs(tmp_path: Path) -> None:
+    profile = DraftLoopProfile(profile_id="profile-foton", brand="foton", channel="telegram")
+    cfg = DraftLoopConfig(
+        profiles={profile.profile_id: profile},
+        pairs={},
+        state_path=tmp_path / "state.json",
+        journal_path=tmp_path / "journal.jsonl",
+        manager_edit_log_path=tmp_path / "manager_edits.jsonl",
+        heartbeat_path=tmp_path / "heartbeat.json",
+        stop_path=tmp_path / "STOP_DRAFT_LOOP",
+        chat_limit=0,
+    )
+    dialogs = [{"id": f"chat-{idx}", "type": "user"} for idx in range(101)]
+    wappi = FakeWappi({profile.profile_id: dialogs}, {})
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=True)
+
+    assert summary["bot_calls"] == 0
+    assert wappi.list_calls == 2
 
 
 def test_draft_loop_filters_non_text_and_recent_debounce(tmp_path: Path) -> None:

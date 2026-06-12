@@ -53,7 +53,8 @@ DEFAULT_PROFILES_PATH = Path.home() / ".mango_secrets" / "amo_wappi_profiles.jso
 DEFAULT_PAIRS_PATH = Path.home() / ".mango_secrets" / "draft_loop_pairs.json"
 DEFAULT_AUTO_PAIRS_PATH = Path.home() / ".mango_secrets" / "draft_loop_auto_pairs.json"
 DEFAULT_RETRO_DIR = Path.home() / ".mango_local" / "draft_loop_inventory"
-DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phone_stoplist.json"
+DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
+LEGACY_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phone_stoplist.json"
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 DRAFT_LOOP_AUTO_RESOLVER_ENV = "DRAFT_LOOP_AUTO_RESOLVER"
 CLOSED_STATUS_IDS = {"142", "143"}
@@ -112,6 +113,8 @@ def build_config(args: argparse.Namespace) -> DraftLoopConfig:
         visibility = True
     elif args.manager_outgoing_visible == "no":
         visibility = False
+    raw_chat_limit = int(getattr(args, "chat_limit", 50) or 0)
+    chat_limit = 0 if raw_chat_limit <= 0 else max(1, min(raw_chat_limit, 100))
     return DraftLoopConfig(
         profiles=profiles,
         pairs=pairs,
@@ -123,7 +126,7 @@ def build_config(args: argparse.Namespace) -> DraftLoopConfig:
         heartbeat_path=local_dir / "heartbeat.json",
         stop_path=args.stop_file.expanduser(),
         manager_outgoing_visible=visibility,
-        chat_limit=max(1, min(int(getattr(args, "chat_limit", 50) or 50), 100)),
+        chat_limit=chat_limit,
         config_fingerprint=build_draft_loop_config_fingerprint(
             getattr(args, "snapshot", DEFAULT_SNAPSHOT),
             gold_pack_version=DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION,
@@ -243,8 +246,12 @@ def _is_active_lead(lead: Mapping[str, Any]) -> bool:
     return status_id not in CLOSED_STATUS_IDS and not closed_at
 
 
+def _lead_org_values(lead: Mapping[str, Any]) -> list[str]:
+    return _custom_field_values(lead, "организация", "organization")
+
+
 def _lead_org_brand(lead: Mapping[str, Any]) -> str:
-    values = _custom_field_values(lead, "организация", "organization")
+    values = _lead_org_values(lead)
     text = " ".join(values).casefold()
     if not text:
         return ""
@@ -256,6 +263,8 @@ def _lead_org_brand(lead: Mapping[str, Any]) -> str:
 
 def _load_phone_stoplist(path: Path) -> tuple[set[str], str]:
     target = path.expanduser()
+    if not target.exists() and target == DEFAULT_STOPLIST_PATH and LEGACY_STOPLIST_PATH.exists():
+        target = LEGACY_STOPLIST_PATH
     if not target.exists():
         return set(), "shared_phone_stoplist_unavailable"
     try:
@@ -376,6 +385,7 @@ class AmoAutoResolver:
             return {"status": "rejected", "reason": "multi_active_lead", "contact_id": contact_id, "match_key": match_key}
         lead = active[0]
         org_brand = _lead_org_brand(lead)
+        org_values = _lead_org_values(lead)
         if org_brand and org_brand != profile.brand:
             return {
                 "status": "rejected",
@@ -383,6 +393,7 @@ class AmoAutoResolver:
                 "contact_id": contact_id,
                 "lead_id": str(lead.get("id") or ""),
                 "organization_brand": org_brand,
+                "organization_values": org_values,
             }
         return {
             "status": "matched",
@@ -394,6 +405,8 @@ class AmoAutoResolver:
                 "status_id": str(lead.get("status_id") or ""),
                 "closed_at": str(lead.get("closed_at") or ""),
                 "pipeline_id": str(lead.get("pipeline_id") or ""),
+                "organization_brand": org_brand,
+                "organization_values": org_values,
             },
         }
 

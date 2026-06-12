@@ -502,13 +502,7 @@ class AmoWappiDraftLoop:
         seen_processed = self.state.processed_keys() | self.journal.processed_message_keys()
         try:
             for profile in self.config.profiles.values():
-                dialogs_payload = self.wappi_client.list_chats(
-                    channel=profile.channel,
-                    profile_id=profile.profile_id,
-                    limit=max(1, min(int(self.config.chat_limit), 100)),
-                )
-                dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
-                for dialog in dialogs if isinstance(dialogs, Sequence) else []:
+                for dialog in self._iter_dialogs(profile):
                     if not isinstance(dialog, Mapping):
                         continue
                     chat_id = str(dialog.get("id") or "").strip()
@@ -585,6 +579,38 @@ class AmoWappiDraftLoop:
             self.state.save()
         self._write_heartbeat("stop" if stop_active else "ok", summary)
         return summary
+
+    def _iter_dialogs(self, profile: DraftLoopProfile) -> Iterable[Mapping[str, Any]]:
+        configured_limit = int(self.config.chat_limit)
+        if configured_limit > 0:
+            dialogs_payload = self.wappi_client.list_chats(
+                channel=profile.channel,
+                profile_id=profile.profile_id,
+                limit=max(1, min(configured_limit, 100)),
+            )
+            dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
+            if isinstance(dialogs, Sequence) and not isinstance(dialogs, (str, bytes, bytearray)):
+                yield from (dialog for dialog in dialogs if isinstance(dialog, Mapping))
+            return
+        page_limit = 100
+        offset = 0
+        while True:
+            dialogs_payload = self.wappi_client.list_chats(
+                channel=profile.channel,
+                profile_id=profile.profile_id,
+                limit=page_limit,
+                offset=offset,
+            )
+            dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
+            if not isinstance(dialogs, Sequence) or isinstance(dialogs, (str, bytes, bytearray)):
+                return
+            page = [dialog for dialog in dialogs if isinstance(dialog, Mapping)]
+            if not page:
+                return
+            yield from page
+            if len(page) < page_limit:
+                return
+            offset += page_limit
 
     def _fetch_messages(self, profile: DraftLoopProfile, chat_id: str) -> list[WappiHistoryMessage]:
         payload = self.wappi_client.get_chat_messages(

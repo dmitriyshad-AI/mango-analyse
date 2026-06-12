@@ -94,6 +94,29 @@ def test_wappi_profile_list_uses_readonly_profile_endpoints() -> None:
     assert calls[0]["headers"]["Authorization"] == "tg-token"
 
 
+def test_wappi_max_chat_reads_use_max_token_and_readonly_endpoints() -> None:
+    calls: list[dict] = []
+
+    def transport(**kwargs):
+        calls.append(kwargs)
+        return {"dialogs": [{"id": "chat-1"}], "messages": [{"id": "m1"}]}
+
+    client = WappiPhase1Client(
+        WappiClientConfig(base_url="https://wappi.pro", telegram_token="tg-token", max_token="max-token"),
+        transport=transport,
+    )
+
+    client.list_chats(channel="max", profile_id="profile-max", limit=5)
+    client.get_chat_messages(channel="max", profile_id="profile-max", chat_id="chat-1", mark_all=False)
+
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["url"] == "https://wappi.pro/maxapi/sync/chats/get?profile_id=profile-max&limit=5&offset=0&order=desc&show_all=false"
+    assert calls[0]["headers"]["Authorization"] == "max-token"
+    assert calls[1]["url"] == (
+        "https://wappi.pro/maxapi/sync/messages/get?profile_id=profile-max&chat_id=chat-1&limit=50&offset=0&order=desc&mark_all=false"
+    )
+
+
 def test_amo_client_reads_pipelines_leads_and_contacts() -> None:
     calls: list[dict] = []
 

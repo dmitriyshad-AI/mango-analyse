@@ -1,0 +1,2 @@
+﻿id,name,description,type,direction,cost,date_payment,contact_id,account_id,account_name,most_abonements_id,most_class_id,invoice_id,filial,print_check_status,print_refund_status,school_out_type,tags,exclude_reason
+19333529-4fe1-84ec-bc8b-6a1d5d42d5d8,ЛШ очная,,sbp,in,59500,2026-05-30,ed9c182d-7ff7-ef27-e728-6a1d4416cf90,,,,,,{'vyezdnye_shkoly_inogorodnij_': 'Выездные школы (иногородний)'},,,,,неоднозначная очная ЛШ

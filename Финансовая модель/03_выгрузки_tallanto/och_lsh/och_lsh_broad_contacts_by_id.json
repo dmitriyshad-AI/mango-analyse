@@ -1,0 +1,41 @@
+{
+  "cfa1d69e-feb3-9398-b4cb-610679d8e83f": {
+    "id": "cfa1d69e-feb3-9398-b4cb-610679d8e83f",
+    "first_name": "Михаил Александрович",
+    "last_name": "Калашников",
+    "title": "",
+    "phone_mobile": "+79773402325",
+    "email1": "nadyakorneva@yandex.ru",
+    "type_client_c_translated": "7 класс",
+    "type_client_c": "4_klass",
+    "discount": 0,
+    "discount_type_translated": "%",
+    "discount_type": "percent",
+    "discount_comment": "",
+    "filial": {
+      "mfti": "МФТИ",
+      "pacaeva": "Пацаева"
+    },
+    "contact_notice": "",
+    "tags": {
+      "importirovan": "Импортирован"
+    }
+  },
+  "ed9c182d-7ff7-ef27-e728-6a1d4416cf90": {
+    "id": "ed9c182d-7ff7-ef27-e728-6a1d4416cf90",
+    "first_name": "Егор Дмитриевич",
+    "last_name": "Амелин",
+    "title": "",
+    "phone_mobile": "+79852256820",
+    "email1": "egoremal2@gmail.com",
+    "type_client_c_translated": "7 класс",
+    "type_client_c": "4_klass",
+    "discount": 0,
+    "discount_type_translated": "%",
+    "discount_type": "percent",
+    "discount_comment": "",
+    "filial": "",
+    "contact_notice": "",
+    "tags": ""
+  }
+}

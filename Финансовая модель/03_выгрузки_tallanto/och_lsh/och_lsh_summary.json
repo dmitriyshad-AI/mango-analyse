@@ -1,0 +1,284 @@
+{
+  "selected_courses_count": 5,
+  "selected_events": [
+    {
+      "event_id": "OCH_LSH_MSK_UNPK_0607",
+      "brand": "УНПК",
+      "legal_entity": "АНО УНПК МФТИ",
+      "location": "Москва",
+      "title": "ЛШ очная Москва 06.07-17.07 УНПК",
+      "course_id": "bb4fc9bf-6544-5f02-9ede-69dca4bad805",
+      "course_name": "ЛШ 2026 Очно Москва 6.07 - 17.07 (УНПК)",
+      "date_start": "2026-07-06",
+      "date_finish": "2026-07-17",
+      "filial": {
+        "sretenka": "Сретенка"
+      }
+    },
+    {
+      "event_id": "OCH_LSH_MSK_UNPK_2007_FM",
+      "brand": "УНПК",
+      "legal_entity": "АНО УНПК МФТИ",
+      "location": "Москва",
+      "title": "ЛШ очная Москва 20.07-31.07 УНПК ФМ",
+      "course_id": "23614378-0805-50a6-9420-6a1fe644bae2",
+      "course_name": "ЛШ 2026 Очно Москва 20.07 - 31.07 (УНПК) ФМ",
+      "date_start": "2026-07-20",
+      "date_finish": "2026-07-31",
+      "filial": ""
+    },
+    {
+      "event_id": "OCH_LSH_MFTI_UNPK_2007",
+      "brand": "УНПК",
+      "legal_entity": "АНО УНПК МФТИ",
+      "location": "МФТИ",
+      "title": "ЛШ очная МФТИ 20.07-31.07 УНПК",
+      "course_id": "bbbddbb3-7a10-37b6-d559-69dca318f82b",
+      "course_name": "ЛШ 2026 Очно МФТИ 20.07 - 31.07 (УНПК)",
+      "date_start": "2026-07-20",
+      "date_finish": "2026-07-31",
+      "filial": {
+        "mfti": "МФТИ"
+      }
+    },
+    {
+      "event_id": "OCH_LSH_MSK_FOTON_0308",
+      "brand": "ФОТОН",
+      "legal_entity": "ЦДПО ФОТОН",
+      "location": "Москва",
+      "title": "ЛШ очная Москва 03.08-14.08 ФОТОН",
+      "course_id": "3fb8804b-fa57-8f10-2ae5-69dca4e663d8",
+      "course_name": "ЛШ 2026 Очно Москва 3.08 - 14.08 (ФОТОН)",
+      "date_start": "2026-08-03",
+      "date_finish": "2026-08-14",
+      "filial": {
+        "sretenka": "Сретенка"
+      }
+    },
+    {
+      "event_id": "OCH_LSH_MFTI_UNPK_1708",
+      "brand": "УНПК",
+      "legal_entity": "АНО УНПК МФТИ",
+      "location": "МФТИ",
+      "title": "ЛШ очная МФТИ 17.08-28.08 УНПК",
+      "course_id": "d205a658-ae79-65f9-191d-69dca3ebe216",
+      "course_name": "ЛШ 2026 Очно МФТИ 17.08 - 28.08 (УНПК)",
+      "date_start": "2026-08-17",
+      "date_finish": "2026-08-28",
+      "filial": {
+        "mfti": "МФТИ"
+      }
+    }
+  ],
+  "excluded_related_courses": [
+    {
+      "id": "18de4cc6-7e8d-650f-57fa-69fb3f4e6a40",
+      "name": "ЛШ 2026 Выездная 20.06-28.06 (Лист ожидания)",
+      "date_start": "2026-06-20",
+      "date_finish": "2026-06-28",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "5f4805c0-9ed5-bd34-4a26-691856da3f13",
+      "name": "ЛШ 2026 Выездная 20.06-28.06 (ИТ) 7-10 кл (Не пишем)",
+      "date_start": "2026-06-20",
+      "date_finish": "2026-06-28",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "7d31929b-063c-0841-9c39-69185688a84c",
+      "name": "ЛШ 2026 Выездная 20.06-28.06 (ФМ) 5-10 кл (Не пишем)",
+      "date_start": "2026-06-20",
+      "date_finish": "2026-06-28",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "95592285-6023-eb97-1655-6a22b5e19163",
+      "name": "ЛШ 2026 Онлайн 22.06 – 03.07 (УНПК)",
+      "date_start": "2026-06-22",
+      "date_finish": "2026-07-03",
+      "filial": {
+        "onlajn": "Онлайн"
+      }
+    },
+    {
+      "id": "c9f061ad-263a-d250-f653-6a22b5caab09",
+      "name": "ЛШ 2026 Онлайн 06.07 – 17.07 (УНПК)",
+      "date_start": "2026-07-06",
+      "date_finish": "2026-07-17",
+      "filial": {
+        "onlajn": "Онлайн"
+      }
+    },
+    {
+      "id": "2bd1b4fc-7014-331a-dc1a-691857138323",
+      "name": "ЛШ 2026 Выездная 18.07-26.07 (ФМ) УНПК (Не пишем)",
+      "date_start": "2026-07-18",
+      "date_finish": "2026-07-26",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "65c811ad-ee0f-aca0-3f56-69185635259c",
+      "name": "ЛШ 2026 Выездная 18.07-26.07 (ФМ) 5-10 кл ФОТОН (Не пишем)",
+      "date_start": "2026-07-18",
+      "date_finish": "2026-07-26",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "cc220b78-d9cb-68c8-98c1-6a140fb11a32",
+      "name": "ЛШ 2026 Выездная 18.07-26.07 ФОТОН (Лист ожидания)",
+      "date_start": "2026-07-18",
+      "date_finish": "2026-07-26",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "ee6b0895-db11-257c-f781-6a140fc92677",
+      "name": "ЛШ 2026 Выездная 18.07-26.07 УНПК (Лист ожидания)",
+      "date_start": "2026-07-18",
+      "date_finish": "2026-07-26",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "1f6fa90d-62ac-1e68-3add-6a22b644ec43",
+      "name": "ЛШ 2026 Онлайн 20.07 – 31.07 (УНПК)",
+      "date_start": "2026-07-20",
+      "date_finish": "2026-07-31",
+      "filial": {
+        "onlajn": "Онлайн"
+      }
+    },
+    {
+      "id": "37649445-d1f4-812d-bb7d-6a22b728f66e",
+      "name": "ЛШ 2026 Онлайн 03.08 – 14.08 (УНПК)",
+      "date_start": "2026-08-03",
+      "date_finish": "2026-08-14",
+      "filial": {
+        "onlajn": "Онлайн"
+      }
+    },
+    {
+      "id": "57f49275-6a4b-7d31-5af3-6918568d6c18",
+      "name": "ЛШ 2026 Выездная УНПК 15.08 - 25.08 (ФМ) 5-10 кл (Не пишем)",
+      "date_start": "2026-08-15",
+      "date_finish": "2026-08-25",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    },
+    {
+      "id": "c2990716-f688-c43f-043a-691856540d0f",
+      "name": "ЛШ 2026 Выездная УНПК 15.08 - 25.08 (ИТ) 7-10 кл (Не пишем)",
+      "date_start": "2026-08-15",
+      "date_finish": "2026-08-25",
+      "filial": {
+        "vyezdnye_shkoly_inogorodnij_": "Выездные школы (иногородний)"
+      }
+    }
+  ],
+  "participants": 289,
+  "participants_by_event": {
+    "OCH_LSH_MFTI_UNPK_1708": 71,
+    "OCH_LSH_MSK_FOTON_0308": 42,
+    "OCH_LSH_MSK_UNPK_0607": 164,
+    "OCH_LSH_MSK_UNPK_2007_FM": 12
+  },
+  "confirmed_payments": 189,
+  "confirmed_sum": 9735218,
+  "payments_by_event": {
+    "OCH_LSH_MSK_FOTON_0308": 18,
+    "OCH_LSH_MFTI_UNPK_1708": 40,
+    "OCH_LSH_MSK_UNPK_0607": 106,
+    "OCH_LSH_MSK_UNPK_2007_FM": 1,
+    "OCH_LSH_MFTI_UNPK_2007": 24
+  },
+  "sum_by_event": {
+    "OCH_LSH_MFTI_UNPK_1708": 2053550,
+    "OCH_LSH_MFTI_UNPK_2007": 1121875,
+    "OCH_LSH_MSK_FOTON_0308": 778320,
+    "OCH_LSH_MSK_UNPK_0607": 5747723,
+    "OCH_LSH_MSK_UNPK_2007_FM": 33750
+  },
+  "payments_by_method": {
+    "Webmoney": 18,
+    "Альфа-банк": 150,
+    "СБП": 21
+  },
+  "status_counts": {
+    "оплачено": 157,
+    "нет оплаты": 129,
+    "переплата/проверить": 3
+  },
+  "event_plan_prices": {
+    "OCH_LSH_MSK_UNPK_0607": 99500,
+    "OCH_LSH_MSK_UNPK_2007_FM": 33800,
+    "OCH_LSH_MFTI_UNPK_2007": 59500,
+    "OCH_LSH_MSK_FOTON_0308": 59000,
+    "OCH_LSH_MFTI_UNPK_1708": 99500
+  },
+  "abonement_cost_distribution_by_event": {
+    "OCH_LSH_MSK_FOTON_0308": {
+      "30870": 1,
+      "34300": 7,
+      "46550": 2,
+      "49000": 1,
+      "56050": 2,
+      "59000": 4
+    },
+    "OCH_LSH_MFTI_UNPK_1708": {
+      "33750": 1,
+      "35625": 1,
+      "37500": 15,
+      "53500": 1,
+      "53550": 3,
+      "56525": 1,
+      "59500": 16,
+      "99500": 2
+    },
+    "OCH_LSH_MSK_UNPK_0607": {
+      "31298": 1,
+      "33750": 2,
+      "37500": 41,
+      "49000": 1,
+      "53550": 2,
+      "59500": 43,
+      "89550": 1,
+      "94525": 1,
+      "99500": 12
+    },
+    "OCH_LSH_MSK_UNPK_2007_FM": {
+      "33750": 1
+    },
+    "OCH_LSH_MFTI_UNPK_2007": {
+      "33750": 3,
+      "37500": 8,
+      "56525": 2,
+      "59500": 11,
+      "99500": 1
+    }
+  },
+  "ambiguous_lsh_payment_candidates": 1,
+  "excluded_lsh_payment_candidates": 34,
+  "broad_finances_rows": 377,
+  "merged_finances_rows": 686,
+  "payment_only_participant_rows": 0,
+  "payments_without_participant_rows": 25,
+  "payments_without_participant_keys": 25,
+  "payments_without_participant_by_event": {
+    "OCH_LSH_MFTI_UNPK_2007": 24,
+    "OCH_LSH_MSK_UNPK_0607": 1
+  }
+}

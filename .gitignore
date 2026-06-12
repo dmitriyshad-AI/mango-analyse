@@ -205,6 +205,7 @@ mango_tallanto_transfer/
 prod_runtime_transfer/
 Contacts.xls
 tallanto_postman_collection.json
+tallanto_postman_collection*.json
 sales_workbook.xlsx
 АКТУАЛЬНО_*.xlsx
 АКТУАЛЬНО_*.json

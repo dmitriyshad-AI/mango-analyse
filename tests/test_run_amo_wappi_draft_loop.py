@@ -61,6 +61,9 @@ def test_context_builder_marks_draft_loop_as_not_sending_clients(tmp_path: Path)
     assert context["public_pilot_mode"]["sends_client_replies"] is False
     assert context["public_pilot_mode"]["no_crm_tallanto_write"] is True
 
+    max_context = build_context(DraftLoopKey("profile-foton-max", "chat-1"), (), "Цена?", "foton", channel="max")
+    assert max_context["client_identity"]["channel"] == "wappi_max"
+
 
 def test_safe_transport_blocks_unlisted_wappi_get() -> None:
     ai_office_config = runner.AiOfficeClientConfig(base_url="https://api.fotonai.online", api_key="key")

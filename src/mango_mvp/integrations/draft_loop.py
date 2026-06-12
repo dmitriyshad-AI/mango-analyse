@@ -364,7 +364,7 @@ def _iso_from_epoch(value: int) -> str:
 
 def _is_private_dialog(dialog: Mapping[str, Any]) -> bool:
     dialog_type = str(dialog.get("type") or "").casefold()
-    return not dialog_type or dialog_type == "user"
+    return not dialog_type or dialog_type in {"user", "dialog"}
 
 
 def wappi_message_from_raw(profile_id: str, raw: Mapping[str, Any]) -> WappiHistoryMessage | None:
@@ -444,9 +444,7 @@ class AmoWappiDraftLoop:
         seen_processed = self.state.processed_keys() | self.journal.processed_message_keys()
         try:
             for profile in self.config.profiles.values():
-                if profile.channel != "telegram":
-                    continue
-                dialogs_payload = self.wappi_client.list_telegram_chats(profile_id=profile.profile_id, limit=50)
+                dialogs_payload = self.wappi_client.list_chats(channel=profile.channel, profile_id=profile.profile_id, limit=50)
                 dialogs = dialogs_payload.get("dialogs") if isinstance(dialogs_payload, Mapping) else []
                 for dialog in dialogs if isinstance(dialogs, Sequence) else []:
                     if not isinstance(dialog, Mapping):
@@ -458,7 +456,7 @@ class AmoWappiDraftLoop:
                         self.journal.append({"event": "chat_skipped", "profile_id": profile.profile_id, "chat_id": chat_id, "reason": "non_private"})
                         skipped_count += 1
                         continue
-                    messages = self._fetch_messages(profile.profile_id, chat_id)
+                    messages = self._fetch_messages(profile, chat_id)
                     manager_edit_count += self._classify_manager_edits(profile, chat_id, messages)
                     inbound_new = [
                         item
@@ -521,9 +519,10 @@ class AmoWappiDraftLoop:
         self._write_heartbeat("stop" if stop_active else "ok", summary)
         return summary
 
-    def _fetch_messages(self, profile_id: str, chat_id: str) -> list[WappiHistoryMessage]:
-        payload = self.wappi_client.get_telegram_chat_messages(
-            profile_id=profile_id,
+    def _fetch_messages(self, profile: DraftLoopProfile, chat_id: str) -> list[WappiHistoryMessage]:
+        payload = self.wappi_client.get_chat_messages(
+            channel=profile.channel,
+            profile_id=profile.profile_id,
             chat_id=chat_id,
             limit=max(20, self.config.history_limit * 2),
             order="desc",
@@ -534,7 +533,7 @@ class AmoWappiDraftLoop:
         for raw in raw_messages if isinstance(raw_messages, Sequence) else []:
             if not isinstance(raw, Mapping):
                 continue
-            item = wappi_message_from_raw(profile_id, raw)
+            item = wappi_message_from_raw(profile.profile_id, raw)
             if item is not None:
                 messages.append(item)
         messages.sort(key=lambda item: (item.timestamp, item.message_id))
@@ -672,6 +671,7 @@ class AmoWappiDraftLoop:
             history,
             client_message,
             brand,
+            channel=profile.channel,
             dialogue_memory=previous_memory,
             current_message_id=inbound_new[-1].message_id,
         )
@@ -726,6 +726,7 @@ class AmoWappiDraftLoop:
         client_message: str,
         brand: str,
         *,
+        channel: str = "telegram",
         dialogue_memory: Mapping[str, Any],
         current_message_id: str,
     ) -> Mapping[str, Any]:
@@ -735,11 +736,22 @@ class AmoWappiDraftLoop:
                 history,
                 client_message,
                 brand,
+                channel=channel,
                 dialogue_memory=dialogue_memory,
                 current_message_id=current_message_id,
             )
         except TypeError:
-            return self.context_builder(key, history, client_message, brand)
+            try:
+                return self.context_builder(
+                    key,
+                    history,
+                    client_message,
+                    brand,
+                    dialogue_memory=dialogue_memory,
+                    current_message_id=current_message_id,
+                )
+            except TypeError:
+                return self.context_builder(key, history, client_message, brand)
 
     def retry_pending_notes(self) -> int:
         retries = 0
@@ -934,7 +946,7 @@ def load_profiles_file(path: Path | str) -> dict[str, DraftLoopProfile]:
         profile_id = str(row.get("profile_id") or "").strip()
         brand = str(row.get("brand") or "").strip().casefold()
         channel = str(row.get("channel") or "").strip().casefold()
-        if not profile_id or brand not in {"foton", "unpk"} or channel != "telegram":
+        if not profile_id or brand not in {"foton", "unpk"} or channel not in {"telegram", "max"}:
             continue
         result[profile_id] = DraftLoopProfile(profile_id=profile_id, brand=brand, channel=channel)
     return result

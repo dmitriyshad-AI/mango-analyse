@@ -17,9 +17,13 @@ def test_transport_allows_only_declared_read_and_note_paths() -> None:
     assert transport(method="GET", url="https://wappi.pro/tapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=false") == {
         "ok": True
     }
+    assert transport(method="GET", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p") == {"ok": True}
+    assert transport(method="GET", url="https://wappi.pro/maxapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=false") == {
+        "ok": True
+    }
     assert transport(method="GET", url="https://educent.amocrm.ru/api/v4/contacts?query=test") == {"ok": True}
     assert transport(method="POST", url="https://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes") == {"ok": True}
-    assert len(calls) == 3
+    assert len(calls) == 5
 
 
 def test_transport_denies_unknown_get_and_side_effect_wappi_params() -> None:
@@ -29,6 +33,10 @@ def test_transport_denies_unknown_get_and_side_effect_wappi_params() -> None:
         transport(method="GET", url="https://wappi.pro/tapi/profile/queue/purge?profile_id=p")
     with pytest.raises(TransportDenied):
         transport(method="GET", url="https://wappi.pro/tapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=true")
+    with pytest.raises(TransportDenied):
+        transport(method="GET", url="https://wappi.pro/maxapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=true")
+    with pytest.raises(TransportDenied):
+        transport(method="POST", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p")
     with pytest.raises(TransportDenied):
         transport(method="DELETE", url="https://educent.amocrm.ru/api/v4/leads/49832125")
     with pytest.raises(TransportDenied):

@@ -110,6 +110,7 @@ def build_context_builder(snapshot_path: Path):
         client_message: str,
         brand: str,
         *,
+        channel: str = "telegram",
         dialogue_memory: Mapping[str, Any] | None = None,
         current_message_id: str = "",
     ) -> Mapping[str, Any]:
@@ -120,7 +121,7 @@ def build_context_builder(snapshot_path: Path):
             recent_messages=tuple(history)[-10:],
             dialogue_memory=dialogue_memory or {},
             session_id=f"amo_draft_loop:{brand}:{key.profile_id}:{key.chat_id}",
-            channel="wappi_telegram",
+            channel=f"wappi_{str(channel or 'telegram').strip().casefold()}",
             channel_thread_id=key.value,
             channel_user_id=key.chat_id,
             current_message_id=current_message_id,

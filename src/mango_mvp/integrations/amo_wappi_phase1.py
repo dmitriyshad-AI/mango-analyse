@@ -415,6 +415,20 @@ class WappiPhase1Client:
         order: str = "desc",
         show_all: bool = False,
     ) -> Mapping[str, Any]:
+        return self.list_chats(channel="telegram", profile_id=profile_id, limit=limit, offset=offset, order=order, show_all=show_all)
+
+    def list_chats(
+        self,
+        *,
+        channel: str,
+        profile_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "desc",
+        show_all: bool = False,
+    ) -> Mapping[str, Any]:
+        normalized = str(channel or "").strip().casefold()
+        path = "/tapi/sync/chats/get" if normalized == "telegram" else "/maxapi/sync/chats/get"
         params = {
             "profile_id": str(profile_id),
             "limit": max(1, min(int(limit), 100)),
@@ -422,7 +436,7 @@ class WappiPhase1Client:
             "order": str(order or "desc"),
             "show_all": "true" if show_all else "false",
         }
-        return self._request_telegram("GET", "/tapi/sync/chats/get", params=params)
+        return self._request_channel(normalized, "GET", path, params=params)
 
     def get_telegram_chat_messages(
         self,
@@ -442,10 +456,44 @@ class WappiPhase1Client:
             "order": str(order or "desc"),
             "mark_all": "true" if mark_all else "false",
         }
-        return self._request_telegram("GET", "/tapi/sync/messages/get", params=params)
+        return self.get_chat_messages(
+            channel="telegram",
+            profile_id=profile_id,
+            chat_id=chat_id,
+            limit=limit,
+            offset=offset,
+            order=order,
+            mark_all=mark_all,
+        )
+
+    def get_chat_messages(
+        self,
+        *,
+        channel: str,
+        profile_id: str,
+        chat_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "desc",
+        mark_all: bool = False,
+    ) -> Mapping[str, Any]:
+        normalized = str(channel or "").strip().casefold()
+        path = "/tapi/sync/messages/get" if normalized == "telegram" else "/maxapi/sync/messages/get"
+        params = {
+            "profile_id": str(profile_id),
+            "chat_id": str(chat_id),
+            "limit": max(1, min(int(limit), 100)),
+            "offset": max(0, int(offset)),
+            "order": str(order or "desc"),
+            "mark_all": "true" if mark_all else "false",
+        }
+        return self._request_channel(normalized, "GET", path, params=params)
 
     def _request_telegram(self, method: str, path: str, *, params: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
-        token = self._token_for_channel("telegram")
+        return self._request_channel("telegram", method, path, params=params)
+
+    def _request_channel(self, channel: str, method: str, path: str, *, params: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
+        token = self._token_for_channel(channel)
         url = url_parse.urljoin(f"{self.config.base_url.rstrip('/')}/", path.lstrip("/"))
         if params:
             query = url_parse.urlencode({key: value for key, value in params.items() if value not in (None, "")}, doseq=True)

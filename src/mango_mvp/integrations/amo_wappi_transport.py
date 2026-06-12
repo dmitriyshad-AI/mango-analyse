@@ -43,9 +43,14 @@ class SafeTransportPolicy:
     def _assert_wappi_allowed(self, *, method: str, path: str, query: Mapping[str, list[str]]) -> None:
         if method != "GET":
             raise TransportDenied(f"Wappi HTTP denied: method {method} is not read-only.")
-        if path in {"/tapi/profile/all/get", "/maxapi/profile/all/get", "/tapi/sync/chats/get"}:
+        if path in {
+            "/tapi/profile/all/get",
+            "/maxapi/profile/all/get",
+            "/tapi/sync/chats/get",
+            "/maxapi/sync/chats/get",
+        }:
             return
-        if path == "/tapi/sync/messages/get":
+        if path in {"/tapi/sync/messages/get", "/maxapi/sync/messages/get"}:
             mark_values = [str(item).casefold() for item in query.get("mark_all", []) if str(item).strip()]
             if any(value not in {"0", "false", "no", "off"} for value in mark_values):
                 raise TransportDenied("Wappi HTTP denied: mark_all must be false or omitted.")

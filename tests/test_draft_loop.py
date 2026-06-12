@@ -22,6 +22,7 @@ from mango_mvp.integrations.draft_loop import (
     build_draft_loop_config_fingerprint,
     classify_manager_edit_windows,
     load_pairs_file,
+    load_profiles_file,
 )
 
 
@@ -36,6 +37,13 @@ class FakeWappi:
         return {"dialogs": self.dialogs.get(profile_id, [])}
 
     def get_telegram_chat_messages(self, *, profile_id: str, chat_id: str, **kwargs):
+        return {"messages": self.messages_by_chat.get((profile_id, chat_id), [])}
+
+    def list_chats(self, *, channel: str, profile_id: str, limit: int = 50):
+        self.list_calls += 1
+        return {"dialogs": self.dialogs.get(profile_id, [])}
+
+    def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
         return {"messages": self.messages_by_chat.get((profile_id, chat_id), [])}
 
 
@@ -131,6 +139,47 @@ def test_draft_loop_uses_composite_key_and_writes_single_note(tmp_path: Path) ->
     assert amo.notes[0]["route"] == "bot_answer_self"
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert {item["message_id"] for item in state["processed"]} == {"m1", "m2"}
+
+
+def test_draft_loop_processes_max_profile_with_explicit_pair(tmp_path: Path) -> None:
+    profile = DraftLoopProfile(profile_id="profile-max-foton", brand="foton", channel="max")
+    key = DraftLoopKey(profile.profile_id, "max-chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    cfg = DraftLoopConfig(
+        profiles={profile.profile_id: profile},
+        pairs={key: pair},
+        allowed_test_lead_ids=frozenset({"49832125"}),
+        state_path=tmp_path / "state.json",
+        journal_path=tmp_path / "journal.jsonl",
+        manager_edit_log_path=tmp_path / "manager_edits.jsonl",
+        heartbeat_path=tmp_path / "heartbeat.json",
+        stop_path=tmp_path / "STOP_DRAFT_LOOP",
+        debounce_seconds=60,
+    )
+    amo = FakeAmo()
+    bot = FakeBot()
+    wappi = FakeWappi(
+        {profile.profile_id: [{"id": "max-chat-1", "type": "DIALOG"}]},
+        {(profile.profile_id, "max-chat-1"): [_message("mx1", chat_id="max-chat-1", text="Цена?", ts=1000)]},
+    )
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand, **kwargs: {
+            "key": key.value,
+            "channel": kwargs.get("channel"),
+        },
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["processed"] == 1
+    assert summary["bot_calls"] == 1
+    assert bot.calls[0]["context"]["channel"] == "max"
+    assert amo.notes[0]["lead_id"] == "49832125"
 
 
 def test_draft_loop_journal_records_config_fingerprint_on_draft_created(tmp_path: Path) -> None:
@@ -372,6 +421,26 @@ def test_load_pairs_rejects_bare_chat_id(tmp_path: Path) -> None:
         load_pairs_file(path)
 
 
+def test_load_profiles_accepts_telegram_and_max_profiles(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.json"
+    path.write_text(
+        json.dumps(
+            [
+                {"profile_id": "tg-foton", "brand": "foton", "channel": "telegram"},
+                {"profile_id": "max-unpk", "brand": "unpk", "channel": "max"},
+                {"profile_id": "bad", "brand": "foton", "channel": "whatsapp"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    profiles = load_profiles_file(path)
+
+    assert set(profiles) == {"tg-foton", "max-unpk"}
+    assert profiles["max-unpk"].channel == "max"
+
+
 def test_manager_edit_classifies_superseded_draft_sent_later_and_single_best_match() -> None:
     drafts = [
         DraftWindow(profile_id="p", chat_id="c", message_id="d1", bot_draft_text="Добрый день! Цена 49 000.", draft_ts=100, superseded=True),
@@ -470,7 +539,7 @@ def test_draft_loop_writes_heartbeat_on_success(tmp_path: Path) -> None:
 
 def test_draft_loop_auth_error_series_stops_without_calling_bot(tmp_path: Path) -> None:
     class AuthFailWappi(FakeWappi):
-        def list_telegram_chats(self, *, profile_id: str, limit: int = 50):
+        def list_chats(self, *, channel: str, profile_id: str, limit: int = 50):
             self.list_calls += 1
             raise RuntimeError("HTTP 401 Unauthorized")
 

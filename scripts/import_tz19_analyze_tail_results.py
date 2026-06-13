@@ -53,6 +53,7 @@ class ImportConfig:
     results: tuple[Path, ...]
     apply: bool = False
     backup_to: Path | None = None
+    blacklist_override: Path | None = None
     expect_prompt_version: str = "v7"
     expect_model_substr: str = "mini"
     expect_prompt_sha256: str | None = None
@@ -64,10 +65,26 @@ def import_tail_results(config: ImportConfig) -> Mapping[str, Any]:
     manifest = read_manifest(cfg.manifest)
     allowed_ids = manifest_call_ids(manifest)
     blacklist_ids = read_int_set(cfg.blacklist)
+    blacklist_override_ids = read_required_int_set(cfg.blacklist_override) if cfg.blacklist_override else set()
     if not allowed_ids:
         raise RuntimeError("manifest contains no allowed call ids")
-    if allowed_ids & blacklist_ids:
+    if not cfg.blacklist_override and allowed_ids & blacklist_ids:
         raise RuntimeError("manifest intersects blacklist")
+    if cfg.blacklist_override:
+        if not blacklist_override_ids:
+            raise RuntimeError("--blacklist-override contains no ids")
+        non_blacklist_override = sorted(blacklist_override_ids - blacklist_ids)
+        if non_blacklist_override:
+            raise RuntimeError(
+                "--blacklist-override contains non-blacklist ids: "
+                f"{non_blacklist_override[:10]}"
+            )
+        override_not_in_manifest = sorted(blacklist_override_ids - allowed_ids)
+        if override_not_in_manifest:
+            raise RuntimeError(
+                "--blacklist-override ids are not in manifest: "
+                f"{override_not_in_manifest[:10]}"
+            )
     if cfg.expect_prompt_sha256 and str(manifest.get("prompt_sha256")) != cfg.expect_prompt_sha256:
         raise RuntimeError("manifest prompt_sha256 mismatch")
     if str(manifest.get("prompt_version", "")) != cfg.expect_prompt_version:
@@ -76,6 +93,7 @@ def import_tail_results(config: ImportConfig) -> Mapping[str, Any]:
         raise RuntimeError("--apply requires --backup-to")
 
     records, duplicate_report = load_unique_records(cfg.results)
+    effective_allowed_ids = blacklist_override_ids if cfg.blacklist_override else allowed_ids
     if cfg.apply and cfg.backup_to is not None:
         cfg.backup_to.parent.mkdir(parents=True, exist_ok=True)
         if cfg.backup_to.exists():
@@ -85,15 +103,21 @@ def import_tail_results(config: ImportConfig) -> Mapping[str, Any]:
     con = sqlite3.connect(cfg.db if cfg.apply else f"file:{cfg.db}?mode=ro", uri=not cfg.apply)
     con.row_factory = sqlite3.Row
     try:
-        before = prompt_counts(con, allowed_ids, cfg.expect_prompt_version)
+        before = prompt_counts(con, effective_allowed_ids, cfg.expect_prompt_version)
         counters: dict[str, int] = {
             "read": 0,
             "updated": 0,
+            "accepted_for_import": 0,
+            "accepted_needs_review": 0,
+            "accepted_non_conversation": 0,
+            "accepted_non_conversation_needs_review": 0,
             "skipped_same": 0,
             "skipped_duplicate_same": duplicate_report["same"],
             "rejected_duplicate_conflict": duplicate_report["conflict"],
             "rejected_not_in_manifest": 0,
             "rejected_blacklist": 0,
+            "rejected_blacklist_not_overridden": 0,
+            "rejected_non_blacklist_in_blacklist_override": 0,
             "rejected_not_done": 0,
             "rejected_bad_json": 0,
             "rejected_meta": 0,
@@ -109,14 +133,28 @@ def import_tail_results(config: ImportConfig) -> Mapping[str, Any]:
             if cid in conflict_ids:
                 add_rejected_id(rejected_ids, "duplicate_conflict", cid)
                 continue
-            if cid in blacklist_ids:
-                counters["rejected_blacklist"] += 1
-                add_rejected_id(rejected_ids, "blacklist", cid)
-                continue
-            if cid not in allowed_ids:
-                counters["rejected_not_in_manifest"] += 1
-                add_rejected_id(rejected_ids, "not_in_manifest", cid)
-                continue
+            if cfg.blacklist_override:
+                if cid not in blacklist_ids:
+                    counters["rejected_non_blacklist_in_blacklist_override"] += 1
+                    add_rejected_id(rejected_ids, "non_blacklist_in_blacklist_override", cid)
+                    continue
+                if cid not in blacklist_override_ids:
+                    counters["rejected_blacklist_not_overridden"] += 1
+                    add_rejected_id(rejected_ids, "blacklist_not_overridden", cid)
+                    continue
+                if cid not in allowed_ids:
+                    counters["rejected_not_in_manifest"] += 1
+                    add_rejected_id(rejected_ids, "not_in_manifest", cid)
+                    continue
+            else:
+                if cid in blacklist_ids:
+                    counters["rejected_blacklist"] += 1
+                    add_rejected_id(rejected_ids, "blacklist", cid)
+                    continue
+                if cid not in allowed_ids:
+                    counters["rejected_not_in_manifest"] += 1
+                    add_rejected_id(rejected_ids, "not_in_manifest", cid)
+                    continue
             payload = str(record.get("analysis_json") or "").strip()
             if record.get("analysis_status") != "done" or not payload:
                 counters["rejected_not_done"] += 1
@@ -154,6 +192,13 @@ def import_tail_results(config: ImportConfig) -> Mapping[str, Any]:
                 counters["rejected_transcript_changed"] += 1
                 add_rejected_id(rejected_ids, "transcript_changed", cid)
                 continue
+            counters["accepted_for_import"] += 1
+            if analysis_needs_review(doc):
+                counters["accepted_needs_review"] += 1
+            if analysis_call_type(doc) == "non_conversation":
+                counters["accepted_non_conversation"] += 1
+                if analysis_needs_review(doc):
+                    counters["accepted_non_conversation_needs_review"] += 1
             if (row["analysis_json"] or "") == payload:
                 counters["skipped_same"] += 1
                 continue
@@ -173,18 +218,22 @@ def import_tail_results(config: ImportConfig) -> Mapping[str, Any]:
             counters["updated"] += 1
         if cfg.apply:
             con.commit()
-        after = prompt_counts(con, allowed_ids, cfg.expect_prompt_version)
+        after = prompt_counts(con, effective_allowed_ids, cfg.expect_prompt_version)
     finally:
         con.close()
 
     summary = {
-        "schema_version": "tz19_tail_import_report_v1",
+        "schema_version": "tz19_tail_import_report_v2",
         "mode": "apply" if cfg.apply else "dry_run",
         "db": str(cfg.db),
         "manifest": str(cfg.manifest),
         "results": [str(path) for path in cfg.results],
         "allowed_ids": len(allowed_ids),
         "blacklist_ids": len(blacklist_ids),
+        "blacklist_override_enabled": bool(cfg.blacklist_override),
+        "blacklist_override": str(cfg.blacklist_override) if cfg.blacklist_override else None,
+        "blacklist_override_ids": len(blacklist_override_ids),
+        "effective_allowed_ids": len(effective_allowed_ids),
         "allowed_update_columns": list(ALLOWED_UPDATE_COLUMNS),
         "manifest_prompt_sha256": manifest.get("prompt_sha256"),
         "expected_prompt_sha256": cfg.expect_prompt_sha256,
@@ -214,6 +263,9 @@ def normalize_config(config: ImportConfig) -> ImportConfig:
         results=tuple(path.expanduser().resolve(strict=False) for path in config.results),
         apply=config.apply,
         backup_to=config.backup_to.expanduser().resolve(strict=False) if config.backup_to else None,
+        blacklist_override=(
+            config.blacklist_override.expanduser().resolve(strict=False) if config.blacklist_override else None
+        ),
         expect_prompt_version=config.expect_prompt_version,
         expect_model_substr=config.expect_model_substr,
         expect_prompt_sha256=config.expect_prompt_sha256,
@@ -299,6 +351,31 @@ def read_int_set(path: Path) -> set[int]:
     return values
 
 
+def read_required_int_set(path: Path) -> set[int]:
+    if not path.exists():
+        raise RuntimeError(f"--blacklist-override file does not exist: {path}")
+    values: set[int] = set()
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        item = line.strip()
+        if not item:
+            continue
+        if not item.isdigit():
+            raise RuntimeError(f"--blacklist-override line {lineno} is not an integer")
+        values.add(int(item))
+    return values
+
+
+def analysis_needs_review(doc: Mapping[str, Any]) -> bool:
+    quality = doc.get("quality_flags") if isinstance(doc.get("quality_flags"), dict) else {}
+    return bool(doc.get("needs_review") or quality.get("needs_review"))
+
+
+def analysis_call_type(doc: Mapping[str, Any]) -> str:
+    quality = doc.get("quality_flags") if isinstance(doc.get("quality_flags"), dict) else {}
+    value = quality.get("call_type") or doc.get("call_type")
+    return str(value or "").strip()
+
+
 def prompt_counts(con: sqlite3.Connection, allowed_ids: set[int], prompt_version: str) -> Mapping[str, int]:
     if not allowed_ids:
         return {"rows": 0, "prompt_version_rows": 0}
@@ -336,6 +413,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--results", nargs="+", type=Path, default=list(DEFAULT_RESULTS))
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--backup-to", type=Path, default=None)
+    parser.add_argument(
+        "--blacklist-override",
+        type=Path,
+        default=None,
+        help="Explicit blacklist call-id allowlist. Without this flag blacklist rows are rejected.",
+    )
     parser.add_argument("--expect-prompt-version", default="v7")
     parser.add_argument("--expect-model-substr", default="mini")
     parser.add_argument("--expect-prompt-sha256", default=None)
@@ -354,6 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 results=tuple(args.results),
                 apply=bool(args.apply),
                 backup_to=args.backup_to,
+                blacklist_override=args.blacklist_override,
                 expect_prompt_version=args.expect_prompt_version,
                 expect_model_substr=args.expect_model_substr,
                 expect_prompt_sha256=args.expect_prompt_sha256,

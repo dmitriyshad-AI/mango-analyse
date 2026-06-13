@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.import_tz19_analyze_tail_results import ImportConfig, import_tail_results
+from scripts.import_tz19_analyze_tail_results import ImportConfig, build_parser, import_tail_results
 
 
 PROMPT_SHA = "p" * 64
@@ -125,6 +125,203 @@ def test_manifest_prompt_sha_mismatch_blocks_before_db_write(tmp_path: Path) -> 
         import_tail_results(ImportConfig(db, manifest, blacklist, (results,), expect_prompt_sha256="wrong"))
 
 
+def test_manifest_intersecting_blacklist_still_fails_without_override(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(tmp_path, [1], [result_row(1)], blacklist_ids=[1])
+
+    with pytest.raises(RuntimeError, match="manifest intersects blacklist"):
+        import_tail_results(ImportConfig(db, manifest, blacklist, (results,), expect_prompt_sha256=PROMPT_SHA))
+
+
+def test_blacklist_override_allows_explicit_blacklist_ids_in_dry_run(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(tmp_path, [1], [result_row(1)], blacklist_ids=[1])
+    override = write_ids(tmp_path / "override.txt", [1])
+
+    summary = import_tail_results(
+        ImportConfig(
+            db,
+            manifest,
+            blacklist,
+            (results,),
+            blacklist_override=override,
+            expect_prompt_sha256=PROMPT_SHA,
+        )
+    )
+
+    assert summary["mode"] == "dry_run"
+    assert summary["blacklist_override_enabled"] is True
+    assert summary["blacklist_override_ids"] == 1
+    assert summary["effective_allowed_ids"] == 1
+    assert summary["counters"]["accepted_for_import"] == 1
+    assert summary["counters"]["updated"] == 1
+    assert json.loads(fetch_call(db, 1)["analysis_json"])["analysis_meta"]["analysis_prompt_version"] == "v6"
+
+
+def test_blacklist_override_requires_ids_to_be_blacklisted(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(tmp_path, [1], [result_row(1)], blacklist_ids=[])
+    override = write_ids(tmp_path / "override.txt", [1])
+
+    with pytest.raises(RuntimeError, match="contains non-blacklist ids"):
+        import_tail_results(
+            ImportConfig(
+                db,
+                manifest,
+                blacklist,
+                (results,),
+                blacklist_override=override,
+                expect_prompt_sha256=PROMPT_SHA,
+            )
+        )
+
+
+def test_blacklist_override_requires_ids_to_be_in_manifest(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(tmp_path, [1], [result_row(1)], blacklist_ids=[1, 2])
+    override = write_ids(tmp_path / "override.txt", [1, 2])
+
+    with pytest.raises(RuntimeError, match="ids are not in manifest"):
+        import_tail_results(
+            ImportConfig(
+                db,
+                manifest,
+                blacklist,
+                (results,),
+                blacklist_override=override,
+                expect_prompt_sha256=PROMPT_SHA,
+            )
+        )
+
+
+def test_blacklist_override_rejects_non_blacklist_result_rows(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(
+        tmp_path,
+        [1, 2],
+        [result_row(1), result_row(2)],
+        blacklist_ids=[1],
+    )
+    override = write_ids(tmp_path / "override.txt", [1])
+
+    summary = import_tail_results(
+        ImportConfig(
+            db,
+            manifest,
+            blacklist,
+            (results,),
+            blacklist_override=override,
+            expect_prompt_sha256=PROMPT_SHA,
+        )
+    )
+
+    assert summary["counters"]["updated"] == 1
+    assert summary["counters"]["rejected_non_blacklist_in_blacklist_override"] == 1
+
+
+def test_blacklist_override_rejects_blacklist_rows_missing_from_explicit_list(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(
+        tmp_path,
+        [1, 2],
+        [result_row(1), result_row(2)],
+        blacklist_ids=[1, 2],
+    )
+    override = write_ids(tmp_path / "override.txt", [1])
+
+    summary = import_tail_results(
+        ImportConfig(
+            db,
+            manifest,
+            blacklist,
+            (results,),
+            blacklist_override=override,
+            expect_prompt_sha256=PROMPT_SHA,
+        )
+    )
+
+    assert summary["counters"]["updated"] == 1
+    assert summary["counters"]["rejected_blacklist_not_overridden"] == 1
+
+
+def test_blacklist_override_counts_needs_review_and_non_conversation_needs_review(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(
+        tmp_path,
+        [1, 2, 3],
+        [
+            result_row(1, needs_review=True, call_type="non_conversation"),
+            result_row(2, needs_review=False, call_type="non_conversation"),
+            result_row(3, needs_review=True, call_type="service_call"),
+        ],
+        blacklist_ids=[1, 2, 3],
+    )
+    override = write_ids(tmp_path / "override.txt", [1, 2, 3])
+
+    summary = import_tail_results(
+        ImportConfig(
+            db,
+            manifest,
+            blacklist,
+            (results,),
+            blacklist_override=override,
+            expect_prompt_sha256=PROMPT_SHA,
+        )
+    )
+
+    assert summary["counters"]["accepted_for_import"] == 3
+    assert summary["counters"]["accepted_needs_review"] == 2
+    assert summary["counters"]["accepted_non_conversation"] == 2
+    assert summary["counters"]["accepted_non_conversation_needs_review"] == 1
+
+
+def test_blacklist_override_repeated_dry_run_is_stable_and_does_not_write(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(tmp_path, [1], [result_row(1)], blacklist_ids=[1])
+    override = write_ids(tmp_path / "override.txt", [1])
+    config = ImportConfig(
+        db,
+        manifest,
+        blacklist,
+        (results,),
+        blacklist_override=override,
+        expect_prompt_sha256=PROMPT_SHA,
+    )
+
+    first = import_tail_results(config)
+    second = import_tail_results(config)
+
+    assert first["counters"]["updated"] == 1
+    assert second["counters"]["updated"] == 1
+    assert first["counters"] == second["counters"]
+    assert json.loads(fetch_call(db, 1)["analysis_json"])["analysis_meta"]["analysis_prompt_version"] == "v6"
+
+
+def test_blacklist_override_apply_updates_only_whitelisted_columns_on_tmp_db(tmp_path: Path) -> None:
+    db, manifest, blacklist, results = seed_import_case(tmp_path, [1], [result_row(1)], blacklist_ids=[1])
+    override = write_ids(tmp_path / "override.txt", [1])
+    backup = tmp_path / "backup.sqlite"
+
+    summary = import_tail_results(
+        ImportConfig(
+            db,
+            manifest,
+            blacklist,
+            (results,),
+            apply=True,
+            backup_to=backup,
+            blacklist_override=override,
+            expect_prompt_sha256=PROMPT_SHA,
+        )
+    )
+
+    assert summary["counters"]["updated"] == 1
+    row = fetch_call(db, 1)
+    assert row["analysis_status"] == "done"
+    assert row["has_analysis_json"] == 1
+    assert row["last_error"] is None
+    assert row["phone"] == "+79990000001"
+    assert row["transcript_chars"] == 123
+
+
+def test_parser_accepts_blacklist_override_path() -> None:
+    args = build_parser().parse_args(["--blacklist-override", "ids.txt"])
+
+    assert args.blacklist_override == Path("ids.txt")
+
+
 def seed_import_case(
     tmp_path: Path,
     manifest_ids: list[int],
@@ -197,10 +394,22 @@ def seed_db(path: Path, call_ids: list[int]) -> None:
 
 
 def result_payload() -> str:
+    return result_payload_with()
+
+
+def result_payload_with(*, needs_review: bool = False, call_type: str = "service_call") -> str:
     return json.dumps(
         {
             "analysis_schema_version": "v2",
             "analysis_meta": {"analysis_prompt_version": "v7", "analysis_model": "gpt-5.4-mini"},
+            "quality_flags": {
+                "call_type": call_type,
+                "needs_review": needs_review,
+                "review_reasons": ["long_non_conversation"] if needs_review else [],
+            },
+            "tags": [call_type],
+            "needs_review": needs_review,
+            "review_reasons": ["long_non_conversation"] if needs_review else [],
             "history_summary": "ok",
         },
         ensure_ascii=False,
@@ -213,11 +422,13 @@ def result_row(
     status: str = "done",
     payload: str | None = None,
     transcript_chars: int = 123,
+    needs_review: bool = False,
+    call_type: str = "service_call",
 ) -> dict:
     return {
         "canonical_call_id": call_id,
         "analysis_status": status,
-        "analysis_json": result_payload() if payload is None else payload,
+        "analysis_json": result_payload_with(needs_review=needs_review, call_type=call_type) if payload is None else payload,
         "transcript_chars": transcript_chars,
         "last_error": None,
     }
@@ -230,3 +441,8 @@ def fetch_call(db: Path, call_id: int) -> sqlite3.Row:
         return con.execute("SELECT * FROM canonical_calls WHERE canonical_call_id=?", (call_id,)).fetchone()
     finally:
         con.close()
+
+
+def write_ids(path: Path, ids: list[int]) -> Path:
+    path.write_text("\n".join(str(cid) for cid in ids) + "\n", encoding="utf-8")
+    return path

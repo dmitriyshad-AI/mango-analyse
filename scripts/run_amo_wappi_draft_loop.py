@@ -6,10 +6,11 @@ import json
 import os
 import time
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib import parse as url_parse
 
 from mango_mvp.channels.subscription_llm import (
@@ -55,8 +56,13 @@ DEFAULT_AUTO_PAIRS_PATH = Path.home() / ".mango_secrets" / "draft_loop_auto_pair
 DEFAULT_RETRO_DIR = Path.home() / ".mango_local" / "draft_loop_inventory"
 DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
 LEGACY_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phone_stoplist.json"
+DEFAULT_AUTO_RESOLVER_CACHE_PATH = Path.home() / ".mango_local" / "draft_loop" / "auto_resolver_cache.json"
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 DRAFT_LOOP_AUTO_RESOLVER_ENV = "DRAFT_LOOP_AUTO_RESOLVER"
+DRAFT_LOOP_AUTO_RESOLVER_CHANNELS_ENV = "DRAFT_LOOP_AUTO_RESOLVER_CHANNELS"
+DRAFT_LOOP_AUTO_RESOLVER_CACHE_TTL_ENV = "DRAFT_LOOP_AUTO_RESOLVER_CACHE_TTL_SEC"
+DRAFT_LOOP_AUTO_RESOLVER_THROTTLE_ENV = "DRAFT_LOOP_AUTO_RESOLVER_THROTTLE_SEC"
+DRAFT_LOOP_AUTO_RESOLVER_RETRY_AFTER_ENV = "DRAFT_LOOP_AUTO_RESOLVER_RETRY_AFTER_SEC"
 CLOSED_STATUS_IDS = {"142", "143"}
 ORG_BRAND_KEYWORDS = {
     "foton": ("фотон", "cdpo", "цдпо"),
@@ -84,6 +90,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chat-limit", type=int, default=50)
     parser.add_argument("--amo-mcp-env-file", type=Path, default=Path("~/.mango_secrets/foton_crm_readonly_mcp_connector.env").expanduser())
     parser.add_argument("--shared-phone-stoplist", type=Path, default=DEFAULT_STOPLIST_PATH)
+    parser.add_argument("--auto-resolver-cache", type=Path, default=DEFAULT_AUTO_RESOLVER_CACHE_PATH)
+    parser.add_argument("--auto-resolver-cache-ttl-sec", type=int, default=24 * 3600)
+    parser.add_argument("--auto-resolver-throttle-sec", type=float, default=0.2)
+    parser.add_argument("--auto-resolver-retry-after-sec", type=float, default=3.0)
+    parser.add_argument("--auto-resolver-channels", default="")
     parser.add_argument("--retro-report", nargs="?", const="", default=None, help="Write an offline bot-vs-manager report outside the repo and exit.")
     parser.add_argument("--retro-lookback-hours", type=int, default=48)
     parser.add_argument("--retro-limit", type=int, default=30)
@@ -180,6 +191,34 @@ def build_safe_transport(ai_office_config: AiOfficeClientConfig, wappi_config: W
 
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return int(default)
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _parse_channel_set(value: str | None) -> frozenset[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return frozenset({"telegram", "max"})
+    items = {item.strip().casefold() for item in raw.split(",") if item.strip()}
+    return frozenset(item for item in items if item in {"telegram", "max"})
 
 
 def _embedded_items(payload: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
@@ -301,14 +340,94 @@ def _max_dialog_phone(dialog: Mapping[str, Any]) -> tuple[str, str]:
     return "", "max_phone_missing"
 
 
+class AutoResolverCache:
+    def __init__(self, path: Path | str, *, ttl_sec: int, time_fn: Callable[[], float] | None = None) -> None:
+        self.path = Path(path).expanduser()
+        self.ttl_sec = max(60, int(ttl_sec))
+        self.time_fn = time_fn or time.time
+        self.payload = self._load()
+
+    def _load(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"schema_version": "draft_loop_auto_resolver_cache_v1", "entries": {}}
+        try:
+            decoded = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {"schema_version": "draft_loop_auto_resolver_cache_v1", "entries": {}}
+        if not isinstance(decoded, Mapping):
+            return {"schema_version": "draft_loop_auto_resolver_cache_v1", "entries": {}}
+        entries = decoded.get("entries")
+        if not isinstance(entries, Mapping):
+            entries = {}
+        return {"schema_version": "draft_loop_auto_resolver_cache_v1", "entries": dict(entries)}
+
+    def get(self, key: DraftLoopKey) -> Mapping[str, Any] | None:
+        entry = (self.payload.get("entries") or {}).get(key.value)
+        if not isinstance(entry, Mapping):
+            return None
+        try:
+            expires_at = float(entry.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        if expires_at <= self.time_fn():
+            self.invalidate(key)
+            return None
+        return dict(entry)
+
+    def put(self, key: DraftLoopKey, *, profile: DraftLoopProfile, candidate: Mapping[str, Any]) -> None:
+        now = float(self.time_fn())
+        entries = dict(self.payload.get("entries") or {})
+        entries[key.value] = {
+            "profile_id": key.profile_id,
+            "chat_id": key.chat_id,
+            "channel": profile.channel,
+            "brand": profile.brand,
+            "lead_id": str(candidate.get("lead_id") or ""),
+            "contact_id": str(candidate.get("contact_id") or ""),
+            "match_key": str(candidate.get("match_key") or ""),
+            "match_value": str(candidate.get("match_value") or ""),
+            "lead_snapshot": dict(candidate.get("lead_snapshot") or {}),
+            "cached_at": int(now),
+            "expires_at": int(now + self.ttl_sec),
+        }
+        self.payload["entries"] = entries
+        self.save()
+
+    def invalidate(self, key: DraftLoopKey) -> None:
+        entries = dict(self.payload.get("entries") or {})
+        if key.value in entries:
+            entries.pop(key.value, None)
+            self.payload["entries"] = entries
+            self.save()
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(self.payload, ensure_ascii=False, indent=2, sort_keys=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=str(self.path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.write("\n")
+        os.replace(tmp_name, self.path)
+
+
 @dataclass
 class AmoAutoResolver:
     client: AmoMcpClient
     shared_phone_stoplist: set[str]
     stoplist_error: str = ""
+    cache: AutoResolverCache | None = None
+    allowed_channels: frozenset[str] = frozenset({"telegram", "max"})
+    throttle_sec: float = 0.2
+    retry_after_sec: float = 3.0
+    time_fn: Callable[[], float] = time.time
+    sleep_fn: Callable[[float], None] = time.sleep
 
     def __post_init__(self) -> None:
         self.shared_phone_stoplist = {phone for phone in (normalize_phone(item) for item in self.shared_phone_stoplist) if phone}
+        self.allowed_channels = frozenset(item for item in self.allowed_channels if item in {"telegram", "max"}) or frozenset({"telegram", "max"})
+        self.throttle_sec = max(0.0, float(self.throttle_sec))
+        self.retry_after_sec = max(0.0, float(self.retry_after_sec))
+        self._last_request_at = 0.0
 
     def __call__(
         self,
@@ -320,11 +439,74 @@ class AmoAutoResolver:
         message: WappiHistoryMessage,
     ) -> Mapping[str, Any]:
         del messages, message
+        if profile.channel not in self.allowed_channels:
+            return {"status": "rejected", "reason": "auto_resolver_channel_disabled", "channel": profile.channel}
+        cached = self._resolve_from_cache(key=key, profile=profile)
+        if cached is not None:
+            return cached
         if profile.channel == "telegram":
-            return self._resolve_telegram(key=key, profile=profile)
-        if profile.channel == "max":
-            return self._resolve_max(key=key, profile=profile, dialog=dialog)
-        return {"status": "rejected", "reason": "unsupported_channel"}
+            result = self._resolve_telegram(key=key, profile=profile)
+        elif profile.channel == "max":
+            result = self._resolve_max(key=key, profile=profile, dialog=dialog)
+        else:
+            result = {"status": "rejected", "reason": "unsupported_channel"}
+        if str(result.get("status") or "") == "matched" and self.cache is not None:
+            self.cache.put(key, profile=profile, candidate=result)
+        return result
+
+    def _amo_get(self, *, path: str, params: Mapping[str, Any] | None = None, limit: int = 50) -> Mapping[str, Any]:
+        now = float(self.time_fn())
+        if self._last_request_at and self.throttle_sec > 0:
+            wait = self.throttle_sec - (now - self._last_request_at)
+            if wait > 0:
+                self.sleep_fn(wait)
+        self._last_request_at = float(self.time_fn())
+        try:
+            return self.client.amo_api_get(path=path, params=params, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            if "429" not in str(exc) or self.retry_after_sec <= 0:
+                raise
+            self.sleep_fn(self.retry_after_sec)
+            self._last_request_at = float(self.time_fn())
+            return self.client.amo_api_get(path=path, params=params, limit=limit)
+
+    def _resolve_from_cache(self, *, key: DraftLoopKey, profile: DraftLoopProfile) -> Mapping[str, Any] | None:
+        if self.cache is None:
+            return None
+        entry = self.cache.get(key)
+        if entry is None:
+            return None
+        if str(entry.get("channel") or "") != profile.channel or str(entry.get("brand") or "") != profile.brand:
+            self.cache.invalidate(key)
+            return None
+        lead_id = str(entry.get("lead_id") or "").strip()
+        if not lead_id:
+            self.cache.invalidate(key)
+            return None
+        lead = self._amo_get(path=f"leads/{int(lead_id)}", params={"with": "contacts"}, limit=1)
+        if not _is_active_lead(lead):
+            self.cache.invalidate(key)
+            return None
+        org_brand = _lead_org_brand(lead)
+        org_values = _lead_org_values(lead)
+        if org_brand and org_brand != profile.brand:
+            self.cache.invalidate(key)
+            return None
+        return {
+            "status": "matched",
+            "lead_id": lead_id,
+            "contact_id": str(entry.get("contact_id") or ""),
+            "match_key": str(entry.get("match_key") or "cache"),
+            "match_value": str(entry.get("match_value") or ""),
+            "cache": "hit",
+            "lead_snapshot": {
+                "status_id": str(lead.get("status_id") or ""),
+                "closed_at": str(lead.get("closed_at") or ""),
+                "pipeline_id": str(lead.get("pipeline_id") or ""),
+                "organization_brand": org_brand,
+                "organization_values": org_values,
+            },
+        }
 
     def _resolve_telegram(self, *, key: DraftLoopKey, profile: DraftLoopProfile) -> Mapping[str, Any]:
         if not key.chat_id.isdigit():
@@ -348,12 +530,12 @@ class AmoAutoResolver:
         return self._resolve_contact(profile=profile, contact=contacts[0], match_key=source, match_value=phone)
 
     def _search_contacts_exact_telegram_id(self, telegram_id: str) -> list[Mapping[str, Any]]:
-        payload = self.client.amo_api_get(path="contacts", params={"query": telegram_id, "with": "leads"}, limit=50)
+        payload = self._amo_get(path="contacts", params={"query": telegram_id, "with": "leads"}, limit=50)
         contacts = _embedded_items(payload, "contacts")
         return [contact for contact in contacts if telegram_id in _contact_telegram_ids(contact)]
 
     def _search_contacts_exact_phone(self, phone: str) -> list[Mapping[str, Any]]:
-        payload = self.client.amo_api_get(path="contacts", params={"query": phone, "with": "leads"}, limit=50)
+        payload = self._amo_get(path="contacts", params={"query": phone, "with": "leads"}, limit=50)
         contacts = _embedded_items(payload, "contacts")
         return [contact for contact in contacts if phone in _contact_phones(contact)]
 
@@ -368,12 +550,12 @@ class AmoAutoResolver:
         contact_id = str(contact.get("id") or "").strip()
         lead_ids = _lead_ids_from_contact(contact)
         if not lead_ids and contact_id:
-            contact_payload = self.client.amo_api_get(path=f"contacts/{int(contact_id)}", params={"with": "leads"}, limit=1)
+            contact_payload = self._amo_get(path=f"contacts/{int(contact_id)}", params={"with": "leads"}, limit=1)
             lead_ids = _lead_ids_from_contact(contact_payload)
         leads: list[Mapping[str, Any]] = []
         deleted_seen = False
         for lead_id in lead_ids:
-            lead = self.client.amo_api_get(path=f"leads/{int(lead_id)}", params={"with": "contacts"}, limit=1)
+            lead = self._amo_get(path=f"leads/{int(lead_id)}", params={"with": "contacts"}, limit=1)
             if bool(lead.get("is_deleted") or lead.get("deleted")):
                 deleted_seen = True
             leads.append(lead)
@@ -415,6 +597,10 @@ def build_auto_resolver(args: argparse.Namespace) -> AmoAutoResolver | None:
     if not _truthy(os.getenv(DRAFT_LOOP_AUTO_RESOLVER_ENV)):
         return None
     stoplist, stoplist_error = _load_phone_stoplist(args.shared_phone_stoplist)
+    channels = _parse_channel_set(os.getenv(DRAFT_LOOP_AUTO_RESOLVER_CHANNELS_ENV) or getattr(args, "auto_resolver_channels", ""))
+    cache_ttl_sec = _env_int(DRAFT_LOOP_AUTO_RESOLVER_CACHE_TTL_ENV, int(getattr(args, "auto_resolver_cache_ttl_sec", 24 * 3600)))
+    throttle_sec = _env_float(DRAFT_LOOP_AUTO_RESOLVER_THROTTLE_ENV, float(getattr(args, "auto_resolver_throttle_sec", 0.2)))
+    retry_after_sec = _env_float(DRAFT_LOOP_AUTO_RESOLVER_RETRY_AFTER_ENV, float(getattr(args, "auto_resolver_retry_after_sec", 3.0)))
     config = read_mcp_env(args.amo_mcp_env_file)
     if config.transport != "curl":
         config = AmoMcpConfig(
@@ -425,7 +611,15 @@ def build_auto_resolver(args: argparse.Namespace) -> AmoAutoResolver | None:
             user_agent="mango-draft-loop-auto-resolver/1.0",
             transport="curl",
         )
-    return AmoAutoResolver(client=AmoMcpClient(config), shared_phone_stoplist=stoplist, stoplist_error=stoplist_error)
+    return AmoAutoResolver(
+        client=AmoMcpClient(config),
+        shared_phone_stoplist=stoplist,
+        stoplist_error=stoplist_error,
+        cache=AutoResolverCache(getattr(args, "auto_resolver_cache", DEFAULT_AUTO_RESOLVER_CACHE_PATH), ttl_sec=cache_ttl_sec),
+        allowed_channels=channels,
+        throttle_sec=throttle_sec,
+        retry_after_sec=retry_after_sec,
+    )
 
 
 def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:

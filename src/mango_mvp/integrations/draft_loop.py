@@ -267,6 +267,17 @@ class DraftLoopState:
         decoded.setdefault("quarantined_pairs", {})
         return decoded
 
+    def auto_resolver_started_at(self, now_ts: int) -> int:
+        try:
+            value = int(float(self.payload.get("auto_resolver_started_at") or 0))
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+        value = max(1, int(now_ts))
+        self.payload["auto_resolver_started_at"] = value
+        return value
+
     def processed_keys(self) -> set[tuple[str, str, str]]:
         result: set[tuple[str, str, str]] = set()
         for item in self.payload.get("processed") or []:
@@ -512,6 +523,9 @@ class AmoWappiDraftLoop:
         manager_edit_count = 0
         auto_resolver_counts: Counter[str] = Counter()
         now_epoch = int(self.now_fn().timestamp())
+        auto_resolver_started_at = 0
+        if self.auto_resolver is not None and not stop_active:
+            auto_resolver_started_at = self.state.auto_resolver_started_at(now_epoch)
         seen_processed = self.state.processed_keys() | self.journal.processed_message_keys()
         try:
             for profile in self.config.profiles.values():
@@ -558,7 +572,14 @@ class AmoWappiDraftLoop:
                         for item in inbound_new:
                             self.journal.append(_message_event("stop_raw_inbound", item, status="stop_not_processed"))
                         continue
-                    result = self._process_chat_messages(profile, dialog, messages, inbound_new, dry_run=dry_run)
+                    result = self._process_chat_messages(
+                        profile,
+                        dialog,
+                        messages,
+                        inbound_new,
+                        dry_run=dry_run,
+                        auto_resolver_started_at=auto_resolver_started_at,
+                    )
                     processed_count += int(result.get("processed", 0))
                     skipped_count += int(result.get("skipped", 0))
                     bot_calls += int(result.get("bot_calls", 0))
@@ -605,6 +626,8 @@ class AmoWappiDraftLoop:
             "auth_error": False,
             "auth_error_count": 0,
         }
+        if auto_resolver_started_at:
+            summary["auto_resolver_started_at"] = auto_resolver_started_at
         if not dry_run and not stop_active:
             self.state.save()
         elif manager_edit_count or previous_auth_error_count:
@@ -766,10 +789,30 @@ class AmoWappiDraftLoop:
         inbound_new: Sequence[WappiHistoryMessage],
         *,
         dry_run: bool,
-    ) -> Mapping[str, int]:
+        auto_resolver_started_at: int = 0,
+    ) -> Mapping[str, Any]:
         key = DraftLoopKey(profile.profile_id, inbound_new[-1].chat_id)
         pair = self.config.pair_for(key)
+        auto_resolver_reason = ""
         if pair is None:
+            if auto_resolver_started_at and all(item.timestamp <= 0 or item.timestamp <= auto_resolver_started_at for item in inbound_new):
+                for item in inbound_new:
+                    self.journal.append(
+                        {
+                            **_message_event("auto_not_before_skipped", item, status="skipped"),
+                            "not_before_ts": auto_resolver_started_at,
+                        }
+                    )
+                    if not dry_run:
+                        self.state.mark_processed(item)
+                if not dry_run:
+                    self.state.save()
+                return {
+                    "processed": 0,
+                    "skipped": len(inbound_new),
+                    "bot_calls": 0,
+                    "auto_resolver_reason": "auto_not_before_skipped",
+                }
             candidate = self._resolve_auto_candidate(key, profile, dialog, messages, inbound_new[-1])
             if (
                 not dry_run
@@ -782,7 +825,7 @@ class AmoWappiDraftLoop:
                     key=key,
                     lead_id=str(candidate.get("lead_id") or ""),
                     expected_brand=profile.brand,
-                    not_before_ts=now_ts,
+                    not_before_ts=int(auto_resolver_started_at or now_ts),
                     source="auto",
                     match_key=str(candidate.get("match_key") or ""),
                     contact_id=str(candidate.get("contact_id") or ""),
@@ -790,6 +833,7 @@ class AmoWappiDraftLoop:
                 )
                 created = persist_auto_pair(self.config.auto_pairs_path, pair)
                 if created:
+                    auto_resolver_reason = "matched"
                     self.journal.append(
                         {
                             "event": "auto_pair_created",
@@ -803,31 +847,15 @@ class AmoWappiDraftLoop:
                             "lead_snapshot": dict(candidate.get("lead_snapshot") or {}),
                         }
                     )
-                for item in inbound_new:
-                    self.journal.append(
-                        {
-                            **_message_event("not_before_skipped", item, status="skipped"),
-                            "lead_id": pair.lead_id,
-                            "not_before_ts": pair.not_before_ts,
-                            "reason": "auto_pair_created_watermark",
-                        }
-                    )
-                    self.state.mark_processed(item)
-                self.state.save()
-                return {
-                    "processed": 0,
-                    "skipped": len(inbound_new),
-                    "bot_calls": 0,
-                    "auto_resolver_reason": "matched",
-                }
-            self.journal.append(
-                {
-                    **_message_event("pair_missing", inbound_new[-1], status="skipped"),
-                    "auto_candidate": dict(candidate or {}),
-                }
-            )
-            reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
-            return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
+            if pair is None:
+                self.journal.append(
+                    {
+                        **_message_event("pair_missing", inbound_new[-1], status="skipped"),
+                        "auto_candidate": dict(candidate or {}),
+                    }
+                )
+                reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
+                return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
         if self.state.is_pair_quarantined(key):
             for item in inbound_new:
                 self.journal.append(
@@ -935,12 +963,18 @@ class AmoWappiDraftLoop:
                     "error": str(exc)[:300],
                 }
             )
-            return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
+            result = {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
+            if auto_resolver_reason:
+                result["auto_resolver_reason"] = auto_resolver_reason
+            return result
         self.state.clear_pending(_message_state_key(last_message))
         for item in inbound_new:
             self.state.mark_processed(item)
         self.journal.append({**pending_payload, "event": "note_written", "status": "note_written"})
-        return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
+        result = {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
+        if auto_resolver_reason:
+            result["auto_resolver_reason"] = auto_resolver_reason
+        return result
 
     def _build_context(
         self,

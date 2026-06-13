@@ -169,7 +169,7 @@ def test_draft_loop_skips_messages_at_or_before_not_before_ts_and_zero_timestamp
     assert {row["message_id"] for row in skipped} == {"m0", "m1"}
 
 
-def test_draft_loop_auto_pair_is_persisted_once_and_watermarks_current_message(tmp_path: Path) -> None:
+def test_draft_loop_auto_pair_processes_new_message_after_resolver_start(tmp_path: Path) -> None:
     auto_pairs = tmp_path / "auto_pairs.json"
     cfg = _config(tmp_path)
     cfg = DraftLoopConfig(
@@ -184,8 +184,12 @@ def test_draft_loop_auto_pair_is_persisted_once_and_watermarks_current_message(t
         stop_path=cfg.stop_path,
         debounce_seconds=cfg.debounce_seconds,
     )
-    wappi = FakeWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [_message("m1")]})
+    state = DraftLoopState(cfg.state_path)
+    state.payload["auto_resolver_started_at"] = 1000
+    state.save()
+    wappi = FakeWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [_message("m1", ts=1100)]})
     bot = FakeBot()
+    amo = FakeAmo()
 
     def resolver(**kwargs):
         return {"status": "matched", "lead_id": "49762441", "contact_id": "111", "match_key": "Telegram ID"}
@@ -193,32 +197,71 @@ def test_draft_loop_auto_pair_is_persisted_once_and_watermarks_current_message(t
     loop = AmoWappiDraftLoop(
         config=cfg,
         wappi_client=wappi,
-        amo_client=FakeAmo(),
+        amo_client=amo,
         bot_provider=bot,
         context_builder=lambda key, history, client_message, brand: {},
         auto_resolver=resolver,
+        state=DraftLoopState(cfg.state_path),
         now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
     )
 
     summary = loop.run_once(dry_run=False)
     summary_second = loop.run_once(dry_run=False)
 
-    assert summary["skipped"] == 1
-    assert summary["bot_calls"] == 0
+    assert summary["processed"] == 1
+    assert summary["skipped"] == 0
+    assert summary["bot_calls"] == 1
+    assert summary["auto_resolver_counts"] == {"matched": 1}
     assert summary_second["bot_calls"] == 0
+    assert [note["lead_id"] for note in amo.notes] == ["49762441"]
     loaded = load_pairs_file(auto_pairs, default_source="auto")
     pair = loaded[DraftLoopKey("profile-foton", "chat-1")]
     assert pair.lead_id == "49762441"
-    assert pair.not_before_ts == 1200
+    assert pair.not_before_ts == 1000
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert sum(1 for row in rows if row["event"] == "auto_pair_created") == 1
+
+
+def test_draft_loop_auto_resolver_skips_old_messages_before_start_without_lookup(tmp_path: Path) -> None:
+    calls = []
+
+    def resolver(**kwargs):
+        calls.append(kwargs)
+        return {"status": "matched", "lead_id": "49762441", "contact_id": "111", "match_key": "Telegram ID"}
+
+    loop = _loop(tmp_path, messages=[_message("m1", ts=1000)], auto_resolver=resolver)
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["bot_calls"] == 0
+    assert summary["auto_resolver_counts"] == {"auto_not_before_skipped": 1}
+    assert calls == []
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["event"] == "auto_not_before_skipped"
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state["auto_resolver_started_at"] == 1200
+    assert state["processed"][0]["message_id"] == "m1"
 
 
 def test_draft_loop_auto_resolver_failure_is_manual_review_not_crash(tmp_path: Path) -> None:
     def resolver(**kwargs):
         raise RuntimeError("MCP HTTP 429: rate limit")
 
-    loop = _loop(tmp_path, messages=[_message("m1")], auto_resolver=resolver)
+    cfg = _config(tmp_path)
+    state = DraftLoopState(cfg.state_path)
+    state.payload["auto_resolver_started_at"] = 900
+    state.save()
+    wappi = FakeWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [_message("m1", ts=1000)]})
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        auto_resolver=resolver,
+        state=DraftLoopState(cfg.state_path),
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
 
     summary = loop.run_once(dry_run=True)
 
@@ -228,6 +271,64 @@ def test_draft_loop_auto_resolver_failure_is_manual_review_not_crash(tmp_path: P
     rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert rows[-1]["event"] == "pair_missing"
     assert rows[-1]["auto_candidate"]["reason"] == "auto_resolver_unavailable"
+
+
+def test_draft_loop_auto_resolver_writes_only_identified_new_chats(tmp_path: Path) -> None:
+    profile = DraftLoopProfile(profile_id="profile-foton", brand="foton", channel="telegram")
+    auto_pairs = tmp_path / "auto_pairs.json"
+    cfg = DraftLoopConfig(
+        profiles={profile.profile_id: profile},
+        pairs={},
+        auto_pairs_path=auto_pairs,
+        state_path=tmp_path / "state.json",
+        journal_path=tmp_path / "journal.jsonl",
+        manager_edit_log_path=tmp_path / "manager_edits.jsonl",
+        heartbeat_path=tmp_path / "heartbeat.json",
+        stop_path=tmp_path / "STOP_DRAFT_LOOP",
+        debounce_seconds=60,
+    )
+    state = DraftLoopState(cfg.state_path)
+    state.payload["auto_resolver_started_at"] = 900
+    state.save()
+    wappi = FakeWappi(
+        {
+            profile.profile_id: [
+                {"id": "chat-ok", "type": "user"},
+                {"id": "chat-missing", "type": "user"},
+            ]
+        },
+        {
+            (profile.profile_id, "chat-ok"): [_message("ok1", chat_id="chat-ok", ts=1000)],
+            (profile.profile_id, "chat-missing"): [_message("miss1", chat_id="chat-missing", ts=1000)],
+        },
+    )
+    amo = FakeAmo()
+    bot = FakeBot()
+
+    def resolver(**kwargs):
+        key = kwargs["key"]
+        if key.chat_id == "chat-ok":
+            return {"status": "matched", "lead_id": "49762441", "contact_id": "111", "match_key": "Telegram ID"}
+        return {"status": "rejected", "reason": "no_contact"}
+
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {},
+        state=DraftLoopState(cfg.state_path),
+        auto_resolver=resolver,
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=False)
+
+    assert summary["processed"] == 1
+    assert summary["skipped"] == 1
+    assert summary["bot_calls"] == 1
+    assert summary["auto_resolver_counts"] == {"matched": 1, "no_contact": 1}
+    assert [note["lead_id"] for note in amo.notes] == ["49762441"]
 
 
 def test_persist_auto_pair_does_not_duplicate_or_move_watermark(tmp_path: Path) -> None:
@@ -447,11 +548,20 @@ def test_build_draft_loop_config_fingerprint_uses_snapshot_dir_and_gold_version(
 
 def test_draft_loop_never_writes_note_for_auto_candidate_without_explicit_pair(tmp_path: Path) -> None:
     amo = FakeAmo()
-    loop = _loop(
-        tmp_path,
-        messages=[_message("m1")],
-        auto_resolver=lambda key, message: {"lead_id": "49832125", "source": "auto"},
-        amo=amo,
+    cfg = _config(tmp_path)
+    state = DraftLoopState(cfg.state_path)
+    state.payload["auto_resolver_started_at"] = 900
+    state.save()
+    wappi = FakeWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [_message("m1", ts=1000)]})
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=amo,
+        bot_provider=FakeBot(),
+        context_builder=lambda key, history, client_message, brand: {},
+        auto_resolver=lambda key, message: {"status": "matched", "lead_id": "49832125", "source": "auto"},
+        state=DraftLoopState(cfg.state_path),
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
     )
 
     summary = loop.run_once(dry_run=False)

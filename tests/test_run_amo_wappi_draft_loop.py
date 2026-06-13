@@ -137,11 +137,27 @@ def _lead(lead_id="49762441", *, status_id=123, closed_at=None, deleted=False, o
     }
 
 
-def _resolver(*, contacts=None, leads=None, stoplist=None, stoplist_error=""):
+def _resolver(
+    *,
+    contacts=None,
+    leads=None,
+    stoplist=None,
+    stoplist_error="",
+    cache=None,
+    allowed_channels=frozenset({"telegram", "max"}),
+    throttle_sec=0.0,
+    retry_after_sec=0.0,
+    sleep_fn=None,
+):
     return runner.AmoAutoResolver(
         client=FakeMcp(contacts=contacts, leads=leads),
         shared_phone_stoplist=set(stoplist or ()),
         stoplist_error=stoplist_error,
+        cache=cache,
+        allowed_channels=frozenset(allowed_channels),
+        throttle_sec=throttle_sec,
+        retry_after_sec=retry_after_sec,
+        sleep_fn=sleep_fn or (lambda seconds: None),
     )
 
 
@@ -229,6 +245,81 @@ def test_auto_resolver_includes_organization_snapshot_for_review() -> None:
     assert result["status"] == "matched"
     assert result["lead_snapshot"]["organization_brand"] == "foton"
     assert result["lead_snapshot"]["organization_values"] == ["Фотон"]
+
+
+def test_auto_resolver_cache_hit_revalidates_open_lead_without_contact_search(tmp_path: Path) -> None:
+    cache = runner.AutoResolverCache(tmp_path / "cache.json", ttl_sec=3600, time_fn=lambda: 1000)
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+    key = DraftLoopKey("profile-foton", "123456")
+    cache.put(
+        key,
+        profile=profile,
+        candidate={"lead_id": "1", "contact_id": "111", "match_key": "Telegram ID", "match_value": "123456"},
+    )
+    resolver = _resolver(contacts=[], leads=[_lead("1", org="Фотон")], cache=cache)
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[], message=None)
+
+    assert result["status"] == "matched"
+    assert result["cache"] == "hit"
+    assert result["lead_id"] == "1"
+    assert [call["path"] for call in resolver.client.calls] == ["leads/1"]
+
+
+def test_auto_resolver_cache_does_not_return_closed_stale_lead(tmp_path: Path) -> None:
+    cache = runner.AutoResolverCache(tmp_path / "cache.json", ttl_sec=3600, time_fn=lambda: 1000)
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+    key = DraftLoopKey("profile-foton", "123456")
+    cache.put(
+        key,
+        profile=profile,
+        candidate={"lead_id": "1", "contact_id": "111", "match_key": "Telegram ID", "match_value": "123456"},
+    )
+    resolver = _resolver(contacts=[], leads=[_lead("1", status_id=143, closed_at=1)], cache=cache)
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[], message=None)
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "username_only"
+    assert cache.get(key) is None
+
+
+def test_auto_resolver_can_disable_max_channel() -> None:
+    profile = DraftLoopProfile("profile-max", "foton", "max")
+    resolver = _resolver(contacts=[_contact(phone="+79990000000")], leads=[_lead()], allowed_channels={"telegram"})
+
+    result = resolver(key=DraftLoopKey("profile-max", "max-chat-1"), profile=profile, dialog={"phone": "+7 999 000-00-00"}, messages=[], message=None)
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "auto_resolver_channel_disabled"
+
+
+def test_auto_resolver_retries_rate_limit_once() -> None:
+    class RateLimitOnceMcp(FakeMcp):
+        def __init__(self) -> None:
+            super().__init__(contacts=[_contact(telegram_id="123456", leads=("1",))], leads=[_lead("1")])
+            self.failed = False
+
+        def amo_api_get(self, *, path, params=None, limit=50):
+            if path == "contacts" and not self.failed:
+                self.failed = True
+                raise RuntimeError("HTTP 429: Tallanto rate limit")
+            return super().amo_api_get(path=path, params=params, limit=limit)
+
+    sleeps: list[float] = []
+    resolver = runner.AmoAutoResolver(
+        client=RateLimitOnceMcp(),
+        shared_phone_stoplist=set(),
+        throttle_sec=0.0,
+        retry_after_sec=2.5,
+        sleep_fn=sleeps.append,
+    )
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+
+    result = resolver(key=DraftLoopKey("profile-foton", "123456"), profile=profile, dialog={}, messages=[], message=None)
+
+    assert result["status"] == "matched"
+    assert sleeps == [2.5]
 
 
 def test_load_phone_stoplist_uses_plural_default_and_legacy_fallback(tmp_path: Path, monkeypatch) -> None:

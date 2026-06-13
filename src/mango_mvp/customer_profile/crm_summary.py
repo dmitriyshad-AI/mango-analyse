@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -171,6 +172,18 @@ def _profile_ids_by_phone(con: sqlite3.Connection, phone: str) -> list[str]:
     target_tail = last10(phone)
     if not target and not target_tail:
         return []
+    if os.getenv("PROFILE_PHONE_INDEX", "0") == "1" and _has_customer_profile_column(con, "primary_phone_norm"):
+        rows = con.execute(
+            """
+            SELECT profile_id
+            FROM customer_profiles
+            WHERE primary_phone_norm = ?
+               OR (? != '' AND primary_phone_norm LIKE ?)
+            ORDER BY profile_id
+            """,
+            (target or "", target_tail or "", f"%{target_tail}" if target_tail else ""),
+        ).fetchall()
+        return [str(row["profile_id"]) for row in rows]
     rows = con.execute(
         """
         SELECT profile_id, COALESCE(primary_phone, '') AS primary_phone
@@ -184,6 +197,10 @@ def _profile_ids_by_phone(con: sqlite3.Connection, phone: str) -> list[str]:
         if normalize_phone(stored) == target or (target_tail and last10(stored) == target_tail):
             matched.append(str(row["profile_id"]))
     return matched
+
+
+def _has_customer_profile_column(con: sqlite3.Connection, column_name: str) -> bool:
+    return any(str(row["name"]) == column_name for row in con.execute("PRAGMA table_info(customer_profiles)").fetchall())
 
 
 def _profile_rows(con: sqlite3.Connection, profile_ids: Sequence[str]) -> list[sqlite3.Row]:

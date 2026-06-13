@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from mango_mvp.amocrm_runtime.amo_integration import build_custom_fields_values
-from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS, DEAL_AI_OPTIONAL_FIELDS, DEAL_AI_REQUIRED_FIELDS, DISCOUNT_PROMISE_RE
+from mango_mvp.deal_aware.deal_text_builder import (
+    DEAL_AI_FIELDS,
+    DEAL_AI_OPTIONAL_FIELDS,
+    DEAL_AI_REQUIRED_FIELDS,
+    DISCOUNT_PROMISE_RE,
+    resolve_analysis_date,
+)
 from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
 from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 
@@ -34,13 +40,14 @@ class DealAwareStage6Paths:
     stage5_summary_json: Path
     field_catalog_cache_json: Path
     out_root: Path
-    analysis_date: str = "2026-05-13"
+    analysis_date: str | None = None
     stage20_size: int = 20
     require_commercial_fields: bool = False
 
 
 def run_deal_aware_stage6_preflight(paths: DealAwareStage6Paths) -> dict[str, Any]:
     paths.out_root.mkdir(parents=True, exist_ok=True)
+    analysis_date = resolve_analysis_date(paths.analysis_date)
     input_rows = read_csv(paths.input_csv)
     stage5_summary = load_json(paths.stage5_summary_json)
     field_catalog_payload = load_json(paths.field_catalog_cache_json)
@@ -54,12 +61,12 @@ def run_deal_aware_stage6_preflight(paths: DealAwareStage6Paths) -> dict[str, An
     for index, row in enumerate(input_rows, start=1):
         report_row, row_findings = build_dry_run_row(
             row,
-                row_index=index,
-                field_catalog=field_catalog,
-                field_guard=field_guard,
-                analysis_date=paths.analysis_date,
-                require_commercial_fields=paths.require_commercial_fields,
-            )
+            row_index=index,
+            field_catalog=field_catalog,
+            field_guard=field_guard,
+            analysis_date=analysis_date,
+            require_commercial_fields=paths.require_commercial_fields,
+        )
         report_rows.append(report_row)
         findings.extend(row_findings)
 
@@ -95,6 +102,7 @@ def run_deal_aware_stage6_preflight(paths: DealAwareStage6Paths) -> dict[str, An
         stage5_guard=stage5_guard,
         field_catalog_payload=field_catalog_payload,
         outputs=outputs,
+        analysis_date=analysis_date,
     )
     outputs["summary_json"].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     outputs["readme"].write_text(render_readme(summary), encoding="utf-8")
@@ -287,6 +295,7 @@ def build_summary(
     stage5_guard: dict[str, Any],
     field_catalog_payload: dict[str, Any],
     outputs: dict[str, Path],
+    analysis_date: str,
 ) -> dict[str, Any]:
     status_counts = dict(Counter(safe_text(row.get("stage6_status")) for row in report_rows).most_common())
     risk_counts = dict(Counter(safe_text(row.get("risk_type")) for row in findings).most_common())
@@ -302,7 +311,7 @@ def build_summary(
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "analysis_date": paths.analysis_date,
+        "analysis_date": analysis_date,
         "input": {
             "stage5_candidates_csv": str(paths.input_csv),
             "stage5_candidates_sha256": sha256_file(paths.input_csv),
@@ -386,6 +395,7 @@ def write_stage20_wrappers(out_root: Path, summary: dict[str, Any]) -> None:
     summary_json = summary["outputs"]["summary_json"]
     report_dir = out_root / "stage20_live_report"
     readback_dir = out_root / "readback_after_stage20"
+    # Historical token for the 2026-05-13 stage20 run; do not reuse for new live writes.
     token = "WRITE_AMO_DEAL_AWARE_STAGE20_20260513"
     approve.write_text(
         f"""#!/usr/bin/env bash

@@ -15,6 +15,7 @@ from mango_mvp.channels.contracts import (
     stable_digest,
 )
 from mango_mvp.channels.persistence import ChannelSQLiteStore, channel_sqlite_safety_contract
+from mango_mvp.utils.phone import normalize_phone as canonical_normalize_phone
 
 
 TELEGRAM_HISTORY_SCHEMA_VERSION = "telegram_history_archive_v1"
@@ -792,15 +793,7 @@ def normalize_username(value: Any) -> Optional[str]:
 
 
 def normalize_phone(value: Any) -> Optional[str]:
-    text = optional_clean_text(value)
-    if not text:
-        return None
-    digits = re.sub(r"\D+", "", text)
-    if not digits:
-        return None
-    if len(digits) == 11 and digits.startswith("8"):
-        digits = "7" + digits[1:]
-    return f"+{digits}"
+    return canonical_normalize_phone(value)
 
 
 def optional_clean_text(value: Any) -> Optional[str]:

@@ -1,0 +1,16 @@
+audits/_inbox/crm_layer_audit_2026-06-13/dead_code_candidates.md
+src/mango_mvp/channels/telegram_history.py
+src/mango_mvp/customer_profile/crm_summary.py
+src/mango_mvp/customer_profile/store.py
+src/mango_mvp/customer_timeline/context_provider.py
+src/mango_mvp/deal_aware/deal_quality_gate.py
+src/mango_mvp/deal_aware/deal_text_builder.py
+src/mango_mvp/deal_aware/deal_writeback.py
+src/mango_mvp/insights/phone_identity.py
+src/mango_mvp/productization/mail_archive.py
+src/mango_mvp/services/analyze.py
+src/mango_mvp/utils/phone.py
+tests/test_analysis_schema.py
+tests/test_customer_profile_crm_summary.py
+tests/test_deal_aware_stage4_preview.py
+tests/test_phone_normalization_canonical.py

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.customer_profile.contracts import ProfileFieldCandidate, ProfileSnapshot
+from mango_mvp.utils.phone import normalize_phone
 
 
 CUSTOMER_PROFILE_SQLITE_SCHEMA_VERSION = "customer_profile_sqlite_v1"
+
+
+def _phone_index_enabled() -> bool:
+    return os.getenv("PROFILE_PHONE_INDEX", "0") == "1"
 
 
 def sha256_file(path: Path) -> str:
@@ -77,7 +83,20 @@ class CustomerProfileSQLiteStore:
             );
             """
         )
+        if _phone_index_enabled():
+            self._ensure_phone_index()
         self._con.commit()
+
+    def _ensure_phone_index(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._con.execute("PRAGMA table_info(customer_profiles)").fetchall()
+        }
+        if "primary_phone_norm" not in columns:
+            self._con.execute("ALTER TABLE customer_profiles ADD COLUMN primary_phone_norm TEXT")
+        self._con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_customer_profiles_phone_norm ON customer_profiles(primary_phone_norm)"
+        )
 
     def replace_profiles(
         self,
@@ -98,26 +117,39 @@ class CustomerProfileSQLiteStore:
                 self._con.execute("DELETE FROM profile_fields WHERE profile_id = ?", (profile_id,))
                 self._con.execute("DELETE FROM customer_profiles WHERE profile_id = ?", (profile_id,))
             for profile in profiles:
-                self._con.execute(
-                    """
-                    INSERT INTO customer_profiles (
-                      profile_id, tenant_id, primary_phone, display_name, built_at, build_id,
-                      source_event_count, last_event_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        profile.profile_id,
-                        profile.tenant_id,
-                        profile.primary_phone,
-                        profile.display_name,
-                        built_at.astimezone(timezone.utc).isoformat(timespec="seconds"),
-                        build_id,
-                        int(profile.source_event_count),
-                        profile.last_event_at.astimezone(timezone.utc).isoformat(timespec="seconds")
-                        if profile.last_event_at
-                        else None,
-                    ),
+                base_values = (
+                    profile.profile_id,
+                    profile.tenant_id,
+                    profile.primary_phone,
+                    profile.display_name,
+                    built_at.astimezone(timezone.utc).isoformat(timespec="seconds"),
+                    build_id,
+                    int(profile.source_event_count),
+                    profile.last_event_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+                    if profile.last_event_at
+                    else None,
                 )
+                if _phone_index_enabled():
+                    self._ensure_phone_index()
+                    self._con.execute(
+                        """
+                        INSERT INTO customer_profiles (
+                          profile_id, tenant_id, primary_phone, display_name, built_at, build_id,
+                          source_event_count, last_event_at, primary_phone_norm
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (*base_values, normalize_phone(profile.primary_phone) or ""),
+                    )
+                else:
+                    self._con.execute(
+                        """
+                        INSERT INTO customer_profiles (
+                          profile_id, tenant_id, primary_phone, display_name, built_at, build_id,
+                          source_event_count, last_event_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        base_values,
+                    )
             for field in fields:
                 self._con.execute(
                     """

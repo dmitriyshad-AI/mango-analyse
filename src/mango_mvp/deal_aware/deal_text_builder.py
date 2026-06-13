@@ -124,7 +124,14 @@ class DealTextPaths:
     stage1_snapshot_root: Path
     stage3_deal_state_root: Path
     out_root: Path
-    analysis_date: str = "2026-05-13"
+    analysis_date: str | None = None
+
+
+def resolve_analysis_date(value: str | None = None) -> str:
+    text = safe_text(value)
+    if text:
+        return text
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def build_deal_text_preview(
@@ -134,6 +141,7 @@ def build_deal_text_preview(
     include_timeline_context: bool = False,
 ) -> dict[str, Any]:
     paths.out_root.mkdir(parents=True, exist_ok=True)
+    analysis_date = resolve_analysis_date(paths.analysis_date)
 
     candidates = read_csv(paths.stage3_deal_state_root / "deal_stage4_deal_candidates.csv")
     policy_rows = read_csv(paths.stage3_deal_state_root / "deal_call_writeback_policy.csv")
@@ -176,11 +184,11 @@ def build_deal_text_preview(
             full_calls,
             tallanto_context=tallanto_context,
             generated_at=generated_at,
-            analysis_date=paths.analysis_date,
+            analysis_date=analysis_date,
         )
         row_findings = detect_crm_text_quality_risks(
             quality_payload(candidate, payload),
-            analysis_date=paths.analysis_date,
+            analysis_date=analysis_date,
             min_severity="P3",
             compact_max_chars=1800,
             verbose_max_chars=3500,
@@ -227,7 +235,7 @@ def build_deal_text_preview(
 
     batch_findings = detect_crm_text_quality_batch_risks(
         [quality_payload(row, {field: row.get(field, "") for field in DEAL_AI_REQUIRED_FIELDS + DEAL_AI_OPTIONAL_FIELDS}) for row in preview_rows],
-        analysis_date=paths.analysis_date,
+        analysis_date=analysis_date,
         min_severity="P3",
     )
     quality_findings.extend(findings_to_rows("batch", "", batch_findings))
@@ -276,6 +284,7 @@ def build_deal_text_preview(
         stage1_summary=stage1_summary,
         stage3_summary=stage3_summary,
         outputs=outputs,
+        analysis_date=analysis_date,
     )
     outputs["summary_json"].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     outputs["readme"].write_text(render_readme(summary), encoding="utf-8")
@@ -626,10 +635,10 @@ def build_next_step(
     return clean_next_step_text(raw)
 
 
-def build_followup_hint(candidate: dict[str, str], *, mode: str, status: str, analysis_date: str) -> str:
+def build_followup_hint(candidate: dict[str, str], *, mode: str, status: str, analysis_date: str | None) -> str:
     if mode == "context_only_paid_or_success":
         return "Без автоматического коммерческого касания; только при сервисном поводе."
-    base = parse_date_only(analysis_date) or datetime(2026, 5, 13, tzinfo=timezone.utc)
+    base = parse_date_only(resolve_analysis_date(analysis_date))
     deal_id = safe_text(candidate.get("selected_deal_id"))
     spread = stable_mod(deal_id, 5)
     status_cf = status.casefold()
@@ -1519,6 +1528,7 @@ def build_summary(
     stage1_summary: dict[str, Any],
     stage3_summary: dict[str, Any],
     outputs: dict[str, Path],
+    analysis_date: str,
 ) -> dict[str, Any]:
     mode_counts = Counter(safe_text(row.get("deal_writeback_mode")) for row in preview_rows)
     quality_counts = Counter(safe_text(row.get("crm_text_quality_passed")) for row in preview_rows)
@@ -1528,7 +1538,7 @@ def build_summary(
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "analysis_date": paths.analysis_date,
+        "analysis_date": analysis_date,
         "sources": {
             "stage1_snapshot_root": str(paths.stage1_snapshot_root),
             "stage3_deal_state_root": str(paths.stage3_deal_state_root),

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
+from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS, resolve_analysis_date
 from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
 from mango_mvp.question_catalog.source_index import load_source_index, split_tokens
 from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
@@ -81,12 +81,13 @@ RAW_PHONE_RE = re.compile(r"(?:\+7|8)\s*[\d ()-]{9,}\d")
 class DealQualityGatePaths:
     stage4_preview_root: Path
     out_root: Path
-    analysis_date: str = "2026-05-13"
+    analysis_date: str | None = None
     question_catalog_source_index_json: Path | None = None
 
 
 def run_deal_quality_gate(paths: DealQualityGatePaths) -> dict[str, Any]:
     paths.out_root.mkdir(parents=True, exist_ok=True)
+    analysis_date = resolve_analysis_date(paths.analysis_date)
     preview_rows = read_csv(paths.stage4_preview_root / "deal_stage4_preview.csv")
     payload_rows = read_payload_jsonl(paths.stage4_preview_root / "deal_stage4_payloads.jsonl")
     stage4_findings_by_review_id = read_stage4_findings_by_review_id(paths.stage4_preview_root / "deal_stage4_quality_findings.csv")
@@ -107,7 +108,7 @@ def run_deal_quality_gate(paths: DealQualityGatePaths) -> dict[str, Any]:
             row,
             payload,
             row_index=index,
-            analysis_date=paths.analysis_date,
+            analysis_date=analysis_date,
             stage4_findings=stage4_findings_by_review_id.get(safe_text(row.get("review_id")), []),
             question_index=question_index,
         )
@@ -169,6 +170,7 @@ def run_deal_quality_gate(paths: DealQualityGatePaths) -> dict[str, Any]:
         findings_rows=findings_rows,
         stage4_summary=stage4_summary,
         outputs=outputs,
+        analysis_date=analysis_date,
     )
     outputs["summary_json"].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     outputs["readme"].write_text(render_readme(summary), encoding="utf-8")
@@ -457,13 +459,14 @@ def build_summary(
     findings_rows: list[dict[str, Any]],
     stage4_summary: dict[str, Any],
     outputs: dict[str, Path],
+    analysis_date: str,
 ) -> dict[str, Any]:
     hard_findings = [row for row in findings_rows if safe_text(row.get("severity")) in {"P0", "P1", "P2"}]
     warning_findings = [row for row in findings_rows if safe_text(row.get("severity")) == "P3"]
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "analysis_date": paths.analysis_date,
+        "analysis_date": analysis_date,
         "input": {
             "stage4_preview_csv": str(paths.stage4_preview_root / "deal_stage4_preview.csv"),
             "stage4_preview_sha256": sha256_file(paths.stage4_preview_root / "deal_stage4_preview.csv"),

@@ -2023,6 +2023,17 @@ class AnalyzeService:
             "analyzed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
 
+    @staticmethod
+    def _with_analysis_runtime_metadata(analysis: Dict[str, Any]) -> Dict[str, Any]:
+        enriched = dict(analysis)
+        quality_flags = enriched.get("quality_flags") if isinstance(enriched.get("quality_flags"), dict) else {}
+        analysis_meta = enriched.get("analysis_meta") if isinstance(enriched.get("analysis_meta"), dict) else {}
+        enriched["analyze_model"] = str(analysis_meta.get("analysis_model") or "")
+        enriched["analyze_prompt_profile"] = str(quality_flags.get("analyze_prompt_profile") or "")
+        enriched["analyze_prompt_truncated"] = bool(quality_flags.get("analyze_prompt_truncated"))
+        enriched["analyze_prompt_chars"] = int(quality_flags.get("analyze_transcript_chars_prompt", 0) or 0)
+        return enriched
+
     def _mock_analysis(self, call: CallRecord, text: str) -> Dict[str, Any]:
         _ = call
         lowered = text.lower()
@@ -2335,6 +2346,7 @@ class AnalyzeService:
                 raw_analysis = self._analyze_text(call, text)
                 analysis = self._normalize_analysis(call, text, raw_analysis)
                 analysis["analysis_meta"] = self._build_analysis_meta(analysis)
+                analysis = self._with_analysis_runtime_metadata(analysis)
                 call.analysis_json = json.dumps(analysis, ensure_ascii=False)
                 self._export_analysis_files(call, analysis)
                 call.analysis_status = "done"

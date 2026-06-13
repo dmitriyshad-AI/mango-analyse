@@ -3,14 +3,18 @@ from __future__ import annotations
 import csv
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
+from mango_mvp.deal_aware.deal_quality_gate import DealQualityGatePaths
 from mango_mvp.deal_aware.deal_text_builder import (
     DealTextPaths,
     build_deal_payload,
     build_deal_text_preview,
     quality_payload,
+    resolve_analysis_date,
 )
+from mango_mvp.deal_aware.deal_writeback import DealAwareStage6Paths
 from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 
 
@@ -21,6 +25,16 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def test_analysis_date_defaults_to_current_date_but_explicit_date_is_stable(tmp_path: Path) -> None:
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    assert resolve_analysis_date("2026-05-13") == "2026-05-13"
+    assert resolve_analysis_date(None) == today
+    assert DealTextPaths(tmp_path, tmp_path, tmp_path).analysis_date is None
+    assert DealQualityGatePaths(tmp_path, tmp_path).analysis_date is None
+    assert DealAwareStage6Paths(tmp_path / "in.csv", tmp_path / "s.json", tmp_path / "f.json", tmp_path).analysis_date is None
 
 
 def test_paid_deal_next_step_is_context_only_not_payment_collection() -> None:

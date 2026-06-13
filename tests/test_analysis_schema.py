@@ -115,6 +115,34 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertEqual(openai_meta["analysis_provider"], "openai")
         self.assertEqual(openai_meta["analysis_model"], "gpt-4o-mini")
 
+    def test_analysis_runtime_metadata_is_additive_top_level(self) -> None:
+        service = AnalyzeService(
+            replace(
+                make_settings(),
+                analyze_provider="codex_cli",
+                codex_analyze_model="gpt-5.4-mini",
+            )
+        )
+        analysis = {
+            "history_summary": "Клиент запросил программу.",
+            "quality_flags": {
+                "analyze_prompt_profile": "compact",
+                "analyze_prompt_truncated": True,
+                "analyze_transcript_chars_prompt": 1234,
+                "analyze_prompt_version": "v7",
+            },
+        }
+        analysis["analysis_meta"] = service._build_analysis_meta(analysis)
+
+        enriched = service._with_analysis_runtime_metadata(analysis)
+
+        self.assertEqual(enriched["analyze_model"], "gpt-5.4-mini")
+        self.assertEqual(enriched["analyze_prompt_profile"], "compact")
+        self.assertTrue(enriched["analyze_prompt_truncated"])
+        self.assertEqual(enriched["analyze_prompt_chars"], 1234)
+        self.assertEqual(enriched["quality_flags"], analysis["quality_flags"])
+        self.assertEqual(enriched["analysis_meta"], analysis["analysis_meta"])
+
     def test_normalize_analysis_preserves_prompt_quality_flags(self) -> None:
         service = AnalyzeService(make_settings())
         call = CallRecord(

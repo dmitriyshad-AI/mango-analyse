@@ -30,6 +30,7 @@ from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 from mango_mvp.services.ingest import SUPPORTED_EXTENSIONS, parse_filename_metadata
+from mango_mvp.utils.phone import normalize_phone as canonical_normalize_phone
 from mango_mvp.productization.mail_imap_snapshot import (
     HEADER_FETCH_QUERY,
     ImapClient,
@@ -471,17 +472,7 @@ def extract_email_addresses(value: object) -> list[str]:
 
 
 def normalize_phone(value: object) -> str:
-    text = clean_text(value)
-    if not text:
-        return ""
-    digits = re.sub(r"\D+", "", text)
-    if len(digits) == 11 and digits[0] in {"7", "8"}:
-        return "+7" + digits[-10:]
-    if len(digits) == 10:
-        return "+7" + digits
-    if 11 <= len(digits) <= 15:
-        return "+" + digits
-    return ""
+    return canonical_normalize_phone(clean_text(value)) or ""
 
 
 def extract_phone_numbers(value: object) -> list[str]:

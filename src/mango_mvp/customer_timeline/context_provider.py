@@ -16,6 +16,7 @@ from mango_mvp.customer_timeline.safety import (
     customer_timeline_safety_contract,
     guard_customer_timeline_output_path,
 )
+from mango_mvp.utils.phone import normalize_phone as canonical_normalize_phone
 
 
 CUSTOMER_TIMELINE_CONTEXT_PROVIDER_SCHEMA_VERSION = "customer_timeline_context_provider_v1"
@@ -352,12 +353,7 @@ def phone_search_terms(phone: str) -> list[str]:
 
 
 def normalize_phone_for_match(value: Any) -> str:
-    digits = re.sub(r"\D+", "", safe_text(value))
-    if len(digits) == 11 and digits.startswith("8"):
-        digits = "7" + digits[1:]
-    if len(digits) == 10:
-        digits = "7" + digits
-    return "+" + digits if digits else ""
+    return canonical_normalize_phone(value) or ""
 
 
 def extract_phones_from_row(row: Mapping[str, Any]) -> set[str]:

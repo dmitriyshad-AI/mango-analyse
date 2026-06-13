@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -140,6 +141,32 @@ def test_empty_profile_gives_clear_placeholder(tmp_path: Path) -> None:
     assert "данных пока недостаточно" in text
     assert "Активных полей профиля нет" in text
     assert "+***4567" in text
+
+
+def test_profile_phone_index_is_absent_by_default(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PROFILE_PHONE_INDEX", raising=False)
+
+    db = _profiles_db(tmp_path, fields=[])
+    with sqlite3.connect(db) as con:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(customer_profiles)").fetchall()}
+
+    assert "primary_phone_norm" not in columns
+    assert "данных пока недостаточно" in render_crm_summary_from_db(db, phone="9991234567")
+
+
+def test_profile_phone_index_flag_adds_norm_column_and_preserves_lookup(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PROFILE_PHONE_INDEX", "1")
+
+    db = _profiles_db(tmp_path, fields=[])
+    with sqlite3.connect(db) as con:
+        columns = {row[1] for row in con.execute("PRAGMA table_info(customer_profiles)").fetchall()}
+        indexes = {row[1] for row in con.execute("PRAGMA index_list(customer_profiles)").fetchall()}
+        row = con.execute("SELECT primary_phone_norm FROM customer_profiles WHERE profile_id = 'cust-1'").fetchone()
+
+    assert "primary_phone_norm" in columns
+    assert "idx_customer_profiles_phone_norm" in indexes
+    assert row[0] == "+79991234567"
+    assert "данных пока недостаточно" in render_crm_summary_from_db(db, phone="9991234567")
 
 
 def test_phone_with_multiple_profiles_requires_manual_selection_without_first_preview(tmp_path: Path) -> None:

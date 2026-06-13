@@ -9,6 +9,7 @@ import pytest
 
 from mango_mvp.customer_profile import CustomerProfileBuilder, CustomerProfileBuildOptions
 from mango_mvp.customer_profile.build_cli import safe_field_preview
+from mango_mvp.customer_profile.builder import child_slot_groups
 from mango_mvp.customer_profile.contracts import ProfileFieldCandidate
 from mango_mvp.customer_profile.store import CustomerProfileSQLiteStore
 from mango_mvp.customer_timeline.contracts import (
@@ -254,6 +255,47 @@ def test_builder_marks_duplicate_child_slots_as_merge_candidate(tmp_path: Path) 
     assert first["child_slot_merge"]["merge_candidate_groups"] == 1
     assert second["fields_written"] == first["fields_written"]
     assert active_second == active_first
+
+
+def test_child_slot_trait_merge_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PROFILE_CHILD_MERGE_BY_TRAIT", raising=False)
+
+    groups = child_slot_groups(
+        {
+            "child_1": {"names": set(), "grades": {"7"}, "subjects": {"математика"}},
+            "child_2": {"names": set(), "grades": {"7"}, "subjects": {"математика"}},
+        }
+    )
+
+    assert groups == [("child_1", ["child_1"]), ("child_2", ["child_2"])]
+
+
+def test_child_slot_trait_merge_combines_nameless_same_grade_and_subject(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROFILE_CHILD_MERGE_BY_TRAIT", "1")
+
+    groups = child_slot_groups(
+        {
+            "child_1": {"names": set(), "grades": {"7"}, "subjects": {"математика"}},
+            "child_2": {"names": set(), "grades": {"7"}, "subjects": {"математика"}},
+            "child_3": {"names": set(), "grades": {"7"}, "subjects": {"физика"}},
+        }
+    )
+
+    assert groups == [("child_1", ["child_1", "child_2"]), ("child_3", ["child_3"])]
+
+
+def test_child_slot_trait_merge_does_not_absorb_named_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROFILE_CHILD_MERGE_BY_TRAIT", "1")
+
+    groups = child_slot_groups(
+        {
+            "child_1": {"names": {"Анна"}, "grades": {"7"}, "subjects": {"математика"}},
+            "child_2": {"names": set(), "grades": {"7"}, "subjects": {"математика"}},
+            "child_3": {"names": {"Олег"}, "grades": {"7"}, "subjects": {"математика"}},
+        }
+    )
+
+    assert groups == [("child_1", ["child_1"]), ("child_2", ["child_2"]), ("child_3", ["child_3"])]
 
 
 def test_builder_does_not_merge_different_children_or_ambiguous_diminutive(tmp_path: Path) -> None:

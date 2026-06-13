@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, replace
@@ -593,7 +594,15 @@ def child_slot_groups(slots: Mapping[str, Mapping[str, set[str]]]) -> list[tuple
 def child_slots_match(left: Mapping[str, set[str]], right: Mapping[str, set[str]]) -> bool:
     left_name = child_slot_name_key(left.get("names", set()))
     right_name = child_slot_name_key(right.get("names", set()))
-    return bool(left_name and right_name and left_name == right_name)
+    if left_name and right_name:
+        return left_name == right_name
+    if os.getenv("PROFILE_CHILD_MERGE_BY_TRAIT", "0") == "1" and not left_name and not right_name:
+        left_grades = frozenset(left.get("grades", set()))
+        right_grades = frozenset(right.get("grades", set()))
+        left_subjects = frozenset(left.get("subjects", set()))
+        right_subjects = frozenset(right.get("subjects", set()))
+        return bool(left_grades and left_grades == right_grades and left_subjects and left_subjects == right_subjects)
+    return False
 
 
 def build_child_slot_merge_markers(
@@ -620,20 +629,18 @@ def build_child_slot_merge_markers(
                 continue
             supporting_fields = [latest_by_profile_key[(profile_id, member)] for member in members if (profile_id, member) in latest_by_profile_key]
             event_at = max((field.event_at for field in supporting_fields), default=datetime.now(timezone.utc))
+            normalized_name_keys = sorted(
+                set().union(
+                    *[child_name_keys(collect_names_for_slot(original_fields, profile_id, member)) for member in members]
+                )
+            )
             value = json.dumps(
                 {
                     "marker": "merge_candidate",
-                    "reason": "normalized_child_name_match",
+                    "reason": "normalized_child_name_match" if normalized_name_keys else "grade_subject_match",
                     "canonical_child_key": canonical,
                     "child_keys": sorted(members, key=child_key_sort),
-                    "normalized_name_keys": sorted(
-                        set().union(
-                            *[
-                                child_name_keys(collect_names_for_slot(original_fields, profile_id, member))
-                                for member in members
-                            ]
-                        )
-                    ),
+                    "normalized_name_keys": normalized_name_keys,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

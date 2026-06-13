@@ -275,6 +275,39 @@ def test_contact_auto_history_uses_compact_chronology_marker_without_ellipsis() 
     assert "Хронология: есть в полной рабочей таблице" in payload
 
 
+def test_contact_auto_history_hard_limit_is_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRM_AUTO_HISTORY_HARD_LIMIT", raising=False)
+
+    payload = write_amo_ready_contacts._compose_auto_history(
+        {
+            "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 120),
+            "Следующий шаг": "Отправить подробные материалы",
+            "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 80),
+        }
+    )
+    stored_payload = payload
+
+    assert len(payload) <= write_amo_ready_contacts.MAX_AUTO_HISTORY_CHARS
+    assert payload.endswith("[сжато]")
+    assert "..." not in payload
+    assert "…" not in payload
+    assert stored_payload == payload
+
+
+def test_contact_auto_history_keeps_old_length_when_hard_limit_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_AUTO_HISTORY_HARD_LIMIT", "0")
+
+    payload = write_amo_ready_contacts._compose_auto_history(
+        {
+            "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 120),
+            "Следующий шаг": "Отправить подробные материалы",
+            "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 80),
+        }
+    )
+
+    assert len(payload) > write_amo_ready_contacts.MAX_AUTO_HISTORY_CHARS
+
+
 def test_contact_writeback_runtime_db_preflight_reports_error_before_row_loop() -> None:
     ok, error = write_amo_ready_contacts._preflight_runtime_db(BrokenPreflightSession())
 

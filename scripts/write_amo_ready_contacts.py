@@ -223,7 +223,10 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
     if tallanto_history:
         blocks.append("История общения Tallanto:\n" + tallanto_history)
 
-    return "\n\n".join(block for block in blocks if block.strip()).strip()
+    composed = "\n\n".join(block for block in blocks if block.strip()).strip()
+    if os.getenv("CRM_AUTO_HISTORY_HARD_LIMIT", "1") == "1" and len(composed) > MAX_AUTO_HISTORY_CHARS:
+        composed = _compact_without_ellipsis(composed, limit=MAX_AUTO_HISTORY_CHARS)
+    return composed
 
 
 def _compact_without_ellipsis(text: Any, *, limit: int) -> str:

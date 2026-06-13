@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import hashlib
+import os
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -781,7 +782,18 @@ def short_evidence(row: dict[str, str]) -> str:
     text = safe_text(row.get("call_summary"))
     if len(text) <= 160:
         return text
-    return text[:151].rstrip() + " [сжато]"
+    return _cut_on_word_boundary(text, limit=160)
+
+
+def _cut_on_word_boundary(text: str, *, limit: int, suffix: str = " [сжато]") -> str:
+    if len(text) <= limit:
+        return text
+    budget = max(20, limit - len(suffix))
+    chunk = text[:budget].rstrip()
+    cut = max(chunk.rfind(" "), chunk.rfind(","), chunk.rfind(";"), chunk.rfind("."))
+    if cut >= int(budget * 0.6):
+        chunk = chunk[:cut]
+    return chunk.rstrip(" ,;:.") + suffix
 
 
 def serialize_structured_objections(
@@ -1089,13 +1101,23 @@ def hydrate_policy_calls(policy_rows: list[dict[str, str]], call_by_id: dict[str
 
 
 def normalize_manager_text(value: Any) -> str:
-    text = safe_text(value).replace("…", " ").replace("...", " ")
-    text = text.replace("[сжато]", "").replace("[truncated]", "")
+    keep_mark = os.getenv("CRM_KEEP_TRUNCATION_MARK", "0") == "1"
+    text = safe_text(value)
+    has_truncation_mark = bool(re.search(r"\[(?:сжато|truncated)\]", text, flags=re.I))
+    if keep_mark:
+        text = re.sub(r"\[(?:сжато|truncated)\]", " ", text, flags=re.I)
+        text = text.replace("…", " ").replace("...", " ")
+    else:
+        text = text.replace("…", " ").replace("...", " ")
+        text = text.replace("[сжато]", "").replace("[truncated]", "")
     for pattern, replacement in TENANT_TERM_REPLACEMENTS:
         text = pattern.sub(replacement, text)
     text = re.sub(r"\bунпк\b", "УНПК", text, flags=re.I)
     text = re.sub(r"\s+([.,;:])", r"\1", text)
     text = re.sub(r"\s+", " ", text).strip()
+    if keep_mark and has_truncation_mark:
+        text = text.rstrip(" .;:")
+        text = f"{text} [сжато]".strip()
     return text
 
 
@@ -1250,7 +1272,7 @@ def history_call_summary(value: Any, *, max_sentences: int, max_chars: int) -> s
             break
         chunk = candidate
     if len(chunk) < 80:
-        chunk = selected[: max_chars - 26].rstrip(" ,;:.")
+        return _cut_on_word_boundary(selected, limit=max_chars, suffix=". Детали в полном звонке.")
     return f"{chunk.rstrip(' ,;:.')}. Детали в полном звонке."
 
 
@@ -1303,10 +1325,23 @@ def normalize_objection(value: Any) -> str:
     if text in {"неактуально", "не актуально"}:
         return "ранее звучала неактуальность, нужна проверка текущего статуса"
     if len(text) > 90:
+        if os.getenv("CRM_OBJECTION_COMPACT", "1") == "1":
+            return compact_objection(text, max_chars=90)
         return ""
     if len(text) <= 2 or text.isdigit():
         return ""
     return text
+
+
+def compact_objection(text: str, *, max_chars: int = 90) -> str:
+    if len(text) <= max_chars:
+        return text
+    budget = max(20, max_chars - 1)
+    chunk = text[:budget].rstrip()
+    cut = max(chunk.rfind(" "), chunk.rfind(","), chunk.rfind(";"))
+    if cut >= int(budget * 0.6):
+        chunk = chunk[:cut]
+    return chunk.rstrip(" ,;:.") + "…"
 
 
 def split_pipe(value: Any) -> list[str]:

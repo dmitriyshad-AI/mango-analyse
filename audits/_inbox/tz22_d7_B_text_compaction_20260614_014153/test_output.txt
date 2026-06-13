@@ -1,0 +1,14 @@
+Targeted:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_deal_aware_structured_objections.py tests/test_deal_aware_stage4_preview.py tests/test_deal_aware_commercial_payload.py tests/test_amo_writeback_guards.py tests/test_tenant_text_normalizer.py tests/test_post_backfill_amo_ready_export.py tests/test_amocrm_deals.py
+
+Result:
+108 passed in 1.73s
+
+Full:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+Result:
+3121 passed, 5 skipped, 1 warning in 46.84s
+
+Warning:
+urllib3 NotOpenSSLWarning from local Python/LibreSSL; unrelated to this block.

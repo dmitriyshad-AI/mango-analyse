@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from mango_mvp.deal_aware.deal_text_builder import (
+    DEAL_AI_REQUIRED_FIELDS,
     build_deal_payload,
     build_objections,
     build_structured_objections,
+    history_call_summary,
+    normalize_manager_text,
+    normalize_objection,
+    short_evidence,
     serialize_structured_objections,
 )
 from mango_mvp.deal_aware.deal_writeback import build_dry_run_row, validate_field_catalog
-from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_REQUIRED_FIELDS
 
 
 def _call(**kwargs: str) -> dict[str, str]:
@@ -146,3 +152,74 @@ def test_structured_objections_are_not_sent_to_amo_payload_by_default() -> None:
 
 def test_empty_objections_keep_current_human_fallback_text() -> None:
     assert build_objections([], {}) == "Актуальные возражения в релевантных звонках не выделены."
+
+
+def test_long_objection_is_compacted_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRM_OBJECTION_COMPACT", raising=False)
+    text = (
+        "клиент подробно сомневается из-за стоимости программы и хочет сначала обсудить бюджет "
+        "с родителями перед оплатой"
+    )
+
+    normalized = normalize_objection(text)
+
+    assert normalized
+    assert len(normalized) <= 90
+    assert normalized.endswith("…")
+    assert "Текст сокращен" not in normalized
+    assert "роди…" not in normalized
+
+
+def test_long_objection_keeps_old_drop_behavior_when_compaction_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_OBJECTION_COMPACT", "0")
+
+    assert (
+        normalize_objection(
+            "клиент подробно сомневается из-за стоимости программы и хочет сначала обсудить бюджет "
+            "с родителями перед оплатой"
+        )
+        == ""
+    )
+
+
+def test_short_dictionary_objection_remains_backward_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRM_OBJECTION_COMPACT", raising=False)
+
+    assert normalize_objection("цена") == "есть вопрос по стоимости"
+
+
+def test_manager_text_drops_truncation_mark_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRM_KEEP_TRUNCATION_MARK", raising=False)
+
+    assert normalize_manager_text("Клиент [сжато] обсуждает оплату") == "Клиент обсуждает оплату"
+
+
+def test_manager_text_preserves_single_truncation_mark_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_KEEP_TRUNCATION_MARK", "1")
+
+    normalized = normalize_manager_text("Клиент [truncated] подробно обсуждает оплату... [сжато]")
+
+    assert normalized == "Клиент подробно обсуждает оплату [сжато]"
+    assert normalized.count("[сжато]") == 1
+    assert "..." not in normalized
+    assert "…" not in normalized
+
+
+def test_short_evidence_compacts_on_word_boundary() -> None:
+    source = " ".join(["Клиент спокойно обсуждает стоимость программы"] * 12)
+
+    evidence = short_evidence({"call_summary": source})
+
+    assert len(evidence) <= 160
+    assert evidence.endswith("[сжато]")
+    assert "програм [сжато]" not in evidence
+
+
+def test_history_call_summary_fallback_compacts_on_word_boundary() -> None:
+    source = " ".join(["Клиент спокойно обсуждает стоимость программы"] * 10)
+
+    summary = history_call_summary(source, max_sentences=1, max_chars=120)
+
+    assert len(summary) <= 120
+    assert summary.endswith(". Детали в полном звонке.")
+    assert "програм. Детали" not in summary

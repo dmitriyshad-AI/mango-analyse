@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.amocrm_runtime.config import get_settings
@@ -259,6 +260,9 @@ def build_tallanto_live_card(
         skipped["filial_shd"] = 1
         return _no_card("filial_shd", matched_via=matched_via, contacts_found=1, skipped=skipped)
     active = _safe_text(active_brand).casefold()
+    fail_closed = os.getenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "0") == "1"
+    if fail_closed and not active:
+        return _no_card("brand_unverified", matched_via=matched_via, contacts_found=1, brand_scope=scope, skipped=skipped)
     if active and scope not in {active, "shared"}:
         return _no_card("brand_mismatch", matched_via=matched_via, contacts_found=1, brand_scope=scope, skipped=skipped)
     if scope == "unknown" and active:

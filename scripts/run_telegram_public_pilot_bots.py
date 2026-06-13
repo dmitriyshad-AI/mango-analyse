@@ -1333,6 +1333,7 @@ def build_read_only_crm_context(
             normalized_phone,
             tallanto_id=tallanto_id,
             tallanto_match_status=tallanto_status,
+            active_brand=brand,
         )
     context["timeline_context"] = build_timeline_hint_from_local_context(local_context)
     context["summary"] = summarize_read_only_crm_context(context)
@@ -1569,6 +1570,7 @@ def build_live_tallanto_context_readonly(
     *,
     tallanto_id: str = "",
     tallanto_match_status: str = "",
+    active_brand: str | None = None,
 ) -> dict[str, Any]:
     try:
         from mango_mvp.amocrm_runtime.tallanto_context import build_live_tallanto_context
@@ -1579,6 +1581,7 @@ def build_live_tallanto_context_readonly(
             phone=phone,
             tallanto_id=tallanto_id or None,
             tallanto_match_status=tallanto_match_status or None,
+            active_brand=active_brand,
             max_related_records=20,
         )
         return {**dict(payload), "source": "tallanto_live", "read_only": True}

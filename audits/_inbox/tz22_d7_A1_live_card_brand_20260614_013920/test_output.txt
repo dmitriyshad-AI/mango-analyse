@@ -1,0 +1,35 @@
+# Test Output
+
+## Targeted A1
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_tallanto_live_card.py tests/test_tallanto_export.py tests/test_amocrm_deals.py tests/test_telegram_public_pilot_bots.py
+```
+
+Result:
+
+```text
+86 passed in 1.32s
+```
+
+## Full pytest
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Result:
+
+```text
+3112 passed, 5 skipped, 1 warning in 47.45s
+```
+
+Warning:
+
+```text
+urllib3 NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, current ssl is LibreSSL 2.8.3
+```

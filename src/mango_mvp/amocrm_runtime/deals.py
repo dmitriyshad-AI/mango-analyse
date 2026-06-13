@@ -835,6 +835,7 @@ def _build_dossier_and_analysis(
     contact: dict[str, Any],
     pipelines: list[dict[str, Any]],
     users: list[dict[str, Any]],
+    active_brand: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], Optional[dict[str, Any]], Optional[dict[str, Any]], dict[str, Any]]:
     lead = fetch_lead(session, lead_id=candidate.lead_id, with_fields="contacts")
     notes = fetch_lead_notes(session, lead_id=candidate.lead_id)
@@ -863,6 +864,7 @@ def _build_dossier_and_analysis(
         pipeline_name=_safe_text((pipeline_map.get(pipeline_id) or {}).get("name")),
         status_name=_safe_text((status_map.get((pipeline_id, status_id)) or {}).get("name")),
         user_map=user_map,
+        active_brand=active_brand,
         transcript_excerpt_chars=settings.crm_analysis_transcript_excerpt_chars,
         max_transcript_calls=settings.crm_analysis_max_transcript_calls,
     )

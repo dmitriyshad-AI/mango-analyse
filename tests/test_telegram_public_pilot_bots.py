@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from scripts.run_telegram_public_pilot_bots import (
     apply_public_autonomy_kill_switch,
     BrandBotConfig,
+    build_read_only_crm_context,
     build_server_amo_context_readonly,
     ChatSession,
     context_flags_for_report,
@@ -26,6 +27,7 @@ from scripts.run_telegram_public_pilot_bots import (
     PublicPilotBotRuntime,
     write_public_bot_heartbeat,
 )
+from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
 import mango_mvp.channels.dialogue_memory as dialogue_memory_module
 from mango_mvp.pilot_context_assembly import build_pilot_context_payload
@@ -721,6 +723,69 @@ def test_server_amo_context_compacts_read_only_payload(monkeypatch) -> None:
     assert context["contacts_found"] == 1
     assert context["leads_found"] == 1
     assert "custom_fields_values" not in context["contacts"][0]
+
+
+def test_live_crm_context_passes_active_brand_to_tallanto(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_build_live_tallanto_context(**kwargs):
+        captured.update(kwargs)
+        live_card = build_tallanto_live_card(
+            [{"contact": {"filial": "mfti"}, "classes": []}],
+            active_brand=kwargs.get("active_brand"),
+            matched_via="phone",
+        )
+        return {"enabled": True, "status": "ok", "live_card": live_card}
+
+    monkeypatch.setattr("scripts.run_telegram_public_pilot_bots.load_crm_env_into_process", lambda _path: None)
+    monkeypatch.setattr("scripts.run_telegram_public_pilot_bots.build_live_amo_context_readonly", lambda _phone: {})
+    monkeypatch.setattr(
+        "scripts.run_telegram_public_pilot_bots.build_local_phone_context",
+        lambda _phone: {"status": "ok", "tallanto_id": "", "tallanto_match_status": ""},
+    )
+    monkeypatch.setattr(
+        "mango_mvp.amocrm_runtime.tallanto_context.build_live_tallanto_context",
+        fake_build_live_tallanto_context,
+    )
+
+    context = build_read_only_crm_context(
+        phone="8 (909) 200-99-33",
+        brand="foton",
+        mode="live",
+        crm_env_file=tmp_path / ".env",
+    )
+
+    assert captured["active_brand"] == "foton"
+    assert context["tallanto_context"]["live_card"]["status"] == "no_card"
+    assert context["tallanto_context"]["live_card"]["reason"] == "brand_mismatch"
+
+
+def test_live_crm_context_allows_matching_active_brand(monkeypatch, tmp_path: Path) -> None:
+    def fake_build_live_tallanto_context(**kwargs):
+        live_card = build_tallanto_live_card(
+            [{"contact": {"filial": "mfti"}, "classes": []}],
+            active_brand=kwargs.get("active_brand"),
+            matched_via="phone",
+        )
+        return {"enabled": True, "status": "ok", "live_card": live_card}
+
+    monkeypatch.setattr("scripts.run_telegram_public_pilot_bots.load_crm_env_into_process", lambda _path: None)
+    monkeypatch.setattr("scripts.run_telegram_public_pilot_bots.build_live_amo_context_readonly", lambda _phone: {})
+    monkeypatch.setattr("scripts.run_telegram_public_pilot_bots.build_local_phone_context", lambda _phone: {})
+    monkeypatch.setattr(
+        "mango_mvp.amocrm_runtime.tallanto_context.build_live_tallanto_context",
+        fake_build_live_tallanto_context,
+    )
+
+    context = build_read_only_crm_context(
+        phone="8 (909) 200-99-33",
+        brand="unpk",
+        mode="live",
+        crm_env_file=tmp_path / ".env",
+    )
+
+    assert context["tallanto_context"]["live_card"]["status"] == "ok"
+    assert context["tallanto_context"]["live_card"]["brand"] == "unpk"
 
 
 def _night_snapshot(tmp_path: Path) -> Path:

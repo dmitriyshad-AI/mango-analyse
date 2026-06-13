@@ -206,6 +206,7 @@ def build_deal_dossier(
     pipeline_name: str,
     status_name: str,
     user_map: dict[int, str],
+    active_brand: str | None = None,
     transcript_excerpt_chars: int = 2200,
     max_transcript_calls: int = 8,
 ) -> dict[str, Any]:
@@ -216,6 +217,7 @@ def build_deal_dossier(
         phone=phone_context.phone,
         tallanto_id=phone_context.tallanto_id,
         tallanto_match_status=phone_context.tallanto_match_status,
+        active_brand=active_brand,
     )
 
     call_history: list[dict[str, Any]] = []

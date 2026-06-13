@@ -1,0 +1,14 @@
+scripts/run_telegram_public_pilot_bots.py
+src/mango_mvp/amocrm_runtime/deal_dossier.py
+src/mango_mvp/amocrm_runtime/deals.py
+src/mango_mvp/amocrm_runtime/tallanto_context.py
+tests/test_amocrm_deals.py
+tests/test_tallanto_export.py
+tests/test_tallanto_live_card.py
+tests/test_telegram_public_pilot_bots.py
+audits/_inbox/tz22_d7_A1_live_card_brand_20260614_013920/implementation_notes.md
+audits/_inbox/tz22_d7_A1_live_card_brand_20260614_013920/changed_files.txt
+audits/_inbox/tz22_d7_A1_live_card_brand_20260614_013920/test_output.txt
+audits/_inbox/tz22_d7_A1_live_card_brand_20260614_013920/semantic_review.md
+audits/_inbox/tz22_d7_A1_live_card_brand_20260614_013920/risk_review.md
+audits/_inbox/tz22_d7_A1_live_card_brand_20260614_013920/backward_compatibility.md

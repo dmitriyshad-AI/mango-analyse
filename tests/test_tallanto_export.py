@@ -78,7 +78,7 @@ def test_build_deal_dossier_includes_live_tallanto_context():
         with patch(
             "mango_mvp.amocrm_runtime.deal_dossier.build_live_tallanto_context",
             return_value={"enabled": True, "status": "ok", "matched_via": "tallanto_id", "contacts_found": 1},
-        ):
+        ) as live_context:
             dossier = build_deal_dossier(
                 phone_context=phone_context,
                 contact={"id": 1, "name": "Ивановы"},
@@ -88,7 +88,9 @@ def test_build_deal_dossier_includes_live_tallanto_context():
                 pipeline_name="Сделки B2C",
                 status_name="Закрыто и не реализовано",
                 user_map={},
+                active_brand="unpk",
             )
 
     assert dossier["tallanto_live"]["status"] == "ok"
     assert dossier["tallanto_live"]["matched_via"] == "tallanto_id"
+    assert live_context.call_args.kwargs["active_brand"] == "unpk"

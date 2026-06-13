@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from mango_mvp.amocrm_runtime.tallanto_context import brand_scope_from_filial, build_tallanto_live_card
+from dataclasses import replace
+
+from mango_mvp.amocrm_runtime import tallanto_context as tallanto_context_module
+from mango_mvp.amocrm_runtime.tallanto_context import (
+    brand_scope_from_filial,
+    build_live_tallanto_context,
+    build_tallanto_live_card,
+)
 
 
 def test_live_card_builds_balance_schedule_and_enrollment_without_teacher_name() -> None:
@@ -37,6 +44,26 @@ def test_live_card_builds_balance_schedule_and_enrollment_without_teacher_name()
     assert card["enrollment"][0]["remaining_seats"] == "3"
     assert "teacher" not in str(card).casefold()
     assert "Не должен попасть" not in str(card)
+
+
+def test_live_tallanto_context_mock_mode_is_disabled_before_brand_checks(monkeypatch) -> None:
+    monkeypatch.setenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "1")
+    monkeypatch.setattr(
+        tallanto_context_module,
+        "settings",
+        replace(tallanto_context_module.settings, crm_tallanto_mode="mock"),
+    )
+    monkeypatch.setattr(
+        tallanto_context_module,
+        "TallantoApiClient",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Tallanto client must not be created")),
+    )
+
+    context = build_live_tallanto_context(phone="+79990001122", active_brand=None)
+
+    assert context["enabled"] is False
+    assert context["status"] == "disabled"
+    assert context["reason"] == "crm_tallanto_mode=mock"
 
 
 def test_live_card_multi_match_returns_no_card() -> None:
@@ -80,6 +107,44 @@ def test_live_card_brand_mismatch_blocks_card() -> None:
 
     assert card["status"] == "no_card"
     assert card["reason"] == "brand_mismatch"
+
+
+def test_live_card_fail_closed_blocks_unverified_brand(monkeypatch) -> None:
+    monkeypatch.setenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "1")
+
+    card = build_tallanto_live_card([{"contact": {"filial": "mfti"}, "classes": []}], active_brand=None)
+
+    assert card["status"] == "no_card"
+    assert card["reason"] == "brand_unverified"
+    assert card["brand_scope"] == "unpk"
+
+
+def test_live_card_fail_closed_blocks_shared_without_brand(monkeypatch) -> None:
+    monkeypatch.setenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "1")
+
+    card = build_tallanto_live_card([{"contact": {"filial": "onlajn"}, "classes": []}], active_brand="")
+
+    assert card["status"] == "no_card"
+    assert card["reason"] == "brand_unverified"
+    assert card["brand_scope"] == "shared"
+
+
+def test_live_card_fail_closed_off_keeps_old_unverified_behavior(monkeypatch) -> None:
+    monkeypatch.delenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", raising=False)
+
+    card = build_tallanto_live_card([{"contact": {"filial": "mfti"}, "classes": []}], active_brand=None)
+
+    assert card["status"] == "ok"
+    assert card["brand"] == "unpk"
+
+
+def test_live_card_skip_shd_takes_priority_over_fail_closed(monkeypatch) -> None:
+    monkeypatch.setenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "1")
+
+    card = build_tallanto_live_card([{"contact": {"filial": "shd"}, "classes": []}], active_brand=None)
+
+    assert card["status"] == "no_card"
+    assert card["reason"] == "filial_shd"
 
 
 def test_brand_scope_mapping() -> None:

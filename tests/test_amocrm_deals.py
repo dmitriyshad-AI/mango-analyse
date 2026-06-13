@@ -8,6 +8,7 @@ import dataclasses
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 from urllib import error as url_error
 
@@ -154,6 +155,57 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         self.assertEqual(normalized["premature_close_risk"], "manual_review")
         self.assertTrue(normalized["needs_manual_review"])
         self.assertEqual(normalized["confidence"], 0.2)
+
+    def test_build_dossier_and_analysis_passes_active_brand_to_dossier(self) -> None:
+        phone_context = PhoneContext(
+            phone="+79990001122",
+            source_dir="",
+            contact_row={},
+            call_rows=[],
+            call_ids=[],
+            first_call_at="",
+            last_call_at="",
+            manager_history=[],
+            interest_summary="",
+            objections_summary="",
+            current_sales_temperature="warm",
+            recommended_next_step="Перезвонить",
+            follow_up_due_at="2026-04-20",
+            history_summary="",
+            chronology="",
+            tallanto_id="",
+            tallanto_match_status="",
+        )
+        candidate = deals_module.LeadCandidate(
+            contact_id=1,
+            lead_id=10,
+            score=100,
+            confidence=1.0,
+            reason="test",
+            lead={"id": 10},
+        )
+        captured: dict[str, Any] = {}
+
+        def fake_build_deal_dossier(**kwargs):
+            captured.update(kwargs)
+            return {"schema_version": "test_dossier"}
+
+        with patch.object(deals_module, "fetch_lead", return_value={"id": 10, "pipeline_id": 100, "status_id": 143}), patch.object(
+            deals_module, "fetch_lead_notes", return_value=[]
+        ), patch.object(deals_module, "fetch_lead_tasks", return_value=[]), patch.object(
+            deals_module, "build_deal_dossier", side_effect=fake_build_deal_dossier
+        ):
+            deals_module._build_dossier_and_analysis(
+                object(),
+                phone_context=phone_context,
+                candidate=candidate,
+                contact={"id": 1, "name": "Ивановы"},
+                pipelines=[{"id": 100, "name": "Сделки B2C", "statuses": [{"id": 143, "name": "Закрыто"}]}],
+                users=[],
+                active_brand="foton",
+            )
+
+        self.assertEqual(captured["active_brand"], "foton")
 
     def test_prepare_writeback_payload_does_not_include_ai_office_by_default(self) -> None:
         payload = deals_module._prepare_writeback_payload(

@@ -1,0 +1,13 @@
+scripts/build_tz16_profiles_v7.py
+scripts/compute_tz16_rerun_tail.py
+src/mango_mvp/customer_profile/builder.py
+tests/test_customer_profile_builder.py
+tests/test_tz16_profiles_v7_build.py
+tests/test_tz16_rerun_tail.py
+tasks/_done/2026-06-13_TZ21_blockA_tail_import_report.md
+audits/_inbox/tz21_tail_ingest_profiles_20260613/implementation_notes.md
+audits/_inbox/tz21_tail_ingest_profiles_20260613/changed_files.txt
+audits/_inbox/tz21_tail_ingest_profiles_20260613/test_output.txt
+audits/_inbox/tz21_tail_ingest_profiles_20260613/semantic_review.md
+audits/_inbox/tz21_tail_ingest_profiles_20260613/risk_review.md
+audits/_inbox/tz21_tail_ingest_profiles_20260613/backward_compatibility.md

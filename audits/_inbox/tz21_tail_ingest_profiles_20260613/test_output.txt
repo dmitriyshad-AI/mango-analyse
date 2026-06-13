@@ -1,0 +1,36 @@
+# TZ-21 test output
+
+## Targeted tests
+
+Command:
+
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. python3 -m pytest -q tests/test_customer_profile_builder.py tests/test_tz16_profiles_v7_build.py tests/test_tz16_rerun_tail.py`
+
+Result:
+
+`24 passed in 0.60s`
+
+## Full pytest
+
+Command:
+
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. python3 -m pytest -q`
+
+Result:
+
+`3100 passed, 2 skipped, 1 warning in 45.34s`
+
+Warning:
+
+- urllib3 reports LibreSSL instead of OpenSSL. This is existing environment noise, not a TZ-21 functional failure.
+
+## Manual acceptance checks
+
+- Import dry-run before apply: `updated=3439`, `rejected=0`.
+- Import apply: `updated=3439`, `rejected=0`.
+- Import idempotence apply: `updated=0`, `skipped_same=3439`, `rejected=0`.
+- DB `PRAGMA quick_check`: `ok`.
+- Total v7 rows after import: `26118`.
+- Manifest rows with v7 after import: `3439`.
+- Profile rebuild idempotence: `content_signature_equal=true`.
+- Output directories under `product_data/customer_profiles/` are git-ignored.

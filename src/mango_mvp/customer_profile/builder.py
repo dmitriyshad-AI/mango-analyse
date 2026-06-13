@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from urllib.parse import quote
 
 from mango_mvp.customer_profile.contracts import (
     ProfileFieldCandidate,
@@ -36,7 +37,7 @@ class CustomerProfileBuilder:
     def build(self) -> Mapping[str, Any]:
         started_at = datetime.now(timezone.utc)
         build_id = self.options.build_id or f"profile_build_{started_at.strftime('%Y%m%dT%H%M%SZ')}"
-        timeline = sqlite3.connect(f"file:{self.options.timeline_db}?mode=ro", uri=True)
+        timeline = connect_read_only(self.options.timeline_db)
         timeline.row_factory = sqlite3.Row
         try:
             profile_ids = self._select_profile_ids(timeline)
@@ -196,7 +197,7 @@ class CustomerProfileBuilder:
         if not phone_map or not self.options.master_calls_db:
             return
         brand_index = self._mango_brand_index(timeline, profile_ids)
-        master = sqlite3.connect(f"file:{self.options.master_calls_db}?mode=ro", uri=True)
+        master = connect_read_only(self.options.master_calls_db)
         master.row_factory = sqlite3.Row
         unmatched = 0
         ambiguous = 0
@@ -262,6 +263,12 @@ class CustomerProfileBuilder:
 
 def table_exists(con: sqlite3.Connection, table: str) -> bool:
     return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+
+def connect_read_only(path: Path) -> sqlite3.Connection:
+    resolved = path.expanduser().resolve(strict=False)
+    uri = f"file:{quote(str(resolved), safe='/:')}?mode=ro&immutable=1"
+    return sqlite3.connect(uri, uri=True)
 
 
 def parse_json(raw: Any) -> Mapping[str, Any]:

@@ -33,6 +33,18 @@ def test_profile_metrics_counts_coverage_children_merge_and_superseded(tmp_path:
     assert metrics["superseded_by_field"]["next_step"] == 1
 
 
+def test_profile_metrics_open_db_under_path_with_space(tmp_path: Path) -> None:
+    root = tmp_path / "profiles with space"
+    root.mkdir()
+    db = root / "profiles.sqlite"
+    seed_profiles(db)
+
+    metrics = profile_metrics(db)
+
+    assert metrics["profile_count"] == 2
+    assert metrics["coverage_profiles_by_field"]["child_name"] == 2
+
+
 def test_anonymized_examples_do_not_expose_raw_values(tmp_path: Path) -> None:
     db = tmp_path / "profiles.sqlite"
     seed_profiles(db)

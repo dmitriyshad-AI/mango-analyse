@@ -191,6 +191,27 @@ def test_builder_marks_superseded_conflicting_grade_and_is_idempotent(tmp_path: 
     assert all_grade_rows[1][1] == ""
 
 
+def test_builder_opens_read_only_sources_under_path_with_space(tmp_path: Path) -> None:
+    root = tmp_path / "profile source with space"
+    root.mkdir()
+    timeline_db = _timeline_db(root)
+    master_db = _master_calls_db(root, [(100, "2026-01-10T10:00:00+00:00", _analysis())])
+    profiles_db = root / "profiles.sqlite"
+
+    report = CustomerProfileBuilder(
+        CustomerProfileBuildOptions(
+            timeline_db=timeline_db,
+            profiles_db=profiles_db,
+            master_calls_db=master_db,
+            customer_ids=("cust-1",),
+        )
+    ).build()
+
+    assert report["profiles_built"] == 1
+    with CustomerProfileSQLiteStore(profiles_db) as store:
+        assert any(row["field"] == "grade" for row in store.active_fields("cust-1"))
+
+
 def test_builder_marks_duplicate_child_slots_as_merge_candidate(tmp_path: Path) -> None:
     timeline_db = _timeline_db(tmp_path)
     master_db = _master_calls_db(

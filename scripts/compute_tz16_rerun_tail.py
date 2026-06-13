@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from urllib.parse import quote
 
 
 DEFAULT_TIMELINE_DB = Path(
@@ -164,7 +165,7 @@ def compute_rerun_tail(config: RerunTailConfig) -> Mapping[str, Any]:
 
 
 def load_zone(timeline_db: Path) -> Mapping[str, Any]:
-    con = sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True)
+    con = connect_read_only(timeline_db)
     try:
         active_amo = {
             str(row[0])
@@ -221,7 +222,7 @@ def load_zone(timeline_db: Path) -> Mapping[str, Any]:
 def load_call_rows(master_calls_db: Path, call_ids: Sequence[int]) -> list[CallRow]:
     if not call_ids:
         return []
-    con = sqlite3.connect(f"file:{master_calls_db}?mode=ro", uri=True)
+    con = connect_read_only(master_calls_db)
     con.row_factory = sqlite3.Row
     try:
         table = "canonical_calls" if table_exists(con, "canonical_calls") else "call_records"
@@ -489,6 +490,12 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 def table_exists(con: sqlite3.Connection, table: str) -> bool:
     return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+
+def connect_read_only(path: Path) -> sqlite3.Connection:
+    resolved = path.expanduser().resolve(strict=False)
+    uri = f"file:{quote(str(resolved), safe='/:')}?mode=ro&immutable=1"
+    return sqlite3.connect(uri, uri=True)
 
 
 def has_column(con: sqlite3.Connection, table: str, column: str) -> bool:

@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import quote
 
 from mango_mvp.customer_profile.builder import CustomerProfileBuilder, CustomerProfileBuildOptions
 from mango_mvp.customer_profile.store import sha256_file
@@ -162,7 +163,7 @@ def copy_timeline(source: Path, target: Path) -> None:
 
 
 def select_micro_customer_ids(timeline_db: Path, *, tenant_id: str, limit: int) -> list[str]:
-    con = sqlite3.connect(f"file:{timeline_db}?mode=ro", uri=True)
+    con = connect_read_only(timeline_db)
     try:
         rows = con.execute(
             """
@@ -183,7 +184,7 @@ def select_micro_customer_ids(timeline_db: Path, *, tenant_id: str, limit: int) 
 
 
 def profile_metrics(profiles_db: Path) -> Mapping[str, Any]:
-    con = sqlite3.connect(f"file:{profiles_db}?mode=ro", uri=True)
+    con = connect_read_only(profiles_db)
     con.row_factory = sqlite3.Row
     try:
         profile_count = scalar_int(con, "SELECT COUNT(*) FROM customer_profiles")
@@ -267,7 +268,7 @@ def profile_metrics(profiles_db: Path) -> Mapping[str, Any]:
 
 def analysis_counts(master_calls_db: Path, blacklist_path: Path) -> Mapping[str, Any]:
     blacklist_ids = read_id_set(blacklist_path)
-    con = sqlite3.connect(f"file:{master_calls_db}?mode=ro", uri=True)
+    con = connect_read_only(master_calls_db)
     con.row_factory = sqlite3.Row
     try:
         table = "canonical_calls" if table_exists(con, "canonical_calls") else "call_records"
@@ -346,7 +347,7 @@ def count_ids(
 
 
 def anonymized_examples(profiles_db: Path, *, limit: int) -> list[Mapping[str, Any]]:
-    con = sqlite3.connect(f"file:{profiles_db}?mode=ro", uri=True)
+    con = connect_read_only(profiles_db)
     con.row_factory = sqlite3.Row
     examples: list[Mapping[str, Any]] = []
     try:
@@ -393,7 +394,7 @@ def anonymized_examples(profiles_db: Path, *, limit: int) -> list[Mapping[str, A
 
 
 def profile_content_signature(profiles_db: Path) -> str:
-    con = sqlite3.connect(f"file:{profiles_db}?mode=ro", uri=True)
+    con = connect_read_only(profiles_db)
     try:
         digest = hashlib.sha256()
         for query in (
@@ -433,6 +434,12 @@ def read_id_set(path: Path) -> set[str]:
 
 def table_exists(con: sqlite3.Connection, table: str) -> bool:
     return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+
+def connect_read_only(path: Path) -> sqlite3.Connection:
+    resolved = path.expanduser().resolve(strict=False)
+    uri = f"file:{quote(str(resolved), safe='/:')}?mode=ro&immutable=1"
+    return sqlite3.connect(uri, uri=True)
 
 
 def has_column(con: sqlite3.Connection, table: str, column: str) -> bool:

@@ -26,6 +26,17 @@ def test_load_zone_matches_active_amo_and_strong_tallanto_formula(tmp_path: Path
     assert zone["call_ids"] == {101, 102}
 
 
+def test_load_zone_opens_timeline_under_path_with_space(tmp_path: Path) -> None:
+    root = tmp_path / "timeline with space"
+    root.mkdir()
+    timeline = root / "timeline.sqlite"
+    seed_timeline(timeline)
+
+    zone = load_zone(timeline)
+
+    assert zone["call_ids"] == {101, 102}
+
+
 def test_compute_rerun_tail_counts_v7_blacklist_and_eligible_tail(tmp_path: Path) -> None:
     timeline = tmp_path / "timeline.sqlite"
     master = tmp_path / "master.sqlite"

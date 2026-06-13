@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
-from urllib import error as url_error
+from urllib import error as url_error, parse as url_parse
 
 from mango_mvp.amocrm_runtime.deal_dossier import build_deal_dossier
 from mango_mvp.amocrm_runtime.deal_llm import DealLLMAnalyzer
@@ -468,6 +468,139 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         self.assertIsInstance(by_id[1], int)
         self.assertEqual(by_id[1], 1778673453)
         self.assertEqual(by_id[2], 1778803200)
+
+    def test_fetch_leads_batch_uses_amo_filter_id_contract_and_preserves_input_order(self) -> None:
+        captured_urls: list[str] = []
+
+        def fake_http_request(**kwargs):
+            captured_urls.append(kwargs["url"])
+            return {"_embedded": {"leads": [{"id": 22, "name": "Lead 22"}, {"id": 11, "name": "Lead 11"}]}}
+
+        with patch.object(
+            amo_integration,
+            "resolve_amo_access_context",
+            return_value=amo_integration.AmoAccessContext(
+                account_base_url="https://educent.amocrm.ru",
+                access_token="token",
+                token_source="oauth",
+                connection=None,
+            ),
+        ), patch.object(amo_integration, "_amo_http_request", side_effect=fake_http_request):
+            leads = amo_integration.fetch_leads_batch(
+                None,  # type: ignore[arg-type]
+                lead_ids=[11, 22],
+                with_fields="contacts",
+            )
+
+        query = url_parse.parse_qs(url_parse.urlparse(captured_urls[0]).query)
+        self.assertEqual(query["filter[id][]"], ["11", "22"])
+        self.assertEqual(query["with"], ["contacts"])
+        self.assertEqual(query["limit"], ["2"])
+        self.assertEqual([lead["id"] for lead in leads], [11, 22])
+
+    def test_resolve_target_lead_batch_fetch_is_flagged_and_keeps_selected_lead(self) -> None:
+        phone_context = PhoneContext(
+            phone="+79990001122",
+            source_dir="",
+            contact_row={},
+            call_rows=[{"Тип звонка": "sales_call"}],
+            call_ids=[],
+            first_call_at="2026-04-10 10:00:00",
+            last_call_at="2026-04-10 10:00:00",
+            manager_history=["Иванов Иван"],
+            interest_summary="",
+            objections_summary="",
+            current_sales_temperature="warm",
+            recommended_next_step="",
+            follow_up_due_at="",
+            history_summary="",
+            chronology="",
+            tallanto_id="",
+            tallanto_match_status="",
+        )
+        contact = {"id": 123, "name": "Контакт", "_embedded": {"leads": [{"id": 11}, {"id": 22}]}}
+        pipelines = [
+            {
+                "id": 100,
+                "name": "Сделки B2C",
+                "_embedded": {"statuses": [{"id": 143, "name": "Закрыто и не реализовано"}]},
+            }
+        ]
+        users = [{"id": 1, "name": "Иванов Иван"}]
+        leads_by_id = {
+            11: {
+                "id": 11,
+                "name": "Best",
+                "pipeline_id": 100,
+                "status_id": 143,
+                "responsible_user_id": 1,
+                "updated_at": "2026-04-10 10:00:00",
+            },
+            22: {
+                "id": 22,
+                "name": "Older",
+                "pipeline_id": 100,
+                "status_id": 143,
+                "responsible_user_id": 0,
+                "updated_at": "2025-01-01 10:00:00",
+            },
+        }
+
+        def run_resolve(*, batch_enabled: bool) -> tuple[dict[str, Any], int, int]:
+            fetch_one_calls = 0
+            fetch_batch_calls = 0
+
+            def fake_fetch_lead(session, *, lead_id, with_fields="contacts"):
+                nonlocal fetch_one_calls
+                fetch_one_calls += 1
+                return leads_by_id[int(lead_id)]
+
+            def fake_fetch_leads_batch(session, *, lead_ids, with_fields="contacts"):
+                nonlocal fetch_batch_calls
+                fetch_batch_calls += 1
+                return [leads_by_id[int(lead_id)] for lead_id in lead_ids]
+
+            with patch.dict("os.environ", {"AMO_LEADS_BATCH_FETCH": "1" if batch_enabled else "0"}), patch.object(
+                deals_module,
+                "get_phone_context",
+                return_value=phone_context,
+            ), patch.object(
+                deals_module,
+                "search_contacts_by_phone",
+                return_value=[contact],
+            ), patch.object(
+                deals_module,
+                "fetch_pipelines_with_statuses",
+                return_value=pipelines,
+            ), patch.object(
+                deals_module,
+                "fetch_users",
+                return_value=users,
+            ), patch.object(
+                deals_module,
+                "fetch_lead",
+                side_effect=fake_fetch_lead,
+            ), patch.object(
+                deals_module,
+                "fetch_leads_batch",
+                side_effect=fake_fetch_leads_batch,
+            ), patch.object(
+                deals_module,
+                "fetch_related_leads",
+                side_effect=AssertionError("embedded leads should skip related-leads fetch"),
+            ):
+                result = deals_module.resolve_target_lead(None, phone="+79990001122")  # type: ignore[arg-type]
+            return result, fetch_one_calls, fetch_batch_calls
+
+        off_result, off_single_calls, off_batch_calls = run_resolve(batch_enabled=False)
+        on_result, on_single_calls, on_batch_calls = run_resolve(batch_enabled=True)
+
+        self.assertEqual(off_result["selected"], on_result["selected"])
+        self.assertEqual(off_result["selected"]["lead_id"], 11)
+        self.assertEqual(off_single_calls, 2)
+        self.assertEqual(off_batch_calls, 0)
+        self.assertEqual(on_single_calls, 0)
+        self.assertEqual(on_batch_calls, 1)
 
     def test_write_analysis_to_lead_safe_mode_skips_nonempty_fields(self) -> None:
         with patch.object(

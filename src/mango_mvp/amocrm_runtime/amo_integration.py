@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 from urllib import error as url_error
 from urllib import parse as url_parse
 from urllib import request as url_request
@@ -1113,6 +1113,49 @@ def fetch_lead(
         path_or_url=_lead_entity_endpoint(resolve_amo_access_context(session).account_base_url, lead_id),
         params=params,
     )
+
+
+def fetch_leads_batch(
+    session: Session,
+    *,
+    lead_ids: Iterable[int],
+    with_fields: Optional[str] = "contacts",
+) -> list[dict[str, Any]]:
+    ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in lead_ids:
+        lead_id = int(raw_id or 0)
+        if lead_id <= 0 or lead_id in seen:
+            continue
+        seen.add(lead_id)
+        ids.append(lead_id)
+    if not ids:
+        return []
+
+    fetched: dict[int, dict[str, Any]] = {}
+    url = _leads_collection_endpoint(resolve_amo_access_context(session).account_base_url)
+    for index in range(0, len(ids), 50):
+        chunk = ids[index : index + 50]
+        params: dict[str, Any] = {
+            "filter[id][]": chunk,
+            "limit": len(chunk),
+        }
+        if with_fields:
+            params["with"] = with_fields
+        payload = amo_api_request(
+            session,
+            method="GET",
+            path_or_url=url,
+            params=params,
+        )
+        leads = (payload.get("_embedded") or {}).get("leads") if isinstance(payload, dict) else []
+        for lead in leads or []:
+            if not isinstance(lead, dict):
+                continue
+            lead_id = int(lead.get("id") or 0)
+            if lead_id:
+                fetched[lead_id] = lead
+    return [fetched[lead_id] for lead_id in ids if lead_id in fetched]
 
 
 def fetch_lead_notes(

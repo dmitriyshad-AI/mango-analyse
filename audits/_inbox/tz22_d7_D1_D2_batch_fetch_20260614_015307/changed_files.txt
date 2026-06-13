@@ -1,0 +1,6 @@
+src/mango_mvp/amocrm_runtime/amo_integration.py
+src/mango_mvp/amocrm_runtime/deals.py
+src/mango_mvp/amocrm_runtime/tallanto_api.py
+src/mango_mvp/amocrm_runtime/tallanto_context.py
+tests/test_amocrm_deals.py
+tests/test_tallanto_api.py

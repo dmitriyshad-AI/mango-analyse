@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import csv
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from mango_mvp.amocrm_runtime.amo_integration import (
     fetch_contact,
     fetch_lead,
+    fetch_leads_batch,
     fetch_lead_notes,
     fetch_lead_tasks,
     fetch_pipelines_with_statuses,
@@ -939,8 +941,11 @@ def resolve_target_lead(
         lead_ids = [int(item.get("id") or 0) for item in embedded_leads if int(item.get("id") or 0)]
         leads: list[dict[str, Any]] = []
         if lead_ids:
-            for lead_id in lead_ids:
-                leads.append(fetch_lead(session, lead_id=lead_id, with_fields="contacts"))
+            if os.getenv("AMO_LEADS_BATCH_FETCH", "0") == "1":
+                leads = fetch_leads_batch(session, lead_ids=lead_ids, with_fields="contacts")
+            else:
+                for lead_id in lead_ids:
+                    leads.append(fetch_lead(session, lead_id=lead_id, with_fields="contacts"))
         else:
             leads = fetch_related_leads(session, contact_id=contact_id)
         if phone_context is None:

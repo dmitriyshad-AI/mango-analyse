@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import ssl
 import time
@@ -33,6 +34,10 @@ class TallantoApiConfig:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _batch_fetch_enabled() -> bool:
+    return os.getenv("TALLANTO_BATCH_FETCH", "0") == "1"
 
 
 def _normalize_base_url(raw_value: str) -> str:
@@ -423,6 +428,8 @@ class TallantoApiClient:
                         continue
                     continue
                 records.extend(_extract_record_list(payload))
+                if records and _batch_fetch_enabled():
+                    return _dedupe_dicts(records)[:max_records]
                 if len(records) >= max_records:
                     return _dedupe_dicts(records)[:max_records]
         deduped = _dedupe_dicts(records)[:max_records]
@@ -549,6 +556,7 @@ class TallantoApiClient:
         *,
         max_contacts: int = 10,
         max_related_records: int = 100,
+        live_card_only: bool = False,
     ) -> dict[str, Any]:
         contacts = self.search_contacts_by_phone(phone, max_records=max_contacts)
         contexts: list[dict[str, Any]] = []
@@ -557,13 +565,18 @@ class TallantoApiClient:
             if not contact_id:
                 continue
             class_relations = self.class_relations_by_contact(contact_id, max_records=max_related_records)
+            load_live_only = live_card_only and _batch_fetch_enabled()
             contexts.append(
                 {
                     "contact": contact,
-                    "opportunities": self.opportunities_by_contact(contact_id, max_records=max_related_records),
-                    "requests": self.requests_by_contact(contact_id, max_records=max_related_records),
+                    "opportunities": []
+                    if load_live_only
+                    else self.opportunities_by_contact(contact_id, max_records=max_related_records),
+                    "requests": [] if load_live_only else self.requests_by_contact(contact_id, max_records=max_related_records),
                     "finances": self.finances_by_contact(contact_id, max_records=max_related_records),
-                    "course_relations": self.course_relations_by_contact(contact_id, max_records=max_related_records),
+                    "course_relations": []
+                    if load_live_only
+                    else self.course_relations_by_contact(contact_id, max_records=max_related_records),
                     "class_relations": class_relations,
                     "abonements": self.abonements_by_contact(contact_id, max_records=max_related_records),
                     "classes": self.classes_by_ids(
@@ -585,6 +598,7 @@ class TallantoApiClient:
         contact_id: str,
         *,
         max_related_records: int = 100,
+        live_card_only: bool = False,
     ) -> dict[str, Any]:
         contact = self.contact_by_id(contact_id)
         if not contact:
@@ -597,6 +611,7 @@ class TallantoApiClient:
             }
         resolved_contact_id = str(contact.get("id") or contact_id).strip()
         class_relations = self.class_relations_by_contact(resolved_contact_id, max_records=max_related_records)
+        load_live_only = live_card_only and _batch_fetch_enabled()
         return {
             "generated_at": _iso_now(),
             "base_url": self.config.base_url,
@@ -605,10 +620,16 @@ class TallantoApiClient:
             "contexts": [
                 {
                     "contact": contact,
-                    "opportunities": self.opportunities_by_contact(resolved_contact_id, max_records=max_related_records),
-                    "requests": self.requests_by_contact(resolved_contact_id, max_records=max_related_records),
+                    "opportunities": []
+                    if load_live_only
+                    else self.opportunities_by_contact(resolved_contact_id, max_records=max_related_records),
+                    "requests": []
+                    if load_live_only
+                    else self.requests_by_contact(resolved_contact_id, max_records=max_related_records),
                     "finances": self.finances_by_contact(resolved_contact_id, max_records=max_related_records),
-                    "course_relations": self.course_relations_by_contact(resolved_contact_id, max_records=max_related_records),
+                    "course_relations": []
+                    if load_live_only
+                    else self.course_relations_by_contact(resolved_contact_id, max_records=max_related_records),
                     "class_relations": class_relations,
                     "abonements": self.abonements_by_contact(resolved_contact_id, max_records=max_related_records),
                     "classes": self.classes_by_ids(

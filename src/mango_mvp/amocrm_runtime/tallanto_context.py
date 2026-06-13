@@ -98,11 +98,13 @@ def build_live_tallanto_context(
 
     matched_via = "phone"
     payload: dict[str, Any]
+    live_card_only = os.getenv("TALLANTO_BATCH_FETCH", "0") == "1"
     try:
         if _safe_text(tallanto_id) and _safe_text(tallanto_match_status) in {"exact_phone_single", "manual_confirmed", "id_confirmed"}:
             payload = client.build_contact_context_by_contact_id(
                 _safe_text(tallanto_id),
                 max_related_records=max_related_records,
+                live_card_only=live_card_only,
             )
             matched_via = "tallanto_id"
             if int(payload.get("contacts_found") or 0) == 0:
@@ -110,6 +112,7 @@ def build_live_tallanto_context(
                     phone,
                     max_contacts=5,
                     max_related_records=max_related_records,
+                    live_card_only=live_card_only,
                 )
                 matched_via = "phone_fallback"
         else:
@@ -117,6 +120,7 @@ def build_live_tallanto_context(
                 phone,
                 max_contacts=5,
                 max_related_records=max_related_records,
+                live_card_only=live_card_only,
             )
     except TallantoApiError as exc:
         return {

@@ -11,6 +11,7 @@ from mango_mvp.amocrm_runtime.tallanto_api import (
     TallantoApiConfig,
     TallantoApiError,
 )
+from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
 import mango_mvp.amocrm_runtime.tallanto_api as tallanto_api_module
 
 
@@ -79,6 +80,125 @@ def test_search_contacts_by_phone_skips_not_found_errors(monkeypatch):
     records = client.search_contacts_by_phone("+79000000000")
     assert len(records) == 1
     assert records[0]["id"] == "123"
+
+
+def test_search_contacts_by_phone_keeps_full_scan_when_batch_fetch_disabled(monkeypatch):
+    monkeypatch.setenv("TALLANTO_BATCH_FETCH", "0")
+    calls: list[dict[str, str]] = []
+
+    def fake_get_entry_by_fields(*, module, field_values, select_fields=None):
+        calls.append(field_values)
+        return {"entry_list": [{"id": "123", "phone_mobile": list(field_values.values())[0]}]}
+
+    client = TallantoApiClient(TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"))
+    monkeypatch.setattr(client, "get_entry_by_fields", fake_get_entry_by_fields)
+
+    records = client.search_contacts_by_phone("+79000000000", max_records=50)
+
+    assert records == [{"id": "123", "phone_mobile": "+79000000000"}]
+    assert len(calls) == len(client.CONTACT_PHONE_FIELDS) * 3
+
+
+def test_search_contacts_by_phone_returns_after_first_hit_when_batch_fetch_enabled(monkeypatch):
+    monkeypatch.setenv("TALLANTO_BATCH_FETCH", "1")
+    calls: list[dict[str, str]] = []
+
+    def fake_get_entry_by_fields(*, module, field_values, select_fields=None):
+        calls.append(field_values)
+        return {"entry_list": [{"id": "123", "phone_mobile": list(field_values.values())[0]}]}
+
+    client = TallantoApiClient(TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"))
+    monkeypatch.setattr(client, "get_entry_by_fields", fake_get_entry_by_fields)
+
+    records = client.search_contacts_by_phone("+79000000000", max_records=50)
+
+    assert records == [{"id": "123", "phone_mobile": "+79000000000"}]
+    assert len(calls) == 1
+
+
+def test_build_contact_context_live_card_only_skips_unused_blocks_without_changing_card(monkeypatch):
+    client = TallantoApiClient(TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"))
+
+    def build_payload(*, batch_enabled: bool) -> tuple[dict, dict[str, int]]:
+        monkeypatch.setenv("TALLANTO_BATCH_FETCH", "1" if batch_enabled else "0")
+        calls = {
+            "opportunities": 0,
+            "requests": 0,
+            "finances": 0,
+            "course_relations": 0,
+            "class_relations": 0,
+            "abonements": 0,
+            "classes": 0,
+        }
+        monkeypatch.setattr(
+            client,
+            "search_contacts_by_phone",
+            lambda phone, max_records=20, select_fields=None: [{"id": "123", "filial": "Онлайн"}],
+        )
+        monkeypatch.setattr(
+            client,
+            "opportunities_by_contact",
+            lambda contact_id, max_records=100: calls.__setitem__("opportunities", calls["opportunities"] + 1) or [{"id": "O-1"}],
+        )
+        monkeypatch.setattr(
+            client,
+            "requests_by_contact",
+            lambda contact_id, max_records=100: calls.__setitem__("requests", calls["requests"] + 1) or [{"id": "R-1"}],
+        )
+        monkeypatch.setattr(
+            client,
+            "finances_by_contact",
+            lambda contact_id, max_records=100: calls.__setitem__("finances", calls["finances"] + 1) or [{"id": "F-1"}],
+        )
+        monkeypatch.setattr(
+            client,
+            "course_relations_by_contact",
+            lambda contact_id, max_records=100: calls.__setitem__("course_relations", calls["course_relations"] + 1)
+            or [{"id": "CR-1"}],
+        )
+        monkeypatch.setattr(
+            client,
+            "class_relations_by_contact",
+            lambda contact_id, max_records=100: calls.__setitem__("class_relations", calls["class_relations"] + 1)
+            or [{"id": "REL-1", "class_id": "CL-1"}],
+        )
+        monkeypatch.setattr(
+            client,
+            "abonements_by_contact",
+            lambda contact_id, max_records=100: calls.__setitem__("abonements", calls["abonements"] + 1) or [{"id": "A-1"}],
+        )
+        monkeypatch.setattr(
+            client,
+            "classes_by_ids",
+            lambda class_ids, max_records=100: calls.__setitem__("classes", calls["classes"] + 1) or [{"id": "CL-1"}],
+        )
+        return client.build_contact_context("+79000000000", live_card_only=True), calls
+
+    full_payload, full_calls = build_payload(batch_enabled=False)
+    slim_payload, slim_calls = build_payload(batch_enabled=True)
+
+    full_card = build_tallanto_live_card([full_payload["contexts"][0]], active_brand="foton")
+    slim_card = build_tallanto_live_card([slim_payload["contexts"][0]], active_brand="foton")
+
+    assert full_card == slim_card
+    assert full_calls == {
+        "opportunities": 1,
+        "requests": 1,
+        "finances": 1,
+        "course_relations": 1,
+        "class_relations": 1,
+        "abonements": 1,
+        "classes": 1,
+    }
+    assert slim_calls == {
+        "opportunities": 0,
+        "requests": 0,
+        "finances": 1,
+        "course_relations": 0,
+        "class_relations": 1,
+        "abonements": 1,
+        "classes": 1,
+    }
 
 
 def test_classes_by_ids_skips_not_found_errors(monkeypatch):

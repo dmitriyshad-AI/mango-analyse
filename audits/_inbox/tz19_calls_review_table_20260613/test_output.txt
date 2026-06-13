@@ -1,0 +1,29 @@
+# TZ-19 calls review table test output
+
+## Targeted
+
+Command:
+
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. python3 -m pytest -q tests/test_tz19_calls_review_table.py`
+
+Result:
+
+`2 passed in 0.13s`
+
+## Full pytest
+
+Command:
+
+`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:. python3 -m pytest -q`
+
+Result:
+
+`3102 passed, 2 skipped, 1 warning in 46.13s`
+
+## Workbook verification
+
+- `Все`: 22,679 rows, 28 columns, freeze `A2`, filter `A1:AB22680`.
+- `blacklist-77`: 0 rows, 28 columns, freeze `A2`, filter `A1:AB1`.
+- `длинные`: 2,796 rows, 28 columns, freeze `A2`, filter `A1:AB2797`.
+- Email regex hits: 0.
+- Phone regex hits: 0.

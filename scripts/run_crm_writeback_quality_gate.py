@@ -148,6 +148,7 @@ def main() -> int:
         crm_text_blocking_rows = len({row["row_index"] for row in blocking if "crm_text" in row["risk_types"] or any(
             risk in row["risk_types"] for risk in (
                 "lossy_ellipsis_truncation",
+                "service_test_marker",
                 "duplicate_label_and_count",
                 "empty_auto_history",
                 "strong_negative_objection_conflict",
@@ -247,6 +248,7 @@ def main() -> int:
             "warning_risk_counts": dict(crm_text_warning_counter.most_common()),
             "fail_live_risk_types": [
                 "lossy_ellipsis_truncation",
+                "service_test_marker",
                 "duplicate_label_and_count",
                 "empty_auto_history",
                 "strong_negative_objection_conflict",

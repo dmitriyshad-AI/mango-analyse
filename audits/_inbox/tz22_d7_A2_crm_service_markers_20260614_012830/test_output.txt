@@ -1,0 +1,49 @@
+# Test Output
+
+## Baseline collect-only
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+```
+
+Result:
+
+```text
+3104 tests collected in 6.30s
+```
+
+## Targeted A2
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_crm_text_quality_detector.py
+```
+
+Result:
+
+```text
+50 passed in 0.09s
+```
+
+## Full pytest
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Result:
+
+```text
+3104 passed, 5 skipped, 1 warning in 48.20s
+```
+
+Warning:
+
+```text
+urllib3 NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, current ssl is LibreSSL 2.8.3
+```

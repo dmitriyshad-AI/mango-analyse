@@ -28,6 +28,46 @@ def test_detects_internal_ellipsis_anywhere_in_target_ai_field() -> None:
     assert findings[0].severity == "P1"
 
 
+def test_blocks_service_test_marker_in_auto_history() -> None:
+    row = {
+        "Авто история общения": (
+            "Второй боевой smoke test из AI Office: проверка полей статуса матчинга "
+            "и AI-приоритета для контакта. [match-status, ai-priority | Тестовый ИИ]"
+        )
+    }
+
+    findings = detect_crm_text_quality_risks(row)
+
+    assert {finding.risk_type for finding in findings} == {"service_test_marker"}
+    assert findings[0].class_id == "Q-service-marker"
+    assert findings[0].severity == "P0"
+    assert has_blocking_crm_text_quality_risk(row) is True
+
+
+def test_service_test_marker_does_not_match_plain_test_word() -> None:
+    row = {"Авто история общения": "Клиент просит дз по мат в виде тестов и материалы к занятию."}
+
+    assert detect_crm_text_quality_risks(row) == []
+
+
+def test_service_test_marker_ignores_manual_history_field() -> None:
+    row = {"История общения": "Тестовая история"}
+
+    assert detect_crm_text_quality_risks(row) == []
+
+
+def test_service_test_marker_ignores_manual_history_even_with_marker() -> None:
+    row = {"История общения": "AI Office smoke test"}
+
+    assert detect_crm_text_quality_risks(row) == []
+
+
+def test_service_test_marker_does_not_match_test_history_in_auto_field() -> None:
+    row = {"Авто история общения": "Тестовая история"}
+
+    assert detect_crm_text_quality_risks(row) == []
+
+
 def test_detects_duplicate_raw_label_and_count_label() -> None:
     row = {"Авто история общения": "Продукты интереса: летний лагерь | летний лагерь: 14 | математика"}
 

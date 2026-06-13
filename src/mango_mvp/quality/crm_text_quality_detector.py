@@ -268,6 +268,11 @@ ACTIVE_STALE_NEXT_STEP_RE = re.compile(
     re.I,
 )
 TERMINAL_LOST_STATUS_RE = re.compile(r"\bзакрыт\w+\s+и\s+не\s+реализован\w+\b|closed\s+lost", re.I)
+SERVICE_TEST_MARKERS_RE = re.compile(
+    r"smoke[\s\-]*test|\bai\s*office\b|тестовый\s+ии"
+    r"|match-status|ai-priority|\bplaceholder\b|\blorem\b|\bfoobar\b|\bdummy\b",
+    re.I,
+)
 
 
 def detect_crm_text_quality_risks(
@@ -283,6 +288,7 @@ def detect_crm_text_quality_risks(
     findings: list[CrmTextQualityFinding] = []
     row = payload if isinstance(payload, Mapping) else None
 
+    findings.extend(_detect_service_test_markers(payload))
     for field, value in _iter_target_text_fields(payload):
         findings.extend(_detect_ellipsis(field, value))
         findings.extend(_detect_duplicate_label_counts(field, value))
@@ -389,6 +395,30 @@ def detect_crm_text_quality_batch_risks(
         )
         if finding.severity in allowed and finding not in findings:
             findings.append(finding)
+    return findings
+
+
+def _detect_service_test_markers(payload: object) -> list[CrmTextQualityFinding]:
+    findings: list[CrmTextQualityFinding] = []
+    if not isinstance(payload, Mapping):
+        return findings
+    for field in TARGET_CRM_TEXT_FIELDS:
+        value = _safe_text(payload.get(field))
+        if not value:
+            continue
+        match = SERVICE_TEST_MARKERS_RE.search(value)
+        if not match:
+            continue
+        findings.append(
+            CrmTextQualityFinding(
+                class_id="Q-service-marker",
+                risk_type="service_test_marker",
+                severity="P0",
+                field=field,
+                matched_text=match.group(0)[:60],
+                reason="Служебный/тестовый текст в клиентском поле - нельзя выгружать в бой",
+            )
+        )
     return findings
 
 

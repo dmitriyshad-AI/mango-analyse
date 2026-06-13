@@ -53,6 +53,18 @@ METRIC_TARGETS = {
 }
 HANDOFF_TRACE_ENV = "TELEGRAM_HANDOFF_TRACE"
 DIRECT_PATH_FAIL_FAST_DIALOGS = 4
+PERSONA_PROMPT_INTERNAL_KEYS = {
+    "action_contract",
+    "action_intent",
+    "action_judge",
+    "deal_card",
+    "expected_action",
+    "privacy",
+    "provenance",
+    "raw_source",
+    "source_provenance",
+    "source_refs",
+}
 
 
 @dataclass(frozen=True)
@@ -1016,6 +1028,26 @@ def load_transcripts(path: Path) -> list[Mapping[str, Any]]:
     return rows
 
 
+def persona_for_dynamic_prompt(persona: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Hide future action-judge fields from the current client and text judge."""
+
+    return _strip_persona_internal_fields(persona)
+
+
+def _strip_persona_internal_fields(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _strip_persona_internal_fields(item)
+            for key, item in value.items()
+            if str(key) not in PERSONA_PROMPT_INTERNAL_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_persona_internal_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_persona_internal_fields(item) for item in value)
+    return value
+
+
 def build_client_model(args: argparse.Namespace) -> Any:
     if args.client_mode == "fake":
         return FakeClientModel()
@@ -1848,6 +1880,7 @@ def build_client_prompt(
     transcript = "\n".join(
         f"Клиент: {turn['client_message']}\nБот: {turn['bot_text']}" for turn in turns
     )
+    prompt_persona = persona_for_dynamic_prompt(persona)
     return (
         "Ты симулируешь клиента для проверки Telegram-бота образовательного центра.\n"
         "Верни только JSON без Markdown: {\"message\":\"...\", \"stop\": false}.\n"
@@ -1855,7 +1888,7 @@ def build_client_prompt(
         "Правила симулятора:\n"
         f"{json.dumps(simulator_spec, ensure_ascii=False, indent=2)}\n\n"
         "Персона:\n"
-        f"{json.dumps(persona, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(prompt_persona, ensure_ascii=False, indent=2)}\n\n"
         "Текущий транскрипт:\n"
         f"{transcript or '(диалог ещё не начался)'}\n\n"
         "Сгенерируй следующую короткую реплику клиента. Если цель достигнута или бот явно не помогает, stop=true."
@@ -1885,6 +1918,7 @@ def build_judge_prompt(
     judge_prompt_version: str = "v2",
 ) -> str:
     version = normalize_judge_prompt_version(judge_prompt_version)
+    prompt_persona = persona_for_dynamic_prompt(persona)
     transcript = "\n".join(
         f"Ход {turn['turn']}\n"
         f"Клиент видел реплику клиента: {turn['client_message']}\n"
@@ -1937,7 +1971,7 @@ def build_judge_prompt(
         "Инструкция судьи:\n"
         f"{json.dumps(judge_spec, ensure_ascii=False, indent=2)}\n\n"
         "Персона:\n"
-        f"{json.dumps(persona, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(prompt_persona, ensure_ascii=False, indent=2)}\n\n"
         "Транскрипт:\n"
         f"{transcript}\n"
     )

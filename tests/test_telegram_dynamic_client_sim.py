@@ -103,6 +103,47 @@ def test_known_dialog_fields_do_not_treat_program_as_programming_subject():
     assert "subject" not in fields
 
 
+def test_action_persona_fields_are_hidden_from_client_and_text_judge_prompts():
+    persona = {
+        "type": "persona",
+        "dialog_id": "autonomy_unpk_test",
+        "brand": "unpk",
+        "persona": "родитель выбирает курс",
+        "seed_opening": "Здравствуйте, подскажите по курсу для старшей школы",
+        "deal_card": {
+            "brand": "unpk",
+            "stage": {"pipeline_id": "10408062", "status_id": "82258194", "name": "Ожидание оплаты"},
+        },
+        "expected_action": {"action": "send_payment_link", "reason": "test-only future judge field"},
+        "source_provenance": {"telegram_dialog_ids": ["raw-1"], "call_files": ["raw.md"]},
+        "held_facts": {"grade": "10", "subject": "математика"},
+    }
+    turn = {
+        "turn": 1,
+        "client_message": "Здравствуйте",
+        "bot_text": "Здравствуйте! Помогу подобрать курс.",
+        "bot_route": "draft_for_manager",
+        "bot_topic_id": "theme:016_program",
+        "bot_safety_flags": [],
+        "bot_manager_checklist": [],
+        "bot_missing_facts": [],
+        "bot_confirmed_facts": [],
+        "bot_knowledge_snippets": [],
+    }
+
+    client_prompt = sim.build_client_prompt({"rules": []}, persona, [], turn_index=1)
+    judge_prompt = sim.build_judge_prompt({"output_schema": {"verdict": "PASS|FAIL"}}, persona, [turn])
+
+    for prompt in (client_prompt, judge_prompt):
+        assert "seed_opening" in prompt
+        assert "held_facts" in prompt
+        assert "expected_action" not in prompt
+        assert "send_payment_link" not in prompt
+        assert "deal_card" not in prompt
+        assert "Ожидание оплаты" not in prompt
+        assert "source_provenance" not in prompt
+
+
 def test_judge_prompt_marks_metadata_as_internal():
     prompt = sim.build_judge_prompt(
         {"output_schema": {"verdict": "PASS|FAIL"}},

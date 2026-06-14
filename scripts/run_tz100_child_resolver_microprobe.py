@@ -2,18 +2,25 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sqlite3
-from dataclasses import dataclass
-from datetime import datetime
+from collections import Counter
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 from mango_mvp.customer_profile.builder import CustomerProfileBuilder, CustomerProfileBuildOptions
-from mango_mvp.customer_profile.child_resolver_llm import DEFAULT_STOPLIST_PATH, load_shared_phone_stoplist
+from mango_mvp.customer_profile.child_resolver_llm import (
+    DEFAULT_STOPLIST_PATH,
+    build_child_resolver_cases,
+    load_shared_phone_stoplist,
+)
+from mango_mvp.customer_profile.contracts import ProfileFieldCandidate
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -21,6 +28,8 @@ DEFAULT_SOURCE_ROOT = Path("/Users/dmitrijfabarisov/Projects/Mango analyse/produ
 DEFAULT_MASTER_CALLS_DB = Path(
     "/Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/canonical_master_20260523_audio_working_store_v1/canonical_calls_master.db"
 )
+DEFAULT_KNOWN_BAD_CASE_PREFIXES = ("588aa705", "e55507f6", "d5ab113b", "daf16c4b")
+DEFAULT_KNOWN_BAD_PROFILE_HASHES = ("a8f4040d3c7b", "55d79fc10eb7", "bbefe66c6cc9", "00084f702554")
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,7 @@ class Candidate:
     has_merge_marker: bool
     is_shared_phone: bool
     source_event_count: int
+    case_id: str = ""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -47,16 +57,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_root.mkdir(parents=True, exist_ok=True)
 
     stoplist = load_shared_phone_stoplist(stoplist_path, required=True)
-    candidates = load_candidates(profiles_db, stoplist=stoplist)
-    selected = select_microprobe_candidates(candidates, limit=int(args.limit))
+    candidates = attach_case_ids(load_candidates(profiles_db, stoplist=stoplist), profiles_db)
+    known_bad_prefixes = tuple(str(item).strip() for item in args.known_bad_case_prefix if str(item).strip())
+    known_bad_profile_hashes = tuple(str(item).strip() for item in args.known_bad_profile_hash if str(item).strip())
+    selected = select_microprobe_candidates(
+        candidates,
+        limit=int(args.limit),
+        required_case_prefixes=known_bad_prefixes,
+        required_profile_hashes=known_bad_profile_hashes,
+    )
     if not selected:
         raise SystemExit("No TZ100 microprobe candidates found")
 
     trace_path = out_root / "llm_child_resolver_trace.jsonl"
-    if trace_path.exists():
-        trace_path.unlink()
+    name_diagnostics_path = out_root / "name_veto_diagnostics.local.jsonl"
+    cache_dir = out_root / "llm_cache"
     before_db = out_root / "customer_profiles_before.sqlite"
     after_db = out_root / "customer_profiles_after.sqlite"
+    ensure_fresh_out_root(
+        trace_path=trace_path,
+        name_diagnostics_path=name_diagnostics_path,
+        cache_dir=cache_dir,
+        before_db=before_db,
+        after_db=after_db,
+    )
 
     old_env = os.environ.copy()
     try:
@@ -77,8 +101,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.environ["PROFILE_LLM_CHILD_RESOLVER_MAX_CONCURRENCY"] = str(args.max_concurrency)
         os.environ["PROFILE_LLM_CHILD_RESOLVER_STOPLIST"] = str(stoplist_path)
         os.environ["PROFILE_LLM_CHILD_RESOLVER_TRACE_PATH"] = str(trace_path)
+        os.environ["PROFILE_LLM_CHILD_RESOLVER_NAME_DIAGNOSTICS_PATH"] = str(name_diagnostics_path)
         os.environ["PROFILE_LLM_CHILD_RESOLVER_PROJECT_ROOT"] = str(Path.cwd())
-        os.environ["LLM_CACHE_DIR"] = str(out_root / "llm_cache")
+        os.environ["LLM_CACHE_DIR"] = str(cache_dir)
         after_report = build_profiles(
             timeline_db=timeline_db,
             profiles_db=after_db,
@@ -93,9 +118,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     before_metrics = child_metrics(before_db)
     after_metrics = child_metrics(after_db)
     trace_events = read_trace_events(trace_path)
+    known_bad_events = known_bad_trace_events(trace_events, known_bad_prefixes)
+    confidence_summary = summarize_confidence(trace_events, known_bad_prefixes=known_bad_prefixes)
+    manual_review_jsonl = out_root / "manual_review_cases.anonymized.jsonl"
+    manual_review_csv = out_root / "manual_review_cases.anonymized.csv"
+    known_bad_focus_path = out_root / "known_bad_focus.anonymized.jsonl"
+    write_jsonl(manual_review_jsonl, trace_events)
+    write_manual_review_csv(manual_review_csv, trace_events)
+    write_jsonl(known_bad_focus_path, known_bad_events)
     selected_public = [
         {
             "profile_hash": item.profile_hash,
+            "source_snapshot_case_id": item.case_id,
             "child_slots_before_source": item.child_slots,
             "named_slots_source": item.named_slots,
             "unnamed_slots_source": item.unnamed_slots,
@@ -106,7 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for item in selected
     ]
     summary = {
-        "schema_version": "tz100_child_resolver_microprobe_v1",
+        "schema_version": "tz100_child_resolver_microprobe_v3",
         "out_root": str(out_root),
         "profiles_db_source": str(profiles_db),
         "timeline_db": str(timeline_db),
@@ -123,6 +157,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "before_child_metrics": before_metrics,
         "after_child_metrics": after_metrics,
         "trace_path": str(trace_path),
+        "name_veto_diagnostics_path": str(name_diagnostics_path),
+        "manual_review_cases_anonymized_jsonl": str(manual_review_jsonl),
+        "manual_review_cases_anonymized_csv": str(manual_review_csv),
+        "known_bad_focus_anonymized_jsonl": str(known_bad_focus_path),
+        "known_bad_case_prefixes": list(known_bad_prefixes),
+        "known_bad_profile_hashes": list(known_bad_profile_hashes),
+        "known_bad_events": known_bad_events,
+        "confidence_bucket_summary": confidence_summary,
         "trace_events": trace_events,
         "safety": {
             "write_amo": False,
@@ -138,29 +180,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     write_json(out_root / "summary.json", summary)
     write_json(out_root / "selected_profiles_anonymized.json", selected_public)
-    print(json.dumps({"out_root": str(out_root), "selected_count": len(selected), "trace_path": str(trace_path)}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "out_root": str(out_root),
+                "selected_count": len(selected),
+                "trace_path": str(trace_path),
+                "name_veto_diagnostics_path": str(name_diagnostics_path),
+                "known_bad_found": len(known_bad_events),
+                "confidence_bucket_summary": confidence_summary,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run TZ100 child resolver microprobe on 15-20 existing profile families.")
+    parser = argparse.ArgumentParser(description="Run TZ100 v3 child resolver microprobe on 100-150 existing profile families.")
     parser.add_argument("--source-root", default=str(DEFAULT_SOURCE_ROOT))
     parser.add_argument("--profiles-db")
     parser.add_argument("--timeline-db")
     parser.add_argument("--master-calls-db", default=str(DEFAULT_MASTER_CALLS_DB))
     parser.add_argument("--stoplist", default=str(DEFAULT_STOPLIST_PATH))
     parser.add_argument("--out-root")
-    parser.add_argument("--limit", type=int, default=18)
+    parser.add_argument("--limit", type=int, default=150)
     parser.add_argument("--provider", default="codex_cli")
     parser.add_argument("--model", default="gpt-5.4-mini")
     parser.add_argument("--reasoning", default="medium")
     parser.add_argument("--max-concurrency", type=int, default=2)
+    parser.add_argument("--known-bad-case-prefix", action="append", default=list(DEFAULT_KNOWN_BAD_CASE_PREFIXES))
+    parser.add_argument("--known-bad-profile-hash", action="append", default=list(DEFAULT_KNOWN_BAD_PROFILE_HASHES))
     return parser
 
 
 def default_out_root() -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("product_data/customer_profiles") / f"tz100_microprobe_{stamp}"
+    return Path("product_data/customer_profiles") / f"tz100_microprobe_v3_{stamp}"
 
 
 def build_profiles(
@@ -180,6 +237,21 @@ def build_profiles(
             build_id=build_id,
         )
     ).build()
+
+
+def ensure_fresh_out_root(
+    *,
+    trace_path: Path,
+    name_diagnostics_path: Path,
+    cache_dir: Path,
+    before_db: Path,
+    after_db: Path,
+) -> None:
+    existing_files = [path for path in (trace_path, name_diagnostics_path, before_db, after_db) if path.exists()]
+    if existing_files:
+        raise SystemExit(f"Output root is not fresh; refusing to overwrite: {existing_files[0]}")
+    if cache_dir.exists() and any(cache_dir.iterdir()):
+        raise SystemExit(f"LLM cache dir is not empty; refusing to reuse cache: {cache_dir}")
 
 
 def load_candidates(profiles_db: Path, *, stoplist: set[str]) -> list[Candidate]:
@@ -238,7 +310,68 @@ def load_candidates(profiles_db: Path, *, stoplist: set[str]) -> list[Candidate]
     ]
 
 
-def select_microprobe_candidates(candidates: Sequence[Candidate], *, limit: int) -> list[Candidate]:
+def attach_case_ids(candidates: Sequence[Candidate], profiles_db: Path) -> list[Candidate]:
+    by_profile = {item.profile_id: item for item in candidates}
+    if not by_profile:
+        return []
+    fields = load_active_child_fields(profiles_db, profile_ids=tuple(by_profile))
+    profile_phones = {item.profile_id: item.primary_phone for item in candidates}
+    case_ids_by_profile = {case.profile_id: case.case_id for case in build_child_resolver_cases(fields, profile_phones=profile_phones)}
+    return [replace(item, case_id=case_ids_by_profile.get(item.profile_id, "")) for item in candidates]
+
+
+def load_active_child_fields(profiles_db: Path, *, profile_ids: Sequence[str]) -> list[ProfileFieldCandidate]:
+    if not profile_ids:
+        return []
+    placeholders = ",".join("?" for _ in profile_ids)
+    con = connect_read_only(profiles_db)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            f"""
+            SELECT profile_id, field, value, child_key, brand, source_system, source_ref, event_at, quote, field_id, superseded_by
+            FROM profile_fields
+            WHERE superseded_by = ''
+              AND child_key <> ''
+              AND field IN ('child_name', 'grade', 'subject')
+              AND profile_id IN ({placeholders})
+            """,
+            tuple(profile_ids),
+        ).fetchall()
+    finally:
+        con.close()
+    return [
+        ProfileFieldCandidate(
+            profile_id=str(row["profile_id"]),
+            field=str(row["field"]),
+            value=str(row["value"]),
+            child_key=str(row["child_key"] or ""),
+            brand=str(row["brand"] or "unknown"),
+            source_system=str(row["source_system"]),
+            source_ref=str(row["source_ref"]),
+            event_at=parse_event_at(str(row["event_at"])),
+            quote=str(row["quote"] or ""),
+            field_id=str(row["field_id"] or "") or None,
+            superseded_by=str(row["superseded_by"] or ""),
+        )
+        for row in rows
+    ]
+
+
+def parse_event_at(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def select_microprobe_candidates(
+    candidates: Sequence[Candidate],
+    *,
+    limit: int,
+    required_case_prefixes: Sequence[str] = (),
+    required_profile_hashes: Sequence[str] = (),
+) -> list[Candidate]:
     selected: list[Candidate] = []
 
     def add(items: Sequence[Candidate], count: int) -> None:
@@ -250,12 +383,27 @@ def select_microprobe_candidates(candidates: Sequence[Candidate], *, limit: int)
             selected.append(item)
             count -= 1
 
+    required = [
+        item
+        for prefix in required_case_prefixes
+        for item in candidates
+        if item.case_id.startswith(f"family_{prefix}") and item not in selected
+    ]
+    required.extend(
+        item
+        for profile_hash in required_profile_hashes
+        for item in candidates
+        if item.profile_hash == profile_hash and item not in required
+    )
     shared = [item for item in candidates if item.is_shared_phone]
+    multi_named = [item for item in candidates if item.named_slots >= 2 and not item.is_shared_phone]
     merge_markers = [item for item in candidates if item.has_merge_marker and not item.is_shared_phone]
     named_nameless = [item for item in candidates if item.named_slots >= 1 and item.unnamed_slots >= 1 and not item.is_shared_phone]
     nameless_only = [item for item in candidates if item.unnamed_slots >= 1 and item.named_slots == 0 and not item.is_shared_phone]
     general = [item for item in candidates if not item.is_shared_phone]
+    add(required, len(required))
     add(shared, 1)
+    add(multi_named, max(10, limit // 3))
     add(merge_markers, max(3, limit // 3))
     add(named_nameless, max(5, limit // 3))
     add(nameless_only, max(2, limit // 6))
@@ -314,6 +462,105 @@ def read_trace_events(path: Path) -> list[Mapping[str, Any]]:
     return result
 
 
+def known_bad_trace_events(
+    trace_events: Sequence[Mapping[str, Any]],
+    known_bad_prefixes: Sequence[str],
+) -> list[Mapping[str, Any]]:
+    return [
+        event
+        for event in trace_events
+        if any(str(event.get("case_id") or "").startswith(f"family_{prefix}") for prefix in known_bad_prefixes)
+    ]
+
+
+def summarize_confidence(
+    trace_events: Sequence[Mapping[str, Any]],
+    *,
+    known_bad_prefixes: Sequence[str],
+) -> Mapping[str, Any]:
+    child_buckets: Counter[str] = Counter()
+    event_buckets: Counter[str] = Counter()
+    known_bad: list[Mapping[str, Any]] = []
+    for event in trace_events:
+        children = event.get("model_children") if isinstance(event.get("model_children"), list) else []
+        confidences = [
+            str(child.get("merge_confidence") or "missing").strip().lower()
+            for child in children
+            if isinstance(child, Mapping)
+        ]
+        if not confidences:
+            confidences = ["missing"]
+        for confidence in confidences:
+            child_buckets[confidence if confidence in {"high", "low"} else "missing"] += 1
+        event_bucket = "low" if "low" in confidences else "high" if confidences and all(item == "high" for item in confidences) else "missing"
+        event_buckets[event_bucket] += 1
+        case_id = str(event.get("case_id") or "")
+        if any(case_id.startswith(f"family_{prefix}") for prefix in known_bad_prefixes):
+            known_bad.append(
+                {
+                    "case_id": case_id,
+                    "profile_hash": event.get("profile_hash"),
+                    "accepted": event.get("accepted"),
+                    "error_code": event.get("error_code"),
+                    "error_detail": event.get("error_detail"),
+                    "confidences": confidences,
+                    "has_low": "low" in confidences,
+                    "has_high": "high" in confidences,
+                }
+            )
+    known_bad_found = {str(item["case_id"])[7:15] for item in known_bad if str(item.get("case_id", "")).startswith("family_")}
+    return {
+        "children_by_confidence": dict(sorted(child_buckets.items())),
+        "events_by_confidence_signal": dict(sorted(event_buckets.items())),
+        "known_bad": known_bad,
+        "known_bad_found_prefixes": sorted(known_bad_found),
+        "known_bad_missing_prefixes": sorted(set(known_bad_prefixes) - known_bad_found),
+        "known_bad_all_have_low": bool(known_bad) and all(item["has_low"] for item in known_bad),
+        "known_bad_any_high": any(item["has_high"] for item in known_bad),
+    }
+
+
+def write_manual_review_csv(path: Path, trace_events: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "case_id",
+                "profile_hash",
+                "accepted",
+                "error_code",
+                "error_detail",
+                "merge_confidences",
+                "input_mentions_count",
+                "model_children_count",
+            ],
+        )
+        writer.writeheader()
+        for event in trace_events:
+            children = event.get("model_children") if isinstance(event.get("model_children"), list) else []
+            mentions = event.get("input_mentions") if isinstance(event.get("input_mentions"), list) else []
+            confidences = sorted(
+                {
+                    str(child.get("merge_confidence") or "missing").strip().lower()
+                    for child in children
+                    if isinstance(child, Mapping)
+                }
+            )
+            writer.writerow(
+                {
+                    "case_id": event.get("case_id", ""),
+                    "profile_hash": event.get("profile_hash", ""),
+                    "accepted": event.get("accepted", ""),
+                    "error_code": event.get("error_code", ""),
+                    "error_detail": event.get("error_detail", ""),
+                    "merge_confidences": ";".join(confidences or ["missing"]),
+                    "input_mentions_count": len(mentions),
+                    "model_children_count": len(children),
+                }
+            )
+
+
 def phone_in_stoplist(phone: str, stoplist: set[str]) -> bool:
     normalized = normalize_phone(phone)
     if not normalized:
@@ -335,6 +582,13 @@ def hash_text(value: str) -> str:
 def write_json(path: Path, payload: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

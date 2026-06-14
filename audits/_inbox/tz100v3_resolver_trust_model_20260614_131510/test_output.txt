@@ -1,0 +1,22 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile src/mango_mvp/customer_profile/child_resolver_llm.py scripts/run_tz100_child_resolver_microprobe.py
+PASS
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_profile_builder.py
+38 passed in 0.71s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_profile_builder.py tests/test_tz16_profiles_v7_build.py tests/test_refresh_customer_profiles.py
+47 passed in 0.93s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+3214 passed, 5 skipped, 1 warning in 47.43s
+
+Warning: urllib3 NotOpenSSLWarning, existing local Python/LibreSSL environment warning.
+
+Microprobe command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_tz100_child_resolver_microprobe.py --out-root product_data/customer_profiles/tz100_microprobe_v3_20260614_124341 --limit 120 --provider codex_cli --model gpt-5.4-mini --reasoning medium --max-concurrency 2
+
+Microprobe result:
+selected_count=120
+known_bad_found=4
+known_bad_all_have_low=false
+known_bad_any_high=true

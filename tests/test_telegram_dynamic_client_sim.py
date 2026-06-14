@@ -656,6 +656,7 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     assert flags["rubric"] == {"env": "", "effective": True}
     assert flags["retriever"] == {"env": "", "effective": True}
     assert flags["memory_provenance"] == {"env": "", "effective": True}
+    assert flags["direct_path_model_p0"] == {"env": "", "effective": False}
     assert flags["snapshot"] == str(snapshot_path)
 
 

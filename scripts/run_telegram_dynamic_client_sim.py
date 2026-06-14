@@ -1483,6 +1483,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
         "memory_provenance": flag_state(MEMORY_PROVENANCE_ENV),
         "deal_action_decision": flag_state(ACTION_JUDGE_FLAG_ENV),
+        "direct_path_model_p0": flag_state("TELEGRAM_DIRECT_PATH_MODEL_P0"),
         "snapshot": str(snapshot_path),
     }
 

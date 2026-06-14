@@ -346,6 +346,7 @@ def effective_flag_profile(env: Mapping[str, str] | None = None) -> dict[str, An
         "TELEGRAM_DIRECT_PATH_PILOT_CONFIG",
         "TELEGRAM_DIRECT_PATH",
         ACTION_JUDGE_FLAG_ENV,
+        "TELEGRAM_DIRECT_PATH_MODEL_P0",
         "TELEGRAM_TEMPLATE_FROM_KB",
         "TELEGRAM_ROUTE_RUBRIC",
         "TELEGRAM_LLM_RETRIEVE",

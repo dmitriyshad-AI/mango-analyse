@@ -1,0 +1,10 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py tests/test_telegram_dynamic_client_sim.py
+
+564 passed in 8.53s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+3270 passed, 2 skipped, 1 warning in 49.06s
+
+Warning:
+urllib3 NotOpenSSLWarning because local Python ssl module is compiled with LibreSSL 2.8.3.

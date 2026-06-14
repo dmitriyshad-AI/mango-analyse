@@ -57,6 +57,8 @@ from mango_mvp.channels.subscription_llm import (
     PRESALE_PII_MEMORY_ENV,
     PRESALE_SOURCE_ID_ENV,
     PRESALE_VERIFIER_FAILSOFT_ENV,
+    RETRIEVER_MODEL_DRIVEN_ENV,
+    RETRIEVER_NEED_SHADOW_ENV,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
     SAFE_FALLBACK_DRAFT_TEXT,
     ADMISSION_GUARANTEE_SAFE_TEXT,
@@ -11139,6 +11141,208 @@ def test_wave6_llm_retrieve_selects_enrollment_fact_for_paid_next_step(tmp_path:
     assert pack["llm_retrieve"]["used"] is True
 
 
+def test_tz110_retriever_flags_off_keep_id_only_contract(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    prompt_seen = ""
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        "conversation_intent_plan": {
+            "primary_intent": "pricing",
+            "answer_topics": ["pricing"],
+            "required_fact_keys": ["prices.current"],
+        },
+    }
+
+    def retriever(prompt: str) -> Mapping[str, object]:
+        nonlocal prompt_seen
+        prompt_seen = prompt
+        return {"exact_ids": ["foton.price.online"], "adjacent_ids": []}
+
+    pack = _direct_path_context_fact_pack(context, client_message="Сколько стоит?", retriever_fn=retriever)
+
+    assert "needed_facts" not in prompt_seen
+    assert "required_fact_keys" in prompt_seen
+    assert "prices.current" in prompt_seen
+    assert pack["llm_retrieve"]["mode"] == "id_only"
+    assert pack["llm_retrieve"]["needed_facts"] == []
+    assert pack["llm_retrieve"]["keyword_required_fact_keys"] == ["prices.current"]
+
+
+def test_tz110_need_shadow_logs_declaration_without_changing_selection(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    base_context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        "conversation_intent_plan": {
+            "primary_intent": "pricing",
+            "answer_topics": ["pricing"],
+            "required_fact_keys": ["prices.current"],
+        },
+    }
+    payload = {
+        "needed_facts": [
+            {
+                "theme": "pricing",
+                "fact_type": "price",
+                "brand": "foton",
+                "grade": "не указано",
+                "subject": "не указано",
+                "format": "онлайн",
+                "product": "regular_course",
+                "why_needed": "клиент спрашивает стоимость",
+                "importance": "required",
+            }
+        ],
+        "exact_ids": ["foton.price.online"],
+        "adjacent_ids": ["foton.schedule"],
+    }
+
+    off = _direct_path_context_fact_pack(base_context, client_message="Сколько стоит?", retriever_fn=lambda prompt: payload)
+    shadow = _direct_path_context_fact_pack(
+        {**base_context, RETRIEVER_NEED_SHADOW_ENV: "1"},
+        client_message="Сколько стоит?",
+        retriever_fn=lambda prompt: payload,
+    )
+
+    assert shadow["facts"] == off["facts"]
+    assert shadow["exact_keys"] == off["exact_keys"]
+    assert shadow["adjacent_keys"] == off["adjacent_keys"]
+    assert shadow["llm_retrieve"]["mode"] == "need_shadow"
+    assert shadow["llm_retrieve"]["need_shadow_enabled"] is True
+    assert shadow["llm_retrieve"]["model_driven"] is False
+    assert shadow["llm_retrieve"]["needed_facts"][0]["fact_type"] == "price"
+    assert shadow["llm_retrieve"]["declaration_comparison"]["model_fact_types"] == ["price"]
+    assert shadow["llm_retrieve"]["keyword_required_fact_keys"] == ["prices.current"]
+
+
+def test_tz110_model_driven_strips_required_fact_keys_from_retriever_prompt_but_keeps_metadata(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    prompt_seen = ""
+    calls = 0
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        RETRIEVER_MODEL_DRIVEN_ENV: "1",
+        "conversation_intent_plan": {
+            "primary_intent": "pricing",
+            "answer_topics": ["pricing"],
+            "required_fact_keys": ["prices.current"],
+        },
+    }
+
+    def retriever(prompt: str) -> Mapping[str, object]:
+        nonlocal calls, prompt_seen
+        calls += 1
+        prompt_seen = prompt
+        return {
+            "needed_facts": [
+                {
+                    "theme": "pricing",
+                    "fact_type": "price",
+                    "brand": "foton",
+                    "why_needed": "клиент спрашивает стоимость",
+                    "importance": "required",
+                }
+            ],
+            "exact_ids": ["foton.price.online"],
+            "adjacent_ids": [],
+        }
+
+    pack = _direct_path_context_fact_pack(context, client_message="Сколько стоит?", retriever_fn=retriever)
+
+    assert "required_fact_keys" not in prompt_seen
+    assert "prices.current" not in prompt_seen
+    assert "сам по смыслу определи" in prompt_seen
+    assert calls == 1
+    assert pack["llm_retrieve"]["mode"] == "model_driven"
+    assert pack["llm_retrieve"]["model_driven"] is True
+    assert pack["llm_retrieve"]["keyword_required_fact_keys"] == ["prices.current"]
+
+
+def test_tz110_model_driven_requires_needed_fact_declaration_and_falls_back_to_keyword(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        RETRIEVER_MODEL_DRIVEN_ENV: "1",
+        "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
+    }
+    keyword = _direct_path_context_fact_pack({**context, LLM_RETRIEVE_ENV: "0"}, client_message="Сколько стоит?")
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит?",
+        retriever_fn=lambda prompt: {"exact_ids": ["foton.price.online"], "adjacent_ids": []},
+    )
+
+    assert pack["facts"] == keyword["facts"]
+    assert pack["llm_retrieve"]["fallback"] is True
+    assert pack["llm_retrieve"]["fallback_reason"] == "missing_needed_facts"
+    assert pack["llm_retrieve"]["needed_fact_declaration_missing"] is True
+
+
+def test_tz110_llm_retrieve_logs_scope_demoted_ids_for_wrong_scope_exact_selection(tmp_path: Path) -> None:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics9.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: физика 9 класс онлайн стоит 29 750 ₽ за семестр.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics9.offline.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: физика 9 класс очно стоит 44 600 ₽ за семестр.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "scope_snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    pack = _direct_path_context_fact_pack(
+        {
+            "active_brand": "foton",
+            "snapshot_path": str(snapshot_path),
+            LLM_RETRIEVE_ENV: "1",
+            RETRIEVER_NEED_SHADOW_ENV: "1",
+            "known_slots": {"format": "очно", "grade": "9", "subject": "физика"},
+        },
+        client_message="Сколько стоит очно физика 9 класс?",
+        retriever_fn=lambda prompt: {
+            "needed_facts": [
+                {
+                    "theme": "pricing",
+                    "fact_type": "price",
+                    "brand": "foton",
+                    "format": "очно",
+                    "why_needed": "клиент спрашивает цену очного формата",
+                    "importance": "required",
+                }
+            ],
+            "exact_ids": ["foton.physics9.online.price"],
+            "adjacent_ids": ["foton.physics9.offline.price"],
+        },
+    )
+
+    assert "foton.physics9.online.price" not in pack["exact_keys"]
+    assert "foton.physics9.online.price" in pack["adjacent_keys"]
+    assert "foton.physics9.offline.price" in pack["exact_keys"]
+    assert pack["llm_retrieve"]["model_selected_exact_ids"] == ["foton.physics9.online.price"]
+    assert pack["llm_retrieve"]["selected_exact_ids"] == ["foton.physics9.offline.price"]
+    assert pack["llm_retrieve"]["scope_demoted_ids"] == ["foton.physics9.online.price"]
+
+
 def test_wave6_llm_retrieve_supplements_price_and_schedule_for_known_course(tmp_path: Path) -> None:
     snapshot = {
         "facts": [
@@ -12664,12 +12868,14 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         PRESALE_SOURCE_ID_ENV,
         subscription_llm.MEMORY_PROVENANCE_ENV,
         subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
-        subscription_llm.PII_RELATION_STOPWORDS_ENV,
-        subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
-        TEMPLATE_FROM_KB_ENV,
-        DIRECT_PATH_PILOT_CONFIG_ENV,
-    ):
-        monkeypatch.delenv(key, raising=False)
+	        subscription_llm.PII_RELATION_STOPWORDS_ENV,
+	        subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
+	        RETRIEVER_MODEL_DRIVEN_ENV,
+	        RETRIEVER_NEED_SHADOW_ENV,
+	        TEMPLATE_FROM_KB_ENV,
+	        DIRECT_PATH_PILOT_CONFIG_ENV,
+	    ):
+	        monkeypatch.delenv(key, raising=False)
 
     context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
 
@@ -12692,6 +12898,12 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PII_RELATION_STOPWORDS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._retriever_need_shadow_enabled(context) is False
+    assert subscription_llm._retriever_model_driven_enabled(context) is False
+    assert subscription_llm._retriever_need_shadow_enabled({**context, RETRIEVER_NEED_SHADOW_ENV: "1"}) is True
+    assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is True
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:

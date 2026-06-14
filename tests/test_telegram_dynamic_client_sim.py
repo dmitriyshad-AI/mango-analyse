@@ -600,6 +600,8 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_TEMPLATE_FROM_KB", raising=False)
     monkeypatch.delenv("TELEGRAM_ROUTE_RUBRIC", raising=False)
     monkeypatch.delenv("TELEGRAM_LLM_RETRIEVE", raising=False)
+    monkeypatch.delenv("TELEGRAM_RETRIEVER_NEED_SHADOW", raising=False)
+    monkeypatch.delenv("TELEGRAM_RETRIEVER_MODEL_DRIVEN", raising=False)
     snapshot_path = tmp_path / "snapshot.json"
 
     summary = sim.build_summary(
@@ -614,6 +616,8 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     assert flags["render"] == {"env": "", "effective": True}
     assert flags["rubric"] == {"env": "", "effective": True}
     assert flags["retriever"] == {"env": "", "effective": True}
+    assert flags["retriever_need_shadow"] == {"env": "", "effective": False}
+    assert flags["retriever_model_driven"] == {"env": "", "effective": False}
     assert flags["memory_provenance"] == {"env": "", "effective": True}
     assert flags["snapshot"] == str(snapshot_path)
 
@@ -632,6 +636,23 @@ def test_summary_key_run_flags_allow_explicit_retriever_disable(monkeypatch, tmp
     assert summary["run_config"]["key_flags"]["retriever"] == {"env": "0", "effective": False}
 
 
+def test_summary_key_run_flags_allow_explicit_tz110_retriever_modes(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setenv("TELEGRAM_RETRIEVER_NEED_SHADOW", "1")
+    monkeypatch.setenv("TELEGRAM_RETRIEVER_MODEL_DRIVEN", "1")
+
+    summary = sim.build_summary(
+        [{"dialog_id": "flags", "brand": "foton", "run_status": "completed", "turns": []}],
+        [{"dialog_id": "flags", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    flags = summary["run_config"]["key_flags"]
+    assert flags["retriever_need_shadow"] == {"env": "1", "effective": True}
+    assert flags["retriever_model_driven"] == {"env": "1", "effective": True}
+
+
 def test_summary_key_run_flags_allow_explicit_memory_provenance_disable(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
     monkeypatch.setenv("TELEGRAM_MEMORY_PROVENANCE", "0")
@@ -644,6 +665,63 @@ def test_summary_key_run_flags_allow_explicit_memory_provenance_disable(monkeypa
     )
 
     assert summary["run_config"]["key_flags"]["memory_provenance"] == {"env": "0", "effective": False}
+
+
+def test_summary_includes_machine_readable_fact_retrieval_trace(tmp_path):
+    trace = {
+        "required_fact_keys": ["prices.current"],
+        "model_needed_facts": [{"fact_type": "price", "why_needed": "клиент спрашивает цену"}],
+        "declaration_comparison": {
+            "keyword_fact_types": ["prices"],
+            "model_fact_types": ["price"],
+            "model_only_fact_types": ["price"],
+            "keyword_only_fact_types": ["prices"],
+        },
+        "candidate_count": 4,
+        "selected_exact_ids": ["foton.price.online"],
+        "selected_adjacent_ids": ["foton.schedule"],
+        "scope_demoted_ids": ["foton.price.offline"],
+        "discarded_ids": ["missing.fact"],
+        "llm_retrieve": {"enabled": True, "used": True, "fallback": False, "fallback_reason": ""},
+        "mode": "model_driven",
+        "need_shadow_enabled": True,
+        "model_driven": True,
+        "route": "bot_answer_self_for_pilot",
+        "p0_signal": {"answer_contract_p0_required": False, "safety_flags": [], "gate_codes": []},
+        "brand_scope_verdicts": {"active_brand": "foton", "gate_action": "pass", "gate_codes": []},
+    }
+
+    summary = sim.build_summary(
+        [
+            {
+                "dialog_id": "fact_trace",
+                "brand": "foton",
+                "run_status": "completed",
+                "turns": [
+                    {
+                        "turn": 1,
+                        "bot_route": "bot_answer_self_for_pilot",
+                        "bot_fact_retrieval_trace": trace,
+                        "bot_safety_flags": [],
+                        "bot_authoritative_output_gate": {"action": "pass", "findings": []},
+                    }
+                ],
+            }
+        ],
+        [{"dialog_id": "fact_trace", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    fact_trace = summary["fact_retrieval_trace"]
+    assert fact_trace["schema_version"] == "fact_retrieval_trace_v1_2026_06_15"
+    assert fact_trace["mode_counts"] == {"model_driven": 1}
+    assert fact_trace["llm_used_turns"] == 1
+    assert fact_trace["scope_demoted_id_count"] == 1
+    assert fact_trace["discarded_id_count"] == 1
+    assert fact_trace["turns"][0]["required_fact_keys"] == ["prices.current"]
+    assert fact_trace["turns"][0]["model_needed_facts"][0]["fact_type"] == "price"
+    assert fact_trace["turns"][0]["declaration_comparison"]["model_only_fact_types"] == ["price"]
 
 
 def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):

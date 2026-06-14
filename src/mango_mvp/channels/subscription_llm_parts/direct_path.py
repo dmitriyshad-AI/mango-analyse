@@ -64,6 +64,12 @@ DIRECT_PATH_WIDE_FACT_LIMIT = 60
 
 DIRECT_PATH_WIDE_FACT_CHAR_LIMIT = 10_000
 
+RETRIEVER_NEED_SHADOW_ENV = "TELEGRAM_RETRIEVER_NEED_SHADOW"
+
+RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
+
+RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
+
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
     Path(__file__).resolve().parents[4]
     / "product_data"
@@ -137,6 +143,37 @@ def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
 
 def _llm_retrieve_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_profile_flag_enabled(context, LLM_RETRIEVE_ENV, aliases=("llm_retrieve_enabled",))
+
+def _default_off_flag_enabled(
+    context: Optional[Mapping[str, Any]],
+    env_name: str,
+    *,
+    aliases: Sequence[str] = (),
+) -> bool:
+    if isinstance(context, Mapping):
+        for key in (env_name, *aliases):
+            if key in context:
+                return _truthy_value(context.get(key))
+    if env_name in os.environ:
+        return _truthy_value(os.getenv(env_name))
+    return False
+
+def _retriever_need_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        RETRIEVER_NEED_SHADOW_ENV,
+        aliases=("retriever_need_shadow", "retriever_need_shadow_enabled"),
+    )
+
+def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        RETRIEVER_MODEL_DRIVEN_ENV,
+        aliases=("retriever_model_driven", "retriever_model_driven_enabled"),
+    )
+
+def _retriever_need_declaration_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _retriever_need_shadow_enabled(context) or _retriever_model_driven_enabled(context)
 
 def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
@@ -678,6 +715,107 @@ def _direct_path_retriever_candidate_summary(fact: Mapping[str, Any]) -> str:
     prefix = "; ".join(item for item in (f"fact_type={fact_type}" if fact_type else "", f"product={product}" if product else "") if item)
     return f"{prefix}: {text}" if prefix else text
 
+def _direct_path_required_fact_keys(context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
+    if not isinstance(context, Mapping):
+        return ()
+    values: list[str] = []
+
+    def add_many(raw: Any) -> None:
+        if isinstance(raw, str):
+            seq: Sequence[Any] = [raw]
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            seq = raw
+        else:
+            return
+        for item in seq:
+            key = str(item or "").strip()
+            if key and key not in values:
+                values.append(key)
+
+    add_many(context.get("required_fact_keys"))
+    plan = context.get("conversation_intent_plan")
+    if isinstance(plan, Mapping):
+        add_many(plan.get("required_fact_keys"))
+    facts_context = context.get("facts_context")
+    if isinstance(facts_context, Mapping):
+        add_many(facts_context.get("required_fact_keys"))
+    return tuple(values)
+
+def _direct_path_retriever_mode(context: Optional[Mapping[str, Any]]) -> str:
+    if _retriever_model_driven_enabled(context):
+        return "model_driven"
+    if _retriever_need_shadow_enabled(context):
+        return "need_shadow"
+    return "id_only"
+
+def _compact_retriever_text(value: Any, *, max_chars: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "…"
+    return text
+
+def _direct_path_needed_fact_declaration(payload: Mapping[str, Any]) -> list[dict[str, str]]:
+    raw = payload.get("needed_facts") or payload.get("needed_fact_requests") or payload.get("facts_needed")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return []
+    result: list[dict[str, str]] = []
+    allowed_keys = (
+        "theme",
+        "fact_type",
+        "brand",
+        "grade",
+        "subject",
+        "format",
+        "product",
+        "why_needed",
+        "importance",
+    )
+    for item in raw[:20]:
+        if not isinstance(item, Mapping):
+            continue
+        normalized = {
+            key: _compact_retriever_text(item.get(key), max_chars=260 if key == "why_needed" else 80)
+            for key in allowed_keys
+            if _compact_retriever_text(item.get(key), max_chars=260 if key == "why_needed" else 80)
+        }
+        if normalized:
+            result.append(normalized)
+    return result
+
+def _direct_path_fact_type_root(value: str) -> str:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return ""
+    return re.split(r"[.:/\s_-]+", text, maxsplit=1)[0]
+
+def _direct_path_declaration_comparison(
+    *,
+    keyword_required_fact_keys: Sequence[str],
+    needed_facts: Sequence[Mapping[str, str]],
+) -> Mapping[str, Any]:
+    keyword_types = sorted(
+        {
+            _direct_path_fact_type_root(key)
+            for key in keyword_required_fact_keys
+            if _direct_path_fact_type_root(key)
+        }
+    )
+    model_types = sorted(
+        {
+            _direct_path_fact_type_root(str(item.get("fact_type") or ""))
+            for item in needed_facts
+            if _direct_path_fact_type_root(str(item.get("fact_type") or ""))
+        }
+    )
+    keyword_set = set(keyword_types)
+    model_set = set(model_types)
+    return {
+        "keyword_fact_types": keyword_types,
+        "model_fact_types": model_types,
+        "model_only_fact_types": sorted(model_set - keyword_set),
+        "keyword_only_fact_types": sorted(keyword_set - model_set),
+    }
+
 def build_direct_path_llm_retriever_prompt(
     client_message: str,
     *,
@@ -686,12 +824,17 @@ def build_direct_path_llm_retriever_prompt(
 ) -> str:
     recent = "\n".join(_direct_path_recent_messages(context, limit=6)) or "(нет истории)"
     slots = json.dumps(_direct_path_known_slots(context), ensure_ascii=False, sort_keys=True)
+    need_declaration = _retriever_need_declaration_enabled(context)
+    model_driven = _retriever_model_driven_enabled(context)
     plan = {}
     if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping):
         source_plan = context["conversation_intent_plan"]
+        plan_keys = ("primary_intent", "answer_topics", "planner_slots", "planner_confidence")
+        if not model_driven:
+            plan_keys = ("primary_intent", "answer_topics", "required_fact_keys", "planner_slots", "planner_confidence")
         plan = {
             key: source_plan.get(key)
-            for key in ("primary_intent", "answer_topics", "required_fact_keys", "planner_slots", "planner_confidence")
+            for key in plan_keys
             if key in source_plan
         }
     plan_json = json.dumps(plan, ensure_ascii=False, sort_keys=True)
@@ -702,6 +845,28 @@ def build_direct_path_llm_retriever_prompt(
             continue
         lines.append(f"- {key}: {_direct_path_retriever_candidate_summary(fact)}")
     candidate_block = "\n".join(lines) or "(нет кандидатов)"
+    declaration_instruction = ""
+    json_schema = '{"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+    if need_declaration:
+        driver_line = (
+            "В этом режиме сам по смыслу определи, какие факты нужны для ответа; "
+            "не жди внешней подсказки с готовыми ключами фактов.\n"
+            if model_driven
+            else "Наличие needed_facts не должно менять exact_ids и adjacent_ids: сначала выбери id как в обычном режиме, затем опиши нужные факты.\n"
+        )
+        declaration_instruction = (
+            "\nДополнительно верни needed_facts — структурированную декларацию того, какие факты нужны клиенту.\n"
+            f"Версия схемы декларации: {RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION}.\n"
+            f"{driver_line}"
+            "Каждый элемент needed_facts: theme, fact_type, brand, grade, subject, format, product, "
+            "why_needed, importance. importance только required или helpful. Если нужных фактов нет, верни пустой список.\n"
+        )
+        json_schema = (
+            '{"needed_facts":[{"theme":"pricing","fact_type":"price","brand":"foton",'
+            '"grade":"9","subject":"физика","format":"онлайн","product":"regular_course",'
+            '"why_needed":"клиент спрашивает стоимость","importance":"required"}],'
+            '"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+        )
     return (
         "Ты выбираешь факты для черновика ответа учебного центра.\n"
         "Твоя задача — выбрать id фактов из списка кандидатов. Не пиши клиентский текст.\n"
@@ -716,7 +881,8 @@ def build_direct_path_llm_retriever_prompt(
         f"Известные слоты: {slots}\n"
         f"План/интент: {plan_json}\n\n"
         f"Кандидаты:\n{candidate_block}\n\n"
-        'Верни строго JSON: {"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+        f"{declaration_instruction}"
+        f"Верни строго JSON: {json_schema}"
     )
 
 def _direct_path_retriever_ids(value: Any) -> tuple[str, ...]:
@@ -744,20 +910,39 @@ def _direct_path_llm_retrieve_fact_pack(
     max_chars: int,
     retriever_fn: Optional[Callable[[str], Mapping[str, Any] | str]],
 ) -> tuple[Optional[Mapping[str, Any]], Mapping[str, Any]]:
+    need_declaration = _retriever_need_declaration_enabled(context)
+    model_driven = _retriever_model_driven_enabled(context)
+    keyword_required_fact_keys = _direct_path_required_fact_keys(context)
     candidate_by_key = {
         _direct_path_snapshot_fact_key(fact): fact
         for fact in records
         if _direct_path_snapshot_fact_key(fact)
     }
     metadata: dict[str, Any] = {
+        "schema_version": "llm_retrieve_v2_2026_06_15",
         "enabled": True,
         "used": False,
         "fallback": False,
         "fallback_reason": "",
+        "mode": _direct_path_retriever_mode(context),
+        "need_shadow_enabled": _retriever_need_shadow_enabled(context),
+        "model_driven": model_driven,
+        "need_declaration_schema_version": RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION if need_declaration else "",
+        "keyword_required_fact_keys": list(keyword_required_fact_keys),
+        "needed_facts": [],
+        "needed_fact_declaration_missing": False,
+        "declaration_comparison": _direct_path_declaration_comparison(
+            keyword_required_fact_keys=keyword_required_fact_keys,
+            needed_facts=(),
+        ),
         "candidate_count": len(candidate_by_key),
         "selected_exact_ids": [],
         "selected_adjacent_ids": [],
+        "model_selected_exact_ids": [],
+        "model_selected_adjacent_ids": [],
         "invalid_ids": [],
+        "discarded_ids": [],
+        "scope_demoted_ids": [],
         "active_brand": str(active_brand or ""),
     }
     if not candidate_by_key:
@@ -780,6 +965,17 @@ def _direct_path_llm_retrieve_fact_pack(
     except Exception as exc:  # noqa: BLE001
         metadata.update({"fallback": True, "fallback_reason": "invalid_json", "error": str(exc)[:300]})
         return None, metadata
+    if need_declaration:
+        needed_facts = _direct_path_needed_fact_declaration(payload)
+        metadata["needed_facts"] = needed_facts
+        metadata["needed_fact_declaration_missing"] = not bool(needed_facts)
+        metadata["declaration_comparison"] = _direct_path_declaration_comparison(
+            keyword_required_fact_keys=keyword_required_fact_keys,
+            needed_facts=needed_facts,
+        )
+        if model_driven and not needed_facts:
+            metadata.update({"fallback": True, "fallback_reason": "missing_needed_facts"})
+            return None, metadata
     exact_raw = _direct_path_retriever_ids(payload.get("exact_ids") or payload.get("exact") or payload.get("exact_fact_ids"))
     adjacent_raw = _direct_path_retriever_ids(payload.get("adjacent_ids") or payload.get("adjacent") or payload.get("adjacent_fact_ids"))
     selected_exact: list[str] = []
@@ -797,6 +993,9 @@ def _direct_path_llm_retrieve_fact_pack(
         else:
             selected_adjacent.append(key)
     metadata["invalid_ids"] = invalid
+    metadata["discarded_ids"] = list(invalid)
+    metadata["model_selected_exact_ids"] = list(selected_exact)
+    metadata["model_selected_adjacent_ids"] = list(selected_adjacent)
     if not selected_exact and not selected_adjacent:
         metadata.update({"fallback": True, "fallback_reason": "empty_selection"})
         return None, metadata
@@ -804,14 +1003,23 @@ def _direct_path_llm_retrieve_fact_pack(
     slots = _direct_path_slot_scope(context)
     exact_records: list[Mapping[str, Any]] = []
     adjacent_records: list[Mapping[str, Any]] = []
+    final_exact_ids: list[str] = []
+    final_adjacent_ids: list[str] = []
+    scope_demoted_ids: list[str] = []
     for key in selected_exact:
         fact = candidate_by_key[key]
         if _direct_path_fact_conflicts_slots(fact, slots):
             adjacent_records.append(fact)
+            scope_demoted_ids.append(key)
+            if key not in final_adjacent_ids:
+                final_adjacent_ids.append(key)
         else:
             exact_records.append(fact)
+            final_exact_ids.append(key)
     for key in selected_adjacent:
         adjacent_records.append(candidate_by_key[key])
+        if key not in final_adjacent_ids:
+            final_adjacent_ids.append(key)
     supplemented_exact: list[str] = []
     for fact in _direct_path_course_fact_supplements(
         records,
@@ -822,17 +1030,19 @@ def _direct_path_llm_retrieve_fact_pack(
         key = _direct_path_snapshot_fact_key(fact)
         if not key or key in selected_exact:
             continue
-        if key in selected_adjacent:
-            selected_adjacent.remove(key)
+        if key in final_adjacent_ids:
+            final_adjacent_ids.remove(key)
             adjacent_records = [item for item in adjacent_records if _direct_path_snapshot_fact_key(item) != key]
-        selected_exact.append(key)
+        if key not in final_exact_ids:
+            final_exact_ids.append(key)
         exact_records.append(fact)
         supplemented_exact.append(key)
     metadata.update(
         {
             "used": True,
-            "selected_exact_ids": list(selected_exact),
-            "selected_adjacent_ids": list(selected_adjacent),
+            "selected_exact_ids": list(final_exact_ids),
+            "selected_adjacent_ids": list(final_adjacent_ids),
+            "scope_demoted_ids": scope_demoted_ids,
             "supplemented_exact_ids": supplemented_exact,
         }
     )

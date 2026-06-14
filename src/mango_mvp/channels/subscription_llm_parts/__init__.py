@@ -15,10 +15,15 @@ __all__.extend(
     [
         "DEAL_ACTION_DECISION_ENV",
         "DIRECT_PATH_MODEL_P0_ENV",
+        "RETRIEVER_MODEL_DRIVEN_ENV",
+        "RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION",
+        "RETRIEVER_NEED_SHADOW_ENV",
         "DEAL_ACTION_DECISION_SCHEMA_VERSION",
         "DEAL_ACTION_UNKNOWN",
         "DEAL_ACTIONS",
         "apply_deal_action_decision_layer",
+        "_retriever_model_driven_enabled",
+        "_retriever_need_shadow_enabled",
     ]
 )
 

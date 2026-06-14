@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from mango_mvp.channels.subscription_llm import (
+    RETRIEVER_MODEL_DRIVEN_ENV,
+    RETRIEVER_NEED_SHADOW_ENV,
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
     build_codex_exec_command,
@@ -1368,13 +1370,111 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
             effective = _truthy_env_value(raw)
         return {"env": "" if raw is None else str(raw), "effective": bool(effective)}
 
+    def default_off_flag_state(name: str) -> Mapping[str, Any]:
+        raw = os.getenv(name)
+        return {"env": "" if raw is None else str(raw), "effective": bool(_truthy_env_value(raw))}
+
     return {
         "profile": {"env": profile, "effective": profile_enabled},
         "render": flag_state("TELEGRAM_TEMPLATE_FROM_KB"),
         "rubric": flag_state("TELEGRAM_ROUTE_RUBRIC"),
         "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
+        "retriever_need_shadow": default_off_flag_state(RETRIEVER_NEED_SHADOW_ENV),
+        "retriever_model_driven": default_off_flag_state(RETRIEVER_MODEL_DRIVEN_ENV),
         "memory_provenance": flag_state(MEMORY_PROVENANCE_ENV),
         "snapshot": str(snapshot_path),
+    }
+
+
+def _string_list(value: object, *, limit: int = 80) -> list[str]:
+    if isinstance(value, str):
+        seq: Sequence[object] = [value]
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        seq = value
+    else:
+        return []
+    result: list[str] = []
+    for item in seq[:limit]:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _context_required_fact_keys(context: Mapping[str, Any]) -> list[str]:
+    keys: list[str] = []
+
+    def add_many(value: object) -> None:
+        for key in _string_list(value):
+            if key not in keys:
+                keys.append(key)
+
+    add_many(context.get("required_fact_keys"))
+    plan = context.get("conversation_intent_plan")
+    if isinstance(plan, Mapping):
+        add_many(plan.get("required_fact_keys"))
+    facts_context = context.get("facts_context")
+    if isinstance(facts_context, Mapping):
+        add_many(facts_context.get("required_fact_keys"))
+    return keys
+
+
+def _fact_retrieval_trace_for_turn(
+    *,
+    context: Mapping[str, Any],
+    direct_path_metadata: Mapping[str, Any],
+    authoritative_gate_metadata: Mapping[str, Any],
+    result: Any,
+) -> Mapping[str, Any]:
+    llm = direct_path_metadata.get("llm_retrieve") if isinstance(direct_path_metadata.get("llm_retrieve"), Mapping) else {}
+    gate_codes = _authoritative_gate_finding_codes(authoritative_gate_metadata)
+    brand_scope_codes = [
+        code
+        for code in gate_codes
+        if re.search(r"brand|scope|wrong_scope|cross_brand", code, re.I)
+    ]
+    contract = context.get("answer_contract") if isinstance(context.get("answer_contract"), Mapping) else {}
+    result_metadata = getattr(result, "metadata", None)
+    top_model_p0 = (
+        result_metadata.get("direct_path_model_p0")
+        if isinstance(result_metadata, Mapping) and isinstance(result_metadata.get("direct_path_model_p0"), Mapping)
+        else {}
+    )
+    direct_model_p0 = direct_path_metadata.get("model_p0") if isinstance(direct_path_metadata.get("model_p0"), Mapping) else {}
+    safety_flags = _string_list(getattr(result, "safety_flags", ()))
+    p0_flags = [flag for flag in safety_flags if re.search(r"p0|refund|complaint|legal|payment_dispute|high_risk", flag, re.I)]
+    mode = str(llm.get("mode") or "off")
+    return {
+        "required_fact_keys": _context_required_fact_keys(context),
+        "model_needed_facts": list(llm.get("needed_facts") or []) if isinstance(llm, Mapping) else [],
+        "declaration_comparison": dict(llm.get("declaration_comparison") or {}) if isinstance(llm.get("declaration_comparison"), Mapping) else {},
+        "candidate_count": int(llm.get("candidate_count") or 0) if isinstance(llm, Mapping) else 0,
+        "selected_exact_ids": _string_list(llm.get("selected_exact_ids") or direct_path_metadata.get("wide_fact_exact_keys") or []),
+        "selected_adjacent_ids": _string_list(llm.get("selected_adjacent_ids") or direct_path_metadata.get("wide_fact_adjacent_keys") or []),
+        "scope_demoted_ids": _string_list(llm.get("scope_demoted_ids") or []),
+        "discarded_ids": _string_list(llm.get("discarded_ids") or llm.get("invalid_ids") or []),
+        "llm_retrieve": {
+            "enabled": bool(llm.get("enabled")) if isinstance(llm, Mapping) else False,
+            "used": bool(llm.get("used")) if isinstance(llm, Mapping) else False,
+            "fallback": bool(llm.get("fallback")) if isinstance(llm, Mapping) else False,
+            "fallback_reason": str(llm.get("fallback_reason") or "") if isinstance(llm, Mapping) else "",
+        },
+        "mode": mode,
+        "need_shadow_enabled": bool(llm.get("need_shadow_enabled")) if isinstance(llm, Mapping) else False,
+        "model_driven": bool(llm.get("model_driven")) if isinstance(llm, Mapping) else False,
+        "route": str(getattr(result, "route", "") or ""),
+        "p0_signal": {
+            "model": dict(direct_model_p0 or top_model_p0),
+            "answer_contract_p0_required": bool(contract.get("p0_required") or contract.get("is_p0")),
+            "safety_flags": p0_flags,
+            "gate_codes": list(gate_codes),
+        },
+        "brand_scope_verdicts": {
+            "active_brand": str(context.get("active_brand") or direct_path_metadata.get("active_brand") or ""),
+            "gate_action": str(authoritative_gate_metadata.get("action") or ""),
+            "gate_codes": list(gate_codes),
+            "brand_scope_codes": brand_scope_codes,
+        },
     }
 
 
@@ -1465,6 +1565,11 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                     ),
                     "bot_authoritative_output_gate": json.dumps(
                         turn.get("bot_authoritative_output_gate") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "bot_fact_retrieval_trace": json.dumps(
+                        turn.get("bot_fact_retrieval_trace") or {},
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
@@ -1695,6 +1800,12 @@ def run_one_dialog(
             "bot_missing_facts": list(result.missing_facts),
             "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
             "bot_direct_path": direct_path_metadata,
+            "bot_fact_retrieval_trace": _fact_retrieval_trace_for_turn(
+                context=context,
+                direct_path_metadata=direct_path_metadata,
+                authoritative_gate_metadata=authoritative_gate_metadata,
+                result=result,
+            ),
             "bot_faithfulness_shadow": list(dialogue_contract_metadata.get("faithfulness_shadow") or []),
             "bot_fallback_reason": bot_fallback_reason,
             "bot_provider_error": bot_provider_error,
@@ -2916,6 +3027,7 @@ def build_summary(
     tone_sell_prompt = _tone_sell_prompt_summary(transcripts)
     action_decision = _action_decision_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
+    fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     config_validity = _direct_path_config_invalid(
         transcripts,
         persona_order={str(dialog.get("dialog_id") or ""): index for index, dialog in enumerate(transcripts)},
@@ -3040,6 +3152,7 @@ def build_summary(
         "direct_path_rubric": direct_path_rubric,
         "llm_calls": llm_call_summary,
         "semantic_output_verifier": semantic_output_verifier,
+        "fact_retrieval_trace": fact_retrieval_trace,
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
@@ -3162,6 +3275,75 @@ def _semantic_verifier_deduped_by_deterministic_gate(turn: Mapping[str, Any]) ->
         if deterministic_codes.intersection(_SEMANTIC_VERIFIER_DEDUP_CLASSES.get(code, set())):
             return True
     return False
+
+
+def _fact_retrieval_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    mode_counts: Counter[str] = Counter()
+    fallback_reasons: Counter[str] = Counter()
+    turns: list[Mapping[str, Any]] = []
+    total = 0
+    llm_used = 0
+    scope_demoted = 0
+    discarded = 0
+    missing_declaration = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            trace = turn.get("bot_fact_retrieval_trace")
+            if not isinstance(trace, Mapping) or not trace:
+                continue
+            total += 1
+            mode = str(trace.get("mode") or "off")
+            mode_counts[mode] += 1
+            llm = trace.get("llm_retrieve") if isinstance(trace.get("llm_retrieve"), Mapping) else {}
+            if llm.get("used"):
+                llm_used += 1
+            reason = str(llm.get("fallback_reason") or "")
+            if reason:
+                fallback_reasons[reason] += 1
+            scope_demoted_ids = _string_list(trace.get("scope_demoted_ids") or [])
+            discarded_ids = _string_list(trace.get("discarded_ids") or [])
+            scope_demoted += len(scope_demoted_ids)
+            discarded += len(discarded_ids)
+            if trace.get("need_shadow_enabled") or trace.get("model_driven"):
+                if not trace.get("model_needed_facts"):
+                    missing_declaration += 1
+            turns.append(
+                {
+                    "dialog_id": str(dialog.get("dialog_id") or ""),
+                    "turn": turn.get("turn"),
+                    "brand": str(dialog.get("brand") or ""),
+                    "mode": mode,
+                    "route": trace.get("route") or turn.get("bot_route") or "",
+                    "required_fact_keys": _string_list(trace.get("required_fact_keys") or []),
+                    "model_needed_facts": list(trace.get("model_needed_facts") or []),
+                    "declaration_comparison": dict(trace.get("declaration_comparison") or {})
+                    if isinstance(trace.get("declaration_comparison"), Mapping)
+                    else {},
+                    "candidate_count": int(trace.get("candidate_count") or 0),
+                    "selected_exact_ids": _string_list(trace.get("selected_exact_ids") or []),
+                    "selected_adjacent_ids": _string_list(trace.get("selected_adjacent_ids") or []),
+                    "scope_demoted_ids": scope_demoted_ids,
+                    "discarded_ids": discarded_ids,
+                    "llm_retrieve": dict(llm),
+                    "p0_signal": dict(trace.get("p0_signal") or {}) if isinstance(trace.get("p0_signal"), Mapping) else {},
+                    "brand_scope_verdicts": dict(trace.get("brand_scope_verdicts") or {})
+                    if isinstance(trace.get("brand_scope_verdicts"), Mapping)
+                    else {},
+                }
+            )
+    return {
+        "schema_version": "fact_retrieval_trace_v1_2026_06_15",
+        "turn_count": total,
+        "mode_counts": dict(mode_counts),
+        "llm_used_turns": llm_used,
+        "fallback_reasons": dict(fallback_reasons),
+        "scope_demoted_id_count": scope_demoted,
+        "discarded_id_count": discarded,
+        "missing_declaration_turns": missing_declaration,
+        "turns": turns,
+    }
 
 
 def _llm_call_summary(counts: Mapping[str, int], *, dialogs: int, turns: int) -> Mapping[str, Any]:

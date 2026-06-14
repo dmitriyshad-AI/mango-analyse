@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -162,6 +163,8 @@ LATEST_ANALYSIS_SCHEMA_VERSION = "v2"
 ANALYZE_PROMPT_VERSION_COMPACT = "v6"
 ANALYZE_PROMPT_VERSION_FULL = "v7"
 TRANSCRIPT_QUALITY_GUARDRAILS_VERSION = "non_conversation_v4_live_safeguards"
+NON_CONVERSATION_ADVISORY_ENV = "TELEGRAM_NON_CONVERSATION_ADVISORY"
+TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on", "да"}
 
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 GRADE_RE = re.compile(r"\b((?:[1-9]|1[0-1]))(?:-?й)?\s*класс(?:а)?\b", re.I)
@@ -232,6 +235,12 @@ PROMPT_COMPACTION_REPEAT_RE = re.compile(
     r"(?:[\s,.;:!?-]+(?P=token)\b)+",
     re.I,
 )
+
+
+def _truthy_env_flag(name: str) -> bool:
+    value = os.getenv(name)
+    return str(value or "").strip().casefold() in TRUE_ENV_VALUES
+
 
 class AnalyzeService:
     def __init__(self, settings: Settings):
@@ -1100,6 +1109,34 @@ class AnalyzeService:
             return "non_conversation"
         return "service_call"
 
+    def _non_conversation_advisory_call_type(
+        self,
+        text: str,
+        *,
+        tags: list[str],
+        products: list[str],
+        formats: list[str],
+        exam_targets: list[str],
+        next_step_action: Optional[str],
+    ) -> str:
+        lowered_tags = {str(item).strip().lower() for item in tags if str(item).strip()}
+        if "existing_client_progress" in lowered_tags or self._matches_any_pattern(text, EXISTING_CLIENT_PROGRESS_PATTERNS):
+            return "existing_client_progress"
+        if "technical_call" in lowered_tags or self._matches_any_pattern(text, TECHNICAL_CALL_PATTERNS):
+            return "technical_call"
+        if "service_call" in lowered_tags or self._matches_any_pattern(text, SERVICE_CALL_PATTERNS):
+            return "service_call"
+        if self._has_explicit_sales_signal(
+            raw_sales_signal=self._has_meaningful_sales_signal(text),
+            products=products,
+            formats=formats,
+            exam_targets=exam_targets,
+        ):
+            return "sales_call"
+        if self._clean_text(next_step_action) or self._has_substantial_dialogue(text):
+            return "service_call"
+        return "non_conversation"
+
     def _build_review_flags(
         self,
         call: CallRecord,
@@ -1219,6 +1256,8 @@ class AnalyzeService:
         quality_flags = normalized.get("quality_flags")
         if not isinstance(quality_flags, dict):
             quality_flags = {}
+        if quality_flags.get("non_conversation_advisory"):
+            return normalized
         if quality_flags.get("call_type") != "non_conversation":
             return normalized
 
@@ -1748,6 +1787,10 @@ class AnalyzeService:
             transcript_text=text,
             duration_sec=getattr(call, "duration_sec", None),
         )
+        non_conversation_advisory_enabled = _truthy_env_flag(NON_CONVERSATION_ADVISORY_ENV)
+        pre_llm_non_conversation_advisory = (
+            non_conversation_advisory_enabled and next_step_signals.should_force_non_conversation
+        )
         allow_heuristic_next_step = not (
             next_step_signals.should_force_non_conversation
             or (
@@ -1767,7 +1810,7 @@ class AnalyzeService:
 
         score = self._coerce_score(raw.get("follow_up_score"))
         if score is None:
-            if self._is_non_conversation(text):
+            if self._is_non_conversation(text) and not non_conversation_advisory_enabled:
                 score = 0
             elif next_step_action:
                 score = 70
@@ -1783,7 +1826,7 @@ class AnalyzeService:
             lead_priority = self._priority_from_score(score)
 
         tags = self._unique(self._clean_list(raw.get("tags")))
-        call_type = self._detect_call_type(
+        detected_call_type = self._detect_call_type(
             text,
             tags=tags,
             products=products,
@@ -1792,11 +1835,25 @@ class AnalyzeService:
             exam_targets=exam_targets,
             next_step_action=next_step_action,
         )
+        call_type = detected_call_type
+        non_conversation_advisory_sources: list[str] = []
+        if non_conversation_advisory_enabled and detected_call_type == "non_conversation":
+            if pre_llm_non_conversation_advisory:
+                non_conversation_advisory_sources.append("pre_llm_guardrail")
+            non_conversation_advisory_sources.append("post_llm_detector")
+            call_type = self._non_conversation_advisory_call_type(
+                text,
+                tags=tags,
+                products=products,
+                formats=formats,
+                exam_targets=exam_targets,
+                next_step_action=next_step_action,
+            )
         tags = [item for item in tags if item.lower() not in CALL_TYPE_TAGS]
         non_conversation_soft_warning_sources = (
-            self._unique(llm_sales_signal_sources) if call_type == "non_conversation" else []
+            self._unique(llm_sales_signal_sources) if detected_call_type == "non_conversation" else []
         )
-        if call_type == "non_conversation":
+        if detected_call_type == "non_conversation" and not non_conversation_advisory_enabled:
             tags.append("non_conversation")
             products = []
             formats = []
@@ -1822,6 +1879,8 @@ class AnalyzeService:
             lead_priority = "cold"
         elif call_type != "sales_call":
             tags.append(call_type)
+        if non_conversation_advisory_sources:
+            tags.append("non_conversation_advisory")
 
         follow_up_reason = self._clean_text(raw.get("follow_up_reason"))
         if not follow_up_reason:
@@ -1951,6 +2010,14 @@ class AnalyzeService:
         )
         review_reasons = list(review_flags["review_reasons"])
         needs_review = bool(review_flags["needs_review"])
+        if non_conversation_advisory_sources:
+            quality_flags["non_conversation_advisory"] = True
+            quality_flags["non_conversation_advisory_env"] = NON_CONVERSATION_ADVISORY_ENV
+            quality_flags["non_conversation_advisory_sources"] = self._unique(non_conversation_advisory_sources)
+            quality_flags["non_conversation_advisory_recommended_call_type"] = "non_conversation"
+            quality_flags["non_conversation_advisory_final_call_type"] = call_type
+            review_reasons = self._unique(review_reasons + ["non_conversation_advisory"])
+            needs_review = True
         if non_conversation_soft_warning_sources:
             quality_flags["non_conversation_soft_warning_llm_sales_signal"] = True
             quality_flags["non_conversation_soft_warning_sources"] = non_conversation_soft_warning_sources
@@ -2300,9 +2367,10 @@ class AnalyzeService:
             transcript_text=text,
             duration_sec=getattr(call, "duration_sec", None),
         )
-        if signals.should_force_non_conversation:
+        non_conversation_advisory_enabled = _truthy_env_flag(NON_CONVERSATION_ADVISORY_ENV)
+        if signals.should_force_non_conversation and not non_conversation_advisory_enabled:
             return self._non_conversation_analysis(signals)
-        if self._is_non_conversation(text):
+        if self._is_non_conversation(text) and not non_conversation_advisory_enabled:
             return self._non_conversation_analysis()
         provider = self._settings.analyze_provider
         profile = self._analysis_prompt_profile()

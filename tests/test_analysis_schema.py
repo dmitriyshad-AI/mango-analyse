@@ -12,7 +12,7 @@ from unittest.mock import patch
 from mango_mvp import cli as cli_module
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
-from mango_mvp.services.analyze import AnalyzeService
+from mango_mvp.services.analyze import AnalyzeService, NON_CONVERSATION_ADVISORY_ENV
 from mango_mvp.services.sync_amocrm import _build_custom_fields
 from tests.test_dialogue_format import make_settings
 
@@ -333,6 +333,57 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertEqual(analysis["structured_fields"]["objections"], [])
         self.assertEqual(analysis["structured_fields"]["contacts"]["phone_from_filename"], "+79161234567")
 
+    def test_non_conversation_advisory_preserves_llm_facts_and_marks_review(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/voicemail.mp3",
+            source_filename="2026-03-08__11-22-33__79161234567__Петрова Анна_44.mp3",
+            phone="+79161234567",
+            manager_name="Петрова Анна",
+            started_at=datetime(2026, 3, 8, 11, 22, 33),
+            duration_sec=24.0,
+        )
+        transcript = (
+            "MANAGER:\n"
+            "Добрый день, это Фотон, хотели рассказать про летний лагерь.\n\n"
+            "CLIENT:\n"
+            "Абонент сейчас не может ответить на ваш звонок. Оставьте сообщение после звукового сигнала."
+        )
+        raw = {
+            "history_summary": "Клиент заинтересовался летним лагерем и попросил отправить ссылку на оплату.",
+            "structured_fields": {
+                "people": {"parent_fio": "Иванова Анна", "child_fio": "Петр"},
+                "contacts": {"email": "test@example.com", "preferred_channel": "telegram"},
+                "student": {"grade_current": "7", "school": "Школа 1"},
+                "interests": {"products": ["летний лагерь"], "format": [], "subjects": ["математика"], "exam_targets": []},
+                "commercial": {"price_sensitivity": "high", "budget": "до 100000", "discount_interest": True},
+                "objections": ["цена"],
+                "next_step": {"action": "Отправить ссылку на оплату", "due": "завтра"},
+                "lead_priority": "hot",
+            },
+            "target_product": "летний лагерь",
+            "follow_up_score": 90,
+            "tags": ["sales_call"],
+        }
+
+        with patch.dict("os.environ", {NON_CONVERSATION_ADVISORY_ENV: "1"}):
+            analysis = service._normalize_analysis(call, transcript, raw)
+
+        quality_flags = analysis["quality_flags"]
+        self.assertEqual(quality_flags["call_type"], "sales_call")
+        self.assertTrue(quality_flags["non_conversation_advisory"])
+        self.assertEqual(quality_flags["non_conversation_advisory_recommended_call_type"], "non_conversation")
+        self.assertIn("pre_llm_guardrail", quality_flags["non_conversation_advisory_sources"])
+        self.assertIn("post_llm_detector", quality_flags["non_conversation_advisory_sources"])
+        self.assertTrue(quality_flags["needs_review"])
+        self.assertIn("non_conversation_advisory", quality_flags["review_reasons"])
+        self.assertFalse(quality_flags.get("non_conversation_hard_validation_applied", False))
+        self.assertEqual(analysis["target_product"], "летний лагерь")
+        self.assertEqual(analysis["structured_fields"]["interests"]["products"], ["летний лагерь"])
+        self.assertEqual(analysis["structured_fields"]["next_step"]["action"], "Отправить ссылку на оплату")
+        self.assertEqual(analysis["structured_fields"]["people"]["parent_fio"], "Иванова Анна")
+        self.assertIn("non_conversation_advisory", analysis["tags"])
+
     def test_normalize_analysis_marks_sales_without_product_and_next_step_for_review(self) -> None:
         service = AnalyzeService(make_settings())
         call = CallRecord(
@@ -610,6 +661,37 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertEqual(payload["follow_up_score"], 0)
         self.assertTrue(payload["quality_flags"]["pre_llm_non_conversation_gate"])
         self.assertTrue(payload["quality_flags"]["transcript_quality_should_force_non_conversation"])
+
+    def test_analyze_text_advisory_calls_provider_for_no_live_candidate(self) -> None:
+        settings = replace(
+            make_settings(),
+            analyze_provider="codex_cli",
+            analyze_escalate_full_on_ambiguity=False,
+        )
+        service = AnalyzeService(settings)
+        call = CallRecord(
+            source_file="/tmp/voicemail.mp3",
+            source_filename="voicemail.mp3",
+            manager_name="Смирнов Иван",
+            duration_sec=18.0,
+        )
+        text = (
+            "MANAGER:\n"
+            "Добрый день, это учебный центр Фотон.\n\n"
+            "CLIENT:\n"
+            "Абонент сейчас не может ответить на ваш звонок. Оставьте сообщение после звукового сигнала."
+        )
+
+        with patch.dict("os.environ", {NON_CONVERSATION_ADVISORY_ENV: "1"}):
+            with patch.object(
+                service,
+                "_codex_cli_analysis",
+                return_value={"summary": "provider called", "target_product": "летний лагерь"},
+            ) as mocked:
+                payload = service._analyze_text(call, text)
+
+        mocked.assert_called_once()
+        self.assertEqual(payload["target_product"], "летний лагерь")
 
     def test_migrate_analysis_schema_refreshes_export_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mango_migrate_export_") as td:

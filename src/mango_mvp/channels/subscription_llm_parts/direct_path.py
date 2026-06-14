@@ -33,6 +33,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _active_brand,
     _client_clean_fact_text,
     _deal_action_decision_enabled,
+    _direct_path_model_p0_enabled,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_fact_by_brand_key,
     _direct_path_fact_value,
@@ -1221,6 +1222,24 @@ def _build_direct_path_prompt(
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
     action_proposal_instruction = ""
     action_proposal_field = ""
+    p0_instruction = ""
+    p0_fields = ""
+    route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager"'
+    if _direct_path_model_p0_enabled(context):
+        route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager" | "manager_only"'
+        p0_instruction = (
+            "Срочные обращения/P0: если клиент пишет про спорную оплату, списание/платёж, возврат, жалобу, "
+            "юридическую угрозу, претензию или конфликтную ситуацию, поставь is_p0=true, risk_level=\"high\", "
+            "route=\"manager_only\". В p0_kind выбери одно: payment_dispute, refund, complaint, legal_threat. "
+            "Модель может только добавить срочность; если это обычное возражение «дорого/подумаю» или "
+            "гипотетический вопрос про правила возврата без претензии, is_p0=false.\n\n"
+        )
+        p0_fields = (
+            '  "is_p0": false,\n'
+            '  "risk_level": "low|high",\n'
+            '  "p0_kind": "none|payment_dispute|refund|complaint|legal_threat",\n'
+            '  "model_reason": "кратко, почему это P0 или почему нет",\n'
+        )
     if _deal_action_decision_enabled(context):
         action_proposal_instruction = (
             "Предложи одно следующее действие для менеджера в поле action_proposal из закрытого списка: "
@@ -1236,6 +1255,7 @@ def _build_direct_path_prompt(
         f"{_direct_path_route_rubric_block(context)}"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
+        f"{p0_instruction}"
         f"{action_proposal_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
@@ -1253,8 +1273,9 @@ def _build_direct_path_prompt(
         f"{recent_block}\n\n"
         "Верни только JSON без Markdown и без комментариев:\n"
         "{\n"
-        '  "route": "bot_answer_self_for_pilot" | "draft_for_manager",\n'
+        f'  "route": {route_choices},\n'
         '  "draft_text": "текст для клиента",\n'
+        f"{p0_fields}"
         f"{action_proposal_field}"
         '  "manager_checklist": [],\n'
         '  "missing_facts": [],\n'

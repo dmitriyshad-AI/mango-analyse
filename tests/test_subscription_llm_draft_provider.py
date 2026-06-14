@@ -11372,6 +11372,178 @@ def test_direct_path_benign_teacher_minute_question_is_not_p0() -> None:
     assert result.route == "bot_answer_self_for_pilot"
 
 
+def test_direct_path_model_p0_prompt_is_flagged_off_by_default() -> None:
+    context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
+
+    off_prompt = subscription_llm._build_direct_path_prompt("Нужна помощь по спорной оплате.", context=context)
+    on_prompt = subscription_llm._build_direct_path_prompt(
+        "Нужна помощь по спорной оплате.",
+        context={**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"},
+    )
+
+    assert "is_p0" not in off_prompt
+    assert '"manager_only"' not in off_prompt
+    assert "спорную оплату" in on_prompt
+    assert '"is_p0": false' in on_prompt
+    assert '"p0_kind": "none|payment_dispute|refund|complaint|legal_threat"' in on_prompt
+    assert '"route": "bot_answer_self_for_pilot" | "draft_for_manager" | "manager_only"' in on_prompt
+    assert "дорого/подумаю" in on_prompt
+
+
+def test_direct_path_model_p0_off_keeps_previous_route_and_text() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Можем посмотреть скидку и варианты оплаты.",
+            risk_level="high",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "risk_level": "high",
+                    "p0_kind": "payment_dispute",
+                    "model_reason": "клиент пишет про спорную оплату",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Нужна помощь по спорной ситуации с оплатой.",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Можем посмотреть скидку и варианты оплаты."
+    assert "direct_path_model_p0_payment_dispute" not in result.safety_flags
+
+
+def test_direct_path_model_p0_payment_dispute_routes_before_gate_and_replaces_sales_text() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Можем посмотреть скидку и варианты оплаты.",
+            risk_level="high",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "risk_level": "high",
+                    "p0_kind": "payment_dispute",
+                    "model_reason": "спорная ситуация с оплатой",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Нужна помощь по спорной ситуации с оплатой.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    direct_p0 = result.metadata["direct_path_model_p0"]
+    assert provider.calls == 1
+    assert result.route == "manager_only"
+    assert "скидк" not in result.draft_text.casefold()
+    assert "варианты оплаты" not in result.draft_text.casefold()
+    assert "direct_path_model_p0_payment_dispute" in result.safety_flags
+    assert "payment_dispute" in result.safety_flags
+    assert direct_p0["p0_kind"] == "payment_dispute"
+    assert direct_p0["model_reason"] == "спорная ситуация с оплатой"
+    assert direct_p0["floor_reason"] == ""
+    assert gate["route_before"] == "manager_only"
+    assert gate["action"] == "block"
+    assert "hard_p0" in {item["code"] for item in gate["findings"]}
+
+
+def test_direct_path_model_p0_latches_next_neutral_turn() -> None:
+    first_provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Можем посмотреть скидку и варианты оплаты.",
+            risk_level="high",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "risk_level": "high",
+                    "p0_kind": "payment_dispute",
+                    "model_reason": "спорная ситуация с оплатой",
+                }
+            },
+        )
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+    }
+    first = first_provider.build_draft("Нужна помощь по спорной ситуации с оплатой.", context=context)
+    memory = build_dialogue_memory(
+        active_brand="foton",
+        current_message="Нужна помощь по спорной ситуации с оплатой.",
+        context=context,
+    )
+    memory = update_dialogue_memory_after_answer(
+        memory,
+        answer_text=first.draft_text,
+        route=first.route,
+        safety_flags=first.safety_flags,
+    )
+
+    follow_provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+    follow = follow_provider.build_draft(
+        "А когда удобно?",
+        context={**context, "dialogue_memory_view": memory.to_json_dict()},
+    )
+
+    assert memory.p0_latch.active is True
+    assert "payment_dispute" in memory.p0_latch.codes
+    assert follow_provider.calls == 0
+    assert follow.route == "manager_only"
+    assert follow.metadata["direct_path"]["preblocked"] is True
+    assert follow.metadata["direct_path"]["preblock_reason"] == "p0_pre_gate"
+
+
+def test_direct_path_model_p0_benign_messages_stay_autonomous() -> None:
+    for message in ("Дорого, подумаю.", "А можно вернуть деньги гипотетически, если передумаем?"):
+        provider = _DirectPathProvider(
+            SubscriptionDraftResult(
+                route="bot_answer_self_for_pilot",
+                draft_text="Да, подскажу условия по фактам.",
+                risk_level="low",
+                metadata={
+                    "direct_path_model_p0": {
+                        "is_p0": False,
+                        "risk_level": "low",
+                        "p0_kind": "none",
+                        "model_reason": "обычный вопрос без претензии",
+                    }
+                },
+            )
+        )
+
+        result = provider.build_draft(
+            message,
+            context={
+                "active_brand": "foton",
+                DIRECT_PATH_ENV: "1",
+                subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+                "confirmed_facts": {"payment.foton": "Фотон: условия оплаты объясняет менеджер."},
+            },
+        )
+
+        assert provider.calls == 1
+        assert result.route == "bot_answer_self_for_pilot"
+        assert "direct_path_model_p0_payment_dispute" not in result.safety_flags
+        assert "authoritative_gate:hard_p0" not in result.safety_flags
+
+
 def test_direct_path_prompt_forbids_manager_deadline_and_unconfirmed_phone_for_night_lead() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(route="draft_for_manager", draft_text="Менеджер свяжется и поможет подобрать группу.")

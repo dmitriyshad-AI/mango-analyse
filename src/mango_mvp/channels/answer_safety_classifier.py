@@ -128,6 +128,18 @@ def classify_answer_safety(
     if "payment_confirmation" in flag_text:
         codes.append("payment_dispute")
         evidence.setdefault("safety_flags", "payment_dispute")
+    if "direct_path_model_p0_refund" in flag_text:
+        codes.append("refund")
+        evidence.setdefault("safety_flags", "direct_path_model_p0_refund")
+    if "direct_path_model_p0_legal_threat" in flag_text:
+        codes.append("legal")
+        evidence.setdefault("safety_flags", "direct_path_model_p0_legal_threat")
+    if "direct_path_model_p0_complaint" in flag_text:
+        codes.append("complaint")
+        evidence.setdefault("safety_flags", "direct_path_model_p0_complaint")
+    if "direct_path_model_p0_payment_dispute" in flag_text:
+        codes.append("payment_dispute")
+        evidence.setdefault("safety_flags", "direct_path_model_p0_payment_dispute")
 
     topic = str(topic_id or "").strip()
     if topic == "theme:009_refund":

@@ -140,6 +140,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_template_from_fact,
     _direct_path_valid_until_ok,
     _deal_action_decision_enabled,
+    _direct_path_model_p0_enabled,
     _presale_prompt_child_name_value,
     _looks_like_russian_surname,
     _fresh_fact_texts,
@@ -1121,6 +1122,11 @@ class SubscriptionLlmDraftProvider:
                 except Exception as exc:  # noqa: BLE001
                     direct_meta["rubric_reason"] = f"regen_failed:{str(exc)[:160]}"
             result = _direct_path_merge_metadata(result, direct_meta)
+            result = _apply_direct_path_model_p0_route(
+                result,
+                client_message=client_message,
+                context=context,
+            )
 
         semantic_checked = apply_semantic_output_verifier(
             result,
@@ -2023,6 +2029,106 @@ def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = 
     )
 
 
+_DIRECT_PATH_MODEL_P0_KINDS = frozenset({"payment_dispute", "refund", "complaint", "legal_threat"})
+
+
+def _direct_path_payload_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "да", "p0", "high"}
+
+
+def _direct_path_model_p0_kind(value: Any) -> str:
+    kind = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    if kind == "legal":
+        kind = "legal_threat"
+    if kind in {"payment", "payment_issue", "payment_problem", "payment_claim"}:
+        kind = "payment_dispute"
+    return kind if kind in _DIRECT_PATH_MODEL_P0_KINDS else ""
+
+
+def _direct_path_model_p0_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    meta = metadata.get("direct_path_model_p0")
+    return meta if isinstance(meta, Mapping) else {}
+
+
+def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_message: str, context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    if not _direct_path_model_p0_enabled(context):
+        return {}
+    meta = _direct_path_model_p0_meta(result)
+    kind = _direct_path_model_p0_kind(meta.get("p0_kind"))
+    risk_level = str(meta.get("risk_level") or result.risk_level or "").strip().casefold()
+    model_is_p0 = bool(meta.get("is_p0")) or (risk_level in {"high", "p0", "critical", "high_risk"} and bool(kind))
+    floor_reason = str(dialogue_contract_p0_pre_gate(client_message, context=context) or "")
+    if not model_is_p0 and not floor_reason:
+        return {}
+    if not kind:
+        kind = "complaint"
+    return {
+        "is_p0": True,
+        "p0_kind": kind,
+        "risk_level": "high",
+        "model_reason": str(meta.get("model_reason") or "").strip()[:240],
+        "floor_reason": floor_reason,
+        "source": "model_p0" if model_is_p0 else "p0_pre_gate",
+    }
+
+
+def _apply_direct_path_model_p0_route(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    signal = _direct_path_model_p0_signal(result, client_message=client_message, context=context)
+    if not signal:
+        return result
+    kind = str(signal.get("p0_kind") or "complaint")
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    direct["model_p0"] = {
+        "is_p0": True,
+        "p0_kind": kind,
+        "risk_level": "high",
+        "model_reason": str(signal.get("model_reason") or ""),
+        "floor_reason": str(signal.get("floor_reason") or ""),
+        "source": str(signal.get("source") or "model_p0"),
+    }
+    metadata["direct_path"] = direct
+    metadata["direct_path_model_p0"] = dict(direct["model_p0"])
+    metadata["reason_class"] = "p0_deferral"
+    metadata["is_manager_deferral"] = True
+    flags = tuple(
+        dict.fromkeys(
+            [
+                *result.safety_flags,
+                f"direct_path_model_p0_{kind}",
+                kind,
+                "manager_approval_required",
+                "no_auto_send",
+            ]
+        )
+    )
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "P0/high-risk: модель прямого пути классифицировала срочное обращение; отвечает менеджер.",
+            ]
+        )
+    )
+    return replace(
+        result,
+        message_type="manager_only",
+        route="manager_only",
+        risk_level="high",
+        safety_flags=flags,
+        manager_checklist=checklist,
+        metadata=metadata,
+    )
+
+
 def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: Optional[str] = None) -> SubscriptionDraftResult:
     if not isinstance(payload, Mapping):
         raise RuntimeError("direct path response JSON root must be an object")
@@ -2030,6 +2136,14 @@ def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: 
     if route == "bot_answer_self":
         route = "bot_answer_self_for_pilot"
     metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
+    risk_level = str(payload.get("risk_level") or "low").strip()
+    if any(key in payload for key in ("is_p0", "risk_level", "p0_kind", "p0_code", "model_reason")):
+        metadata["direct_path_model_p0"] = {
+            "is_p0": _direct_path_payload_bool(payload.get("is_p0")),
+            "risk_level": risk_level,
+            "p0_kind": _direct_path_model_p0_kind(payload.get("p0_kind") or payload.get("p0_code") or payload.get("risk_code")),
+            "model_reason": " ".join(str(payload.get("model_reason") or payload.get("p0_reason") or "").split())[:240],
+        }
     proposal = payload.get("action_proposal")
     if isinstance(proposal, Mapping):
         metadata["action_proposal"] = dict(proposal)
@@ -2042,7 +2156,7 @@ def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: 
         topic_confidence=_clamp_float(payload.get("confidence_theme", payload.get("topic_confidence", 0.8))),
         confidence_group=_clamp_float(payload.get("confidence_group", 0.8)),
         alternative_themes=tuple(_clean_list(payload.get("alternative_themes"), max_items=5, max_chars=120)),
-        risk_level=str(payload.get("risk_level") or "low"),
+        risk_level=risk_level,
         route=route,
         draft_text=str(payload.get("draft_text") or SAFE_FALLBACK_DRAFT_TEXT),
         manager_checklist=tuple(_clean_list(payload.get("manager_checklist"), max_items=12, max_chars=240)),

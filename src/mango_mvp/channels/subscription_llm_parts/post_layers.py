@@ -1295,6 +1295,10 @@ def _deal_action_final_p0(
     gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
     findings = gate.get("findings") if isinstance(gate.get("findings"), Sequence) else ()
     gate_codes = tuple(str(item.get("code") or "") for item in findings if isinstance(item, Mapping))
+    model_p0 = metadata.get("direct_path_model_p0") if isinstance(metadata.get("direct_path_model_p0"), Mapping) else {}
+    if bool(model_p0.get("is_p0")):
+        kind = str(model_p0.get("p0_kind") or "model_p0")
+        return True, f"direct_path_model_p0:{kind}"
     raw_hard_codes = tuple(code for code in codes_from_text(client_message) if code in HARD_P0_CODES)
     safety = classify_answer_safety(
         client_message=client_message,

@@ -37,11 +37,13 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests
 
 ## Graphify-карта
 
-Карта пересобрана на новой вершине `main`.
+Карта пересобрана на новой вершине `main`. Так как сам этот отчёт является
+отдельным doc-коммитом после merge, финальная проверка актуальности карты
+делается по внешнему summary/manifest в каталоге Graphify-output: их `revision`
+должен совпадать с текущим `git rev-parse HEAD`.
 
 ```text
 Command: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/graphify_structural_build.py
-Revision: 63550948b963a9b79454481fe38ada35144a4c91
 Output: /Users/dmitrijfabarisov/Projects/Mango analyse_graphify_structural/output/graphify-out
 Summary: /Users/dmitrijfabarisov/Projects/Mango analyse_graphify_structural/structural_build_summary.json
 Reproducible: true
@@ -60,8 +62,6 @@ Graphify pin: graphify 0.8.39, commit fd470faeee16e9f42e3f47204824a2002a1f899c
 
 ## Финальная вершина
 
-```text
-main = 63550948
-```
+Финальный хэш фиксируется в `git log -1` после коммита отчёта и push.
 
 Служебные untracked-файлы очереди и аудита (`tasks/_inbox_codex/*`, новые `D1_audit_backlog/*`) не трогались и не коммитились.

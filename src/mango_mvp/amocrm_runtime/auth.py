@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from typing import Optional
@@ -59,6 +60,8 @@ def _parse_api_key_specs() -> dict[str, AuthContext]:
 
 
 AUTH_PRINCIPALS = _parse_api_key_specs()
+DEV_AUTH_ENV_NAMES = ("AI_OFFICE_ALLOW_DEV_AUTH_CONTEXT", "MANGO_API_DEV_CONTEXT")
+LOCAL_DEV_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def _resolve_stream_token_secret() -> bytes:
@@ -160,11 +163,35 @@ def verify_stream_token(token: str, *, project_id: str) -> AuthContext:
     return AuthContext(api_key_id=api_key_id, role=role, actor=actor)
 
 
+def _env_flag_enabled(*names: str) -> bool:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip().lower() in {"1", "true", "yes", "on"}:
+            return True
+    return False
+
+
+def _is_local_request(request: Request) -> bool:
+    client = request.client
+    host = client.host if client else ""
+    return host in LOCAL_DEV_HOSTS
+
+
+def _allow_dev_auth_context(request: Request) -> bool:
+    return _env_flag_enabled(*DEV_AUTH_ENV_NAMES) and _is_local_request(request)
+
+
 def get_auth_context(request: Request) -> AuthContext:
     context = getattr(request.state, "auth_context", None)
     if isinstance(context, AuthContext):
         return context
-    return DEFAULT_DEV_CONTEXT
+    if not AUTH_PRINCIPALS and _allow_dev_auth_context(request):
+        request.state.auth_context = DEFAULT_DEV_CONTEXT
+        return DEFAULT_DEV_CONTEXT
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing or invalid API key.",
+    )
 
 
 def ensure_role(auth: AuthContext, *allowed_roles: str) -> None:
@@ -186,8 +213,13 @@ def require_api_key(
     stream_token: Optional[str] = Query(default=None),
 ) -> AuthContext:
     if not AUTH_PRINCIPALS:
-        request.state.auth_context = DEFAULT_DEV_CONTEXT
-        return DEFAULT_DEV_CONTEXT
+        if _allow_dev_auth_context(request):
+            request.state.auth_context = DEFAULT_DEV_CONTEXT
+            return DEFAULT_DEV_CONTEXT
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid API key.",
+        )
 
     provided = x_api_key or api_key
     if provided is not None:

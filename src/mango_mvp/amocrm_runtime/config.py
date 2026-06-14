@@ -25,6 +25,7 @@ class Settings:
     redis_url: str
     api_host: str
     api_port: int
+    api_cors_allow_origins: Tuple[str, ...]
     runtime_root: str
     source_workspace_root: str
     task_container_driver: str
@@ -143,8 +144,9 @@ def get_settings() -> Settings:
         db_pool_timeout_seconds=max(1, int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30"))),
         db_pool_recycle_seconds=max(30, int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800"))),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        api_host=os.getenv("API_HOST", "0.0.0.0"),
+        api_host=os.getenv("API_HOST", "127.0.0.1"),
         api_port=int(os.getenv("API_PORT", "8000")),
+        api_cors_allow_origins=_parse_csv(os.getenv("AI_OFFICE_CORS_ALLOW_ORIGINS")),
         runtime_root=_normalize_path(os.getenv("RUNTIME_ROOT", "./runtime")),
         source_workspace_root=str(Path(source_workspace_root).resolve()),
         task_container_driver=os.getenv("TASK_CONTAINER_DRIVER", "process"),

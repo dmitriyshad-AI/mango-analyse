@@ -17,6 +17,7 @@ from mango_mvp.deal_aware.stage1_snapshot import safe_text, stringify, write_csv
 SNAPSHOT_SCHEMA_VERSION = "deal_aware_amo_pre_write_snapshot_v1"
 ROLLBACK_CONFIRMATION = "ROLLBACK_DEAL_AWARE_AMO_FIELDS"
 WRITER_VERSION = "deal_aware_stage6_live_writeback_snapshot_v1"
+SUCCESSFUL_ROLLBACK_STATUSES = {"restored"}
 
 SNAPSHOT_FIELDNAMES = [
     "schema_version",
@@ -212,14 +213,20 @@ def load_successful_rollback_keys(path: Path | None) -> set[str]:
         return set()
     if path.suffix.lower() == ".json":
         payload = json.loads(path.read_text(encoding="utf-8"))
-        rows = payload.get("rows") if isinstance(payload, dict) else []
+        if (
+            isinstance(payload, dict)
+            and "successful_statuses" in payload
+            and set(payload.get("successful_statuses") or []) <= SUCCESSFUL_ROLLBACK_STATUSES
+        ):
+            return {safe_text(key) for key in payload.get("successful_keys") or [] if safe_text(key)}
+        rows = (payload.get("rows") or []) if isinstance(payload, dict) else []
     else:
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
             rows = [dict(row) for row in csv.DictReader(fh)]
     return {
         safe_text(row.get("snapshot_key"))
         for row in rows
-        if safe_text(row.get("snapshot_key")) and safe_text(row.get("rollback_status")) in {"restored", "dry_run_ready"}
+        if safe_text(row.get("snapshot_key")) and safe_text(row.get("rollback_status")) in SUCCESSFUL_ROLLBACK_STATUSES
     }
 
 
@@ -435,11 +442,12 @@ def write_rollback_outputs(
     (out_root / "rollback_resume_state.json").write_text(
         json.dumps(
             {
+                "successful_statuses": sorted(SUCCESSFUL_ROLLBACK_STATUSES),
                 "successful_keys": sorted(
                     {
                         safe_text(row.get("snapshot_key"))
                         for row in rows
-                        if safe_text(row.get("snapshot_key")) and safe_text(row.get("rollback_status")) in {"restored", "dry_run_ready"}
+                        if safe_text(row.get("snapshot_key")) and safe_text(row.get("rollback_status")) in SUCCESSFUL_ROLLBACK_STATUSES
                     }
                 )
             },

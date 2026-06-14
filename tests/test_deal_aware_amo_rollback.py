@@ -12,8 +12,11 @@ from mango_mvp.deal_aware.amo_rollback import (
     build_pre_write_snapshot_rows,
     call_with_retries,
     load_snapshot_rows,
+    load_successful_rollback_keys,
     rollback_decision,
+    rollback_summary,
     run_rollback,
+    write_rollback_outputs,
 )
 from mango_mvp.deal_aware.deal_text_builder import DEAL_AI_FIELDS
 from scripts.write_deal_aware_amo_fields import run_live_write
@@ -374,3 +377,76 @@ def test_rollback_resume_skips_already_successful_rows() -> None:
 
     assert rows[0]["rollback_status"] == "skipped"
     assert rows[0]["reason"] == "resume_success_already_processed"
+
+
+def test_rollback_resume_does_not_treat_dry_run_ready_as_success(tmp_path: Path) -> None:
+    report = tmp_path / "rollback_dry_run_report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {"snapshot_key": "dry-run-key", "rollback_status": "dry_run_ready"},
+                    {"snapshot_key": "restored-key", "rollback_status": "restored"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_successful_rollback_keys(report) == {"restored-key"}
+
+
+def test_rollback_resume_state_ignores_legacy_state_without_success_statuses(tmp_path: Path) -> None:
+    state = tmp_path / "rollback_resume_state.json"
+    state.write_text(json.dumps({"successful_keys": ["legacy-dry-run-key"]}), encoding="utf-8")
+
+    assert load_successful_rollback_keys(state) == set()
+
+
+def test_rollback_resume_state_records_only_restored_rows(tmp_path: Path) -> None:
+    rows = [
+        {"snapshot_key": "dry-run-key", "rollback_status": "dry_run_ready"},
+        {"snapshot_key": "restored-key", "rollback_status": "restored"},
+    ]
+    summary = rollback_summary(rows=rows, snapshot_path=tmp_path / "snapshot.jsonl", apply=True, max_rollback_rows=None)
+
+    write_rollback_outputs(tmp_path, rows=rows, summary=summary, apply=True)
+
+    state_payload = json.loads((tmp_path / "rollback_resume_state.json").read_text(encoding="utf-8"))
+    assert state_payload["successful_statuses"] == ["restored"]
+    assert state_payload["successful_keys"] == ["restored-key"]
+    assert load_successful_rollback_keys(tmp_path / "rollback_resume_state.json") == {"restored-key"}
+
+
+def test_rollback_apply_after_dry_run_report_still_restores(tmp_path: Path) -> None:
+    snapshot = {"lead_id": "123", "field_name": "AI-сводка по сделке", "old_value": "old", "new_value": "new"}
+    dry_run_report = tmp_path / "rollback_dry_run_report.json"
+    dry_run_report.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "snapshot_key": "123|AI-сводка по сделке|",
+                        "rollback_status": "dry_run_ready",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    rows = run_rollback(
+        snapshot_rows=[snapshot],
+        fetch_lead=lambda lead_id: _lead_with_values({"AI-сводка по сделке": "new"}),
+        send_update=lambda **kwargs: calls.append(kwargs) or {"ok": True},
+        apply=True,
+        confirmation=ROLLBACK_CONFIRMATION,
+        retry_policy=RetryPolicy(max_retries=0, delay_ms=0, sleep_func=lambda seconds: None),
+        resume_success_keys=load_successful_rollback_keys(dry_run_report),
+    )
+
+    assert rows[0]["rollback_status"] == "restored"
+    assert calls == [{"lead_id": 123, "field_payload": {"AI-сводка по сделке": "old"}}]

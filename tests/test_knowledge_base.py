@@ -325,8 +325,55 @@ def test_sanitize_answer_blocks_when_fixpoint_is_not_reached(monkeypatch) -> Non
     result = sanitizer_module.sanitize_answer("циклический текст", mode="bot", max_passes=3)
 
     assert result.status == "fixpoint_not_reached"
+    assert result.text == ""
     assert result.fixpoint_reached is False
     assert result.pass_count == 3
+
+
+def test_sanitize_customer_text_blocks_when_fixpoint_is_not_reached(monkeypatch) -> None:
+    def unstable_pass(text: object, *, mode: sanitizer_module.SanitizerMode = "customer") -> sanitizer_module.SanitizedText:
+        return sanitizer_module.SanitizedText(
+            f"{sanitizer_module.clean_text(text)} x",
+            ("phone_redacted",),
+            "safe_with_placeholders",
+            pass_count=1,
+        )
+
+    monkeypatch.setattr(sanitizer_module, "_sanitize_answer_pass", unstable_pass)
+
+    result = sanitizer_module.sanitize_answer("циклический клиентский текст", mode="customer", max_passes=3)
+
+    assert result.status == "fixpoint_not_reached"
+    assert result.text == ""
+    assert result.fixpoint_reached is False
+    assert result.pass_count == 3
+
+
+def test_sanitize_manager_text_keeps_diagnostic_text_when_fixpoint_is_not_reached(monkeypatch) -> None:
+    def unstable_pass(text: object, *, mode: sanitizer_module.SanitizerMode = "manager") -> sanitizer_module.SanitizedText:
+        return sanitizer_module.SanitizedText(
+            f"{sanitizer_module.clean_text(text)} x",
+            ("price_redacted",),
+            "safe_with_placeholders",
+            pass_count=1,
+        )
+
+    monkeypatch.setattr(sanitizer_module, "_sanitize_answer_pass", unstable_pass)
+
+    result = sanitizer_module.sanitize_answer("циклический текст", mode="manager", max_passes=3)
+
+    assert result.status == "fixpoint_not_reached"
+    assert result.text == "циклический текст x x x"
+    assert result.fixpoint_reached is False
+    assert result.pass_count == 3
+
+
+def test_sanitize_answer_stable_text_keeps_existing_client_safe_parity() -> None:
+    result = sanitize_answer("Менеджер подтвердит актуальную стоимость.", mode="bot")
+
+    assert result.status == "safe_no_changes"
+    assert result.text == "Менеджер подтвердит актуальную стоимость."
+    assert result.fixpoint_reached is True
 
 
 def test_enrich_review_row_adds_manager_and_bot_safe_answers() -> None:

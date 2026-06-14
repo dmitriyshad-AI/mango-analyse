@@ -231,6 +231,8 @@ def sanitize_answer(text: object, *, mode: SanitizerMode = "manager", max_passes
         current = passed.text
 
     flags = tuple(dict.fromkeys(all_flags))
+    if mode in {"bot", "customer"}:
+        return SanitizedText("", flags, "fixpoint_not_reached", pass_count=max_passes, fixpoint_reached=False)
     return SanitizedText(current, flags, "fixpoint_not_reached", pass_count=max_passes, fixpoint_reached=False)
 
 

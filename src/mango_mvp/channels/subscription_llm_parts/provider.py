@@ -141,6 +141,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_valid_until_ok,
     _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
+    _direct_default_manager_enabled,
     _presale_prompt_child_name_value,
     _looks_like_russian_surname,
     _fresh_fact_texts,
@@ -2132,7 +2133,9 @@ def _apply_direct_path_model_p0_route(
 def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: Optional[str] = None) -> SubscriptionDraftResult:
     if not isinstance(payload, Mapping):
         raise RuntimeError("direct path response JSON root must be an object")
-    route = str(payload.get("route") or "bot_answer_self_for_pilot").strip()
+    route = str(payload.get("route") or "").strip()
+    if not route:
+        route = "draft_for_manager" if _direct_default_manager_enabled() else "bot_answer_self_for_pilot"
     if route == "bot_answer_self":
         route = "bot_answer_self_for_pilot"
     metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}

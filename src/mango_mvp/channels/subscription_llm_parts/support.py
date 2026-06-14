@@ -78,6 +78,9 @@ DEAL_ACTION_DECISION_ENV = "TELEGRAM_DEAL_ACTION_DECISION"
 DIRECT_PATH_MODEL_P0_ENV = "TELEGRAM_DIRECT_PATH_MODEL_P0"
 
 
+DIRECT_DEFAULT_MANAGER_ENV = "TELEGRAM_DIRECT_DEFAULT_MANAGER"
+
+
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 
 
@@ -411,6 +414,10 @@ def _direct_path_model_p0_enabled(context: Optional[Mapping[str, Any]] = None) -
     if explicit is not None:
         return explicit
     return False
+
+
+def _direct_default_manager_enabled() -> bool:
+    return _truthy_value(os.getenv(DIRECT_DEFAULT_MANAGER_ENV))
 
 
 def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, str]:

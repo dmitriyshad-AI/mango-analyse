@@ -118,6 +118,7 @@ from mango_mvp.channels.subscription_llm import (
     find_unsupported_followup_deadline_claims,
     find_redundant_questions_for_known_context,
     build_codex_exec_env,
+    _normalize_direct_path_payload,
     parse_llm_json,
     strip_internal_service_markers,
     known_context_fields,
@@ -300,6 +301,64 @@ def test_provider_parses_valid_json() -> None:
     assert result.confidence_group == 0.9
     assert result.alternative_themes == ("theme:002_payment_method",)
     assert result.to_json_dict()["confidence_theme"] == 0.8
+
+
+def test_direct_path_missing_route_default_off_keeps_existing_self_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TELEGRAM_DIRECT_DEFAULT_MANAGER", raising=False)
+
+    result = _normalize_direct_path_payload(
+        {
+            "draft_text": "Здравствуйте! Подскажу по проверенным условиям.",
+            "message_type": "question",
+            "topic_id": "service:S5_general_consultation",
+        }
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+
+
+def test_direct_path_missing_route_flag_on_defaults_to_manager_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DIRECT_DEFAULT_MANAGER", "1")
+
+    result = _normalize_direct_path_payload(
+        {
+            "draft_text": "Здравствуйте! Подскажу по проверенным условиям.",
+            "message_type": "question",
+            "topic_id": "service:S5_general_consultation",
+        }
+    )
+
+    assert result.route == "draft_for_manager"
+
+
+def test_direct_path_blank_route_flag_on_defaults_to_manager_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DIRECT_DEFAULT_MANAGER", "1")
+
+    result = _normalize_direct_path_payload(
+        {
+            "route": "   ",
+            "draft_text": "Здравствуйте! Подскажу по проверенным условиям.",
+            "message_type": "question",
+            "topic_id": "service:S5_general_consultation",
+        }
+    )
+
+    assert result.route == "draft_for_manager"
+
+
+def test_direct_path_explicit_route_is_not_overridden_by_default_manager_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DIRECT_DEFAULT_MANAGER", "1")
+
+    result = _normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Здравствуйте! Подскажу по проверенным условиям.",
+            "message_type": "question",
+            "topic_id": "service:S5_general_consultation",
+        }
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
 
 
 def test_provider_strips_internal_manager_note_and_keeps_safe_variant() -> None:

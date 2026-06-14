@@ -110,7 +110,7 @@ def test_live_card_brand_mismatch_blocks_card() -> None:
 
 
 def test_live_card_fail_closed_blocks_unverified_brand(monkeypatch) -> None:
-    monkeypatch.setenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "1")
+    monkeypatch.delenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", raising=False)
 
     card = build_tallanto_live_card([{"contact": {"filial": "mfti"}, "classes": []}], active_brand=None)
 
@@ -120,7 +120,7 @@ def test_live_card_fail_closed_blocks_unverified_brand(monkeypatch) -> None:
 
 
 def test_live_card_fail_closed_blocks_shared_without_brand(monkeypatch) -> None:
-    monkeypatch.setenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "1")
+    monkeypatch.delenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", raising=False)
 
     card = build_tallanto_live_card([{"contact": {"filial": "onlajn"}, "classes": []}], active_brand="")
 
@@ -129,8 +129,8 @@ def test_live_card_fail_closed_blocks_shared_without_brand(monkeypatch) -> None:
     assert card["brand_scope"] == "shared"
 
 
-def test_live_card_fail_closed_off_keeps_old_unverified_behavior(monkeypatch) -> None:
-    monkeypatch.delenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", raising=False)
+def test_live_card_fail_closed_explicit_off_keeps_old_unverified_behavior(monkeypatch) -> None:
+    monkeypatch.setenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "0")
 
     card = build_tallanto_live_card([{"contact": {"filial": "mfti"}, "classes": []}], active_brand=None)
 
@@ -149,6 +149,21 @@ def test_live_card_skip_shd_takes_priority_over_fail_closed(monkeypatch) -> None
 
 def test_brand_scope_mapping() -> None:
     assert brand_scope_from_filial("МФТИ") == "unpk"
+    assert brand_scope_from_filial("Фотон") == "foton"
+    assert brand_scope_from_filial("foton online") == "foton"
     assert brand_scope_from_filial("Онлайн") == "shared"
     assert brand_scope_from_filial("ШД") == "skip_shd"
+    assert brand_scope_from_filial("Красносельская") == "unknown"
+    assert brand_scope_from_filial("Менделеево") == "unknown"
+    assert brand_scope_from_filial("Сретенка") == "unknown"
     assert brand_scope_from_filial("") == "unknown"
+
+
+def test_live_card_foton_filial_matches_active_foton_brand(monkeypatch) -> None:
+    monkeypatch.delenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", raising=False)
+
+    card = build_tallanto_live_card([{"contact": {"filial": "Фотон"}, "classes": []}], active_brand="foton")
+
+    assert card["status"] == "ok"
+    assert card["brand"] == "foton"
+    assert card["brand_scope"] == "foton"

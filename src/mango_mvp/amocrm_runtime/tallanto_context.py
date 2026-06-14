@@ -64,11 +64,20 @@ def brand_scope_from_filial(value: Any) -> str:
         return "unknown"
     if any(token in filial for token in ("shd", "шд", "жако")):
         return "skip_shd"
-    if any(token in filial for token in ("mfti", "мфти", "pacaeva", "пацаева", "sretenka", "сретенка")):
+    if any(token in filial for token in ("foton", "фотон")):
+        return "foton"
+    if any(token in filial for token in ("mfti", "мфти", "pacaeva", "пацаева")):
         return "unpk"
-    if any(token in filial for token in ("onlajn", "online", "онлайн", "красносель", "менделеево")):
+    if any(token in filial for token in ("onlajn", "online", "онлайн")):
         return "shared"
     return "unknown"
+
+
+def _live_card_brand_failclosed_enabled() -> bool:
+    value = os.getenv("CRM_LIVE_CARD_BRAND_FAILCLOSED")
+    if value is None:
+        return True
+    return value.strip().casefold() not in {"0", "false", "no", "off", "нет"}
 
 
 def build_live_tallanto_context(
@@ -264,7 +273,7 @@ def build_tallanto_live_card(
         skipped["filial_shd"] = 1
         return _no_card("filial_shd", matched_via=matched_via, contacts_found=1, skipped=skipped)
     active = _safe_text(active_brand).casefold()
-    fail_closed = os.getenv("CRM_LIVE_CARD_BRAND_FAILCLOSED", "0") == "1"
+    fail_closed = _live_card_brand_failclosed_enabled()
     if fail_closed and not active:
         return _no_card("brand_unverified", matched_via=matched_via, contacts_found=1, brand_scope=scope, skipped=skipped)
     if active and scope not in {active, "shared"}:

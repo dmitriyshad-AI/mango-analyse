@@ -21,7 +21,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 
 NAMESPACE = "child_resolver_v1"
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 PROVIDER_OPENAI = "openai"
 PROVIDER_CODEX_CLI = "codex_cli"
 DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
@@ -38,7 +38,7 @@ CHILD_RESPONSE_KEYS = {
     "mention_ids",
     "merge_confidence",
 }
-NAME_VETO_CODES = {"different_child_names_merged", "mention_name_misattributed"}
+CHILD_REQUIRED_RESPONSE_KEYS = CHILD_RESPONSE_KEYS - {"merge_confidence"}
 
 
 class ChildResolverError(RuntimeError):
@@ -365,6 +365,7 @@ def resolve_child_family(
                 prompt=prompt,
                 response=normalized_payload,
             )
+        write_name_review_diagnostic(case, result, config=config)
         write_trace_event(case, result, config=config)
         return result
     except Exception as exc:  # noqa: BLE001 - fail-soft is an explicit TZ-100 requirement.
@@ -378,8 +379,7 @@ def resolve_child_family(
             error_detail=str(exc)[:500],
             cache_hit=cache_hit,
         )
-        if result.error_code in NAME_VETO_CODES:
-            write_name_veto_diagnostic(case, result, exc, config=config)
+        write_name_review_diagnostic(case, result, config=config, exc=exc)
         write_trace_event(case, result, config=config)
         return result
 
@@ -390,16 +390,17 @@ def build_child_resolver_prompt(case: ChildResolverCase) -> str:
         "Ты помогаешь собрать семейную карточку учебного центра. "
         "Нужно понять, сколько реальных детей есть в семье, по уже извлечённым упоминаниям.\n\n"
         "Правила:\n"
-        "- Опечатки, варианты написания и уменьшительные одного имени относятся к одному ребёнку.\n"
-        "- Реально разные имена относятся к разным детям.\n"
-        "- При сомнении не сливай: ошибка слить двух разных детей дороже.\n"
+        "- Идентичность ребёнка по именам решаешь ты по смыслу, не по строковому совпадению.\n"
+        "- Сливай ФИО, имя, уменьшительное, опечатки и ASR-варианты одного ребёнка.\n"
+        "- Разных детей, включая братьев/сестёр с общей фамилией, но разными именами, оставляй раздельно.\n"
         "- Класс может расти со временем, например 9 -> 11 за длительный период может быть один ребёнок.\n"
-        "- Не выдумывай имена: canonical_name и name_variants должны быть только из входных name.\n"
+        "- Не выдумывай имена: canonical_name должен быть ровно одним из входных name; "
+        "name_variants должны перечислять только входные написания этой группы.\n"
         "- Не отбрасывай упоминания: каждый mention_id должен быть ровно у одного ребёнка.\n"
         "- Если у ребёнка нет имени во входе, canonical_name верни пустой строкой.\n\n"
         "- Для каждого ребёнка выставь merge_confidence: high, если упоминания явно про одного ребёнка; "
         "low, если есть сомнение, разные имена, слабая связь или безымянные упоминания.\n"
-        "- merge_confidence не заменяет правило безопасности: при сомнении всё равно не сливай разных детей.\n\n"
+        "- merge_confidence только отражает твою уверенность; оно не меняет формат ответа.\n\n"
         "Верни строго JSON object без markdown:\n"
         "{\n"
         "  \"children\": [\n"
@@ -589,7 +590,7 @@ def normalize_child_resolver_response(payload: Mapping[str, Any] | None) -> dict
         if not isinstance(item, Mapping):
             raise ChildResolverError("each child must be a JSON object")
         item_keys = set(item.keys())
-        if CHILD_RESPONSE_KEYS - item_keys:
+        if CHILD_REQUIRED_RESPONSE_KEYS - item_keys:
             raise ChildResolverError("response child has missing required fields")
         if item_keys - CHILD_RESPONSE_KEYS:
             raise ChildResolverError("response child has unexpected fields")
@@ -603,7 +604,7 @@ def normalize_child_resolver_response(payload: Mapping[str, Any] | None) -> dict
                 "subjects": clean_string_list(item.get("subjects")),
                 "brands": clean_string_list(item.get("brands")),
                 "mention_ids": mention_ids,
-                "merge_confidence": str(item.get("merge_confidence") or "").strip().lower(),
+                "merge_confidence": normalize_merge_confidence(item.get("merge_confidence")),
             }
         )
     return {"children": children}
@@ -624,6 +625,8 @@ def validate_child_resolver_response(
 
     input_name_norms = {normalize_full_name(mention.child_name) for mention in case.mentions if mention.child_name}
     input_name_norms.discard("")
+    input_name_spellings = {input_name_key(mention.child_name) for mention in case.mentions if mention.child_name}
+    input_name_spellings.discard("")
     has_unnamed = any(not mention.child_name for mention in case.mentions)
     max_children = len(input_name_norms) + (1 if has_unnamed else 0)
     if len(children) > max(1, max_children):
@@ -634,13 +637,10 @@ def validate_child_resolver_response(
     for unnamed_index, child in enumerate(children, start=1):
         if not isinstance(child, Mapping):
             raise ChildResolverError("child item is not object")
-        merge_confidence = str(child.get("merge_confidence") or "").strip().lower()
-        if merge_confidence not in MERGE_CONFIDENCE_VALUES:
-            raise ChildResolverError("invalid_merge_confidence")
         child_name_values = [str(child.get("canonical_name") or "").strip(), *clean_string_list(child.get("name_variants"))]
-        child_name_norms = {normalize_full_name(value) for value in child_name_values if value}
-        child_name_norms.discard("")
-        invented = child_name_norms - input_name_norms
+        child_name_spellings = {input_name_key(value) for value in child_name_values if value}
+        child_name_spellings.discard("")
+        invented = child_name_spellings - input_name_spellings
         if invented:
             raise ChildResolverError("invented_child_name")
         mention_ids = clean_string_list(child.get("mention_ids"))
@@ -652,37 +652,6 @@ def validate_child_resolver_response(
             if mention_id in seen_mentions:
                 raise ChildResolverError("duplicate_mention_id")
             seen_mentions.add(mention_id)
-            mention = mentions_by_id[mention_id]
-            mention_name_norm = normalize_full_name(mention.child_name)
-            if mention_name_norm and mention_name_norm not in child_name_norms:
-                raise ChildResolverError(
-                    "mention_name_misattributed",
-                    diagnostics={
-                        "mention_id": mention_id,
-                        "mention_child_key": mention.child_key,
-                        "mention_name": mention.child_name,
-                        "mention_name_norm": mention_name_norm,
-                        "child_id": str(child.get("child_id") or ""),
-                        "child_name_values": child_name_values,
-                        "child_name_norms": sorted(child_name_norms),
-                        "child_mention_ids": mention_ids,
-                        "merge_confidence": merge_confidence,
-                    },
-                )
-        assigned_names = [mentions_by_id[mention_id].child_name for mention_id in mention_ids if mentions_by_id[mention_id].child_name]
-        if not child_names_are_compatible(assigned_names):
-            raise ChildResolverError(
-                "different_child_names_merged",
-                diagnostics={
-                    "child_id": str(child.get("child_id") or ""),
-                    "assigned_names": assigned_names,
-                    "assigned_name_norms": [normalize_full_name(value) for value in assigned_names],
-                    "child_name_values": child_name_values,
-                    "child_name_norms": sorted(child_name_norms),
-                    "child_mention_ids": mention_ids,
-                    "merge_confidence": merge_confidence,
-                },
-            )
         target_key = target_child_key_for_child(child, unnamed_index=unnamed_index)
         for mention_id in mention_ids:
             mention_to_child_key[mention_id] = target_key
@@ -724,9 +693,10 @@ def reject_incompatible_grades(case: ChildResolverCase, payload: Mapping[str, An
 
 
 def target_child_key_for_child(child: Mapping[str, Any], *, unnamed_index: int) -> str:
-    canonical_name = str(child.get("canonical_name") or "").strip()
-    if canonical_name:
-        return f"child_{stable_hash(canonical_name.lower())}"
+    mention_ids = sorted(clean_string_list(child.get("mention_ids")))
+    if mention_ids:
+        raw = json.dumps(mention_ids, ensure_ascii=False, separators=(",", ":"))
+        return f"child_{stable_hash(raw)}"
     return f"child_unnamed_{unnamed_index}"
 
 
@@ -807,7 +777,7 @@ def child_resolver_output_json_schema() -> dict[str, Any]:
             "subjects": {"type": "array", "items": {"type": "string"}},
             "brands": {"type": "array", "items": {"type": "string"}},
             "mention_ids": {"type": "array", "items": {"type": "string"}},
-            "merge_confidence": {"type": "string", "enum": ["high", "low"]},
+            "merge_confidence": {"type": "string"},
         },
     }
     return {
@@ -871,85 +841,13 @@ def normalize_full_name(value: str) -> str:
     return " ".join(re.findall(r"[a-zа-яё]+", str(value or "").lower().replace("ё", "е"), flags=re.IGNORECASE))
 
 
-_ROLE_TOKENS = {"дочка", "дочь", "мальчик", "ребенок", "ребёнок", "сын", "ученик", "ученица"}
-_NAME_ALIASES: dict[str, tuple[str, ...]] = {
-    "алеша": ("алексей",),
-    "алексей": ("алексей",),
-    "анна": ("анна",),
-    "аня": ("анна",),
-    "артем": ("артем",),
-    "артемий": ("артемий",),
-    "вася": ("василий",),
-    "василий": ("василий",),
-    "ваня": ("иван",),
-    "иван": ("иван",),
-    "дима": ("дмитрий",),
-    "дмитрий": ("дмитрий",),
-    "катя": ("екатерина",),
-    "екатерина": ("екатерина",),
-    "леша": ("алексей",),
-    "мария": ("мария",),
-    "маша": ("мария",),
-    "михаил": ("михаил",),
-    "миша": ("михаил",),
-    "олег": ("олег",),
-    "петр": ("петр",),
-    "петя": ("петр",),
-    "рома": ("роман",),
-    "роман": ("роман",),
-    "саша": ("александр", "александра"),
-    "степа": ("степан",),
-    "степан": ("степан",),
-    "стёпа": ("степан",),
-    "тим": ("тимур",),
-    "тима": ("тимур",),
-    "тимур": ("тимур",),
-}
+def input_name_key(value: str) -> str:
+    return str(value or "").strip().casefold()
 
 
-def child_names_are_compatible(values: Sequence[str]) -> bool:
-    canonical_sets = [canonical_tokens_for_child_name(value) for value in values if normalize_full_name(value)]
-    for left_index, left in enumerate(canonical_sets):
-        for right in canonical_sets[left_index + 1 :]:
-            if left & right:
-                continue
-            if any(levenshtein_distance(left_token, right_token) <= 1 for left_token in left for right_token in right):
-                continue
-            return False
-    return True
-
-
-def canonical_tokens_for_child_name(value: str) -> set[str]:
-    tokens = [token for token in normalize_full_name(value).split() if token and token not in _ROLE_TOKENS]
-    if not tokens:
-        return set()
-    source_tokens = [token for token in tokens if token in _NAME_ALIASES] if len(tokens) > 1 else tokens
-    if not source_tokens:
-        source_tokens = tokens
-    result: set[str] = set()
-    for token in source_tokens:
-        result.update(_NAME_ALIASES.get(token, (token,)))
-    return result
-
-
-def levenshtein_distance(left: str, right: str) -> int:
-    if left == right:
-        return 0
-    if min(len(left), len(right)) < 4:
-        return 99
-    previous = list(range(len(right) + 1))
-    for left_index, left_char in enumerate(left, start=1):
-        current = [left_index]
-        for right_index, right_char in enumerate(right, start=1):
-            current.append(
-                min(
-                    previous[right_index] + 1,
-                    current[right_index - 1] + 1,
-                    previous[right_index - 1] + (0 if left_char == right_char else 1),
-                )
-            )
-        previous = current
-    return previous[-1]
+def normalize_merge_confidence(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in MERGE_CONFIDENCE_VALUES else "low"
 
 
 def clean_name_variant_list(value: Any) -> list[str]:
@@ -959,7 +857,7 @@ def clean_name_variant_list(value: Any) -> list[str]:
     seen: set[str] = set()
     for item in value:
         text = str(item or "").strip()
-        key = normalize_full_name(text) or text.lower()
+        key = text.casefold()
         if not text or key in seen:
             continue
         seen.add(key)
@@ -1087,7 +985,7 @@ def anonymized_trace_event(case: ChildResolverCase, result: ChildResolverFamilyR
                 "subjects": clean_string_list(child.get("subjects")),
                 "brands": clean_string_list(child.get("brands")),
                 "mention_ids": clean_string_list(child.get("mention_ids")),
-                "merge_confidence": str(child.get("merge_confidence") or "").strip().lower(),
+                "merge_confidence": normalize_merge_confidence(child.get("merge_confidence")),
             }
         )
     return {
@@ -1103,17 +1001,20 @@ def anonymized_trace_event(case: ChildResolverCase, result: ChildResolverFamilyR
     }
 
 
-def write_name_veto_diagnostic(
+def write_name_review_diagnostic(
     case: ChildResolverCase,
     result: ChildResolverFamilyResult,
-    exc: Exception,
     *,
     config: ChildResolverConfig,
+    exc: Exception | None = None,
 ) -> None:
+    reason = name_review_reason(case, result, exc)
+    if not reason:
+        return
     path = name_diagnostics_path(config)
     if path is None:
         return
-    event = name_veto_diagnostic_event(case, result, exc)
+    event = name_review_diagnostic_event(case, result, reason=reason, exc=exc)
     try:
         with _NAME_DIAGNOSTIC_LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1127,14 +1028,46 @@ def name_diagnostics_path(config: ChildResolverConfig) -> Path | None:
     if config.name_diagnostics_path:
         return Path(config.name_diagnostics_path).expanduser()
     if config.trace_path:
-        return Path(config.trace_path).expanduser().with_name("name_veto_diagnostics.local.jsonl")
+        return Path(config.trace_path).expanduser().with_name("name_review_diagnostics.local.jsonl")
     return None
 
 
-def name_veto_diagnostic_event(
+def name_review_reason(
     case: ChildResolverCase,
     result: ChildResolverFamilyResult,
-    exc: Exception,
+    exc: Exception | None = None,
+) -> str:
+    if exc is not None and child_resolver_error_code(exc) in {"invented_child_name", "children_count_exceeds_name_bound"}:
+        return child_resolver_error_code(exc)
+    if not result.accepted:
+        return ""
+    children = result.raw_response.get("children") if isinstance(result.raw_response, Mapping) else []
+    child_items = children if isinstance(children, list) else []
+    has_low = any(
+        isinstance(child, Mapping) and normalize_merge_confidence(child.get("merge_confidence")) == "low"
+        for child in child_items
+    )
+    has_two_named_roots = len({mention.child_key for mention in case.mentions if mention.child_name}) >= 2
+    has_multi_named_merge = any(child_named_root_count(case, child) >= 2 for child in child_items if isinstance(child, Mapping))
+    if has_low and has_two_named_roots:
+        return "low_confidence_multi_named"
+    if has_multi_named_merge:
+        return "accepted_multi_named_merge"
+    return ""
+
+
+def child_named_root_count(case: ChildResolverCase, child: Mapping[str, Any]) -> int:
+    mentions_by_id = {mention.mention_id: mention for mention in case.mentions}
+    mention_ids = clean_string_list(child.get("mention_ids"))
+    return len({mentions_by_id[mention_id].child_key for mention_id in mention_ids if mention_id in mentions_by_id and mentions_by_id[mention_id].child_name})
+
+
+def name_review_diagnostic_event(
+    case: ChildResolverCase,
+    result: ChildResolverFamilyResult,
+    *,
+    reason: str,
+    exc: Exception | None = None,
 ) -> Mapping[str, Any]:
     children = result.raw_response.get("children") if isinstance(result.raw_response, Mapping) else []
     model_children = []
@@ -1147,15 +1080,18 @@ def name_veto_diagnostic_event(
                 "canonical_name": str(child.get("canonical_name") or ""),
                 "name_variants": clean_string_list(child.get("name_variants")),
                 "mention_ids": clean_string_list(child.get("mention_ids")),
-                "merge_confidence": str(child.get("merge_confidence") or "").strip().lower(),
+                "merge_confidence": normalize_merge_confidence(child.get("merge_confidence")),
+                "named_root_count": child_named_root_count(case, child),
             }
         )
     return {
         "case_id": case.case_id,
         "profile_hash": stable_hash(case.profile_id)[:12],
-        "error_code": child_resolver_error_code(exc),
-        "error_detail": str(exc)[:500],
-        "diagnostics": getattr(exc, "diagnostics", {}),
+        "reason": reason,
+        "accepted": result.accepted,
+        "error_code": child_resolver_error_code(exc) if exc else result.error_code,
+        "error_detail": (str(exc) if exc else result.error_detail)[:500],
+        "diagnostics": getattr(exc, "diagnostics", {}) if exc else {},
         "grouped_name_spellings": grouped_name_spellings(case),
         "input_mentions": [
             {

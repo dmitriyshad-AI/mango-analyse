@@ -437,7 +437,7 @@ def test_llm_child_resolver_schema_and_prompt_include_merge_confidence() -> None
     assert schema["additionalProperties"] is False
     assert child_schema["additionalProperties"] is False
     assert "merge_confidence" in child_schema["required"]
-    assert child_schema["properties"]["merge_confidence"] == {"type": "string", "enum": ["high", "low"]}
+    assert child_schema["properties"]["merge_confidence"] == {"type": "string"}
 
     fields = [
         _child_field("child_name", "Степан", child_key="child_a", source_ref="mango:1"),
@@ -447,6 +447,7 @@ def test_llm_child_resolver_schema_and_prompt_include_merge_confidence() -> None
     prompt = build_child_resolver_prompt(case)
 
     assert '"merge_confidence": "high"' in prompt
+    assert "ФИО" in prompt
     assert "high" in prompt
     assert "low" in prompt
 
@@ -470,7 +471,7 @@ def test_llm_child_resolver_normalizes_confidence_and_dedups_name_variants() -> 
     normalized = normalize_child_resolver_response(payload)
 
     assert normalized["children"][0]["merge_confidence"] == "low"
-    assert normalized["children"][0]["name_variants"] == ["Стёпа"]
+    assert normalized["children"][0]["name_variants"] == ["Стёпа", "Степа"]
 
 
 def test_llm_child_resolver_normalize_rejects_extra_and_missing_fields() -> None:
@@ -493,8 +494,12 @@ def test_llm_child_resolver_normalize_rejects_extra_and_missing_fields() -> None
 
     missing_confidence = dict(child)
     missing_confidence.pop("merge_confidence")
-    with pytest.raises(ChildResolverError, match="missing required fields"):
-        normalize_child_resolver_response({"children": [missing_confidence]})
+    normalized_missing = normalize_child_resolver_response({"children": [missing_confidence]})
+    assert normalized_missing["children"][0]["merge_confidence"] == "low"
+
+    invalid_confidence = {**child, "merge_confidence": "medium"}
+    normalized_invalid = normalize_child_resolver_response({"children": [invalid_confidence]})
+    assert normalized_invalid["children"][0]["merge_confidence"] == "low"
 
 
 def test_llm_child_resolver_merges_typo_name_variants(tmp_path: Path) -> None:
@@ -578,10 +583,73 @@ def test_llm_child_resolver_low_confidence_is_logged_without_behavior_change(tmp
     assert trace_event["model_children"][0]["merge_confidence"] == "low"
 
 
-def test_llm_child_resolver_rejects_name_misattribution(tmp_path: Path) -> None:
+def test_llm_child_resolver_child_key_is_stable_across_canonical_choice(tmp_path: Path) -> None:
     fields = [
-        _child_field("child_name", "Петя", child_key="child_a", source_ref="mango:1"),
-        _child_field("child_name", "Вася", child_key="child_b", source_ref="mango:2"),
+        _child_field("child_name", "Дубинина Елизавета Андреевна", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Лиза", child_key="child_b", source_ref="mango:2"),
+    ]
+
+    first = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=_FakeClient(
+            [
+                lambda prompt: _children_payload(
+                    prompt,
+                    [
+                        {
+                            "child_id": "child_1",
+                            "canonical_name": "Дубинина Елизавета Андреевна",
+                            "name_variants": ["Дубинина Елизавета Андреевна", "Лиза"],
+                            "grades": [],
+                            "subjects": [],
+                            "brands": [],
+                            "mention_ids": "all",
+                            "merge_confidence": "high",
+                        }
+                    ],
+                )
+            ]
+        ),
+        cache=LLMResponseCache(enabled=False, root_dir=tmp_path / "cache1"),
+    )
+    second = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=_FakeClient(
+            [
+                lambda prompt: _children_payload(
+                    prompt,
+                    [
+                        {
+                            "child_id": "child_1",
+                            "canonical_name": "Лиза",
+                            "name_variants": ["Дубинина Елизавета Андреевна", "Лиза"],
+                            "grades": [],
+                            "subjects": [],
+                            "brands": [],
+                            "mention_ids": "all",
+                            "merge_confidence": "high",
+                        }
+                    ],
+                )
+            ]
+        ),
+        cache=LLMResponseCache(enabled=False, root_dir=tmp_path / "cache2"),
+    )
+
+    first_keys = {field.child_key for field in first.fields if field.field == "child_name"}
+    second_keys = {field.child_key for field in second.fields if field.field == "child_name"}
+    assert len(first_keys) == 1
+    assert first_keys == second_keys
+
+
+def test_llm_child_resolver_rejects_children_count_growth_above_input_names(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Анна", child_key="child_a", source_ref="mango:1"),
+        _child_field("subject", "физика", child_key="child_b", source_ref="mango:2"),
     ]
     client = _FakeClient(
         [
@@ -590,13 +658,34 @@ def test_llm_child_resolver_rejects_name_misattribution(tmp_path: Path) -> None:
                 [
                     {
                         "child_id": "child_1",
-                        "canonical_name": "Вася",
-                        "name_variants": ["Вася"],
+                        "canonical_name": "Анна",
+                        "name_variants": ["Анна"],
                         "grades": [],
                         "subjects": [],
                         "brands": [],
-                        "mention_ids": "all",
-                    }
+                        "mention_ids": [0],
+                        "merge_confidence": "high",
+                    },
+                    {
+                        "child_id": "child_2",
+                        "canonical_name": "",
+                        "name_variants": [],
+                        "grades": [],
+                        "subjects": ["физика"],
+                        "brands": [],
+                        "mention_ids": [1],
+                        "merge_confidence": "low",
+                    },
+                    {
+                        "child_id": "child_3",
+                        "canonical_name": "",
+                        "name_variants": [],
+                        "grades": [],
+                        "subjects": [],
+                        "brands": [],
+                        "mention_ids": [],
+                        "merge_confidence": "low",
+                    },
                 ],
             )
         ]
@@ -614,10 +703,10 @@ def test_llm_child_resolver_rejects_name_misattribution(tmp_path: Path) -> None:
     assert result.summary["llm_families_failed_soft"] == 1
 
 
-def test_llm_child_resolver_rejects_merging_different_named_children(tmp_path: Path) -> None:
+def test_llm_child_resolver_merges_full_name_and_short_name_as_one_child(tmp_path: Path) -> None:
     fields = [
-        _child_field("child_name", "Петя", child_key="child_a", source_ref="mango:1"),
-        _child_field("child_name", "Вася", child_key="child_b", source_ref="mango:2"),
+        _child_field("child_name", "Дубинина Елизавета Андреевна", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Лиза", child_key="child_b", source_ref="mango:2"),
     ]
     client = _FakeClient(
         [
@@ -626,51 +715,91 @@ def test_llm_child_resolver_rejects_merging_different_named_children(tmp_path: P
                 [
                     {
                         "child_id": "child_1",
-                        "canonical_name": "Петя",
-                        "name_variants": ["Петя", "Вася"],
-                        "grades": [],
-                        "subjects": [],
-                        "brands": [],
-                        "mention_ids": "all",
-                    }
-                ],
-            )
-        ]
-    )
-
-    result = apply_llm_child_resolver_to_fields(
-        fields,
-        profile_phones={"cust-1": "+79990000000"},
-        config=_resolver_config(tmp_path),
-        client=client,
-        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
-    )
-
-    assert result.fields == fields
-    assert result.summary["llm_families_failed_soft"] == 1
-
-
-def test_llm_child_resolver_high_confidence_does_not_override_name_veto_and_writes_diagnostics(tmp_path: Path) -> None:
-    fields = [
-        _child_field("child_name", "Петя", child_key="child_a", source_ref="mango:1"),
-        _child_field("child_name", "Вася", child_key="child_b", source_ref="mango:2"),
-    ]
-    trace_path = tmp_path / "trace.jsonl"
-    diagnostics_path = tmp_path / "name_veto_diagnostics.local.jsonl"
-    client = _FakeClient(
-        [
-            lambda prompt: _children_payload(
-                prompt,
-                [
-                    {
-                        "child_id": "child_1",
-                        "canonical_name": "Петя",
-                        "name_variants": ["Петя", "Вася"],
+                        "canonical_name": "Дубинина Елизавета Андреевна",
+                        "name_variants": ["Дубинина Елизавета Андреевна", "Лиза"],
                         "grades": [],
                         "subjects": [],
                         "brands": [],
                         "mention_ids": "all",
                         "merge_confidence": "high",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.summary["llm_families_resolved"] == 1
+    assert result.summary["llm_families_failed_soft"] == 0
+    assert len({field.child_key for field in result.fields if field.field == "child_name"}) == 1
+
+
+def test_llm_child_resolver_merges_alias_spellings_as_one_child(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Колосов Даниил", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Даня", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Колосов Даниил",
+                        "name_variants": ["Колосов Даниил", "Даня"],
+                        "grades": [],
+                        "subjects": [],
+                        "brands": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "high",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.summary["llm_families_resolved"] == 1
+    assert result.summary["llm_families_failed_soft"] == 0
+    assert len({field.child_key for field in result.fields if field.field == "child_name"}) == 1
+
+
+def test_llm_child_resolver_merges_asr_variant_and_writes_review_diagnostics(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Майчислав Леонидович", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Вячеслав Леонидович", child_key="child_b", source_ref="mango:2"),
+    ]
+    trace_path = tmp_path / "trace.jsonl"
+    diagnostics_path = tmp_path / "name_review_diagnostics.local.jsonl"
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Майчислав Леонидович",
+                        "name_variants": ["Майчислав Леонидович", "Вячеслав Леонидович"],
+                        "grades": [],
+                        "subjects": [],
+                        "brands": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
                     }
                 ],
             )
@@ -687,14 +816,14 @@ def test_llm_child_resolver_high_confidence_does_not_override_name_veto_and_writ
     trace_event = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[0])
     diagnostics_event = json.loads(diagnostics_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert result.fields == fields
-    assert result.summary["llm_families_failed_soft"] == 1
-    assert result.summary["llm_merge_confidence_high_children"] == 1
-    assert trace_event["model_children"][0]["merge_confidence"] == "high"
-    assert trace_event["error_code"] == "different_child_names_merged"
-    assert diagnostics_event["error_code"] == "different_child_names_merged"
-    assert diagnostics_event["diagnostics"]["assigned_names"] == ["Петя", "Вася"]
-    assert {item["name_norm"] for item in diagnostics_event["grouped_name_spellings"]} == {"вася", "петя"}
+    assert result.summary["llm_families_resolved"] == 1
+    assert result.summary["llm_merge_confidence_low_children"] == 1
+    assert len({field.child_key for field in result.fields if field.field == "child_name"}) == 1
+    assert trace_event["error_code"] == ""
+    assert trace_event["model_children"][0]["merge_confidence"] == "low"
+    assert diagnostics_event["reason"] == "low_confidence_multi_named"
+    assert diagnostics_event["accepted"] is True
+    assert [item["spellings"] for item in diagnostics_event["grouped_name_spellings"]]
 
 
 def test_llm_child_resolver_rejects_extra_response_fields(tmp_path: Path) -> None:
@@ -729,8 +858,9 @@ def test_llm_child_resolver_rejects_extra_response_fields(tmp_path: Path) -> Non
     assert result.summary["child_slot_fields_rekeyed"] == 0
 
 
-def test_llm_child_resolver_rejects_invalid_merge_confidence(tmp_path: Path) -> None:
+def test_llm_child_resolver_defaults_invalid_merge_confidence_to_low(tmp_path: Path) -> None:
     fields = [_child_field("grade", "7", child_key="child_a"), _child_field("subject", "физика", child_key="child_b")]
+    trace_path = tmp_path / "trace.jsonl"
     client = _FakeClient(
         [
             lambda prompt: _children_payload(
@@ -754,19 +884,22 @@ def test_llm_child_resolver_rejects_invalid_merge_confidence(tmp_path: Path) -> 
     result = apply_llm_child_resolver_to_fields(
         fields,
         profile_phones={"cust-1": "+79990000000"},
-        config=_resolver_config(tmp_path),
+        config=_resolver_config(tmp_path, trace_path=trace_path),
         client=client,
         cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
     )
+    trace_event = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[0])
 
-    assert result.fields == fields
-    assert result.summary["llm_families_failed_soft"] == 1
+    assert result.summary["llm_families_resolved"] == 1
+    assert result.summary["llm_families_failed_soft"] == 0
+    assert result.summary["llm_merge_confidence_low_children"] == 1
+    assert trace_event["model_children"][0]["merge_confidence"] == "low"
 
 
 def test_llm_child_resolver_keeps_different_names_separate(tmp_path: Path) -> None:
     fields = [
-        _child_field("child_name", "Петя", child_key="child_a", source_ref="mango:1"),
-        _child_field("child_name", "Вася", child_key="child_b", source_ref="mango:2"),
+        _child_field("child_name", "Кулаков Никита", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Кулакова Дарья", child_key="child_b", source_ref="mango:2"),
     ]
     client = _FakeClient(
         [
@@ -775,8 +908,8 @@ def test_llm_child_resolver_keeps_different_names_separate(tmp_path: Path) -> No
                 [
                     {
                         "child_id": "child_1",
-                        "canonical_name": "Петя",
-                        "name_variants": ["Петя"],
+                        "canonical_name": "Кулаков Никита",
+                        "name_variants": ["Кулаков Никита"],
                         "grades": [],
                         "subjects": [],
                         "brands": [],
@@ -784,8 +917,8 @@ def test_llm_child_resolver_keeps_different_names_separate(tmp_path: Path) -> No
                     },
                     {
                         "child_id": "child_2",
-                        "canonical_name": "Вася",
-                        "name_variants": ["Вася"],
+                        "canonical_name": "Кулакова Дарья",
+                        "name_variants": ["Кулакова Дарья"],
                         "grades": [],
                         "subjects": [],
                         "brands": [],

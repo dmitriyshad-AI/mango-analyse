@@ -70,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("No TZ100 microprobe candidates found")
 
     trace_path = out_root / "llm_child_resolver_trace.jsonl"
-    name_diagnostics_path = out_root / "name_veto_diagnostics.local.jsonl"
+    name_diagnostics_path = out_root / "name_review_diagnostics.local.jsonl"
     cache_dir = out_root / "llm_cache"
     before_db = out_root / "customer_profiles_before.sqlite"
     after_db = out_root / "customer_profiles_after.sqlite"
@@ -119,13 +119,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     after_metrics = child_metrics(after_db)
     trace_events = read_trace_events(trace_path)
     known_bad_events = known_bad_trace_events(trace_events, known_bad_prefixes)
+    low_multi_named_events = low_confidence_multi_named_events(trace_events)
     confidence_summary = summarize_confidence(trace_events, known_bad_prefixes=known_bad_prefixes)
     manual_review_jsonl = out_root / "manual_review_cases.anonymized.jsonl"
     manual_review_csv = out_root / "manual_review_cases.anonymized.csv"
     known_bad_focus_path = out_root / "known_bad_focus.anonymized.jsonl"
+    low_multi_named_focus_path = out_root / "low_confidence_multi_named.anonymized.jsonl"
     write_jsonl(manual_review_jsonl, trace_events)
     write_manual_review_csv(manual_review_csv, trace_events)
     write_jsonl(known_bad_focus_path, known_bad_events)
+    write_jsonl(low_multi_named_focus_path, low_multi_named_events)
     selected_public = [
         {
             "profile_hash": item.profile_hash,
@@ -157,13 +160,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "before_child_metrics": before_metrics,
         "after_child_metrics": after_metrics,
         "trace_path": str(trace_path),
-        "name_veto_diagnostics_path": str(name_diagnostics_path),
+        "name_review_diagnostics_path": str(name_diagnostics_path),
         "manual_review_cases_anonymized_jsonl": str(manual_review_jsonl),
         "manual_review_cases_anonymized_csv": str(manual_review_csv),
         "known_bad_focus_anonymized_jsonl": str(known_bad_focus_path),
+        "low_confidence_multi_named_anonymized_jsonl": str(low_multi_named_focus_path),
         "known_bad_case_prefixes": list(known_bad_prefixes),
         "known_bad_profile_hashes": list(known_bad_profile_hashes),
         "known_bad_events": known_bad_events,
+        "low_confidence_multi_named_events": low_multi_named_events,
         "confidence_bucket_summary": confidence_summary,
         "trace_events": trace_events,
         "safety": {
@@ -186,8 +191,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "out_root": str(out_root),
                 "selected_count": len(selected),
                 "trace_path": str(trace_path),
-                "name_veto_diagnostics_path": str(name_diagnostics_path),
+                "name_review_diagnostics_path": str(name_diagnostics_path),
                 "known_bad_found": len(known_bad_events),
+                "low_confidence_multi_named_found": len(low_multi_named_events),
                 "confidence_bucket_summary": confidence_summary,
             },
             ensure_ascii=False,
@@ -471,6 +477,21 @@ def known_bad_trace_events(
         for event in trace_events
         if any(str(event.get("case_id") or "").startswith(f"family_{prefix}") for prefix in known_bad_prefixes)
     ]
+
+
+def low_confidence_multi_named_events(trace_events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    result: list[Mapping[str, Any]] = []
+    for event in trace_events:
+        mentions = event.get("input_mentions") if isinstance(event.get("input_mentions"), list) else []
+        children = event.get("model_children") if isinstance(event.get("model_children"), list) else []
+        named_mentions = sum(1 for mention in mentions if isinstance(mention, Mapping) and mention.get("has_name"))
+        has_low = any(
+            isinstance(child, Mapping) and str(child.get("merge_confidence") or "").strip().lower() == "low"
+            for child in children
+        )
+        if has_low and named_mentions >= 2:
+            result.append(event)
+    return result
 
 
 def summarize_confidence(

@@ -9,9 +9,15 @@ import pytest
 
 from mango_mvp.customer_profile import CustomerProfileBuilder, CustomerProfileBuildOptions
 from mango_mvp.customer_profile.build_cli import safe_field_preview
-from mango_mvp.customer_profile.builder import child_slot_groups
-from mango_mvp.customer_profile.contracts import ProfileFieldCandidate
+from mango_mvp.customer_profile.builder import apply_child_slot_merge_candidates, child_slot_groups
+from mango_mvp.customer_profile.child_resolver_llm import (
+    ChildResolverConfig,
+    ChildResolverError,
+    apply_llm_child_resolver_to_fields,
+)
+from mango_mvp.customer_profile.contracts import ProfileFieldCandidate, apply_superseded_rules
 from mango_mvp.customer_profile.store import CustomerProfileSQLiteStore
+from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     IdentityLink,
@@ -25,6 +31,104 @@ from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
+
+
+class _FakeMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content: str):
+        self.message = _FakeMessage(content)
+
+
+class _FakeResponse:
+    def __init__(self, content: str):
+        self.choices = [_FakeChoice(content)]
+
+
+class _FakeCompletions:
+    def __init__(self, payloads: list[dict[str, object] | str]):
+        self.payloads = list(payloads)
+        self.calls = 0
+
+    def create(self, **kwargs: object) -> _FakeResponse:
+        self.calls += 1
+        if not self.payloads:
+            raise AssertionError("unexpected child resolver LLM call")
+        payload = self.payloads.pop(0)
+        if callable(payload):
+            payload = payload(str(kwargs["messages"][0]["content"]))
+        if isinstance(payload, str):
+            return _FakeResponse(payload)
+        return _FakeResponse(json.dumps(payload, ensure_ascii=False))
+
+
+class _FakeChat:
+    def __init__(self, completions: _FakeCompletions):
+        self.completions = completions
+
+
+class _FakeClient:
+    def __init__(self, payloads: list[dict[str, object] | str]):
+        self.completions = _FakeCompletions(payloads)
+        self.chat = _FakeChat(self.completions)
+
+
+def _prompt_mention_ids(prompt: str) -> list[str]:
+    payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+    return [str(item["mention_id"]) for item in payload["mentions"]]
+
+
+def _children_payload(prompt: str, children: list[dict[str, object]]) -> dict[str, object]:
+    mention_ids = _prompt_mention_ids(prompt)
+    translated: list[dict[str, object]] = []
+    for child in children:
+        ids = child.get("mention_ids")
+        if ids == "all":
+            resolved_ids = mention_ids
+        elif isinstance(ids, list) and ids and isinstance(ids[0], int):
+            resolved_ids = [mention_ids[int(item)] for item in ids]
+        else:
+            resolved_ids = ids
+        translated.append({**child, "mention_ids": resolved_ids})
+    return {"children": translated}
+
+
+def _resolver_config(tmp_path: Path, *, stoplist_phone: str = "+70000000000") -> ChildResolverConfig:
+    stoplist = tmp_path / "shared_phones_stoplist.json"
+    stoplist.write_text(json.dumps({"phones": [stoplist_phone]}), encoding="utf-8")
+    return ChildResolverConfig(
+        provider="openai",
+        model="fake-child-resolver",
+        cache_root_dir=tmp_path / "cache",
+        max_concurrency=2,
+        max_retries=1,
+        stoplist_path=stoplist,
+    )
+
+
+def _child_field(
+    field: str,
+    value: str,
+    *,
+    profile_id: str = "cust-1",
+    child_key: str = "child_1",
+    source_ref: str = "mango:1",
+    event_at: datetime = NOW,
+    brand: str = "foton",
+) -> ProfileFieldCandidate:
+    return ProfileFieldCandidate(
+        profile_id=profile_id,
+        field=field,
+        value=value,
+        child_key=child_key,
+        source_system="mango_processed_summary",
+        source_ref=source_ref,
+        event_at=event_at,
+        brand=brand,
+    )
 
 
 def _timeline_db(tmp_path: Path, *, duplicate_phone_customer: bool = False) -> Path:
@@ -296,6 +400,473 @@ def test_child_slot_trait_merge_does_not_absorb_named_slots(monkeypatch: pytest.
     )
 
     assert groups == [("child_1", ["child_1"]), ("child_2", ["child_2"]), ("child_3", ["child_3"])]
+
+
+def test_llm_child_resolver_flag_off_matches_existing_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+    fields = [
+        _child_field("child_name", "Рома", child_key="child_a", source_ref="mango:1"),
+        _child_field("grade", "7", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Роман", child_key="child_b", source_ref="mango:2"),
+        _child_field("grade", "8", child_key="child_b", source_ref="mango:2"),
+    ]
+    monkeypatch.delenv("PROFILE_LLM_CHILD_RESOLVER", raising=False)
+    old_fields, old_summary = apply_child_slot_merge_candidates(fields)
+    monkeypatch.setenv("PROFILE_LLM_CHILD_RESOLVER", "0")
+    new_fields, new_summary = apply_child_slot_merge_candidates(fields)
+
+    assert old_summary == new_summary
+    assert old_fields == new_fields
+
+
+def test_llm_child_resolver_merges_typo_name_variants(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Степан", child_key="child_a", source_ref="mango:1"),
+        _child_field("grade", "7", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Стёпа", child_key="child_b", source_ref="mango:2"),
+        _child_field("subject", "физика", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Степан",
+                        "name_variants": ["Степан", "Стёпа"],
+                        "grades": ["7"],
+                        "subjects": ["физика"],
+                        "brands": ["foton"],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    child_keys = {field.child_key for field in result.fields if field.field in {"child_name", "grade", "subject"}}
+    assert len(child_keys) == 1
+    assert result.summary["llm_families_resolved"] == 1
+    assert client.completions.calls == 1
+
+
+def test_llm_child_resolver_rejects_name_misattribution(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Петя", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Вася", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Вася",
+                        "name_variants": ["Вася"],
+                        "grades": [],
+                        "subjects": [],
+                        "brands": [],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.fields == fields
+    assert result.summary["llm_families_failed_soft"] == 1
+
+
+def test_llm_child_resolver_rejects_merging_different_named_children(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Петя", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Вася", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Петя",
+                        "name_variants": ["Петя", "Вася"],
+                        "grades": [],
+                        "subjects": [],
+                        "brands": [],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.fields == fields
+    assert result.summary["llm_families_failed_soft"] == 1
+
+
+def test_llm_child_resolver_keeps_different_names_separate(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Петя", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Вася", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Петя",
+                        "name_variants": ["Петя"],
+                        "grades": [],
+                        "subjects": [],
+                        "brands": [],
+                        "mention_ids": [0],
+                    },
+                    {
+                        "child_id": "child_2",
+                        "canonical_name": "Вася",
+                        "name_variants": ["Вася"],
+                        "grades": [],
+                        "subjects": [],
+                        "brands": [],
+                        "mention_ids": [1],
+                    },
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    child_keys = {field.child_key for field in result.fields if field.field == "child_name"}
+    assert len(child_keys) == 2
+    assert result.summary["llm_families_resolved"] == 1
+
+
+def test_llm_child_resolver_attaches_nameless_mentions_to_named_child(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Анна", child_key="child_name_hash", source_ref="mango:1"),
+        _child_field("grade", "7", child_key="child_grade_hash", source_ref="mango:2"),
+        _child_field("subject", "математика", child_key="child_subject_hash", source_ref="mango:3"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Анна",
+                        "name_variants": ["Анна"],
+                        "grades": ["7"],
+                        "subjects": ["математика"],
+                        "brands": ["foton"],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    child_keys = {field.child_key for field in result.fields if field.field in {"child_name", "grade", "subject"}}
+    assert len(child_keys) == 1
+    assert result.summary["child_slot_fields_rekeyed"] == 3
+
+
+def test_llm_child_resolver_rejects_incompatible_same_period_grades(tmp_path: Path) -> None:
+    fields = [
+        _child_field("grade", "5 класс", child_key="child_a", source_ref="mango:1", event_at=NOW),
+        _child_field("grade", "9 класс", child_key="child_b", source_ref="mango:2", event_at=NOW.replace(month=7)),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "",
+                        "name_variants": [],
+                        "grades": ["5 класс", "9 класс"],
+                        "subjects": [],
+                        "brands": ["foton"],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.fields == fields
+    assert result.summary["llm_families_failed_soft"] == 1
+
+
+def test_llm_child_resolver_allows_grade_progression_9_to_11(tmp_path: Path) -> None:
+    fields = [
+        _child_field(
+            "child_name",
+            "Анна",
+            child_key="child_a",
+            source_ref="mango:1",
+            event_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+        _child_field(
+            "grade",
+            "9 класс",
+            child_key="child_a",
+            source_ref="mango:1",
+            event_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ),
+        _child_field(
+            "child_name",
+            "Анна",
+            child_key="child_b",
+            source_ref="mango:2",
+            event_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        _child_field(
+            "grade",
+            "11 класс",
+            child_key="child_b",
+            source_ref="mango:2",
+            event_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Анна",
+                        "name_variants": ["Анна"],
+                        "grades": ["9 класс", "11 класс"],
+                        "subjects": [],
+                        "brands": ["foton"],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+    active = [field for field in apply_superseded_rules(result.fields) if not field.superseded_by and field.field == "grade"]
+
+    assert result.summary["llm_families_resolved"] == 1
+    assert len(active) == 1
+    assert active[0].value == "11 класс"
+
+
+def test_llm_child_resolver_requires_stoplist_file(tmp_path: Path) -> None:
+    with pytest.raises(ChildResolverError, match="stoplist"):
+        apply_llm_child_resolver_to_fields(
+            [_child_field("grade", "7", child_key="child_a"), _child_field("subject", "физика", child_key="child_b")],
+            profile_phones={"cust-1": "+79990000000"},
+            config=ChildResolverConfig(provider="openai", stoplist_path=tmp_path / "missing.json"),
+            client=_FakeClient([]),
+            cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+        )
+
+
+def test_llm_child_resolver_skips_shared_phone_from_stoplist(tmp_path: Path) -> None:
+    fields = [_child_field("grade", "7", child_key="child_a"), _child_field("subject", "физика", child_key="child_b")]
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path, stoplist_phone="+79990000000"),
+        client=_FakeClient([]),
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.fields == fields
+    assert result.summary["llm_families_skipped_shared_phone"] == 1
+
+
+def test_llm_child_resolver_invalid_json_is_fail_soft(tmp_path: Path) -> None:
+    fields = [_child_field("grade", "7", child_key="child_a"), _child_field("subject", "физика", child_key="child_b")]
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=_FakeClient(["not json"]),
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.fields == fields
+    assert result.summary["llm_families_failed_soft"] == 1
+
+
+def test_llm_child_resolver_rejects_empty_mention_ids(tmp_path: Path) -> None:
+    fields = [_child_field("grade", "7", child_key="child_a"), _child_field("subject", "физика", child_key="child_b")]
+    client = _FakeClient(
+        [
+            {
+                "children": [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "",
+                        "name_variants": [],
+                        "grades": ["7"],
+                        "subjects": ["физика"],
+                        "brands": ["foton"],
+                        "mention_ids": [],
+                    }
+                ]
+            }
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert result.fields == fields
+    assert result.summary["llm_families_failed_soft"] == 1
+
+
+def test_llm_child_resolver_uses_cache_on_repeat(tmp_path: Path) -> None:
+    fields = [_child_field("grade", "7", child_key="child_a"), _child_field("subject", "физика", child_key="child_b")]
+    cache = LLMResponseCache(enabled=True, root_dir=tmp_path / "cache")
+    config = _resolver_config(tmp_path)
+    first_client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "",
+                        "name_variants": [],
+                        "grades": ["7"],
+                        "subjects": ["физика"],
+                        "brands": ["foton"],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    first = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=config,
+        client=first_client,
+        cache=cache,
+    )
+    second_client = _FakeClient([])
+    second = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=config,
+        client=second_client,
+        cache=cache,
+    )
+
+    assert first.summary["llm_cache_hits"] == 0
+    assert second.summary["llm_cache_hits"] == 1
+    assert second.summary["llm_calls_total"] == 0
+    assert first_client.completions.calls == 1
+    assert second_client.completions.calls == 0
+
+
+def test_llm_child_resolver_preserves_brand_per_row(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Анна", child_key="child_a", source_ref="mango:1", brand="unpk"),
+        _child_field("grade", "7", child_key="child_b", source_ref="mango:2", brand="foton"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Анна",
+                        "name_variants": ["Анна"],
+                        "grades": ["7"],
+                        "subjects": [],
+                        "brands": ["unpk", "foton"],
+                        "mention_ids": "all",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    brands_by_field = {field.field: field.brand for field in result.fields}
+    assert brands_by_field == {"child_name": "unpk", "grade": "foton"}
+    assert result.summary["llm_brand_changed_fields"] == 0
 
 
 def test_builder_does_not_merge_different_children_or_ambiguous_diminutive(tmp_path: Path) -> None:

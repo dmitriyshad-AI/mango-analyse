@@ -1,0 +1,4 @@
+src/mango_mvp/customer_profile/builder.py
+src/mango_mvp/customer_profile/child_resolver_llm.py
+scripts/run_tz100_child_resolver_microprobe.py
+tests/test_customer_profile_builder.py

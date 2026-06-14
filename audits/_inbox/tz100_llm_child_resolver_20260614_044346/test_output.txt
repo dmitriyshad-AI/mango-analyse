@@ -1,0 +1,24 @@
+Commands:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile src/mango_mvp/customer_profile/child_resolver_llm.py scripts/run_tz100_child_resolver_microprobe.py
+Result: passed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_profile_builder.py
+Result: 31 passed in 0.64s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_profile_builder.py tests/test_tz16_profiles_v7_build.py tests/test_refresh_customer_profiles.py
+Result: 40 passed in 0.79s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+Result: 3207 passed, 5 skipped, 1 warning in 38.73s
+
+Microprobe command:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_tz100_child_resolver_microprobe.py --limit 18 --provider codex_cli --model gpt-5.4-mini --reasoning medium --max-concurrency 2 --out-root product_data/customer_profiles/tz100_microprobe_20260614_043317
+
+Microprobe result:
+- selected_count: 18
+- trace_events: 18
+- sqlite quick_check before: ok
+- sqlite quick_check after: ok
+- output path ignored by git through `.gitignore:141:product_data/customer_profiles/`

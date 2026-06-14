@@ -46,7 +46,8 @@ class CustomerProfileBuilder:
             fields = list(self._fields_from_timeline(timeline, profile_ids))
             if self.options.master_calls_db:
                 fields.extend(self._fields_from_master_calls(timeline, profile_ids))
-            fields, child_slot_merge = apply_child_slot_merge_candidates(fields)
+            profile_phones = {profile.profile_id: profile.primary_phone for profile in profiles}
+            fields, child_slot_merge = apply_child_slot_merge_candidates(fields, profile_phones=profile_phones)
             fields = list(apply_superseded_rules(fields))
         finally:
             timeline.close()
@@ -499,7 +500,15 @@ _DIMINUTIVE_CANONICAL: dict[str, tuple[str, ...]] = {
 
 def apply_child_slot_merge_candidates(
     fields: Sequence[ProfileFieldCandidate],
-) -> tuple[list[ProfileFieldCandidate], Mapping[str, int]]:
+    *,
+    profile_phones: Mapping[str, str] | None = None,
+) -> tuple[list[ProfileFieldCandidate], Mapping[str, Any]]:
+    if os.getenv("PROFILE_LLM_CHILD_RESOLVER", "0") == "1":
+        from mango_mvp.customer_profile.child_resolver_llm import apply_llm_child_resolver_to_fields
+
+        result = apply_llm_child_resolver_to_fields(fields, profile_phones=profile_phones)
+        return result.fields, result.summary
+
     child_slots = collect_child_slots(fields)
     profile_groups: dict[str, list[tuple[str, list[str]]]] = {}
     profile_canonical: dict[tuple[str, str], str] = {}

@@ -30,6 +30,7 @@ DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 MEMORY_PROVENANCE_COMPACT_ENV = "TELEGRAM_MEMORY_PROVENANCE_COMPACT"
 MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
+MEMORY_CHILD_IDENTITY_MODEL_ENV = "TELEGRAM_CHILD_IDENTITY_MODEL"
 MEMORY_PROFILE_DEFAULT_ON_FLAGS: tuple[str, ...] = (
     MEMORY_PROVENANCE_COMPACT_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
@@ -357,6 +358,7 @@ def build_dialogue_memory(
     active_brand: str,
     recent_messages: Sequence[str] = (),
     known_slots: Mapping[str, Any] | None = None,
+    resolved_children: Sequence[Mapping[str, Any]] = (),
     context: Mapping[str, Any] | None = None,
     previous_memory: Mapping[str, Any] | DialogueMemory | None = None,
     session_id: str = "",
@@ -374,7 +376,16 @@ def build_dialogue_memory(
 
     slot_history: tuple[Mapping[str, Any], ...] = _slot_history_from_previous(previous_memory)
     if _memory_provenance_enabled():
-        slot_map, slot_history = _extract_provenance_slots(turns, previous_memory=previous_memory)
+        slot_map, slot_history = _extract_provenance_slots(
+            turns,
+            previous_memory=previous_memory,
+            resolved_child_key=_resolved_current_child_key(
+                known_slots=known_slots or {},
+                resolved_children=resolved_children,
+            )
+            if _child_identity_model_enabled()
+            else "",
+        )
     else:
         slot_map = _slots_from_previous(previous_memory)
         _merge_slots(slot_map, known_slots or {}, source_name="provided_context", confidence=0.82)
@@ -968,6 +979,10 @@ def _memory_profile_flag_enabled(env_name: str) -> bool:
     )
 
 
+def _child_identity_model_enabled() -> bool:
+    return _memory_profile_flag_enabled(MEMORY_CHILD_IDENTITY_MODEL_ENV)
+
+
 _GRADE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?P<grade>[1-9]|1[01])\s*[- ]?(?:й|ый|ого)?\s*(?:класс\w*|кл\.?)\b", re.I),
     re.compile(r"\bза\s+(?P<grade>[1-9]|1[01])\s*(?:класс\w*|кл\.?)\b", re.I),
@@ -1028,10 +1043,11 @@ def _extract_provenance_slots(
     turns: Sequence[DialogueTurn],
     *,
     previous_memory: Mapping[str, Any] | DialogueMemory | None,
+    resolved_child_key: str = "",
 ) -> tuple[dict[str, DialogueSlot], tuple[Mapping[str, Any], ...]]:
     slots = _slots_from_previous(previous_memory)
     history = list(_slot_history_from_previous(previous_memory))
-    latest_child_key = _latest_child_key(slots) or "child_1"
+    latest_child_key = _clean_child_key(resolved_child_key) or _latest_child_key(slots) or "child_1"
     client_turn_index = 0
     seen_messages: set[str] = set()
     for turn in turns:
@@ -1043,13 +1059,14 @@ def _extract_provenance_slots(
             seen_messages.add(turn.message_id)
         client_turn_index += 1
         child_key = latest_child_key
-        if _NEW_CHILD_RE.search(turn.text):
+        if not resolved_child_key and _NEW_CHILD_RE.search(turn.text):
             child_key = _next_child_key(slots)
         extracted = _extract_provenance_slots_from_client_text(
             turn.text,
             turn_index=client_turn_index,
             message_id=turn.message_id,
             child_key=child_key,
+            model_resolved_child_key=bool(resolved_child_key),
         )
         if extracted.get("child_name") and child_key == latest_child_key and _NEW_CHILD_RE.search(turn.text):
             latest_child_key = child_key
@@ -1069,6 +1086,7 @@ def _extract_provenance_slots_from_client_text(
     turn_index: int,
     message_id: str,
     child_key: str,
+    model_resolved_child_key: bool = False,
 ) -> Mapping[str, DialogueSlot]:
     result: dict[str, DialogueSlot] = {}
     child_grade_matches = list(_CHILD_GRADE_RE.finditer(text))
@@ -1080,10 +1098,12 @@ def _extract_provenance_slots_from_client_text(
     if child_grade_matches:
         for index, match in enumerate(child_grade_matches, start=1):
             marker = normalize_text(match.group("marker"))
-            inferred_child = (
-                "child_2"
-                if "доч" in marker or "девоч" in marker or "младш" in marker or index > 1
-                else "child_1"
+            inferred_child = _infer_child_key_for_grade_match(
+                marker,
+                index=index,
+                matches_count=len(child_grade_matches),
+                fallback_child_key=child_key,
+                model_resolved_child_key=model_resolved_child_key,
             )
             slot = _provenance_slot("grade", match.group("grade"), match.group(0), turn_index, message_id, inferred_child)
             result[f"{inferred_child}_grade"] = slot
@@ -1135,6 +1155,65 @@ def _provenance_slot(field: str, value: str, quote: str, turn_index: int, messag
         child_key=child_key,
         message_id=str(message_id or ""),
     )
+
+
+def _infer_child_key_for_grade_match(
+    marker: str,
+    *,
+    index: int,
+    matches_count: int,
+    fallback_child_key: str,
+    model_resolved_child_key: bool,
+) -> str:
+    if model_resolved_child_key and matches_count == 1 and _clean_child_key(fallback_child_key):
+        return _clean_child_key(fallback_child_key)
+    return "child_2" if "доч" in marker or "девоч" in marker or "младш" in marker or index > 1 else "child_1"
+
+
+def _resolved_current_child_key(
+    *,
+    known_slots: Mapping[str, Any],
+    resolved_children: Sequence[Mapping[str, Any]],
+) -> str:
+    direct = _clean_child_key(known_slots.get("current_child_key") or known_slots.get("child_key"))
+    if direct:
+        return direct
+    identity = known_slots.get("child_identity")
+    if isinstance(identity, Mapping):
+        direct = _clean_child_key(identity.get("current_child_key") or identity.get("child_key"))
+        if direct:
+            return direct
+    nested = known_slots.get("resolved_children")
+    if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes, bytearray)):
+        direct = _current_child_key_from_resolved_children(nested)
+        if direct:
+            return direct
+    return _current_child_key_from_resolved_children(resolved_children)
+
+
+def _current_child_key_from_resolved_children(children: Sequence[Any]) -> str:
+    candidates = [item for item in children if isinstance(item, Mapping)]
+    if not candidates:
+        return ""
+    for item in candidates:
+        if _truthy_child_identity_flag(item.get("current") or item.get("is_current") or item.get("active")):
+            direct = _clean_child_key(item.get("child_key") or item.get("id") or item.get("key"))
+            if direct:
+                return direct
+    if len(candidates) == 1:
+        return _clean_child_key(candidates[0].get("child_key") or candidates[0].get("id") or candidates[0].get("key"))
+    return ""
+
+
+def _clean_child_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_:-]+", "_", text)[:80].strip("_")
+
+
+def _truthy_child_identity_flag(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y", "да"}
 
 
 def _latest_child_key(slots: Mapping[str, DialogueSlot]) -> str:

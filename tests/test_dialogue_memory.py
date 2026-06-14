@@ -5,6 +5,7 @@ import json
 from mango_mvp.channels.dialogue_memory import (
     MEMORY_PROVENANCE_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
+    MEMORY_CHILD_IDENTITY_MODEL_ENV,
     build_memory_llm_prompt,
     build_dialogue_memory,
     update_dialogue_memory_after_answer,
@@ -410,6 +411,57 @@ def test_memory_provenance_keeps_two_children_separate(monkeypatch) -> None:
     view = memory.to_prompt_view()
 
     assert view["known_slots"]["grade"] == "4"
+    assert view["known_slots"]["child_1_grade"] == "7"
+    assert view["known_slots"]["child_2_grade"] == "4"
+    assert view["slot_provenance"]["child_1_grade"]["child_key"] == "child_1"
+    assert view["slot_provenance"]["child_2_grade"]["child_key"] == "child_2"
+
+
+def test_child_identity_model_flag_off_keeps_legacy_child_marker(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.setenv(MEMORY_CHILD_IDENTITY_MODEL_ENV, "0")
+
+    memory = build_dialogue_memory(
+        current_message="Дочке в 7 класс, интересует математика.",
+        active_brand="foton",
+        known_slots={"child_identity": {"current_child_key": "child_model_main"}},
+        session_id="s-child-identity-off",
+    )
+    view = memory.to_prompt_view()
+
+    assert view["known_slots"]["child_2_grade"] == "7"
+    assert view["slot_provenance"]["grade"]["child_key"] == "child_2"
+
+
+def test_child_identity_model_uses_ready_child_key_for_single_current_mention(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.setenv(MEMORY_CHILD_IDENTITY_MODEL_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Дочке в 7 класс, интересует математика.",
+        active_brand="foton",
+        known_slots={"child_identity": {"current_child_key": "child_model_main"}},
+        session_id="s-child-identity-on",
+    )
+    view = memory.to_prompt_view()
+
+    assert view["known_slots"]["child_model_main_grade"] == "7"
+    assert view["slot_provenance"]["grade"]["child_key"] == "child_model_main"
+    assert "child_2_grade" not in view["known_slots"]
+
+
+def test_child_identity_model_keeps_two_child_message_separate(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.setenv(MEMORY_CHILD_IDENTITY_MODEL_ENV, "1")
+
+    memory = build_dialogue_memory(
+        current_message="Сыну в 7 классе, дочке в 4 классе. Сколько стоит?",
+        active_brand="foton",
+        known_slots={"child_identity": {"current_child_key": "child_model_main"}},
+        session_id="s-child-identity-two-kids",
+    )
+    view = memory.to_prompt_view()
+
     assert view["known_slots"]["child_1_grade"] == "7"
     assert view["known_slots"]["child_2_grade"] == "4"
     assert view["slot_provenance"]["child_1_grade"]["child_key"] == "child_1"

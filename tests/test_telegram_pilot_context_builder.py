@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from mango_mvp.channels.dialogue_memory import MEMORY_CHILD_IDENTITY_MODEL_ENV, MEMORY_PROVENANCE_ENV
+from mango_mvp.channels.pilot_context import MEMORY_PROVENANCE_COMPACT_ENV
 from mango_mvp.channels.telegram_pilot_context_builder import (
     NO_KNOWLEDGE_SNAPSHOT_VERSION,
     build_telegram_pilot_context,
@@ -108,6 +110,25 @@ def test_builder_uses_known_slots_to_retrieve_followup_price_fact() -> None:
     assert payload["dialogue_memory_view"]["known_slots"]["grade"] == "8"
     assert payload["dialogue_memory_view"]["known_slots"]["subject"] == "информатика"
     assert payload["dialogue_memory_view"]["open_question"]["kind"] == "price_fix"
+
+
+def test_builder_passes_resolved_child_identity_into_dialogue_memory(monkeypatch) -> None:
+    monkeypatch.setenv(MEMORY_PROVENANCE_ENV, "1")
+    monkeypatch.setenv(MEMORY_PROVENANCE_COMPACT_ENV, "1")
+    monkeypatch.setenv(MEMORY_CHILD_IDENTITY_MODEL_ENV, "1")
+
+    context = build_telegram_pilot_context(
+        "Дочке в 7 класс, интересует математика.",
+        active_brand="foton",
+        kc_snapshot={"schema_version": "kc_knowledge_snapshot_v1", "run_id": "empty", "facts": [], "chunks": []},
+        resolved_children=[{"child_key": "child_from_profile", "current": True}],
+        session_id="ctx-child-identity",
+    )
+    memory = context.to_prompt_context()["dialogue_memory_view"]
+
+    assert memory["known_slots"]["child_from_profile_grade"] == "7"
+    assert memory["slot_provenance"]["grade"]["child_key"] == "child_from_profile"
+    assert "child_2_grade" not in memory["known_slots"]
 
 
 def test_builder_dialogue_memory_uses_recent_client_context_without_reasking() -> None:

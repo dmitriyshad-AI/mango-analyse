@@ -784,6 +784,9 @@ class PublicPilotBotRuntime:
     ) -> str:
         if result.route in AUTONOMOUS_ROUTES:
             return ""
+        summary_context = dict(context)
+        if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("action_decision"), Mapping):
+            summary_context["action_decision"] = dict(result.metadata.get("action_decision") or {})
         return build_manager_handoff_summary(
             brand=self.config.brand,
             client_message=input_text,
@@ -795,7 +798,7 @@ class PublicPilotBotRuntime:
             missing_facts=result.missing_facts,
             manager_checklist=result.manager_checklist,
             funnel_state=funnel_state,
-            context=context,
+            context=summary_context,
         )
 
     def record_night_shadow_decision(

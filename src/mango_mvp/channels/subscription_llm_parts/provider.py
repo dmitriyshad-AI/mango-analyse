@@ -139,6 +139,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_template_fact_text,
     _direct_path_template_from_fact,
     _direct_path_valid_until_ok,
+    _deal_action_decision_enabled,
     _presale_prompt_child_name_value,
     _looks_like_russian_surname,
     _fresh_fact_texts,
@@ -829,6 +830,7 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _unsupported_claims_by_pattern,
     _verifier_handoff_claims_enabled,
     apply_a2_proactive_layer,
+    apply_deal_action_decision_layer,
     apply_authoritative_output_gate,
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
@@ -913,7 +915,14 @@ class SubscriptionLlmDraftProvider:
         context: Optional[Mapping[str, Any]] = None,
     ) -> SubscriptionDraftResult:
         if _direct_path_enabled(context):
-            return self._build_direct_path_draft(client_message, context=context)
+            direct_result = self._build_direct_path_draft(client_message, context=context)
+            if _deal_action_decision_enabled(context):
+                direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
+            return apply_deal_action_decision_layer(
+                direct_result,
+                client_message=client_message,
+                context=context,
+            )
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -945,7 +954,13 @@ class SubscriptionLlmDraftProvider:
                     if _semantic_diagnosis_guard_enabled(context)
                     else None,
                 )
-            return apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
+            if _deal_action_decision_enabled(context):
+                semantic_checked = apply_autonomy_matrix_guard(semantic_checked, client_message=client_message, context=context)
+            return apply_deal_action_decision_layer(
+                apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context),
+                client_message=client_message,
+                context=context,
+            )
         else:
             prompt = build_draft_prompt(client_message, context=context)
             result = self.generate_from_prompt(prompt, force_manager_only=should_force_manager_only(context))
@@ -1007,7 +1022,11 @@ class SubscriptionLlmDraftProvider:
                 if _semantic_diagnosis_guard_enabled(context)
                 else None,
             )
-        return apply_authoritative_output_gate(result, client_message=client_message, context=context)
+        return apply_deal_action_decision_layer(
+            apply_authoritative_output_gate(result, client_message=client_message, context=context),
+            client_message=client_message,
+            context=context,
+        )
 
     def _build_direct_path_draft(
         self,
@@ -1022,7 +1041,12 @@ class SubscriptionLlmDraftProvider:
             if preblocked is not None:
                 before_gate_route = preblocked.route
                 gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
-                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route, context=context)
+                return _direct_path_finalize_metadata(
+                    gated,
+                    before_gate_route=before_gate_route,
+                    client_message=client_message,
+                    context=context,
+                )
         fact_pack = _direct_path_context_fact_pack(
             context,
             client_message=client_message,
@@ -1034,7 +1058,12 @@ class SubscriptionLlmDraftProvider:
             if preblocked is not None:
                 before_gate_route = preblocked.route
                 gated = apply_authoritative_output_gate(preblocked, client_message=client_message, context=context)
-                return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route, context=context)
+                return _direct_path_finalize_metadata(
+                    gated,
+                    before_gate_route=before_gate_route,
+                    client_message=client_message,
+                    context=context,
+                )
 
         active_brand = _active_brand(context)
         pilot_config = _direct_path_pilot_config(context)
@@ -1102,7 +1131,12 @@ class SubscriptionLlmDraftProvider:
         )
         before_gate_route = semantic_checked.route
         gated = apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context)
-        return _direct_path_finalize_metadata(gated, before_gate_route=before_gate_route, context=context)
+        return _direct_path_finalize_metadata(
+            gated,
+            before_gate_route=before_gate_route,
+            client_message=client_message,
+            context=context,
+        )
 
     def _build_dialogue_contract_pipeline_draft(
         self,
@@ -1995,6 +2029,12 @@ def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: 
     route = str(payload.get("route") or "bot_answer_self_for_pilot").strip()
     if route == "bot_answer_self":
         route = "bot_answer_self_for_pilot"
+    metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
+    proposal = payload.get("action_proposal")
+    if isinstance(proposal, Mapping):
+        metadata["action_proposal"] = dict(proposal)
+    elif isinstance(proposal, str) and proposal.strip():
+        metadata["action_proposal"] = {"action": proposal.strip(), "source": "direct_model"}
     return SubscriptionDraftResult(
         message_type=str(payload.get("message_type") or "question"),
         broad_group=str(payload.get("broad_group") or "direct_path"),
@@ -2015,7 +2055,7 @@ def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: 
         manager_followup_required=bool(payload.get("manager_followup_required")),
         manager_followup_deadline=_optional_text(payload.get("manager_followup_deadline")),
         raw_response=raw_response,
-        metadata=dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {},
+        metadata=metadata,
     )
 
 

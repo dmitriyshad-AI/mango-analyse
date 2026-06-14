@@ -32,6 +32,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _CLIENT_EMAIL_RE,
     _active_brand,
     _client_clean_fact_text,
+    _deal_action_decision_enabled,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_fact_by_brand_key,
     _direct_path_fact_value,
@@ -1218,11 +1219,24 @@ def _build_direct_path_prompt(
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
     memory = _direct_path_prompt_memory_view(context)
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
+    action_proposal_instruction = ""
+    action_proposal_field = ""
+    if _deal_action_decision_enabled(context):
+        action_proposal_instruction = (
+            "Предложи одно следующее действие для менеджера в поле action_proposal из закрытого списка: "
+            "answer_only, send_schedule, send_materials, send_crm_data, capture_lead, schedule_followup, "
+            "send_payment_link, send_document, advance_stage, handoff_manager, unknown. "
+            "Это только предложение: не исполняй действие и не обещай его клиенту. Если не уверен — unknown.\n\n"
+        )
+        action_proposal_field = (
+            '  "action_proposal": {"action": "answer_only|send_schedule|send_materials|send_crm_data|capture_lead|schedule_followup|send_payment_link|send_document|advance_stage|handoff_manager|unknown", "confidence": 0.0, "reason": "кратко"},\n'
+        )
     return (
         f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
         f"{_direct_path_route_rubric_block(context)}"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
+        f"{action_proposal_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
         + (f"{gold_block}\n\n" if gold_block else "")
@@ -1241,6 +1255,7 @@ def _build_direct_path_prompt(
         "{\n"
         '  "route": "bot_answer_self_for_pilot" | "draft_for_manager",\n'
         '  "draft_text": "текст для клиента",\n'
+        f"{action_proposal_field}"
         '  "manager_checklist": [],\n'
         '  "missing_facts": [],\n'
         '  "context_used": []\n'

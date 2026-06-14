@@ -72,6 +72,9 @@ PII_RELATION_STOPWORDS_ENV = "TELEGRAM_PII_RELATION_STOPWORDS"
 MEMORY_CHILD_ELLIPSIS_ENV = "TELEGRAM_MEMORY_CHILD_ELLIPSIS"
 
 
+DEAL_ACTION_DECISION_ENV = "TELEGRAM_DEAL_ACTION_DECISION"
+
+
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 
 
@@ -383,6 +386,17 @@ def _pilot_profile_default_on_flag_enabled(
     if explicit is not None:
         return explicit
     return env_name in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS and _pilot_gold_profile_enabled(context)
+
+
+def _deal_action_decision_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        DEAL_ACTION_DECISION_ENV,
+        aliases=("deal_action_decision_enabled", "action_decision_enabled"),
+    )
+    if explicit is not None:
+        return explicit
+    return False
 
 
 def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, str]:

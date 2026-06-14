@@ -1667,6 +1667,8 @@ def run_one_dialog(
         humanity_x2_metadata = dict(result.metadata.get("humanity_x2") or {}) if isinstance(result.metadata.get("humanity_x2"), Mapping) else {}
         close_detect_metadata = dict(result.metadata.get("close_detect") or {}) if isinstance(result.metadata.get("close_detect"), Mapping) else {}
         tone_sell_prompt_metadata = dict(result.metadata.get("tone_sell_prompt") or {}) if isinstance(result.metadata.get("tone_sell_prompt"), Mapping) else {}
+        action_proposal_metadata = dict(result.metadata.get("action_proposal") or {}) if isinstance(result.metadata.get("action_proposal"), Mapping) else {}
+        action_decision_metadata = dict(result.metadata.get("action_decision") or {}) if isinstance(result.metadata.get("action_decision"), Mapping) else {}
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))
@@ -1701,6 +1703,9 @@ def run_one_dialog(
             "bot_reason_evidence": dict(deferral_metadata.get("reason_evidence") or {}),
             "bot_authoritative_output_gate": authoritative_gate_metadata,
             "bot_semantic_output_verifier": semantic_output_verifier_metadata,
+            "bot_action_proposal": action_proposal_metadata,
+            "bot_action_decision": action_decision_metadata,
+            "bot_action_decision_action": str(action_decision_metadata.get("action") or ""),
             "bot_close_detect": close_detect_metadata,
             "bot_tone_sell_prompt": tone_sell_prompt_metadata,
             "bot_claude_cli_errors": claude_cli_events,
@@ -2662,6 +2667,36 @@ def _tone_sell_prompt_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mappi
     }
 
 
+def _action_decision_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    decisions: list[Mapping[str, Any]] = []
+    proposals: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        if not isinstance(dialog, Mapping):
+            continue
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            decision = turn.get("bot_action_decision")
+            if isinstance(decision, Mapping) and decision:
+                decisions.append(decision)
+            proposal = turn.get("bot_action_proposal")
+            if isinstance(proposal, Mapping) and proposal:
+                proposals.append(proposal)
+    return {
+        "turns_with_decision": len(decisions),
+        "enabled_turns": sum(1 for item in decisions if bool(item.get("enabled"))),
+        "by_action": dict(Counter(str(item.get("action") or "") for item in decisions if str(item.get("action") or "").strip())),
+        "by_reason": dict(Counter(str(item.get("reason") or "") for item in decisions if str(item.get("reason") or "").strip())),
+        "proposal_by_action": dict(
+            Counter(str(item.get("action") or "") for item in proposals if str(item.get("action") or "").strip())
+        ),
+        "p0_latched": sum(1 for item in decisions if bool(item.get("p0_latched"))),
+        "requires_manager_approval": sum(1 for item in decisions if bool(item.get("requires_manager_approval"))),
+        "sync_flags": dict(Counter(str(item.get("sync_flag") or "") for item in decisions if str(item.get("sync_flag") or "").strip())),
+        "threshold_configured": any(bool(item.get("threshold_configured")) for item in decisions),
+    }
+
+
 def _non_p0_self_route_transcripts(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     filtered: list[Mapping[str, Any]] = []
     for dialog in transcripts:
@@ -2879,6 +2914,7 @@ def build_summary(
     manager_deferrals = _manager_deferral_summary(transcripts)
     close_detect = _close_detect_summary(transcripts)
     tone_sell_prompt = _tone_sell_prompt_summary(transcripts)
+    action_decision = _action_decision_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     config_validity = _direct_path_config_invalid(
         transcripts,
@@ -3006,6 +3042,7 @@ def build_summary(
         "semantic_output_verifier": semantic_output_verifier,
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
+        "action_decision": action_decision,
         "close_detect": close_detect,
         "tone_sell_prompt": tone_sell_prompt,
         "claude_cli_errors": claude_cli_errors,

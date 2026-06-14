@@ -128,6 +128,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _CLIENT_EMAIL_RE,
     _active_brand,
     _client_clean_fact_text,
+    _deal_action_decision_enabled,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_pilot_config,
     _direct_path_fact_by_brand_key,
@@ -1145,10 +1146,466 @@ def _direct_path_prepare_model_result(result: SubscriptionDraftResult) -> Subscr
     )
 
 
+DEAL_ACTION_DECISION_SCHEMA_VERSION = "deal_action_decision_v1_2026_06_14"
+
+DEAL_ACTION_UNKNOWN = "unknown"
+
+DEAL_ACTIONS = frozenset(
+    {
+        "answer_only",
+        "send_schedule",
+        "send_materials",
+        "send_crm_data",
+        "capture_lead",
+        "schedule_followup",
+        "send_payment_link",
+        "send_document",
+        "advance_stage",
+        "handoff_manager",
+        DEAL_ACTION_UNKNOWN,
+    }
+)
+
+_DEAL_ACTION_PAYMENT_RE = re.compile(
+    r"\b(?:беру|оформляйте|оформим|готов[аы]?\s+(?:оплатить|платить|оформить)|давайте\s+(?:оплат|оформ)|ссылк\w+\s+на\s+оплат)\b",
+    re.I,
+)
+_DEAL_ACTION_PAYMENT_QUERY_RE = re.compile(r"\b(?:как|куда|можно\s+ли)\s+(?:оплат|плат)|\b(?:ссылк\w+|реквизит\w*)\b", re.I)
+_DEAL_ACTION_PAYMENT_QUESTION_RE = re.compile(r"\?(?:\s*)$|(?:как|куда|можно\s+ли|сколько|какая|какой|что)\b", re.I)
+_DEAL_ACTION_SCHEDULE_RE = re.compile(r"\b(?:распис|когда|во\s+сколько|дни|дням|суббот|воскрес|будн|время\s+занят)\b", re.I)
+_DEAL_ACTION_MATERIALS_RE = re.compile(r"\b(?:пробн|фрагмент|материал|посмотреть\s+(?:урок|занят)|пример\s+(?:урока|занят))\b", re.I)
+_DEAL_ACTION_CRM_DATA_RE = re.compile(
+    r"\b(?:баланс|остат\w*|осталось\s+(?:занят\w*|урок\w*|средств\w*)|мои\s+оплат\w*|сколько(?:\s+\w+){0,4}\s+(?:занят\w*|урок\w*|средств\w*))\b",
+    re.I,
+)
+_DEAL_ACTION_LEAD_RE = re.compile(r"\b(?:запишите|записать|оставлю\s+заявк|хочу\s+записаться|интересно|подберите|подобрать\s+групп)\b", re.I)
+_DEAL_ACTION_FOLLOWUP_RE = re.compile(r"\b(?:перезвон|позвоните|напишите\s+позже|свяжитесь|напомните|завтра|вечером|утром)\b", re.I)
+_DEAL_ACTION_DOCUMENT_RE = re.compile(r"\b(?:договор|оферт|сч[её]т|квитанц|документ|справк|акт)\b", re.I)
+_DEAL_ACTION_FACT_QUESTION_RE = re.compile(
+    r"\b(?:цена|стоимост|скидк|рассроч|долями|адрес|маткап|материнск|налог|платформ|запис[ьи]\s+урок|вы\s+бот|ты\s+бот|кто\s+вы)\b",
+    re.I,
+)
+
+
+def _deal_action_unknown(reason: str, *, proposal: Optional[Mapping[str, Any]] = None, enabled: bool = True) -> dict[str, Any]:
+    return {
+        "schema_version": DEAL_ACTION_DECISION_SCHEMA_VERSION,
+        "enabled": bool(enabled),
+        "action": DEAL_ACTION_UNKNOWN,
+        "confidence": 0.0,
+        "reason": str(reason or "unknown"),
+        "source": "deterministic",
+        "proposal_action": str((proposal or {}).get("action") or DEAL_ACTION_UNKNOWN),
+        "requires_manager_approval": True,
+    }
+
+
+def _deal_action_normalize(value: Any) -> str:
+    action = str(value or "").strip().casefold()
+    action = action.replace("-", "_").replace(" ", "_")
+    if action == "book_trial":
+        return "send_materials"
+    return action if action in DEAL_ACTIONS else DEAL_ACTION_UNKNOWN
+
+
+def _deal_action_float(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return max(0.0, min(1.0, float(value)))
+    text = str(value or "").strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        return max(0.0, min(1.0, float(text)))
+    except ValueError:
+        return None
+
+
+def _deal_action_proposal(result: SubscriptionDraftResult) -> dict[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    raw = metadata.get("action_proposal")
+    if isinstance(raw, Mapping):
+        action = _deal_action_normalize(raw.get("action") or raw.get("name") or raw.get("intent"))
+        confidence = _deal_action_float(raw.get("confidence"))
+        return {
+            "schema_version": DEAL_ACTION_DECISION_SCHEMA_VERSION,
+            "action": action,
+            "confidence": confidence,
+            "reason": " ".join(str(raw.get("reason") or raw.get("rationale") or "").split())[:240],
+            "source": str(raw.get("source") or "direct_model"),
+        }
+    if isinstance(raw, str) and raw.strip():
+        return {
+            "schema_version": DEAL_ACTION_DECISION_SCHEMA_VERSION,
+            "action": _deal_action_normalize(raw),
+            "confidence": None,
+            "reason": "",
+            "source": "direct_model",
+        }
+    return {
+        "schema_version": DEAL_ACTION_DECISION_SCHEMA_VERSION,
+        "action": DEAL_ACTION_UNKNOWN,
+        "confidence": None,
+        "reason": "model_proposal_missing",
+        "source": "missing",
+    }
+
+
+def _deal_action_context_mapping(context: Optional[Mapping[str, Any]], key: str) -> Mapping[str, Any]:
+    if not isinstance(context, Mapping):
+        return {}
+    value = context.get(key)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _deal_action_intent_plan(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    return _deal_action_context_mapping(context, "conversation_intent_plan")
+
+
+def _deal_action_known_slots(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    slots = _deal_action_context_mapping(context, "known_slots")
+    plan_slots = _deal_action_context_mapping(_deal_action_intent_plan(context), "known_slots")
+    memory = _deal_action_context_mapping(context, "dialogue_memory_view")
+    memory_slots = _deal_action_context_mapping(memory, "known_slots")
+    return {**dict(slots), **dict(memory_slots), **dict(plan_slots)}
+
+
+def _deal_action_texts(result: SubscriptionDraftResult, context: Optional[Mapping[str, Any]]) -> tuple[dict[str, str], tuple[str, ...]]:
+    gate_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    facts = _authoritative_gate_fact_texts(result, gate_context)
+    exact_keys: list[str] = []
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    direct_facts = direct.get("retrieved_facts") if isinstance(direct.get("retrieved_facts"), Mapping) else {}
+    for key, value in direct_facts.items():
+        if str(key).strip() and str(value).strip():
+            facts[str(key)] = str(value)
+    exact_keys.extend(str(key) for key in (direct.get("wide_fact_exact_keys") or ()) if str(key).strip())
+    if not exact_keys:
+        exact_keys.extend(str(key) for key in facts.keys())
+    return facts, tuple(dict.fromkeys(exact_keys))
+
+
+def _deal_action_final_p0(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> tuple[bool, str]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
+    findings = gate.get("findings") if isinstance(gate.get("findings"), Sequence) else ()
+    gate_codes = tuple(str(item.get("code") or "") for item in findings if isinstance(item, Mapping))
+    raw_hard_codes = tuple(code for code in codes_from_text(client_message) if code in HARD_P0_CODES)
+    safety = classify_answer_safety(
+        client_message=client_message,
+        context=context,
+        topic_id=result.topic_id,
+        route=result.route,
+        safety_flags=result.safety_flags,
+    )
+    if raw_hard_codes:
+        return True, "p0_recall_spec:" + ",".join(dict.fromkeys(raw_hard_codes))
+    if safety.p0_required and not safety.semantic_non_p0:
+        return True, f"answer_safety:{safety.primary_risk or 'p0_required'}"
+    if result.route == "manager_only" and any(
+        code in {"hard_p0", "zero_collect_required", "p0_promise", "p0_semantic_risk"} for code in gate_codes
+    ):
+        return True, "authoritative_output_gate:" + ",".join(dict.fromkeys(gate_codes))
+    if _humanity_p0_required(result):
+        return True, "result_p0_flags"
+    return False, ""
+
+
+def _deal_action_amounts(text: str) -> tuple[str, ...]:
+    result: list[str] = []
+    for match in PRICE_AMOUNT_RE.finditer(str(text or "")):
+        digits = re.sub(r"\D+", "", match.group(0))
+        if digits:
+            result.append(digits)
+    return tuple(dict.fromkeys(result))
+
+
+def _deal_action_price_backed_by_facts(result: SubscriptionDraftResult, facts: Mapping[str, str]) -> tuple[bool, tuple[str, ...]]:
+    amounts = _deal_action_amounts(result.draft_text)
+    if not amounts:
+        return False, ()
+    fact_text = "\n".join(str(value or "") for value in facts.values())
+    fact_amounts = set(_deal_action_amounts(fact_text))
+    return all(amount in fact_amounts for amount in amounts), amounts
+
+
+def _deal_action_product_unambiguous(context: Optional[Mapping[str, Any]], facts: Mapping[str, str]) -> bool:
+    slots = _deal_action_known_slots(context)
+    grade = str(slots.get("grade") or slots.get("class") or slots.get("student_grade") or "").strip()
+    subject = str(slots.get("subject") or slots.get("course_subject") or slots.get("interest_subject") or "").strip()
+    product = str(slots.get("product") or slots.get("course") or slots.get("product_family") or "").strip()
+    if grade and subject:
+        return True
+    if product and product.casefold() not in {"unknown", "непонятно", "общий"}:
+        return True
+    return False
+
+
+def _deal_action_has_objection_or_exit(client_message: str, context: Optional[Mapping[str, Any]]) -> bool:
+    plan = _deal_action_intent_plan(context)
+    selling = plan.get("selling") if isinstance(plan.get("selling"), Mapping) else {}
+    objection = str(selling.get("objection") or "none").strip().casefold()
+    if objection and objection != "none":
+        return True
+    if _truthy_value(selling.get("exit_signal")):
+        return True
+    value = str(client_message or "").casefold().replace("ё", "е")
+    return bool(
+        re.search(r"\b(?:дорого|подумаю|подумаем|не\s+сейчас|пока\s+не\s+готов|посмотрю|сравню|не\s+подходит)\b", value)
+    )
+
+
+def _deal_action_payment_confirmed(client_message: str) -> bool:
+    text = str(client_message or "")
+    if not _DEAL_ACTION_PAYMENT_RE.search(text):
+        return False
+    if _DEAL_ACTION_PAYMENT_QUESTION_RE.search(text) and not re.search(
+        r"\b(?:оформляйте|беру|готов[аы]?\s+(?:оплатить|платить|оформить)|давайте\s+(?:оплат|оформ))\b",
+        text,
+        re.I,
+    ):
+        return False
+    return True
+
+
+def _deal_action_schedule_available(
+    *,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+    exact_keys: Sequence[str],
+) -> bool:
+    slots = _deal_action_known_slots(context)
+    grade = str(slots.get("grade") or slots.get("class") or slots.get("student_grade") or "").strip()
+    subject = str(slots.get("subject") or slots.get("course_subject") or slots.get("interest_subject") or "").strip()
+    fmt = str(slots.get("format") or slots.get("course_format") or slots.get("preferred_format") or "").strip()
+    if not (grade and subject and fmt):
+        return False
+    exact = set(str(key) for key in exact_keys)
+    for key, value in facts.items():
+        if exact and str(key) not in exact:
+            continue
+        combined = f"{key} {value}".casefold()
+        if ("tallanto" in combined or "group" in combined or "групп" in combined) and re.search(
+            r"распис|вс\b|сб\b|пн\b|вт\b|ср\b|чт\b|пт\b|суббот|воскрес|старт|начал",
+            combined,
+            re.I,
+        ):
+            return True
+    return False
+
+
+def _deal_action_materials_available(facts: Mapping[str, str], exact_keys: Sequence[str]) -> bool:
+    exact = set(str(key) for key in exact_keys)
+    for key, value in facts.items():
+        if exact and str(key) not in exact:
+            continue
+        combined = f"{key} {value}".casefold()
+        if re.search(r"онлайн", combined, re.I) and re.search(r"фрагмент|материал|пробн", combined, re.I):
+            return True
+    return False
+
+
+def _deal_action_crm_identity_ok(context: Optional[Mapping[str, Any]]) -> tuple[bool, str]:
+    if not isinstance(context, Mapping):
+        return False, "no_context"
+    quality = context.get("context_quality") if isinstance(context.get("context_quality"), Mapping) else {}
+    identity = context.get("client_identity") if isinstance(context.get("client_identity"), Mapping) else {}
+    active_brand = _active_brand(context)
+    brand_values = []
+    for key in ("amo_context", "tallanto_context", "read_only_customer_context"):
+        mapping = context.get(key) if isinstance(context.get(key), Mapping) else {}
+        for brand_key in ("brand", "active_brand", "expected_brand"):
+            if str(mapping.get(brand_key) or "").strip():
+                brand_values.append(str(mapping.get(brand_key)).strip().casefold())
+    brand_ok = not brand_values or active_brand in {"", "unknown"} or all(value in {"", active_brand} for value in brand_values)
+    identity_ok = bool(
+        _truthy_value(quality.get("customer_identity_found"))
+        or _truthy_value(identity.get("verified"))
+        or str(identity.get("match_class") or "").strip().casefold() in {"strong", "exact", "verified"}
+        or (identity.get("phone") and _truthy_value(identity.get("phone_verified")))
+    )
+    if not identity_ok:
+        return False, "identity_not_strict"
+    if not brand_ok:
+        return False, "brand_mismatch"
+    return True, "strict_identity"
+
+
+def _deal_action_candidate(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+    exact_keys: Sequence[str],
+) -> tuple[str, str]:
+    text = str(client_message or "")
+    low = text.casefold()
+    if result.route == "manager_only":
+        return "handoff_manager", "manager_only_route"
+    if _DEAL_ACTION_CRM_DATA_RE.search(text):
+        ok, reason = _deal_action_crm_identity_ok(context)
+        return ("send_crm_data", "crm_data_strict_identity") if ok else ("handoff_manager", f"crm_data_requires_manager:{reason}")
+    if _DEAL_ACTION_PAYMENT_RE.search(text) or _DEAL_ACTION_PAYMENT_QUERY_RE.search(text):
+        backed, amounts = _deal_action_price_backed_by_facts(result, facts)
+        if (
+            backed
+            and amounts
+            and _deal_action_product_unambiguous(context, facts)
+            and _deal_action_payment_confirmed(text)
+            and not _deal_action_has_objection_or_exit(text, context)
+        ):
+            return "send_payment_link", "payment_preconditions_met"
+        if _deal_action_payment_confirmed(text):
+            return DEAL_ACTION_UNKNOWN, "payment_preconditions_missing"
+    if _DEAL_ACTION_SCHEDULE_RE.search(text):
+        if _deal_action_schedule_available(context=context, facts=facts, exact_keys=exact_keys):
+            return "send_schedule", "schedule_exact_tallanto_fact"
+        return "answer_only", "schedule_missing_precise_group"
+    if _DEAL_ACTION_MATERIALS_RE.search(text):
+        if _deal_action_materials_available(facts, exact_keys):
+            return "send_materials", "online_fragment_fact"
+        return DEAL_ACTION_UNKNOWN, "materials_fact_missing"
+    if _DEAL_ACTION_FOLLOWUP_RE.search(text):
+        return "schedule_followup", "explicit_followup_request"
+    if _DEAL_ACTION_LEAD_RE.search(text):
+        return "capture_lead", "lead_capture_signal"
+    if _DEAL_ACTION_DOCUMENT_RE.search(text):
+        return "send_document", "document_request_observed"
+    plan = _deal_action_intent_plan(context)
+    primary_intent = str(plan.get("primary_intent") or "").strip()
+    if primary_intent in {"pricing", "installment", "discount", "address", "matkap", "tax", "platform_access", "identity"}:
+        return "answer_only", f"fact_question:{primary_intent}"
+    if _DEAL_ACTION_FACT_QUESTION_RE.search(text):
+        return "answer_only", "fact_question"
+    return DEAL_ACTION_UNKNOWN, "no_explicit_action_signal"
+
+
+def _deal_action_model_lowers(candidate: str, proposal: Mapping[str, Any]) -> tuple[str, str]:
+    proposal_action = _deal_action_normalize(proposal.get("action"))
+    if candidate == "send_payment_link" and proposal_action in {"answer_only", "handoff_manager", DEAL_ACTION_UNKNOWN}:
+        return proposal_action, "model_lowered_payment"
+    if candidate in {"send_materials", "send_schedule"} and proposal_action == "handoff_manager":
+        return "handoff_manager", "model_lowered_to_manager"
+    return candidate, ""
+
+
+def _deal_action_text_sync(action: str, result: SubscriptionDraftResult) -> tuple[str, str]:
+    text = str(result.draft_text or "")
+    if action == "send_payment_link" and not re.search(
+        r"\b(?:оплат\w*|оформ\w*|ссылк\w*|плат[её]ж\w*|реквизит\w*)\b",
+        text,
+        re.I,
+    ):
+        return "answer_only", "action_not_in_text"
+    if action == "send_schedule" and not _DEAL_ACTION_SCHEDULE_RE.search(text):
+        return "answer_only", "action_not_in_text"
+    if action == "send_materials" and not _DEAL_ACTION_MATERIALS_RE.search(text):
+        return "answer_only", "action_not_in_text"
+    if action == "schedule_followup" and not _DEAL_ACTION_FOLLOWUP_RE.search(text):
+        return "answer_only", "action_not_in_text"
+    if action == "capture_lead" and not re.search(r"\b(?:запис|заявк|передам|менеджер|контакт|телефон)\b", text, re.I):
+        return "answer_only", "action_not_in_text"
+    return action, ""
+
+
+def _deal_action_manager_note(action: str) -> str:
+    notes = {
+        "send_schedule": "Рекомендуемый следующий шаг: если данные группы подтверждены, отправить клиенту расписание по выбранному классу, предмету и формату.",
+        "send_materials": "Рекомендуемый следующий шаг: если формат онлайн подтверждён, отправить клиенту фрагмент занятия или материалы.",
+        "send_crm_data": "Рекомендуемый следующий шаг: менеджеру проверить карточку и ответить по балансу/остатку занятий только этому клиенту.",
+        "capture_lead": "Рекомендуемый следующий шаг: зафиксировать заявку и уточнить недостающие данные для записи.",
+        "schedule_followup": "Рекомендуемый следующий шаг: поставить безопасный follow-up для менеджера.",
+        "send_payment_link": "Рекомендуемый следующий шаг: клиент назвал готовность; если менеджер подтвердит продукт и цену, сформировать безопасную ссылку на оплату.",
+        "send_document": "Рекомендуемый следующий шаг: менеджеру подготовить нужный документ/счёт после проверки карточки.",
+        "advance_stage": "Рекомендуемый следующий шаг: проверить, нужно ли продвинуть этап сделки в AMO.",
+        "handoff_manager": "Рекомендуемый следующий шаг: передать менеджеру, без автоматических действий.",
+    }
+    return notes.get(action, "")
+
+
+def apply_deal_action_decision_layer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _deal_action_decision_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    if isinstance(metadata.get("action_decision"), Mapping):
+        return result
+    proposal = _deal_action_proposal(result)
+    p0_required, p0_reason = _deal_action_final_p0(result, client_message=client_message, context=context)
+    facts, exact_keys = _deal_action_texts(result, context)
+    sync_flag = ""
+    if p0_required:
+        action = "handoff_manager"
+        reason = p0_reason or "p0_final_latch"
+    else:
+        action, reason = _deal_action_candidate(
+            result,
+            client_message=client_message,
+            context=context,
+            facts=facts,
+            exact_keys=exact_keys,
+        )
+        action, lower_reason = _deal_action_model_lowers(action, proposal)
+        reason = lower_reason or reason
+        action, sync_flag = _deal_action_text_sync(action, result)
+        if sync_flag:
+            reason = sync_flag
+    if action not in DEAL_ACTIONS:
+        action = DEAL_ACTION_UNKNOWN
+        reason = "invalid_action"
+    confidence = 1.0 if action in {"handoff_manager", "answer_only"} else 0.75 if action != DEAL_ACTION_UNKNOWN else 0.0
+    decision = {
+        "schema_version": DEAL_ACTION_DECISION_SCHEMA_VERSION,
+        "enabled": True,
+        "action": action,
+        "confidence": confidence,
+        "reason": reason,
+        "source": "deterministic",
+        "proposal_action": proposal.get("action"),
+        "requires_manager_approval": True,
+        "no_live_execution": True,
+        "p0_latched": bool(p0_required),
+        "active_brand": _active_brand(context),
+        "exact_fact_keys": list(exact_keys)[:20],
+        "threshold_configured": False,
+    }
+    if sync_flag:
+        decision["sync_flag"] = sync_flag
+    if action == "send_payment_link":
+        decision["preconditions"] = {
+            "price_backed_by_facts": True,
+            "product_unambiguous": True,
+            "explicit_last_reply_confirmation": True,
+            "no_objection_or_exit_signal": True,
+        }
+    metadata["action_proposal"] = proposal
+    metadata["action_decision"] = decision
+    checklist = list(result.manager_checklist)
+    note = _deal_action_manager_note(action)
+    if note:
+        checklist.append(note)
+    return replace(
+        result,
+        manager_checklist=tuple(dict.fromkeys(item for item in checklist if str(item or "").strip())),
+        metadata=metadata,
+    )
+
+
 def _direct_path_finalize_metadata(
     result: SubscriptionDraftResult,
     *,
     before_gate_route: str,
+    client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
     metadata = dict(result.metadata)

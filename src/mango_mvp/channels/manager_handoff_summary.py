@@ -41,6 +41,15 @@ def build_manager_handoff_summary(
     checks = [str(item).strip() for item in manager_checklist if str(item).strip()]
     facts = [str(item).strip() for item in missing_facts if str(item).strip()]
     p0 = is_p0_handoff(topic_id=topic_id, route=route, risk_level=risk_level, safety_flags=safety, state=state)
+    action_decision = context.get("action_decision") if isinstance(context, Mapping) else {}
+    action_decision = action_decision if isinstance(action_decision, Mapping) else {}
+    action = str(action_decision.get("action") or "").strip()
+    if action_decision and action == "unknown":
+        recommended_next_step = "обработать вручную"
+    elif action_decision and action:
+        recommended_next_step = action_decision_label(action)
+    else:
+        recommended_next_step = clean(state.get("next_best_question") or next_step_label(state.get("next_step_type")), limit=240) or "обработать вручную"
 
     lines = [
         f"Бренд: {brand_label(brand)}",
@@ -51,7 +60,7 @@ def build_manager_handoff_summary(
         f"Недостающие поля: {render_list(missing_slots) or 'нет явных'}",
         f"Что ответили клиенту: {clean(answer_text, limit=700)}",
         f"Что нужно проверить: {render_list([*facts, *checks]) or 'проверить следующий шаг по ситуации'}",
-        f"Рекомендуемый следующий шаг: {clean(state.get('next_best_question') or next_step_label(state.get('next_step_type')), limit=240) or 'обработать вручную'}",
+        f"Рекомендуемый следующий шаг: {recommended_next_step}",
         f"Что нельзя обещать: {P0_ZERO_COLLECT_WARNING if p0 else default_forbidden_promises()}",
     ]
     summary = "\n".join(lines)
@@ -69,6 +78,22 @@ def manager_handoff_metadata(summary: str, *, funnel_state: LeadFunnelState | Ma
         "missing_slots": list(state.get("missing_slots") or []),
         "filled_slots": dict(state.get("filled_slots") or {}),
     }
+
+
+def action_decision_label(action: str) -> str:
+    labels = {
+        "answer_only": "ответить по факту, без дополнительных действий",
+        "send_schedule": "проверить группу и отправить расписание",
+        "send_materials": "отправить онлайн-фрагмент или материалы, если подтверждены",
+        "send_crm_data": "проверить карточку и ответить по данным клиента",
+        "capture_lead": "зафиксировать заявку и недостающие данные",
+        "schedule_followup": "поставить безопасный перезвон или напоминание",
+        "send_payment_link": "после проверки сформировать ссылку на оплату",
+        "send_document": "подготовить документ после проверки карточки",
+        "advance_stage": "проверить этап сделки",
+        "handoff_manager": "передать менеджеру, без автоматических действий",
+    }
+    return labels.get(str(action or "").strip(), "обработать вручную")
 
 
 def is_p0_handoff(

@@ -71,6 +71,10 @@ Graphify-навык или wrapper обязан возвращать путь к
 
 Не вести несколько крупных блоков параллельно в одном рабочем дереве. Исключение: независимые read-only аудиты без изменений.
 
+## Frozen Legacy Bot Areas
+
+Legacy-слои `subscription_llm_parts/policy_routing.py`, `channels/rules_engine.py` и `channels/answer_quality_rewriter.py` считаются замороженной legacy-лазанью для текущего Telegram-пилота. Не расширяй их без отдельного ТЗ: живой пилотный путь идёт через direct path в `src/mango_mvp/channels/subscription_llm_parts/provider.py:913` -> `_build_direct_path_draft()` при `_direct_path_enabled(context)`, а legacy-ветки используются только как совместимость/страховочная история.
+
 ## Git Discipline
 
 Перед изменениями проверяй `git status --short`.

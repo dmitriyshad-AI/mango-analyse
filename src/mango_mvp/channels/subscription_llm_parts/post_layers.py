@@ -127,6 +127,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _A2_PHONE_RE,
     _CLIENT_EMAIL_RE,
     _active_brand,
+    _answerability_shadow_enabled,
     _client_clean_fact_text,
     _deal_action_decision_enabled,
     _direct_path_client_safe_snapshot_fact,
@@ -1605,6 +1606,101 @@ def apply_deal_action_decision_layer(
     )
 
 
+def _answerability_gate_findings(gate: Mapping[str, Any]) -> list[dict[str, str]]:
+    findings = gate.get("findings")
+    if not isinstance(findings, Sequence) or isinstance(findings, (str, bytes)):
+        return []
+    result: list[dict[str, str]] = []
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        result.append(
+            {
+                "code": code[:120],
+                "source": str(item.get("source") or item.get("layer") or "").strip()[:120],
+                "detail": str(item.get("detail") or item.get("message") or "").strip()[:240],
+            }
+        )
+    return result
+
+
+def _answerability_semantic_codes(verifier: Mapping[str, Any]) -> list[str]:
+    codes = verifier.get("finding_codes")
+    if not codes:
+        findings = verifier.get("findings")
+        if isinstance(findings, Sequence) and not isinstance(findings, (str, bytes)):
+            codes = [
+                item.get("code")
+                for item in findings
+                if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+            ]
+    return list(_clean_list(codes, max_items=16, max_chars=120))
+
+
+def _direct_path_answerability_trace(
+    *,
+    direct: Mapping[str, Any],
+    gate: Mapping[str, Any],
+    verifier: Mapping[str, Any],
+    answerability_self: Mapping[str, Any],
+    before_gate_route: str,
+    final_route: str,
+    gate_action: str,
+    downgraded: bool,
+    regenerated: bool,
+    reason_class: str,
+    reason_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    preblocked = bool(direct.get("preblocked"))
+    lowering_layers: list[str] = []
+    if preblocked:
+        lowering_layers.append("preblock")
+    semantic_action = str(verifier.get("action") or "").strip()
+    if semantic_action in {"block", "downgrade", "downgrade_keep_text", "regenerate"} or regenerated:
+        lowering_layers.append("semantic_output_verifier")
+    if gate_action in {"block", "downgrade", "downgrade_keep_text"} or downgraded:
+        lowering_layers.append("authoritative_output_gate")
+    if final_route not in AUTONOMOUS_ROUTES and not lowering_layers:
+        lowering_layers.append("direct_path_policy")
+    return {
+        "schema_version": "answerability_trace_v1_2026_06_15",
+        "enabled": True,
+        "route_before_gate": str(before_gate_route or ""),
+        "route_after": str(final_route or ""),
+        "lowering_layers": lowering_layers,
+        "preblock": {
+            "preblocked": preblocked,
+            "reason": str(direct.get("preblock_reason") or "").strip(),
+        },
+        "direct_path": {
+            "reason_class": str(direct.get("reason_class") or reason_class or "").strip(),
+            "reason_evidence": dict(direct.get("reason_evidence") or reason_evidence or {}),
+            "model_called": bool(direct.get("model_called")),
+            "text_composition_source": str(direct.get("text_composition_source") or "").strip(),
+        },
+        "semantic_output_verifier": {
+            "action": semantic_action,
+            "finding_codes": _answerability_semantic_codes(verifier),
+            "fallback_reason": str(verifier.get("fallback_reason") or "").strip()[:240],
+        },
+        "authoritative_output_gate": {
+            "action": gate_action,
+            "route_before": str(gate.get("route_before") or "").strip(),
+            "route_after": str(gate.get("route_after") or "").strip(),
+            "findings": _answerability_gate_findings(gate),
+        },
+        "answerability_self": dict(answerability_self),
+        "final": {
+            "reason_class": reason_class,
+            "reason_evidence": dict(reason_evidence or {}),
+            "is_manager_deferral": final_route not in AUTONOMOUS_ROUTES,
+        },
+    }
+
+
 def _direct_path_finalize_metadata(
     result: SubscriptionDraftResult,
     *,
@@ -1659,6 +1755,21 @@ def _direct_path_finalize_metadata(
     if template_trace:
         direct["template_from_kb_trace"] = template_trace
         metadata["template_from_kb_trace"] = template_trace
+    if _answerability_shadow_enabled(context):
+        answerability_self = metadata.get("answerability_self") if isinstance(metadata.get("answerability_self"), Mapping) else {}
+        metadata["answerability_trace"] = _direct_path_answerability_trace(
+            direct=direct,
+            gate=gate,
+            verifier=verifier,
+            answerability_self=answerability_self,
+            before_gate_route=before_gate_route,
+            final_route=result.route,
+            gate_action=gate_action,
+            downgraded=downgraded,
+            regenerated=regenerated,
+            reason_class=reason_class,
+            reason_evidence=reason_evidence,
+        )
     metadata["direct_path"] = direct
     metadata["text_composition_source"] = direct.get("text_composition_source") or metadata.get("text_composition_source")
     metadata["is_manager_deferral"] = bool(direct["is_manager_deferral"])

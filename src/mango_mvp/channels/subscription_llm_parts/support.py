@@ -81,6 +81,9 @@ DIRECT_PATH_MODEL_P0_ENV = "TELEGRAM_DIRECT_PATH_MODEL_P0"
 DIRECT_DEFAULT_MANAGER_ENV = "TELEGRAM_DIRECT_DEFAULT_MANAGER"
 
 
+ANSWERABILITY_SHADOW_ENV = "TELEGRAM_ANSWERABILITY_SHADOW"
+
+
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 
 
@@ -118,6 +121,15 @@ def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> st
             if value:
                 return value
     return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip()
+
+
+def _answerability_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    for key in (ANSWERABILITY_SHADOW_ENV, "answerability_shadow", "answerability_shadow_enabled"):
+        if isinstance(context, Mapping) and key in context:
+            return _truthy_value(context.get(key))
+    if ANSWERABILITY_SHADOW_ENV in os.environ:
+        return _truthy_value(os.getenv(ANSWERABILITY_SHADOW_ENV))
+    return False
 
 
 def _presale_prompt_child_name_value(value: Any) -> str:

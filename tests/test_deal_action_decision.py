@@ -79,6 +79,17 @@ def test_p0_multitopic_complaint_latches_to_handoff_manager():
     )
     assert _decision(checked)["action"] == "handoff_manager"
     assert _decision(checked)["p0_latched"] is True
+    assert _decision(checked)["requires_manager_approval"] is True
+
+
+def test_answer_only_does_not_require_manager_approval():
+    checked = apply_deal_action_decision_layer(
+        _result(),
+        client_message="Какая стоимость онлайн-физики?",
+        context=_context(conversation_intent_plan={"primary_intent": "pricing"}),
+    )
+    assert _decision(checked)["action"] == "answer_only"
+    assert _decision(checked)["requires_manager_approval"] is False
 
 
 def test_send_payment_link_requires_explicit_payment_not_signup():
@@ -107,6 +118,7 @@ def test_send_payment_link_requires_price_fact_and_product_slots():
     )
     assert _decision(no_slots)["action"] == "unknown"
     assert _decision(no_slots)["reason"] == "payment_preconditions_missing"
+    assert _decision(no_slots)["requires_manager_approval"] is False
 
 
 def test_model_can_lower_payment_recommendation():
@@ -114,6 +126,7 @@ def test_model_can_lower_payment_recommendation():
     checked = apply_deal_action_decision_layer(result, client_message="Готова оплатить, оформляйте", context=_context())
     assert _decision(checked)["action"] == "answer_only"
     assert _decision(checked)["reason"] == "model_lowered_payment"
+    assert _decision(checked)["requires_manager_approval"] is False
 
 
 def test_crm_data_requires_strict_identity_and_brand_match():

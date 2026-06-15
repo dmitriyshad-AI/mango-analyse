@@ -1167,6 +1167,16 @@ DEAL_ACTIONS = frozenset(
     }
 )
 
+_DEAL_ACTION_MANAGER_APPROVAL_ACTIONS = frozenset(
+    {
+        "handoff_manager",
+        "send_crm_data",
+        "send_payment_link",
+        "send_document",
+        "advance_stage",
+    }
+)
+
 _DEAL_ACTION_PAYMENT_RE = re.compile(
     r"\b(?:беру|оформляйте|оформим|готов[аы]?\s+(?:оплатить|платить|оформить)|давайте\s+(?:оплат|оформ)|ссылк\w+\s+на\s+оплат)\b",
     re.I,
@@ -1197,7 +1207,7 @@ def _deal_action_unknown(reason: str, *, proposal: Optional[Mapping[str, Any]] =
         "reason": str(reason or "unknown"),
         "source": "deterministic",
         "proposal_action": str((proposal or {}).get("action") or DEAL_ACTION_UNKNOWN),
-        "requires_manager_approval": True,
+        "requires_manager_approval": False,
     }
 
 
@@ -1534,6 +1544,19 @@ def _deal_action_manager_note(action: str) -> str:
     return notes.get(action, "")
 
 
+def _deal_action_requires_manager_approval(
+    action: str,
+    result: SubscriptionDraftResult,
+    *,
+    p0_required: bool = False,
+) -> bool:
+    if p0_required:
+        return True
+    if result.route in {"manager_only", "draft_for_manager"}:
+        return True
+    return action in _DEAL_ACTION_MANAGER_APPROVAL_ACTIONS
+
+
 def apply_deal_action_decision_layer(
     result: SubscriptionDraftResult,
     *,
@@ -1577,7 +1600,7 @@ def apply_deal_action_decision_layer(
         "reason": reason,
         "source": "deterministic",
         "proposal_action": proposal.get("action"),
-        "requires_manager_approval": True,
+        "requires_manager_approval": _deal_action_requires_manager_approval(action, result, p0_required=p0_required),
         "no_live_execution": True,
         "p0_latched": bool(p0_required),
         "active_brand": _active_brand(context),

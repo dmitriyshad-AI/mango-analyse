@@ -55,6 +55,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         for index, row in enumerate(source_rows, start=1)
     ]
     metrics = compute_classification_metrics(predictions)
+    rule_metrics = compute_classification_metrics(predictions, pred_field="rule_theme_id")
+    model_metrics = compute_classification_metrics(predictions, pred_field="model_theme_id")
     method_counts = Counter(str(row.get("classification_method") or "") for row in predictions)
     comparison_counts = Counter(str(row.get("model_comparison") or "") for row in predictions if row.get("model_comparison"))
     missing_model = sum(1 for row in predictions if row.get("model_required_missing") == "1")
@@ -74,6 +76,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "accuracy": metrics.accuracy,
         "macro_f1": metrics.macro_f1,
         "label_count": metrics.label_count,
+        "rule_vs_gold": metrics_dict(rule_metrics),
+        "model_vs_gold": metrics_dict(model_metrics),
         "classification_method_counts": dict(method_counts),
         "model_comparison_counts": dict(comparison_counts),
         "missing_model_labels": missing_model,
@@ -279,8 +283,26 @@ def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def metrics_dict(metrics: Any) -> dict[str, Any]:
+    return {
+        "total": metrics.total,
+        "correct": metrics.correct,
+        "accuracy": metrics.accuracy,
+        "macro_f1": metrics.macro_f1,
+        "label_count": metrics.label_count,
+    }
+
+
 def render_report(summary: dict[str, Any], predictions: list[Mapping[str, Any]]) -> str:
     mismatches = [row for row in predictions if str(row.get("human_label") or "") != str(row.get("predicted_theme_id") or "")][:20]
+    model_mismatches = [
+        row
+        for row in predictions
+        if str(row.get("model_theme_id") or "")
+        and str(row.get("human_label") or "") != str(row.get("model_theme_id") or "")
+    ][:20]
+    rule = summary["rule_vs_gold"]
+    model = summary["model_vs_gold"]
     lines = [
         "# TZ-116 C Question Catalog Offline Measurement",
         "",
@@ -288,8 +310,10 @@ def render_report(summary: dict[str, Any], predictions: list[Mapping[str, Any]])
         f"- LLM source: `{summary['llm_source']}`",
         f"- Records: `{summary['records_total']}`",
         f"- Gold-labeled: `{summary['gold_labeled_total']}`",
-        f"- Accuracy: `{summary['accuracy']:.4f}`",
-        f"- Macro-F1: `{summary['macro_f1']:.4f}`",
+        f"- Final accuracy: `{summary['accuracy']:.4f}`",
+        f"- Final macro-F1: `{summary['macro_f1']:.4f}`",
+        f"- Rule vs gold: `{rule['correct']}/{rule['total']}` accuracy `{rule['accuracy']:.4f}`",
+        f"- Model vs gold: `{model['correct']}/{model['total']}` accuracy `{model['accuracy']:.4f}`",
         f"- LLM calls total: `{summary['llm_calls_total']}`",
         "",
         "Safety: Codex CLI only when llm_source=codex, no OpenAI API key, no main catalog rebuild.",
@@ -303,6 +327,20 @@ def render_report(summary: dict[str, Any], predictions: list[Mapping[str, Any]])
         lines.append(
             f"| `{row.get('question_id', '')}` | `{row.get('human_label', '')}` | `{row.get('predicted_theme_id', '')}` | "
             f"`{row.get('rule_theme_id', '')}` | `{row.get('model_theme_id', '')}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## First Model Mismatches",
+            "",
+            "| id | human | model | rule |",
+            "|---|---|---|---|",
+        ]
+    )
+    for row in model_mismatches:
+        lines.append(
+            f"| `{row.get('question_id', '')}` | `{row.get('human_label', '')}` | "
+            f"`{row.get('model_theme_id', '')}` | `{row.get('rule_theme_id', '')}` |"
         )
     return "\n".join(lines) + "\n"
 

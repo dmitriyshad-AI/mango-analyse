@@ -8,8 +8,11 @@ from pathlib import Path
 from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand
 from mango_mvp.insights.outcome_linker import classify_tallanto_rows
 from mango_mvp.services.transcribe import TranscribeService
+from scripts.build_tz116_crm_fixed_snapshot import build_heuristic, select_cases
 from scripts.evaluate_tz116_mono_role_assignment import main as mono_eval_main
+from scripts.run_tz116_be_real_measure import main as be_measure_main
 from scripts.run_tz116_crm_llm_offline_measure import main as crm_measure_main
+from scripts.run_tz116_mono_role_gold50_measure import main as mono_gold50_main
 from scripts.run_tz116_mono_role_shadow_real import main as mono_real_main
 from scripts.run_tz116_question_catalog_offline_measure import main as qc_measure_main
 
@@ -193,6 +196,8 @@ def test_question_catalog_offline_measure_shadow_uses_precomputed_model_without_
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["llm_calls_total"] == 0
     assert summary["safety"]["rebuilds_main_catalog"] is False
+    assert summary["rule_vs_gold"]["total"] == 1
+    assert summary["model_vs_gold"]["correct"] == 1
     rows = list(csv.DictReader((out_dir / "question_catalog_offline_predictions.csv").open(encoding="utf-8-sig")))
     assert rows[0]["classification_method"] == "rule_shadow"
     assert rows[0]["model_comparison"] in {"agree", "disagree"}
@@ -253,6 +258,7 @@ def test_question_catalog_offline_measure_shadow_can_use_codex_source(tmp_path: 
     rows = list(csv.DictReader((out_dir / "question_catalog_offline_predictions.csv").open(encoding="utf-8-sig")))
     assert rows[0]["classification_method"] == "rule_shadow_codex"
     assert rows[0]["model_theme_id"] == "theme:001_pricing"
+    assert summary["model_vs_gold"]["correct"] == 1
 
 
 def test_mono_role_assignment_eval_uses_only_synthetic_roles(tmp_path: Path) -> None:
@@ -405,3 +411,168 @@ def test_real_mono_primary_is_blocked_until_gold_regrede(tmp_path: Path) -> None
         assert "primary is blocked" in str(exc)
     else:
         raise AssertionError("primary mode must stay blocked even with legacy flag")
+
+
+def test_mono_role_gold50_measure_calls_codex_only_for_low_confidence(tmp_path: Path, monkeypatch) -> None:
+    input_path = tmp_path / "gold50.csv"
+    turns = [
+        {"i": 1, "start": 0.0, "text": "угу"},
+        {"i": 2, "start": 5.0, "text": "ага"},
+    ]
+    with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "canonical_call_id",
+                "source_filename",
+                "started_at",
+                "manager_name",
+                "duration_sec",
+                "turn_count",
+                "gold_roles",
+                "notes_for_reviewer",
+                "turns_json",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "canonical_call_id": "1",
+                "source_filename": "synthetic.mp3",
+                "started_at": "2026-06-01T10:00:00+00:00",
+                "manager_name": "Иванов",
+                "duration_sec": "60",
+                "turn_count": "2",
+                "gold_roles": json.dumps(["manager", "client"]),
+                "notes_for_reviewer": "",
+                "turns_json": json.dumps(turns, ensure_ascii=False),
+            }
+        )
+
+    def fake_codex(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "client"], "confidence": 0.93, "notes": "synthetic"},
+            turns=turns,
+            manager_name=manager_name,
+            provider="codex_cli",
+        )
+
+    monkeypatch.setattr(TranscribeService, "_assign_roles_with_codex", fake_codex)
+    out_dir = tmp_path / "gold50_out"
+
+    assert mono_gold50_main(["--input", str(input_path), "--out-dir", str(out_dir), "--mode", "shadow"]) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["calls_total"] == 1
+    assert summary["rule_low_confidence_calls"] == 1
+    assert summary["codex_called_calls"] == 1
+    assert summary["llm_calls_total"] == 1
+    assert summary["model_vs_gold"]["exact_correct"] == 1
+    rows = list(csv.DictReader((out_dir / "mono_role_gold50_measure_rows.csv").open(encoding="utf-8-sig")))
+    assert rows[0]["selected_provider"] == "codex_cli"
+    assert rows[0]["model_exact_vs_gold"] == "Да"
+
+
+def test_be_real_measure_counts_negation_shadow_and_brand_flips(tmp_path: Path) -> None:
+    tallanto = tmp_path / "tallanto.csv"
+    with tallanto.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["tallanto_id", "phone_parent", "phone_extra", "phones_joined", "history_raw", "student_type", "branch", "responsible"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "tallanto_id": "t1",
+                "phone_parent": "+79990000000",
+                "phone_extra": "",
+                "phones_joined": "+79990000000",
+                "history_raw": "Клиент не оплатил и не записался.",
+                "student_type": "Слушатель",
+                "branch": "",
+                "responsible": "",
+            }
+        )
+    chains = tmp_path / "chains.csv"
+    with chains.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["client_key", "phone"])
+        writer.writeheader()
+        writer.writerow({"client_key": "+79990000000", "phone": "+79990000000"})
+    master = tmp_path / "master.csv"
+    with master.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["name", "branch"])
+        writer.writeheader()
+        writer.writerow({"name": "Фотон и УНПК", "branch": ""})
+        writer.writerow({"name": "ЦДПО", "branch": ""})
+    amo_contacts = tmp_path / "amo_contacts.csv"
+    amo_deals = tmp_path / "amo_deals.csv"
+    for path in (amo_contacts, amo_deals):
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["name"])
+            writer.writeheader()
+            writer.writerow({"name": "МПК МФТИ"})
+
+    out_dir = tmp_path / "be_out"
+    assert be_measure_main(
+        [
+            "--out-dir",
+            str(out_dir),
+            "--tallanto-contacts",
+            str(tallanto),
+            "--client-chains",
+            str(chains),
+            "--master-contacts",
+            str(master),
+            "--amo-contacts",
+            str(amo_contacts),
+            "--amo-deals",
+            str(amo_deals),
+        ]
+    ) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["llm_calls_total"] == 0
+    assert summary["b_outcome_negation_shadow"]["client_chain_rows_changed"] == 1
+    assert summary["e_brand_infer"]["total_changed_rows"] >= 1
+
+
+def test_crm_fixed_snapshot_selection_keeps_brand_split_and_skips_conflicts() -> None:
+    def lead(lead_id: int, brand_text: str, *, closed_at: int = 1000) -> dict[str, object]:
+        return {
+            "id": lead_id,
+            "name": brand_text,
+            "pipeline_id": 8938034,
+            "status_id": 143,
+            "closed_at": closed_at,
+            "custom_fields_values": [
+                {
+                    "field_name": "Организация",
+                    "values": [{"value": brand_text}],
+                },
+                {
+                    "field_name": "Причина отказа (лид)",
+                    "values": [{"value": "Не актуально"}],
+                },
+            ],
+        }
+
+    selected = select_cases(
+        [
+            lead(1, "ЦДПО ФОТОН"),
+            lead(2, "АНО УНПК МФТИ"),
+            lead(3, "Фотон УНПК"),
+        ],
+        per_brand=1,
+        pipeline_ids={8938034},
+    )
+
+    assert [item["id"] for item in selected] == [1, 2]
+    heuristic = build_heuristic(
+        lead=selected[0],
+        brand="foton",
+        pipeline_name="Лиды",
+        status_name="Закрыто и не реализовано",
+        loss_reason="Не актуально",
+    )
+    assert heuristic["close_verdict"] == "manual_review"
+    assert heuristic["analysis_source"] == "heuristic"

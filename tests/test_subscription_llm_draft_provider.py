@@ -10654,6 +10654,82 @@ class _DirectPathRetrieverProvider(_DirectPathProvider):
         return self.retriever_payload
 
 
+def test_direct_path_deal_action_off_keeps_service_topic_parity() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Стоимость онлайн-курса физики для 8 класса — 47 250 ₽.",
+            message_type="question",
+            topic_id="service:S2_unclear",
+            metadata={
+                "direct_path": {
+                    "retrieved_facts": {
+                        "foton_online_price_physics_8": "Фотон: онлайн-курс физики для 8 класса стоит 47 250 ₽."
+                    },
+                    "wide_fact_exact_keys": ["foton_online_price_physics_8"],
+                },
+                "action_proposal": {"action": "answer_only", "confidence": 0.8},
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Какая стоимость онлайн-физики для 8 класса?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "client_safe_fact_verified": True,
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "conversation_intent_plan": {"topic_id": "theme:001_pricing", "primary_intent": "pricing"},
+        },
+    )
+
+    assert result.topic_id == "service:S2_unclear"
+    assert "direct_path_autonomy_topic_from_plan" not in result.safety_flags
+    assert "action_decision" not in result.metadata
+
+
+def test_direct_path_deal_action_autonomy_uses_intent_topic() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Стоимость онлайн-курса физики для 8 класса — 47 250 ₽.",
+            message_type="question",
+            topic_id="service:S2_unclear",
+            metadata={
+                "direct_path": {
+                    "retrieved_facts": {
+                        "foton_online_price_physics_8": "Фотон: онлайн-курс физики для 8 класса стоит 47 250 ₽."
+                    },
+                    "wide_fact_exact_keys": ["foton_online_price_physics_8"],
+                },
+                "action_proposal": {"action": "answer_only", "confidence": 0.8},
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Какая стоимость онлайн-физики для 8 класса?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DEAL_ACTION_DECISION_ENV: "1",
+            "client_safe_fact_verified": True,
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "conversation_intent_plan": {"topic_id": "theme:001_pricing", "primary_intent": "pricing"},
+        },
+    )
+
+    decision = result.metadata["action_decision"]
+    assert result.topic_id == "theme:001_pricing"
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "direct_path_autonomy_topic_from_plan" in result.safety_flags
+    assert "autonomy_default_cautious_topic_not_allowed" not in result.safety_flags
+    assert result.metadata["direct_path_autonomy_topic_from"] == "service:S2_unclear"
+    assert decision["action"] == "answer_only"
+    assert decision["requires_manager_approval"] is False
+
+
 DEFAULT_SNAPSHOT_PATH = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 V67_SNAPSHOT_PATH = DEFAULT_SNAPSHOT_PATH
 

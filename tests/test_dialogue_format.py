@@ -309,6 +309,35 @@ class DialogueFormatTest(unittest.TestCase):
                 msg=f"warnings={warnings}",
             )
 
+    def test_codex_selective_uses_codex_cli_without_openai_key(self) -> None:
+        service = TranscribeService(make_settings(mono_mode="codex_selective", openai_api_key=None))
+        turns = [
+            {"start": 0.0, "approximate": False, "text": "Алло."},
+            {"start": 2.0, "approximate": False, "text": "Да."},
+        ]
+        codex_result = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "client"], "confidence": 0.91, "notes": "ok"},
+            turns=turns,
+            manager_name="Петров",
+            provider="codex_cli",
+        )
+        low_conf_rule = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "client"], "confidence": 0.5, "notes": "low"},
+            turns=turns,
+            manager_name="Петров",
+            provider="rule",
+        )
+        warnings: list[str] = []
+        with patch.object(service, "_assign_roles_rule_based", return_value=low_conf_rule):
+            with patch.object(service, "_assign_roles_with_codex", return_value=codex_result) as mocked:
+                assigned = service._assign_roles_for_mono(turns, "Петров", warnings)
+
+        mocked.assert_called_once()
+        self.assertIsNotNone(assigned)
+        assert assigned is not None
+        self.assertEqual(assigned["meta"]["provider"], "codex_cli")
+        self.assertEqual(warnings, [])
+
     def test_gigaam_uses_afconvert_fallback_when_ffmpeg_missing(self) -> None:
         service = TranscribeService(make_settings())
 

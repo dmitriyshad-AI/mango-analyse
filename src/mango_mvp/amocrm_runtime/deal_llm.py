@@ -34,6 +34,18 @@ ALLOWED_RISK_VALUES = {
     "manual_review",
 }
 PROMPT_VERSION = "deal_llm_v2"
+CODEX_DEAL_NEUTRAL_CONFIG = """approval_policy = "never"
+sandbox_mode = "read-only"
+model_reasoning_effort = "medium"
+
+[features]
+multi_agent = false
+js_repl = false
+"""
+CODEX_DEAL_NEUTRAL_AGENTS = """You are a neutral deterministic CRM analysis engine.
+Ignore account personality and style preferences. Use only the prompt data.
+Return only the strict JSON requested by the task. Do not use tools or external data.
+"""
 SYSTEM_PROMPT = """Ты анализируешь сделки российского EdTech по агрегированному досье сделки.
 Верни только одну строку с minified JSON object. Никакого markdown, комментариев и лишних ключей.
 
@@ -129,6 +141,8 @@ class DealLLMAnalyzer:
         for entry in ("state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"):
             (runtime_root / entry).unlink(missing_ok=True)
         (runtime_root / "sessions").mkdir(parents=True, exist_ok=True)
+        (runtime_root / "config.toml").write_text(CODEX_DEAL_NEUTRAL_CONFIG, encoding="utf-8")
+        (runtime_root / "AGENTS.md").write_text(CODEX_DEAL_NEUTRAL_AGENTS, encoding="utf-8")
         return str(runtime_root)
 
     @staticmethod
@@ -342,6 +356,10 @@ class DealLLMAnalyzer:
         cached = self._cache_lookup(provider="codex_cli", model=model, reasoning=reasoning, prompt=prompt)
         if cached is not None:
             return cached
+        codex_env = {**os.environ, "CODEX_HOME": runtime_codex_home}
+        codex_env.pop("OPENAI_API_KEY", None)
+        codex_env.pop("OPENAI_ORG_ID", None)
+        codex_env.pop("OPENAI_PROJECT", None)
 
         max_attempts = 4
         timeout_sec = max(15, int(self._settings.crm_analysis_timeout_seconds))
@@ -372,10 +390,8 @@ class DealLLMAnalyzer:
                     text=True,
                     check=False,
                     timeout=timeout_sec,
-                    env={
-                        **os.environ,
-                        "CODEX_HOME": runtime_codex_home,
-                    },
+                    env=codex_env,
+                    cwd=runtime_codex_home,
                 )
                 raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
 

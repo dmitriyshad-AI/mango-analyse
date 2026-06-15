@@ -156,6 +156,32 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         self.assertTrue(normalized["needs_manual_review"])
         self.assertEqual(normalized["confidence"], 0.2)
 
+    def test_deal_llm_codex_home_uses_neutral_config_without_service_tier(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_deal_codex_home_source_") as td:
+            home = Path(td) / "home"
+            source = home / ".codex"
+            source.mkdir(parents=True)
+            (source / "auth.json").write_text('{"mode":"test"}', encoding="utf-8")
+            (source / "config.toml").write_text(
+                'personality = "pragmatic"\nservice_tier = "default"\n',
+                encoding="utf-8",
+            )
+            analyzer = DealLLMAnalyzer()
+            analyzer._settings = dataclasses.replace(  # noqa: SLF001
+                analyzer._settings,  # noqa: SLF001
+                crm_analysis_llm_cache_dir=str(Path(td) / "cache" / "llm"),
+            )
+
+            with patch("mango_mvp.amocrm_runtime.deal_llm.Path.home", return_value=home):
+                runtime_home = Path(analyzer._prepare_runtime_codex_home())  # noqa: SLF001
+
+            config_text = (runtime_home / "config.toml").read_text(encoding="utf-8")
+            agents_text = (runtime_home / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertTrue((runtime_home / "auth.json").exists())
+            self.assertNotIn("service_tier", config_text)
+            self.assertNotIn("personality", config_text)
+            self.assertIn("neutral deterministic CRM", agents_text)
+
     def test_build_dossier_and_analysis_passes_active_brand_to_dossier(self) -> None:
         phone_context = PhoneContext(
             phone="+79990001122",

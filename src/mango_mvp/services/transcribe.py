@@ -28,6 +28,50 @@ TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 WORD_RE = re.compile(r"\w+", re.UNICODE)
 MERGE_ALLOWED_PROVIDERS = {"primary", "rule", "openai", "ollama", "codex_cli"}
 ROLE_ASSIGN_ALLOWED_MODES = {"off", "rule", "openai_selective", "ollama_selective", "codex_selective"}
+ROLE_ASSIGN_LOW_INFO_FILTER_MODES = {"off", "mark", "filter"}
+ROLE_ASSIGN_LOW_INFO_PHRASES = {
+    "ага",
+    "алло",
+    "да",
+    "да да",
+    "доброе утро",
+    "добрый вечер",
+    "добрый день",
+    "до свидания",
+    "здравствуйте",
+    "ладно",
+    "нет",
+    "нет нет",
+    "ок",
+    "окей",
+    "понятно",
+    "спасибо",
+    "спасибо до свидания",
+    "привет",
+    "слушаю",
+    "всего доброго",
+    "всего хорошего",
+    "хорошего дня",
+    "угу",
+    "хорошо",
+    "ясно",
+}
+ROLE_ASSIGN_LOW_INFO_TOKENS = {
+    "ага",
+    "алло",
+    "да",
+    "ладно",
+    "нет",
+    "ок",
+    "окей",
+    "понятно",
+    "спасибо",
+    "привет",
+    "слушаю",
+    "угу",
+    "хорошо",
+    "ясно",
+}
 CODEX_HOME_COPY_ALLOWLIST = ("auth.json", "rules", "skills", "models_cache.json")
 CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
 sandbox_mode = "read-only"
@@ -1673,6 +1717,79 @@ class TranscribeService:
             },
         }
 
+    def _is_low_info_role_turn(self, text: Any) -> bool:
+        normalized = " ".join(WORD_RE.findall(str(text or "").lower().replace("ё", "е")))
+        if not normalized:
+            return True
+        if normalized in ROLE_ASSIGN_LOW_INFO_PHRASES:
+            return True
+        words = normalized.split()
+        if 1 <= len(words) <= 3 and all(word in ROLE_ASSIGN_LOW_INFO_TOKENS for word in words):
+            return True
+        if len(words) <= 3 and words[:2] in (["до", "свидания"], ["всего", "доброго"], ["всего", "хорошего"]):
+            return True
+        return False
+
+    def _apply_low_info_role_filter(
+        self,
+        llm_result: Dict[str, Any],
+        *,
+        rule_result: Optional[Dict[str, Any]],
+        turns: list[dict[str, Any]],
+        manager_name: str,
+    ) -> Dict[str, Any]:
+        filter_mode = (self._settings.mono_role_low_info_filter_mode or "off").strip().lower()
+        if filter_mode not in ROLE_ASSIGN_LOW_INFO_FILTER_MODES or filter_mode == "off":
+            return llm_result
+        if not rule_result:
+            return llm_result
+        llm_meta = llm_result.get("meta") if isinstance(llm_result.get("meta"), dict) else {}
+        rule_meta = rule_result.get("meta") if isinstance(rule_result.get("meta"), dict) else {}
+        llm_roles = [str(role) for role in llm_meta.get("roles") or []]
+        rule_roles = [str(role) for role in rule_meta.get("roles") or []]
+        if len(llm_roles) != len(turns) or len(rule_roles) != len(turns):
+            return llm_result
+
+        low_info_indexes = [
+            index
+            for index, turn in enumerate(turns)
+            if self._is_low_info_role_turn(turn.get("text"))
+        ]
+        if not low_info_indexes:
+            return llm_result
+
+        merged_roles = llm_roles[:]
+        changed_indexes: list[int] = []
+        if filter_mode == "filter":
+            for index in low_info_indexes:
+                if merged_roles[index] != rule_roles[index]:
+                    changed_indexes.append(index)
+                merged_roles[index] = rule_roles[index]
+
+        manager_text, client_text, dialogue_lines = self._build_role_texts_and_lines(
+            turns, merged_roles, manager_name
+        )
+        meta = dict(llm_meta)
+        meta["roles"] = merged_roles
+        meta["has_both_roles"] = bool(manager_text and client_text)
+        meta["low_info_filter_applied"] = True
+        meta["low_info_filter_mode"] = filter_mode
+        meta["low_info_policy"] = (
+            "short_service_turns_keep_rule_role"
+            if filter_mode == "filter"
+            else "short_service_turns_mark_only"
+        )
+        meta["low_info_turn_indexes"] = [index + 1 for index in low_info_indexes]
+        meta["low_info_changed_indexes"] = [index + 1 for index in changed_indexes]
+        meta["low_info_turn_count"] = len(low_info_indexes)
+        meta["low_info_changed_count"] = len(changed_indexes)
+        return {
+            "manager_text": manager_text,
+            "client_text": client_text,
+            "dialogue_lines": dialogue_lines,
+            "meta": meta,
+        }
+
     def _assign_roles_with_codex(
         self,
         turns: list[dict[str, Any]],
@@ -1902,6 +2019,14 @@ class TranscribeService:
                 llm_result = self._assign_roles_with_codex(turns, manager_name)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"mono_role_assign: codex_failed: {exc}")
+
+        if llm_result and mode == "codex_selective":
+            llm_result = self._apply_low_info_role_filter(
+                llm_result,
+                rule_result=rule_result,
+                turns=turns,
+                manager_name=manager_name,
+            )
 
         if (
             llm_result

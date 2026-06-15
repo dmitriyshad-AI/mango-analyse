@@ -34,13 +34,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    traces = {
-        "c": build_c_trace(Path(args.c_dir)),
-        "d": build_d_trace(Path(args.d_dir)),
-        "a": build_a_trace(Path(args.a_dir)),
-        "b": build_review_trace(Path(args.gold_dir) / "b_outcome_flip_gold_sample.csv", block="b"),
-        "e": build_review_trace(Path(args.gold_dir) / "e_brand_loss_gold_sample.csv", block="e"),
+    requested_blocks = parse_blocks(args.blocks)
+    trace_builders = {
+        "c": lambda: build_c_trace(Path(args.c_dir)),
+        "d": lambda: build_d_trace(Path(args.d_dir)),
+        "a": lambda: build_a_trace(Path(args.a_dir)),
+        "b": lambda: build_review_trace(Path(args.gold_dir) / "b_outcome_flip_gold_sample.csv", block="b"),
+        "e": lambda: build_review_trace(Path(args.gold_dir) / "e_brand_loss_gold_sample.csv", block="e"),
     }
+    traces = {block: trace_builders[block]() for block in requested_blocks}
 
     summaries: dict[str, Any] = {}
     for block, rows in traces.items():
@@ -169,6 +171,12 @@ def build_d_trace(d_dir: Path) -> list[dict[str, str]]:
         selected_meta = selected.get("meta") if isinstance(selected.get("meta"), dict) else {}
         confidence = str(selected.get("confidence") or selected_meta.get("confidence") or "")
         rationale = one_line(selected_meta.get("rationale") or selected_meta.get("notes"))
+        low_info_policy = str(selected_meta.get("low_info_policy") or "")
+        low_info_indexes = {
+            int(value)
+            for value in selected_meta.get("low_info_turn_indexes") or []
+            if str(value).isdigit()
+        }
         max_len = max(len(turns), len(gold_roles), len(rule_roles), len(model_roles))
         for index in range(max_len):
             gold = str(gold_roles[index]) if index < len(gold_roles) else ""
@@ -178,6 +186,16 @@ def build_d_trace(d_dir: Path) -> list[dict[str, str]]:
             fragment = ""
             if index < len(turns) and isinstance(turns[index], Mapping):
                 fragment = redact_fragment(turns[index].get("text"), limit=220)
+            row_rationale = rationale
+            if index + 1 in low_info_indexes:
+                low_info_prefix = (
+                    "low_info: короткая служебная реплика оставлена правилу"
+                    if low_info_policy == "short_service_turns_keep_rule_role"
+                    else "low_info: короткая служебная реплика помечена для ручной калибровки"
+                )
+                row_rationale = one_line(
+                    low_info_prefix + " | " + rationale
+                )
             rows.append(
                 {
                     "id": f"{call_id}:{index + 1}",
@@ -186,7 +204,7 @@ def build_d_trace(d_dir: Path) -> list[dict[str, str]]:
                     "rule": rule_role,
                     "model": model,
                     "confidence": confidence,
-                    "rationale": rationale,
+                    "rationale": row_rationale,
                     "matched_gold": bool_cell(matched),
                     "error_type": classify_error_type(gold=gold, rule=rule_role, model=model),
                 }
@@ -310,6 +328,24 @@ def split_flip(value: str) -> tuple[str, str]:
         return value, ""
     left, right = value.split("->", 1)
     return left.strip(), right.strip()
+
+
+def parse_blocks(value: Any) -> list[str]:
+    raw = str(value or "all").strip().lower()
+    if raw in {"", "all", "*"}:
+        return ["c", "d", "a", "b", "e"]
+    blocks: list[str] = []
+    for part in raw.replace(";", ",").split(","):
+        block = part.strip().lower()
+        if not block:
+            continue
+        if block not in {"a", "b", "c", "d", "e"}:
+            raise SystemExit(f"Unsupported block for TZ-117 trace: {block}")
+        if block not in blocks:
+            blocks.append(block)
+    if not blocks:
+        raise SystemExit("At least one TZ-117 trace block is required")
+    return blocks
 
 
 def combine_verdict(value: Mapping[str, Any]) -> str:
@@ -441,6 +477,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--a-dir", default=str(DEFAULT_A))
     parser.add_argument("--d-dir", default=str(DEFAULT_D))
     parser.add_argument("--gold-dir", default=str(DEFAULT_GOLD))
+    parser.add_argument("--blocks", default="all", help="Comma-separated blocks to build: a,b,c,d,e or all.")
     return parser.parse_args(argv)
 
 

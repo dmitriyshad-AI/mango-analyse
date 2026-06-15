@@ -91,6 +91,7 @@ class Settings:
     stereo_overlap_similarity_threshold: float
     stereo_overlap_min_chars: int
     mono_role_assignment_mode: str
+    mono_role_low_info_filter_mode: str
     mono_role_assignment_min_confidence: float
     mono_role_assignment_llm_threshold: float
     openai_role_assign_model: str
@@ -218,6 +219,9 @@ def get_settings() -> Settings:
         ),
         stereo_overlap_min_chars=_int_env("STEREO_OVERLAP_MIN_CHARS", 80),
         mono_role_assignment_mode=os.getenv("MONO_ROLE_ASSIGNMENT_MODE", "off").strip().lower(),
+        mono_role_low_info_filter_mode=(
+            os.getenv("MONO_ROLE_LOW_INFO_FILTER_MODE", "off").strip().lower() or "off"
+        ),
         mono_role_assignment_min_confidence=_float_env(
             "MONO_ROLE_ASSIGNMENT_MIN_CONFIDENCE", 0.62
         ),

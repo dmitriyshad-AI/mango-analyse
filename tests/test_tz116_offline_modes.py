@@ -9,7 +9,9 @@ from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand
 from mango_mvp.insights.outcome_linker import classify_tallanto_rows
 from mango_mvp.services.transcribe import TranscribeService
 from scripts.build_tz117_error_traces import (
+    build_d_trace,
     classify_error_type,
+    parse_blocks,
     redact_fragment,
     review_gold_label,
     summarize_trace,
@@ -546,6 +548,40 @@ def test_tz117_review_gold_label_does_not_treat_verdict_as_target_label() -> Non
     assert review_gold_label("expected_fail_closed", rule="foton", model="unknown", block="e") == "unknown"
     assert review_gold_label("false_negative", rule="unpk", model="unknown", block="e") == "unpk"
     assert review_gold_label("unclear", rule="unpk", model="unknown", block="e") == ""
+
+
+def test_tz117_d_trace_marks_low_info_rationale(tmp_path: Path) -> None:
+    d_dir = tmp_path / "d"
+    d_dir.mkdir()
+    payload = {
+        "canonical_call_id": "call1",
+        "turns": [
+            {"text": "Алло."},
+            {"text": "Сколько стоит курс?"},
+        ],
+        "rule": {"roles": ["manager", "manager"], "confidence": 0.5, "meta": {}},
+        "selected": {
+            "roles": ["manager", "client"],
+            "confidence": 0.9,
+            "meta": {
+                "provider": "codex_cli",
+                "rationale": "synthetic",
+                "low_info_turn_indexes": [1],
+            },
+        },
+        "gold_roles": ["manager", "client"],
+        "warnings": [],
+    }
+    (d_dir / "mono_role_gold50_measure_results.jsonl").write_text(
+        json.dumps(payload, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    rows = build_d_trace(d_dir)
+
+    assert parse_blocks("d") == ["d"]
+    assert rows[0]["rationale"].startswith("low_info:")
+    assert rows[1]["rationale"] == "synthetic"
 
 
 def test_be_real_measure_counts_negation_shadow_and_brand_flips(tmp_path: Path) -> None:

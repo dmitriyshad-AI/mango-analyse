@@ -12,6 +12,7 @@ from mango_mvp.services.transcribe import TranscribeService
 def make_settings(
     *,
     mono_mode: str = "off",
+    mono_low_info_filter_mode: str = "off",
     openai_api_key: str | None = None,
 ) -> Settings:
     return Settings(
@@ -57,6 +58,7 @@ def make_settings(
         stereo_overlap_similarity_threshold=0.97,
         stereo_overlap_min_chars=80,
         mono_role_assignment_mode=mono_mode,
+        mono_role_low_info_filter_mode=mono_low_info_filter_mode,
         mono_role_assignment_min_confidence=0.62,
         mono_role_assignment_llm_threshold=0.72,
         openai_role_assign_model="gpt-4o-mini",
@@ -336,6 +338,108 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertIsNotNone(assigned)
         assert assigned is not None
         self.assertEqual(assigned["meta"]["provider"], "codex_cli")
+        self.assertEqual(warnings, [])
+
+    def test_mono_role_assignment_off_does_not_touch_rule_or_codex(self) -> None:
+        service = TranscribeService(make_settings(mono_mode="off", openai_api_key=None))
+        turns = [
+            {"start": 0.0, "approximate": False, "text": "Алло."},
+            {"start": 2.0, "approximate": False, "text": "Да."},
+        ]
+        warnings: list[str] = []
+        with patch.object(service, "_assign_roles_rule_based") as rule_mock:
+            with patch.object(service, "_assign_roles_with_codex") as codex_mock:
+                assigned = service._assign_roles_for_mono(turns, "Петров", warnings)
+
+        self.assertIsNone(assigned)
+        rule_mock.assert_not_called()
+        codex_mock.assert_not_called()
+        self.assertEqual(warnings, [])
+
+    def test_codex_selective_keeps_rule_roles_for_low_info_turns(self) -> None:
+        service = TranscribeService(
+            make_settings(
+                mono_mode="codex_selective",
+                mono_low_info_filter_mode="filter",
+                openai_api_key=None,
+            )
+        )
+        turns = [
+            {"start": 0.0, "approximate": False, "text": "Алло."},
+            {"start": 2.0, "approximate": False, "text": "Да."},
+            {"start": 5.0, "approximate": False, "text": "Сколько стоит курс по математике?"},
+        ]
+        codex_result = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["client", "manager", "manager"],
+                "confidence": 0.91,
+                "notes": "synthetic",
+                "rationale": "synthetic",
+            },
+            turns=turns,
+            manager_name="Петров",
+            provider="codex_cli",
+        )
+        low_conf_rule = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "client", "client"], "confidence": 0.5, "notes": "low"},
+            turns=turns,
+            manager_name="Петров",
+            provider="rule",
+        )
+        warnings: list[str] = []
+        with patch.object(service, "_assign_roles_rule_based", return_value=low_conf_rule):
+            with patch.object(service, "_assign_roles_with_codex", return_value=codex_result):
+                assigned = service._assign_roles_for_mono(turns, "Петров", warnings)
+
+        self.assertIsNotNone(assigned)
+        assert assigned is not None
+        self.assertEqual(assigned["meta"]["roles"], ["manager", "client", "manager"])
+        self.assertEqual(assigned["meta"]["provider"], "codex_cli")
+        self.assertEqual(assigned["meta"]["low_info_turn_indexes"], [1, 2])
+        self.assertEqual(assigned["meta"]["low_info_changed_indexes"], [1, 2])
+        self.assertEqual(warnings, [])
+
+    def test_low_info_filter_does_not_hide_meaningful_short_question(self) -> None:
+        service = TranscribeService(
+            make_settings(
+                mono_mode="codex_selective",
+                mono_low_info_filter_mode="filter",
+                openai_api_key=None,
+            )
+        )
+
+        self.assertTrue(service._is_low_info_role_turn("До свидания."))  # noqa: SLF001
+        self.assertTrue(service._is_low_info_role_turn("угу, да"))  # noqa: SLF001
+        self.assertFalse(service._is_low_info_role_turn("Да, подскажите класс"))  # noqa: SLF001
+        self.assertFalse(service._is_low_info_role_turn("Сколько стоит?"))  # noqa: SLF001
+
+    def test_low_info_filter_default_off_keeps_codex_roles_byte_for_byte(self) -> None:
+        service = TranscribeService(make_settings(mono_mode="codex_selective", openai_api_key=None))
+        turns = [
+            {"start": 0.0, "approximate": False, "text": "Алло."},
+            {"start": 2.0, "approximate": False, "text": "Да."},
+        ]
+        codex_result = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["client", "manager"], "confidence": 0.91, "notes": "synthetic"},
+            turns=turns,
+            manager_name="Петров",
+            provider="codex_cli",
+        )
+        low_conf_rule = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "client"], "confidence": 0.5, "notes": "low"},
+            turns=turns,
+            manager_name="Петров",
+            provider="rule",
+        )
+        warnings: list[str] = []
+        with patch.object(service, "_assign_roles_rule_based", return_value=low_conf_rule):
+            with patch.object(service, "_assign_roles_with_codex", return_value=codex_result):
+                assigned = service._assign_roles_for_mono(turns, "Петров", warnings)
+
+        self.assertIsNotNone(assigned)
+        assert assigned is not None
+        self.assertEqual(assigned["meta"]["roles"], ["client", "manager"])
+        self.assertNotIn("low_info_filter_applied", assigned["meta"])
         self.assertEqual(warnings, [])
 
     def test_gigaam_uses_afconvert_fallback_when_ffmpeg_missing(self) -> None:

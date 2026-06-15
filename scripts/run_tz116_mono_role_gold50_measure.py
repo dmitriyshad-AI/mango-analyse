@@ -32,6 +32,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mode,
         min_confidence=float(args.min_confidence),
         llm_threshold=float(args.llm_threshold),
+        low_info_filter_mode=str(args.low_info_filter_mode or ""),
         model=str(args.model or ""),
         reasoning_effort=str(args.reasoning_effort or ""),
         timeout_sec=int(args.timeout_sec),
@@ -57,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         llm_calls_total=llm_attempts["count"],
         min_confidence=float(args.min_confidence),
         llm_threshold=float(args.llm_threshold),
+        low_info_filter_mode=str(args.low_info_filter_mode or ""),
     )
     write_csv(out_dir / "mono_role_gold50_measure_rows.csv", rows)
     write_csv(out_dir / "mono_role_gold50_manual_review_queue.csv", review_rows)
@@ -77,6 +79,7 @@ def build_service(
     *,
     min_confidence: float,
     llm_threshold: float,
+    low_info_filter_mode: str,
     model: str,
     reasoning_effort: str,
     timeout_sec: int,
@@ -87,6 +90,9 @@ def build_service(
         replace(
             settings,
             mono_role_assignment_mode="off" if mode == "off" else "codex_selective",
+            mono_role_low_info_filter_mode=(
+                "off" if mode == "off" else (low_info_filter_mode.strip().lower() or "off")
+            ),
             mono_role_assignment_min_confidence=min_confidence,
             mono_role_assignment_llm_threshold=llm_threshold,
             codex_transcribe_model=model.strip() or settings.codex_transcribe_model,
@@ -184,6 +190,12 @@ def evaluate_row(
         "gold_roles_json": json.dumps(gold_roles, ensure_ascii=False),
         "codex_notes": str(selected_meta.get("notes") or "") if selected_provider == "codex_cli" else "",
         "codex_rationale": str(selected_meta.get("rationale") or "") if selected_provider == "codex_cli" else "",
+        "low_info_filter_mode": str(selected_meta.get("low_info_filter_mode") or ""),
+        "low_info_filter_applied": "Да" if selected_meta.get("low_info_filter_applied") else "Нет",
+        "low_info_turn_count": int(selected_meta.get("low_info_turn_count") or 0),
+        "low_info_changed_count": int(selected_meta.get("low_info_changed_count") or 0),
+        "low_info_turn_indexes_json": json.dumps(selected_meta.get("low_info_turn_indexes") or [], ensure_ascii=False),
+        "low_info_changed_indexes_json": json.dumps(selected_meta.get("low_info_changed_indexes") or [], ensure_ascii=False),
     }
     review_row = {
         "canonical_call_id": call_id,
@@ -283,11 +295,13 @@ def build_summary(
     llm_calls_total: int,
     min_confidence: float,
     llm_threshold: float,
+    low_info_filter_mode: str,
 ) -> dict[str, Any]:
     provider_counts = Counter(str(row.get("selected_provider") or "") for row in rows)
     low_conf = [row for row in rows if row.get("rule_low_confidence") == "Да"]
     gold_rows = [row for row in rows if row.get("gold_labeled") == "Да"]
     model_rows = [row for row in rows if row.get("codex_called") == "Да"]
+    low_info_rows = [row for row in rows if row.get("low_info_filter_applied") == "Да"]
     return {
         "schema_version": "tz116_mono_role_gold50_measure_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -301,6 +315,11 @@ def build_summary(
         "codex_called_calls": len(model_rows),
         "llm_calls_total": llm_calls_total,
         "selected_provider_counts": dict(provider_counts),
+        "low_info_filter": {
+            "calls_with_filter": len(low_info_rows),
+            "turns_filtered_total": sum(int(row.get("low_info_turn_count") or 0) for row in rows),
+            "turns_changed_total": sum(int(row.get("low_info_changed_count") or 0) for row in rows),
+        },
         "rule_vs_gold": aggregate_exact(rows, "rule_exact_vs_gold", "rule_per_turn_accuracy_vs_gold"),
         "selected_vs_gold": aggregate_exact(rows, "selected_exact_vs_gold", "selected_per_turn_accuracy_vs_gold"),
         "model_vs_gold": aggregate_exact(rows, "model_exact_vs_gold", "model_per_turn_accuracy_vs_gold"),
@@ -309,6 +328,7 @@ def build_summary(
             "min_confidence": min_confidence,
             "llm_threshold": llm_threshold,
         },
+        "low_info_filter_mode": "off" if mode == "off" else (low_info_filter_mode.strip().lower() or "off"),
         "safety": {
             "model_transport": "codex_cli" if mode == "shadow" else "none",
             "uses_openai_api_key": False,
@@ -402,6 +422,8 @@ def render_report(summary: Mapping[str, Any]) -> str:
             f"- Gold-labeled calls: `{summary['gold_labeled_calls']}`",
             f"- LLM calls total: `{summary['llm_calls_total']}`",
             f"- Selected providers: `{json.dumps(summary['selected_provider_counts'], ensure_ascii=False, sort_keys=True)}`",
+            f"- Low-info filter mode: `{summary.get('low_info_filter_mode', '')}`",
+            f"- Low-info filter: `{json.dumps(summary.get('low_info_filter', {}), ensure_ascii=False, sort_keys=True)}`",
             f"- Rule vs gold: `{json.dumps(summary['rule_vs_gold'], ensure_ascii=False, sort_keys=True)}`",
             f"- Model vs gold: `{json.dumps(summary['model_vs_gold'], ensure_ascii=False, sort_keys=True)}`",
             f"- Model vs rule: `{json.dumps(summary['model_vs_rule'], ensure_ascii=False, sort_keys=True)}`",
@@ -421,6 +443,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", default="")
     parser.add_argument("--reasoning-effort", default="")
     parser.add_argument("--timeout-sec", type=int, default=240)
+    parser.add_argument("--low-info-filter-mode", choices=["off", "mark", "filter"], default="off")
     parser.add_argument("--review-low-confidence-all", action="store_true")
     return parser.parse_args(argv)
 

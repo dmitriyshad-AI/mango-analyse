@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,6 +38,14 @@ AMO_SOURCE = "amocrm_snapshot"
 TALLANTO_SOURCE = "tallanto_snapshot"
 MAIL_SOURCE = "mail_archive"
 DEFAULT_TENANT_ID = "foton"
+BRAND_INFER_MODE_LEGACY = "legacy"
+BRAND_INFER_MODE_CYRILLIC_V2 = "cyrillic_v2"
+FOTON_BRAND_RE = re.compile(r"(?<![a-zа-я0-9])(?:фотон|foton|цдпо|црдо|cdpofoton)(?![a-zа-я0-9])", re.I)
+UNPK_BRAND_RE = re.compile(
+    r"(?<![a-zа-я0-9])(?:унпк|unpk|kmipt|мпк\s+мфти|нпк\s+мфти|онпк\s+мфти|унфк\s+мфти|"
+    r"унп\s+мфти|унипк\s+мфти|у\s*н\s*п\s*к\s*м\s*ф\s*т\s*и)(?![a-zа-я0-9])",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +63,7 @@ class CanonicalReadonlyTimelineConfig:
     mail_bridge_db: Optional[Path] = None
     generated_at: Optional[datetime] = None
     max_call_events_per_contact: int = 0
+    brand_infer_mode: str = BRAND_INFER_MODE_LEGACY
 
 
 def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimelineConfig) -> Mapping[str, Any]:
@@ -63,10 +73,12 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
 
     contacts = read_csv_rows(resolved.master_contacts_csv)
     phones = sorted({phone for row in contacts if (phone := normalize_phone(row.get("Телефон клиента", "")))})
+    brand_infer_mode = normalize_brand_infer_mode(resolved.brand_infer_mode)
     customers_by_phone = build_customer_index(
         contacts,
         tenant_id=resolved.tenant_id,
         generated_at=generated_at,
+        brand_infer_mode=brand_infer_mode,
     )
     known_phones = set(customers_by_phone)
     calls_by_phone = read_calls_by_phone(
@@ -106,6 +118,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             "schema_version": CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION,
             "sources": source_manifest,
             "tenant_id": resolved.tenant_id,
+            "brand_infer_mode": brand_infer_mode,
             "known_phones": len(known_phones),
             "generated_at": generated_at.isoformat(),
         }
@@ -138,7 +151,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         for phone in phones:
             row = customers_by_phone[phone]["row"]
             customer = customers_by_phone[phone]["customer"]
-            brand = infer_brand(row.values())
+            brand = infer_brand(row.values(), mode=brand_infer_mode)
             brand_counts[brand] += 1
             reasons = manual_review_reasons(
                 row=row,
@@ -209,6 +222,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                     amo_contact=amo_contact,
                     deals_by_contact_id=amo_deals_by_contact_id,
                     brand=brand,
+                    brand_infer_mode=brand_infer_mode,
                     generated_at=generated_at,
                     ingestion_run_id=run.run_id,
                     duplicate_amo_contact_ids=duplicate_amo_contact_ids,
@@ -352,6 +366,7 @@ def resolve_config(config: CanonicalReadonlyTimelineConfig) -> CanonicalReadonly
         mail_bridge_db=mail_bridge,
         generated_at=config.generated_at,
         max_call_events_per_contact=max(0, int(config.max_call_events_per_contact)),
+        brand_infer_mode=normalize_brand_infer_mode(config.brand_infer_mode),
     )
 
 
@@ -360,6 +375,7 @@ def build_customer_index(
     *,
     tenant_id: str,
     generated_at: datetime,
+    brand_infer_mode: str = BRAND_INFER_MODE_LEGACY,
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -388,7 +404,7 @@ def build_customer_index(
                 "tallanto_match_status": safe_text(row.get("Статус матчинга Tallanto")),
                 "amo_contact_id_count": len(split_ids(row.get("AMO contact IDs"))),
                 "amo_lead_id_count": len(split_ids(row.get("AMO lead IDs"))),
-                "brand": infer_brand(row.values()),
+                "brand": infer_brand(row.values(), mode=brand_infer_mode),
             },
             metadata={"source": MASTER_CONTACT_SOURCE},
             created_at=generated_at,
@@ -705,6 +721,7 @@ def upsert_amo_snapshot(
     amo_contact: Mapping[str, str],
     deals_by_contact_id: Mapping[str, Sequence[Mapping[str, str]]],
     brand: str,
+    brand_infer_mode: str = BRAND_INFER_MODE_LEGACY,
     generated_at: datetime,
     ingestion_run_id: str,
     duplicate_amo_contact_ids: set[str] | None = None,
@@ -775,7 +792,7 @@ def upsert_amo_snapshot(
         if not lead_id:
             continue
         is_duplicate_lead = lead_id in duplicate_amo_lead_ids
-        deal_brand = infer_brand([brand, deal.get("lead_name"), deal.get("pipeline_name")])
+        deal_brand = infer_brand([brand, deal.get("lead_name"), deal.get("pipeline_name")], mode=brand_infer_mode)
         deal_created_at = parse_unix_or_iso(deal.get("created_at"))
         deal_updated_at = parse_unix_or_iso(deal.get("updated_at")) or deal_created_at or updated_at
         opened_at, deal_seen_at, deal_date_corrected = ordered_datetime_pair(
@@ -1403,13 +1420,38 @@ def call_direction(value: Any) -> TimelineDirection:
     return TimelineDirection.SYSTEM
 
 
-def infer_brand(values: Iterable[Any]) -> str:
+def normalize_brand_infer_mode(value: Any) -> str:
+    mode = safe_text(value).lower()
+    if mode in {BRAND_INFER_MODE_LEGACY, BRAND_INFER_MODE_CYRILLIC_V2}:
+        return mode
+    return BRAND_INFER_MODE_LEGACY
+
+
+def infer_brand(values: Iterable[Any], *, mode: str = BRAND_INFER_MODE_LEGACY) -> str:
     text = " ".join(safe_text(value).lower() for value in values)
-    if "унпк" in text or "unpk" in text:
-        return "unpk"
-    if "фотон" in text or "foton" in text:
-        return "foton"
+    if normalize_brand_infer_mode(mode) != BRAND_INFER_MODE_CYRILLIC_V2:
+        if "унпк" in text or "unpk" in text:
+            return "unpk"
+        if "фотон" in text or "foton" in text:
+            return "foton"
+        return "unknown"
+
+    normalized = normalize_brand_text(text)
+    matched: set[str] = set()
+    if UNPK_BRAND_RE.search(normalized):
+        matched.add("unpk")
+    if FOTON_BRAND_RE.search(normalized):
+        matched.add("foton")
+    if len(matched) == 1:
+        return next(iter(matched))
     return "unknown"
+
+
+def normalize_brand_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", safe_text(value)).casefold().replace("ё", "е")
+    text = re.sub(r"[\u200b\u200c\u200d]", "", text)
+    text = re.sub(r"[^0-9a-zа-я@._+-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def compact_join(parts: Sequence[Any]) -> str:

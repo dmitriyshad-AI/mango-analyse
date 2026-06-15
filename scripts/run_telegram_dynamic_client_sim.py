@@ -37,6 +37,15 @@ from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_fun
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dialogue_memory, update_dialogue_memory_after_answer
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
+from mango_mvp.channels.action_decision_judge import (
+    ACTION_JUDGE_FLAG_ENV,
+    action_judge_enabled,
+    attach_action_judge_to_turn,
+    effective_flag_profile,
+    expected_action_payload,
+    summarize_action_judgements,
+    validate_action_judge_inputs,
+)
 from mango_mvp.insights.tone_score import summarize_tone_scores
 
 
@@ -55,6 +64,18 @@ METRIC_TARGETS = {
 }
 HANDOFF_TRACE_ENV = "TELEGRAM_HANDOFF_TRACE"
 DIRECT_PATH_FAIL_FAST_DIALOGS = 4
+PERSONA_PROMPT_INTERNAL_KEYS = {
+    "action_contract",
+    "action_intent",
+    "action_judge",
+    "deal_card",
+    "expected_action",
+    "privacy",
+    "provenance",
+    "raw_source",
+    "source_provenance",
+    "source_refs",
+}
 
 
 @dataclass(frozen=True)
@@ -673,6 +694,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     personas = [item for item in sim_input.personas if args.brand == "all" or item.get("brand") == args.brand]
     if args.limit > 0:
         personas = personas[: args.limit]
+    validate_action_judge_inputs(personas, judge_spec=sim_input.judge_spec)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     transcripts_path = args.out_dir / "dynamic_dialog_transcripts.jsonl"
@@ -687,6 +709,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         str(persona.get("dialog_id") or ""): index
         for index, persona in enumerate(personas)
     }
+    persona_by_id = persona_by_dialog_id(personas)
 
     if args.transcripts_in is not None and args.replay_from is not None:
         raise ValueError("--transcripts-in and --replay-from are mutually exclusive")
@@ -697,11 +720,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         judge_model = build_judge_model(args)
         memory_model = build_memory_model(args)
         transcripts = [
-            attach_context_facts_to_dialog(
-                dialog,
-                snapshot_path=args.snapshot,
-                memory_model=memory_model,
-                judge_prompt_version=args.judge_prompt_version,
+            attach_action_metadata_to_dialog(
+                attach_context_facts_to_dialog(
+                    dialog,
+                    snapshot_path=args.snapshot,
+                    memory_model=memory_model,
+                    judge_prompt_version=args.judge_prompt_version,
+                ),
+                persona_by_id=persona_by_id,
+                judge_spec=sim_input.judge_spec,
             )
             for dialog in load_transcripts(args.transcripts_in)
             if args.brand == "all" or dialog.get("brand") == args.brand
@@ -734,7 +761,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             replay_by_id = {str(dialog.get("dialog_id") or ""): dialog for dialog in replay_dialogs if str(dialog.get("dialog_id") or "").strip()}
             replay_source_run = str(args.replay_from)
         if args.resume and transcripts_path.exists() and args.replay_from is None:
-            transcripts = list(load_transcripts(transcripts_path))
+            transcripts = attach_action_metadata_to_dialogs(
+                load_transcripts(transcripts_path),
+                persona_by_id=persona_by_id,
+                judge_spec=sim_input.judge_spec,
+            )
             print(f"resume_loaded_dialogs={len(transcripts)}", flush=True)
         existing_by_id = {str(dialog.get("dialog_id") or ""): dict(dialog) for dialog in transcripts if str(dialog.get("dialog_id") or "").strip()}
         rerun_ids = {
@@ -1016,6 +1047,82 @@ def load_transcripts(path: Path) -> list[Mapping[str, Any]]:
             if isinstance(payload, Mapping):
                 rows.append(payload)
     return rows
+
+
+def persona_by_dialog_id(personas: Sequence[Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
+    return {
+        str(persona.get("dialog_id") or ""): persona
+        for persona in personas
+        if str(persona.get("dialog_id") or "").strip()
+    }
+
+
+def enrich_turn_action_metadata(
+    turn: Mapping[str, Any],
+    *,
+    persona: Mapping[str, Any],
+    judge_spec: Mapping[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(turn)
+    enriched["expected_action"] = expected_action_payload(persona)
+    if action_judge_enabled(judge_spec):
+        enriched = attach_action_judge_to_turn(enriched, persona=persona)
+    return enriched
+
+
+def attach_action_metadata_to_dialog(
+    dialog: Mapping[str, Any],
+    *,
+    persona_by_id: Mapping[str, Mapping[str, Any]],
+    judge_spec: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    dialog_id = str(dialog.get("dialog_id") or "")
+    dialog_persona = dialog.get("persona") if isinstance(dialog.get("persona"), Mapping) else {}
+    persona = dict(persona_by_id.get(dialog_id) or dialog_persona)
+    turns = [
+        enrich_turn_action_metadata(turn, persona=persona, judge_spec=judge_spec)
+        if isinstance(turn, Mapping)
+        else turn
+        for turn in (dialog.get("turns") or [])
+    ]
+    return {
+        **dict(dialog),
+        "persona": persona,
+        "expected_action": expected_action_payload(persona),
+        "turns": turns,
+    }
+
+
+def attach_action_metadata_to_dialogs(
+    transcripts: Sequence[Mapping[str, Any]],
+    *,
+    persona_by_id: Mapping[str, Mapping[str, Any]],
+    judge_spec: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    return [
+        attach_action_metadata_to_dialog(dialog, persona_by_id=persona_by_id, judge_spec=judge_spec)
+        for dialog in transcripts
+    ]
+
+
+def persona_for_dynamic_prompt(persona: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Hide future action-judge fields from the current client and text judge."""
+
+    return _strip_persona_internal_fields(persona)
+
+
+def _strip_persona_internal_fields(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _strip_persona_internal_fields(item)
+            for key, item in value.items()
+            if str(key) not in PERSONA_PROMPT_INTERNAL_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_persona_internal_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_persona_internal_fields(item) for item in value)
+    return value
 
 
 def build_client_model(args: argparse.Namespace) -> Any:
@@ -1304,6 +1411,7 @@ def build_infra_error_dialog(
         "dialog_id": dialog_id,
         "brand": brand,
         "persona": dict(persona),
+        "expected_action": expected_action_payload(persona),
         "turns": [],
         "run_status": status,
         "infra_error": error_text[-2000:],
@@ -1382,6 +1490,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "retriever_need_shadow": default_off_flag_state(RETRIEVER_NEED_SHADOW_ENV),
         "retriever_model_driven": default_off_flag_state(RETRIEVER_MODEL_DRIVEN_ENV),
         "memory_provenance": flag_state(MEMORY_PROVENANCE_ENV),
+        "deal_action_decision": flag_state(ACTION_JUDGE_FLAG_ENV),
         "snapshot": str(snapshot_path),
     }
 
@@ -1529,6 +1638,10 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
     rows: list[Mapping[str, Any]] = []
     for dialog in transcripts:
         for turn in dialog.get("turns") or []:
+            expected_action = turn.get("expected_action") if isinstance(turn.get("expected_action"), Mapping) else {}
+            action_proposal = turn.get("bot_action_proposal") if isinstance(turn.get("bot_action_proposal"), Mapping) else {}
+            action_decision = turn.get("bot_action_decision") if isinstance(turn.get("bot_action_decision"), Mapping) else {}
+            action_judge = turn.get("action_judge") if isinstance(turn.get("action_judge"), Mapping) else {}
             rows.append(
                 {
                     "dialog_id": dialog.get("dialog_id") or "",
@@ -1556,6 +1669,45 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                     "bot_safety_flags": "|".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])),
                     "bot_fallback_reason": turn.get("bot_fallback_reason") or "",
                     "bot_provider_error": turn.get("bot_provider_error") or "",
+                    "expected_action": expected_action.get("action") or "",
+                    "expected_action_manual_label": expected_action.get("manual_label"),
+                    "expected_action_json": json.dumps(expected_action, ensure_ascii=False, sort_keys=True),
+                    "bot_action_proposal_action": action_proposal.get("action") or "",
+                    "bot_action_proposal_json": json.dumps(action_proposal, ensure_ascii=False, sort_keys=True),
+                    "bot_action_decision_action": action_decision.get("action") or "",
+                    "bot_action_decision_reason": action_decision.get("reason") or "",
+                    "bot_action_decision_confidence": action_decision.get("confidence"),
+                    "bot_action_decision_source": action_decision.get("source") or "",
+                    "bot_action_decision_proposal_action": action_decision.get("proposal_action") or "",
+                    "bot_action_decision_sync_flag": action_decision.get("sync_flag") or "",
+                    "bot_action_decision_p0_latched": action_decision.get("p0_latched"),
+                    "bot_action_decision_requires_manager_approval": action_decision.get("requires_manager_approval"),
+                    "bot_action_decision_no_live_execution": action_decision.get("no_live_execution"),
+                    "bot_action_decision_active_brand": action_decision.get("active_brand") or "",
+                    "bot_action_decision_preconditions_json": json.dumps(
+                        action_decision.get("preconditions") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "bot_action_decision_exact_fact_keys": "|".join(
+                        str(key) for key in (action_decision.get("exact_fact_keys") or [])
+                    ),
+                    "bot_action_decision_json": json.dumps(action_decision, ensure_ascii=False, sort_keys=True),
+                    "action_judge_decided_action": action_judge.get("decided_action") or "",
+                    "action_judge_reward_eligible": action_judge.get("reward_eligible"),
+                    "action_judge_hard_barriers": "|".join(str(code) for code in (action_judge.get("hard_barriers") or [])),
+                    "action_judge_soft_flags": "|".join(str(code) for code in (action_judge.get("soft_flags") or [])),
+                    "action_judge_preconditions_json": json.dumps(
+                        action_judge.get("preconditions") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "action_judge_text_confirmation_json": json.dumps(
+                        action_judge.get("text_confirmation") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "action_judge_json": json.dumps(action_judge, ensure_ascii=False, sort_keys=True),
                     "bot_is_manager_deferral": bool(turn.get("bot_is_manager_deferral")),
                     "bot_reason_class": turn.get("bot_reason_class") or "",
                     "bot_reason_evidence": json.dumps(
@@ -1847,6 +1999,7 @@ def run_one_dialog(
             "number_audit": number_audit,
             "judge_fact_audit": judge_fact_audit,
         }
+        turn = enrich_turn_action_metadata(turn, persona=persona, judge_spec=judge_spec)
         if _handoff_trace_enabled():
             turn["handoff_trace"] = _handoff_trace_for_turn(turn)
         turns.append(turn)
@@ -1869,6 +2022,7 @@ def run_one_dialog(
         "dialog_id": dialog_id,
         "brand": brand,
         "persona": dict(persona),
+        "expected_action": expected_action_payload(persona),
         "turns": turns,
         "judge_result": judge_result,
     }
@@ -1964,6 +2118,7 @@ def build_client_prompt(
     transcript = "\n".join(
         f"Клиент: {turn['client_message']}\nБот: {turn['bot_text']}" for turn in turns
     )
+    prompt_persona = persona_for_dynamic_prompt(persona)
     return (
         "Ты симулируешь клиента для проверки Telegram-бота образовательного центра.\n"
         "Верни только JSON без Markdown: {\"message\":\"...\", \"stop\": false}.\n"
@@ -1971,7 +2126,7 @@ def build_client_prompt(
         "Правила симулятора:\n"
         f"{json.dumps(simulator_spec, ensure_ascii=False, indent=2)}\n\n"
         "Персона:\n"
-        f"{json.dumps(persona, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(prompt_persona, ensure_ascii=False, indent=2)}\n\n"
         "Текущий транскрипт:\n"
         f"{transcript or '(диалог ещё не начался)'}\n\n"
         "Сгенерируй следующую короткую реплику клиента. Если цель достигнута или бот явно не помогает, stop=true."
@@ -2001,6 +2156,7 @@ def build_judge_prompt(
     judge_prompt_version: str = "v2",
 ) -> str:
     version = normalize_judge_prompt_version(judge_prompt_version)
+    prompt_persona = persona_for_dynamic_prompt(persona)
     transcript = "\n".join(
         f"Ход {turn['turn']}\n"
         f"Клиент видел реплику клиента: {turn['client_message']}\n"
@@ -2053,7 +2209,7 @@ def build_judge_prompt(
         "Инструкция судьи:\n"
         f"{json.dumps(judge_spec, ensure_ascii=False, indent=2)}\n\n"
         "Персона:\n"
-        f"{json.dumps(persona, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(prompt_persona, ensure_ascii=False, indent=2)}\n\n"
         "Транскрипт:\n"
         f"{transcript}\n"
     )
@@ -3026,6 +3182,7 @@ def build_summary(
     close_detect = _close_detect_summary(transcripts)
     tone_sell_prompt = _tone_sell_prompt_summary(transcripts)
     action_decision = _action_decision_summary(transcripts)
+    action_judge = summarize_action_judgements(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     config_validity = _direct_path_config_invalid(
@@ -3063,6 +3220,7 @@ def build_summary(
             "judge_prompt_version": normalize_judge_prompt_version(judge_prompt_version),
             "judge_prompt_version_id": judge_prompt_version_id(judge_prompt_version),
             "key_flags": _run_key_flags(snapshot_path),
+            "effective_flag_profile": effective_flag_profile(),
             "replay": bool(replay_source_run),
             "replay_source_run": replay_source_run,
             "answer_quality_llm_rewrite_enabled": (
@@ -3156,6 +3314,7 @@ def build_summary(
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
+        "action_judge": action_judge,
         "close_detect": close_detect,
         "tone_sell_prompt": tone_sell_prompt,
         "claude_cli_errors": claude_cli_errors,
@@ -4450,6 +4609,8 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
     over_handoff = summary.get("over_handoff") if isinstance(summary.get("over_handoff"), Mapping) else {}
     handoff_trace = summary.get("handoff_trace") if isinstance(summary.get("handoff_trace"), Mapping) else {}
     judge_fact_audit = summary.get("judge_fact_audit") if isinstance(summary.get("judge_fact_audit"), Mapping) else {}
+    action_decision = summary.get("action_decision") if isinstance(summary.get("action_decision"), Mapping) else {}
+    action_judge = summary.get("action_judge") if isinstance(summary.get("action_judge"), Mapping) else {}
     return "\n".join(
         [
             "# Dynamic Telegram Client Simulation v7",
@@ -4469,6 +4630,8 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- Branch metrics: `{summary.get('branch_metrics')}`",
             f"- LLM calls: `{llm_calls}`",
             f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",
+            f"- Action decision: `{action_decision}`",
+            f"- Action judge: `{action_judge}`",
             f"- Close detect: `{summary.get('close_detect')}`",
             f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
@@ -4502,12 +4665,15 @@ def render_full_transcripts_md(transcripts: Sequence[Mapping[str, Any]]) -> str:
 def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
     persona = dialog.get("persona") if isinstance(dialog.get("persona"), Mapping) else {}
     judge = dialog.get("judge_result") if isinstance(dialog.get("judge_result"), Mapping) else {}
+    expected_action = dialog.get("expected_action") if isinstance(dialog.get("expected_action"), Mapping) else expected_action_payload(persona)
     lines = [
         f"## {dialog.get('dialog_id') or 'dialog'}",
         "",
         f"- Бренд: `{dialog.get('brand')}`",
         f"- Персона: {persona.get('persona') or ''}",
         f"- Цель клиента: {persona.get('goal') or ''}",
+        f"- Expected action: `{expected_action.get('action') or ''}`",
+        f"- Expected action source: `{expected_action.get('source') or ''}`",
         f"- Verdict: `{judge.get('verdict') or ''}`",
         f"- Hard gates passed: `{judge.get('hard_gates_passed')}`",
         f"- Violated gates: `{format_list(judge.get('violated_gates') or [])}`",
@@ -4517,6 +4683,9 @@ def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
         "",
     ]
     for turn in dialog.get("turns") or []:
+        turn_expected_action = turn.get("expected_action") if isinstance(turn.get("expected_action"), Mapping) else {}
+        action_decision = turn.get("bot_action_decision") if isinstance(turn.get("bot_action_decision"), Mapping) else {}
+        action_judge = turn.get("action_judge") if isinstance(turn.get("action_judge"), Mapping) else {}
         lines.extend(
             [
                 f"### Ход {turn.get('turn')}",
@@ -4543,6 +4712,11 @@ def render_one_dialog_md(dialog: Mapping[str, Any]) -> str:
                 f"- safety_flags: `{format_list(turn.get('bot_safety_flags') or [])}`",
                 f"- fallback_reason: `{turn.get('bot_fallback_reason') or ''}`",
                 f"- provider_error: `{turn.get('bot_provider_error') or ''}`",
+                f"- expected_action: `{turn_expected_action.get('action') or ''}`",
+                f"- action_decision: `{action_decision}`",
+                f"- action_judge_reward_eligible: `{action_judge.get('reward_eligible')}`",
+                f"- action_judge_hard_barriers: `{format_list(action_judge.get('hard_barriers') or [])}`",
+                f"- action_judge_soft_flags: `{format_list(action_judge.get('soft_flags') or [])}`",
                 f"- claude_cli_error_count: `{turn.get('bot_claude_cli_error_count') or 0}`",
                 f"- claude_cli_errors: `{turn.get('bot_claude_cli_errors') or []}`",
                 f"- handoff_trace: `{turn.get('handoff_trace') or {}}`",
@@ -4618,6 +4792,31 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_conversation_intent",
         "bot_conversation_topic_switch",
         "bot_safety_flags",
+        "expected_action",
+        "expected_action_manual_label",
+        "expected_action_json",
+        "bot_action_proposal_action",
+        "bot_action_proposal_json",
+        "bot_action_decision_action",
+        "bot_action_decision_reason",
+        "bot_action_decision_confidence",
+        "bot_action_decision_source",
+        "bot_action_decision_proposal_action",
+        "bot_action_decision_sync_flag",
+        "bot_action_decision_p0_latched",
+        "bot_action_decision_requires_manager_approval",
+        "bot_action_decision_no_live_execution",
+        "bot_action_decision_active_brand",
+        "bot_action_decision_preconditions_json",
+        "bot_action_decision_exact_fact_keys",
+        "bot_action_decision_json",
+        "action_judge_decided_action",
+        "action_judge_reward_eligible",
+        "action_judge_hard_barriers",
+        "action_judge_soft_flags",
+        "action_judge_preconditions_json",
+        "action_judge_text_confirmation_json",
+        "action_judge_json",
         "bot_answer_quality_findings",
         "bot_answer_quality_rewritten",
         "context_parity_checked",

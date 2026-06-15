@@ -103,6 +103,47 @@ def test_known_dialog_fields_do_not_treat_program_as_programming_subject():
     assert "subject" not in fields
 
 
+def test_action_persona_fields_are_hidden_from_client_and_text_judge_prompts():
+    persona = {
+        "type": "persona",
+        "dialog_id": "autonomy_unpk_test",
+        "brand": "unpk",
+        "persona": "родитель выбирает курс",
+        "seed_opening": "Здравствуйте, подскажите по курсу для старшей школы",
+        "deal_card": {
+            "brand": "unpk",
+            "stage": {"pipeline_id": "10408062", "status_id": "82258194", "name": "Ожидание оплаты"},
+        },
+        "expected_action": {"action": "send_payment_link", "reason": "test-only future judge field"},
+        "source_provenance": {"telegram_dialog_ids": ["raw-1"], "call_files": ["raw.md"]},
+        "held_facts": {"grade": "10", "subject": "математика"},
+    }
+    turn = {
+        "turn": 1,
+        "client_message": "Здравствуйте",
+        "bot_text": "Здравствуйте! Помогу подобрать курс.",
+        "bot_route": "draft_for_manager",
+        "bot_topic_id": "theme:016_program",
+        "bot_safety_flags": [],
+        "bot_manager_checklist": [],
+        "bot_missing_facts": [],
+        "bot_confirmed_facts": [],
+        "bot_knowledge_snippets": [],
+    }
+
+    client_prompt = sim.build_client_prompt({"rules": []}, persona, [], turn_index=1)
+    judge_prompt = sim.build_judge_prompt({"output_schema": {"verdict": "PASS|FAIL"}}, persona, [turn])
+
+    for prompt in (client_prompt, judge_prompt):
+        assert "seed_opening" in prompt
+        assert "held_facts" in prompt
+        assert "expected_action" not in prompt
+        assert "send_payment_link" not in prompt
+        assert "deal_card" not in prompt
+        assert "Ожидание оплаты" not in prompt
+        assert "source_provenance" not in prompt
+
+
 def test_judge_prompt_marks_metadata_as_internal():
     prompt = sim.build_judge_prompt(
         {"output_schema": {"verdict": "PASS|FAIL"}},
@@ -722,6 +763,119 @@ def test_summary_includes_machine_readable_fact_retrieval_trace(tmp_path):
     assert fact_trace["turns"][0]["required_fact_keys"] == ["prices.current"]
     assert fact_trace["turns"][0]["model_needed_facts"][0]["fact_type"] == "price"
     assert fact_trace["turns"][0]["declaration_comparison"]["model_only_fact_types"] == ["price"]
+
+
+def test_action_judge_requires_env_flag_when_enabled(tmp_path, monkeypatch):
+    path = tmp_path / "action_scenarios.jsonl"
+    rows = [
+        {"type": "simulator_spec", "instructions": "Клиент отвечает коротко."},
+        {"type": "judge_spec", "action_judge_enabled": True, "output_schema": {"verdict": "PASS|FAIL"}},
+        {
+            "type": "persona",
+            "dialog_id": "action_env",
+            "brand": "unpk",
+            "persona": "родитель",
+            "expected_action": {"action": "answer_only"},
+            "max_turns": 1,
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
+    monkeypatch.delenv("TELEGRAM_DEAL_ACTION_DECISION", raising=False)
+
+    with pytest.raises(ValueError, match="TELEGRAM_DEAL_ACTION_DECISION"):
+        sim.main(["--scenarios", str(path), "--out-dir", str(tmp_path / "out"), "--client-mode", "fake", "--judge-mode", "fake", "--bot-mode", "fake"])
+
+
+def test_action_judge_writes_transcript_summary_and_csv(tmp_path, monkeypatch):
+    path = tmp_path / "action_scenarios.jsonl"
+    out_dir = tmp_path / "out"
+    rows = [
+        {"type": "simulator_spec", "instructions": "Клиент отвечает коротко."},
+        {"type": "judge_spec", "action_judge_enabled": True, "output_schema": {"verdict": "PASS|FAIL"}},
+        {
+            "type": "persona",
+            "dialog_id": "action_ok",
+            "brand": "unpk",
+            "persona": "родитель хочет пробный фрагмент",
+            "expected_action": {"action": "send_materials", "manual_label": True, "source": "test"},
+            "deal_card": {"brand": "unpk", "preconditions": {"product_selected": True, "wants_trial": True}},
+            "max_turns": 1,
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_DEAL_ACTION_DECISION", "1")
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    class ActionBotProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "answer",
+                    "route": "bot_answer_self_for_pilot",
+                    "topic_id": "theme:trial",
+                    "risk_level": "low",
+                    "draft_text": "Отправлю фрагмент занятия и материалы.",
+                    "metadata": {
+                        "direct_path": {
+                            "retrieved_facts": {
+                                "materials": "УНПК: онлайн-фрагмент занятия и материалы доступны."
+                            },
+                            "wide_fact_exact_keys": ["materials"],
+                        },
+                        "action_decision": {
+                            "enabled": True,
+                            "action": "send_materials",
+                            "reason": "online_fragment_fact",
+                            "active_brand": "unpk",
+                            "no_live_execution": True,
+                            "requires_manager_approval": True,
+                            "exact_fact_keys": ["materials"],
+                        },
+                        "action_proposal": {"action": "send_materials", "confidence": 0.8},
+                    },
+                }
+            )
+
+    monkeypatch.setattr(sim, "build_bot_provider", lambda *args, **kwargs: ActionBotProvider())
+
+    rc = sim.main(
+        [
+            "--scenarios",
+            str(path),
+            "--out-dir",
+            str(out_dir),
+            "--client-mode",
+            "fake",
+            "--judge-mode",
+            "fake",
+            "--bot-mode",
+            "fake",
+            "--memory-mode",
+            "fake",
+        ]
+    )
+
+    assert rc == 0
+    transcripts = [
+        json.loads(line)
+        for line in (out_dir / "dynamic_dialog_transcripts.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    turn = transcripts[0]["turns"][0]
+    assert transcripts[0]["expected_action"]["action"] == "send_materials"
+    assert turn["expected_action"]["action"] == "send_materials"
+    assert turn["action_judge"]["reward_eligible"] is True
+    assert turn["action_judge"]["hard_barriers"] == []
+
+    summary = json.loads((out_dir / "dynamic_summary.json").read_text(encoding="utf-8"))
+    assert summary["action_judge"]["turns"] == 1
+    assert summary["action_judge"]["reward_eligible"] == 1
+    assert summary["run_config"]["effective_flag_profile"]["TELEGRAM_DEAL_ACTION_DECISION"] == {"env": "1", "effective": True}
+
+    csv_text = (out_dir / "dynamic_turns.csv").read_text(encoding="utf-8")
+    assert "action_judge_reward_eligible" in csv_text
+    assert "send_materials" in csv_text
 
 
 def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):

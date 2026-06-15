@@ -76,6 +76,7 @@ Rules:
    - roles: array of strings (each exactly "manager" or "client")
    - confidence: number 0..1
    - notes: string
+   - rationale: string, one short factual sentence explaining the role split without private data
 No markdown, no extra keys."""
 CODEX_ROLE_ASSIGN_NEUTRAL_AGENTS = """You are a neutral deterministic classifier for Russian phone-call utterances.
 Ignore any account personality or stylistic preference. Do not chat with the user.
@@ -1520,6 +1521,7 @@ class TranscribeService:
                 "provider": "rule",
                 "confidence": confidence,
                 "notes": f"coverage={coverage_ratio:.2f}; margin={mean_margin:.2f}",
+                "rationale": f"coverage={coverage_ratio:.2f}; margin={mean_margin:.2f}",
                 "has_both_roles": has_both_roles,
                 "roles": roles,
             },
@@ -1597,6 +1599,7 @@ class TranscribeService:
                 "provider": "openai",
                 "confidence": confidence,
                 "notes": str(payload.get("notes", "")).strip(),
+                "rationale": str(payload.get("rationale") or payload.get("notes") or "").strip(),
                 "has_both_roles": has_both_roles,
                 "roles": roles,
             },
@@ -1655,6 +1658,7 @@ class TranscribeService:
         confidence = self._clamp_01(confidence)
         if not has_both_roles:
             confidence = min(confidence, 0.45)
+        rationale = str(payload.get("rationale") or payload.get("notes") or "").strip()
         return {
             "manager_text": manager_text,
             "client_text": client_text,
@@ -1663,6 +1667,7 @@ class TranscribeService:
                 "provider": provider,
                 "confidence": confidence,
                 "notes": str(payload.get("notes", "")).strip(),
+                "rationale": rationale,
                 "has_both_roles": has_both_roles,
                 "roles": roles,
             },
@@ -1687,7 +1692,7 @@ class TranscribeService:
             provider="codex_cli",
             model=model,
             reasoning=reasoning_effort,
-            prompt_version="mono_role_assignment_v1",
+            prompt_version="mono_role_assignment_v2",
             prompt=prompt,
         )
         if cached is not None:
@@ -1763,7 +1768,7 @@ class TranscribeService:
             provider="codex_cli",
             model=model,
             reasoning=reasoning_effort,
-            prompt_version="mono_role_assignment_v1",
+            prompt_version="mono_role_assignment_v2",
             prompt=prompt,
             response=result,
         )
@@ -1833,6 +1838,7 @@ class TranscribeService:
                 "provider": "ollama",
                 "confidence": confidence,
                 "notes": str(payload.get("notes", "")).strip(),
+                "rationale": str(payload.get("rationale") or payload.get("notes") or "").strip(),
                 "has_both_roles": has_both_roles,
                 "roles": roles,
             },

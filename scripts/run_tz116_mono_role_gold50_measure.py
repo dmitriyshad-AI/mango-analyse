@@ -183,6 +183,7 @@ def evaluate_row(
         "model_roles_json": json.dumps(model_roles, ensure_ascii=False),
         "gold_roles_json": json.dumps(gold_roles, ensure_ascii=False),
         "codex_notes": str(selected_meta.get("notes") or "") if selected_provider == "codex_cli" else "",
+        "codex_rationale": str(selected_meta.get("rationale") or "") if selected_provider == "codex_cli" else "",
     }
     review_row = {
         "canonical_call_id": call_id,

@@ -8,6 +8,12 @@ from pathlib import Path
 from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand
 from mango_mvp.insights.outcome_linker import classify_tallanto_rows
 from mango_mvp.services.transcribe import TranscribeService
+from scripts.build_tz117_error_traces import (
+    classify_error_type,
+    redact_fragment,
+    review_gold_label,
+    summarize_trace,
+)
 from scripts.build_tz116_crm_fixed_snapshot import build_heuristic, select_cases
 from scripts.evaluate_tz116_mono_role_assignment import main as mono_eval_main
 from scripts.run_tz116_be_real_measure import main as be_measure_main
@@ -451,7 +457,12 @@ def test_mono_role_gold50_measure_calls_codex_only_for_low_confidence(tmp_path: 
 
     def fake_codex(self, turns, manager_name):  # noqa: ANN001
         return self._normalize_role_assignment_payload(  # noqa: SLF001
-            {"roles": ["manager", "client"], "confidence": 0.93, "notes": "synthetic"},
+            {
+                "roles": ["manager", "client"],
+                "confidence": 0.93,
+                "notes": "synthetic",
+                "rationale": "Первый ход похож на менеджера, второй на клиента.",
+            },
             turns=turns,
             manager_name=manager_name,
             provider="codex_cli",
@@ -471,6 +482,70 @@ def test_mono_role_gold50_measure_calls_codex_only_for_low_confidence(tmp_path: 
     rows = list(csv.DictReader((out_dir / "mono_role_gold50_measure_rows.csv").open(encoding="utf-8-sig")))
     assert rows[0]["selected_provider"] == "codex_cli"
     assert rows[0]["model_exact_vs_gold"] == "Да"
+    assert rows[0]["codex_rationale"] == "Первый ход похож на менеджера, второй на клиента."
+
+
+def test_tz117_trace_summary_counts_fix_break_and_redacts_pii() -> None:
+    rows = [
+        {
+            "id": "fix",
+            "gold": "a",
+            "rule": "b",
+            "model": "a",
+            "confidence": "0.91",
+            "matched_gold": "Да",
+            "error_type": classify_error_type(gold="a", rule="b", model="a"),
+            "rationale": "ok",
+        },
+        {
+            "id": "break",
+            "gold": "a",
+            "rule": "a",
+            "model": "b",
+            "confidence": "0.88",
+            "matched_gold": "Нет",
+            "error_type": classify_error_type(gold="a", rule="a", model="b"),
+            "rationale": "wrong",
+        },
+        {
+            "id": "both",
+            "gold": "a",
+            "rule": "b",
+            "model": "c",
+            "confidence": "0.42",
+            "matched_gold": "Нет",
+            "error_type": classify_error_type(gold="a", rule="b", model="c"),
+            "rationale": "wrong",
+        },
+        {
+            "id": "nogold",
+            "gold": "",
+            "rule": "legacy",
+            "model": "candidate",
+            "confidence": "0.99",
+            "matched_gold": "",
+            "error_type": classify_error_type(gold="", rule="legacy", model="candidate"),
+            "rationale": "shadow disagreement",
+        },
+    ]
+
+    summary = summarize_trace(rows)
+
+    assert summary["model_fix"] == 1
+    assert summary["model_break"] == 1
+    assert summary["both_wrong"] == 1
+    assert summary["high_conf_wrong_count"] == 1
+    assert summary["gold_present_total"] == 3
+    assert summary["gold_absent_total"] == 1
+    assert redact_fragment("mail test@example.com phone +7 999 123-45-67") == "mail [email] phone [phone]"
+
+
+def test_tz117_review_gold_label_does_not_treat_verdict_as_target_label() -> None:
+    assert review_gold_label("true_fix", rule="won", model="lead", block="b") == "lead"
+    assert review_gold_label("false_fix", rule="won", model="lead", block="b") == "won"
+    assert review_gold_label("expected_fail_closed", rule="foton", model="unknown", block="e") == "unknown"
+    assert review_gold_label("false_negative", rule="unpk", model="unknown", block="e") == "unpk"
+    assert review_gold_label("unclear", rule="unpk", model="unknown", block="e") == ""
 
 
 def test_be_real_measure_counts_negation_shadow_and_brand_flips(tmp_path: Path) -> None:

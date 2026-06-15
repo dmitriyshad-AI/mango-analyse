@@ -21,8 +21,8 @@ MODES = {"off", "shadow", "primary"}
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     mode = normalize_mode(args.mode)
-    if mode == "primary" and not args.allow_primary_after_gold_regrede:
-        raise SystemExit("primary is blocked until gold set and Claude/Dmitry regrede approve it")
+    if mode == "primary":
+        raise SystemExit("primary is blocked for TZ-116 D; use shadow and wait for Claude/Dmitry regrede")
 
     db_path = Path(args.db).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -37,7 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     service = build_service(mode)
     llm_attempts = {"count": 0}
     if mode in {"shadow", "primary"}:
-        wrap_openai_counter(service, llm_attempts)
+        wrap_codex_counter(service, llm_attempts)
 
     rows: list[dict[str, Any]] = []
     jsonl_rows: list[dict[str, Any]] = []
@@ -61,11 +61,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "assignment_provider_counts": dict(counters),
         "status_counts": dict(status_counts),
         "llm_calls_total": llm_attempts["count"],
+        "model_transport": "codex_cli" if mode in {"shadow", "primary"} else "none",
         "safety": {
             "reads_db_mode": "ro",
             "writes_db": False,
             "reads_audio": False,
             "runs_asr": False,
+            "calls_openai_api": False,
+            "uses_openai_api_key": False,
             "writes_crm": False,
             "writes_tallanto": False,
             "mode_default_off": True,
@@ -88,7 +91,7 @@ def normalize_mode(value: Any) -> str:
 
 def build_service(mode: str) -> TranscribeService:
     settings = get_settings()
-    mono_mode = "off" if mode == "off" else "openai_selective"
+    mono_mode = "off" if mode == "off" else "codex_selective"
     return TranscribeService(
         replace(
             settings,
@@ -99,14 +102,14 @@ def build_service(mode: str) -> TranscribeService:
     )
 
 
-def wrap_openai_counter(service: TranscribeService, counter: dict[str, int]) -> None:
-    original = service._assign_roles_with_openai  # noqa: SLF001
+def wrap_codex_counter(service: TranscribeService, counter: dict[str, int]) -> None:
+    original = service._assign_roles_with_codex  # noqa: SLF001
 
     def counted(turns: list[dict[str, Any]], manager_name: str) -> dict[str, Any]:
         counter["count"] += 1
         return original(turns, manager_name)
 
-    service._assign_roles_with_openai = counted  # type: ignore[method-assign] # noqa: SLF001
+    service._assign_roles_with_codex = counted  # type: ignore[method-assign] # noqa: SLF001
 
 
 def load_mono_calls(
@@ -239,22 +242,23 @@ def render_report(summary: dict[str, Any]) -> str:
         f"- Mode: `{summary['mode']}`",
         f"- Loaded calls: `{summary['loaded_calls']}`",
         f"- LLM calls total: `{summary['llm_calls_total']}`",
+        f"- Model transport: `{summary['model_transport']}`",
         f"- Provider counts: `{json.dumps(summary['assignment_provider_counts'], ensure_ascii=False, sort_keys=True)}`",
         "",
-        "Safety: read-only SQLite, no audio, no ASR, no CRM/Tallanto writes.",
+        "Safety: read-only SQLite, no audio, no ASR, no OpenAI API key, no CRM/Tallanto writes.",
     ]
     return "\n".join(lines) + "\n"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TZ-116 D: real mono-call role assignment shadow runner.")
+    parser = argparse.ArgumentParser(description="TZ-116 D: real mono-call role assignment shadow runner via Codex CLI.")
     parser.add_argument("--db", required=True, help="Path to canonical_calls_master.db; opened read-only.")
     parser.add_argument("--out-dir", default="audits/_inbox/tz116_mono_role_shadow_real")
     parser.add_argument("--mode", choices=sorted(MODES), default="off")
     parser.add_argument("--limit", type=int, default=25)
     parser.add_argument("--min-duration-sec", type=float, default=120.0)
     parser.add_argument("--order", choices=("duration_desc", "id_asc"), default="duration_desc")
-    parser.add_argument("--allow-primary-after-gold-regrede", action="store_true")
+    parser.add_argument("--allow-primary-after-gold-regrede", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 

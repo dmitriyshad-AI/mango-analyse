@@ -93,6 +93,69 @@ class CodexMergeTest(unittest.TestCase):
         self.assertIsInstance(duration_sec, float)
         self.assertGreaterEqual(duration_sec, 0.0)
 
+    def test_role_assignment_codex_cli_uses_isolated_home_and_strips_openai_key(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_role_codex_home_") as td:
+            settings = replace(
+                make_settings(),
+                codex_cli_command="codex",
+                codex_transcribe_model="gpt-5-codex",
+                codex_cli_timeout_sec=30,
+                llm_cache_enabled=False,
+            )
+            service = TranscribeService(settings)
+            turns = [
+                {"start": 0.0, "approximate": False, "text": "Алло."},
+                {"start": 2.0, "approximate": False, "text": "Добрый день."},
+            ]
+
+            def _fake_run(cmd: list[str], **kwargs):  # type: ignore[no-untyped-def]
+                out_idx = cmd.index("--output-last-message") + 1
+                out_path = Path(cmd[out_idx])
+                out_path.write_text(
+                    '{"roles":["client","manager"],"confidence":0.92,"notes":"ok"}',
+                    encoding="utf-8",
+                )
+                self.assertEqual(kwargs.get("cwd"), td)
+                self.assertEqual(kwargs.get("env", {}).get("CODEX_HOME"), td)
+                self.assertNotIn("OPENAI_API_KEY", kwargs.get("env", {}))
+                self.assertIn("Manager name from call metadata", kwargs.get("input", ""))
+                return subprocess.CompletedProcess(cmd, 0, "", "tokens used\n710\n")
+
+            with patch("mango_mvp.services.transcribe.shutil.which", return_value="/usr/bin/codex"):
+                with patch.object(service, "_prepare_role_assignment_codex_home", return_value=td):
+                    with patch("mango_mvp.services.transcribe.subprocess.run", side_effect=_fake_run):
+                        assigned = service._assign_roles_with_codex(turns, "Иванов")
+
+        self.assertEqual(assigned["meta"]["provider"], "codex_cli")
+        self.assertEqual(assigned["meta"]["roles"], ["client", "manager"])
+        self.assertEqual(assigned["meta"]["tokens_used_actual"], 710)
+
+    def test_role_assignment_codex_home_uses_neutral_config_without_service_tier(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mango_role_codex_home_source_") as td:
+            home = Path(td) / "home"
+            source = home / ".codex"
+            source.mkdir(parents=True)
+            (source / "auth.json").write_text('{"mode":"test"}', encoding="utf-8")
+            (source / "config.toml").write_text(
+                'personality = "pragmatic"\nservice_tier = "default"\n',
+                encoding="utf-8",
+            )
+            settings = replace(
+                make_settings(),
+                llm_cache_dir=str(Path(td) / "cache" / "llm"),
+            )
+            service = TranscribeService(settings)
+
+            with patch("mango_mvp.services.transcribe.Path.home", return_value=home):
+                runtime_home = Path(service._prepare_role_assignment_codex_home())  # noqa: SLF001
+
+            config_text = (runtime_home / "config.toml").read_text(encoding="utf-8")
+            agents_text = (runtime_home / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertTrue((runtime_home / "auth.json").exists())
+            self.assertNotIn("service_tier", config_text)
+            self.assertNotIn("personality", config_text)
+            self.assertIn("neutral deterministic classifier", agents_text)
+
     def test_parse_codex_tokens_used(self) -> None:
         service = TranscribeService(make_settings())
         self.assertEqual(service._parse_codex_tokens_used("tokens used\n22 301\n"), 22301)

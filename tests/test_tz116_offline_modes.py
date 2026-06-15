@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand
 from mango_mvp.insights.outcome_linker import classify_tallanto_rows
+from mango_mvp.services.transcribe import TranscribeService
 from scripts.evaluate_tz116_mono_role_assignment import main as mono_eval_main
 from scripts.run_tz116_crm_llm_offline_measure import main as crm_measure_main
 from scripts.run_tz116_mono_role_shadow_real import main as mono_real_main
@@ -112,6 +113,66 @@ def test_crm_llm_offline_measure_shadow_never_allows_writeback(tmp_path: Path) -
     assert "offline_measure_no_writeback" in rows[0]["final_writeback_blockers"]
 
 
+def test_crm_llm_offline_measure_shadow_can_use_codex_source_without_writeback(tmp_path: Path, monkeypatch) -> None:
+    input_path = tmp_path / "crm_codex.jsonl"
+    input_path.write_text(
+        json.dumps(
+            {
+                "case_id": "case-1",
+                "dossier": {"lead": {"id": 1}, "call_history": []},
+                "heuristic_analysis": {
+                    "close_verdict": "closed_valid",
+                    "premature_close_risk": "no_risk",
+                    "match_confidence": 0.95,
+                    "analysis_source": "heuristic",
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeAnalyzer:
+        def analyze(self, *, dossier, heuristic_analysis):  # noqa: ANN001
+            return {
+                "close_verdict": "follow_up_needed",
+                "premature_close_risk": "medium",
+                "confidence": 0.9,
+                "needs_manual_review": False,
+                "conflict_flags": [],
+                "llm_provider": "codex_cli",
+            }
+
+    monkeypatch.setattr(
+        "scripts.run_tz116_crm_llm_offline_measure.build_codex_analyzer",
+        lambda _args: FakeAnalyzer(),
+    )
+    out_dir = tmp_path / "out_codex"
+
+    assert crm_measure_main(
+        [
+            "--input",
+            str(input_path),
+            "--out-dir",
+            str(out_dir),
+            "--mode",
+            "shadow",
+            "--llm-source",
+            "codex",
+        ]
+    ) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["llm_source"] == "codex"
+    assert summary["llm_calls_total"] == 1
+    assert summary["safety"]["model_transport"] == "codex_cli"
+    assert summary["safety"]["uses_openai_api_key"] is False
+    rows = list(csv.DictReader((out_dir / "crm_llm_offline_measure_rows.csv").open(encoding="utf-8-sig")))
+    assert rows[0]["final_writeback_allowed"] == "Нет"
+    assert "shadow_mode" in rows[0]["final_writeback_blockers"]
+
+
 def test_question_catalog_offline_measure_shadow_uses_precomputed_model_without_live_call(tmp_path: Path) -> None:
     input_path = tmp_path / "questions.csv"
     with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -135,6 +196,63 @@ def test_question_catalog_offline_measure_shadow_uses_precomputed_model_without_
     rows = list(csv.DictReader((out_dir / "question_catalog_offline_predictions.csv").open(encoding="utf-8-sig")))
     assert rows[0]["classification_method"] == "rule_shadow"
     assert rows[0]["model_comparison"] in {"agree", "disagree"}
+
+
+def test_question_catalog_offline_measure_shadow_can_use_codex_source(tmp_path: Path, monkeypatch) -> None:
+    input_path = tmp_path / "questions_codex.csv"
+    with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["question_id", "raw_text", "human_label"])
+        writer.writeheader()
+        writer.writerow(
+            {
+                "question_id": "q1",
+                "raw_text": "Сколько стоит курс?",
+                "human_label": "theme:001_pricing",
+            }
+        )
+
+    def fake_codex(prompt, *, codex_bin, candidate, timeout_sec):  # noqa: ANN001
+        assert "q1" in prompt
+        return json.dumps(
+            {
+                "items": [
+                    {
+                        "question_item_id": "q1",
+                        "theme_id": "theme:001_pricing",
+                        "confidence": 0.93,
+                        "reasoning": "вопрос о цене",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("scripts.run_tz116_question_catalog_offline_measure.call_codex_batch", fake_codex)
+    out_dir = tmp_path / "qc_codex"
+
+    assert qc_measure_main(
+        [
+            "--input",
+            str(input_path),
+            "--out-dir",
+            str(out_dir),
+            "--mode",
+            "shadow",
+            "--llm-source",
+            "codex",
+            "--batch-size",
+            "1",
+        ]
+    ) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["llm_source"] == "codex"
+    assert summary["llm_calls_total"] == 1
+    assert summary["safety"]["model_transport"] == "codex_cli"
+    assert summary["safety"]["uses_openai_api_key"] is False
+    rows = list(csv.DictReader((out_dir / "question_catalog_offline_predictions.csv").open(encoding="utf-8-sig")))
+    assert rows[0]["classification_method"] == "rule_shadow_codex"
+    assert rows[0]["model_theme_id"] == "theme:001_pricing"
 
 
 def test_mono_role_assignment_eval_uses_only_synthetic_roles(tmp_path: Path) -> None:
@@ -227,16 +345,33 @@ def test_real_mono_shadow_runner_default_off_reads_sqlite_without_assignment(tmp
     assert rows[0]["status"] == "off"
 
 
-def test_real_mono_shadow_runner_shadow_does_not_require_openai_key_for_rule_paths(tmp_path: Path) -> None:
+def test_real_mono_shadow_runner_shadow_uses_codex_selective_without_openai_api(tmp_path: Path, monkeypatch) -> None:
     db = tmp_path / "canonical.db"
     _write_canonical_mono_db(db)
     out_dir = tmp_path / "real_shadow"
+
+    def fake_codex(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["manager" if idx % 2 == 0 else "client" for idx, _ in enumerate(turns)],
+                "confidence": 0.9,
+                "notes": "synthetic",
+            },
+            turns=turns,
+            manager_name=manager_name,
+            provider="codex_cli",
+        )
+
+    monkeypatch.setattr(TranscribeService, "_assign_roles_with_codex", fake_codex)
 
     assert mono_real_main(["--db", str(db), "--out-dir", str(out_dir), "--mode", "shadow", "--limit", "1"]) == 0
 
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "shadow"
+    assert summary["model_transport"] == "codex_cli"
     assert summary["safety"]["writes_db"] is False
+    assert summary["safety"]["calls_openai_api"] is False
+    assert summary["safety"]["uses_openai_api_key"] is False
     rows = list(csv.DictReader((out_dir / "mono_role_shadow_real_rows.csv").open(encoding="utf-8-sig")))
     assert rows[0]["status"] in {"assigned", "not_assigned"}
 
@@ -251,3 +386,22 @@ def test_real_mono_primary_is_blocked_until_gold_regrede(tmp_path: Path) -> None
         assert "primary is blocked" in str(exc)
     else:
         raise AssertionError("primary mode must be blocked without explicit flag")
+
+    try:
+        mono_real_main(
+            [
+                "--db",
+                str(db),
+                "--out-dir",
+                str(tmp_path / "primary_flag"),
+                "--mode",
+                "primary",
+                "--limit",
+                "1",
+                "--allow-primary-after-gold-regrede",
+            ]
+        )
+    except SystemExit as exc:
+        assert "primary is blocked" in str(exc)
+    else:
+        raise AssertionError("primary mode must stay blocked even with legacy flag")

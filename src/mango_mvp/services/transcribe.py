@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import re
@@ -26,7 +27,16 @@ from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
 TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 WORD_RE = re.compile(r"\w+", re.UNICODE)
 MERGE_ALLOWED_PROVIDERS = {"primary", "rule", "openai", "ollama", "codex_cli"}
-ROLE_ASSIGN_ALLOWED_MODES = {"off", "rule", "openai_selective", "ollama_selective"}
+ROLE_ASSIGN_ALLOWED_MODES = {"off", "rule", "openai_selective", "ollama_selective", "codex_selective"}
+CODEX_HOME_COPY_ALLOWLIST = ("auth.json", "rules", "skills", "models_cache.json")
+CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
+sandbox_mode = "read-only"
+model_reasoning_effort = "medium"
+
+[features]
+multi_agent = false
+js_repl = false
+"""
 MERGE_SYSTEM_PROMPT = """You merge two ASR transcript variants for the same speaker in one phone call.
 Rules:
 1) Use only information from variants A and B. Do not invent facts.
@@ -67,6 +77,10 @@ Rules:
    - confidence: number 0..1
    - notes: string
 No markdown, no extra keys."""
+CODEX_ROLE_ASSIGN_NEUTRAL_AGENTS = """You are a neutral deterministic classifier for Russian phone-call utterances.
+Ignore any account personality or stylistic preference. Do not chat with the user.
+Return only the strict JSON requested by the task. Do not use tools or external data.
+"""
 
 MANAGER_CUES: dict[str, float] = {
     "учебный центр": 3.0,
@@ -484,6 +498,38 @@ class TranscribeService:
             return None
         digits = "".join(ch for ch in match.group(1) if ch.isdigit())
         return int(digits) if digits else None
+
+    def _prepare_role_assignment_codex_home(self) -> str:
+        source_root = Path.home() / ".codex"
+        runtime_root = Path(self._settings.llm_cache_dir).resolve().parent / "codex_home_role_assignment"
+        runtime_root.mkdir(parents=True, exist_ok=True)
+
+        if source_root.exists():
+            for entry in CODEX_HOME_COPY_ALLOWLIST:
+                source_path = source_root / entry
+                target_path = runtime_root / entry
+                if not source_path.exists():
+                    continue
+                if target_path.exists():
+                    if target_path.is_dir():
+                        shutil.rmtree(target_path, ignore_errors=True)
+                    else:
+                        target_path.unlink(missing_ok=True)
+                if source_path.is_dir():
+                    shutil.copytree(source_path, target_path, dirs_exist_ok=True)
+                else:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, target_path)
+
+        # Keep the Codex CLI authenticated, but remove session/personality state for this classifier.
+        shutil.rmtree(runtime_root / "sessions", ignore_errors=True)
+        shutil.rmtree(runtime_root / "sqlite", ignore_errors=True)
+        for entry in ("state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"):
+            (runtime_root / entry).unlink(missing_ok=True)
+        (runtime_root / "sessions").mkdir(parents=True, exist_ok=True)
+        (runtime_root / "AGENTS.md").write_text(CODEX_ROLE_ASSIGN_NEUTRAL_AGENTS, encoding="utf-8")
+        (runtime_root / "config.toml").write_text(CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG, encoding="utf-8")
+        return str(runtime_root)
 
     @staticmethod
     def _looks_like_phone(value: str) -> bool:
@@ -1556,6 +1602,173 @@ class TranscribeService:
             },
         }
 
+    def _build_role_assignment_prompt(
+        self,
+        turns: list[dict[str, Any]],
+        manager_name: str,
+    ) -> str:
+        numbered_turns: list[str] = []
+        for idx, turn in enumerate(turns, start=1):
+            text = str(turn.get("text", "")).strip()
+            start = float(turn.get("start", 0.0))
+            approximate = bool(turn.get("approximate", False))
+            timecode = self._format_timecode(start, approximate=approximate)
+            numbered_turns.append(f"{idx}. {timecode} {text}")
+        return (
+            f"{ROLE_ASSIGN_SYSTEM_PROMPT}\n\n"
+            f"Manager name from call metadata: {manager_name}\n"
+            "Turns:\n"
+            + "\n".join(numbered_turns)
+        )
+
+    def _normalize_role_assignment_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        turns: list[dict[str, Any]],
+        manager_name: str,
+        provider: str,
+    ) -> Dict[str, Any]:
+        roles_raw = payload.get("roles")
+        if not isinstance(roles_raw, list):
+            raise RuntimeError(f"{provider} role assignment must return roles array")
+        if len(roles_raw) != len(turns):
+            raise RuntimeError(
+                f"{provider} role assignment roles length mismatch: {len(roles_raw)} != {len(turns)}"
+            )
+        roles: list[str] = []
+        for item in roles_raw:
+            value = str(item).strip().lower()
+            if value not in {"manager", "client"}:
+                raise RuntimeError(f"{provider} role assignment invalid role: {value}")
+            roles.append(value)
+
+        manager_text, client_text, dialogue_lines = self._build_role_texts_and_lines(
+            turns, roles, manager_name
+        )
+        has_both_roles = bool(manager_text and client_text)
+        confidence_raw = payload.get("confidence")
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = self._clamp_01(confidence)
+        if not has_both_roles:
+            confidence = min(confidence, 0.45)
+        return {
+            "manager_text": manager_text,
+            "client_text": client_text,
+            "dialogue_lines": dialogue_lines,
+            "meta": {
+                "provider": provider,
+                "confidence": confidence,
+                "notes": str(payload.get("notes", "")).strip(),
+                "has_both_roles": has_both_roles,
+                "roles": roles,
+            },
+        }
+
+    def _assign_roles_with_codex(
+        self,
+        turns: list[dict[str, Any]],
+        manager_name: str,
+    ) -> Dict[str, Any]:
+        if not turns:
+            raise RuntimeError("mono role assignment has no turns")
+        codex_bin = (self._settings.codex_cli_command or "codex").strip() or "codex"
+        if shutil.which(codex_bin) is None:
+            raise RuntimeError(f"codex binary is not available: {codex_bin}")
+
+        prompt = self._build_role_assignment_prompt(turns, manager_name)
+        model = self._settings.codex_transcribe_model
+        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        cached = self._llm_cache.get(
+            namespace="mono_role_assignment",
+            provider="codex_cli",
+            model=model,
+            reasoning=reasoning_effort,
+            prompt_version="mono_role_assignment_v1",
+            prompt=prompt,
+        )
+        if cached is not None:
+            return cached
+
+        runtime_codex_home = self._prepare_role_assignment_codex_home()
+        timeout_sec = max(15, int(self._settings.codex_cli_timeout_sec))
+        env = {**os.environ, "CODEX_HOME": runtime_codex_home}
+        # This path must use Codex subscription auth only, never a direct OpenAI API key.
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("OPENAI_ORG_ID", None)
+        env.pop("OPENAI_PROJECT", None)
+
+        with tempfile.NamedTemporaryFile(prefix="mango_codex_role_assign_", suffix=".txt") as out_file:
+            cmd = [
+                codex_bin,
+                "exec",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--sandbox",
+                "read-only",
+                "--model",
+                model,
+                "--output-last-message",
+                out_file.name,
+            ]
+            if reasoning_effort in {"low", "medium", "high"}:
+                cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+            cmd.append("-")
+            started_at = time.time()
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout_sec,
+                env=env,
+                cwd=runtime_codex_home,
+            )
+            elapsed_sec = time.time() - started_at
+            raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
+
+        candidates = [raw, proc.stdout or "", proc.stderr or ""]
+        payload: dict[str, Any] | None = None
+        for candidate in candidates:
+            candidate = (candidate or "").strip()
+            if not candidate:
+                continue
+            try:
+                payload = self._extract_json_payload(candidate)
+                break
+            except Exception:
+                continue
+        if payload is None:
+            if proc.returncode != 0:
+                stderr_tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
+                raise RuntimeError(
+                    f"codex exec failed rc={proc.returncode}: {stderr_tail[0].strip()}"
+                )
+            raise RuntimeError("Codex role assignment returned no JSON object")
+
+        result = self._normalize_role_assignment_payload(
+            payload,
+            turns=turns,
+            manager_name=manager_name,
+            provider="codex_cli",
+        )
+        result["meta"]["tokens_used_actual"] = self._parse_codex_tokens_used(proc.stderr or "")
+        result["meta"]["duration_sec"] = round(elapsed_sec, 3)
+        self._llm_cache.put(
+            namespace="mono_role_assignment",
+            provider="codex_cli",
+            model=model,
+            reasoning=reasoning_effort,
+            prompt_version="mono_role_assignment_v1",
+            prompt=prompt,
+            response=result,
+        )
+        return result
+
     def _assign_roles_with_ollama(
         self,
         turns: list[dict[str, Any]],
@@ -1653,7 +1866,7 @@ class TranscribeService:
             warnings.append("mono_role_assign: rule confidence too low; keep mono")
             return None
 
-        # openai_selective/ollama_selective: use rule result directly if it is already reliable.
+        # Selective modes use the rule result directly if it is already reliable.
         if (
             rule_result
             and rule_result["meta"].get("has_both_roles")
@@ -1678,6 +1891,11 @@ class TranscribeService:
                 llm_result = self._assign_roles_with_ollama(turns, manager_name)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"mono_role_assign: ollama_failed: {exc}")
+        elif mode == "codex_selective":
+            try:
+                llm_result = self._assign_roles_with_codex(turns, manager_name)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"mono_role_assign: codex_failed: {exc}")
 
         if (
             llm_result

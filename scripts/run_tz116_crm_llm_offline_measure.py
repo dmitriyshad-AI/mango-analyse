@@ -6,14 +6,18 @@ import csv
 import gzip
 import json
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from mango_mvp.amocrm_runtime import deals as deals_module
+from mango_mvp.amocrm_runtime.deal_llm import DealLLMAnalyzer, DealLLMError
+from mango_mvp.services.llm_response_cache import LLMResponseCache
 
 
 MODES = {"off", "shadow", "primary"}
+LLM_SOURCES = {"precomputed", "codex"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -22,6 +26,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     records = list(read_jsonl(Path(args.input)))
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    llm_source = normalize_llm_source(args.llm_source)
+    analyzer = build_codex_analyzer(args) if mode in {"shadow", "primary"} and llm_source == "codex" else None
 
     rows: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
@@ -29,12 +35,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     for index, record in enumerate(records, start=1):
         case_id = str(record.get("case_id") or record.get("id") or index)
         heuristic = dict(record.get("heuristic_analysis") or {})
-        llm = record.get("llm_analysis")
         if not heuristic:
             counters["missing_heuristic"] += 1
             continue
-        if mode in {"shadow", "primary"} and not isinstance(llm, dict):
-            counters["missing_llm_analysis"] += 1
+        llm = resolve_llm_analysis(
+            record,
+            heuristic=heuristic,
+            mode=mode,
+            llm_source=llm_source,
+            analyzer=analyzer,
+            counters=counters,
+        )
         final, comparison = finalize_offline(heuristic, llm if isinstance(llm, dict) else None, mode=mode)
         row = build_row(case_id, heuristic, llm if isinstance(llm, dict) else None, final, comparison)
         rows.append(row)
@@ -65,12 +76,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "schema_version": "tz116_crm_llm_offline_measure_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "llm_source": llm_source,
         "input": str(Path(args.input).expanduser().resolve()),
         "records_total": len(records),
         "counters": dict(counters),
-        "llm_calls_total": 0,
+        "llm_calls_total": int(counters.get("llm_calls_total", 0)),
         "safety": {
-            "calls_live_llm": False,
+            "calls_live_llm": bool(llm_source == "codex" and mode in {"shadow", "primary"}),
+            "model_transport": "codex_cli" if llm_source == "codex" and mode in {"shadow", "primary"} else "none",
+            "uses_openai_api_key": False,
             "writes_amo": False,
             "writes_tallanto": False,
             "writes_crm": False,
@@ -89,6 +103,74 @@ def main(argv: Sequence[str] | None = None) -> int:
 def normalize_mode(value: Any) -> str:
     mode = str(value or "off").strip().lower()
     return mode if mode in MODES else "off"
+
+
+def normalize_llm_source(value: Any) -> str:
+    source = str(value or "precomputed").strip().lower()
+    return source if source in LLM_SOURCES else "precomputed"
+
+
+def build_codex_analyzer(args: argparse.Namespace) -> DealLLMAnalyzer:
+    analyzer = DealLLMAnalyzer()
+    cache_dir = ".codex_local/tz116_crm_llm_offline_measure/cache_disabled"
+    analyzer._settings = replace(  # noqa: SLF001
+        analyzer._settings,  # noqa: SLF001
+        crm_analysis_provider="codex_cli",
+        crm_analysis_model=str(args.model or "gpt-5.4-mini").strip() or "gpt-5.4-mini",
+        crm_analysis_reasoning_effort=str(args.reasoning_effort or "medium").strip().lower() or "medium",
+        crm_analysis_timeout_seconds=max(30, int(args.timeout_sec)),
+        crm_analysis_llm_cache_enabled=False,
+        crm_analysis_llm_cache_dir=cache_dir,
+    )
+    analyzer._cache = LLMResponseCache(enabled=False, root_dir=cache_dir)  # noqa: SLF001
+    return analyzer
+
+
+def resolve_llm_analysis(
+    record: dict[str, Any],
+    *,
+    heuristic: dict[str, Any],
+    mode: str,
+    llm_source: str,
+    analyzer: DealLLMAnalyzer | None,
+    counters: Counter[str],
+) -> dict[str, Any] | None:
+    if mode not in {"shadow", "primary"}:
+        return None
+    if llm_source == "precomputed":
+        llm = record.get("llm_analysis")
+        if not isinstance(llm, dict):
+            counters["missing_llm_analysis"] += 1
+            return None
+        return llm
+
+    dossier = record.get("dossier")
+    if not isinstance(dossier, dict):
+        counters["missing_dossier_for_codex"] += 1
+        return None
+    if analyzer is None:
+        counters["missing_codex_analyzer"] += 1
+        return None
+    counters["llm_calls_total"] += 1
+    try:
+        return analyzer.analyze(dossier=dossier, heuristic_analysis=heuristic)
+    except DealLLMError as exc:
+        counters["llm_runtime_errors"] += 1
+        return {
+            "analysis_schema_version": "deal_llm_v2",
+            "close_verdict": "manual_review",
+            "premature_close_risk": "manual_review",
+            "close_reason_summary": f"Codex CLI анализ завершился ошибкой: {exc}",
+            "recommended_next_step": "Проверить сделку вручную; shadow-анализ временно недоступен.",
+            "follow_up_due_at": heuristic.get("follow_up_due_at"),
+            "deal_summary": heuristic.get("deal_summary", ""),
+            "manager_action_summary": "",
+            "confidence": 0.0,
+            "needs_manual_review": True,
+            "evidence_signals": [],
+            "conflict_flags": ["llm_runtime_error"],
+            "llm_provider": "codex_cli",
+        }
 
 
 def finalize_offline(
@@ -180,13 +262,14 @@ def render_report(summary: dict[str, Any], disagreements: list[dict[str, Any]]) 
         "# TZ-116 A CRM LLM Offline Measurement",
         "",
         f"- Mode: `{summary['mode']}`",
+        f"- LLM source: `{summary['llm_source']}`",
         f"- Records: `{summary['records_total']}`",
         f"- Compared: `{counters.get('compared', 0)}`",
         f"- Verdict changed: `{counters.get('verdict_changed', 0)}`",
         f"- Severe conflict: `{counters.get('severe_conflict', 0)}`",
         f"- LLM calls total: `{summary['llm_calls_total']}`",
         "",
-        "Safety: no live LLM calls, no cache, no writeback.",
+        "Safety: Codex CLI only when llm_source=codex, no OpenAI API key, no cache, no writeback.",
         "",
         "## First Disagreements",
         "",
@@ -202,10 +285,14 @@ def render_report(summary: dict[str, Any], disagreements: list[dict[str, Any]]) 
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TZ-116 A: compare precomputed CRM LLM analysis with heuristic offline.")
+    parser = argparse.ArgumentParser(description="TZ-116 A: compare CRM LLM analysis with heuristic offline.")
     parser.add_argument("--input", required=True, help="JSONL/JSONL.GZ with case_id, heuristic_analysis, optional llm_analysis.")
     parser.add_argument("--out-dir", default="audits/_inbox/tz116_crm_llm_offline_measure")
     parser.add_argument("--mode", choices=sorted(MODES), default="off")
+    parser.add_argument("--llm-source", choices=sorted(LLM_SOURCES), default="precomputed")
+    parser.add_argument("--model", default="gpt-5.4-mini")
+    parser.add_argument("--reasoning-effort", default="medium")
+    parser.add_argument("--timeout-sec", type=int, default=300)
     return parser.parse_args(argv)
 
 

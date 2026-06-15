@@ -1,0 +1,12 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile src/mango_mvp/channels/humanity_guards.py scripts/run_telegram_dynamic_client_sim.py
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_humanity_guards.py tests/test_telegram_dynamic_client_sim.py
+103 passed in 1.09s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+464 passed in 7.30s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+3269 passed, 5 skipped, 1 warning in 46.67s
+
+Warning: существующее предупреждение urllib3/LibreSSL, не связано с TZ-115.

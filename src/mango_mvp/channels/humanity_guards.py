@@ -84,18 +84,34 @@ _META_CLIENT_MARKERS: tuple[str, ...] = (
     "source_id",
 )
 
+_META_FACT_PHRASE_RE = re.compile(
+    r"(?:"
+    r"в\s+(?:факт\w+|баз\w+|данн\w+)\s+нет|"
+    r"нет\s+в\s+(?:факт\w+|баз\w+|данн\w+)|"
+    r"(?:не\s+указан\w*|не\s+уточнен\w*|отсутствует)[^.\n]{0,20}\b(?:факт\w+|баз\w+|данн\w+)"
+    r")",
+    re.I,
+)
+
+
+def _has_meta_fact_phrase(text: object) -> bool:
+    return bool(_META_FACT_PHRASE_RE.search(str(text or "").casefold().replace("ё", "е")))
+
 
 def has_meta_leak(text: object) -> bool:
     """Клиенту виден внутренний/служебный текст."""
     low = _norm(text)
     low_raw = str(text or "").casefold()
-    return any((m in low) or (m in low_raw) for m in _META_CLIENT_MARKERS)
+    return _has_meta_fact_phrase(text) or any((m in low) or (m in low_raw) for m in _META_CLIENT_MARKERS)
 
 
 def meta_markers_present(text: object) -> list[str]:
     low = _norm(text)
     low_raw = str(text or "").casefold()
-    return [m for m in _META_CLIENT_MARKERS if (m in low) or (m in low_raw)]
+    markers = [m for m in _META_CLIENT_MARKERS if (m in low) or (m in low_raw)]
+    if _has_meta_fact_phrase(text):
+        markers.append("fact_phrase_leak")
+    return markers
 
 
 def should_answer_not_handoff(

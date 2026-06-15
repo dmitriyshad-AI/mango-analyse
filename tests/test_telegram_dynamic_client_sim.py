@@ -2672,6 +2672,96 @@ def test_number_audit_dates_match_day_and_month_not_day_only(tmp_path):
     assert audit["items"][0]["level"] == "no_match"
 
 
+def test_number_audit_date_from_before_fact_key_is_grounded(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "summer_school.signup_before_2026_07_01",
+                "valid_until": "2026-07-01",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: запись открыта.",
+            }
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_number_claims(
+        "Записаться можно до 01.07.2026.",
+        client_message="",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+
+    assert "date:01.07.2026" in sim._fact_window_date_keys(snapshot["facts"][0])
+    assert "date:01.07" in sim._fact_window_date_keys(snapshot["facts"][0])
+    assert audit["items"][0]["kind"] == "date"
+    assert audit["items"][0]["normalized"] == "date:01.07"
+    assert audit["items"][0]["level"] == "same_brand_global_match"
+    assert audit["has_risky_number"] is False
+
+    rows = sim.build_human_review_rows(
+        [
+            {
+                "dialog_id": "window_date",
+                "brand": "foton",
+                "turns": [{"number_audit": audit}],
+                "persona": {"persona": "p", "goal": "g"},
+            }
+        ],
+        [
+            {
+                "dialog_id": "window_date",
+                "brand": "foton",
+                "verdict": "FAIL",
+                "hard_gates_passed": False,
+                "violated_gates": ["fabrication"],
+            }
+        ],
+    )
+    assert rows[0]["hard_gate_cause"] == "measurement_suspect"
+
+
+def test_number_audit_does_not_index_raw_valid_until_without_matching_before_key(tmp_path):
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "summer_school.signup_window",
+                "valid_until": "2026-12-31",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: запись открыта.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "summer_school.signup_before_2026_07_01",
+                "valid_until": "2026-12-31",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: запись открыта.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_number_claims(
+        "Записаться можно до 31.12.2026.",
+        client_message="",
+        active_brand="foton",
+        retrieved_facts={},
+        snapshot_path=snapshot_path,
+    )
+
+    assert sim._fact_window_date_keys(snapshot["facts"][0]) == set()
+    assert sim._fact_window_date_keys(snapshot["facts"][1]) == set()
+    assert audit["items"][0]["kind"] == "date"
+    assert audit["items"][0]["normalized"] == "date:31.12"
+    assert audit["items"][0]["level"] == "no_match"
+    assert audit["has_risky_number"] is True
+
+
 def test_number_audit_marks_absurd_weekly_frequency_as_kb_integrity_issue(tmp_path):
     snapshot_path = tmp_path / "snapshot.json"
     snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")

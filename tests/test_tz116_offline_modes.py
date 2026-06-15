@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import csv
 import json
+import sqlite3
 from pathlib import Path
 
 from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand
 from mango_mvp.insights.outcome_linker import classify_tallanto_rows
 from scripts.evaluate_tz116_mono_role_assignment import main as mono_eval_main
 from scripts.run_tz116_crm_llm_offline_measure import main as crm_measure_main
+from scripts.run_tz116_mono_role_shadow_real import main as mono_real_main
 from scripts.run_tz116_question_catalog_offline_measure import main as qc_measure_main
 
 
@@ -159,3 +161,93 @@ def test_mono_role_assignment_eval_uses_only_synthetic_roles(tmp_path: Path) -> 
     assert summary["safety"]["calls_openai"] is False
     rows = list(csv.DictReader((out_dir / "mono_role_assignment_eval_rows.csv").open(encoding="utf-8-sig")))
     assert rows[0]["shadow_rule_model_disagreement"] == "1"
+
+
+def _write_canonical_mono_db(path: Path) -> None:
+    with sqlite3.connect(path) as con:
+        con.execute(
+            """
+            CREATE TABLE canonical_calls (
+                canonical_call_id INTEGER PRIMARY KEY,
+                source_filename TEXT,
+                started_at TEXT,
+                manager_name TEXT,
+                duration_sec REAL,
+                transcript_text TEXT,
+                transcript_variants_json TEXT,
+                has_transcript_variants_json INTEGER
+            )
+            """
+        )
+        payload = {
+            "mode": "mono_or_fallback",
+            "full": {
+                "final": (
+                    "Добрый день, вас беспокоит учебный центр. "
+                    "Здравствуйте, можно стоимость курса? "
+                    "Да, подскажите класс ребенка. "
+                    "Девятый класс, нужна подготовка к ОГЭ."
+                )
+            },
+            "role_assignment": {"applied": False, "mode": "off", "meta": None},
+        }
+        con.execute(
+            """
+            INSERT INTO canonical_calls (
+                canonical_call_id, source_filename, started_at, manager_name, duration_sec,
+                transcript_text, transcript_variants_json, has_transcript_variants_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                "synthetic.mp3",
+                "2026-06-01T10:00:00+00:00",
+                "Иванов",
+                180.0,
+                payload["full"]["final"],
+                json.dumps(payload, ensure_ascii=False),
+                1,
+            ),
+        )
+
+
+def test_real_mono_shadow_runner_default_off_reads_sqlite_without_assignment(tmp_path: Path) -> None:
+    db = tmp_path / "canonical.db"
+    _write_canonical_mono_db(db)
+    out_dir = tmp_path / "real_off"
+
+    assert mono_real_main(["--db", str(db), "--out-dir", str(out_dir), "--mode", "off", "--limit", "1"]) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "off"
+    assert summary["llm_calls_total"] == 0
+    assert summary["safety"]["reads_db_mode"] == "ro"
+    assert summary["safety"]["runs_asr"] is False
+    rows = list(csv.DictReader((out_dir / "mono_role_shadow_real_rows.csv").open(encoding="utf-8-sig")))
+    assert rows[0]["status"] == "off"
+
+
+def test_real_mono_shadow_runner_shadow_does_not_require_openai_key_for_rule_paths(tmp_path: Path) -> None:
+    db = tmp_path / "canonical.db"
+    _write_canonical_mono_db(db)
+    out_dir = tmp_path / "real_shadow"
+
+    assert mono_real_main(["--db", str(db), "--out-dir", str(out_dir), "--mode", "shadow", "--limit", "1"]) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "shadow"
+    assert summary["safety"]["writes_db"] is False
+    rows = list(csv.DictReader((out_dir / "mono_role_shadow_real_rows.csv").open(encoding="utf-8-sig")))
+    assert rows[0]["status"] in {"assigned", "not_assigned"}
+
+
+def test_real_mono_primary_is_blocked_until_gold_regrede(tmp_path: Path) -> None:
+    db = tmp_path / "canonical.db"
+    _write_canonical_mono_db(db)
+
+    try:
+        mono_real_main(["--db", str(db), "--out-dir", str(tmp_path / "primary"), "--mode", "primary", "--limit", "1"])
+    except SystemExit as exc:
+        assert "primary is blocked" in str(exc)
+    else:
+        raise AssertionError("primary mode must be blocked without explicit flag")

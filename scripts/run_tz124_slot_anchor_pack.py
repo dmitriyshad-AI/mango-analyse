@@ -41,7 +41,13 @@ CASES: tuple[Mapping[str, Any], ...] = (
     {"id": "N7", "text": "дважды списали, верните", "brand": "unpk", "p0": True},
     {"id": "N8", "text": "дважды списали, верните; а в каком классе берёте?", "brand": "unpk", "p0": True},
     {"id": "N9", "text": "посмотрите баланс по +7 916 123 45 67", "brand": "unpk", "trap": True},
-    {"id": "N10", "text": "физика 8 онлайн", "brand": "unpk", "off_parity": True},
+    {
+        "id": "N10",
+        "label": "OFF parity control: same text as P1",
+        "text": "физика 8 онлайн",
+        "brand": "unpk",
+        "off_parity": True,
+    },
 )
 
 
@@ -87,6 +93,7 @@ def run_case(case: Mapping[str, Any], *, mode: str) -> dict[str, Any]:
     known_slots = dict(view.get("known_slots") or {})
     return {
         "case_id": case["id"],
+        "case_label": str(case.get("label") or ""),
         "mode": mode,
         "client_text": case["text"],
         "memory_known_slots": known_slots,
@@ -200,10 +207,14 @@ def render_transcripts(rows: list[Mapping[str, Any]]) -> str:
     lines = ["# TZ-124 Slot Anchor Pack Transcripts", ""]
     for row in rows:
         known = row.get("memory_known_slots") or {}
-        lines.extend(
+        block = [
+            f"## {row['case_id']} / {row['mode']}",
+            "",
+        ]
+        if row.get("case_label"):
+            block.append(f"LABEL: {row['case_label']}")
+        block.extend(
             [
-                f"## {row['case_id']} / {row['mode']}",
-                "",
                 f"CLIENT: {row['client_text']}",
                 f"MEMORY_GRADE: {known.get('grade', '')}",
                 f"MEMORY_SUBJECT: {known.get('subject', '')}",
@@ -214,6 +225,7 @@ def render_transcripts(rows: list[Mapping[str, Any]]) -> str:
                 "",
             ]
         )
+        lines.extend(block)
     return "\n".join(lines)
 
 

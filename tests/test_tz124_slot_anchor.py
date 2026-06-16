@@ -170,4 +170,6 @@ def test_tz124_runner_writes_parallel_off_on_pack(tmp_path) -> None:
     assert summary["stop_conditions"]["price_under_extracted_class"] is False
     transcripts = (out_dir / "transcripts.md").read_text(encoding="utf-8")
     assert "P1 / on" in transcripts
+    assert "N10 / off" in transcripts
+    assert "LABEL: OFF parity control: same text as P1" in transcripts
     assert "MEMORY_GRADE: 8" in transcripts

@@ -6348,6 +6348,100 @@ def test_bot_answer_self_requires_client_safe_verified_fact() -> None:
     assert "autonomy_default_cautious_unverified_fact" in result.safety_flags
 
 
+def test_tz122_academic_year_start_missing_facts_stays_manager_when_flag_off() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": (
+                "Учебный год 2026/27 в Фотоне начинается в сентябре: занятия в Москве стартуют "
+                "12-13 сентября 2026, онлайн-занятия — 19-20 сентября 2026."
+            ),
+            "message_type": "question",
+            "topic_id": "theme:013_schedule",
+            "confidence_theme": 0.91,
+            "metadata": {
+                "authoritative_output_gate": {"action": "pass", "findings": []},
+                "direct_path": {
+                    "retrieved_fact_keys": [
+                        "academic_year_2026_27.start",
+                        "academic_year_2026_27.start_by_location.moscow",
+                    ],
+                    "retrieved_facts": {
+                        "academic_year_2026_27.start": (
+                            "Фотон: учебный год 2026/27, старт занятий — 12-20 сентября 2026."
+                        ),
+                        "academic_year_2026_27.start_by_location.moscow": (
+                            "Фотон: учебный год 2026/27, Москва — 12-13 сентября 2026."
+                        ),
+                    },
+                },
+            },
+        }
+    )
+
+    result = provider.build_draft(
+        "Когда начинается учебный год? Какие даты старта?",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:013_schedule"]},
+            "missing_facts": ["класс ребёнка"],
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "autonomy_default_cautious_missing_facts" in result.safety_flags
+
+
+def test_tz122_academic_year_start_can_answer_with_verified_start_facts_when_flag_on() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": (
+                "Учебный год 2026/27 в Фотоне начинается в сентябре: занятия в Москве стартуют "
+                "12-13 сентября 2026, онлайн-занятия — 19-20 сентября 2026."
+            ),
+            "message_type": "question",
+            "topic_id": "theme:013_schedule",
+            "confidence_theme": 0.91,
+            "metadata": {
+                "authoritative_output_gate": {"action": "pass", "findings": []},
+                "direct_path": {
+                    "retrieved_fact_keys": [
+                        "academic_year_2026_27.start",
+                        "academic_year_2026_27.start_by_location.moscow",
+                        "academic_year_2026_27.start_by_location.online",
+                    ],
+                    "retrieved_facts": {
+                        "academic_year_2026_27.start": (
+                            "Фотон: учебный год 2026/27, старт занятий — 12-20 сентября 2026."
+                        ),
+                        "academic_year_2026_27.start_by_location.moscow": (
+                            "Фотон: учебный год 2026/27, Москва — 12-13 сентября 2026."
+                        ),
+                        "academic_year_2026_27.start_by_location.online": (
+                            "Фотон: учебный год 2026/27, онлайн — 19-20 сентября 2026."
+                        ),
+                    },
+                },
+            },
+        }
+    )
+
+    result = provider.build_draft(
+        "Когда начинается учебный год? Какие даты старта?",
+        context={
+            "TELEGRAM_WRONG_INTENT_FACT_CALIBRATION": True,
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:013_schedule"]},
+            "missing_facts": ["класс ребёнка"],
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "autonomy_default_cautious_missing_facts" not in result.safety_flags
+    assert "tz122_academic_year_start_autonomy_allowed" in result.safety_flags
+
+
 def test_bot_answer_self_allowed_for_safe_topic_with_verified_fact() -> None:
     provider = FakeDraftProvider(
         {

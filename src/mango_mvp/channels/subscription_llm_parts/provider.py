@@ -864,6 +864,32 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
 _Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def _direct_path_autonomy_matrix_topic_result(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not isinstance(context, Mapping):
+        return result
+    plan = context.get("conversation_intent_plan")
+    if not isinstance(plan, Mapping):
+        return result
+    topic = str(plan.get("topic_id") or "").strip()
+    if not topic or topic == result.topic_id:
+        return result
+    metadata = dict(result.metadata)
+    metadata["direct_path_autonomy_topic_from"] = result.topic_id
+    metadata["direct_path_autonomy_topic"] = topic
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        direct_meta = dict(direct)
+        direct_meta["autonomy_topic_from"] = result.topic_id
+        direct_meta["autonomy_topic"] = topic
+        metadata["direct_path"] = direct_meta
+    flags = tuple(dict.fromkeys((*result.safety_flags, "direct_path_autonomy_topic_from_plan")))
+    return replace(result, topic_id=topic, safety_flags=flags, metadata=metadata)
+
+
 class SubscriptionLlmDraftProvider:
     def __init__(
         self,
@@ -920,6 +946,7 @@ class SubscriptionLlmDraftProvider:
         if _direct_path_enabled(context):
             direct_result = self._build_direct_path_draft(client_message, context=context)
             if _deal_action_decision_enabled(context):
+                direct_result = _direct_path_autonomy_matrix_topic_result(direct_result, context=context)
                 direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
             return apply_deal_action_decision_layer(
                 direct_result,

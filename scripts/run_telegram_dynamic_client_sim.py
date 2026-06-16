@@ -1774,6 +1774,11 @@ def run_one_dialog(
         tone_sell_prompt_metadata = dict(result.metadata.get("tone_sell_prompt") or {}) if isinstance(result.metadata.get("tone_sell_prompt"), Mapping) else {}
         action_proposal_metadata = dict(result.metadata.get("action_proposal") or {}) if isinstance(result.metadata.get("action_proposal"), Mapping) else {}
         action_decision_metadata = dict(result.metadata.get("action_decision") or {}) if isinstance(result.metadata.get("action_decision"), Mapping) else {}
+        answerability_trace_metadata = (
+            dict(result.metadata.get("answerability_trace") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
+            else {}
+        )
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))
@@ -1847,6 +1852,8 @@ def run_one_dialog(
             "number_audit": number_audit,
             "judge_fact_audit": judge_fact_audit,
         }
+        if answerability_trace_metadata:
+            turn["bot_answerability_trace"] = answerability_trace_metadata
         if _handoff_trace_enabled():
             turn["handoff_trace"] = _handoff_trace_for_turn(turn)
         turns.append(turn)
@@ -3028,6 +3035,7 @@ def build_summary(
     action_decision = _action_decision_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
+    answerability_trace = _answerability_trace_summary(transcripts)
     config_validity = _direct_path_config_invalid(
         transcripts,
         persona_order={str(dialog.get("dialog_id") or ""): index for index, dialog in enumerate(transcripts)},
@@ -3153,6 +3161,7 @@ def build_summary(
         "llm_calls": llm_call_summary,
         "semantic_output_verifier": semantic_output_verifier,
         "fact_retrieval_trace": fact_retrieval_trace,
+        **({"answerability_trace": answerability_trace} if int(answerability_trace.get("turn_count") or 0) else {}),
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
@@ -3343,6 +3352,66 @@ def _fact_retrieval_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> M
         "discarded_id_count": discarded,
         "missing_declaration_turns": missing_declaration,
         "turns": turns,
+    }
+
+
+def _answerability_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    lowering_layers: Counter[str] = Counter()
+    route_transitions: Counter[str] = Counter()
+    gate_findings: Counter[str] = Counter()
+    semantic_actions: Counter[str] = Counter()
+    self_can_answer: Counter[str] = Counter()
+    examples: list[Mapping[str, Any]] = []
+    total = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            trace = turn.get("bot_answerability_trace")
+            if not isinstance(trace, Mapping) or not trace:
+                continue
+            total += 1
+            before = str(trace.get("route_before_gate") or "").strip()
+            after = str(trace.get("route_after") or turn.get("bot_route") or "").strip()
+            if before or after:
+                route_transitions[f"{before or 'unknown'}->{after or 'unknown'}"] += 1
+            for layer in _string_list(trace.get("lowering_layers") or []):
+                lowering_layers[layer] += 1
+            semantic = trace.get("semantic_output_verifier") if isinstance(trace.get("semantic_output_verifier"), Mapping) else {}
+            action = str(semantic.get("action") or "").strip()
+            if action:
+                semantic_actions[action] += 1
+            gate = trace.get("authoritative_output_gate") if isinstance(trace.get("authoritative_output_gate"), Mapping) else {}
+            findings = gate.get("findings") if isinstance(gate.get("findings"), Sequence) else ()
+            for item in findings:
+                if isinstance(item, Mapping) and str(item.get("code") or "").strip():
+                    gate_findings[str(item.get("code"))] += 1
+            self_eval = trace.get("answerability_self") if isinstance(trace.get("answerability_self"), Mapping) else {}
+            can_answer = str(self_eval.get("can_answer_self") or "").strip()
+            if can_answer:
+                self_can_answer[can_answer] += 1
+            if len(examples) < 50:
+                examples.append(
+                    {
+                        "dialog_id": str(dialog.get("dialog_id") or ""),
+                        "turn": turn.get("turn"),
+                        "brand": str(dialog.get("brand") or ""),
+                        "route_transition": f"{before or 'unknown'}->{after or 'unknown'}",
+                        "lowering_layers": _string_list(trace.get("lowering_layers") or []),
+                        "reason_class": str((trace.get("final") or {}).get("reason_class") or turn.get("bot_reason_class") or ""),
+                        "semantic_action": action,
+                        "self_can_answer": can_answer,
+                    }
+                )
+    return {
+        "schema_version": "answerability_trace_summary_v1_2026_06_15",
+        "turn_count": total,
+        "lowering_layers": dict(lowering_layers),
+        "route_transitions": dict(route_transitions),
+        "semantic_actions": dict(semantic_actions),
+        "gate_findings": dict(gate_findings),
+        "self_can_answer": dict(self_can_answer),
+        "examples": examples,
     }
 
 

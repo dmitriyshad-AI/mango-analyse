@@ -1,0 +1,14 @@
+Команды:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile src/mango_mvp/channels/subscription_llm_parts/__init__.py src/mango_mvp/channels/subscription_llm_parts/support.py src/mango_mvp/channels/subscription_llm_parts/direct_path.py src/mango_mvp/channels/subscription_llm_parts/provider.py src/mango_mvp/channels/subscription_llm_parts/post_layers.py scripts/run_telegram_dynamic_client_sim.py
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_telegram_dynamic_client_sim.py
+101 passed in 0.95s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+471 passed in 7.69s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+3278 passed, 2 skipped, 1 warning in 47.65s
+
+Примечание: предупреждение urllib3/LibreSSL существующее, не связано с этим изменением.

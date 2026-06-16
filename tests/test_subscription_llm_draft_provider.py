@@ -363,6 +363,60 @@ def test_direct_path_explicit_route_is_not_overridden_by_default_manager_flag(mo
     assert result.route == "bot_answer_self_for_pilot"
 
 
+def test_answerability_shadow_payload_off_does_not_store_self_eval() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Да, можно записаться онлайн.",
+            "can_answer_self": "no",
+            "self_missing_facts": ["актуальная группа"],
+            "supporting_facts": ["fact:trial_online"],
+            "why_manager": "Нужна проверка группы.",
+        }
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Да, можно записаться онлайн."
+    assert "answerability_self" not in result.metadata
+
+
+def test_answerability_shadow_payload_on_is_observe_only() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Да, можно записаться онлайн.",
+            "can_answer_self": "no",
+            "self_missing_facts": ["актуальная группа"],
+            "supporting_facts": ["fact:trial_online"],
+            "why_manager": "Нужна проверка группы.",
+        },
+        include_answerability_self=True,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Да, можно записаться онлайн."
+    assert result.metadata["answerability_self"] == {
+        "schema_version": "answerability_self_v1_2026_06_15",
+        "can_answer_self": "no",
+        "self_missing_facts": ["актуальная группа"],
+        "supporting_facts": ["fact:trial_online"],
+        "why_manager": "Нужна проверка группы.",
+    }
+
+
+def test_answerability_shadow_payload_on_tolerates_missing_keys() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Да, можно записаться онлайн.",
+        },
+        include_answerability_self=True,
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.metadata["answerability_self"] == {}
+
+
 def test_provider_strips_internal_manager_note_and_keeps_safe_variant() -> None:
     result = parse_llm_json(
         '{"route":"draft_for_manager","draft_text":"Клиент понял условия и взял паузу. '
@@ -11653,6 +11707,92 @@ def test_direct_path_model_p0_prompt_is_flagged_off_by_default() -> None:
     assert "дорого/подумаю" in on_prompt
 
 
+def test_answerability_shadow_prompt_is_flagged_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(subscription_llm.ANSWERABILITY_SHADOW_ENV, raising=False)
+    context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
+
+    prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=context)
+
+    assert "Теневая самооценка ответуемости" not in prompt
+    assert '"can_answer_self"' not in prompt
+    assert '"self_missing_facts"' not in prompt
+    assert '"supporting_facts"' not in prompt
+    assert '"why_manager"' not in prompt
+
+
+def test_answerability_shadow_prompt_on_adds_observation_fields() -> None:
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.ANSWERABILITY_SHADOW_ENV: "1",
+    }
+
+    prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=context)
+
+    assert "Теневая самооценка ответуемости" in prompt
+    assert '"can_answer_self": "yes|no|uncertain"' in prompt
+    assert '"self_missing_facts": []' in prompt
+    assert '"supporting_facts": []' in prompt
+    assert '"why_manager": ""' in prompt
+
+
+def test_answerability_trace_off_is_not_added_to_metadata() -> None:
+    result = subscription_llm._direct_path_finalize_metadata(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Передам менеджеру.",
+            metadata={
+                "direct_path": {"model_called": True, "reason_class": "policy_permission"},
+                "semantic_output_verifier": {"action": "downgrade", "finding_codes": ["unsupported_claim"]},
+                "authoritative_output_gate": {
+                    "action": "downgrade",
+                    "route_before": "bot_answer_self_for_pilot",
+                    "route_after": "draft_for_manager",
+                    "findings": [{"code": "unbacked_fact", "source": "number_gate"}],
+                },
+                "answerability_self": {"can_answer_self": "no"},
+            },
+        ),
+        before_gate_route="bot_answer_self_for_pilot",
+        client_message="Можно записаться?",
+        context={"active_brand": "foton"},
+    )
+
+    assert "answerability_trace" not in result.metadata
+
+
+def test_answerability_trace_on_summarizes_existing_downgrade_causes() -> None:
+    result = subscription_llm._direct_path_finalize_metadata(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Передам менеджеру.",
+            metadata={
+                "direct_path": {"model_called": True, "reason_class": "policy_permission"},
+                "semantic_output_verifier": {"action": "downgrade", "finding_codes": ["unsupported_claim"]},
+                "authoritative_output_gate": {
+                    "action": "downgrade",
+                    "route_before": "bot_answer_self_for_pilot",
+                    "route_after": "draft_for_manager",
+                    "findings": [{"code": "unbacked_fact", "source": "number_gate"}],
+                },
+                "answerability_self": {"can_answer_self": "no"},
+            },
+        ),
+        before_gate_route="bot_answer_self_for_pilot",
+        client_message="Можно записаться?",
+        context={"active_brand": "foton", subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"},
+    )
+
+    trace = result.metadata["answerability_trace"]
+    assert trace["route_before_gate"] == "bot_answer_self_for_pilot"
+    assert trace["route_after"] == "draft_for_manager"
+    assert "semantic_output_verifier" in trace["lowering_layers"]
+    assert "authoritative_output_gate" in trace["lowering_layers"]
+    assert trace["semantic_output_verifier"]["finding_codes"] == ["unsupported_claim"]
+    assert trace["authoritative_output_gate"]["findings"][0]["code"] == "unbacked_fact"
+    assert trace["answerability_self"] == {"can_answer_self": "no"}
+
+
 def test_direct_path_model_p0_off_keeps_previous_route_and_text() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(
@@ -12868,14 +13008,15 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         PRESALE_SOURCE_ID_ENV,
         subscription_llm.MEMORY_PROVENANCE_ENV,
         subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
-	        subscription_llm.PII_RELATION_STOPWORDS_ENV,
-	        subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
-	        RETRIEVER_MODEL_DRIVEN_ENV,
-	        RETRIEVER_NEED_SHADOW_ENV,
-	        TEMPLATE_FROM_KB_ENV,
-	        DIRECT_PATH_PILOT_CONFIG_ENV,
-	    ):
-	        monkeypatch.delenv(key, raising=False)
+        subscription_llm.PII_RELATION_STOPWORDS_ENV,
+        subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
+        RETRIEVER_MODEL_DRIVEN_ENV,
+        RETRIEVER_NEED_SHADOW_ENV,
+        subscription_llm.ANSWERABILITY_SHADOW_ENV,
+        TEMPLATE_FROM_KB_ENV,
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
 
     context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
 
@@ -12900,10 +13041,13 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.ANSWERABILITY_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False
+    assert subscription_llm._answerability_shadow_enabled(context) is False
     assert subscription_llm._retriever_need_shadow_enabled({**context, RETRIEVER_NEED_SHADOW_ENV: "1"}) is True
     assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is True
+    assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"}) is True
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:

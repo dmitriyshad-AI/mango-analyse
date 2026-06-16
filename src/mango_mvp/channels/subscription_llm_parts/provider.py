@@ -127,6 +127,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _A2_PHONE_RE,
     _CLIENT_EMAIL_RE,
     _active_brand,
+    _answerability_shadow_enabled,
     _client_clean_fact_text,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_pilot_config,
@@ -1071,6 +1072,7 @@ class SubscriptionLlmDraftProvider:
         pilot_config = _direct_path_pilot_config(context)
         gold_examples = _direct_path_select_gold_real_examples(client_message, context=context, active_brand=active_brand)
         prompt = _build_direct_path_prompt(client_message, context=context, facts=facts, fact_pack=fact_pack, gold_examples=gold_examples)
+        include_answerability_self = _answerability_shadow_enabled(context)
         direct_meta = _direct_path_metadata(
             attempted=True,
             model_called=True,
@@ -1081,7 +1083,10 @@ class SubscriptionLlmDraftProvider:
             context=context,
         )
         try:
-            result = self._direct_path_draft_runner(prompt)
+            result = self._direct_path_draft_runner_observing_answerability(
+                prompt,
+                include_answerability_self=include_answerability_self,
+            )
         except subprocess.TimeoutExpired:
             direct_meta.update(
                 {
@@ -1118,7 +1123,12 @@ class SubscriptionLlmDraftProvider:
                 direct_meta["rubric_reason"] = "missing_justification"
                 regen_prompt = _build_direct_path_route_rubric_regen_prompt(prompt, result)
                 try:
-                    result = _direct_path_prepare_model_result(self._direct_path_draft_runner(regen_prompt))
+                    result = _direct_path_prepare_model_result(
+                        self._direct_path_draft_runner_observing_answerability(
+                            regen_prompt,
+                            include_answerability_self=include_answerability_self,
+                        )
+                    )
                     direct_meta["rubric_regenerated"] = True
                 except Exception as exc:  # noqa: BLE001
                     direct_meta["rubric_reason"] = f"regen_failed:{str(exc)[:160]}"
@@ -1867,6 +1877,26 @@ class SubscriptionLlmDraftProvider:
             )
         return apply_authoritative_output_gate(guard_identity_disclosure(result))
 
+    def _direct_path_draft_runner_observing_answerability(
+        self,
+        prompt: str,
+        *,
+        include_answerability_self: bool,
+    ) -> SubscriptionDraftResult:
+        had_previous = hasattr(self, "_direct_path_include_answerability_self")
+        previous = getattr(self, "_direct_path_include_answerability_self", False)
+        self._direct_path_include_answerability_self = bool(include_answerability_self)
+        try:
+            return self._direct_path_draft_runner(prompt)
+        finally:
+            if had_previous:
+                self._direct_path_include_answerability_self = previous
+            else:
+                try:
+                    delattr(self, "_direct_path_include_answerability_self")
+                except AttributeError:
+                    pass
+
     def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
         prompt_text = str(prompt or "").strip()
         if not prompt_text:
@@ -1894,7 +1924,11 @@ class SubscriptionLlmDraftProvider:
             raise RuntimeError(message)
 
         payload = extract_json_object(raw or proc.stdout or proc.stderr or "")
-        result = _normalize_direct_path_payload(payload, raw_response=raw)
+        result = _normalize_direct_path_payload(
+            payload,
+            raw_response=raw,
+            include_answerability_self=bool(getattr(self, "_direct_path_include_answerability_self", False)),
+        )
         return replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
 
     def _cache_get(self, cache_key: str) -> Optional[SubscriptionDraftResult]:
@@ -2048,6 +2082,33 @@ def _direct_path_model_p0_kind(value: Any) -> str:
     return kind if kind in _DIRECT_PATH_MODEL_P0_KINDS else ""
 
 
+def _direct_path_answerability_value(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    if text in {"yes", "да", "true", "1", "can_answer", "answer_self"}:
+        return "yes"
+    if text in {"no", "нет", "false", "0", "manager", "manager_only", "handoff"}:
+        return "no"
+    if text in {"uncertain", "unknown", "не_уверен", "не уверен", "непонятно"}:
+        return "uncertain"
+    return text[:40] if text else ""
+
+
+def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    can_answer_self = _direct_path_answerability_value(payload.get("can_answer_self"))
+    missing_facts = _clean_list(payload.get("self_missing_facts"), max_items=12, max_chars=120)
+    supporting_facts = _clean_list(payload.get("supporting_facts"), max_items=12, max_chars=160)
+    why_manager = " ".join(str(payload.get("why_manager") or "").split())[:300]
+    if not any((can_answer_self, missing_facts, supporting_facts, why_manager)):
+        return {}
+    return {
+        "schema_version": "answerability_self_v1_2026_06_15",
+        "can_answer_self": can_answer_self,
+        "self_missing_facts": list(missing_facts),
+        "supporting_facts": list(supporting_facts),
+        "why_manager": why_manager,
+    }
+
+
 def _direct_path_model_p0_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     meta = metadata.get("direct_path_model_p0")
@@ -2130,7 +2191,12 @@ def _apply_direct_path_model_p0_route(
     )
 
 
-def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: Optional[str] = None) -> SubscriptionDraftResult:
+def _normalize_direct_path_payload(
+    payload: Mapping[str, Any],
+    *,
+    raw_response: Optional[str] = None,
+    include_answerability_self: bool = False,
+) -> SubscriptionDraftResult:
     if not isinstance(payload, Mapping):
         raise RuntimeError("direct path response JSON root must be an object")
     route = str(payload.get("route") or "").strip()
@@ -2152,6 +2218,8 @@ def _normalize_direct_path_payload(payload: Mapping[str, Any], *, raw_response: 
         metadata["action_proposal"] = dict(proposal)
     elif isinstance(proposal, str) and proposal.strip():
         metadata["action_proposal"] = {"action": proposal.strip(), "source": "direct_model"}
+    if include_answerability_self:
+        metadata["answerability_self"] = _direct_path_answerability_self_from_payload(payload)
     return SubscriptionDraftResult(
         message_type=str(payload.get("message_type") or "question"),
         broad_group=str(payload.get("broad_group") or "direct_path"),

@@ -17,7 +17,7 @@ from mango_mvp.customer_timeline.canonical_readonly_import import (
     build_customer_index,
     build_source_manifest,
     duplicate_amo_ids_across_sources,
-    infer_brand,
+    infer_offline_brand,
     manual_review_reasons,
     read_amo_contacts_by_phone,
     read_amo_deals_by_contact_id,
@@ -132,7 +132,7 @@ def build_canonical_readonly_timeline_triage(config: CanonicalReadonlyTriageConf
 
     for phone in phones:
         row = customers_by_phone[phone]["row"]
-        brand = infer_brand(row.values())
+        brand = infer_offline_brand(row)
         brand_counts[brand] += 1
         reasons = manual_review_reasons(
             row=row,
@@ -303,7 +303,7 @@ def unknown_brand_reason(
     amo_contacts_by_phone: Mapping[str, Sequence[Mapping[str, str]]],
     amo_deals_by_contact_id: Mapping[str, Sequence[Mapping[str, str]]],
 ) -> str:
-    if infer_brand(row.values()) != "unknown":
+    if infer_offline_brand(row) != "unknown":
         return "known_brand"
     amo_hint = brand_hint_from_amo(phone, amo_contacts_by_phone, amo_deals_by_contact_id)
     if amo_hint != "unknown":
@@ -321,11 +321,11 @@ def brand_hint_from_amo(
     hints: set[str] = set()
     for contact in amo_contacts_by_phone.get(phone, ()):
         contact_id = str(contact.get("contact_id") or "")
-        contact_brand = infer_brand(contact.values())
+        contact_brand = infer_offline_brand(contact)
         if contact_brand != "unknown":
             hints.add(contact_brand)
         for deal in amo_deals_by_contact_id.get(contact_id, ()):
-            deal_brand = infer_brand(deal.values())
+            deal_brand = infer_offline_brand(deal)
             if deal_brand != "unknown":
                 hints.add(deal_brand)
     if len(hints) == 1:

@@ -1,0 +1,13 @@
+case_id,input_text,gold_brand,case_note
+e01,Фотона математика,foton,genitive foton
+e02,Фотоны онлайн,foton,plural/root foton
+e03,Фотону подготовка,foton,dative foton
+e04,в Фотоне курс физики,foton,prepositional foton
+e05,ЦДПФОТОН кабинет,foton,glued cdp foton
+e06,ЦИДПОФОТОН заявка,foton,glued cidpo foton
+e07,УНПК МФТИ физика,unpk,explicit unpk
+e08,олимпиада МФТИ,unpk,mfti root unpk
+e09,Фотон и УНПК,unknown,cross-brand fail closed
+e10,Фотон МФТИ,unknown,cross-brand via mfti fail closed
+e11,без бренда,unknown,no brand
+e12,foton online,foton,latin foton compatibility

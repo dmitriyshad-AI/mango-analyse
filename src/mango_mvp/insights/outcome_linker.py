@@ -59,6 +59,7 @@ class OutcomeLinkerConfig:
     tallanto_contacts: Path | None
     amo_deal_analysis_root: Path | None
     pilot_limit: int = 500
+    outcome_model_mode: str = "off"
 
 
 def build_outcome_linkage_report(config: OutcomeLinkerConfig) -> dict[str, Any]:
@@ -70,13 +71,20 @@ def build_outcome_linkage_report(config: OutcomeLinkerConfig) -> dict[str, Any]:
     chain_rows = _read_csv(readiness_root / "client_chains.csv")
     call_rows = _read_csv(readiness_root / "calls_terminal_analyzed.csv")
     calls_by_phone = _group_calls(call_rows)
-    tallanto_index = load_tallanto_outcome_index(config.tallanto_contacts) if config.tallanto_contacts else {}
+    outcome_model_mode = normalize_outcome_model_mode(config.outcome_model_mode)
+    tallanto_index = (
+        load_tallanto_outcome_index(config.tallanto_contacts, outcome_model_mode=outcome_model_mode)
+        if config.tallanto_contacts
+        else {}
+    )
     amo_index = load_amo_outcome_index(config.amo_deal_analysis_root) if config.amo_deal_analysis_root else {}
 
     linked_rows = [
         link_chain_outcome(row, calls_by_phone.get(str(row.get("phone") or ""), []), tallanto_index, amo_index)
         for row in chain_rows
     ]
+    if outcome_model_mode != "off":
+        attach_outcome_model_fields(linked_rows)
     linked_rows.sort(key=lambda row: (-int(row["extraction_priority_score"]), str(row["phone"])))
     pilot_rows = build_outcome_pilot_sample(linked_rows, config.pilot_limit)
     summary = _build_summary(config, linked_rows, pilot_rows, tallanto_index, amo_index)
@@ -87,9 +95,17 @@ def build_outcome_linkage_report(config: OutcomeLinkerConfig) -> dict[str, Any]:
     return summary
 
 
-def load_tallanto_outcome_index(path: Path | None) -> dict[str, SignalSummary]:
+def normalize_outcome_model_mode(value: Any) -> str:
+    mode = _clean(value).casefold()
+    if mode in {"off", "shadow", "primary"}:
+        return mode
+    return "off"
+
+
+def load_tallanto_outcome_index(path: Path | None, *, outcome_model_mode: str = "off") -> dict[str, SignalSummary]:
     if path is None or not path.exists():
         return {}
+    mode = normalize_outcome_model_mode(outcome_model_mode)
     rows_by_phone: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in _read_csv(path):
         phones: list[str] = []
@@ -97,7 +113,7 @@ def load_tallanto_outcome_index(path: Path | None) -> dict[str, SignalSummary]:
             phones.extend(phones_from_text(row.get(key)))
         for phone in _unique(phones):
             rows_by_phone[phone].append(row)
-    return {phone: classify_tallanto_rows(rows) for phone, rows in rows_by_phone.items()}
+    return {phone: classify_tallanto_rows(rows, outcome_model_mode=mode) for phone, rows in rows_by_phone.items()}
 
 
 def load_amo_outcome_index(root: Path | None) -> dict[str, SignalSummary]:
@@ -114,7 +130,42 @@ def load_amo_outcome_index(root: Path | None) -> dict[str, SignalSummary]:
     return {phone: classify_amo_rows(rows) for phone, rows in rows_by_phone.items()}
 
 
-def classify_tallanto_rows(rows: list[dict[str, Any]]) -> SignalSummary:
+def classify_tallanto_rows(rows: list[dict[str, Any]], *, outcome_model_mode: str = "off") -> SignalSummary:
+    legacy = _classify_tallanto_rows_legacy(rows)
+    mode = normalize_outcome_model_mode(outcome_model_mode)
+    if mode == "off":
+        return legacy
+
+    semantic = _classify_tallanto_rows_negation_aware(rows)
+    comparison = _outcome_model_comparison(legacy, semantic, mode=mode)
+    if mode == "shadow":
+        legacy.metadata["outcome_model_shadow"] = comparison
+        return legacy
+
+    if _primary_outcome_flip_allowed(legacy.label, semantic.label):
+        semantic.metadata["outcome_model_primary"] = {
+            **comparison,
+            "primary_applied": True,
+            "primary_policy": "only_won_paid_or_active_to_known_student_or_lead",
+        }
+        semantic.metadata["legacy_outcome"] = {
+            "label": legacy.label,
+            "confidence_tier": legacy.confidence_tier,
+            "confidence_score": legacy.confidence_score,
+            "reasons": list(legacy.reasons),
+        }
+        return semantic
+
+    legacy.metadata["outcome_model_primary"] = {
+        **comparison,
+        "primary_applied": False,
+        "primary_blocked_reason": "flip_not_allowlisted",
+        "primary_policy": "only_won_paid_or_active_to_known_student_or_lead",
+    }
+    return legacy
+
+
+def _classify_tallanto_rows_legacy(rows: list[dict[str, Any]]) -> SignalSummary:
     histories = [_clean(row.get("history_raw")) for row in rows if _clean(row.get("history_raw"))]
     full_history = "\n".join(histories)
     term_counts = {
@@ -189,6 +240,101 @@ def classify_tallanto_rows(rows: list[dict[str, Any]]) -> SignalSummary:
             "term_counts": term_counts,
         },
     )
+
+
+def _classify_tallanto_rows_negation_aware(rows: list[dict[str, Any]]) -> SignalSummary:
+    histories = [_clean(row.get("history_raw")) for row in rows if _clean(row.get("history_raw"))]
+    full_history = "\n".join(histories)
+    term_counts = {
+        "paid": _affirmed_count(histories, PAID_RE),
+        "enrolled": _affirmed_count(histories, ENROLLED_RE),
+        "active": _affirmed_count(histories, ACTIVE_RE),
+        "refusal": _affirmed_count(histories, REFUSAL_RE),
+        "pending": _bool_count(histories, PENDING_RE),
+        "payment_pending": _bool_count(histories, PAYMENT_PENDING_RE),
+    }
+    latest_label, latest_text = _latest_history_signal_negation_aware(full_history)
+    has_positive = term_counts["paid"] or term_counts["enrolled"] or term_counts["active"]
+    has_refusal = term_counts["refusal"] > 0
+    has_pending = term_counts["pending"] or term_counts["payment_pending"]
+    student_types = {_clean(row.get("student_type")) for row in rows if _clean(row.get("student_type"))}
+    non_listener_student = any(value and value != "Слушатель" for value in student_types)
+
+    reasons: list[str] = []
+    if term_counts["paid"]:
+        reasons.append("tallanto_history_has_affirmed_paid_terms")
+    if term_counts["enrolled"] or term_counts["active"]:
+        reasons.append("tallanto_history_has_affirmed_learning_terms")
+    if has_refusal:
+        reasons.append("tallanto_history_has_affirmed_refusal_terms")
+    if has_pending:
+        reasons.append("tallanto_history_has_pending_terms")
+    if non_listener_student:
+        reasons.append("tallanto_student_type_is_grade")
+
+    if has_positive and latest_label == "refusal":
+        label = "churn_or_refused_after_activity"
+        tier = "strong"
+        score = 0.82
+    elif has_positive:
+        label = "won_paid_or_active"
+        tier = "strong"
+        score = 0.86 if term_counts["paid"] else 0.78
+    elif has_refusal:
+        label = "lost_or_refused"
+        tier = "strong"
+        score = 0.76
+    elif term_counts["payment_pending"]:
+        label = "payment_pending"
+        tier = "proxy"
+        score = 0.62
+    elif has_pending:
+        label = "in_progress_or_undecided"
+        tier = "proxy"
+        score = 0.52
+    elif non_listener_student:
+        label = "known_student_or_lead"
+        tier = "proxy"
+        score = 0.45
+    else:
+        label = "tallanto_match_without_outcome"
+        tier = "proxy"
+        score = 0.35
+
+    return SignalSummary(
+        label=label,
+        confidence_tier=tier,
+        confidence_score=score,
+        reasons=reasons,
+        latest_signal=latest_label,
+        latest_signal_text=latest_text,
+        metadata={
+            "contact_count": len(rows),
+            "tallanto_ids": _join_sorted(row.get("tallanto_id") for row in rows),
+            "student_types": _join_sorted(student_types),
+            "branches": _join_sorted(row.get("branch") for row in rows),
+            "responsible": _join_sorted(row.get("responsible") for row in rows),
+            "term_counts": term_counts,
+        },
+    )
+
+
+def _outcome_model_comparison(legacy: SignalSummary, semantic: SignalSummary, *, mode: str) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "legacy_label": legacy.label,
+        "semantic_label": semantic.label,
+        "legacy_confidence_score": legacy.confidence_score,
+        "semantic_confidence_score": semantic.confidence_score,
+        "label_changed": legacy.label != semantic.label,
+        "semantic_reasons": list(semantic.reasons),
+        "semantic_term_counts": semantic.metadata.get("term_counts", {}),
+        "primary_allowed": _primary_outcome_flip_allowed(legacy.label, semantic.label),
+    }
+
+
+def _primary_outcome_flip_allowed(legacy_label: str, semantic_label: str) -> bool:
+    return legacy_label == "won_paid_or_active" and semantic_label == "known_student_or_lead"
 
 
 def classify_amo_rows(rows: list[dict[str, Any]]) -> SignalSummary:
@@ -296,6 +442,10 @@ def link_chain_outcome(
             "amo_risks_linked": amo.metadata.get("risks", "") if amo else "",
         }
     )
+    if tallanto and tallanto.metadata.get("outcome_model_shadow"):
+        row["_tallanto_shadow_json"] = json.dumps(tallanto.metadata["outcome_model_shadow"], ensure_ascii=False, sort_keys=True)
+    if tallanto and tallanto.metadata.get("outcome_model_primary"):
+        row["_tallanto_shadow_json"] = json.dumps(tallanto.metadata["outcome_model_primary"], ensure_ascii=False, sort_keys=True)
     return row
 
 
@@ -499,7 +649,7 @@ def _build_summary(
             year_counts[year]["chains"] += 1
             year_counts[year][f"outcome:{row['final_outcome_label']}"] += 1
             year_counts[year][f"confidence:{row['outcome_confidence_tier']}"] += 1
-    return {
+    summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "readiness_root": str(config.readiness_root.resolve()),
         "totals": {
@@ -528,6 +678,18 @@ def _build_summary(
             "Use strong/proxy/unknown confidence tiers when selecting data for LLM extraction and future sales bot training.",
         ],
     }
+    outcome_model_mode = normalize_outcome_model_mode(config.outcome_model_mode)
+    if outcome_model_mode != "off":
+        shadow_counts = Counter(str(row.get("tallanto_model_shadow_changed") or "") for row in linked_rows)
+        flips = Counter(
+            f"{row.get('tallanto_model_legacy_label', '')}->{row.get('tallanto_model_semantic_label', '')}"
+            for row in linked_rows
+            if str(row.get("tallanto_model_shadow_changed") or "") == "Да"
+        )
+        summary["outcome_model_mode"] = outcome_model_mode
+        summary["outcome_model_shadow_counts"] = dict(shadow_counts.most_common())
+        summary["outcome_model_label_flips"] = dict(flips.most_common())
+    return summary
 
 
 def _write_outputs(out_root: Path, summary: dict[str, Any], linked_rows: list[dict[str, Any]], pilot_rows: list[dict[str, Any]]) -> dict[str, Path]:
@@ -625,8 +787,82 @@ def _signal_label_for_text(text: str) -> str:
     return ""
 
 
+def attach_outcome_model_fields(rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        shadow = _parse_json_dict(row.get("_tallanto_shadow_json"))
+        row["tallanto_model_legacy_label"] = _clean(shadow.get("legacy_label"))
+        row["tallanto_model_semantic_label"] = _clean(shadow.get("semantic_label"))
+        row["tallanto_model_shadow_changed"] = "Да" if shadow.get("label_changed") else ("Нет" if shadow else "")
+        row["tallanto_model_primary_allowed"] = "Да" if shadow.get("primary_allowed") else ("Нет" if shadow else "")
+        row["tallanto_model_semantic_reasons"] = " | ".join(shadow.get("semantic_reasons") or [])
+        row.pop("_tallanto_shadow_json", None)
+
+
+def _latest_history_signal_negation_aware(history: str) -> tuple[str, str]:
+    latest_label = ""
+    latest_text = ""
+    chunks = [line.strip() for line in re.split(r"[\n\r]+", history) if line.strip()]
+    if not chunks and history.strip():
+        chunks = [history.strip()]
+    for chunk in chunks:
+        label = _signal_label_for_text_negation_aware(chunk)
+        if label:
+            latest_label = label
+            latest_text = chunk[:500]
+    return latest_label, latest_text
+
+
+def _signal_label_for_text_negation_aware(text: str) -> str:
+    if _has_affirmed_match(text, REFUSAL_RE):
+        return "refusal"
+    if _has_affirmed_match(text, PAID_RE):
+        return "paid"
+    if _has_affirmed_match(text, ENROLLED_RE) or _has_affirmed_match(text, ACTIVE_RE):
+        return "active_learning"
+    if PAYMENT_PENDING_RE.search(text):
+        return "payment_pending"
+    if PENDING_RE.search(text):
+        return "pending"
+    return ""
+
+
 def _bool_count(values: Iterable[str], pattern: re.Pattern[str]) -> int:
     return sum(1 for value in values if pattern.search(value))
+
+
+def _affirmed_count(values: Iterable[str], pattern: re.Pattern[str]) -> int:
+    return sum(1 for value in values if _has_affirmed_match(value, pattern))
+
+
+def _has_affirmed_match(value: str, pattern: re.Pattern[str]) -> bool:
+    for match in pattern.finditer(value):
+        if not _match_is_negated(value, match):
+            return True
+    return False
+
+
+def _match_is_negated(value: str, match: re.Match[str]) -> bool:
+    matched = match.group(0).casefold().replace("ё", "е").strip()
+    # Some refusal patterns intentionally start with "не": "не актуально", "не подходит".
+    if matched.startswith("не ") or matched.startswith("неакту"):
+        return False
+    prefix = value[max(0, match.start() - 48) : match.start()].casefold().replace("ё", "е")
+    prefix = re.sub(r"\s+", " ", prefix)
+    prefix = re.split(r"[,.;:!?\-–—]", prefix)[-1]
+    return bool(re.search(r"(?:^|[\s,.;:!?])(?:не|нет|без|ни|никак|еще не|ещё не)\s+(?:\S+\s+){0,3}$", prefix))
+
+
+def _parse_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    text = _clean(value)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
@@ -695,6 +931,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tallanto-contacts", default="stable_runtime/tallanto_snapshot_20260331/tallanto_contacts_normalized.csv")
     parser.add_argument("--amo-deal-analysis-root", default="stable_runtime/amocrm_runtime/deal_analysis")
     parser.add_argument("--pilot-limit", type=int, default=500)
+    parser.add_argument(
+        "--outcome-model-mode",
+        choices=("off", "shadow", "primary"),
+        default="off",
+        help="Offline-only outcome model mode. off preserves the legacy report.",
+    )
     return parser.parse_args(argv)
 
 
@@ -707,6 +949,7 @@ def config_from_args(args: argparse.Namespace) -> OutcomeLinkerConfig:
         tallanto_contacts=(project_root / args.tallanto_contacts).resolve() if args.tallanto_contacts else None,
         amo_deal_analysis_root=(project_root / args.amo_deal_analysis_root).resolve() if args.amo_deal_analysis_root else None,
         pilot_limit=int(args.pilot_limit),
+        outcome_model_mode=normalize_outcome_model_mode(args.outcome_model_mode),
     )
 
 
@@ -726,5 +969,6 @@ __all__ = [
     "link_chain_outcome",
     "load_amo_outcome_index",
     "load_tallanto_outcome_index",
+    "normalize_outcome_model_mode",
     "parse_args",
 ]

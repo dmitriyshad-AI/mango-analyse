@@ -13,11 +13,28 @@ from mango_mvp.customer_timeline import (
     build_canonical_readonly_customer_timeline,
     canonical_readonly_timeline_safety_contract,
 )
-from mango_mvp.customer_timeline.canonical_readonly_import import split_ids
+from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand, infer_offline_brand, split_ids
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 
 
 NOW = datetime(2026, 5, 21, 9, 0, tzinfo=timezone.utc)
+
+
+def test_infer_brand_cyrillic_v2_foton_root_and_cross_brand_fail_closed() -> None:
+    assert infer_brand(["Фотона математика"], mode="legacy") == "foton"
+    assert infer_brand(["Фотоны онлайн"], mode="cyrillic_v2") == "foton"
+    assert infer_brand(["Фотону"], mode="cyrillic_v2") == "foton"
+    assert infer_brand(["в Фотоне"], mode="cyrillic_v2") == "foton"
+    assert infer_brand(["ЦДПФОТОН"], mode="cyrillic_v2") == "foton"
+    assert infer_brand(["ЦИДПОФОТОН"], mode="cyrillic_v2") == "foton"
+    assert infer_brand(["олимпиада МФТИ"], mode="legacy") == "unknown"
+    assert infer_brand(["олимпиада МФТИ"], mode="cyrillic_v2") == "unpk"
+    assert infer_brand(["Фотон и УНПК"], mode="legacy") == "unpk"
+    assert infer_brand(["Фотон и УНПК"], mode="cyrillic_v2") == "unknown"
+    assert infer_brand(["Фотон МФТИ"], mode="cyrillic_v2") == "unknown"
+    assert infer_brand(["мотивация через фотончики"], mode="cyrillic_v2") == "unknown"
+    assert infer_brand(["олимпиада Фотоний"], mode="cyrillic_v2") == "unknown"
+    assert infer_offline_brand({"История": "клиент занимался у Фотона", "Филиал Tallanto": "МФТИ"}) == "foton"
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:

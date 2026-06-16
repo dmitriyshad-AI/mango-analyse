@@ -31,6 +31,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION = "canonical_readonly_customer_timeline_v1"
 DEFAULT_OUT_ROOT = Path("product_data/customer_timeline/canonical_readonly_20260521_v5")
+OFFLINE_BRAND_INFER_MODE = "cyrillic_v2"
 MASTER_CONTACT_SOURCE = "master_contacts_snapshot"
 MANGO_SOURCE = "mango_processed_summary"
 AMO_SOURCE = "amocrm_snapshot"
@@ -138,7 +139,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         for phone in phones:
             row = customers_by_phone[phone]["row"]
             customer = customers_by_phone[phone]["customer"]
-            brand = infer_brand(row.values())
+            brand = infer_offline_brand(row)
             brand_counts[brand] += 1
             reasons = manual_review_reasons(
                 row=row,
@@ -388,7 +389,7 @@ def build_customer_index(
                 "tallanto_match_status": safe_text(row.get("Статус матчинга Tallanto")),
                 "amo_contact_id_count": len(split_ids(row.get("AMO contact IDs"))),
                 "amo_lead_id_count": len(split_ids(row.get("AMO lead IDs"))),
-                "brand": infer_brand(row.values()),
+                "brand": infer_offline_brand(row),
             },
             metadata={"source": MASTER_CONTACT_SOURCE},
             created_at=generated_at,
@@ -775,7 +776,7 @@ def upsert_amo_snapshot(
         if not lead_id:
             continue
         is_duplicate_lead = lead_id in duplicate_amo_lead_ids
-        deal_brand = infer_brand([brand, deal.get("lead_name"), deal.get("pipeline_name")])
+        deal_brand = infer_offline_brand({"contact_brand": brand, "lead_name": deal.get("lead_name"), "pipeline_name": deal.get("pipeline_name")})
         deal_created_at = parse_unix_or_iso(deal.get("created_at"))
         deal_updated_at = parse_unix_or_iso(deal.get("updated_at")) or deal_created_at or updated_at
         opened_at, deal_seen_at, deal_date_corrected = ordered_datetime_pair(
@@ -1403,13 +1404,116 @@ def call_direction(value: Any) -> TimelineDirection:
     return TimelineDirection.SYSTEM
 
 
-def infer_brand(values: Iterable[Any]) -> str:
+def infer_brand(values: Iterable[Any], *, mode: str = "legacy") -> str:
     text = " ".join(safe_text(value).lower() for value in values)
+    normalized_mode = safe_text(mode).casefold() or "legacy"
+    if normalized_mode == "cyrillic_v2":
+        return infer_brand_cyrillic_v2(text)
     if "унпк" in text or "unpk" in text:
         return "unpk"
     if "фотон" in text or "foton" in text:
         return "foton"
     return "unknown"
+
+
+def infer_offline_brand(values: Mapping[str, Any] | Iterable[Any]) -> str:
+    if isinstance(values, Mapping):
+        return infer_brand_cyrillic_v2_record(values)
+    return infer_brand(values, mode=OFFLINE_BRAND_INFER_MODE)
+
+
+def infer_brand_cyrillic_v2(text: str) -> str:
+    hits = brand_root_hits(safe_text(text))
+    has_foton = hits["foton"]
+    has_unpk = hits["unpk"]
+    if has_foton and has_unpk:
+        return "unknown"
+    if has_foton:
+        return "foton"
+    if has_unpk:
+        return "unpk"
+    return "unknown"
+
+
+def infer_brand_cyrillic_v2_record(row: Mapping[str, Any]) -> str:
+    foton_score = 0
+    unpk_score = 0
+    explicit_unpk = False
+    short_mixed = False
+    long_mixed_foton = False
+    long_mixed_unpk = False
+
+    for key, value in row.items():
+        text = safe_text(value)
+        if not text:
+            continue
+        hits = brand_root_hits(text)
+        field = safe_text(key).casefold().replace("ё", "е")
+        if hits["explicit_unpk"]:
+            explicit_unpk = True
+        weight = 1
+        if "филиал" in field or "branch" in field:
+            weight = 1
+        if hits["foton"] and hits["unpk"]:
+            if len(text) <= 160 or hits["explicit_unpk"]:
+                short_mixed = True
+            else:
+                long_mixed_foton = True
+                long_mixed_unpk = True
+            continue
+        if hits["foton"]:
+            foton_score += weight
+        elif hits["unpk"]:
+            unpk_score += weight
+
+    if short_mixed:
+        return "unknown"
+    if foton_score and unpk_score:
+        if explicit_unpk:
+            return "unknown"
+        return "foton"
+    if foton_score:
+        return "foton"
+    if long_mixed_foton and long_mixed_unpk and not explicit_unpk:
+        return "foton"
+    if unpk_score:
+        return "unpk"
+    if long_mixed_unpk:
+        return "unknown"
+    return "unknown"
+
+
+def brand_root_hits(text: str) -> Mapping[str, bool]:
+    normalized = safe_text(text).casefold().replace("ё", "е")
+    compact = re.sub(r"\s+", "", normalized)
+    has_foton = has_foton_root(normalized)
+    has_unpk_token = "унпк" in compact or "unpk" in compact
+    has_mfti = "мфти" in compact
+    return {
+        "foton": has_foton,
+        "unpk": has_unpk_token or has_mfti,
+        "explicit_unpk": has_unpk_token,
+        "mfti": has_mfti,
+    }
+
+
+def has_foton_root(compact_text: str) -> bool:
+    for token in ("foton", "фотон"):
+        start = 0
+        while True:
+            index = compact_text.find(token, start)
+            if index < 0:
+                break
+            suffix = compact_text[index + len(token) :]
+            if not suffix or not re.match(r"[a-zа-я0-9]", suffix[0]):
+                return True
+            if token == "фотон":
+                if suffix.startswith(("а", "у", "е", "ы")) and (len(suffix) == 1 or not re.match(r"[а-я0-9]", suffix[1])):
+                    return True
+                if suffix.startswith("ом") and (len(suffix) == 2 or not re.match(r"[а-я0-9]", suffix[2])):
+                    return True
+            start = index + len(token)
+    return False
 
 
 def compact_join(parts: Sequence[Any]) -> str:

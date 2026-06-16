@@ -11555,6 +11555,32 @@ def test_tz119_assumed_scope_guard_skips_p0_risk() -> None:
     assert result.metadata["assumed_scope_guard"]["action"] == "skipped_p0_or_risk"
 
 
+def test_tz119_assumed_scope_guard_checks_low_risk_model_p0_metadata() -> None:
+    result = subscription_llm.apply_assumed_scope_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            risk_level="low",
+            draft_text="Для 4 класса онлайн стоимость 29 750 ₽ за семестр.",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": False,
+                    "risk_level": "low",
+                    "p0_kind": "none",
+                    "model_reason": "обычный вопрос без P0",
+                }
+            },
+        ),
+        context={
+            ASSUMED_SCOPE_GUARD_ENV: "1",
+            "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "format": "онлайн"}},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "29 750" not in result.draft_text
+    assert result.metadata["assumed_scope_guard"]["action"] == "reask_assumed_parameter"
+
+
 def test_tz119_draft_prompt_marks_assumed_slots_only_when_flag_enabled() -> None:
     context = {
         "active_brand": "foton",
@@ -12718,7 +12744,7 @@ def test_pii_relation_stopwords_flag_still_masks_unmentioned_name(monkeypatch) -
     )
 
     assert "Ирины" not in sanitized
-    assert "данные ребёнка" in sanitized
+    assert "Для ребёнка подберём группу." == sanitized
     assert "client_name_echo" in reasons
 
 

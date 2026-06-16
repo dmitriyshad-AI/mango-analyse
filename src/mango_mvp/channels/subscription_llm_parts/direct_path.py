@@ -412,6 +412,16 @@ _ASSUMED_SCOPE_KEYS = frozenset(
         "product_family",
     }
 )
+_ASSUMED_OUTPUT_GUARD_KEYS = frozenset(
+    {
+        "format",
+        "training_format",
+        "grade",
+        "class",
+        "subject",
+        "course_subject",
+    }
+)
 
 _CONFIRMED_SLOT_SOURCES = {"dialogue_memory", "memory_provenance"}
 
@@ -1781,8 +1791,15 @@ def _direct_path_assumed_scope_p0_active(
     if any(re.search(r"p0|payment_dispute|refund|complaint|legal|high_risk", flag, re.I) for flag in result.safety_flags):
         return True
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
-    if isinstance(metadata.get("direct_path_model_p0"), Mapping):
-        return True
+    model_p0 = metadata.get("direct_path_model_p0")
+    if isinstance(model_p0, Mapping):
+        model_risk = str(model_p0.get("risk_level") or "").strip().casefold()
+        model_kind = str(model_p0.get("p0_kind") or "").strip().casefold()
+        model_is_p0 = str(model_p0.get("is_p0") or "").strip().casefold() in {"1", "true", "yes", "да", "p0"}
+        if model_is_p0 or model_risk in {"high", "p0", "critical", "high_risk"}:
+            return True
+        if model_kind and model_kind not in {"none", "no", "false", "low", "normal"}:
+            return True
     if isinstance(context, Mapping):
         memory = context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else context
         latch = memory.get("p0_latch") if isinstance(memory, Mapping) and isinstance(memory.get("p0_latch"), Mapping) else {}
@@ -1890,7 +1907,7 @@ def apply_assumed_scope_guard(
     assumed_slots = [
         {"key": key, "value": str(data.get("value") or "")}
         for key, data in provenance.items()
-        if key in _ASSUMED_SCOPE_KEYS and not data.get("confirmed") and str(data.get("value") or "").strip()
+        if key in _ASSUMED_OUTPUT_GUARD_KEYS and not data.get("confirmed") and str(data.get("value") or "").strip()
     ]
     trace["assumed_slots"] = assumed_slots
     if _direct_path_assumed_scope_p0_active(result, context=context):

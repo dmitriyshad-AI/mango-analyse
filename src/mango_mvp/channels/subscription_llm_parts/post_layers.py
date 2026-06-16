@@ -2843,6 +2843,12 @@ def _sanitize_client_pii_echo(
                 else name
             )
         value = re.sub(_flexible_name_pattern(name), replacement, value, flags=re.I)
+    value = re.sub(
+        r"\b(для)\s+данные ребёнка\b",
+        lambda match: f"{match.group(1)} ребёнка",
+        value,
+        flags=re.I,
+    )
     return value, tuple(reasons)
 
 

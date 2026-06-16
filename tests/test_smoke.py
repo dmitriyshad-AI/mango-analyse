@@ -36,6 +36,7 @@ class SmokePipelineTest(unittest.TestCase):
                 {
                     "STEREO_OVERLAP_SIMILARITY_THRESHOLD": "0.93",
                     "MONO_ROLE_LOW_INFO_FILTER_MODE": "filter",
+                    "MONO_ROLE_SEGMENT_GUARD_MODE": "repair",
                     "MONO_ROLE_ASSIGNMENT_MIN_CONFIDENCE": "0.71",
                     "MONO_ROLE_ASSIGNMENT_LLM_THRESHOLD": "0.77",
                     "OLLAMA_TEMPERATURE": "0.15",
@@ -46,6 +47,7 @@ class SmokePipelineTest(unittest.TestCase):
                 settings = get_settings()
                 self.assertAlmostEqual(settings.stereo_overlap_similarity_threshold, 0.93)
                 self.assertEqual(settings.mono_role_low_info_filter_mode, "filter")
+                self.assertEqual(settings.mono_role_segment_guard_mode, "repair")
                 self.assertAlmostEqual(settings.mono_role_assignment_min_confidence, 0.71)
                 self.assertAlmostEqual(settings.mono_role_assignment_llm_threshold, 0.77)
                 self.assertAlmostEqual(settings.ollama_temperature, 0.15)

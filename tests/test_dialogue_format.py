@@ -13,6 +13,7 @@ def make_settings(
     *,
     mono_mode: str = "off",
     mono_low_info_filter_mode: str = "off",
+    mono_segment_guard_mode: str = "off",
     openai_api_key: str | None = None,
 ) -> Settings:
     return Settings(
@@ -59,6 +60,7 @@ def make_settings(
         stereo_overlap_min_chars=80,
         mono_role_assignment_mode=mono_mode,
         mono_role_low_info_filter_mode=mono_low_info_filter_mode,
+        mono_role_segment_guard_mode=mono_segment_guard_mode,
         mono_role_assignment_min_confidence=0.62,
         mono_role_assignment_llm_threshold=0.72,
         openai_role_assign_model="gpt-4o-mini",
@@ -441,6 +443,123 @@ class DialogueFormatTest(unittest.TestCase):
         self.assertEqual(assigned["meta"]["roles"], ["client", "manager"])
         self.assertNotIn("low_info_filter_applied", assigned["meta"])
         self.assertEqual(warnings, [])
+
+    def test_segment_guard_default_off_keeps_codex_roles_byte_for_byte(self) -> None:
+        service = TranscribeService(make_settings(mono_mode="codex_selective", openai_api_key=None))
+        turns = [
+            {"start": 0.0, "approximate": False, "text": "Добрый день, вас беспокоит учебный центр."},
+            {"start": 2.0, "approximate": False, "text": "Подскажите, какой класс?"},
+            {"start": 4.0, "approximate": False, "text": "Я отправлю ссылку на оплату."},
+        ]
+        codex_result = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["client", "client", "manager"], "confidence": 0.91, "notes": "synthetic"},
+            turns=turns,
+            manager_name="Петров",
+            provider="codex_cli",
+        )
+        low_conf_rule = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "manager", "manager"], "confidence": 0.5, "notes": "low"},
+            turns=turns,
+            manager_name="Петров",
+            provider="rule",
+        )
+        warnings: list[str] = []
+        with patch.object(service, "_assign_roles_rule_based", return_value=low_conf_rule):
+            with patch.object(service, "_assign_roles_with_codex", return_value=codex_result):
+                assigned = service._assign_roles_for_mono(turns, "Петров", warnings)
+
+        self.assertIsNotNone(assigned)
+        assert assigned is not None
+        self.assertEqual(assigned["meta"]["roles"], ["client", "client", "manager"])
+        self.assertNotIn("segment_guard_applied", assigned["meta"])
+        self.assertEqual(warnings, [])
+
+    def test_segment_guard_repairs_disagreement_run_and_manager_anchor(self) -> None:
+        service = TranscribeService(
+            make_settings(
+                mono_mode="codex_selective",
+                mono_segment_guard_mode="repair",
+                openai_api_key=None,
+            )
+        )
+        turns = [
+            {"start": 0.0, "approximate": False, "text": "Алло."},
+            {"start": 2.0, "approximate": False, "text": "Добрый день, вас беспокоит учебный центр Фотон."},
+            {"start": 4.0, "approximate": False, "text": "Подскажите, какой класс у ребенка?"},
+            {"start": 6.0, "approximate": False, "text": "Я отправлю ссылку на оплату."},
+            {"start": 8.0, "approximate": False, "text": "Сколько стоит курс по математике?"},
+        ]
+        codex_result = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["client", "client", "client", "client", "manager"], "confidence": 0.91, "notes": "synthetic"},
+            turns=turns,
+            manager_name="Петров",
+            provider="codex_cli",
+        )
+        low_conf_rule = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "manager", "manager", "manager", "client"], "confidence": 0.5, "notes": "low"},
+            turns=turns,
+            manager_name="Петров",
+            provider="rule",
+        )
+        warnings: list[str] = []
+        with patch.object(service, "_assign_roles_rule_based", return_value=low_conf_rule):
+            with patch.object(service, "_assign_roles_with_codex", return_value=codex_result):
+                assigned = service._assign_roles_for_mono(turns, "Петров", warnings)
+
+        self.assertIsNotNone(assigned)
+        assert assigned is not None
+        meta = assigned["meta"]
+        self.assertEqual(meta["roles"], ["manager", "manager", "manager", "manager", "client"])
+        self.assertEqual(meta["raw_model_roles_before_guard"], ["client", "client", "client", "client", "manager"])
+        self.assertEqual(meta["segment_guard_segments"], [{"start": 1, "end": 5, "length": 5}])
+        self.assertEqual(meta["segment_guard_manager_anchor_indexes"], [2, 3, 4])
+        self.assertEqual(meta["segment_guard_changed_indexes"], [1, 2, 3, 4, 5])
+        self.assertEqual(warnings, [])
+
+    def test_segment_guard_ignores_short_disagreement_runs(self) -> None:
+        service = TranscribeService(
+            make_settings(
+                mono_mode="codex_selective",
+                mono_segment_guard_mode="repair",
+                openai_api_key=None,
+            )
+        )
+        turns = [
+            {"start": 0.0, "approximate": False, "text": "Меня интересует математика для десятого класса."},
+            {"start": 2.0, "approximate": False, "text": "Хотим понять стоимость и формат."},
+            {"start": 4.0, "approximate": False, "text": "Пришлите информацию на почту."},
+        ]
+        codex_result = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["client", "client", "manager"], "confidence": 0.91, "notes": "synthetic"},
+            turns=turns,
+            manager_name="Петров",
+            provider="codex_cli",
+        )
+        low_conf_rule = service._normalize_role_assignment_payload(  # noqa: SLF001
+            {"roles": ["manager", "manager", "manager"], "confidence": 0.5, "notes": "low"},
+            turns=turns,
+            manager_name="Петров",
+            provider="rule",
+        )
+        warnings: list[str] = []
+        with patch.object(service, "_assign_roles_rule_based", return_value=low_conf_rule):
+            with patch.object(service, "_assign_roles_with_codex", return_value=codex_result):
+                assigned = service._assign_roles_for_mono(turns, "Петров", warnings)
+
+        self.assertIsNotNone(assigned)
+        assert assigned is not None
+        self.assertEqual(assigned["meta"]["roles"], ["client", "client", "manager"])
+        self.assertNotIn("segment_guard_applied", assigned["meta"])
+        self.assertEqual(warnings, [])
+
+    def test_manager_anchor_detector_is_conservative(self) -> None:
+        service = TranscribeService(make_settings())
+
+        self.assertTrue(service._is_manager_anchor_role_turn("Добрый день, вас беспокоит центр Фотон."))  # noqa: SLF001
+        self.assertTrue(service._is_manager_anchor_role_turn("Подскажите, какой класс у ребенка?"))  # noqa: SLF001
+        self.assertTrue(service._is_manager_anchor_role_turn("Я отправлю ссылку на оплату."))  # noqa: SLF001
+        self.assertFalse(service._is_manager_anchor_role_turn("Сколько стоит курс?"))  # noqa: SLF001
+        self.assertFalse(service._is_manager_anchor_role_turn("Да, пришлите ссылку на оплату."))  # noqa: SLF001
 
     def test_gigaam_uses_afconvert_fallback_when_ffmpeg_missing(self) -> None:
         service = TranscribeService(make_settings())

@@ -29,6 +29,8 @@ WORD_RE = re.compile(r"\w+", re.UNICODE)
 MERGE_ALLOWED_PROVIDERS = {"primary", "rule", "openai", "ollama", "codex_cli"}
 ROLE_ASSIGN_ALLOWED_MODES = {"off", "rule", "openai_selective", "ollama_selective", "codex_selective"}
 ROLE_ASSIGN_LOW_INFO_FILTER_MODES = {"off", "mark", "filter"}
+ROLE_ASSIGN_SEGMENT_GUARD_MODES = {"off", "repair"}
+ROLE_ASSIGN_SEGMENT_GUARD_MIN_RUN = 3
 ROLE_ASSIGN_LOW_INFO_PHRASES = {
     "ага",
     "алло",
@@ -71,6 +73,43 @@ ROLE_ASSIGN_LOW_INFO_TOKENS = {
     "угу",
     "хорошо",
     "ясно",
+}
+ROLE_ASSIGN_MANAGER_ANCHOR_CENTER_MARKERS = {
+    "учебный центр",
+    "центр фотон",
+    "цдпо",
+    "цдпофотон",
+    "цидпофотон",
+    "унпк",
+    "мфти",
+}
+ROLE_ASSIGN_MANAGER_ANCHOR_DATA_REQUEST_WORDS = {
+    "назовите",
+    "напишите",
+    "подскажите",
+    "скажите",
+    "уточните",
+}
+ROLE_ASSIGN_MANAGER_ANCHOR_DATA_ROOTS = {
+    "возраст",
+    "данн",
+    "имя",
+    "класс",
+    "почт",
+    "ребен",
+    "телефон",
+    "фамил",
+    "школ",
+}
+ROLE_ASSIGN_MANAGER_ANCHOR_PAYMENT_MARKERS = {
+    "можете оплатить",
+    "оплатить можно",
+    "я отправлю ссылку",
+    "я пришлю ссылку",
+    "мы отправим ссылку",
+    "мы пришлем ссылку",
+    "сейчас отправлю ссылку",
+    "сейчас пришлю ссылку",
 }
 CODEX_HOME_COPY_ALLOWLIST = ("auth.json", "rules", "skills", "models_cache.json")
 CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
@@ -1770,7 +1809,9 @@ class TranscribeService:
             turns, merged_roles, manager_name
         )
         meta = dict(llm_meta)
+        meta.setdefault("raw_model_roles_before_guard", llm_roles)
         meta["roles"] = merged_roles
+        meta["post_guard_roles"] = merged_roles
         meta["has_both_roles"] = bool(manager_text and client_text)
         meta["low_info_filter_applied"] = True
         meta["low_info_filter_mode"] = filter_mode
@@ -1783,6 +1824,168 @@ class TranscribeService:
         meta["low_info_changed_indexes"] = [index + 1 for index in changed_indexes]
         meta["low_info_turn_count"] = len(low_info_indexes)
         meta["low_info_changed_count"] = len(changed_indexes)
+        return {
+            "manager_text": manager_text,
+            "client_text": client_text,
+            "dialogue_lines": dialogue_lines,
+            "meta": meta,
+        }
+
+    @staticmethod
+    def _normalize_role_guard_text(text: Any) -> str:
+        return " ".join(WORD_RE.findall(str(text or "").lower().replace("ё", "е")))
+
+    def _is_manager_anchor_role_turn(self, text: Any) -> bool:
+        normalized = self._normalize_role_guard_text(text)
+        if not normalized:
+            return False
+        compact = normalized.replace(" ", "")
+        has_center_marker = any(
+            marker.replace(" ", "") in compact
+            for marker in ROLE_ASSIGN_MANAGER_ANCHOR_CENTER_MARKERS
+        )
+        has_intro_marker = any(
+            marker in normalized
+            for marker in ("вас беспокоит", "меня зовут", "звоню из")
+        )
+        if has_center_marker and (
+            has_intro_marker
+            or normalized.startswith(("добрый день", "доброе утро", "добрый вечер", "здравствуйте"))
+        ):
+            return True
+
+        words = set(normalized.split())
+        has_data_request = bool(words & ROLE_ASSIGN_MANAGER_ANCHOR_DATA_REQUEST_WORDS) and any(
+            root in normalized for root in ROLE_ASSIGN_MANAGER_ANCHOR_DATA_ROOTS
+        )
+        if has_data_request:
+            return True
+
+        if any(marker in normalized for marker in ROLE_ASSIGN_MANAGER_ANCHOR_PAYMENT_MARKERS):
+            return True
+        payment_action = any(
+            root in normalized
+            for root in ("выстав", "направ", "отправ", "сформир")
+        ) or any(
+            marker in normalized
+            for marker in ("я пришл", "мы пришл", "сейчас пришл", "вам пришл")
+        )
+        if "оплат" in normalized and payment_action and ("ссылк" in normalized or "счет" in normalized):
+            return True
+        return False
+
+    @staticmethod
+    def _find_role_disagreement_runs(
+        rule_roles: list[str],
+        llm_roles: list[str],
+        *,
+        min_run: int,
+    ) -> list[tuple[int, int]]:
+        runs: list[tuple[int, int]] = []
+        start: int | None = None
+        for index, (rule_role, llm_role) in enumerate(zip(rule_roles, llm_roles)):
+            disagrees = rule_role in {"manager", "client"} and llm_role in {"manager", "client"} and rule_role != llm_role
+            if disagrees and start is None:
+                start = index
+            if (not disagrees or index == len(rule_roles) - 1) and start is not None:
+                end = index + 1 if disagrees and index == len(rule_roles) - 1 else index
+                if end - start >= min_run:
+                    runs.append((start, end))
+                start = None
+        return runs
+
+    def _apply_segment_role_guard(
+        self,
+        llm_result: Dict[str, Any],
+        *,
+        rule_result: Optional[Dict[str, Any]],
+        turns: list[dict[str, Any]],
+        manager_name: str,
+    ) -> Dict[str, Any]:
+        guard_mode = (self._settings.mono_role_segment_guard_mode or "off").strip().lower()
+        if guard_mode not in ROLE_ASSIGN_SEGMENT_GUARD_MODES or guard_mode == "off":
+            return llm_result
+        if not rule_result:
+            return llm_result
+
+        llm_meta = llm_result.get("meta") if isinstance(llm_result.get("meta"), dict) else {}
+        rule_meta = rule_result.get("meta") if isinstance(rule_result.get("meta"), dict) else {}
+        llm_roles = [str(role) for role in llm_meta.get("roles") or []]
+        rule_roles = [str(role) for role in rule_meta.get("roles") or []]
+        if len(llm_roles) != len(turns) or len(rule_roles) != len(turns):
+            return llm_result
+
+        min_run = ROLE_ASSIGN_SEGMENT_GUARD_MIN_RUN
+        disagreement_runs = self._find_role_disagreement_runs(
+            rule_roles,
+            llm_roles,
+            min_run=min_run,
+        )
+        low_info_indexes = {
+            index
+            for index, turn in enumerate(turns)
+            if self._is_low_info_role_turn(turn.get("text"))
+        }
+        manager_anchor_indexes = {
+            index
+            for index, turn in enumerate(turns)
+            if self._is_manager_anchor_role_turn(turn.get("text"))
+        }
+
+        guarded_indexes: set[int] = set(low_info_indexes) | set(manager_anchor_indexes)
+        for start, end in disagreement_runs:
+            guarded_indexes.update(range(start, end))
+
+        if not guarded_indexes:
+            return llm_result
+
+        merged_roles = llm_roles[:]
+        turn_reasons: dict[int, list[str]] = {}
+        changed_indexes: list[int] = []
+        segment_indexes: set[int] = set()
+        for start, end in disagreement_runs:
+            segment_indexes.update(range(start, end))
+
+        for index in sorted(guarded_indexes):
+            reasons: list[str] = []
+            if index in low_info_indexes:
+                reasons.append("low_info_rule")
+            if index in manager_anchor_indexes:
+                reasons.append("manager_anchor")
+            if index in segment_indexes:
+                reasons.append("disagreement_run_rule_or_anchor")
+
+            new_role = "manager" if index in manager_anchor_indexes else rule_roles[index]
+            if merged_roles[index] != new_role:
+                changed_indexes.append(index)
+            merged_roles[index] = new_role
+            turn_reasons[index + 1] = reasons
+
+        manager_text, client_text, dialogue_lines = self._build_role_texts_and_lines(
+            turns, merged_roles, manager_name
+        )
+        meta = dict(llm_meta)
+        meta.setdefault("raw_model_roles_before_guard", llm_roles)
+        meta["roles"] = merged_roles
+        meta["post_guard_roles"] = merged_roles
+        meta["has_both_roles"] = bool(manager_text and client_text)
+        meta["segment_guard_applied"] = True
+        meta["segment_guard_mode"] = guard_mode
+        meta["segment_guard_min_run"] = min_run
+        meta["segment_guard_segments"] = [
+            {"start": start + 1, "end": end, "length": end - start}
+            for start, end in disagreement_runs
+        ]
+        meta["segment_guard_turn_indexes"] = [index + 1 for index in sorted(guarded_indexes)]
+        meta["segment_guard_changed_indexes"] = [index + 1 for index in changed_indexes]
+        meta["segment_guard_manager_anchor_indexes"] = [index + 1 for index in sorted(manager_anchor_indexes)]
+        meta["segment_guard_low_info_indexes"] = [index + 1 for index in sorted(low_info_indexes)]
+        meta["segment_guard_turn_reasons"] = {
+            str(index): reasons for index, reasons in sorted(turn_reasons.items())
+        }
+        meta["segment_guard_segment_count"] = len(disagreement_runs)
+        meta["segment_guard_turn_count"] = len(guarded_indexes)
+        meta["segment_guard_changed_count"] = len(changed_indexes)
         return {
             "manager_text": manager_text,
             "client_text": client_text,
@@ -2022,6 +2225,12 @@ class TranscribeService:
 
         if llm_result and mode == "codex_selective":
             llm_result = self._apply_low_info_role_filter(
+                llm_result,
+                rule_result=rule_result,
+                turns=turns,
+                manager_name=manager_name,
+            )
+            llm_result = self._apply_segment_role_guard(
                 llm_result,
                 rule_result=rule_result,
                 turns=turns,

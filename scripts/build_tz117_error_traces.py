@@ -13,12 +13,20 @@ from typing import Any, Iterable, Mapping, Sequence
 
 TRACE_FIELDS = [
     "id",
+    "call_id",
+    "turn_index",
     "input_fragment",
     "gold",
     "rule",
+    "raw_model",
     "model",
     "confidence",
     "rationale",
+    "is_guarded",
+    "guard_changed",
+    "raw_matched_gold",
+    "post_matched_gold",
+    "guard_effect_type",
     "matched_gold",
     "error_type",
 ]
@@ -169,6 +177,7 @@ def build_d_trace(d_dir: Path) -> list[dict[str, str]]:
         rule_roles = list(rule.get("roles") or [])
         model_roles = list(selected.get("roles") or [])
         selected_meta = selected.get("meta") if isinstance(selected.get("meta"), dict) else {}
+        raw_model_roles = list(selected_meta.get("raw_model_roles_before_guard") or model_roles)
         confidence = str(selected.get("confidence") or selected_meta.get("confidence") or "")
         rationale = one_line(selected_meta.get("rationale") or selected_meta.get("notes"))
         low_info_policy = str(selected_meta.get("low_info_policy") or "")
@@ -177,12 +186,29 @@ def build_d_trace(d_dir: Path) -> list[dict[str, str]]:
             for value in selected_meta.get("low_info_turn_indexes") or []
             if str(value).isdigit()
         }
-        max_len = max(len(turns), len(gold_roles), len(rule_roles), len(model_roles))
+        segment_guard_indexes = {
+            int(value)
+            for value in selected_meta.get("segment_guard_turn_indexes") or []
+            if str(value).isdigit()
+        }
+        segment_guard_changed = {
+            int(value)
+            for value in selected_meta.get("segment_guard_changed_indexes") or []
+            if str(value).isdigit()
+        }
+        segment_guard_reasons = (
+            selected_meta.get("segment_guard_turn_reasons")
+            if isinstance(selected_meta.get("segment_guard_turn_reasons"), dict)
+            else {}
+        )
+        max_len = max(len(turns), len(gold_roles), len(rule_roles), len(model_roles), len(raw_model_roles))
         for index in range(max_len):
             gold = str(gold_roles[index]) if index < len(gold_roles) else ""
             rule_role = str(rule_roles[index]) if index < len(rule_roles) else ""
+            raw_model = str(raw_model_roles[index]) if index < len(raw_model_roles) else ""
             model = str(model_roles[index]) if index < len(model_roles) else ""
             matched = bool(gold and model == gold)
+            raw_matched = bool(gold and raw_model == gold)
             fragment = ""
             if index < len(turns) and isinstance(turns[index], Mapping):
                 fragment = redact_fragment(turns[index].get("text"), limit=220)
@@ -196,15 +222,37 @@ def build_d_trace(d_dir: Path) -> list[dict[str, str]]:
                 row_rationale = one_line(
                     low_info_prefix + " | " + rationale
                 )
+            guard_reason_raw = segment_guard_reasons.get(str(index + 1), [])
+            if isinstance(guard_reason_raw, list) and guard_reason_raw:
+                row_rationale = one_line(
+                    "segment_guard: "
+                    + ",".join(str(item) for item in guard_reason_raw)
+                    + " | "
+                    + row_rationale
+                )
+            guard_effect = guard_effect_type(
+                gold=gold,
+                raw_model=raw_model,
+                post_model=model,
+                is_guarded=index + 1 in segment_guard_indexes,
+            )
             rows.append(
                 {
                     "id": f"{call_id}:{index + 1}",
+                    "call_id": call_id,
+                    "turn_index": str(index + 1),
                     "input_fragment": fragment,
                     "gold": gold,
                     "rule": rule_role,
+                    "raw_model": raw_model,
                     "model": model,
                     "confidence": confidence,
                     "rationale": row_rationale,
+                    "is_guarded": bool_cell(index + 1 in segment_guard_indexes),
+                    "guard_changed": bool_cell(index + 1 in segment_guard_changed),
+                    "raw_matched_gold": bool_cell(raw_matched) if gold else "",
+                    "post_matched_gold": bool_cell(matched) if gold else "",
+                    "guard_effect_type": guard_effect,
                     "matched_gold": bool_cell(matched),
                     "error_type": classify_error_type(gold=gold, rule=rule_role, model=model),
                 }
@@ -241,6 +289,7 @@ def build_review_trace(path: Path, *, block: str) -> list[dict[str, str]]:
 
 def summarize_trace(rows: list[dict[str, str]]) -> dict[str, Any]:
     type_counts = Counter(row["error_type"] for row in rows)
+    guard_effect_counts = Counter(row.get("guard_effect_type") or "" for row in rows if row.get("guard_effect_type"))
     confidence_correct: list[float] = []
     confidence_errors: list[float] = []
     high_conf_wrong: list[dict[str, str]] = []
@@ -274,6 +323,7 @@ def summarize_trace(rows: list[dict[str, str]]) -> dict[str, Any]:
         "model_break": int(type_counts.get("model_break", 0) + type_counts.get("false_fix", 0) + type_counts.get("false_negative", 0)),
         "both_wrong": int(type_counts.get("both_wrong", 0)),
         "error_type_counts": dict(type_counts.most_common()),
+        "guard_effect_type_counts": dict(guard_effect_counts.most_common()),
         "avg_confidence_correct": average(confidence_correct),
         "avg_confidence_errors": average(confidence_errors),
         "high_conf_wrong_count": len(high_conf_wrong),
@@ -301,6 +351,28 @@ def classify_error_type(*, gold: str, rule: str, model: str) -> str:
     if rule_ok and not model_ok:
         return "model_break"
     return "both_wrong"
+
+
+def guard_effect_type(
+    *,
+    gold: str,
+    raw_model: str,
+    post_model: str,
+    is_guarded: bool,
+) -> str:
+    if not is_guarded:
+        return "no_guard"
+    if not gold:
+        return "guarded_no_gold"
+    raw_ok = bool(raw_model and raw_model == gold)
+    post_ok = bool(post_model and post_model == gold)
+    if not raw_ok and post_ok:
+        return "fixed"
+    if raw_ok and not post_ok:
+        return "broke"
+    if raw_ok and post_ok:
+        return "neutral_correct"
+    return "neutral_wrong"
 
 
 def review_gold_label(verdict: str, *, rule: str, model: str, block: str) -> str:

@@ -487,6 +487,101 @@ def test_mono_role_gold50_measure_calls_codex_only_for_low_confidence(tmp_path: 
     assert rows[0]["codex_rationale"] == "Первый ход похож на менеджера, второй на клиента."
 
 
+def test_mono_role_gold50_measure_reports_segment_guard_net_effect(tmp_path: Path, monkeypatch) -> None:
+    input_path = tmp_path / "gold50.csv"
+    turns = [
+        {"i": 1, "start": 0.0, "text": "Алло."},
+        {"i": 2, "start": 2.0, "text": "Добрый день, вас беспокоит центр Фотон."},
+        {"i": 3, "start": 4.0, "text": "Подскажите, какой класс у ребенка?"},
+        {"i": 4, "start": 6.0, "text": "Сколько стоит курс?"},
+    ]
+    with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "canonical_call_id",
+                "source_filename",
+                "started_at",
+                "manager_name",
+                "duration_sec",
+                "turn_count",
+                "gold_roles",
+                "notes_for_reviewer",
+                "turns_json",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "canonical_call_id": "seg1",
+                "source_filename": "synthetic.mp3",
+                "started_at": "2026-06-01T10:00:00+00:00",
+                "manager_name": "Иванов",
+                "duration_sec": "60",
+                "turn_count": "4",
+                "gold_roles": json.dumps(["manager", "manager", "manager", "client"]),
+                "notes_for_reviewer": "",
+                "turns_json": json.dumps(turns, ensure_ascii=False),
+            }
+        )
+
+    def fake_rule(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["manager", "manager", "manager", "client"],
+                "confidence": 0.5,
+                "notes": "low",
+                "rationale": "low",
+            },
+            turns=turns,
+            manager_name=manager_name,
+            provider="rule",
+        )
+
+    def fake_codex(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["client", "client", "client", "manager"],
+                "confidence": 0.93,
+                "notes": "synthetic",
+                "rationale": "synthetic",
+            },
+            turns=turns,
+            manager_name=manager_name,
+            provider="codex_cli",
+        )
+
+    monkeypatch.setattr(TranscribeService, "_assign_roles_rule_based", fake_rule)
+    monkeypatch.setattr(TranscribeService, "_assign_roles_with_codex", fake_codex)
+    out_dir = tmp_path / "gold50_out"
+
+    assert mono_gold50_main(
+        [
+            "--input",
+            str(input_path),
+            "--out-dir",
+            str(out_dir),
+            "--mode",
+            "shadow",
+            "--segment-guard-mode",
+            "repair",
+        ]
+    ) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["segment_guard"]["calls_with_guard"] == 1
+    assert summary["segment_guard"]["guard_fixed_total"] == 4
+    assert summary["segment_guard"]["guard_broke_total"] == 0
+    assert summary["segment_guard"]["guard_net_delta"] == 4
+    assert summary["per_turn_micro"]["raw_model_errors"] == 4
+    assert summary["per_turn_micro"]["post_guard_errors"] == 0
+    assert summary["stop_conditions"]["stop_recommended_for_primary"] is False
+    rows = list(csv.DictReader((out_dir / "mono_role_gold50_measure_rows.csv").open(encoding="utf-8-sig")))
+    assert json.loads(rows[0]["raw_model_roles_json"]) == ["client", "client", "client", "manager"]
+    assert json.loads(rows[0]["post_guard_roles_json"]) == ["manager", "manager", "manager", "client"]
+    assert rows[0]["guard_fixed_count"] == "4"
+
+
 def test_tz117_trace_summary_counts_fix_break_and_redacts_pii() -> None:
     rows = [
         {
@@ -582,6 +677,49 @@ def test_tz117_d_trace_marks_low_info_rationale(tmp_path: Path) -> None:
     assert parse_blocks("d") == ["d"]
     assert rows[0]["rationale"].startswith("low_info:")
     assert rows[1]["rationale"] == "synthetic"
+
+
+def test_tz117_d_trace_marks_segment_guard_effect(tmp_path: Path) -> None:
+    d_dir = tmp_path / "d"
+    d_dir.mkdir()
+    payload = {
+        "canonical_call_id": "call2",
+        "turns": [
+            {"text": "Добрый день, вас беспокоит центр Фотон."},
+            {"text": "Сколько стоит курс?"},
+        ],
+        "rule": {"roles": ["manager", "client"], "confidence": 0.5, "meta": {}},
+        "selected": {
+            "roles": ["manager", "client"],
+            "confidence": 0.9,
+            "meta": {
+                "provider": "codex_cli",
+                "rationale": "synthetic",
+                "raw_model_roles_before_guard": ["client", "client"],
+                "segment_guard_turn_indexes": [1],
+                "segment_guard_changed_indexes": [1],
+                "segment_guard_turn_reasons": {"1": ["manager_anchor"]},
+            },
+        },
+        "gold_roles": ["manager", "client"],
+        "warnings": [],
+    }
+    (d_dir / "mono_role_gold50_measure_results.jsonl").write_text(
+        json.dumps(payload, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    rows = build_d_trace(d_dir)
+    summary = summarize_trace(rows)
+
+    assert rows[0]["raw_model"] == "client"
+    assert rows[0]["model"] == "manager"
+    assert rows[0]["is_guarded"] == "Да"
+    assert rows[0]["guard_changed"] == "Да"
+    assert rows[0]["guard_effect_type"] == "fixed"
+    assert rows[0]["rationale"].startswith("segment_guard:")
+    assert rows[1]["guard_effect_type"] == "no_guard"
+    assert summary["guard_effect_type_counts"]["fixed"] == 1
 
 
 def test_be_real_measure_counts_negation_shadow_and_brand_flips(tmp_path: Path) -> None:

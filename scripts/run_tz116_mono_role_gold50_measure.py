@@ -33,6 +33,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_confidence=float(args.min_confidence),
         llm_threshold=float(args.llm_threshold),
         low_info_filter_mode=str(args.low_info_filter_mode or ""),
+        segment_guard_mode=str(args.segment_guard_mode or ""),
         model=str(args.model or ""),
         reasoning_effort=str(args.reasoning_effort or ""),
         timeout_sec=int(args.timeout_sec),
@@ -59,6 +60,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_confidence=float(args.min_confidence),
         llm_threshold=float(args.llm_threshold),
         low_info_filter_mode=str(args.low_info_filter_mode or ""),
+        segment_guard_mode=str(args.segment_guard_mode or ""),
     )
     write_csv(out_dir / "mono_role_gold50_measure_rows.csv", rows)
     write_csv(out_dir / "mono_role_gold50_manual_review_queue.csv", review_rows)
@@ -80,6 +82,7 @@ def build_service(
     min_confidence: float,
     llm_threshold: float,
     low_info_filter_mode: str,
+    segment_guard_mode: str,
     model: str,
     reasoning_effort: str,
     timeout_sec: int,
@@ -92,6 +95,9 @@ def build_service(
             mono_role_assignment_mode="off" if mode == "off" else "codex_selective",
             mono_role_low_info_filter_mode=(
                 "off" if mode == "off" else (low_info_filter_mode.strip().lower() or "off")
+            ),
+            mono_role_segment_guard_mode=(
+                "off" if mode == "off" else (segment_guard_mode.strip().lower() or "off")
             ),
             mono_role_assignment_min_confidence=min_confidence,
             mono_role_assignment_llm_threshold=llm_threshold,
@@ -143,13 +149,32 @@ def evaluate_row(
     selected_roles = [str(item) for item in selected_meta.get("roles") or []]
     selected_confidence = as_float(selected_meta.get("confidence"))
     model_roles = selected_roles if selected_provider == "codex_cli" else []
+    raw_model_roles = [
+        str(item)
+        for item in (selected_meta.get("raw_model_roles_before_guard") or model_roles)
+    ] if selected_provider == "codex_cli" else []
     model_confidence = selected_confidence if selected_provider == "codex_cli" else 0.0
 
     rule_gold = compare_roles(rule_roles, gold_roles)
     selected_gold = compare_roles(selected_roles, gold_roles)
     model_gold = compare_roles(model_roles, gold_roles)
+    raw_model_gold = compare_roles(raw_model_roles, gold_roles)
     model_rule = compare_roles(model_roles, rule_roles)
     selected_rule = compare_roles(selected_roles, rule_roles)
+    guard_indexes = parse_index_list(selected_meta.get("segment_guard_turn_indexes"))
+    guard_changed_indexes = parse_index_list(selected_meta.get("segment_guard_changed_indexes"))
+    guard_effect = guard_effect_counts(
+        raw_roles=raw_model_roles,
+        post_roles=selected_roles,
+        gold_roles=gold_roles,
+        guarded_indexes=guard_indexes,
+    )
+    raw_error = turn_error_counts(raw_model_roles, gold_roles)
+    post_error = turn_error_counts(selected_roles, gold_roles)
+    guarded_error = turn_error_counts_for_indexes(selected_roles, gold_roles, guard_indexes)
+    changed_error = turn_error_counts_for_indexes(selected_roles, gold_roles, guard_changed_indexes)
+    raw_segments = role_error_segment_stats(raw_model_roles, gold_roles)
+    post_segments = role_error_segment_stats(selected_roles, gold_roles)
 
     codex_called = selected_provider == "codex_cli"
     needs_review = (
@@ -177,14 +202,18 @@ def evaluate_row(
         "rule_exact_vs_gold": truthy_cell(rule_gold["exact_match"], gold_roles),
         "selected_exact_vs_gold": truthy_cell(selected_gold["exact_match"], gold_roles),
         "model_exact_vs_gold": truthy_cell(model_gold["exact_match"], gold_roles and model_roles),
+        "raw_model_exact_vs_gold": truthy_cell(raw_model_gold["exact_match"], gold_roles and raw_model_roles),
         "model_exact_vs_rule": truthy_cell(model_rule["exact_match"], model_roles and rule_roles),
         "selected_exact_vs_rule": truthy_cell(selected_rule["exact_match"], selected_roles and rule_roles),
         "rule_per_turn_accuracy_vs_gold": ratio_cell(rule_gold),
         "selected_per_turn_accuracy_vs_gold": ratio_cell(selected_gold),
         "model_per_turn_accuracy_vs_gold": ratio_cell(model_gold),
+        "raw_model_per_turn_accuracy_vs_gold": ratio_cell(raw_model_gold),
         "model_per_turn_accuracy_vs_rule": ratio_cell(model_rule),
         "warnings": " | ".join(warnings),
         "rule_roles_json": json.dumps(rule_roles, ensure_ascii=False),
+        "raw_model_roles_json": json.dumps(raw_model_roles, ensure_ascii=False),
+        "post_guard_roles_json": json.dumps(selected_roles, ensure_ascii=False),
         "selected_roles_json": json.dumps(selected_roles, ensure_ascii=False),
         "model_roles_json": json.dumps(model_roles, ensure_ascii=False),
         "gold_roles_json": json.dumps(gold_roles, ensure_ascii=False),
@@ -196,6 +225,38 @@ def evaluate_row(
         "low_info_changed_count": int(selected_meta.get("low_info_changed_count") or 0),
         "low_info_turn_indexes_json": json.dumps(selected_meta.get("low_info_turn_indexes") or [], ensure_ascii=False),
         "low_info_changed_indexes_json": json.dumps(selected_meta.get("low_info_changed_indexes") or [], ensure_ascii=False),
+        "segment_guard_mode": str(selected_meta.get("segment_guard_mode") or ""),
+        "segment_guard_applied": "Да" if selected_meta.get("segment_guard_applied") else "Нет",
+        "segment_guard_segment_count": int(selected_meta.get("segment_guard_segment_count") or 0),
+        "segment_guard_turn_count": int(selected_meta.get("segment_guard_turn_count") or 0),
+        "segment_guard_changed_count": int(selected_meta.get("segment_guard_changed_count") or 0),
+        "segment_guard_manager_anchor_count": len(parse_index_list(selected_meta.get("segment_guard_manager_anchor_indexes"))),
+        "segment_guard_low_info_count": len(parse_index_list(selected_meta.get("segment_guard_low_info_indexes"))),
+        "segment_guard_turn_indexes_json": json.dumps(selected_meta.get("segment_guard_turn_indexes") or [], ensure_ascii=False),
+        "segment_guard_changed_indexes_json": json.dumps(selected_meta.get("segment_guard_changed_indexes") or [], ensure_ascii=False),
+        "raw_model_turn_total": raw_error["total"],
+        "raw_model_turn_error_count": raw_error["errors"],
+        "raw_model_turn_error_rate": f"{raw_error['error_rate']:.6f}" if raw_error["total"] else "",
+        "post_guard_turn_total": post_error["total"],
+        "post_guard_turn_error_count": post_error["errors"],
+        "post_guard_turn_error_rate": f"{post_error['error_rate']:.6f}" if post_error["total"] else "",
+        "guarded_turn_count": guarded_error["total"],
+        "guarded_turn_error_count_post": guarded_error["errors"],
+        "guarded_turn_error_rate_post": f"{guarded_error['error_rate']:.6f}" if guarded_error["total"] else "",
+        "changed_turn_count": changed_error["total"],
+        "changed_turn_error_count_post": changed_error["errors"],
+        "changed_turn_error_rate_post": f"{changed_error['error_rate']:.6f}" if changed_error["total"] else "",
+        "guard_fixed_count": guard_effect["fixed"],
+        "guard_broke_count": guard_effect["broke"],
+        "guard_neutral_correct_count": guard_effect["neutral_correct"],
+        "guard_neutral_wrong_count": guard_effect["neutral_wrong"],
+        "guard_net_delta": guard_effect["fixed"] - guard_effect["broke"],
+        "raw_error_segments_count": raw_segments["segments"],
+        "raw_error_segment_turns": raw_segments["turns"],
+        "raw_error_segments_len_ge3_count": raw_segments["segments_len_ge3"],
+        "post_guard_error_segments_count": post_segments["segments"],
+        "post_guard_error_segment_turns": post_segments["turns"],
+        "post_guard_error_segments_len_ge3_count": post_segments["segments_len_ge3"],
     }
     review_row = {
         "canonical_call_id": call_id,
@@ -287,6 +348,113 @@ def compare_roles(left: Sequence[str], right: Sequence[str]) -> dict[str, Any]:
     }
 
 
+def parse_index_list(value: Any) -> set[int]:
+    if not isinstance(value, list):
+        return set()
+    indexes: set[int] = set()
+    for item in value:
+        try:
+            index = int(item)
+        except (TypeError, ValueError):
+            continue
+        if index > 0:
+            indexes.add(index)
+    return indexes
+
+
+def turn_error_counts(roles: Sequence[str], gold_roles: Sequence[str]) -> dict[str, Any]:
+    total = min(len(roles), len(gold_roles))
+    if total <= 0:
+        return {"total": 0, "errors": 0, "error_rate": 0.0}
+    errors = sum(1 for role, gold in zip(roles, gold_roles) if role != gold)
+    return {"total": total, "errors": errors, "error_rate": errors / total}
+
+
+def turn_error_counts_for_indexes(
+    roles: Sequence[str],
+    gold_roles: Sequence[str],
+    indexes_1based: set[int],
+) -> dict[str, Any]:
+    total = 0
+    errors = 0
+    for index in sorted(indexes_1based):
+        zero_index = index - 1
+        if zero_index < 0 or zero_index >= len(roles) or zero_index >= len(gold_roles):
+            continue
+        total += 1
+        if roles[zero_index] != gold_roles[zero_index]:
+            errors += 1
+    return {"total": total, "errors": errors, "error_rate": errors / total if total else 0.0}
+
+
+def guard_effect_counts(
+    *,
+    raw_roles: Sequence[str],
+    post_roles: Sequence[str],
+    gold_roles: Sequence[str],
+    guarded_indexes: set[int],
+) -> dict[str, int]:
+    counts = {
+        "fixed": 0,
+        "broke": 0,
+        "neutral_correct": 0,
+        "neutral_wrong": 0,
+        "excluded": 0,
+    }
+    for index in sorted(guarded_indexes):
+        zero_index = index - 1
+        if (
+            zero_index < 0
+            or zero_index >= len(raw_roles)
+            or zero_index >= len(post_roles)
+            or zero_index >= len(gold_roles)
+        ):
+            counts["excluded"] += 1
+            continue
+        raw_correct = raw_roles[zero_index] == gold_roles[zero_index]
+        post_correct = post_roles[zero_index] == gold_roles[zero_index]
+        if not raw_correct and post_correct:
+            counts["fixed"] += 1
+        elif raw_correct and not post_correct:
+            counts["broke"] += 1
+        elif raw_correct and post_correct:
+            counts["neutral_correct"] += 1
+        else:
+            counts["neutral_wrong"] += 1
+    return counts
+
+
+def role_error_segment_stats(roles: Sequence[str], gold_roles: Sequence[str]) -> dict[str, int]:
+    segments = 0
+    turns = 0
+    segments_len_ge3 = 0
+    turns_len_ge3 = 0
+    current_len = 0
+    for role, gold in zip(roles, gold_roles):
+        if role != gold:
+            current_len += 1
+            continue
+        if current_len:
+            segments += 1
+            turns += current_len
+            if current_len >= 3:
+                segments_len_ge3 += 1
+                turns_len_ge3 += current_len
+            current_len = 0
+    if current_len:
+        segments += 1
+        turns += current_len
+        if current_len >= 3:
+            segments_len_ge3 += 1
+            turns_len_ge3 += current_len
+    return {
+        "segments": segments,
+        "turns": turns,
+        "segments_len_ge3": segments_len_ge3,
+        "turns_len_ge3": turns_len_ge3,
+    }
+
+
 def build_summary(
     rows: list[dict[str, Any]],
     *,
@@ -296,12 +464,48 @@ def build_summary(
     min_confidence: float,
     llm_threshold: float,
     low_info_filter_mode: str,
+    segment_guard_mode: str,
 ) -> dict[str, Any]:
     provider_counts = Counter(str(row.get("selected_provider") or "") for row in rows)
     low_conf = [row for row in rows if row.get("rule_low_confidence") == "Да"]
     gold_rows = [row for row in rows if row.get("gold_labeled") == "Да"]
     model_rows = [row for row in rows if row.get("codex_called") == "Да"]
     low_info_rows = [row for row in rows if row.get("low_info_filter_applied") == "Да"]
+    segment_guard_rows = [row for row in rows if row.get("segment_guard_applied") == "Да"]
+    raw_turn_total = sum(int(row.get("raw_model_turn_total") or 0) for row in rows)
+    raw_turn_errors = sum(int(row.get("raw_model_turn_error_count") or 0) for row in rows)
+    post_turn_total = sum(int(row.get("post_guard_turn_total") or 0) for row in rows)
+    post_turn_errors = sum(int(row.get("post_guard_turn_error_count") or 0) for row in rows)
+    guarded_turn_total = sum(int(row.get("guarded_turn_count") or 0) for row in rows)
+    guarded_turn_errors_post = sum(int(row.get("guarded_turn_error_count_post") or 0) for row in rows)
+    changed_turn_total = sum(int(row.get("changed_turn_count") or 0) for row in rows)
+    changed_turn_errors_post = sum(int(row.get("changed_turn_error_count_post") or 0) for row in rows)
+    guard_fixed_total = sum(int(row.get("guard_fixed_count") or 0) for row in rows)
+    guard_broke_total = sum(int(row.get("guard_broke_count") or 0) for row in rows)
+    raw_error_segments_total = sum(int(row.get("raw_error_segments_count") or 0) for row in rows)
+    raw_error_segment_turns = sum(int(row.get("raw_error_segment_turns") or 0) for row in rows)
+    post_error_segments_total = sum(int(row.get("post_guard_error_segments_count") or 0) for row in rows)
+    post_error_segment_turns = sum(int(row.get("post_guard_error_segment_turns") or 0) for row in rows)
+    raw_model_missing = any(
+        row.get("codex_called") == "Да" and not str(row.get("raw_model_roles_json") or "[]").strip("[]")
+        for row in rows
+    )
+    length_mismatch_or_gold_gaps = any(
+        row.get("gold_labeled") == "Да"
+        and (
+            int(row.get("turn_count") or 0) != int(row.get("raw_model_turn_total") or 0)
+            or int(row.get("turn_count") or 0) != int(row.get("post_guard_turn_total") or 0)
+        )
+        for row in rows
+    )
+    stop_conditions = {
+        "raw_model_roles_missing": raw_model_missing,
+        "post_guard_worse_than_raw": bool(post_turn_total and raw_turn_total and post_turn_errors > raw_turn_errors),
+        "guard_net_delta_negative": guard_fixed_total - guard_broke_total < 0,
+        "guard_broke_total_positive": guard_broke_total > 0,
+        "length_mismatch_or_gold_gaps": length_mismatch_or_gold_gaps,
+    }
+    stop_conditions["stop_recommended_for_primary"] = any(stop_conditions.values())
     return {
         "schema_version": "tz116_mono_role_gold50_measure_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -320,15 +524,52 @@ def build_summary(
             "turns_filtered_total": sum(int(row.get("low_info_turn_count") or 0) for row in rows),
             "turns_changed_total": sum(int(row.get("low_info_changed_count") or 0) for row in rows),
         },
+        "segment_guard": {
+            "mode": "off" if mode == "off" else (segment_guard_mode.strip().lower() or "off"),
+            "calls_with_guard": len(segment_guard_rows),
+            "segments_total": sum(int(row.get("segment_guard_segment_count") or 0) for row in rows),
+            "turns_guarded_total": guarded_turn_total,
+            "turns_changed_total": changed_turn_total,
+            "manager_anchor_turns_total": sum(int(row.get("segment_guard_manager_anchor_count") or 0) for row in rows),
+            "low_info_turns_total": sum(int(row.get("segment_guard_low_info_count") or 0) for row in rows),
+            "guard_fixed_total": guard_fixed_total,
+            "guard_broke_total": guard_broke_total,
+            "guard_neutral_correct_total": sum(int(row.get("guard_neutral_correct_count") or 0) for row in rows),
+            "guard_neutral_wrong_total": sum(int(row.get("guard_neutral_wrong_count") or 0) for row in rows),
+            "guard_net_delta": guard_fixed_total - guard_broke_total,
+            "guarded_turn_error_rate_post": guarded_turn_errors_post / guarded_turn_total if guarded_turn_total else 0.0,
+            "changed_turn_error_rate_post": changed_turn_errors_post / changed_turn_total if changed_turn_total else 0.0,
+        },
+        "per_turn_micro": {
+            "raw_model_total": raw_turn_total,
+            "raw_model_errors": raw_turn_errors,
+            "raw_model_error_rate": raw_turn_errors / raw_turn_total if raw_turn_total else 0.0,
+            "post_guard_total": post_turn_total,
+            "post_guard_errors": post_turn_errors,
+            "post_guard_error_rate": post_turn_errors / post_turn_total if post_turn_total else 0.0,
+        },
+        "error_segments": {
+            "raw_model_segments_total": raw_error_segments_total,
+            "raw_model_segment_turns_total": raw_error_segment_turns,
+            "raw_model_segment_turn_ratio": raw_error_segment_turns / raw_turn_total if raw_turn_total else 0.0,
+            "post_guard_segments_total": post_error_segments_total,
+            "post_guard_segment_turns_total": post_error_segment_turns,
+            "post_guard_segment_turn_ratio": post_error_segment_turns / post_turn_total if post_turn_total else 0.0,
+            "raw_model_segments_len_ge3_total": sum(int(row.get("raw_error_segments_len_ge3_count") or 0) for row in rows),
+            "post_guard_segments_len_ge3_total": sum(int(row.get("post_guard_error_segments_len_ge3_count") or 0) for row in rows),
+        },
         "rule_vs_gold": aggregate_exact(rows, "rule_exact_vs_gold", "rule_per_turn_accuracy_vs_gold"),
         "selected_vs_gold": aggregate_exact(rows, "selected_exact_vs_gold", "selected_per_turn_accuracy_vs_gold"),
         "model_vs_gold": aggregate_exact(rows, "model_exact_vs_gold", "model_per_turn_accuracy_vs_gold"),
+        "raw_model_vs_gold": aggregate_exact(rows, "raw_model_exact_vs_gold", "raw_model_per_turn_accuracy_vs_gold"),
         "model_vs_rule": aggregate_exact(rows, "model_exact_vs_rule", "model_per_turn_accuracy_vs_rule"),
         "thresholds": {
             "min_confidence": min_confidence,
             "llm_threshold": llm_threshold,
         },
         "low_info_filter_mode": "off" if mode == "off" else (low_info_filter_mode.strip().lower() or "off"),
+        "segment_guard_mode": "off" if mode == "off" else (segment_guard_mode.strip().lower() or "off"),
+        "stop_conditions": stop_conditions,
         "safety": {
             "model_transport": "codex_cli" if mode == "shadow" else "none",
             "uses_openai_api_key": False,
@@ -424,7 +665,13 @@ def render_report(summary: Mapping[str, Any]) -> str:
             f"- Selected providers: `{json.dumps(summary['selected_provider_counts'], ensure_ascii=False, sort_keys=True)}`",
             f"- Low-info filter mode: `{summary.get('low_info_filter_mode', '')}`",
             f"- Low-info filter: `{json.dumps(summary.get('low_info_filter', {}), ensure_ascii=False, sort_keys=True)}`",
+            f"- Segment guard mode: `{summary.get('segment_guard_mode', '')}`",
+            f"- Segment guard: `{json.dumps(summary.get('segment_guard', {}), ensure_ascii=False, sort_keys=True)}`",
+            f"- Per-turn micro: `{json.dumps(summary.get('per_turn_micro', {}), ensure_ascii=False, sort_keys=True)}`",
+            f"- Error segments: `{json.dumps(summary.get('error_segments', {}), ensure_ascii=False, sort_keys=True)}`",
+            f"- Stop conditions: `{json.dumps(summary.get('stop_conditions', {}), ensure_ascii=False, sort_keys=True)}`",
             f"- Rule vs gold: `{json.dumps(summary['rule_vs_gold'], ensure_ascii=False, sort_keys=True)}`",
+            f"- Raw model vs gold: `{json.dumps(summary.get('raw_model_vs_gold', {}), ensure_ascii=False, sort_keys=True)}`",
             f"- Model vs gold: `{json.dumps(summary['model_vs_gold'], ensure_ascii=False, sort_keys=True)}`",
             f"- Model vs rule: `{json.dumps(summary['model_vs_rule'], ensure_ascii=False, sort_keys=True)}`",
             "",
@@ -444,6 +691,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reasoning-effort", default="")
     parser.add_argument("--timeout-sec", type=int, default=240)
     parser.add_argument("--low-info-filter-mode", choices=["off", "mark", "filter"], default="off")
+    parser.add_argument("--segment-guard-mode", choices=["off", "repair"], default="off")
     parser.add_argument("--review-low-confidence-all", action="store_true")
     return parser.parse_args(argv)
 

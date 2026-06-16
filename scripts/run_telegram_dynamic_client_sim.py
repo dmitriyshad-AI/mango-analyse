@@ -1427,6 +1427,11 @@ def _fact_retrieval_trace_for_turn(
     result: Any,
 ) -> Mapping[str, Any]:
     llm = direct_path_metadata.get("llm_retrieve") if isinstance(direct_path_metadata.get("llm_retrieve"), Mapping) else {}
+    assumed_scope_guard = (
+        direct_path_metadata.get("assumed_scope_guard")
+        if isinstance(direct_path_metadata.get("assumed_scope_guard"), Mapping)
+        else {}
+    )
     gate_codes = _authoritative_gate_finding_codes(authoritative_gate_metadata)
     brand_scope_codes = [
         code
@@ -1459,6 +1464,7 @@ def _fact_retrieval_trace_for_turn(
             "fallback": bool(llm.get("fallback")) if isinstance(llm, Mapping) else False,
             "fallback_reason": str(llm.get("fallback_reason") or "") if isinstance(llm, Mapping) else "",
         },
+        "assumed_scope_guard": dict(assumed_scope_guard),
         "mode": mode,
         "need_shadow_enabled": bool(llm.get("need_shadow_enabled")) if isinstance(llm, Mapping) else False,
         "model_driven": bool(llm.get("model_driven")) if isinstance(llm, Mapping) else False,
@@ -3295,6 +3301,9 @@ def _fact_retrieval_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> M
     scope_demoted = 0
     discarded = 0
     missing_declaration = 0
+    assumed_scope_guard_turns = 0
+    assumed_scope_guard_actions: Counter[str] = Counter()
+    asserted_assumed_slot_count = 0
     for dialog in transcripts:
         for turn in dialog.get("turns") or []:
             if not isinstance(turn, Mapping):
@@ -3318,6 +3327,11 @@ def _fact_retrieval_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> M
             if trace.get("need_shadow_enabled") or trace.get("model_driven"):
                 if not trace.get("model_needed_facts"):
                     missing_declaration += 1
+            assumed_scope_guard = trace.get("assumed_scope_guard")
+            if isinstance(assumed_scope_guard, Mapping) and assumed_scope_guard.get("enabled"):
+                assumed_scope_guard_turns += 1
+                assumed_scope_guard_actions[str(assumed_scope_guard.get("action") or "unknown")] += 1
+                asserted_assumed_slot_count += len(_string_list(assumed_scope_guard.get("asserted_assumed_slots") or []))
             turns.append(
                 {
                     "dialog_id": str(dialog.get("dialog_id") or ""),
@@ -3336,6 +3350,9 @@ def _fact_retrieval_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> M
                     "scope_demoted_ids": scope_demoted_ids,
                     "discarded_ids": discarded_ids,
                     "llm_retrieve": dict(llm),
+                    "assumed_scope_guard": dict(trace.get("assumed_scope_guard") or {})
+                    if isinstance(trace.get("assumed_scope_guard"), Mapping)
+                    else {},
                     "p0_signal": dict(trace.get("p0_signal") or {}) if isinstance(trace.get("p0_signal"), Mapping) else {},
                     "brand_scope_verdicts": dict(trace.get("brand_scope_verdicts") or {})
                     if isinstance(trace.get("brand_scope_verdicts"), Mapping)
@@ -3351,6 +3368,9 @@ def _fact_retrieval_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> M
         "scope_demoted_id_count": scope_demoted,
         "discarded_id_count": discarded,
         "missing_declaration_turns": missing_declaration,
+        "assumed_scope_guard_turns": assumed_scope_guard_turns,
+        "assumed_scope_guard_actions": dict(assumed_scope_guard_actions),
+        "asserted_assumed_slot_count": asserted_assumed_slot_count,
         "turns": turns,
     }
 

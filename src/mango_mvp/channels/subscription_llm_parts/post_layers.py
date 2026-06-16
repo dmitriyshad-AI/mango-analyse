@@ -4474,6 +4474,45 @@ def apply_phase2_tone_layer(
 _SEMANTIC_OUTPUT_VERIFIER_CODES = frozenset({"derived_product_claim", "invented_generalization", "individual_diagnosis"})
 
 
+_SEMANTIC_VERIFIER_FOTON_OFFLINE_SEMESTER_FACT_KEY = "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester"
+_SEMANTIC_VERIFIER_FOTON_OFFLINE_YEAR_FACT_KEY = "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year"
+
+
+def _semantic_output_verifier_price_scope_few_shot(context: Optional[Mapping[str, Any]] = None) -> str:
+    snapshot = _direct_path_load_snapshot(_direct_path_snapshot_path_from_context(context))
+    semester_fact = _direct_path_fact_by_brand_key(
+        snapshot,
+        active_brand="foton",
+        fact_key=_SEMANTIC_VERIFIER_FOTON_OFFLINE_SEMESTER_FACT_KEY,
+    )
+    year_fact = _direct_path_fact_by_brand_key(
+        snapshot,
+        active_brand="foton",
+        fact_key=_SEMANTIC_VERIFIER_FOTON_OFFLINE_YEAR_FACT_KEY,
+    )
+    if not isinstance(semester_fact, Mapping) or not isinstance(year_fact, Mapping):
+        return (
+            "- Факты: «Фотон: очная цена подтверждена только для очного формата; онлайн-цена не указана». "
+            "Вопрос: «а онлайн?». Ответ переносит очную цену в онлайн-контекст. "
+            "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
+        )
+    semester_text = _direct_path_snapshot_fact_text(semester_fact)
+    year_text = _direct_path_snapshot_fact_text(year_fact)
+    semester_price = _direct_path_fact_value(semester_text)
+    year_price = _direct_path_fact_value(year_text)
+    if not semester_text or not year_text or not semester_price or not year_price:
+        return (
+            "- Факты: «Фотон: очная цена подтверждена только для очного формата; онлайн-цена не указана». "
+            "Вопрос: «а онлайн?». Ответ переносит очную цену в онлайн-контекст. "
+            "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
+        )
+    return (
+        f"- Факты: «{semester_text}» / «{year_text}». "
+        f"Вопрос: «а онлайн?». Ответ: «Стоимость курса — {semester_price} или {year_price}». "
+        "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
+    )
+
+
 def build_semantic_output_verifier_prompt(
     *,
     bot_text: str,
@@ -4481,8 +4520,10 @@ def build_semantic_output_verifier_prompt(
     facts: Mapping[str, str] | None = None,
     active_brand: str = "",
     route: str = "",
+    context: Optional[Mapping[str, Any]] = None,
 ) -> str:
     facts_block = "\n".join(f"- {key}: {value}" for key, value in (facts or {}).items()) or "(фактов нет)"
+    price_scope_few_shot = _semantic_output_verifier_price_scope_few_shot(context)
     return (
         "Ты — смысловой верификатор финального текста бота учебного центра. "
         "Проверяй только смысловые производные, которые плохо ловятся регулярными правилами. "
@@ -4520,9 +4561,7 @@ def build_semantic_output_verifier_prompt(
         "- Ответ: «Помогу с оформлением» / «помогу записаться к старту» / "
         "«менеджер сверит наличие мест» / «подберём подходящий вариант». "
         'Вердикт: {"findings":[]} — это сервисный следующий шаг, не продуктовый claim и не diagnosis.\n'
-        "- Факт: «Фотон: очные цены 49 000 ₽ и 82 000 ₽; онлайн-цена не указана». "
-        "Вопрос: «а онлайн?». Ответ: «Стоимость курса — 49 000 ₽ или 82 000 ₽». "
-        "Вердикт: derived_product_claim, relation_to_base=adjacent — цена очного формата не подтверждает онлайн-контекст.\n"
+        f"{price_scope_few_shot}"
         "- Факт: «Фотон: оформление проходит дистанционно, менеджер помогает с договором». "
         "Ответ: «После оплаты по оферте запись считается подтверждённой». "
         "Вердикт: derived_product_claim, relation_to_base=adjacent — похожий факт есть, но порядок записи не подтверждён.\n"
@@ -4619,6 +4658,7 @@ def apply_semantic_output_verifier(
         facts=facts,
         active_brand=_active_brand(gate_context),
         route=result.route,
+        context=gate_context,
     )
     if unavailable_reason:
         verifier_meta["retry_attempted"] = True
@@ -4629,6 +4669,7 @@ def apply_semantic_output_verifier(
             facts=facts,
             active_brand=_active_brand(gate_context),
             route=result.route,
+            context=gate_context,
         )
     verifier_meta["checked"] = unavailable_reason == ""
     if unavailable_reason:
@@ -4673,6 +4714,7 @@ def apply_semantic_output_verifier(
                 facts=facts,
                 active_brand=_active_brand(gate_context),
                 route=result.route,
+                context=gate_context,
             )
             verifier_meta["regen_checked"] = regen_unavailable == ""
             verifier_meta["regen_findings"] = list(_semantic_output_filter_findings(regen_findings, regen_text))
@@ -4731,6 +4773,7 @@ def _run_semantic_output_verifier_once(
     facts: Mapping[str, str],
     active_brand: str,
     route: str,
+    context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[tuple[Mapping[str, Any], ...], str]:
     prompt = build_semantic_output_verifier_prompt(
         bot_text=bot_text,
@@ -4738,6 +4781,7 @@ def _run_semantic_output_verifier_once(
         facts=facts,
         active_brand=active_brand,
         route=route,
+        context=context,
     )
     try:
         raw_payload = verifier(prompt)

@@ -9754,6 +9754,103 @@ def test_semantic_output_verifier_keeps_false_cases_and_prompt_controls() -> Non
     assert gated.metadata["authoritative_output_gate"]["action"] == "pass"
 
 
+def test_semantic_output_verifier_price_scope_few_shot_reads_foton_prices_from_kb(tmp_path: Path) -> None:
+    snapshot = tmp_path / "kb_release_v3_snapshot.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "facts": [
+                    {
+                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+                        "brand": "foton",
+                        "allowed_for_client_answer": True,
+                        "forbidden_for_client": False,
+                        "internal_only": False,
+                        "valid_until": "2099-07-01",
+                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+                    },
+                    {
+                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+                        "brand": "foton",
+                        "allowed_for_client_answer": True,
+                        "forbidden_for_client": False,
+                        "internal_only": False,
+                        "valid_until": "2099-07-01",
+                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+                    },
+                    {
+                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+                        "brand": "unpk",
+                        "allowed_for_client_answer": True,
+                        "valid_until": "2099-07-01",
+                        "client_safe_text": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = build_semantic_output_verifier_prompt(
+        bot_text="Стоимость онлайн-курса такая же, как очно.",
+        client_message="А онлайн?",
+        facts={"prices.offline": "Фотон: очные цены есть только для очного формата."},
+        active_brand="foton",
+        route="bot_answer_self_for_pilot",
+        context={"snapshot_path": str(snapshot)},
+    )
+
+    assert "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽." in prompt
+    assert "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽." in prompt
+    assert "Стоимость курса — 44 600 ₽ или 74 500 ₽" in prompt
+    assert "49 000 ₽" not in prompt
+    assert "82 000 ₽" not in prompt
+
+
+def test_semantic_output_verifier_price_scope_few_shot_ignores_expired_kb_prices(tmp_path: Path) -> None:
+    snapshot = tmp_path / "kb_release_v3_snapshot.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "facts": [
+                    {
+                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+                        "brand": "foton",
+                        "allowed_for_client_answer": True,
+                        "valid_until": "2000-01-01",
+                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+                    },
+                    {
+                        "fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+                        "brand": "foton",
+                        "allowed_for_client_answer": True,
+                        "valid_until": "2000-01-01",
+                        "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    prompt = build_semantic_output_verifier_prompt(
+        bot_text="Стоимость онлайн-курса такая же, как очно.",
+        client_message="А онлайн?",
+        facts={"prices.offline": "Фотон: очные цены есть только для очного формата."},
+        active_brand="foton",
+        route="bot_answer_self_for_pilot",
+        context={"snapshot_path": str(snapshot)},
+    )
+
+    assert "Ответ переносит очную цену в онлайн-контекст" in prompt
+    assert "44 600 ₽" not in prompt
+    assert "74 500 ₽" not in prompt
+    assert "49 000 ₽" not in prompt
+    assert "82 000 ₽" not in prompt
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -9783,12 +9880,12 @@ def test_semantic_output_verifier_keeps_service_next_steps_cross_model_replay(te
 def test_semantic_output_verifier_keeps_online_price_context_real_finding_cross_model_replay() -> None:
     base = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",
-        draft_text="Стоимость курса — 49 000 ₽ или 82 000 ₽.",
+        draft_text="Стоимость курса — 44 600 ₽ или 74 500 ₽.",
         topic_id="theme:001_pricing",
         metadata={
             "dialogue_contract_pipeline": {
                 "retrieved_facts": {
-                    "prices.offline": "Фотон: очные цены 49 000 ₽ и 82 000 ₽; онлайн-цена не указана."
+                    "prices.offline": "Фотон: очные цены 44 600 ₽ и 74 500 ₽; онлайн-цена не указана."
                 },
                 "retrieved_fact_keys": ["prices.offline"],
             }
@@ -9798,7 +9895,7 @@ def test_semantic_output_verifier_keeps_online_price_context_real_finding_cross_
         "findings": [
             {
                 "code": "derived_product_claim",
-                "span": "49 000 ₽ или 82 000 ₽",
+                "span": "44 600 ₽ или 74 500 ₽",
                 "relation_to_base": "adjacent",
                 "nearest_fact_key": "prices.offline",
             }

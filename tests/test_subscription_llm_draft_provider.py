@@ -57,6 +57,7 @@ from mango_mvp.channels.subscription_llm import (
     PRESALE_PII_MEMORY_ENV,
     PRESALE_SOURCE_ID_ENV,
     PRESALE_VERIFIER_FAILSOFT_ENV,
+    ASSUMED_SCOPE_GUARD_ENV,
     RETRIEVER_MODEL_DRIVEN_ENV,
     RETRIEVER_NEED_SHADOW_ENV,
     REFUND_ZERO_COLLECT_SAFE_TEXT,
@@ -10922,12 +10923,13 @@ def test_template_from_kb_pilot_gold_renders_wave1_templates_from_default_snapsh
 
 
 def test_template_from_kb_contact_trace_is_visible_in_direct_metadata(monkeypatch) -> None:
-    for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV):
+    for key in (TEMPLATE_FROM_KB_ENV, DIRECT_PATH_PILOT_CONFIG_ENV, LLM_RETRIEVE_ENV):
         monkeypatch.delenv(key, raising=False)
     context = {
         "active_brand": "foton",
         "snapshot_path": str(DEFAULT_SNAPSHOT_PATH),
         DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        LLM_RETRIEVE_ENV: "0",
     }
     provider = _DirectPathProvider(SubscriptionDraftResult(route="draft_for_manager", draft_text="Дайте контакты."))
 
@@ -11356,6 +11358,7 @@ def test_tz110_model_driven_strips_required_fact_keys_from_retriever_prompt_but_
         "active_brand": "foton",
         "snapshot_path": str(snapshot_path),
         LLM_RETRIEVE_ENV: "1",
+        ASSUMED_SCOPE_GUARD_ENV: "1",
         RETRIEVER_MODEL_DRIVEN_ENV: "1",
         "conversation_intent_plan": {
             "primary_intent": "pricing",
@@ -11393,12 +11396,43 @@ def test_tz110_model_driven_strips_required_fact_keys_from_retriever_prompt_but_
     assert pack["llm_retrieve"]["keyword_required_fact_keys"] == ["prices.current"]
 
 
+def test_tz119_model_driven_requires_assumed_scope_guard(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    prompt_seen = ""
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        RETRIEVER_MODEL_DRIVEN_ENV: "1",
+        "conversation_intent_plan": {
+            "primary_intent": "pricing",
+            "answer_topics": ["pricing"],
+            "required_fact_keys": ["prices.current"],
+        },
+    }
+
+    def retriever(prompt: str) -> Mapping[str, object]:
+        nonlocal prompt_seen
+        prompt_seen = prompt
+        return {"exact_ids": ["foton.price.online"], "adjacent_ids": []}
+
+    pack = _direct_path_context_fact_pack(context, client_message="Сколько стоит?", retriever_fn=retriever)
+
+    assert "required_fact_keys" in prompt_seen
+    assert "сам по смыслу определи" not in prompt_seen
+    assert pack["llm_retrieve"]["mode"] == "id_only"
+    assert pack["llm_retrieve"]["model_driven"] is False
+    assert subscription_llm._retriever_model_driven_enabled(context) is False
+    assert subscription_llm._retriever_model_driven_enabled({**context, ASSUMED_SCOPE_GUARD_ENV: "1"}) is True
+
+
 def test_tz110_model_driven_requires_needed_fact_declaration_and_falls_back_to_keyword(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     context = {
         "active_brand": "foton",
         "snapshot_path": str(snapshot_path),
         LLM_RETRIEVE_ENV: "1",
+        ASSUMED_SCOPE_GUARD_ENV: "1",
         RETRIEVER_MODEL_DRIVEN_ENV: "1",
         "conversation_intent_plan": {"primary_intent": "pricing", "answer_topics": ["pricing"]},
     }
@@ -11471,6 +11505,204 @@ def test_tz110_llm_retrieve_logs_scope_demoted_ids_for_wrong_scope_exact_selecti
     assert pack["llm_retrieve"]["model_selected_exact_ids"] == ["foton.physics9.online.price"]
     assert pack["llm_retrieve"]["selected_exact_ids"] == ["foton.physics9.offline.price"]
     assert pack["llm_retrieve"]["scope_demoted_ids"] == ["foton.physics9.online.price"]
+
+
+def test_tz119_unconfirmed_crm_grade_is_soft_scope_not_hard_demotion(tmp_path: Path) -> None:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics5.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: физика 5 класс онлайн стоит 29 750 ₽ за семестр.",
+            },
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics4.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: физика 4 класс онлайн стоит 29 750 ₽ за семестр.",
+            },
+        ]
+    }
+    snapshot_path = tmp_path / "assumed_scope_snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    prompt_seen = ""
+
+    def retriever(prompt: str) -> Mapping[str, object]:
+        nonlocal prompt_seen
+        prompt_seen = prompt
+        return {
+            "needed_facts": [
+                {
+                    "theme": "pricing",
+                    "fact_type": "price",
+                    "brand": "foton",
+                    "grade": "4",
+                    "why_needed": "клиент спрашивает цену",
+                    "importance": "required",
+                }
+            ],
+            "exact_ids": ["foton.physics5.online.price"],
+            "adjacent_ids": [],
+        }
+
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        RETRIEVER_NEED_SHADOW_ENV: "1",
+        ASSUMED_SCOPE_GUARD_ENV: "1",
+        "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "subject": "физика"}},
+    }
+
+    pack = _direct_path_context_fact_pack(context, client_message="Сколько стоит?", retriever_fn=retriever)
+
+    assert '"grade": {"status": "assumed_from_context", "value": "4"}' in prompt_seen
+    assert pack["exact_keys"] == ["foton.physics5.online.price"]
+    assert pack["llm_retrieve"]["scope_demoted_ids"] == []
+    direct_meta = subscription_llm._direct_path_metadata(
+        attempted=True,
+        model_called=True,
+        facts=pack["facts"],
+        fact_pack=pack,
+        context=context,
+    )
+    assert direct_meta["assumed_scope_guard"]["slot_provenance"]["grade"]["status"] == "assumed_from_context"
+
+
+def test_tz119_confirmed_grade_still_scope_demotes_wrong_fact(tmp_path: Path) -> None:
+    snapshot = {
+        "facts": [
+            {
+                "brand": "foton",
+                "fact_key": "foton.physics5.online.price",
+                "fact_type": "price",
+                "product": "regular_course",
+                "allowed_for_client_answer": True,
+                "client_safe_text": "Фотон: физика 5 класс онлайн стоит 29 750 ₽ за семестр.",
+            }
+        ]
+    }
+    snapshot_path = tmp_path / "confirmed_scope_snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    context = {
+        "active_brand": "foton",
+        "snapshot_path": str(snapshot_path),
+        LLM_RETRIEVE_ENV: "1",
+        RETRIEVER_NEED_SHADOW_ENV: "1",
+        ASSUMED_SCOPE_GUARD_ENV: "1",
+        "dialogue_memory_view": {
+            "slot_provenance": {
+                "grade": {
+                    "value": "4",
+                    "source": "memory_provenance",
+                    "quote": "У ребёнка 4 класс",
+                }
+            }
+        },
+    }
+
+    pack = _direct_path_context_fact_pack(
+        context,
+        client_message="Сколько стоит?",
+        retriever_fn=lambda _: {
+            "needed_facts": [{"theme": "pricing", "fact_type": "price", "brand": "foton", "importance": "required"}],
+            "exact_ids": ["foton.physics5.online.price"],
+            "adjacent_ids": [],
+        },
+    )
+
+    assert pack["exact_keys"] == []
+    assert "foton.physics5.online.price" in pack["adjacent_keys"]
+    assert pack["llm_retrieve"]["scope_demoted_ids"] == ["foton.physics5.online.price"]
+    assert subscription_llm._direct_path_slot_provenance(context)["grade"]["source"] == "memory_provenance"
+
+
+def test_tz119_assumed_scope_guard_reasks_without_manager_handoff() -> None:
+    result = subscription_llm.apply_assumed_scope_guard(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Для 4 класса онлайн стоимость 29 750 ₽ за семестр.",
+        ),
+        context={
+            ASSUMED_SCOPE_GUARD_ENV: "1",
+            "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "format": "онлайн"}},
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "Правильно ли я понимаю" in result.draft_text
+    assert "29 750" not in result.draft_text
+    assert "assumed_scope_guard_reask" in result.safety_flags
+    assert result.metadata["assumed_scope_guard"]["action"] == "reask_assumed_parameter"
+    asserted_keys = {item["key"] for item in result.metadata["assumed_scope_guard"]["asserted_assumed_slots"]}
+    assert "grade" in asserted_keys
+
+
+def test_tz119_confirmed_slot_quote_prevents_reask_on_ellipsis() -> None:
+    original = "Для 4 класса онлайн подойдёт регулярный курс."
+    result = subscription_llm.apply_assumed_scope_guard(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text=original),
+        context={
+            ASSUMED_SCOPE_GUARD_ENV: "1",
+            "dialogue_memory_view": {
+                "slot_provenance": {
+                    "grade": {
+                        "value": "4",
+                        "source": "memory_provenance",
+                        "quote": "У нас 4 класс",
+                    }
+                },
+                "do_not_reask_slots": ["grade"],
+            },
+        },
+    )
+
+    assert result.draft_text == original
+    assert result.metadata["assumed_scope_guard"]["action"] == "pass"
+
+
+def test_tz119_assumed_scope_guard_skips_p0_risk() -> None:
+    original = "Для 4 класса можно оформить возврат по правилам."
+    result = subscription_llm.apply_assumed_scope_guard(
+        SubscriptionDraftResult(
+            route="manager_only",
+            risk_level="high",
+            safety_flags=("p0_refund",),
+            draft_text=original,
+        ),
+        context={
+            ASSUMED_SCOPE_GUARD_ENV: "1",
+            "dialogue_memory_view": {"crm_known_slots": {"grade": "4"}},
+        },
+    )
+
+    assert result.draft_text == original
+    assert result.route == "manager_only"
+    assert result.metadata["assumed_scope_guard"]["action"] == "skipped_p0_or_risk"
+
+
+def test_tz119_draft_prompt_marks_assumed_slots_only_when_flag_enabled() -> None:
+    context = {
+        "active_brand": "foton",
+        "dialogue_memory_view": {"crm_known_slots": {"grade": "4", "subject": "физика"}},
+    }
+
+    off_prompt = subscription_llm._build_direct_path_prompt("Сколько стоит?", context=context)
+    on_prompt = subscription_llm._build_direct_path_prompt(
+        "Сколько стоит?",
+        context={**context, ASSUMED_SCOPE_GUARD_ENV: "1"},
+    )
+
+    assert "assumed_from_context" not in off_prompt
+    assert "Правило неподтверждённых параметров" not in off_prompt
+    assert "assumed_from_context" in on_prompt
+    assert "Не называй итоговые цены" in on_prompt
+    assert '"grade": {' in on_prompt
 
 
 def test_wave6_llm_retrieve_supplements_price_and_schedule_for_known_course(tmp_path: Path) -> None:
@@ -13141,6 +13373,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
         subscription_llm.PII_RELATION_STOPWORDS_ENV,
         subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
+        ASSUMED_SCOPE_GUARD_ENV,
         RETRIEVER_MODEL_DRIVEN_ENV,
         RETRIEVER_NEED_SHADOW_ENV,
         subscription_llm.ANSWERABILITY_SHADOW_ENV,
@@ -13175,16 +13408,21 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PII_RELATION_STOPWORDS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert ASSUMED_SCOPE_GUARD_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.ANSWERABILITY_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._assumed_scope_guard_enabled(context) is False
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False
     assert subscription_llm._answerability_shadow_enabled(context) is True
     assert subscription_llm._retriever_need_shadow_enabled({**context, RETRIEVER_NEED_SHADOW_ENV: "1"}) is True
-    assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is True
+    assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is False
+    assert subscription_llm._retriever_model_driven_enabled(
+        {**context, ASSUMED_SCOPE_GUARD_ENV: "1", RETRIEVER_MODEL_DRIVEN_ENV: "1"}
+    ) is True
     assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"}) is True
     assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "0"}) is False
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "1"}) is True

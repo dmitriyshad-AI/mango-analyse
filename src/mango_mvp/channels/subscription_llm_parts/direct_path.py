@@ -69,6 +69,8 @@ RETRIEVER_NEED_SHADOW_ENV = "TELEGRAM_RETRIEVER_NEED_SHADOW"
 
 RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
 
+ASSUMED_SCOPE_GUARD_ENV = "TELEGRAM_ASSUMED_SCOPE_GUARD"
+
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
 
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
@@ -166,13 +168,19 @@ def _retriever_need_shadow_enabled(context: Optional[Mapping[str, Any]] = None) 
         aliases=("retriever_need_shadow", "retriever_need_shadow_enabled"),
     )
 
-def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+def _assumed_scope_guard_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _default_off_flag_enabled(
+        context,
+        ASSUMED_SCOPE_GUARD_ENV,
+        aliases=("assumed_scope_guard", "assumed_scope_guard_enabled"),
+    )
+
+def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _assumed_scope_guard_enabled(context) and _default_off_flag_enabled(
         context,
         RETRIEVER_MODEL_DRIVEN_ENV,
         aliases=("retriever_model_driven", "retriever_model_driven_enabled"),
     )
-
 
 def _direct_path_answerability_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _answerability_shadow_enabled(context)
@@ -395,7 +403,122 @@ def _direct_path_selected_categories(client_message: str, context: Optional[Mapp
         categories = [client_category, *[item for item in categories if item != client_category]]
     return tuple(categories[:2])
 
-def _direct_path_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
+_ASSUMED_SCOPE_KEYS = frozenset(
+    {
+        "format",
+        "training_format",
+        "grade",
+        "class",
+        "subject",
+        "course_subject",
+        "product",
+        "product_family",
+    }
+)
+
+_CONFIRMED_SLOT_SOURCES = {"dialogue_memory", "memory_provenance"}
+
+
+def _direct_path_add_slot_provenance(
+    result: dict[str, dict[str, Any]],
+    key: Any,
+    value: Any,
+    *,
+    source: str,
+    quote: str = "",
+    confirmed: bool = False,
+) -> None:
+    normalized_key = str(key or "").strip()
+    text = " ".join(str(value or "").split())
+    if not normalized_key or not text:
+        return
+    existing = result.get(normalized_key)
+    confirmed = bool(confirmed)
+    if existing and existing.get("confirmed") and not confirmed:
+        return
+    result[normalized_key] = {
+        "value": text,
+        "source": str(source or "unknown"),
+        "quote": str(quote or "").strip()[:160],
+        "confirmed": confirmed,
+        "status": "confirmed_by_client" if confirmed else "assumed_from_context",
+    }
+
+
+def _direct_path_slot_provenance(context: Optional[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    if not isinstance(context, Mapping):
+        return result
+    containers: list[Mapping[str, Any]] = [context]
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        containers.insert(0, memory)
+
+    for container in containers:
+        provenance = container.get("slot_provenance")
+        if isinstance(provenance, Mapping):
+            for key, raw in provenance.items():
+                if not isinstance(raw, Mapping):
+                    continue
+                source = str(raw.get("source") or "").strip()
+                quote = str(raw.get("quote") or "").strip()
+                _direct_path_add_slot_provenance(
+                    result,
+                    key,
+                    raw.get("value"),
+                    source=source or "slot_provenance",
+                    quote=quote,
+                    confirmed=bool(quote and source in _CONFIRMED_SLOT_SOURCES),
+                )
+
+    for container in containers:
+        slot_history = container.get("slot_history")
+        if not isinstance(slot_history, Sequence) or isinstance(slot_history, (str, bytes, bytearray)):
+            continue
+        for item in slot_history:
+            if not isinstance(item, Mapping):
+                continue
+            source = str(item.get("source") or "").strip()
+            quote = str(item.get("quote") or "").strip()
+            if not quote or source not in _CONFIRMED_SLOT_SOURCES:
+                continue
+            _direct_path_add_slot_provenance(
+                result,
+                item.get("slot") or item.get("key") or item.get("name"),
+                item.get("value"),
+                source=source,
+                quote=quote,
+                confirmed=True,
+            )
+
+    for container in containers:
+        for source_key, source in (
+            ("client_confirmed_slots", "client_confirmed_slots"),
+            ("crm_known_slots", "crm_known_slots"),
+            ("bot_inferred_slots", "bot_inferred_slots"),
+            ("known_slots", "known_slots"),
+            ("known_dialog_fields", "known_dialog_fields"),
+        ):
+            slots = container.get(source_key)
+            if not isinstance(slots, Mapping):
+                continue
+            for key, value in slots.items():
+                existing = result.get(str(key))
+                if existing and existing.get("confirmed"):
+                    continue
+                _direct_path_add_slot_provenance(
+                    result,
+                    key,
+                    value,
+                    source=source,
+                    quote=str(existing.get("quote") or "") if existing else "",
+                    confirmed=bool(existing and existing.get("confirmed")),
+                )
+
+    return result
+
+
+def _direct_path_all_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
     slots = _direct_path_known_slots(context)
     focus: Mapping[str, Any] = {}
     if isinstance(context, Mapping) and isinstance(context.get("dialogue_memory_view"), Mapping):
@@ -409,6 +532,34 @@ def _direct_path_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str
         if value:
             result[key] = value
     return result
+
+
+def _direct_path_confirmed_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
+    result: dict[str, str] = {}
+    for key, data in _direct_path_slot_provenance(context).items():
+        if key not in _ASSUMED_SCOPE_KEYS or not data.get("confirmed"):
+            continue
+        value = str(data.get("value") or "").strip()
+        if value:
+            result[key] = value
+    return result
+
+
+def _direct_path_soft_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
+    if not _assumed_scope_guard_enabled(context):
+        return _direct_path_all_slot_scope(context)
+    result = dict(_direct_path_all_slot_scope(context))
+    for key, data in _direct_path_slot_provenance(context).items():
+        if key in _ASSUMED_SCOPE_KEYS and str(data.get("value") or "").strip():
+            result[key] = str(data.get("value") or "").strip()
+    return result
+
+
+def _direct_path_slot_scope(context: Optional[Mapping[str, Any]]) -> Mapping[str, str]:
+    if _assumed_scope_guard_enabled(context):
+        return _direct_path_confirmed_slot_scope(context)
+    return _direct_path_all_slot_scope(context)
+
 
 def _direct_path_format_scope(value: str) -> str:
     text = _normalize_fact_match_text(value)
@@ -449,7 +600,14 @@ def _direct_path_fact_conflicts_slots(fact: Mapping[str, Any], slots: Mapping[st
         return True
     return False
 
-def _direct_path_fact_relevance_score(fact: Mapping[str, Any], *, client_message: str, categories: Sequence[str], slots: Mapping[str, str]) -> int:
+def _direct_path_fact_relevance_score(
+    fact: Mapping[str, Any],
+    *,
+    client_message: str,
+    categories: Sequence[str],
+    slots: Mapping[str, str],
+    soft_slots: Optional[Mapping[str, str]] = None,
+) -> int:
     haystack = _normalize_fact_match_text(
         f"{_direct_path_snapshot_fact_key(fact)} {fact.get('fact_type') or ''} {fact.get('product') or ''} {_direct_path_snapshot_fact_text(fact)}"
     )
@@ -458,7 +616,8 @@ def _direct_path_fact_relevance_score(fact: Mapping[str, Any], *, client_message
         score += 30
     if not _direct_path_fact_conflicts_slots(fact, slots):
         score += 20
-    for value in slots.values():
+    boost_slots = soft_slots if soft_slots is not None else slots
+    for value in boost_slots.values():
         normalized = _normalize_fact_match_text(value)
         if normalized and normalized in haystack:
             score += 8
@@ -470,7 +629,7 @@ def _direct_path_fact_relevance_score(fact: Mapping[str, Any], *, client_message
     return score
 
 def _direct_path_known_grade_subject(context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
-    known = _direct_path_known_slots(context)
+    known: Mapping[str, Any] = _direct_path_slot_scope(context) if _assumed_scope_guard_enabled(context) else _direct_path_known_slots(context)
     grade = re.sub(r"\D+", "", str(known.get("grade") or known.get("class") or ""))[:2]
     subject = _normalize_fact_match_text(known.get("subject") or known.get("course_subject") or "")
     return grade, subject
@@ -669,6 +828,7 @@ def _direct_path_keyword_fact_pack_from_records(
         selected_category = "fallback_core"
 
     slots = _direct_path_slot_scope(context)
+    soft_slots = _direct_path_soft_slot_scope(context)
     scored = [
         (
             _direct_path_fact_relevance_score(
@@ -676,6 +836,7 @@ def _direct_path_keyword_fact_pack_from_records(
                 client_message=client_message,
                 categories=categories or ("pricing", "format", "schedule", "address", "course"),
                 slots=slots,
+                soft_slots=soft_slots,
             ),
             idx,
             fact,
@@ -829,7 +990,7 @@ def build_direct_path_llm_retriever_prompt(
     candidates: Sequence[Mapping[str, Any]],
 ) -> str:
     recent = "\n".join(_direct_path_recent_messages(context, limit=6)) or "(нет истории)"
-    slots = json.dumps(_direct_path_known_slots(context), ensure_ascii=False, sort_keys=True)
+    slots = json.dumps(_direct_path_prompt_known_slots(context), ensure_ascii=False, sort_keys=True)
     need_declaration = _retriever_need_declaration_enabled(context)
     model_driven = _retriever_model_driven_enabled(context)
     plan = {}
@@ -1238,6 +1399,19 @@ def _presale_prompt_safe_value(value: Any) -> Any:
     return text[:220]
 
 def _direct_path_prompt_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    if _assumed_scope_guard_enabled(context):
+        result: dict[str, Any] = {}
+        for key, data in _direct_path_slot_provenance(context).items():
+            if key not in _ASSUMED_SCOPE_KEYS or not _presale_prompt_safe_key(key):
+                continue
+            safe_value = _presale_prompt_safe_slot_value(key, data.get("value"))
+            if safe_value in ("", {}, []):
+                continue
+            result[key] = {
+                "value": safe_value,
+                "status": str(data.get("status") or "assumed_from_context"),
+            }
+        return result
     slots = _direct_path_known_slots(context)
     if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
         return slots
@@ -1440,6 +1614,7 @@ def _build_direct_path_prompt(
     action_proposal_field = ""
     p0_instruction = ""
     p0_fields = ""
+    assumed_scope_instruction = ""
     route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager"'
     if _direct_path_model_p0_enabled(context):
         route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager" | "manager_only"'
@@ -1466,6 +1641,14 @@ def _build_direct_path_prompt(
         action_proposal_field = (
             '  "action_proposal": {"action": "answer_only|send_schedule|send_materials|send_crm_data|capture_lead|schedule_followup|send_payment_link|send_document|advance_stage|handoff_manager|unknown", "confidence": 0.0, "reason": "кратко"},\n'
         )
+    if _assumed_scope_guard_enabled(context):
+        assumed_scope_instruction = (
+            "Правило неподтверждённых параметров: в «Известных слотах» status=confirmed_by_client означает, "
+            "что клиент сам подтвердил параметр в диалоге. status=assumed_from_context означает CRM/контекстную "
+            "догадку. Не представляй такие класс, предмет, формат или продукт как подтверждённые клиентом. "
+            "Не называй итоговые цены, даты или расписание, если число зависит только от assumed_from_context. "
+            "В такой ситуации мягко задай один уточняющий вопрос или ответь без привязки к неподтверждённому параметру.\n\n"
+        )
     return (
         f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
         f"{_direct_path_route_rubric_block(context)}"
@@ -1473,6 +1656,7 @@ def _build_direct_path_prompt(
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"{p0_instruction}"
         f"{action_proposal_instruction}"
+        f"{assumed_scope_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
         + (f"{gold_block}\n\n" if gold_block else "")
@@ -1562,6 +1746,22 @@ def _direct_path_metadata(
         ]
     if isinstance(pack.get("llm_retrieve"), Mapping):
         metadata["llm_retrieve"] = dict(pack["llm_retrieve"])  # type: ignore[index]
+    if _assumed_scope_guard_enabled(context):
+        metadata["assumed_scope_guard"] = {
+            "enabled": True,
+            "slot_provenance": {
+                key: {
+                    "value": str(data.get("value") or ""),
+                    "status": str(data.get("status") or ""),
+                    "source": str(data.get("source") or ""),
+                    "confirmed": bool(data.get("confirmed")),
+                }
+                for key, data in _direct_path_slot_provenance(context).items()
+                if key in _ASSUMED_SCOPE_KEYS
+            },
+            "confirmed_slot_scope": dict(_direct_path_confirmed_slot_scope(context)),
+            "soft_slot_scope": dict(_direct_path_soft_slot_scope(context)),
+        }
     return metadata
 
 def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Mapping[str, Any]) -> SubscriptionDraftResult:
@@ -1572,6 +1772,163 @@ def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Ma
         metadata["reason_class"] = str(direct_meta.get("reason_class") or "")
         metadata["is_manager_deferral"] = bool(direct_meta.get("is_manager_deferral"))
     return replace(result, metadata=metadata)
+
+
+def _direct_path_assumed_scope_p0_active(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    if str(result.risk_level or "").strip().casefold() in {"high", "p0", "critical", "high_risk"}:
+        return True
+    if any(re.search(r"p0|payment_dispute|refund|complaint|legal|high_risk", flag, re.I) for flag in result.safety_flags):
+        return True
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    if isinstance(metadata.get("direct_path_model_p0"), Mapping):
+        return True
+    if isinstance(context, Mapping):
+        memory = context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else context
+        latch = memory.get("p0_latch") if isinstance(memory, Mapping) and isinstance(memory.get("p0_latch"), Mapping) else {}
+        if latch and (latch.get("active") or latch.get("had_hard_p0_claim")):
+            return True
+        risk_flags = memory.get("risk_flags") if isinstance(memory, Mapping) else ()
+        if isinstance(risk_flags, Sequence) and not isinstance(risk_flags, (str, bytes, bytearray)):
+            return any(re.search(r"p0|payment_dispute|refund|complaint|legal|high_risk", str(flag), re.I) for flag in risk_flags)
+    return False
+
+
+def _direct_path_do_not_reask_slots(context: Optional[Mapping[str, Any]]) -> set[str]:
+    if not isinstance(context, Mapping):
+        return set()
+    values: list[Any] = []
+    for container in (context, context.get("dialogue_memory_view")):
+        if not isinstance(container, Mapping):
+            continue
+        raw = container.get("do_not_reask_slots")
+        if isinstance(raw, str):
+            values.append(raw)
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            values.extend(raw)
+    result = {str(item or "").strip() for item in values if str(item or "").strip()}
+    if "grade" in result:
+        result.add("class")
+    if "class" in result:
+        result.add("grade")
+    if "format" in result:
+        result.add("training_format")
+    if "training_format" in result:
+        result.add("format")
+    if "subject" in result:
+        result.add("course_subject")
+    if "course_subject" in result:
+        result.add("subject")
+    return result
+
+
+def _direct_path_assumed_scope_asserted(text: str, key: str, value: str) -> bool:
+    if not value:
+        return False
+    draft = str(text or "")
+    normalized_draft = _normalize_fact_match_text(draft)
+    normalized_value = _normalize_fact_match_text(value)
+    if key in {"grade", "class"}:
+        grade = re.sub(r"\D+", "", value)[:2]
+        return bool(grade and re.search(rf"\b{re.escape(grade)}\s*(?:-|–)?\s*(?:класс\w*|кл)\b", draft, re.I))
+    if key in {"format", "training_format"}:
+        marker = _direct_path_format_scope(value)
+        if marker == "online":
+            return bool(re.search(r"\bонлайн\b|\bonline\b", draft, re.I))
+        if marker == "offline":
+            return bool(re.search(r"\bочно\b|\boffline\b|долгопруд|москв|красносель", draft, re.I))
+        return False
+    if key in {"subject", "course_subject"}:
+        return bool(normalized_value and len(normalized_value) >= 4 and normalized_value in normalized_draft)
+    if key in {"product", "product_family"}:
+        product_markers = {
+            "regular_course": ("курс", "учебный год", "семестр"),
+            "regular": ("курс", "учебный год", "семестр"),
+            "camp": ("лагер", "смен", "лвш", "летн"),
+            "trial": ("пробн",),
+        }
+        markers = product_markers.get(normalized_value, (normalized_value,))
+        return any(marker and marker in normalized_draft for marker in markers)
+    return False
+
+
+def _direct_path_assumed_scope_reask_text(slots: Sequence[Mapping[str, str]]) -> str:
+    first = slots[0] if slots else {}
+    key = str(first.get("key") or "")
+    value = str(first.get("value") or "").strip()
+    if key in {"grade", "class"}:
+        grade = re.sub(r"\D+", "", value)[:2] or value
+        detail = f"про {grade} класс" if grade else "про этот класс"
+    elif key in {"subject", "course_subject"}:
+        detail = f"про предмет «{value}»" if value else "про этот предмет"
+    elif key in {"format", "training_format"}:
+        detail = f"про формат «{value}»" if value else "про этот формат"
+    else:
+        detail = f"про «{value}»" if value else "про этот параметр"
+    return (
+        f"Правильно ли я понимаю, что вопрос {detail}? "
+        "Подтвердите, пожалуйста, и я подскажу условия без риска ошибиться."
+    )
+
+
+def apply_assumed_scope_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    if not _assumed_scope_guard_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    trace: dict[str, Any] = {
+        "schema_version": "assumed_scope_guard_v1_2026_06_16",
+        "enabled": True,
+        "action": "pass",
+        "asserted_assumed_slots": [],
+    }
+    provenance = _direct_path_slot_provenance(context)
+    assumed_slots = [
+        {"key": key, "value": str(data.get("value") or "")}
+        for key, data in provenance.items()
+        if key in _ASSUMED_SCOPE_KEYS and not data.get("confirmed") and str(data.get("value") or "").strip()
+    ]
+    trace["assumed_slots"] = assumed_slots
+    if _direct_path_assumed_scope_p0_active(result, context=context):
+        trace["action"] = "skipped_p0_or_risk"
+    elif result.route not in {"bot_answer_self", "bot_answer_self_for_pilot"}:
+        trace["action"] = "skipped_non_self_route"
+    else:
+        do_not_reask = _direct_path_do_not_reask_slots(context)
+        asserted = [
+            slot
+            for slot in assumed_slots
+            if slot["key"] not in do_not_reask and _direct_path_assumed_scope_asserted(result.draft_text, slot["key"], slot["value"])
+        ]
+        trace["asserted_assumed_slots"] = asserted
+        if asserted:
+            trace["action"] = "reask_assumed_parameter"
+            metadata["assumed_scope_guard"] = trace
+            direct["assumed_scope_guard"] = trace
+            metadata["direct_path"] = direct
+            flags = tuple(dict.fromkeys((*result.safety_flags, "assumed_scope_guard_reask")))
+            context_used = tuple(dict.fromkeys((*result.context_used, "assumed_scope_guard")))
+            missing = tuple(dict.fromkeys((*result.missing_facts, "подтвердить параметр из контекста")))
+            return replace(
+                result,
+                draft_text=_direct_path_assumed_scope_reask_text(asserted),
+                missing_facts=missing,
+                safety_flags=flags,
+                context_used=context_used,
+                metadata=metadata,
+            )
+    metadata["assumed_scope_guard"] = trace
+    direct["assumed_scope_guard"] = trace
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
 
 def _direct_path_route_rubric_should_regenerate(
     result: SubscriptionDraftResult,

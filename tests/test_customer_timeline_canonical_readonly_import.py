@@ -13,7 +13,7 @@ from mango_mvp.customer_timeline import (
     build_canonical_readonly_customer_timeline,
     canonical_readonly_timeline_safety_contract,
 )
-from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand, split_ids
+from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand, infer_offline_brand, split_ids
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 
 
@@ -32,6 +32,9 @@ def test_infer_brand_cyrillic_v2_foton_root_and_cross_brand_fail_closed() -> Non
     assert infer_brand(["Фотон и УНПК"], mode="legacy") == "unpk"
     assert infer_brand(["Фотон и УНПК"], mode="cyrillic_v2") == "unknown"
     assert infer_brand(["Фотон МФТИ"], mode="cyrillic_v2") == "unknown"
+    assert infer_brand(["мотивация через фотончики"], mode="cyrillic_v2") == "unknown"
+    assert infer_brand(["олимпиада Фотоний"], mode="cyrillic_v2") == "unknown"
+    assert infer_offline_brand({"История": "клиент занимался у Фотона", "Филиал Tallanto": "МФТИ"}) == "foton"
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:

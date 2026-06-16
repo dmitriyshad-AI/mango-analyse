@@ -1403,12 +1403,29 @@ def call_direction(value: Any) -> TimelineDirection:
     return TimelineDirection.SYSTEM
 
 
-def infer_brand(values: Iterable[Any]) -> str:
+def infer_brand(values: Iterable[Any], *, mode: str = "legacy") -> str:
     text = " ".join(safe_text(value).lower() for value in values)
+    normalized_mode = safe_text(mode).casefold() or "legacy"
+    if normalized_mode == "cyrillic_v2":
+        return infer_brand_cyrillic_v2(text)
     if "унпк" in text or "unpk" in text:
         return "unpk"
     if "фотон" in text or "foton" in text:
         return "foton"
+    return "unknown"
+
+
+def infer_brand_cyrillic_v2(text: str) -> str:
+    normalized = safe_text(text).casefold().replace("ё", "е")
+    compact = re.sub(r"\s+", "", normalized)
+    has_foton = "фотон" in compact or "foton" in compact
+    has_unpk = "унпк" in compact or "unpk" in compact or "мфти" in compact
+    if has_foton and has_unpk:
+        return "unknown"
+    if has_foton:
+        return "foton"
+    if has_unpk:
+        return "unpk"
     return "unknown"
 
 

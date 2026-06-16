@@ -2585,6 +2585,187 @@ def test_dynamic_summary_counts_over_handoff_turns_and_false_handoff_only_retrie
     rendered = sim.render_summary_md(summary)
     assert "Over-handoff" in rendered
     assert "false_handoff_count" in rendered
+    assert handoff["buckets"]["counts"]["upsell_miss"] == 2
+    assert handoff["buckets"]["shares"]["upsell_miss"] == 1.0
+    assert handoff["buckets"]["examples"]["upsell_miss"][0]["fact_level"] == "retrieved_match"
+
+
+def _handoff_turn(
+    *,
+    client_message: str = "где адрес?",
+    route: str = "draft_for_manager",
+    bot_text: str = "Передам менеджеру.",
+    retrieved_facts=None,
+    missing_fact_keys=None,
+    safety_flags=None,
+    close_status: str = "",
+    contact_requested: bool = False,
+    action: str = "",
+    contract=None,
+    number_audit_items=None,
+    reason_class: str = "",
+    fallback_reason: str = "",
+    message_type: str = "",
+) -> dict:
+    if contract is None:
+        contract = {
+            "is_p0": False,
+            "subquestions": [
+                {
+                    "text": "адрес",
+                    "needed_fact_keys": ["locations.address"],
+                }
+            ],
+        }
+    turn = {
+        "turn": 1,
+        "client_message": client_message,
+        "bot_text": bot_text,
+        "bot_route": route,
+        "bot_message_type": message_type,
+        "bot_safety_flags": safety_flags or [],
+        "bot_reason_class": reason_class,
+        "bot_fallback_reason": fallback_reason,
+        "bot_dialogue_contract_pipeline": {
+            "contract": contract,
+            "retrieved_facts": retrieved_facts or {},
+            "missing_fact_keys": missing_fact_keys or [],
+            "fallback_reason": fallback_reason,
+        },
+        "number_audit": {"items": number_audit_items or []},
+    }
+    if close_status:
+        turn["bot_close_detect"] = {"status": close_status, "contact_requested": contact_requested}
+    if action:
+        turn["bot_action_decision"] = {"action": action}
+        turn["bot_action_decision_action"] = action
+    return turn
+
+
+def test_classify_handoff_bucket_respects_priority_and_uses_existing_signals(monkeypatch):
+    retrieved = {"locations.address": "Адрес: Сретенка, 20."}
+
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(retrieved_facts=retrieved, close_status="suppressed_handoff", client_message="Спасибо, поняла")
+        )
+        == "closing"
+    )
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(
+                retrieved_facts=retrieved,
+                close_status="suppressed_handoff",
+                client_message="Спасибо, а цена?",
+            )
+        )
+        == "upsell_miss"
+    )
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(
+                route="manager_only",
+                retrieved_facts=retrieved,
+                safety_flags=["p0"],
+                client_message="На ребёнка накричали, где занятия?",
+            )
+        )
+        == "disputed_p0"
+    )
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(
+                route="manager_only",
+                retrieved_facts=retrieved,
+                safety_flags=["p0"],
+                client_message="Хочу возврат оплаты",
+            )
+        )
+        == "legitimate"
+    )
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(
+                route="manager_only",
+                retrieved_facts={"payment.requisites": "Оплата по квитанции."},
+                contract={"is_p0": False, "current_question": "нужны реквизиты", "subquestions": []},
+                reason_class="payment",
+            )
+        )
+        == "legitimate"
+    )
+    assert sim._classify_handoff_bucket(_handoff_turn(retrieved_facts={}, missing_fact_keys=["schedule.days"])) == "legitimate"
+    assert sim._classify_handoff_bucket(_handoff_turn(retrieved_facts=retrieved)) == "upsell_miss"
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(
+                retrieved_facts={},
+                number_audit_items=[{"level": "same_brand_global_match"}],
+            )
+        )
+        == "upsell_miss"
+    )
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(
+                retrieved_facts={"contacts.schedule": "Контакты работают каждый день."},
+                missing_fact_keys=["schedule.exact_days"],
+            )
+        )
+        == "upsell_miss"
+    )
+    assert (
+        sim._classify_handoff_bucket(
+            _handoff_turn(
+                retrieved_facts=retrieved,
+                client_message="Мой телефон 89990000000",
+                action="capture_lead",
+            )
+        )
+        == "legitimate"
+    )
+
+    monkeypatch.setattr(sim, "_handoff_fact_level", lambda turn: "future_level")
+    assert sim._classify_handoff_bucket(_handoff_turn(retrieved_facts=retrieved)) == "unclassified"
+
+
+def test_over_handoff_buckets_are_summary_only_and_keep_transcripts_unchanged(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "observe_only",
+            "brand": "unpk",
+            "run_status": "completed",
+            "turns": [
+                _handoff_turn(
+                    retrieved_facts={"locations.address": "Адрес: Сретенка, 20."},
+                    close_status="suppressed_handoff",
+                    client_message="Спасибо, поняла",
+                ),
+                _handoff_turn(
+                    client_message="Когда расписание?",
+                    retrieved_facts={"contacts.schedule": "Контакты работают каждый день."},
+                    missing_fact_keys=["schedule.exact_days"],
+                ),
+            ],
+        }
+    ]
+    before = json.dumps(transcripts, ensure_ascii=False, sort_keys=True)
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": "observe_only", "brand": "unpk", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    after = json.dumps(transcripts, ensure_ascii=False, sort_keys=True)
+    assert after == before
+    assert summary["over_handoff"]["buckets"]["counts"]["closing"] == 1
+    assert summary["over_handoff"]["buckets"]["counts"]["upsell_miss"] == 1
+    assert summary["over_handoff"]["buckets"]["examples"]["closing"][0]["client_message"] == "Спасибо, поняла"
+    rendered = sim.render_summary_md(summary)
+    assert "buckets" in rendered
 
 
 def test_number_audit_levels_against_retrieved_client_and_snapshot(tmp_path):

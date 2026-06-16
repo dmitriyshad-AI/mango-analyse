@@ -3541,36 +3541,162 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
     handoff_turns: list[dict[str, Any]] = []
     false_handoff: list[dict[str, Any]] = []
     levels: Counter[str] = Counter()
+    buckets: Counter[str] = Counter()
+    bucket_examples: dict[str, list[dict[str, Any]]] = {
+        "closing": [],
+        "legitimate": [],
+        "disputed_p0": [],
+        "upsell_miss": [],
+        "unclassified": [],
+    }
     for dialog in transcripts:
         for turn in dialog.get("turns") or []:
             total_turns += 1
             if not _is_over_handoff_turn(turn):
                 continue
             level = _handoff_fact_level(turn)
+            bucket = _classify_handoff_bucket(turn)
             levels[level] += 1
+            buckets[bucket] += 1
             item = {
                 "dialog_id": dialog.get("dialog_id"),
                 "brand": dialog.get("brand"),
                 "turn": turn.get("turn"),
                 "route": turn.get("bot_route"),
                 "fact_level": level,
+                "bucket": bucket,
                 "client_message": turn.get("client_message"),
                 "fallback_reason": _turn_primary_fallback_reason(turn),
                 "retrieved_fact_keys": list(((turn.get("bot_dialogue_contract_pipeline") or {}).get("retrieved_facts") or {}).keys())[:8],
                 "missing_fact_keys": list((turn.get("bot_dialogue_contract_pipeline") or {}).get("missing_fact_keys") or [])[:8],
             }
             handoff_turns.append(item)
+            if bucket in bucket_examples and len(bucket_examples[bucket]) < 10:
+                bucket_examples[bucket].append(
+                    {
+                        "dialog_id": dialog.get("dialog_id"),
+                        "brand": dialog.get("brand"),
+                        "turn": turn.get("turn"),
+                        "client_message": turn.get("client_message"),
+                        "bot_route": turn.get("bot_route"),
+                        "fact_level": level,
+                    }
+                )
             if level == "retrieved_match":
                 false_handoff.append(item)
+    bucket_counts = {key: int(buckets.get(key, 0)) for key in bucket_examples}
+    bucket_shares = {
+        key: round(count / len(handoff_turns), 3) if handoff_turns else None
+        for key, count in bucket_counts.items()
+    }
     return {
         "turns": total_turns,
         "handoff_turns": len(handoff_turns),
         "over_handoff_turn_rate": round(len(handoff_turns) / total_turns, 3) if total_turns else None,
         "levels": dict(levels),
+        "buckets": {
+            "counts": bucket_counts,
+            "shares": bucket_shares,
+            "examples": bucket_examples,
+        },
         "false_handoff_count": len(false_handoff),
         "false_handoff": false_handoff,
         "candidates": handoff_turns[:80],
     }
+
+
+def _classify_handoff_bucket(turn: Mapping[str, Any]) -> str:
+    if not _is_over_handoff_turn(turn):
+        return "unclassified"
+    fact_level = _handoff_fact_level(turn)
+    if _turn_has_close_detect_status(turn) and not _turn_client_message_has_question_signal(turn):
+        return "closing"
+    if _turn_is_real_p0(turn):
+        if fact_level == "retrieved_match" and not _turn_is_manager_only_domain(turn):
+            return "disputed_p0"
+        return "legitimate"
+    if _turn_is_manager_only_legitimate(turn, fact_level=fact_level):
+        return "legitimate"
+    if fact_level in {"retrieved_match", "same_brand_global_match", "wrong_scope"}:
+        return "upsell_miss"
+    return "unclassified"
+
+
+def _turn_has_close_detect_status(turn: Mapping[str, Any]) -> bool:
+    meta = turn.get("bot_close_detect") if isinstance(turn.get("bot_close_detect"), Mapping) else {}
+    return str(meta.get("status") or "") in {"fired", "suppressed_handoff", "suppressed_pending"}
+
+
+def _turn_client_message_has_question_signal(turn: Mapping[str, Any]) -> bool:
+    pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
+    contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
+    if str(contract.get("message_type") or "").strip() == "question":
+        return True
+    if str(turn.get("bot_message_type") or "").strip() == "question":
+        return True
+    return "?" in str(turn.get("client_message") or "")
+
+
+def _turn_is_manager_only_legitimate(turn: Mapping[str, Any], *, fact_level: str) -> bool:
+    if fact_level == "no_match":
+        return True
+    if _turn_contact_requested_without_open_question(turn):
+        return True
+    return str(turn.get("bot_route") or "") == "manager_only" and _turn_is_manager_only_domain(turn)
+
+
+def _turn_contact_requested_without_open_question(turn: Mapping[str, Any]) -> bool:
+    if _turn_client_message_has_question_signal(turn):
+        return False
+    close_meta = turn.get("bot_close_detect") if isinstance(turn.get("bot_close_detect"), Mapping) else {}
+    if bool(close_meta.get("contact_requested")):
+        return True
+    for key in ("bot_action_decision", "bot_action_proposal"):
+        meta = turn.get(key) if isinstance(turn.get(key), Mapping) else {}
+        action = str(meta.get("action") or "").strip()
+        if action in {"capture_lead", "lead_capture", "request_contact", "handoff_contact"}:
+            return True
+    action = str(turn.get("bot_action_decision_action") or "").strip()
+    if action in {"capture_lead", "lead_capture", "request_contact", "handoff_contact"}:
+        return True
+    a2 = turn.get("bot_a2_proactive") if isinstance(turn.get("bot_a2_proactive"), Mapping) else {}
+    return bool(a2.get("contact_captured"))
+
+
+def _turn_is_manager_only_domain(turn: Mapping[str, Any]) -> bool:
+    haystack = _turn_domain_haystack(turn)
+    return bool(
+        re.search(
+            r"payment|refund|crm|amo|tallanto|оплат|плат[её]ж|возврат|верн[её]т|реквизит|квитанц|касс|"
+            r"сч[её]т|счет|долями|рассроч|договор|лид|заявк",
+            haystack,
+            re.I,
+        )
+    )
+
+
+def _turn_domain_haystack(turn: Mapping[str, Any]) -> str:
+    pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
+    contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
+    parts: list[str] = [
+        str(turn.get("client_message") or ""),
+        str(turn.get("bot_reason_class") or ""),
+        str(turn.get("bot_fallback_reason") or ""),
+        str(pipeline.get("fallback_reason") or ""),
+        str(contract.get("current_question") or ""),
+        str(contract.get("existence_target") or ""),
+        " ".join(str(item) for item in (turn.get("bot_safety_flags") or [])),
+        " ".join(str(item) for item in (turn.get("bot_manager_checklist") or [])),
+        " ".join(str(item) for item in (turn.get("bot_missing_facts") or [])),
+    ]
+    subquestions = contract.get("subquestions") if isinstance(contract.get("subquestions"), Sequence) else []
+    for subquestion in subquestions:
+        if not isinstance(subquestion, Mapping):
+            continue
+        parts.append(str(subquestion.get("text") or ""))
+        parts.append(str(subquestion.get("existence_target") or ""))
+        parts.extend(str(item) for item in (subquestion.get("needed_fact_keys") or []))
+    return " ".join(parts).casefold().replace("ё", "е")
 
 
 def _handoff_trace_enabled() -> bool:
@@ -3733,8 +3859,6 @@ def _handoff_trace_reason(
 
 
 def _is_over_handoff_turn(turn: Mapping[str, Any]) -> bool:
-    if _turn_is_real_p0(turn):
-        return False
     route = str(turn.get("bot_route") or "")
     text = str(turn.get("bot_text") or "").casefold()
     if route in {"draft_for_manager", "manager_only"}:

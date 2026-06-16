@@ -4,7 +4,13 @@
 
 Всегда отвечай Дмитрию на русском языке, кратко и по делу, без сложных английских терминов.
 
-Для сложных задач можно использовать до 6 субагентов с уровнем рассуждения `xhigh`. Для простых вопросов, коротких команд и мелких правок субагентов не запускать.
+## Subagents
+
+Для сложных задач аудита, архитектуры, планирования, рефакторинга, проверки больших изменений и реализации крупных ТЗ можно запускать до 6 субагентов параллельно с максимальным разумным уровнем рассуждения `xhigh`.
+
+Перед запуском субагентов кратко объясняй, какие части задачи им поручаешь. Не запускай субагентов для простых вопросов, коротких команд, мелких правок и задач, где параллельность не даёт пользы.
+
+Если упёрся в лимит активных субагентов, сначала забери полезный результат старых, закрой неактуальных и только потом запускай новых.
 
 ## Hard Safety Boundaries
 
@@ -29,15 +35,59 @@
 Не восстанавливай актуальное состояние проекта из чата. Сначала читай:
 
 1. `AGENTS.md`
-2. `docs/CURRENT_STATE.md`
+2. `docs/PROJECT_NOW.md` (локальный generated-снимок текущей очереди, ветки, блокеров и свежих audit packs; если отсутствует или старше 24 часов — сначала запусти `python3 scripts/project_now.py`)
 3. `docs/DECISIONS_LOG.md`
-4. `docs/ROADMAP.md`
-5. `docs/RUNBOOK.md`
-6. актуальное ТЗ текущего блока
-7. последние audit packs в `audits/_inbox/`
+4. `docs/RUNBOOK.md`
+5. актуальное ТЗ текущего блока
+6. последние audit packs в `audits/_inbox/`
+7. `docs/CURRENT_STATE.md` и `docs/ROADMAP.md` только как исторический контекст, если они явно свежее текущего ТЗ или нужны для проверки старого решения
 8. `stable_runtime/CURRENT_RUNTIME.json` только для чтения, если это нужно для проверки runtime-указателей
 
 Чат можно использовать только как дополнительный контекст, но не как источник правды.
+
+## Task Queue
+
+Очередь ТЗ живёт в `tasks/`:
+
+- `tasks/_inbox_codex/` — новые ТЗ, не брать в работу без явного запроса или текущего приоритета.
+- `tasks/_running/` — ровно те ТЗ, которые сейчас исполняются.
+- `tasks/_done/` — завершённые ТЗ и отчёты.
+- `tasks/_failed/` — остановленные ТЗ с причиной.
+
+Перемещай ТЗ только через `python3 scripts/task_move.py`: `--take`, `--done`, `--fail`. Старый inbox не триажить массово без отдельной команды; для залежавшихся задач делай только отчёт `python3 scripts/task_stale_report.py`.
+
+## Preflight
+
+Перед крупной реализацией порядок такой:
+
+1. `python3 scripts/project_now.py`
+2. `python3 scripts/task_move.py --take <TZ.md>`
+3. `python3 scripts/preflight.py --tz tasks/_running/<TZ.md>`
+
+`preflight.py` должен остановить работу, если ТЗ не в `_running`, заявленные зоны пересекают запретные live/runtime пути, есть новая грязь вне зон ТЗ, `PROJECT_NOW.md` устарел, активный worktree не внесён в `docs/worktrees_registry.md`, или тест-команда из шапки не собирается в безопасном `--collect-only` режиме.
+
+## Interfaces
+
+Репо-локальные операционные инструменты:
+
+- `scripts/project_now.py` — generated-снимок текущего состояния в `docs/PROJECT_NOW.md` (игнорируется git).
+- `scripts/task_move.py` — единственный штатный перенос ТЗ между inbox/running/done/failed.
+- `scripts/task_stale_report.py` — read-only отчёт о залежавшихся ТЗ.
+- `scripts/make_audit_pack.py` — audit pack с ПДн-фильтром телефонов и email; `manifest.json` пишется последним.
+- `scripts/preflight.py` — стоп-гейт перед крупной задачей.
+
+## TZ Header
+
+Для новых ТЗ добавляй машиночитаемую шапку в начале файла:
+
+```text
+Ветка: main
+Зоны: scripts/, tests/, docs/, tasks/, AGENTS.md, .gitignore
+Тест-команда: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/...
+Семантический-аудит: да/нет
+```
+
+Зоны должны быть минимальными. Запретные runtime/live-write зоны (`stable_runtime/`, `~/.codex`, AMO/Tallanto/CRM write, M1 queue, `runs/`, `transcripts/`) не включать без отдельного явного подтверждения Дмитрия.
 
 ## Graphify / карта репозитория
 
@@ -123,19 +173,3 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q <tests>
 - snapshot/rollback contract;
 - readback plan;
 - список того, что не было записано live.
-
-## Current Main Priority
-
-Текущий утвержденный порядок по ТЗ:
-
-1. `G` - git-границы и рабочее состояние.
-2. `A` - AMO pre-write snapshot и rollback.
-3. `PBF` - красный post-backfill тест.
-4. `B` - коммерческие поля в deal-aware AMO payload.
-5. `C` - структурные возражения.
-6. `D` - связь каталога вопросов и deal-aware quality gate.
-7. `E` - customer timeline как read-only источник истории клиента.
-
-Основное ТЗ:
-
-`docs/TOP3_PRIORITY_FIXES_TZ_2026-05-15.md`

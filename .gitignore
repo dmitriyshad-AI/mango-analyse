@@ -56,6 +56,9 @@ tmp/
 .cache/
 .codex_local/
 .codex_workers/
+docs/PROJECT_NOW.md
+docs/_automation_status/
+docs/.preflight_baseline.json
 codex_home_role_assignment_neutral/
 _local_archive_*/
 _bundles/

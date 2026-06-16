@@ -262,6 +262,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _build_direct_path_prompt,
     _direct_path_metadata,
     _direct_path_merge_metadata,
+    apply_assumed_scope_guard,
     _direct_path_route_rubric_should_regenerate,
     _build_direct_path_route_rubric_regen_prompt,
     _a2_extract_phone,
@@ -1128,6 +1129,7 @@ class SubscriptionLlmDraftProvider:
                 client_message=client_message,
                 context=context,
             )
+            result = apply_assumed_scope_guard(result, context=context)
 
         semantic_checked = apply_semantic_output_verifier(
             result,

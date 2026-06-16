@@ -1,0 +1,19 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m py_compile \
+  src/mango_mvp/channels/subscription_llm_parts/direct_path.py \
+  src/mango_mvp/channels/subscription_llm_parts/provider.py \
+  scripts/run_telegram_dynamic_client_sim.py
+Result: passed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'tz110 or tz119 or pilot_gold_v1'
+Result: 16 passed, 455 deselected
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py
+Result: 471 passed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_telegram_dynamic_client_sim.py
+Result: 100 passed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+Result: 3277 passed, 2 skipped, 1 warning in 48.24s
+
+Warning: urllib3 NotOpenSSLWarning from local Python LibreSSL, pre-existing environment warning.

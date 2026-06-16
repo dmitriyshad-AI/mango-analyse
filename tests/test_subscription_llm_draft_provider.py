@@ -11686,6 +11686,281 @@ def test_tz119_assumed_scope_guard_skips_p0_risk() -> None:
     assert result.metadata["assumed_scope_guard"]["action"] == "skipped_p0_or_risk"
 
 
+def _question_handoff_result(
+    facts: Mapping[str, str],
+    *,
+    exact_keys: Sequence[str] | None = None,
+    fact_metadata: Mapping[str, Mapping[str, object]] | None = None,
+    action: str = "answer_only",
+    action_reason: str = "fact_question",
+    draft_text: str = SAFE_FALLBACK_DRAFT_TEXT,
+    missing_facts: Sequence[str] = (),
+) -> SubscriptionDraftResult:
+    return SubscriptionDraftResult(
+        route="draft_for_manager",
+        risk_level="low",
+        draft_text=draft_text,
+        missing_facts=tuple(missing_facts),
+        safety_flags=("manager_approval_required", "no_auto_send", "draft_only", "direct_path_model"),
+        metadata={
+            "authoritative_output_gate": {"action": "pass", "findings": []},
+            "action_decision": {
+                "schema_version": subscription_llm.DEAL_ACTION_DECISION_SCHEMA_VERSION,
+                "enabled": True,
+                "action": action,
+                "confidence": 1.0,
+                "reason": action_reason,
+                "requires_manager_approval": True,
+                "no_live_execution": True,
+            },
+            "direct_path": {
+                "retrieved_facts": dict(facts),
+                "wide_fact_exact_keys": list(exact_keys or facts.keys()),
+                "wide_fact_metadata": dict(fact_metadata or {}),
+            },
+        },
+    )
+
+
+def _question_context(**extra: object) -> dict[str, object]:
+    return {
+        "active_brand": "unpk",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.QUESTION_INSTEAD_OF_HANDOFF_ENV: "1",
+        **extra,
+    }
+
+
+def test_tz123_question_flag_off_keeps_draft_byte_for_byte() -> None:
+    original = _question_handoff_result(
+        {
+            "unpk.online.5_11.price": "УНПК МФТИ: онлайн-курсы 5-11 классы стоят 37 000 ₽ за семестр.",
+            "unpk.online.9_11.price": "УНПК МФТИ: онлайн-курсы 9 и 11 классов стоят 41 800 ₽ за семестр.",
+        }
+    )
+
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        original,
+        client_message="Сколько стоит онлайн?",
+        context={"active_brand": "unpk", DIRECT_PATH_ENV: "1", subscription_llm.QUESTION_INSTEAD_OF_HANDOFF_ENV: "0"},
+    )
+
+    assert result is original
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == original.draft_text
+    assert "question_instead_of_handoff" not in result.metadata
+
+
+def test_tz123_question_asks_grade_when_grade_unlocks_exact_facts() -> None:
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        _question_handoff_result(
+            {
+                "unpk.online.5_11.price": "УНПК МФТИ: онлайн-курсы 5-11 классы стоят 37 000 ₽ за семестр и 59 000 ₽ за год.",
+                "unpk.online.9_11.weekday.price": "УНПК МФТИ: онлайн-курсы 9 и 11 классов по будням стоят 41 800 ₽ за семестр и 69 900 ₽ за год.",
+            }
+        ),
+        client_message="Сколько стоит онлайн?",
+        context=_question_context(),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "класс ученика" in result.draft_text
+    assert result.metadata["question_instead_of_handoff"]["status"] == "fired"
+    assert result.metadata["question_instead_of_handoff"]["slot"] == "grade"
+    assert result.metadata["action_decision"]["action"] == "answer_only"
+    assert result.metadata["action_decision"]["requires_manager_approval"] is False
+
+
+def test_tz123_question_asks_format_when_format_unlocks_exact_facts() -> None:
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        _question_handoff_result(
+            {
+                "foton.offline.price": "Фотон: очные занятия стоят 49 000 ₽ за семестр.",
+                "foton.online.price": "Фотон: онлайн-занятия стоят 29 750 ₽ за семестр.",
+            },
+            exact_keys=("foton.offline.price", "foton.online.price"),
+        ),
+        client_message="Сколько стоит?",
+        context=_question_context(active_brand="foton", known_slots={"grade": "8", "subject": "физика"}),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "очно или онлайн" in result.draft_text
+    assert result.metadata["question_instead_of_handoff"]["slot"] == "format"
+
+
+def test_tz123_question_asks_subject_for_soft_selection_request() -> None:
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        _question_handoff_result(
+            {
+                "foton.math.online.price": "Фотон: онлайн-математика стоит 29 750 ₽ за семестр.",
+                "foton.physics.online.price": "Фотон: онлайн-физика стоит 47 250 ₽ за семестр.",
+            },
+            exact_keys=("foton.math.online.price", "foton.physics.online.price"),
+            action="answer_only",
+            action_reason="fact_question:selection",
+        ),
+        client_message="Подберите, пожалуйста, подходящий курс",
+        context=_question_context(active_brand="foton", known_slots={"grade": "8", "format": "онлайн"}),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "предмет" in result.draft_text.casefold()
+    assert result.metadata["question_instead_of_handoff"]["slot"] == "subject"
+
+
+def test_tz123_question_asks_time_when_time_unlocks_schedule_fact() -> None:
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        _question_handoff_result(
+            {
+                "foton.physics.weekday.schedule": "Фотон: физика 8 класс онлайн по будням: вторник 18:00-20:00.",
+                "foton.physics.weekend.schedule": "Фотон: физика 8 класс онлайн по выходным: воскресенье 14:30-16:30.",
+            },
+            exact_keys=("foton.physics.weekday.schedule", "foton.physics.weekend.schedule"),
+            missing_facts=("уточнить удобное время",),
+        ),
+        client_message="Подберите группу по физике онлайн",
+        context=_question_context(active_brand="foton", known_slots={"grade": "8", "subject": "физика", "format": "онлайн"}),
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "какое время удобнее" in result.draft_text
+    assert result.metadata["question_instead_of_handoff"]["slot"] == "time"
+
+
+def test_tz123_question_does_not_override_p0_payment_dispute() -> None:
+    original = _question_handoff_result(
+        {
+            "unpk.online.5_11.price": "УНПК МФТИ: онлайн-курсы 5-11 классы стоят 37 000 ₽ за семестр.",
+            "unpk.online.9_11.price": "УНПК МФТИ: онлайн-курсы 9 и 11 классов стоят 41 800 ₽ за семестр.",
+        }
+    )
+
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        original,
+        client_message="С карты дважды списали деньги, верните оплату.",
+        context=_question_context(),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == original.draft_text
+    assert result.metadata["question_instead_of_handoff"]["status"] == "skipped_p0"
+
+
+def test_tz123_question_does_not_override_multitopic_complaint() -> None:
+    original = _question_handoff_result(
+        {
+            "unpk.online.5_11.price": "УНПК МФТИ: онлайн-курсы 5-11 классы стоят 37 000 ₽ за семестр.",
+            "unpk.online.9_11.price": "УНПК МФТИ: онлайн-курсы 9 и 11 классов стоят 41 800 ₽ за семестр.",
+        }
+    )
+
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        original,
+        client_message="У меня жалоба на преподавателя, и кстати в каком классе берёте?",
+        context=_question_context(),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == original.draft_text
+    assert result.metadata["question_instead_of_handoff"]["status"] == "skipped_p0"
+
+
+def test_tz123_question_does_not_reask_confirmed_slot() -> None:
+    original = _question_handoff_result(
+        {
+            "unpk.online.5_11.price": "УНПК МФТИ: онлайн-курсы 5-11 классы стоят 37 000 ₽ за семестр.",
+            "unpk.online.9_11.price": "УНПК МФТИ: онлайн-курсы 9 и 11 классов стоят 41 800 ₽ за семестр.",
+        }
+    )
+
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        original,
+        client_message="Сколько стоит онлайн?",
+        context=_question_context(
+            known_slots={"grade": "9"},
+            dialogue_memory_view={
+                "slot_provenance": {"grade": {"value": "9", "source": "memory_provenance", "quote": "9 класс"}},
+                "do_not_reask_slots": ["grade"],
+            },
+        ),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == original.draft_text
+    assert result.metadata["question_instead_of_handoff"]["status"] == "skipped"
+    assert result.metadata["question_instead_of_handoff"]["reason"] == "no_unlocking_slot"
+
+
+def test_tz123_question_does_not_ask_when_slot_does_not_change_answer() -> None:
+    original = _question_handoff_result(
+        {
+            "foton.online.grade8.price": "Фотон: онлайн-курс стоит 29 750 ₽ за семестр.",
+            "foton.online.grade9.price": "Фотон: онлайн-курс стоит 29 750 ₽ за семестр.",
+        }
+    )
+
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        original,
+        client_message="Сколько стоит онлайн?",
+        context=_question_context(active_brand="foton"),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == original.draft_text
+    assert result.metadata["question_instead_of_handoff"]["status"] == "skipped"
+    assert result.metadata["question_instead_of_handoff"]["reason"] == "no_unlocking_slot"
+
+
+def test_tz123_question_does_not_override_manager_action() -> None:
+    original = _question_handoff_result(
+        {
+            "unpk.online.5_11.price": "УНПК МФТИ: онлайн-курсы 5-11 классы стоят 37 000 ₽ за семестр.",
+            "unpk.online.9_11.price": "УНПК МФТИ: онлайн-курсы 9 и 11 классов стоят 41 800 ₽ за семестр.",
+        },
+        action="send_crm_data",
+        action_reason="crm_data_requires_manager:identity_not_strict",
+    )
+
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        original,
+        client_message="Сколько занятий осталось на балансе?",
+        context=_question_context(),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == original.draft_text
+    assert result.metadata["question_instead_of_handoff"]["status"] == "skipped_manager_action"
+    assert result.metadata["question_instead_of_handoff"]["reason"] == "send_crm_data"
+
+
+def test_tz123_question_does_not_repeat_already_asked_slot() -> None:
+    original = _question_handoff_result(
+        {
+            "unpk.online.5_11.price": "УНПК МФТИ: онлайн-курсы 5-11 классы стоят 37 000 ₽ за семестр.",
+            "unpk.online.9_11.price": "УНПК МФТИ: онлайн-курсы 9 и 11 классов стоят 41 800 ₽ за семестр.",
+        }
+    )
+
+    result = subscription_llm.apply_question_instead_of_handoff_layer(
+        original,
+        client_message="Сколько стоит онлайн?",
+        context=_question_context(
+            recent_messages=("Бот: Подскажите, пожалуйста, класс ученика — тогда сориентирую точнее.",)
+        ),
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.metadata["question_instead_of_handoff"]["reason"] == "no_unlocking_slot"
+
+
+def test_tz123_question_flag_is_not_enabled_in_pilot_profile() -> None:
+    assert (
+        subscription_llm.QUESTION_INSTEAD_OF_HANDOFF_ENV
+        not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    )
+
+
 def test_tz119_draft_prompt_marks_assumed_slots_only_when_flag_enabled() -> None:
     context = {
         "active_brand": "foton",

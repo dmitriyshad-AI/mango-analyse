@@ -834,6 +834,7 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _verifier_handoff_claims_enabled,
     apply_a2_proactive_layer,
     apply_deal_action_decision_layer,
+    apply_question_instead_of_handoff_layer,
     apply_authoritative_output_gate,
     apply_humanity_guards,
     apply_humanity_x2_rewriter,
@@ -948,7 +949,12 @@ class SubscriptionLlmDraftProvider:
             if _deal_action_decision_enabled(context):
                 direct_result = _direct_path_autonomy_matrix_topic_result(direct_result, context=context)
                 direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
-            return apply_deal_action_decision_layer(
+            direct_result = apply_deal_action_decision_layer(
+                direct_result,
+                client_message=client_message,
+                context=context,
+            )
+            return apply_question_instead_of_handoff_layer(
                 direct_result,
                 client_message=client_message,
                 context=context,
@@ -986,8 +992,13 @@ class SubscriptionLlmDraftProvider:
                 )
             if _deal_action_decision_enabled(context):
                 semantic_checked = apply_autonomy_matrix_guard(semantic_checked, client_message=client_message, context=context)
-            return apply_deal_action_decision_layer(
+            semantic_checked = apply_deal_action_decision_layer(
                 apply_authoritative_output_gate(semantic_checked, client_message=client_message, context=context),
+                client_message=client_message,
+                context=context,
+            )
+            return apply_question_instead_of_handoff_layer(
+                semantic_checked,
                 client_message=client_message,
                 context=context,
             )
@@ -1052,8 +1063,13 @@ class SubscriptionLlmDraftProvider:
                 if _semantic_diagnosis_guard_enabled(context)
                 else None,
             )
-        return apply_deal_action_decision_layer(
+        result = apply_deal_action_decision_layer(
             apply_authoritative_output_gate(result, client_message=client_message, context=context),
+            client_message=client_message,
+            context=context,
+        )
+        return apply_question_instead_of_handoff_layer(
+            result,
             client_message=client_message,
             context=context,
         )

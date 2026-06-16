@@ -84,6 +84,9 @@ DIRECT_DEFAULT_MANAGER_ENV = "TELEGRAM_DIRECT_DEFAULT_MANAGER"
 ANSWERABILITY_SHADOW_ENV = "TELEGRAM_ANSWERABILITY_SHADOW"
 
 
+QUESTION_INSTEAD_OF_HANDOFF_ENV = "TELEGRAM_QUESTION_INSTEAD_OF_HANDOFF"
+
+
 DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
 
 
@@ -436,6 +439,17 @@ def _direct_path_model_p0_enabled(context: Optional[Mapping[str, Any]] = None) -
         DIRECT_PATH_MODEL_P0_ENV,
         aliases=("direct_path_model_p0", "direct_path_model_p0_enabled", "model_p0_enabled"),
     )
+
+
+def _question_instead_of_handoff_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        QUESTION_INSTEAD_OF_HANDOFF_ENV,
+        aliases=("question_instead_of_handoff", "clarify_instead_of_handoff"),
+    )
+    if explicit is not None:
+        return explicit
+    return False
 
 
 def _direct_default_manager_enabled() -> bool:

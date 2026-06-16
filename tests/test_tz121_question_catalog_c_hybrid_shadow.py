@@ -4,8 +4,6 @@ import csv
 import json
 from pathlib import Path
 
-import pytest
-
 from scripts.run_tz121_question_catalog_c_hybrid_shadow import main as c_hybrid_main
 
 
@@ -85,6 +83,48 @@ def test_tz121_question_catalog_c_hybrid_shadow_uses_followup_guard(tmp_path: Pa
     assert all(row["input_fragment"] == "redacted calibration question" for row in rows)
 
 
-def test_tz121_question_catalog_c_hybrid_runner_rejects_primary(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="shadow-only"):
-        c_hybrid_main(["--mode", "primary", "--out-dir", str(tmp_path / "out")])
+def test_tz121_question_catalog_c_hybrid_primary_is_offline_only(tmp_path: Path) -> None:
+    input_path = tmp_path / "predictions.csv"
+    guard_path = tmp_path / "guard.csv"
+    out_dir = tmp_path / "out"
+    _write_csv(
+        input_path,
+        [
+            {
+                "question_id": "q_primary",
+                "raw_text": "Можно оплатить наличными?",
+                "human_label": "theme:002_payment_method",
+                "rule_theme_id": "theme:003_payment_status",
+                "model_theme_id": "theme:002_payment_method",
+                "model_confidence": "0.86",
+                "source": "synthetic",
+            }
+        ],
+    )
+    _write_csv(
+        guard_path,
+        [
+            {
+                "question_id": "unused",
+                "human_rule": "theme:005_discounts",
+                "model": "theme:001_pricing",
+                "regression_class": "discount_vs_price",
+                "note": "",
+            }
+        ],
+    )
+
+    assert (
+        c_hybrid_main(
+            ["--input", str(input_path), "--guard-review", str(guard_path), "--out-dir", str(out_dir), "--mode", "primary"]
+        )
+        == 0
+    )
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "primary"
+    assert summary["primary_run"] is True
+    assert summary["stop_for_regrede"] is False
+    assert summary["llm_calls_total"] == 0
+    assert summary["safety"]["rebuilds_main_catalog"] is False
+    assert summary["safety"]["writes_db"] is False

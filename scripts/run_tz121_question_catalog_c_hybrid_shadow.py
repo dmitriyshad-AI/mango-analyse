@@ -21,12 +21,12 @@ SERVICE_GUARD_IDS = {
     "service:S4_status_request",
     "service:S5_general_consultation",
 }
+MODES = {"shadow", "primary"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    if str(args.mode or "shadow").strip().lower() != "shadow":
-        raise SystemExit("TZ-121 C hybrid runner is shadow-only until Claude/Dmitry regrede.")
+    mode = normalize_mode(args.mode)
     input_path = Path(args.input).expanduser().resolve()
     guard_path = Path(args.guard_review).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -40,10 +40,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             guard_rows=guard_rows,
             service_confidence_threshold=float(args.service_confidence_threshold),
             include_fragments=bool(args.include_fragments),
+            mode=mode,
         )
         for index, row in enumerate(read_csv(input_path), start=1)
     ]
-    summary = build_summary(rows, input_path=input_path, guard_path=guard_path, out_dir=out_dir)
+    summary = build_summary(rows, input_path=input_path, guard_path=guard_path, out_dir=out_dir, mode=mode)
 
     write_csv(out_dir / "tz121_c_question_catalog_hybrid_trace.csv", rows)
     write_jsonl(out_dir / "tz121_c_question_catalog_hybrid_trace.jsonl", rows)
@@ -60,6 +61,7 @@ def build_trace_row(
     guard_rows: Mapping[str, Mapping[str, str]],
     service_confidence_threshold: float,
     include_fragments: bool,
+    mode: str,
 ) -> dict[str, Any]:
     question_id = row_question_id(row, index)
     raw_text = str(row.get("raw_text") or row.get("question") or "")
@@ -97,7 +99,7 @@ def build_trace_row(
         "rule_error_type": classify_error_type(gold=gold, rule=rule, model=rule),
         "model_error_type": classify_error_type(gold=gold, rule=rule, model=model),
         "guard_reason": guard_reason,
-        "classification_method": "tz121_hybrid_shadow",
+        "classification_method": f"tz121_hybrid_{mode}",
     }
 
 
@@ -132,6 +134,7 @@ def build_summary(
     input_path: Path,
     guard_path: Path,
     out_dir: Path,
+    mode: str,
 ) -> dict[str, Any]:
     rule_metrics = compute_classification_metrics(rows, true_field="gold", pred_field="rule")
     model_metrics = compute_classification_metrics(rows, true_field="gold", pred_field="model")
@@ -144,7 +147,7 @@ def build_summary(
     return {
         "schema_version": "tz121_c_question_catalog_hybrid_shadow_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "mode": "shadow",
+        "mode": mode,
         "input": str(input_path),
         "guard_review": str(guard_path),
         "out_dir": str(out_dir),
@@ -158,8 +161,8 @@ def build_summary(
         "target_accuracy": 0.72,
         "target_passed": hybrid_metrics.accuracy > 0.72,
         "llm_calls_total": 0,
-        "primary_run": False,
-        "stop_for_regrede": True,
+        "primary_run": mode == "primary",
+        "stop_for_regrede": mode != "primary",
         "safety": {
             "calls_model": False,
             "uses_openai_api_key": False,
@@ -178,7 +181,7 @@ def render_report(summary: Mapping[str, Any], rows: list[Mapping[str, Any]]) -> 
     mistakes = [row for row in rows if row["matched_gold"] == "Нет"][:15]
     return "\n".join(
         [
-            "# TZ-121 C Question Catalog Hybrid Shadow",
+            "# TZ-121 C Question Catalog Hybrid",
             "",
             f"- Mode: `{summary['mode']}`",
             f"- Rows: `{summary['records_total']}`",
@@ -200,7 +203,7 @@ def render_report(summary: Mapping[str, Any], rows: list[Mapping[str, Any]]) -> 
                 for row in mistakes
             ],
             "",
-            "Stop: wait for Claude/Dmitry regrede before enabling C primary.",
+            "Stop: primary is enabled only when `mode=primary`; A-block regrede is separate.",
         ]
     ) + "\n"
 
@@ -263,12 +266,19 @@ def safe_float(value: Any) -> float:
         return 0.0
 
 
+def normalize_mode(value: Any) -> str:
+    mode = str(value or "shadow").strip().lower()
+    if mode not in MODES:
+        raise SystemExit(f"Unsupported mode: {mode}")
+    return mode
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TZ-121 C: hybrid shadow measurement for question catalog.")
+    parser = argparse.ArgumentParser(description="TZ-121 C: hybrid offline measurement/primary for question catalog.")
     parser.add_argument("--input", default=DEFAULT_INPUT)
     parser.add_argument("--guard-review", default=DEFAULT_GUARD)
     parser.add_argument("--out-dir", default="audits/_inbox/tz121_c_question_catalog_hybrid_shadow")
-    parser.add_argument("--mode", default="shadow")
+    parser.add_argument("--mode", choices=sorted(MODES), default="shadow")
     parser.add_argument("--service-confidence-threshold", type=float, default=0.85)
     parser.add_argument("--include-fragments", action="store_true")
     return parser.parse_args(argv)

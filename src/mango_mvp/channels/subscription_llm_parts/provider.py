@@ -127,7 +127,6 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _A2_PHONE_RE,
     _CLIENT_EMAIL_RE,
     _active_brand,
-    _answerability_shadow_enabled,
     _client_clean_fact_text,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_pilot_config,
@@ -1099,7 +1098,6 @@ class SubscriptionLlmDraftProvider:
         pilot_config = _direct_path_pilot_config(context)
         gold_examples = _direct_path_select_gold_real_examples(client_message, context=context, active_brand=active_brand)
         prompt = _build_direct_path_prompt(client_message, context=context, facts=facts, fact_pack=fact_pack, gold_examples=gold_examples)
-        include_answerability_self = _answerability_shadow_enabled(context)
         direct_meta = _direct_path_metadata(
             attempted=True,
             model_called=True,
@@ -1110,10 +1108,7 @@ class SubscriptionLlmDraftProvider:
             context=context,
         )
         try:
-            result = self._direct_path_draft_runner_observing_answerability(
-                prompt,
-                include_answerability_self=include_answerability_self,
-            )
+            result = self._direct_path_draft_runner(prompt)
         except subprocess.TimeoutExpired:
             direct_meta.update(
                 {
@@ -1150,12 +1145,7 @@ class SubscriptionLlmDraftProvider:
                 direct_meta["rubric_reason"] = "missing_justification"
                 regen_prompt = _build_direct_path_route_rubric_regen_prompt(prompt, result)
                 try:
-                    result = _direct_path_prepare_model_result(
-                        self._direct_path_draft_runner_observing_answerability(
-                            regen_prompt,
-                            include_answerability_self=include_answerability_self,
-                        )
-                    )
+                    result = _direct_path_prepare_model_result(self._direct_path_draft_runner(regen_prompt))
                     direct_meta["rubric_regenerated"] = True
                 except Exception as exc:  # noqa: BLE001
                     direct_meta["rubric_reason"] = f"regen_failed:{str(exc)[:160]}"
@@ -1904,26 +1894,6 @@ class SubscriptionLlmDraftProvider:
             )
         return apply_authoritative_output_gate(guard_identity_disclosure(result))
 
-    def _direct_path_draft_runner_observing_answerability(
-        self,
-        prompt: str,
-        *,
-        include_answerability_self: bool,
-    ) -> SubscriptionDraftResult:
-        had_previous = hasattr(self, "_direct_path_include_answerability_self")
-        previous = getattr(self, "_direct_path_include_answerability_self", False)
-        self._direct_path_include_answerability_self = bool(include_answerability_self)
-        try:
-            return self._direct_path_draft_runner(prompt)
-        finally:
-            if had_previous:
-                self._direct_path_include_answerability_self = previous
-            else:
-                try:
-                    delattr(self, "_direct_path_include_answerability_self")
-                except AttributeError:
-                    pass
-
     def _direct_path_draft_runner(self, prompt: str) -> SubscriptionDraftResult:
         prompt_text = str(prompt or "").strip()
         if not prompt_text:
@@ -1951,11 +1921,7 @@ class SubscriptionLlmDraftProvider:
             raise RuntimeError(message)
 
         payload = extract_json_object(raw or proc.stdout or proc.stderr or "")
-        result = _normalize_direct_path_payload(
-            payload,
-            raw_response=raw,
-            include_answerability_self=bool(getattr(self, "_direct_path_include_answerability_self", False)),
-        )
+        result = _normalize_direct_path_payload(payload, raw_response=raw)
         return replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
 
     def _cache_get(self, cache_key: str) -> Optional[SubscriptionDraftResult]:

@@ -93,6 +93,7 @@ DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_ENV,
     BOT_GOLD_REAL_ENV,
+    ANSWERABILITY_SHADOW_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     OUTPUT_SANITIZER_ENV,
     ROUTE_RUBRIC_ENV,
@@ -124,12 +125,11 @@ def _direct_path_pilot_config(context: Optional[Mapping[str, Any]] = None) -> st
 
 
 def _answerability_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    for key in (ANSWERABILITY_SHADOW_ENV, "answerability_shadow", "answerability_shadow_enabled"):
-        if isinstance(context, Mapping) and key in context:
-            return _truthy_value(context.get(key))
-    if ANSWERABILITY_SHADOW_ENV in os.environ:
-        return _truthy_value(os.getenv(ANSWERABILITY_SHADOW_ENV))
-    return False
+    return _pilot_profile_default_on_flag_enabled(
+        context,
+        ANSWERABILITY_SHADOW_ENV,
+        aliases=("answerability_shadow", "answerability_shadow_enabled"),
+    )
 
 
 def _presale_prompt_child_name_value(value: Any) -> str:

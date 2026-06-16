@@ -11796,20 +11796,27 @@ def test_answerability_shadow_prompt_is_flagged_off_by_default(monkeypatch: pyte
     assert '"why_manager"' not in prompt
 
 
-def test_answerability_shadow_prompt_on_adds_observation_fields() -> None:
+def test_answerability_shadow_prompt_on_keeps_direct_prompt_byte_identical() -> None:
+    off_context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.ANSWERABILITY_SHADOW_ENV: "0",
+    }
     context = {
         "active_brand": "foton",
         DIRECT_PATH_ENV: "1",
         subscription_llm.ANSWERABILITY_SHADOW_ENV: "1",
     }
 
+    off_prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=off_context)
     prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=context)
 
-    assert "Теневая самооценка ответуемости" in prompt
-    assert '"can_answer_self": "yes|no|uncertain"' in prompt
-    assert '"self_missing_facts": []' in prompt
-    assert '"supporting_facts": []' in prompt
-    assert '"why_manager": ""' in prompt
+    assert prompt == off_prompt
+    assert "Теневая самооценка ответуемости" not in prompt
+    assert '"can_answer_self"' not in prompt
+    assert '"self_missing_facts"' not in prompt
+    assert '"supporting_facts"' not in prompt
+    assert '"why_manager"' not in prompt
 
 
 def test_answerability_trace_off_is_not_added_to_metadata() -> None:
@@ -11867,6 +11874,52 @@ def test_answerability_trace_on_summarizes_existing_downgrade_causes() -> None:
     assert trace["semantic_output_verifier"]["finding_codes"] == ["unsupported_claim"]
     assert trace["authoritative_output_gate"]["findings"][0]["code"] == "unbacked_fact"
     assert trace["answerability_self"] == {"can_answer_self": "no"}
+
+
+def test_pilot_gold_answerability_shadow_changes_only_trace_metadata() -> None:
+    def source_result() -> SubscriptionDraftResult:
+        return SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Передам менеджеру, чтобы проверить наличие места.",
+            safety_flags=("manager_approval_required",),
+            context_used=("schedule.fact",),
+            metadata={
+                "direct_path": {"model_called": True, "reason_class": "policy_permission"},
+                "authoritative_output_gate": {"action": "pass", "findings": []},
+                "answerability_self": {
+                    "can_answer_self": "no",
+                    "why_manager": "нужно проверить наличие места",
+                },
+            },
+        )
+
+    profile_context = {
+        "active_brand": "foton",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+    }
+    off = subscription_llm._direct_path_finalize_metadata(
+        source_result(),
+        before_gate_route="draft_for_manager",
+        client_message="Есть места в группе?",
+        context={**profile_context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "0"},
+    )
+    on = subscription_llm._direct_path_finalize_metadata(
+        source_result(),
+        before_gate_route="draft_for_manager",
+        client_message="Есть места в группе?",
+        context=profile_context,
+    )
+
+    assert off.route == on.route
+    assert off.draft_text == on.draft_text
+    assert off.safety_flags == on.safety_flags
+    assert off.context_used == on.context_used
+    off_metadata = dict(off.metadata)
+    on_metadata = dict(on.metadata)
+    assert "answerability_trace" not in off_metadata
+    assert "answerability_trace" in on_metadata
+    on_metadata.pop("answerability_trace")
+    assert on_metadata == off_metadata
 
 
 def test_direct_path_model_p0_off_keeps_previous_route_and_text() -> None:
@@ -13117,13 +13170,14 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm.ANSWERABILITY_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.ANSWERABILITY_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False
-    assert subscription_llm._answerability_shadow_enabled(context) is False
+    assert subscription_llm._answerability_shadow_enabled(context) is True
     assert subscription_llm._retriever_need_shadow_enabled({**context, RETRIEVER_NEED_SHADOW_ENV: "1"}) is True
     assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is True
     assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"}) is True
+    assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "0"}) is False
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:

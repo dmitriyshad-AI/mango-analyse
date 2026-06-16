@@ -1440,8 +1440,6 @@ def _build_direct_path_prompt(
     action_proposal_field = ""
     p0_instruction = ""
     p0_fields = ""
-    answerability_instruction = ""
-    answerability_fields = ""
     route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager"'
     if _direct_path_model_p0_enabled(context):
         route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager" | "manager_only"'
@@ -1468,18 +1466,6 @@ def _build_direct_path_prompt(
         action_proposal_field = (
             '  "action_proposal": {"action": "answer_only|send_schedule|send_materials|send_crm_data|capture_lead|schedule_followup|send_payment_link|send_document|advance_stage|handoff_manager|unknown", "confidence": 0.0, "reason": "кратко"},\n'
         )
-    if _direct_path_answerability_shadow_enabled(context):
-        answerability_instruction = (
-            "Теневая самооценка ответуемости: дополнительно заполни поля can_answer_self, "
-            "self_missing_facts, supporting_facts и why_manager. Это только диагностика: маршрут всё равно "
-            "задаётся полем route, а эти поля не должны менять текст ответа.\n\n"
-        )
-        answerability_fields = (
-            '  "can_answer_self": "yes|no|uncertain",\n'
-            '  "self_missing_facts": [],\n'
-            '  "supporting_facts": [],\n'
-            '  "why_manager": "",\n'
-        )
     return (
         f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
         f"{_direct_path_route_rubric_block(context)}"
@@ -1487,7 +1473,6 @@ def _build_direct_path_prompt(
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"{p0_instruction}"
         f"{action_proposal_instruction}"
-        f"{answerability_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
         + (f"{gold_block}\n\n" if gold_block else "")
@@ -1506,7 +1491,6 @@ def _build_direct_path_prompt(
         "{\n"
         f'  "route": {route_choices},\n'
         '  "draft_text": "текст для клиента",\n'
-        f"{answerability_fields}"
         f"{p0_fields}"
         f"{action_proposal_field}"
         '  "manager_checklist": [],\n'

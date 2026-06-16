@@ -11720,20 +11720,27 @@ def test_answerability_shadow_prompt_is_flagged_off_by_default(monkeypatch: pyte
     assert '"why_manager"' not in prompt
 
 
-def test_answerability_shadow_prompt_on_adds_observation_fields() -> None:
+def test_answerability_shadow_prompt_on_keeps_direct_prompt_byte_identical() -> None:
+    off_context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.ANSWERABILITY_SHADOW_ENV: "0",
+    }
     context = {
         "active_brand": "foton",
         DIRECT_PATH_ENV: "1",
         subscription_llm.ANSWERABILITY_SHADOW_ENV: "1",
     }
 
+    off_prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=off_context)
     prompt = subscription_llm._build_direct_path_prompt("Можно записаться на пробное?", context=context)
 
-    assert "Теневая самооценка ответуемости" in prompt
-    assert '"can_answer_self": "yes|no|uncertain"' in prompt
-    assert '"self_missing_facts": []' in prompt
-    assert '"supporting_facts": []' in prompt
-    assert '"why_manager": ""' in prompt
+    assert prompt == off_prompt
+    assert "Теневая самооценка ответуемости" not in prompt
+    assert '"can_answer_self"' not in prompt
+    assert '"self_missing_facts"' not in prompt
+    assert '"supporting_facts"' not in prompt
+    assert '"why_manager"' not in prompt
 
 
 def test_answerability_trace_off_is_not_added_to_metadata() -> None:

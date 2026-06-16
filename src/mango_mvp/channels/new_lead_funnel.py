@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -9,6 +10,7 @@ from mango_mvp.channels.text_signals import has_any_marker, has_marker
 
 
 NEW_LEAD_FUNNEL_SCHEMA_VERSION = "new_lead_funnel_v1_2026_05_23"
+ANCHORED_BARE_GRADE_ENV = "TELEGRAM_ANCHORED_BARE_GRADE"
 
 OFF_TOPIC_MARKERS = (
     "айфон",
@@ -29,6 +31,24 @@ SUBJECT_MARKERS = (
     ("хими", "химия"),
     ("биолог", "биология"),
 )
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on", "y", "да"}
+_BARE_GRADE_CANDIDATE_RE = re.compile(r"(?<![\dA-Za-zА-Яа-яЁё+])(?P<grade>[1-9]|1[01])(?![\dA-Za-zА-Яа-яЁё])")
+_PHONE_RE = re.compile(r"(?:\+7|8)[\s\-()]*(?:\d[\s\-()]*){6,}")
+_TIME_RE = re.compile(r"\b(?:[01]?\d|2[0-3])[:.]\d{2}\b")
+_DATE_RE = re.compile(
+    r"\b(?:[1-9]|1[01])\s*(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*\b"
+    r"|\b(?:[1-9]|1[01])[./](?:0?[1-9]|1[0-2])\b",
+    re.I,
+)
+_MONEY_AFTER_RE = re.compile(r"^\s*(?:тыс|т\.?\s*р|руб|₽|000\b)", re.I)
+_AGE_AFTER_RE = re.compile(r"^\s*(?:лет|года|годик|летн\w*)\b", re.I)
+_AGE_BEFORE_RE = re.compile(r"(?:\bс|\bдля)\s*$", re.I)
+_COUNT_AFTER_RE = re.compile(
+    r"^\s*(?:дет(?:ей|и|ям|я)?|реб[её]н\w*|заняти\w*|урок\w*|раз(?:а|ов)?|человек|месяц\w*|недел\w*)\b",
+    re.I,
+)
+_COUNT_BEFORE_RE = re.compile(r"(?:\bу\s+меня|\bнас|\bесть)\s*$", re.I)
+_CHOICE_VERBS_RE = re.compile(r"\b(?:сравнив\w*|дума\w*|выбира\w*|реша\w*|смотр\w*|рассматрива\w*)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -456,7 +476,96 @@ def extract_grade(text: str) -> str:
         return "9"
     if has_marker(text, "егэ"):
         return "11"
+    if anchored_bare_grade_enabled():
+        grade, _quote = extract_anchored_bare_grade_with_quote(text)
+        return grade
     return ""
+
+
+def anchored_bare_grade_enabled() -> bool:
+    return str(os.getenv(ANCHORED_BARE_GRADE_ENV) or "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def extract_anchored_bare_grade_with_quote(text: str) -> tuple[str, str]:
+    normalized = normalize_text(text)
+    candidates: list[tuple[str, tuple[int, int], str]] = []
+    for match in _BARE_GRADE_CANDIDATE_RE.finditer(normalized):
+        grade = match.group("grade")
+        span = match.span("grade")
+        if not _is_safe_bare_grade_candidate(normalized, span=span):
+            continue
+        phrase = _short_phrase_around_span(normalized, span=span)
+        if not _phrase_has_bare_grade_anchor(phrase):
+            continue
+        candidates.append((grade, span, phrase))
+    if len(candidates) != 1:
+        return "", ""
+    grade, _span, phrase = candidates[0]
+    return grade, phrase
+
+
+def _is_safe_bare_grade_candidate(text: str, *, span: tuple[int, int]) -> bool:
+    start, end = span
+    before = text[max(0, start - 24) : start]
+    after = text[end : min(len(text), end + 32)]
+    if _span_overlaps_any(span, _PHONE_RE.finditer(text)):
+        return False
+    if _span_overlaps_any(span, _TIME_RE.finditer(text)):
+        return False
+    if _span_overlaps_any(span, _DATE_RE.finditer(text)):
+        return False
+    if _range_touches_span(text, span=span):
+        return False
+    if _MONEY_AFTER_RE.search(after):
+        return False
+    if _AGE_AFTER_RE.search(after) or _AGE_BEFORE_RE.search(before):
+        return False
+    if _COUNT_AFTER_RE.search(after) or _COUNT_BEFORE_RE.search(before):
+        return False
+    if re.search(r"\bв\s*$", before, re.I):
+        return False
+    return True
+
+
+def _span_overlaps_any(span: tuple[int, int], matches: Any) -> bool:
+    start, end = span
+    for match in matches:
+        if start < match.end() and end > match.start():
+            return True
+    return False
+
+
+def _range_touches_span(text: str, *, span: tuple[int, int]) -> bool:
+    start, end = span
+    left = text[max(0, start - 3) : start]
+    right = text[end : min(len(text), end + 3)]
+    return bool(re.search(r"\d\s*[-–—]\s*$", left) or re.search(r"^\s*[-–—]\s*\d", right))
+
+
+def _short_phrase_around_span(text: str, *, span: tuple[int, int]) -> str:
+    start, end = span
+    left = max(text.rfind(separator, 0, start) for separator in (".", "!", "?", ";", "\n", ","))
+    phrase_start = 0 if left < 0 else left + 1
+    right_candidates = [text.find(separator, end) for separator in (".", "!", "?", ";", "\n", ",")]
+    right_candidates = [candidate for candidate in right_candidates if candidate >= 0]
+    phrase_end = min(right_candidates) if right_candidates else len(text)
+    phrase = text[phrase_start:phrase_end].strip()
+    if len(phrase) <= 140:
+        return phrase
+    window_start = max(0, start - 60)
+    window_end = min(len(text), end + 60)
+    return text[window_start:window_end].strip()
+
+
+def _phrase_has_bare_grade_anchor(phrase: str) -> bool:
+    if not phrase:
+        return False
+    subject = extract_subjects(phrase)
+    if subject and "," not in subject:
+        return True
+    if extract_format(phrase):
+        return True
+    return bool(re.search(r"\b(?:класс\w*|кл\.?|огэ|егэ)\b", phrase, re.I))
 
 
 def extract_subjects(text: str) -> str:
@@ -511,7 +620,20 @@ def extract_format(text: str) -> str:
     )
     online_negated = bool(re.search(r"\b(?:не|только\s+не)\s+онлайн\w*\b", normalized))
     offline_negated = bool(re.search(r"\b(?:не|только\s+не)\s+очн\w*\b|\b(?:не|только\s+не)\s+офлайн\w*\b", normalized))
-    if online_hit and offline_hit and has_marker(normalized, "или") and not online_negated and not offline_negated:
+    if (
+        online_hit
+        and offline_hit
+        and not online_negated
+        and not offline_negated
+        and (
+            has_marker(normalized, "или")
+            or (
+                anchored_bare_grade_enabled()
+                and re.search(r"\bи\b", normalized)
+                and _CHOICE_VERBS_RE.search(normalized)
+            )
+        )
+    ):
         return ""
     if online_hit and not online_negated and not (offline_hit and not offline_negated):
         return "online"

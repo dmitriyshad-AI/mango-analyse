@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.new_lead_funnel import (
+    anchored_bare_grade_enabled,
+    extract_anchored_bare_grade_with_quote,
     extract_format,
     extract_goal,
     extract_grade,
@@ -1117,16 +1119,30 @@ def _extract_provenance_slots_from_client_text(
             if grade.isdigit() and 1 <= int(grade) <= 11:
                 result["grade"] = _provenance_slot("grade", grade, match.group(0), turn_index, message_id, child_key)
             break
-    for pattern, value in _SUBJECT_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            result["subject"] = _provenance_slot("subject", value, match.group(0), turn_index, message_id, child_key)
-            break
-    for pattern, value in _FORMAT_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            result["format"] = _provenance_slot("format", value, match.group(0), turn_index, message_id, child_key)
-            break
+    if "grade" not in result and anchored_bare_grade_enabled():
+        grade, quote = extract_anchored_bare_grade_with_quote(text)
+        if grade:
+            result["grade"] = _provenance_slot("grade", grade, quote or text, turn_index, message_id, child_key)
+    if not (anchored_bare_grade_enabled() and "," in extract_subjects(normalize_text(text))):
+        for pattern, value in _SUBJECT_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                result["subject"] = _provenance_slot("subject", value, match.group(0), turn_index, message_id, child_key)
+                break
+    if anchored_bare_grade_enabled():
+        fmt = _normalize_format(extract_format(text))
+        if fmt:
+            for pattern, _value in _FORMAT_PATTERNS:
+                match = pattern.search(text)
+                if match:
+                    result["format"] = _provenance_slot("format", fmt, match.group(0), turn_index, message_id, child_key)
+                    break
+    else:
+        for pattern, value in _FORMAT_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                result["format"] = _provenance_slot("format", value, match.group(0), turn_index, message_id, child_key)
+                break
     for pattern in _LOCATION_PATTERNS:
         match = pattern.search(text)
         if match:

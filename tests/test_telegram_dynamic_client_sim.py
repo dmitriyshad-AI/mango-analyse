@@ -724,6 +724,58 @@ def test_summary_includes_machine_readable_fact_retrieval_trace(tmp_path):
     assert fact_trace["turns"][0]["declaration_comparison"]["model_only_fact_types"] == ["price"]
 
 
+def test_summary_includes_answerability_trace_only_when_present(tmp_path):
+    base_summary = sim.build_summary(
+        [{"dialog_id": "no_trace", "brand": "foton", "run_status": "completed", "turns": []}],
+        [{"dialog_id": "no_trace", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+    assert "answerability_trace" not in base_summary
+
+    trace = {
+        "schema_version": "answerability_trace_v1_2026_06_15",
+        "route_before_gate": "bot_answer_self_for_pilot",
+        "route_after": "draft_for_manager",
+        "lowering_layers": ["semantic_output_verifier", "authoritative_output_gate"],
+        "semantic_output_verifier": {"action": "downgrade", "finding_codes": ["unsupported_claim"]},
+        "authoritative_output_gate": {"findings": [{"code": "unbacked_fact", "source": "number_gate"}]},
+        "answerability_self": {"can_answer_self": "no"},
+        "final": {"reason_class": "output_safety"},
+    }
+
+    summary = sim.build_summary(
+        [
+            {
+                "dialog_id": "answerability_trace",
+                "brand": "foton",
+                "run_status": "completed",
+                "turns": [
+                    {
+                        "turn": 1,
+                        "bot_route": "draft_for_manager",
+                        "bot_answerability_trace": trace,
+                        "bot_safety_flags": [],
+                        "bot_authoritative_output_gate": {"action": "downgrade", "findings": []},
+                    }
+                ],
+            }
+        ],
+        [{"dialog_id": "answerability_trace", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    answerability = summary["answerability_trace"]
+    assert answerability["schema_version"] == "answerability_trace_summary_v1_2026_06_15"
+    assert answerability["turn_count"] == 1
+    assert answerability["lowering_layers"]["semantic_output_verifier"] == 1
+    assert answerability["lowering_layers"]["authoritative_output_gate"] == 1
+    assert answerability["semantic_actions"] == {"downgrade": 1}
+    assert answerability["gate_findings"] == {"unbacked_fact": 1}
+    assert answerability["self_can_answer"] == {"no": 1}
+
+
 def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_DIRECT_PATH", "1")
     transcripts = [

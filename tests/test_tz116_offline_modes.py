@@ -390,35 +390,86 @@ def test_real_mono_shadow_runner_shadow_uses_codex_selective_without_openai_api(
     assert rows[0]["status"] in {"assigned", "not_assigned"}
 
 
-def test_real_mono_primary_is_blocked_until_gold_regrede(tmp_path: Path) -> None:
+def test_real_mono_primary_uses_codex_selective_after_regrede_without_segment_guard(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     db = tmp_path / "canonical.db"
     _write_canonical_mono_db(db)
+    out_dir = tmp_path / "primary"
 
-    try:
-        mono_real_main(["--db", str(db), "--out-dir", str(tmp_path / "primary"), "--mode", "primary", "--limit", "1"])
-    except SystemExit as exc:
-        assert "primary is blocked" in str(exc)
-    else:
-        raise AssertionError("primary mode must be blocked without explicit flag")
+    def fake_turns(self, full_segments, fallback_text, duration):  # noqa: ANN001
+        return [
+            {"start": 0.0, "approximate": False, "text": "Алло."},
+            {"start": 2.0, "approximate": False, "text": "Да."},
+        ]
 
-    try:
-        mono_real_main(
-            [
-                "--db",
-                str(db),
-                "--out-dir",
-                str(tmp_path / "primary_flag"),
-                "--mode",
-                "primary",
-                "--limit",
-                "1",
-                "--allow-primary-after-gold-regrede",
-            ]
+    def fake_rule(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["manager", "client"],
+                "confidence": 0.5,
+                "notes": "low",
+            },
+            turns=turns,
+            manager_name=manager_name,
+            provider="rule",
         )
-    except SystemExit as exc:
-        assert "primary is blocked" in str(exc)
-    else:
-        raise AssertionError("primary mode must stay blocked even with legacy flag")
+
+    def fake_codex(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["manager", "client"],
+                "confidence": 0.93,
+                "notes": "synthetic",
+                "rationale": "synthetic",
+            },
+            turns=turns,
+            manager_name=manager_name,
+            provider="codex_cli",
+        )
+
+    monkeypatch.setattr(TranscribeService, "_build_mono_turns", fake_turns)
+    monkeypatch.setattr(TranscribeService, "_assign_roles_rule_based", fake_rule)
+    monkeypatch.setattr(TranscribeService, "_assign_roles_with_codex", fake_codex)
+
+    assert mono_real_main(
+        [
+            "--db",
+            str(db),
+            "--out-dir",
+            str(out_dir),
+            "--mode",
+            "primary",
+            "--limit",
+            "1",
+            "--allow-primary-after-gold-regrede",
+        ]
+    ) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "primary"
+    assert summary["llm_calls_total"] == 1
+    assert summary["model_transport"] == "codex_cli"
+    assert summary["segment_guard_mode"] == "off"
+    assert summary["safety"]["primary_blocked_without_flag"] is False
+    assert summary["safety"]["segment_guard_forced_off_in_primary"] is True
+    assert summary["safety"]["writes_db"] is False
+    assert summary["safety"]["calls_openai_api"] is False
+
+    rows = list(csv.DictReader((out_dir / "mono_role_shadow_real_rows.csv").open(encoding="utf-8-sig")))
+    assert rows[0]["mode"] == "primary"
+    assert rows[0]["status"] == "assigned"
+    assert rows[0]["assignment_provider"] == "codex_cli"
+
+    payloads = [
+        json.loads(line)
+        for line in (out_dir / "mono_role_shadow_real_results.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    meta = payloads[0]["assignment"]["meta"]
+    assert meta["provider"] == "codex_cli"
+    assert "segment_guard_applied" not in meta
 
 
 def test_mono_role_gold50_measure_calls_codex_only_for_low_confidence(tmp_path: Path, monkeypatch) -> None:
@@ -485,6 +536,101 @@ def test_mono_role_gold50_measure_calls_codex_only_for_low_confidence(tmp_path: 
     assert rows[0]["selected_provider"] == "codex_cli"
     assert rows[0]["model_exact_vs_gold"] == "Да"
     assert rows[0]["codex_rationale"] == "Первый ход похож на менеджера, второй на клиента."
+
+
+def test_mono_role_gold50_primary_forces_segment_guard_off(tmp_path: Path, monkeypatch) -> None:
+    input_path = tmp_path / "gold50.csv"
+    turns = [
+        {"i": 1, "start": 0.0, "text": "Алло."},
+        {"i": 2, "start": 5.0, "text": "Да."},
+    ]
+    with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "canonical_call_id",
+                "source_filename",
+                "started_at",
+                "manager_name",
+                "duration_sec",
+                "turn_count",
+                "gold_roles",
+                "notes_for_reviewer",
+                "turns_json",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "canonical_call_id": "primary1",
+                "source_filename": "synthetic.mp3",
+                "started_at": "2026-06-01T10:00:00+00:00",
+                "manager_name": "Иванов",
+                "duration_sec": "60",
+                "turn_count": "2",
+                "gold_roles": json.dumps(["manager", "client"]),
+                "notes_for_reviewer": "",
+                "turns_json": json.dumps(turns, ensure_ascii=False),
+            }
+        )
+
+    def fake_rule(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["manager", "client"],
+                "confidence": 0.5,
+                "notes": "low",
+            },
+            turns=turns,
+            manager_name=manager_name,
+            provider="rule",
+        )
+
+    def fake_codex(self, turns, manager_name):  # noqa: ANN001
+        return self._normalize_role_assignment_payload(  # noqa: SLF001
+            {
+                "roles": ["manager", "client"],
+                "confidence": 0.93,
+                "notes": "synthetic",
+                "rationale": "synthetic",
+            },
+            turns=turns,
+            manager_name=manager_name,
+            provider="codex_cli",
+        )
+
+    monkeypatch.setattr(TranscribeService, "_assign_roles_rule_based", fake_rule)
+    monkeypatch.setattr(TranscribeService, "_assign_roles_with_codex", fake_codex)
+    out_dir = tmp_path / "gold50_primary"
+
+    assert mono_gold50_main(
+        [
+            "--input",
+            str(input_path),
+            "--out-dir",
+            str(out_dir),
+            "--mode",
+            "primary",
+            "--segment-guard-mode",
+            "repair",
+        ]
+    ) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "primary"
+    assert summary["llm_calls_total"] == 1
+    assert summary["segment_guard_mode"] == "off"
+    assert summary["segment_guard"]["calls_with_guard"] == 0
+    assert summary["safety"]["primary_blocked"] is False
+    assert summary["safety"]["segment_guard_forced_off_in_primary"] is True
+
+    payloads = [
+        json.loads(line)
+        for line in (out_dir / "mono_role_gold50_measure_results.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert payloads[0]["selected"]["meta"]["provider"] == "codex_cli"
+    assert "segment_guard_applied" not in payloads[0]["selected"]["meta"]
 
 
 def test_mono_role_gold50_measure_reports_segment_guard_net_effect(tmp_path: Path, monkeypatch) -> None:

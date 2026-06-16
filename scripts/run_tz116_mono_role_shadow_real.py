@@ -21,8 +21,6 @@ MODES = {"off", "shadow", "primary"}
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     mode = normalize_mode(args.mode)
-    if mode == "primary":
-        raise SystemExit("primary is blocked for TZ-116 D; use shadow and wait for Claude/Dmitry regrede")
 
     db_path = Path(args.db).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -34,7 +32,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_duration_sec=max(0.0, float(args.min_duration_sec)),
         order=str(args.order),
     )
-    service = build_service(mode)
+    service = build_service(mode, low_info_filter_mode=str(args.low_info_filter_mode or ""))
     llm_attempts = {"count": 0}
     if mode in {"shadow", "primary"}:
         wrap_codex_counter(service, llm_attempts)
@@ -62,6 +60,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "status_counts": dict(status_counts),
         "llm_calls_total": llm_attempts["count"],
         "model_transport": "codex_cli" if mode in {"shadow", "primary"} else "none",
+        "low_info_filter_mode": "off" if mode == "off" else (str(args.low_info_filter_mode).strip().lower() or "off"),
+        "segment_guard_mode": "off",
         "safety": {
             "reads_db_mode": "ro",
             "writes_db": False,
@@ -72,7 +72,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "writes_crm": False,
             "writes_tallanto": False,
             "mode_default_off": True,
-            "primary_blocked_without_flag": True,
+            "primary_blocked_without_flag": False,
+            "primary_scope": (
+                "offline_low_confidence_codex_selective"
+                if mode == "primary"
+                else "not_enabled"
+            ),
+            "segment_guard_forced_off_in_primary": mode == "primary",
         },
     }
     write_csv(out_dir / "mono_role_shadow_real_rows.csv", rows)
@@ -89,13 +95,17 @@ def normalize_mode(value: Any) -> str:
     return mode if mode in MODES else "off"
 
 
-def build_service(mode: str) -> TranscribeService:
+def build_service(mode: str, *, low_info_filter_mode: str) -> TranscribeService:
     settings = get_settings()
     mono_mode = "off" if mode == "off" else "codex_selective"
     return TranscribeService(
         replace(
             settings,
             mono_role_assignment_mode=mono_mode,
+            mono_role_low_info_filter_mode=(
+                "off" if mode == "off" else (low_info_filter_mode.strip().lower() or "off")
+            ),
+            mono_role_segment_guard_mode="off",
             llm_cache_enabled=False,
             llm_cache_dir=".codex_local/tz116_mono_role_shadow_real/cache_disabled",
         )
@@ -243,9 +253,11 @@ def render_report(summary: dict[str, Any]) -> str:
         f"- Loaded calls: `{summary['loaded_calls']}`",
         f"- LLM calls total: `{summary['llm_calls_total']}`",
         f"- Model transport: `{summary['model_transport']}`",
+        f"- Low-info filter mode: `{summary.get('low_info_filter_mode', '')}`",
+        f"- Segment guard mode: `{summary.get('segment_guard_mode', '')}`",
         f"- Provider counts: `{json.dumps(summary['assignment_provider_counts'], ensure_ascii=False, sort_keys=True)}`",
         "",
-        "Safety: read-only SQLite, no audio, no ASR, no OpenAI API key, no CRM/Tallanto writes.",
+        "Safety: read-only SQLite, no audio, no ASR, no OpenAI API key, no CRM/Tallanto writes; primary is offline-only and low-confidence selective.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -258,6 +270,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=25)
     parser.add_argument("--min-duration-sec", type=float, default=120.0)
     parser.add_argument("--order", choices=("duration_desc", "id_asc"), default="duration_desc")
+    parser.add_argument("--low-info-filter-mode", choices=["off", "mark", "filter"], default="mark")
     parser.add_argument("--allow-primary-after-gold-regrede", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 

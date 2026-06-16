@@ -20,8 +20,6 @@ MODES = {"off", "shadow", "primary"}
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     mode = normalize_mode(args.mode)
-    if mode == "primary":
-        raise SystemExit("primary is blocked for TZ-116 D; use shadow and wait for gold + regrede")
 
     input_path = Path(args.input).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -39,7 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout_sec=int(args.timeout_sec),
     )
     llm_attempts = {"count": 0}
-    if mode == "shadow":
+    if mode in {"shadow", "primary"}:
         wrap_codex_counter(service, llm_attempts)
 
     rows: list[dict[str, Any]] = []
@@ -97,7 +95,9 @@ def build_service(
                 "off" if mode == "off" else (low_info_filter_mode.strip().lower() or "off")
             ),
             mono_role_segment_guard_mode=(
-                "off" if mode == "off" else (segment_guard_mode.strip().lower() or "off")
+                "off"
+                if mode in {"off", "primary"}
+                else (segment_guard_mode.strip().lower() or "off")
             ),
             mono_role_assignment_min_confidence=min_confidence,
             mono_role_assignment_llm_threshold=llm_threshold,
@@ -142,7 +142,7 @@ def evaluate_row(
 
     warnings: list[str] = []
     selected = None
-    if mode == "shadow" and turns:
+    if mode in {"shadow", "primary"} and turns:
         selected = service._assign_roles_for_mono(turns, manager_name, warnings)  # noqa: SLF001
     selected_meta = selected.get("meta", {}) if selected else {}
     selected_provider = str(selected_meta.get("provider") or ("off" if mode == "off" else "none"))
@@ -525,7 +525,11 @@ def build_summary(
             "turns_changed_total": sum(int(row.get("low_info_changed_count") or 0) for row in rows),
         },
         "segment_guard": {
-            "mode": "off" if mode == "off" else (segment_guard_mode.strip().lower() or "off"),
+            "mode": (
+                "off"
+                if mode in {"off", "primary"}
+                else (segment_guard_mode.strip().lower() or "off")
+            ),
             "calls_with_guard": len(segment_guard_rows),
             "segments_total": sum(int(row.get("segment_guard_segment_count") or 0) for row in rows),
             "turns_guarded_total": guarded_turn_total,
@@ -568,17 +572,25 @@ def build_summary(
             "llm_threshold": llm_threshold,
         },
         "low_info_filter_mode": "off" if mode == "off" else (low_info_filter_mode.strip().lower() or "off"),
-        "segment_guard_mode": "off" if mode == "off" else (segment_guard_mode.strip().lower() or "off"),
+        "segment_guard_mode": (
+            "off" if mode in {"off", "primary"} else (segment_guard_mode.strip().lower() or "off")
+        ),
         "stop_conditions": stop_conditions,
         "safety": {
-            "model_transport": "codex_cli" if mode == "shadow" else "none",
+            "model_transport": "codex_cli" if mode in {"shadow", "primary"} else "none",
             "uses_openai_api_key": False,
             "reads_audio": False,
             "runs_asr": False,
             "writes_db": False,
             "writes_crm": False,
             "writes_tallanto": False,
-            "primary_blocked": True,
+            "primary_blocked": False,
+            "primary_scope": (
+                "offline_low_confidence_codex_selective"
+                if mode == "primary"
+                else "not_enabled"
+            ),
+            "segment_guard_forced_off_in_primary": mode == "primary",
         },
     }
 
@@ -675,7 +687,7 @@ def render_report(summary: Mapping[str, Any]) -> str:
             f"- Model vs gold: `{json.dumps(summary['model_vs_gold'], ensure_ascii=False, sort_keys=True)}`",
             f"- Model vs rule: `{json.dumps(summary['model_vs_rule'], ensure_ascii=False, sort_keys=True)}`",
             "",
-            "Safety: read-only CSV input, no audio, no ASR, no DB writes, Codex CLI only, primary blocked.",
+            "Safety: read-only CSV input, no audio, no ASR, no DB writes, Codex CLI only; primary is offline-only and low-confidence selective.",
         ]
     ) + "\n"
 

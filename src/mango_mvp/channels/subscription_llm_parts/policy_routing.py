@@ -21,6 +21,7 @@ from mango_mvp.channels.dialogue_contract_pipeline import (
     new_concrete_anchors as dialogue_contract_new_concrete_anchors,
     parse_contract as parse_dialogue_contract,
     verify_output as verify_dialogue_contract_output,
+    wrong_intent_fact_calibration_enabled,
 )
 from mango_mvp.channels.draft_prompt_builder import IDENTITY_DISCLOSURE_FORBIDDEN_PHRASES, safe_schedule_template, should_force_manager_only
 from mango_mvp.channels.fact_scope_spec import answer_scopes_allowed, detect_fact_scopes
@@ -2696,18 +2697,26 @@ def apply_autonomy_matrix_guard(
             "Автономный ответ запрещен: наличие места/группы/смены требует live-проверки менеджером.",
             draft_text=_live_status_manager_check_text(client_message=client_message, context=context),
         )
-    if _context_has_missing_fact_signal(context) and not _is_verified_client_safe_template(result.draft_text):
+    start_dates_allowed = _tz122_academic_year_start_autonomy_allowed(
+        result,
+        client_message=client_message,
+        context=context,
+    )
+    if _context_has_missing_fact_signal(context) and not _is_verified_client_safe_template(result.draft_text) and not start_dates_allowed:
         return demote(
             "draft_for_manager",
             "autonomy_default_cautious_missing_facts",
             "Автономный ответ запрещен: есть недостающие факты.",
         )
-    if not _has_client_safe_current_fact(context) and not _is_verified_client_safe_template(result.draft_text):
+    if not _has_client_safe_current_fact(context) and not _is_verified_client_safe_template(result.draft_text) and not start_dates_allowed:
         return demote(
             "draft_for_manager",
             "autonomy_default_cautious_unverified_fact",
             "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
         )
+    if start_dates_allowed:
+        flags.append("tz122_academic_year_start_autonomy_allowed")
+        metadata["tz122_academic_year_start_autonomy_allowed"] = True
 
     flags.append("autonomy_matrix_passed")
     metadata["autonomy_matrix_passed"] = True
@@ -4450,6 +4459,70 @@ def _context_has_missing_fact_signal(context: Optional[Mapping[str, Any]]) -> bo
     if isinstance(facts_context, Mapping):
         return _truthy_value(facts_context.get("facts_missing")) or _truthy_value(facts_context.get("missing"))
     return False
+
+def _tz122_academic_year_start_autonomy_allowed(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    if not wrong_intent_fact_calibration_enabled(context):
+        return False
+    if result.topic_id != "theme:013_schedule":
+        return False
+    if not _asks_academic_year_start_dates(client_message, result):
+        return False
+    if not _authoritative_gate_clean(result):
+        return False
+    if not _academic_year_start_fact_present(result):
+        return False
+    text = _normalize_fact_match_text(result.draft_text)
+    return bool(
+        re.search(r"учебн\w*\s+год|2026/27|2026-27", text, re.I)
+        and re.search(r"старт|начин|12[-–—]20|12[-–—]13|19[-–—]20|сентябр", text, re.I)
+    )
+
+
+def _asks_academic_year_start_dates(client_message: str, result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    contract = metadata.get("answer_contract") if isinstance(metadata.get("answer_contract"), Mapping) else {}
+    direct_question = str(contract.get("direct_question") or "")
+    text = _normalize_fact_match_text(" ".join((client_message, direct_question, result.draft_text)))
+    return bool(
+        re.search(r"учебн\w*\s+год|academic[_-]?year|2026/27|2026-27", text, re.I)
+        and re.search(r"когда|дат[ауы]?|старт|начин|начал|с\s+какого|start", text, re.I)
+    )
+
+
+def _authoritative_gate_clean(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
+    if not gate:
+        return True
+    findings = gate.get("findings")
+    return str(gate.get("action") or "pass") == "pass" and not (
+        isinstance(findings, Sequence) and not isinstance(findings, (str, bytes, bytearray)) and findings
+    )
+
+
+def _academic_year_start_fact_present(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    values: list[str] = []
+    for key in ("retrieved_facts", "wide_fact_metadata"):
+        mapping = direct.get(key)
+        if isinstance(mapping, Mapping):
+            values.extend(str(item or "") for pair in mapping.items() for item in pair)
+    for key in ("retrieved_fact_keys", "wide_fact_keys", "wide_fact_exact_keys"):
+        sequence = direct.get(key)
+        if isinstance(sequence, Sequence) and not isinstance(sequence, (str, bytes, bytearray)):
+            values.extend(str(item or "") for item in sequence)
+    haystack = _normalize_fact_match_text(" ".join(values))
+    return bool(
+        ("academic_year_2026_27.start" in haystack or "учебный год 2026/27" in haystack)
+        and ("start_by_location" in haystack or "старт занятий" in haystack or "12-20 сентября" in haystack)
+    )
+
 
 def _draft_is_low_value_without_exact_fact(draft_text: str) -> bool:
     text = str(draft_text or "").casefold().replace("ё", "е")

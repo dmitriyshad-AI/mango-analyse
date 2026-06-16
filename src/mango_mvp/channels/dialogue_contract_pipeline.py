@@ -7234,8 +7234,31 @@ def _address_fact_allowed_for_contract(
         return True
     if not calibrated:
         return False
+    if _asks_start_or_academic_year_dates(contract, client_message=client_message):
+        return True
     retrieval = _retrieval_from_facts_for_contract(contract, facts)
     return _address_fact_has_needed_scope(contract, retrieval)
+
+
+def _asks_start_or_academic_year_dates(contract: AnswerContract, *, client_message: str = "") -> bool:
+    text = " ".join(
+        [
+            client_message,
+            contract.current_question,
+            contract.client_state,
+            contract.question_type,
+            " ".join(contract.all_needed_fact_keys()),
+            " ".join(item.text for item in contract.subquestions),
+            " ".join(item.question_type for item in contract.subquestions),
+            " ".join(" ".join(item.needed_fact_keys) for item in contract.subquestions),
+        ]
+    ).casefold().replace("ё", "е")
+    if not text:
+        return False
+    return bool(
+        re.search(r"учебн\w*\s+год|academic[_-]?year|start[_-]?by[_-]?location|start[_-]?date", text, re.I)
+        and re.search(r"когда|дат[ауы]?|старт|начин|начал|с\s+какого|start", text, re.I)
+    )
 
 
 def _address_fact_has_needed_scope(contract: AnswerContract, retrieval: RetrievalResult) -> bool:

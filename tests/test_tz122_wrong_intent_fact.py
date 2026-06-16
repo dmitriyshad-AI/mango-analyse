@@ -112,6 +112,38 @@ def test_tz122_broad_address_phrase_covers_where_courses_question() -> None:
     assert not any("Адресный факт" in detail for detail in details)
 
 
+def test_tz122_start_dates_are_not_demoted_by_location_scoped_fact() -> None:
+    facts = {
+        "academic_year_2026_27.start_by_location.moscow": (
+            "Фотон: учебный год 2026/27, Москва — 12-13 сентября 2026."
+        ),
+        "academic_year_2026_27.start_by_location.online": (
+            "Фотон: учебный год 2026/27, онлайн — 19-20 сентября 2026."
+        ),
+    }
+    details = _wrong_intent_details(
+        "Учебный год 2026/27 в Фотоне начинается в сентябре 2026 года: "
+        "очные занятия в Москве стартуют 12-13 сентября 2026, онлайн-занятия — 19-20 сентября 2026.",
+        facts=facts,
+        contract=AnswerContract(
+            active_brand="foton",
+            current_question="Когда начинается учебный год? Какие даты старта?",
+            answerability="answer_self",
+            subquestions=(
+                Subquestion(
+                    text="Когда начинается учебный год? Какие даты старта?",
+                    answerable="self",
+                    needed_fact_keys=("academic_year_2026_27.start_by_location",),
+                ),
+            ),
+        ),
+        client_message="Когда начинается учебный год? Какие даты старта?",
+        context={FLAG: True, "active_brand": "foton"},
+    )
+
+    assert not any("Адресный факт" in detail for detail in details)
+
+
 def test_tz122_camp_shift_question_is_not_demoted_when_scope_does_not_conflict() -> None:
     facts = {
         "camp.foton.lvsh.price": "ЛВШ Менделеево: стоимость смены — 49 000 ₽.",

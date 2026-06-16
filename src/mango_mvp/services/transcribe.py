@@ -539,11 +539,8 @@ class TranscribeService:
 
     def _prepare_role_assignment_codex_home(self) -> str:
         source_root = Path.home() / ".codex"
-        runtime_root = (
-            Path(self._settings.llm_cache_dir).resolve().parent
-            / "codex_home_role_assignment_neutral"
-        )
-        runtime_root.mkdir(parents=True, exist_ok=True)
+        runtime_root = Path(tempfile.mkdtemp(prefix="codex_home_role_assignment_neutral_")).resolve()
+        runtime_root.chmod(0o700)
 
         if source_root.exists():
             for entry in CODEX_HOME_COPY_ALLOWLIST:
@@ -566,6 +563,15 @@ class TranscribeService:
             encoding="utf-8",
         )
         return str(runtime_root)
+
+    @staticmethod
+    def _cleanup_role_assignment_codex_home(path: str) -> None:
+        runtime_root = Path(path).resolve()
+        if runtime_root.name != "codex_home_role_assignment_neutral" and not runtime_root.name.startswith(
+            "codex_home_role_assignment_neutral_"
+        ):
+            return
+        shutil.rmtree(runtime_root, ignore_errors=True)
 
     @staticmethod
     def _looks_like_phone(value: str) -> bool:
@@ -1819,35 +1825,38 @@ class TranscribeService:
         env.pop("OPENAI_ORG_ID", None)
         env.pop("OPENAI_PROJECT", None)
 
-        with tempfile.NamedTemporaryFile(prefix="mango_codex_role_assign_", suffix=".txt") as out_file:
-            cmd = [
-                codex_bin,
-                "exec",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "--model",
-                model,
-                "--output-last-message",
-                out_file.name,
-            ]
-            if reasoning_effort in {"low", "medium", "high"}:
-                cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
-            cmd.append("-")
-            started_at = time.time()
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout_sec,
-                env=env,
-                cwd=runtime_codex_home,
-            )
-            elapsed_sec = time.time() - started_at
-            raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
+        try:
+            with tempfile.NamedTemporaryFile(prefix="mango_codex_role_assign_", suffix=".txt") as out_file:
+                cmd = [
+                    codex_bin,
+                    "exec",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--sandbox",
+                    "read-only",
+                    "--model",
+                    model,
+                    "--output-last-message",
+                    out_file.name,
+                ]
+                if reasoning_effort in {"low", "medium", "high"}:
+                    cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+                cmd.append("-")
+                started_at = time.time()
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_sec,
+                    env=env,
+                    cwd=runtime_codex_home,
+                )
+                elapsed_sec = time.time() - started_at
+                raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
+        finally:
+            self._cleanup_role_assignment_codex_home(runtime_codex_home)
 
         candidates = [raw, proc.stdout or "", proc.stderr or ""]
         payload: dict[str, Any] | None = None

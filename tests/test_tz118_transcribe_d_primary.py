@@ -178,3 +178,46 @@ def test_d_primary_codex_cli_role_assignment_drops_openai_api_env(
     assert "read-only" in captured["cmd"]
     assert result["meta"]["provider"] == "codex_cli"
     assert result["meta"]["tokens_used_actual"] == 123
+
+
+def test_d_primary_codex_home_is_cleaned_after_role_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = TranscribeService(_settings(tmp_path))
+    runtime_home = tmp_path / "codex_home_role_assignment_neutral_test"
+
+    monkeypatch.setattr(transcribe_module.shutil, "which", lambda _cmd: "/usr/bin/codex")
+
+    def fake_mkdtemp(*, prefix):  # noqa: ANN001
+        assert prefix == "codex_home_role_assignment_neutral_"
+        runtime_home.mkdir()
+        return str(runtime_home)
+
+    monkeypatch.setattr(transcribe_module.tempfile, "mkdtemp", fake_mkdtemp)
+
+    def fake_run(cmd, *, input, capture_output, text, check, timeout, env, cwd):  # noqa: ANN001
+        assert Path(cwd) == runtime_home
+        assert runtime_home.exists()
+        assert runtime_home.stat().st_mode & 0o777 == 0o700
+        out_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        out_path.write_text(
+            json.dumps(
+                {
+                    "roles": ["manager", "client"],
+                    "confidence": 0.91,
+                    "notes": "synthetic",
+                    "rationale": "synthetic role split",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(transcribe_module.subprocess, "run", fake_run)
+
+    result = service._assign_roles_with_codex(_turns(), "Иван")
+
+    assert result["meta"]["provider"] == "codex_cli"
+    assert not runtime_home.exists()

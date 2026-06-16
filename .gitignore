@@ -56,6 +56,7 @@ tmp/
 .cache/
 .codex_local/
 .codex_workers/
+codex_home_role_assignment_neutral/
 _local_archive_*/
 _bundles/
 benchmarks/

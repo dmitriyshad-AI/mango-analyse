@@ -59,6 +59,7 @@ def make_settings(
         mono_role_assignment_mode=mono_mode,
         mono_role_assignment_min_confidence=0.62,
         mono_role_assignment_llm_threshold=0.72,
+        mono_role_low_info_filter_mode="mark",
         openai_role_assign_model="gpt-4o-mini",
         max_workers=2,
         transcribe_max_attempts=3,

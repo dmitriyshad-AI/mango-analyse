@@ -94,6 +94,8 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     DIRECT_PATH_ENV,
     BOT_GOLD_REAL_ENV,
     ANSWERABILITY_SHADOW_ENV,
+    DEAL_ACTION_DECISION_ENV,
+    DIRECT_PATH_MODEL_P0_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     OUTPUT_SANITIZER_ENV,
     ROUTE_RUBRIC_ENV,
@@ -414,7 +416,11 @@ def _deal_action_decision_enabled(context: Optional[Mapping[str, Any]] = None) -
     )
     if explicit is not None:
         return explicit
-    return False
+    return _pilot_profile_default_on_flag_enabled(
+        context,
+        DEAL_ACTION_DECISION_ENV,
+        aliases=("deal_action_decision_enabled", "action_decision_enabled"),
+    )
 
 
 def _direct_path_model_p0_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -425,7 +431,11 @@ def _direct_path_model_p0_enabled(context: Optional[Mapping[str, Any]] = None) -
     )
     if explicit is not None:
         return explicit
-    return False
+    return _pilot_profile_default_on_flag_enabled(
+        context,
+        DIRECT_PATH_MODEL_P0_ENV,
+        aliases=("direct_path_model_p0", "direct_path_model_p0_enabled", "model_p0_enabled"),
+    )
 
 
 def _direct_default_manager_enabled() -> bool:

@@ -13135,6 +13135,8 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         PRESALE_VERIFIER_FAILSOFT_ENV,
         PRESALE_META_RU_ENV,
         PRESALE_SOURCE_ID_ENV,
+        subscription_llm.DEAL_ACTION_DECISION_ENV,
+        subscription_llm.DIRECT_PATH_MODEL_P0_ENV,
         subscription_llm.MEMORY_PROVENANCE_ENV,
         subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
         subscription_llm.PII_RELATION_STOPWORDS_ENV,
@@ -13148,6 +13150,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
     context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+    legacy_context: dict[str, str] = {}
 
     assert _direct_path_enabled(context) is True
     assert _direct_path_gold_real_enabled(context) is True
@@ -13160,6 +13163,10 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _presale_safety_enabled(context, subflag=PRESALE_VERIFIER_FAILSOFT_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_SOURCE_ID_ENV) is True
+    assert subscription_llm._deal_action_decision_enabled(context) is True
+    assert subscription_llm._direct_path_model_p0_enabled(context) is True
+    assert subscription_llm._deal_action_decision_enabled(legacy_context) is False
+    assert subscription_llm._direct_path_model_p0_enabled(legacy_context) is False
     assert subscription_llm._template_from_kb_enabled(context) is True
     assert TONE_RICH_FORMAT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.A_RICH_FORMAT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
@@ -13171,6 +13178,8 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.ANSWERABILITY_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False
     assert subscription_llm._answerability_shadow_enabled(context) is True
@@ -13178,6 +13187,10 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm._retriever_model_driven_enabled({**context, RETRIEVER_MODEL_DRIVEN_ENV: "1"}) is True
     assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"}) is True
     assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "0"}) is False
+    assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "1"}) is True
+    assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "0"}) is False
+    assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"}) is True
+    assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "0"}) is False
 
 
 def test_pilot_gold_v1_llm_retrieve_explicit_zero_keeps_keyword_pack(monkeypatch, tmp_path: Path) -> None:

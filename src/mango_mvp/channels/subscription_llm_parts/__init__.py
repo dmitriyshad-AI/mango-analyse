@@ -24,7 +24,9 @@ __all__.extend(
         "DEAL_ACTIONS",
         "apply_deal_action_decision_layer",
         "_answerability_shadow_enabled",
+        "_deal_action_decision_enabled",
         "_direct_path_answerability_shadow_enabled",
+        "_direct_path_model_p0_enabled",
         "_retriever_model_driven_enabled",
         "_retriever_need_shadow_enabled",
     ]

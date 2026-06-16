@@ -1,0 +1,11 @@
+case_id,student_type,history_raw,gold_label,case_note
+b01,8 класс,Клиент не оплатил и не записался.,known_student_or_lead,allowed false-won removal
+b02,9 класс,Не оплатили курс и не записались на занятия.,known_student_or_lead,allowed false-won removal plural
+b03,Слушатель,Клиент не оплатил и не записался.,tallanto_match_without_outcome,non-student listener remains no outcome
+b04,7 класс,Оплатили курс и записались в группу.,won_paid_or_active,real positive must stay won
+b05,Слушатель,Жду оплату по ссылке.,payment_pending,payment pending legacy remains pending
+b06,Слушатель,Клиент не оплатил и жду оплату.,payment_pending,payment_pending candidate is measured but blocked for primary
+b07,8 класс,Отказались от обучения - не актуально.,lost_or_refused,refusal must stay lost
+b08,10 класс,Не отказались - оплатили и придут на занятие.,won_paid_or_active,negated refusal should not become churn
+b09,6 класс,Ребенок занимается в группе - все устраивает.,won_paid_or_active,active learning stays won
+b10,8 класс,Карточка ученика без истории исхода.,known_student_or_lead,known student proxy stays known

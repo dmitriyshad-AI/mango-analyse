@@ -41,6 +41,97 @@ def test_tallanto_future_payment_is_not_marked_as_paid() -> None:
     assert signal.confidence_tier == "proxy"
 
 
+def test_outcome_linker_default_off_preserves_legacy_negation_behavior() -> None:
+    signal = classify_tallanto_rows(
+        [
+            {
+                "tallanto_id": "t1",
+                "student_type": "8 класс",
+                "history_raw": "Клиент не оплатил и не записался.",
+            }
+        ]
+    )
+
+    assert signal.label == "won_paid_or_active"
+    assert "outcome_model_shadow" not in signal.metadata
+    assert "outcome_model_primary" not in signal.metadata
+
+
+def test_outcome_linker_shadow_reports_allowed_won_to_known_flip_without_changing_label() -> None:
+    signal = classify_tallanto_rows(
+        [
+            {
+                "tallanto_id": "t1",
+                "student_type": "8 класс",
+                "history_raw": "Клиент не оплатил и не записался.",
+            }
+        ],
+        outcome_model_mode="shadow",
+    )
+
+    assert signal.label == "won_paid_or_active"
+    shadow = signal.metadata["outcome_model_shadow"]
+    assert shadow["legacy_label"] == "won_paid_or_active"
+    assert shadow["semantic_label"] == "known_student_or_lead"
+    assert shadow["primary_allowed"] is True
+    assert shadow["label_changed"] is True
+
+
+def test_outcome_linker_primary_applies_only_allowed_won_to_known_flip() -> None:
+    signal = classify_tallanto_rows(
+        [
+            {
+                "tallanto_id": "t1",
+                "student_type": "8 класс",
+                "history_raw": "Клиент не оплатил и не записался.",
+            }
+        ],
+        outcome_model_mode="primary",
+    )
+
+    assert signal.label == "known_student_or_lead"
+    assert signal.metadata["outcome_model_primary"]["primary_applied"] is True
+    assert signal.metadata["legacy_outcome"]["label"] == "won_paid_or_active"
+
+
+def test_outcome_linker_primary_blocks_payment_pending_flip() -> None:
+    signal = classify_tallanto_rows(
+        [
+            {
+                "tallanto_id": "t1",
+                "student_type": "Слушатель",
+                "history_raw": "Клиент не оплатил, жду оплату.",
+            }
+        ],
+        outcome_model_mode="primary",
+    )
+
+    assert signal.label == "won_paid_or_active"
+    primary = signal.metadata["outcome_model_primary"]
+    assert primary["semantic_label"] == "payment_pending"
+    assert primary["primary_allowed"] is False
+    assert primary["primary_applied"] is False
+    assert primary["primary_blocked_reason"] == "flip_not_allowlisted"
+
+
+def test_outcome_linker_negated_refusal_does_not_negate_paid_after_dash() -> None:
+    signal = classify_tallanto_rows(
+        [
+            {
+                "tallanto_id": "t1",
+                "student_type": "8 класс",
+                "history_raw": "Не отказались - оплатили и придут на занятие.",
+            }
+        ],
+        outcome_model_mode="shadow",
+    )
+
+    shadow = signal.metadata["outcome_model_shadow"]
+    assert shadow["legacy_label"] == "churn_or_refused_after_activity"
+    assert shadow["semantic_label"] == "won_paid_or_active"
+    assert shadow["label_changed"] is True
+
+
 def test_tallanto_future_group_assignment_is_not_marked_as_enrolled() -> None:
     signal = classify_tallanto_rows(
         [

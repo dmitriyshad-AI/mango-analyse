@@ -44,6 +44,31 @@ def main() -> int:
     check("normal_no_meta", has_meta_leak(normal) is False, "нормальный ответ ложно помечен мета")
     fallback = "Передам вопрос менеджеру, он ответит по сути."
     check("meta_fallback_no_leak", has_meta_leak(fallback) is False, "аварийный fallback не должен быть мета-утечкой")
+    for index, phrase in enumerate(
+        (
+            "В фактах нет информации по этому вопросу.",
+            "В базе нет точного ответа.",
+            "Нет в данных точного расписания.",
+            "Цена не указана в фактах.",
+            "Нет в фактах точного расписания.",
+        ),
+        start=1,
+    ):
+        check(f"meta_fact_phrase_pos_{index}", has_meta_leak(phrase) is True, phrase)
+        check(f"meta_fact_phrase_marker_{index}", "fact_phrase_leak" in meta_markers_present(phrase), phrase)
+    for index, phrase in enumerate(
+        (
+            "Точное время мы согласуем.",
+            "Дату уточнит менеджер.",
+            "Расписание уточняется.",
+            "У нас нет занятий по выходным.",
+            "Класс не указан в анкете.",
+            "Класс не указан в договоре.",
+            "В группе нет свободных мест.",
+        ),
+        start=1,
+    ):
+        check(f"meta_fact_phrase_neg_{index}", has_meta_leak(phrase) is False, phrase)
 
     # 3. Over-handoff: факт есть, P0 нет, ушёл в менеджера → флаг
     check("overhandoff_flag", should_answer_not_handoff(p0_required=False, has_retrieved_answer_fact=True, route="manager_only") is True)

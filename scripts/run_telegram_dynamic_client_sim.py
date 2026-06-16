@@ -4450,6 +4450,31 @@ def _number_claim_index_key(claim: Mapping[str, Any]) -> str:
     return normalized
 
 
+def _normalize_fact_valid_until_date(value: object) -> str:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(20\d{2})[-_.](\d{1,2})[-_.](\d{1,2})", text)
+    if match:
+        return normalize_date_claim(f"{match.group(3)}.{match.group(2)}.{match.group(1)}")
+    return normalize_date_claim(text)
+
+
+def _fact_window_date_keys(fact: Mapping[str, Any]) -> set[str]:
+    fact_key = str(fact.get("fact_key") or fact.get("fact_id") or "")
+    valid_until = _normalize_fact_valid_until_date(fact.get("valid_until"))
+    result: set[str] = set()
+    for match in re.finditer(r"(?:^|[^a-z0-9])before_(20\d{2})_(\d{2})_(\d{2})(?:$|[^a-z0-9])", fact_key, re.I):
+        window_key = _number_claim_index_key(
+            {
+                "kind": "date",
+                "normalized": normalize_date_claim(f"{match.group(3)}.{match.group(2)}.{match.group(1)}"),
+            }
+        )
+        if window_key and (not valid_until or valid_until == window_key):
+            result.add(window_key)
+            result.add(window_key.rsplit(".", 1)[0])
+    return result
+
+
 @lru_cache(maxsize=8)
 def snapshot_number_index(snapshot_path: Path) -> Mapping[str, Mapping[str, frozenset[str]]]:
     path = Path(snapshot_path)
@@ -4473,6 +4498,8 @@ def snapshot_number_index(snapshot_path: Path) -> Mapping[str, Mapping[str, froz
         text = " ".join(str(fact.get(field) or "") for field in ("client_safe_text", "fact_text", "manager_check_text", "structured_value"))
         for claim in extract_number_claims(text):
             index.setdefault(brand, {}).setdefault(_number_claim_index_key(claim), set()).add(key)
+        for window in _fact_window_date_keys(fact):
+            index.setdefault(brand, {}).setdefault(window, set()).add(key)
     return {brand: {number: frozenset(keys) for number, keys in values.items()} for brand, values in index.items()}
 
 

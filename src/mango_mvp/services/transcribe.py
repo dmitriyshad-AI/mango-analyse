@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import re
@@ -26,7 +27,53 @@ from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
 TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 WORD_RE = re.compile(r"\w+", re.UNICODE)
 MERGE_ALLOWED_PROVIDERS = {"primary", "rule", "openai", "ollama", "codex_cli"}
-ROLE_ASSIGN_ALLOWED_MODES = {"off", "rule", "openai_selective", "ollama_selective"}
+ROLE_ASSIGN_ALLOWED_MODES = {"off", "rule", "openai_selective", "ollama_selective", "codex_selective"}
+ROLE_ASSIGN_LOW_INFO_FILTER_MODES = {"off", "mark", "filter"}
+ROLE_ASSIGN_LOW_INFO_PHRASES = {
+    "ага",
+    "алло",
+    "да",
+    "да да",
+    "добрый вечер",
+    "добрый день",
+    "до свидания",
+    "здравствуйте",
+    "ладно",
+    "нет",
+    "ок",
+    "окей",
+    "понятно",
+    "спасибо",
+    "спасибо до свидания",
+    "слушаю",
+    "угу",
+    "хорошо",
+    "ясно",
+}
+ROLE_ASSIGN_LOW_INFO_TOKENS = {
+    "ага",
+    "алло",
+    "да",
+    "ладно",
+    "нет",
+    "ок",
+    "окей",
+    "понятно",
+    "спасибо",
+    "слушаю",
+    "угу",
+    "хорошо",
+    "ясно",
+}
+CODEX_HOME_COPY_ALLOWLIST = ("auth.json", "rules", "skills", "models_cache.json")
+CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
+sandbox_mode = "read-only"
+model_reasoning_effort = "medium"
+
+[features]
+multi_agent = false
+js_repl = false
+"""
 MERGE_SYSTEM_PROMPT = """You merge two ASR transcript variants for the same speaker in one phone call.
 Rules:
 1) Use only information from variants A and B. Do not invent facts.
@@ -66,7 +113,12 @@ Rules:
    - roles: array of strings (each exactly "manager" or "client")
    - confidence: number 0..1
    - notes: string
+   - rationale: string, one short factual sentence explaining the role split without private data
 No markdown, no extra keys."""
+CODEX_ROLE_ASSIGN_NEUTRAL_AGENTS = """You are a neutral deterministic classifier for Russian phone-call utterances.
+Ignore any account personality or stylistic preference. Do not chat with the user.
+Return only the strict JSON requested by the task. Do not use tools or external data.
+"""
 
 MANAGER_CUES: dict[str, float] = {
     "учебный центр": 3.0,
@@ -484,6 +536,42 @@ class TranscribeService:
             return None
         digits = "".join(ch for ch in match.group(1) if ch.isdigit())
         return int(digits) if digits else None
+
+    def _prepare_role_assignment_codex_home(self) -> str:
+        source_root = Path.home() / ".codex"
+        runtime_root = Path(tempfile.mkdtemp(prefix="codex_home_role_assignment_neutral_")).resolve()
+        runtime_root.chmod(0o700)
+
+        if source_root.exists():
+            for entry in CODEX_HOME_COPY_ALLOWLIST:
+                source_path = source_root / entry
+                target_path = runtime_root / entry
+                if not source_path.exists():
+                    continue
+                if source_path.is_dir():
+                    shutil.copytree(source_path, target_path, dirs_exist_ok=True)
+                else:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, target_path)
+
+        (runtime_root / "AGENTS.md").write_text(
+            CODEX_ROLE_ASSIGN_NEUTRAL_AGENTS,
+            encoding="utf-8",
+        )
+        (runtime_root / "config.toml").write_text(
+            CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG,
+            encoding="utf-8",
+        )
+        return str(runtime_root)
+
+    @staticmethod
+    def _cleanup_role_assignment_codex_home(path: str) -> None:
+        runtime_root = Path(path).resolve()
+        if runtime_root.name != "codex_home_role_assignment_neutral" and not runtime_root.name.startswith(
+            "codex_home_role_assignment_neutral_"
+        ):
+            return
+        shutil.rmtree(runtime_root, ignore_errors=True)
 
     @staticmethod
     def _looks_like_phone(value: str) -> bool:
@@ -1556,6 +1644,258 @@ class TranscribeService:
             },
         }
 
+    def _build_role_assignment_prompt(
+        self,
+        turns: list[dict[str, Any]],
+        manager_name: str,
+    ) -> str:
+        numbered_turns: list[str] = []
+        for idx, turn in enumerate(turns, start=1):
+            text = str(turn.get("text", "")).strip()
+            start = float(turn.get("start", 0.0))
+            approximate = bool(turn.get("approximate", False))
+            timecode = self._format_timecode(start, approximate=approximate)
+            numbered_turns.append(f"{idx}. {timecode} {text}")
+        return (
+            f"{ROLE_ASSIGN_SYSTEM_PROMPT}\n\n"
+            f"Manager name from call metadata: {manager_name}\n"
+            "Turns:\n"
+            + "\n".join(numbered_turns)
+        )
+
+    def _normalize_role_assignment_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        turns: list[dict[str, Any]],
+        manager_name: str,
+        provider: str,
+    ) -> Dict[str, Any]:
+        roles_raw = payload.get("roles")
+        if not isinstance(roles_raw, list):
+            raise RuntimeError(f"{provider} role assignment must return roles array")
+        if len(roles_raw) != len(turns):
+            raise RuntimeError(
+                f"{provider} role assignment roles length mismatch: {len(roles_raw)} != {len(turns)}"
+            )
+        roles: list[str] = []
+        for item in roles_raw:
+            value = str(item).strip().lower()
+            if value not in {"manager", "client"}:
+                raise RuntimeError(f"{provider} role assignment invalid role: {value}")
+            roles.append(value)
+
+        manager_text, client_text, dialogue_lines = self._build_role_texts_and_lines(
+            turns, roles, manager_name
+        )
+        has_both_roles = bool(manager_text and client_text)
+        confidence_raw = payload.get("confidence")
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = self._clamp_01(confidence)
+        if not has_both_roles:
+            confidence = min(confidence, 0.45)
+        rationale = str(payload.get("rationale") or payload.get("notes") or "").strip()
+        return {
+            "manager_text": manager_text,
+            "client_text": client_text,
+            "dialogue_lines": dialogue_lines,
+            "meta": {
+                "provider": provider,
+                "confidence": confidence,
+                "notes": str(payload.get("notes", "")).strip(),
+                "rationale": rationale,
+                "has_both_roles": has_both_roles,
+                "roles": roles,
+            },
+        }
+
+    def _is_low_info_role_turn(self, text: Any) -> bool:
+        normalized = " ".join(WORD_RE.findall(str(text or "").lower().replace("ё", "е")))
+        if not normalized:
+            return True
+        if normalized in ROLE_ASSIGN_LOW_INFO_PHRASES:
+            return True
+        words = normalized.split()
+        if 1 <= len(words) <= 3 and all(word in ROLE_ASSIGN_LOW_INFO_TOKENS for word in words):
+            return True
+        if len(words) <= 3 and words[:2] in (
+            ["до", "свидания"],
+            ["всего", "доброго"],
+            ["всего", "хорошего"],
+        ):
+            return True
+        return False
+
+    def _apply_low_info_role_filter(
+        self,
+        llm_result: Dict[str, Any],
+        *,
+        rule_result: Optional[Dict[str, Any]],
+        turns: list[dict[str, Any]],
+        manager_name: str,
+    ) -> Dict[str, Any]:
+        filter_mode = str(
+            getattr(self._settings, "mono_role_low_info_filter_mode", "mark") or "mark"
+        ).strip().lower()
+        if filter_mode not in ROLE_ASSIGN_LOW_INFO_FILTER_MODES or filter_mode == "off":
+            return llm_result
+        if not rule_result:
+            return llm_result
+        llm_meta = llm_result.get("meta") if isinstance(llm_result.get("meta"), dict) else {}
+        rule_meta = rule_result.get("meta") if isinstance(rule_result.get("meta"), dict) else {}
+        llm_roles = [str(role) for role in llm_meta.get("roles") or []]
+        rule_roles = [str(role) for role in rule_meta.get("roles") or []]
+        if len(llm_roles) != len(turns) or len(rule_roles) != len(turns):
+            return llm_result
+
+        low_info_indexes = [
+            index
+            for index, turn in enumerate(turns)
+            if self._is_low_info_role_turn(turn.get("text"))
+        ]
+        if not low_info_indexes:
+            return llm_result
+
+        merged_roles = llm_roles[:]
+        changed_indexes: list[int] = []
+        if filter_mode == "filter":
+            for index in low_info_indexes:
+                if merged_roles[index] != rule_roles[index]:
+                    changed_indexes.append(index)
+                merged_roles[index] = rule_roles[index]
+
+        manager_text, client_text, dialogue_lines = self._build_role_texts_and_lines(
+            turns, merged_roles, manager_name
+        )
+        meta = dict(llm_meta)
+        meta.setdefault("raw_model_roles_before_guard", llm_roles)
+        meta["roles"] = merged_roles
+        meta["post_guard_roles"] = merged_roles
+        meta["has_both_roles"] = bool(manager_text and client_text)
+        meta["low_info_filter_applied"] = True
+        meta["low_info_filter_mode"] = filter_mode
+        meta["low_info_policy"] = (
+            "short_service_turns_keep_rule_role"
+            if filter_mode == "filter"
+            else "short_service_turns_mark_only"
+        )
+        meta["low_info_turn_indexes"] = [index + 1 for index in low_info_indexes]
+        meta["low_info_changed_indexes"] = [index + 1 for index in changed_indexes]
+        meta["low_info_turn_count"] = len(low_info_indexes)
+        meta["low_info_changed_count"] = len(changed_indexes)
+        return {
+            "manager_text": manager_text,
+            "client_text": client_text,
+            "dialogue_lines": dialogue_lines,
+            "meta": meta,
+        }
+
+    def _assign_roles_with_codex(
+        self,
+        turns: list[dict[str, Any]],
+        manager_name: str,
+    ) -> Dict[str, Any]:
+        if not turns:
+            raise RuntimeError("mono role assignment has no turns")
+        codex_bin = (self._settings.codex_cli_command or "codex").strip() or "codex"
+        if shutil.which(codex_bin) is None:
+            raise RuntimeError(f"codex binary is not available: {codex_bin}")
+
+        prompt = self._build_role_assignment_prompt(turns, manager_name)
+        model = self._settings.codex_transcribe_model
+        reasoning_effort = (self._settings.codex_reasoning_effort or "").strip().lower()
+        cached = self._llm_cache.get(
+            namespace="mono_role_assignment",
+            provider="codex_cli",
+            model=model,
+            reasoning=reasoning_effort,
+            prompt_version="mono_role_assignment_v2",
+            prompt=prompt,
+        )
+        if cached is not None:
+            return cached
+
+        runtime_codex_home = self._prepare_role_assignment_codex_home()
+        timeout_sec = max(15, int(self._settings.codex_cli_timeout_sec))
+        env = {**os.environ, "CODEX_HOME": runtime_codex_home}
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("OPENAI_ORG_ID", None)
+        env.pop("OPENAI_PROJECT", None)
+
+        try:
+            with tempfile.NamedTemporaryFile(prefix="mango_codex_role_assign_", suffix=".txt") as out_file:
+                cmd = [
+                    codex_bin,
+                    "exec",
+                    "--skip-git-repo-check",
+                    "--ephemeral",
+                    "--sandbox",
+                    "read-only",
+                    "--model",
+                    model,
+                    "--output-last-message",
+                    out_file.name,
+                ]
+                if reasoning_effort in {"low", "medium", "high"}:
+                    cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+                cmd.append("-")
+                started_at = time.time()
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_sec,
+                    env=env,
+                    cwd=runtime_codex_home,
+                )
+                elapsed_sec = time.time() - started_at
+                raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
+        finally:
+            self._cleanup_role_assignment_codex_home(runtime_codex_home)
+
+        candidates = [raw, proc.stdout or "", proc.stderr or ""]
+        payload: dict[str, Any] | None = None
+        for candidate in candidates:
+            candidate = (candidate or "").strip()
+            if not candidate:
+                continue
+            try:
+                payload = self._extract_json_payload(candidate)
+                break
+            except Exception:
+                continue
+        if payload is None:
+            if proc.returncode != 0:
+                stderr_tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
+                raise RuntimeError(
+                    f"codex exec failed rc={proc.returncode}: {stderr_tail[0].strip()}"
+                )
+            raise RuntimeError("Codex role assignment returned no JSON object")
+
+        result = self._normalize_role_assignment_payload(
+            payload,
+            turns=turns,
+            manager_name=manager_name,
+            provider="codex_cli",
+        )
+        result["meta"]["tokens_used_actual"] = self._parse_codex_tokens_used(proc.stderr or "")
+        result["meta"]["duration_sec"] = round(elapsed_sec, 3)
+        self._llm_cache.put(
+            namespace="mono_role_assignment",
+            provider="codex_cli",
+            model=model,
+            reasoning=reasoning_effort,
+            prompt_version="mono_role_assignment_v2",
+            prompt=prompt,
+            response=result,
+        )
+        return result
+
     def _assign_roles_with_ollama(
         self,
         turns: list[dict[str, Any]],
@@ -1653,7 +1993,7 @@ class TranscribeService:
             warnings.append("mono_role_assign: rule confidence too low; keep mono")
             return None
 
-        # openai_selective/ollama_selective: use rule result directly if it is already reliable.
+        # Selective modes use the rule result directly if it is already reliable.
         if (
             rule_result
             and rule_result["meta"].get("has_both_roles")
@@ -1678,6 +2018,19 @@ class TranscribeService:
                 llm_result = self._assign_roles_with_ollama(turns, manager_name)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"mono_role_assign: ollama_failed: {exc}")
+        elif mode == "codex_selective":
+            try:
+                llm_result = self._assign_roles_with_codex(turns, manager_name)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"mono_role_assign: codex_failed: {exc}")
+
+        if llm_result and mode == "codex_selective":
+            llm_result = self._apply_low_info_role_filter(
+                llm_result,
+                rule_result=rule_result,
+                turns=turns,
+                manager_name=manager_name,
+            )
 
         if (
             llm_result

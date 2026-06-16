@@ -93,6 +93,7 @@ class Settings:
     mono_role_assignment_mode: str
     mono_role_assignment_min_confidence: float
     mono_role_assignment_llm_threshold: float
+    mono_role_low_info_filter_mode: str
     openai_role_assign_model: str
     max_workers: int
     transcribe_max_attempts: int
@@ -224,6 +225,7 @@ def get_settings() -> Settings:
         mono_role_assignment_llm_threshold=_float_env(
             "MONO_ROLE_ASSIGNMENT_LLM_THRESHOLD", 0.72
         ),
+        mono_role_low_info_filter_mode=os.getenv("MONO_ROLE_LOW_INFO_FILTER_MODE", "mark").strip().lower(),
         openai_role_assign_model=os.getenv("OPENAI_ROLE_ASSIGN_MODEL", "gpt-4o-mini").strip(),
         max_workers=_int_env("MAX_WORKERS", 4),
         transcribe_max_attempts=_int_env("TRANSCRIBE_MAX_ATTEMPTS", 3),

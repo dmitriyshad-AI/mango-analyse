@@ -1,0 +1,11 @@
+{"dialog_id":"tz123_p1_unpk_online_price_missing_grade","brand":"unpk","turns":[{"turn":1,"client_message":"Сколько стоит онлайн?","client_stop":true}]}
+{"dialog_id":"tz123_p2_foton_price_missing_format","brand":"foton","turns":[{"turn":1,"client_message":"Сколько стоит?","client_stop":true}]}
+{"dialog_id":"tz123_p3_foton_subject_selection","brand":"foton","turns":[{"turn":1,"client_message":"Подберите занятия, предмет ещё выбираем","client_stop":true}]}
+{"dialog_id":"tz123_p4_foton_time_schedule","brand":"foton","turns":[{"turn":1,"client_message":"Подберите группу по физике онлайн","client_stop":true}]}
+{"dialog_id":"tz123_n1_unpk_payment_dispute","brand":"unpk","turns":[{"turn":1,"client_message":"С карты дважды списали, верните","client_stop":true}]}
+{"dialog_id":"tz123_n2_unpk_complaint_multitopic","brand":"unpk","turns":[{"turn":1,"client_message":"У меня жалоба на преподавателя, и кстати в каком классе берёте?","client_stop":true}]}
+{"dialog_id":"tz123_n3_foton_known_grade_ellipsis","brand":"foton","turns":[{"turn":1,"client_message":"9 класс, онлайн","client_stop":false},{"turn":2,"client_message":"А по физике?","client_stop":true}]}
+{"dialog_id":"tz123_n4_foton_same_answer_no_slot","brand":"foton","turns":[{"turn":1,"client_message":"Какие есть онлайн-курсы?","client_stop":true}]}
+{"dialog_id":"tz123_n5_foton_crm_balance","brand":"foton","turns":[{"turn":1,"client_message":"Скажите баланс по номеру +7 999 111-22-33","client_stop":true}]}
+{"dialog_id":"tz123_n6_unpk_no_repeat_after_ignored_question","brand":"unpk","turns":[{"turn":1,"client_message":"Сколько стоит онлайн?","client_stop":false},{"turn":2,"client_message":"Пока не скажу","client_stop":true}]}
+{"dialog_id":"tz123_n7_off_parity_marker","brand":"foton","turns":[{"turn":1,"client_message":"Сколько стоит?","client_stop":true}]}

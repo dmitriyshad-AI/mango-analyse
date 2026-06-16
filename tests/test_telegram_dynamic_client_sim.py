@@ -776,6 +776,51 @@ def test_summary_includes_answerability_trace_only_when_present(tmp_path):
     assert answerability["self_can_answer"] == {"no": 1}
 
 
+def test_summary_includes_question_instead_of_handoff_counters(tmp_path):
+    summary = sim.build_summary(
+        [
+            {
+                "dialog_id": "question_instead",
+                "brand": "foton",
+                "run_status": "completed",
+                "turns": [
+                    {
+                        "turn": 1,
+                        "bot_route": "bot_answer_self_for_pilot",
+                        "bot_question_instead_of_handoff": {
+                            "status": "fired",
+                            "slot": "grade",
+                            "reason": "single_missing_slot_question",
+                        },
+                    },
+                    {
+                        "turn": 2,
+                        "bot_route": "draft_for_manager",
+                        "bot_question_instead_of_handoff": {
+                            "status": "skipped_p0",
+                            "slot": "",
+                            "reason": "p0_recall_spec:p0_payment_dispute",
+                        },
+                    },
+                ],
+            }
+        ],
+        [{"dialog_id": "question_instead", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    counters = summary["question_instead_of_handoff"]
+    assert counters["turns"] == 2
+    assert counters["fired"] == 1
+    assert counters["by_status"] == {"fired": 1, "skipped_p0": 1}
+    assert counters["by_slot"] == {"grade": 1}
+    assert counters["by_reason"] == {
+        "single_missing_slot_question": 1,
+        "p0_recall_spec:p0_payment_dispute": 1,
+    }
+
+
 def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_DIRECT_PATH", "1")
     transcripts = [

@@ -1780,6 +1780,11 @@ def run_one_dialog(
         tone_sell_prompt_metadata = dict(result.metadata.get("tone_sell_prompt") or {}) if isinstance(result.metadata.get("tone_sell_prompt"), Mapping) else {}
         action_proposal_metadata = dict(result.metadata.get("action_proposal") or {}) if isinstance(result.metadata.get("action_proposal"), Mapping) else {}
         action_decision_metadata = dict(result.metadata.get("action_decision") or {}) if isinstance(result.metadata.get("action_decision"), Mapping) else {}
+        question_instead_metadata = (
+            dict(result.metadata.get("question_instead_of_handoff") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("question_instead_of_handoff"), Mapping)
+            else {}
+        )
         answerability_trace_metadata = (
             dict(result.metadata.get("answerability_trace") or {})
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
@@ -1828,6 +1833,7 @@ def run_one_dialog(
             "bot_action_proposal": action_proposal_metadata,
             "bot_action_decision": action_decision_metadata,
             "bot_action_decision_action": str(action_decision_metadata.get("action") or ""),
+            "bot_question_instead_of_handoff": question_instead_metadata,
             "bot_close_detect": close_detect_metadata,
             "bot_tone_sell_prompt": tone_sell_prompt_metadata,
             "bot_claude_cli_errors": claude_cli_events,
@@ -3039,6 +3045,7 @@ def build_summary(
     close_detect = _close_detect_summary(transcripts)
     tone_sell_prompt = _tone_sell_prompt_summary(transcripts)
     action_decision = _action_decision_summary(transcripts)
+    question_instead_of_handoff = _question_instead_of_handoff_summary(transcripts)
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     answerability_trace = _answerability_trace_summary(transcripts)
@@ -3171,6 +3178,7 @@ def build_summary(
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
+        "question_instead_of_handoff": question_instead_of_handoff,
         "close_detect": close_detect,
         "tone_sell_prompt": tone_sell_prompt,
         "claude_cli_errors": claude_cli_errors,
@@ -3208,6 +3216,32 @@ _SEMANTIC_VERIFIER_DEDUP_CLASSES = {
     },
     "invented_generalization": set(),
 }
+
+
+def _question_instead_of_handoff_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    metas: list[Mapping[str, Any]] = []
+    for dialog in transcripts:
+        if not isinstance(dialog, Mapping):
+            continue
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            meta = turn.get("bot_question_instead_of_handoff")
+            if isinstance(meta, Mapping) and meta:
+                metas.append(meta)
+    return {
+        "turns": len(metas),
+        "fired": sum(1 for item in metas if str(item.get("status") or "") == "fired"),
+        "by_status": dict(Counter(str(item.get("status") or "") for item in metas if str(item.get("status") or "").strip())),
+        "by_slot": dict(
+            Counter(
+                str(item.get("slot") or "")
+                for item in metas
+                if str(item.get("status") or "") == "fired" and str(item.get("slot") or "").strip()
+            )
+        ),
+        "by_reason": dict(Counter(str(item.get("reason") or "") for item in metas if str(item.get("reason") or "").strip())),
+    }
 
 
 def _semantic_output_verifier_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:

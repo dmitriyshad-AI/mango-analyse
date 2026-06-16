@@ -130,6 +130,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _answerability_shadow_enabled,
     _client_clean_fact_text,
     _deal_action_decision_enabled,
+    _question_instead_of_handoff_enabled,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_pilot_config,
     _direct_path_fact_by_brand_key,
@@ -245,6 +246,8 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_context_fact_pack,
     _direct_path_recent_messages,
     _direct_path_known_slots,
+    _direct_path_slot_provenance,
+    _direct_path_do_not_reask_slots,
     _presale_prompt_safe_key,
     _presale_prompt_safe_slot_value,
     _presale_prompt_safe_mapping,
@@ -1627,6 +1630,357 @@ def apply_deal_action_decision_layer(
         manager_checklist=tuple(dict.fromkeys(item for item in checklist if str(item or "").strip())),
         metadata=metadata,
     )
+
+
+QUESTION_INSTEAD_OF_HANDOFF_SCHEMA_VERSION = "question_instead_of_handoff_v1_2026_06_16"
+_QUESTION_FAST_SLOT_PRIORITY = ("grade", "subject", "format", "time")
+_QUESTION_SLOT_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "grade": ("grade", "class", "student_grade", "класс"),
+    "subject": ("subject", "course_subject", "interest_subject", "предмет"),
+    "format": ("format", "training_format", "course_format", "preferred_format", "формат"),
+    "time": ("time", "preferred_time", "schedule_time", "day", "weekday", "время"),
+}
+
+
+def _question_slot_normalize(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    if not text:
+        return ""
+    for canonical, aliases in _QUESTION_SLOT_ALIASES.items():
+        if text == canonical or any(alias in text for alias in aliases):
+            return canonical
+    if re.search(r"класс|grade|student", text, re.I):
+        return "grade"
+    if re.search(r"предмет|subject|математ|физик|информат", text, re.I):
+        return "subject"
+    if re.search(r"формат|format|онлайн|очно", text, re.I):
+        return "format"
+    if re.search(r"время|time|будн|выходн|утро|вечер|день|час", text, re.I):
+        return "time"
+    return ""
+
+
+def _question_slot_aliases(slot: str) -> tuple[str, ...]:
+    return _QUESTION_SLOT_ALIASES.get(slot, (slot,))
+
+
+def _question_known_slots(context: Optional[Mapping[str, Any]]) -> set[str]:
+    result: set[str] = set()
+    for key, value in _deal_action_known_slots(context).items():
+        if str(value or "").strip():
+            normalized = _question_slot_normalize(key)
+            if normalized:
+                result.add(normalized)
+    for key, data in _direct_path_slot_provenance(context).items():
+        if str(data.get("value") or "").strip():
+            normalized = _question_slot_normalize(key)
+            if normalized:
+                result.add(normalized)
+    return result
+
+
+def _question_do_not_reask_slots(context: Optional[Mapping[str, Any]]) -> set[str]:
+    result = {_question_slot_normalize(item) for item in _direct_path_do_not_reask_slots(context)}
+    result.discard("")
+    if not isinstance(context, Mapping):
+        return result
+    containers: list[Mapping[str, Any]] = [context]
+    memory = context.get("dialogue_memory_view")
+    if isinstance(memory, Mapping):
+        containers.append(memory)
+    for container in containers:
+        for key in ("do_not_reask_slots", "do_not_ask_again"):
+            raw = container.get(key)
+            if isinstance(raw, str):
+                result.add(_question_slot_normalize(raw))
+            elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+                result.update(_question_slot_normalize(item) for item in raw)
+    result.discard("")
+    return result
+
+
+def _question_already_asked_slots(context: Optional[Mapping[str, Any]]) -> set[str]:
+    result: set[str] = set()
+    if not isinstance(context, Mapping):
+        return result
+    containers: list[Mapping[str, Any]] = [context]
+    for key in ("dialogue_memory_view", "proactive_state", "a2_proactive_state", "selling_thread"):
+        value = context.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    for container in containers:
+        for key in ("already_asked", "qualifiers_asked", "clarification_slots", "question_instead_slots"):
+            raw = container.get(key)
+            if isinstance(raw, str):
+                result.add(_question_slot_normalize(raw))
+            elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+                result.update(_question_slot_normalize(item) for item in raw)
+        raw_count = container.get("question_instead_count") or container.get("clarification_question_count")
+        if str(raw_count or "").isdigit() and int(str(raw_count)) >= 1:
+            result.add("__budget_exhausted__")
+    recent = _direct_path_recent_messages(context, limit=8)
+    joined = "\n".join(recent).casefold().replace("ё", "е")
+    if "подскажите, пожалуйста, класс ученика" in joined or "для какого класса" in joined:
+        result.add("grade")
+    if "подскажите, пожалуйста, предмет" in joined or "какой предмет" in joined:
+        result.add("subject")
+    if "какой формат удобнее" in joined or "онлайн или очно" in joined:
+        result.add("format")
+    if "какое время удобнее" in joined or "по времени удобнее" in joined:
+        result.add("time")
+    result.discard("")
+    return result
+
+
+def _question_slot_present_in_text(slot: str, text: str) -> bool:
+    low = str(text or "").casefold().replace("ё", "е")
+    if slot == "grade":
+        return bool(re.search(r"\b(?:[1-9]|10|11)\s*(?:класс|кл\.?)\b", low, re.I))
+    if slot == "subject":
+        return bool(re.search(r"математ|физик|информат|программирован|русск|хими|биологи|английск", low, re.I))
+    if slot == "format":
+        return bool(re.search(r"\bонлайн\b|\bочно\b|офлайн|дистанционно", low, re.I))
+    if slot == "time":
+        return bool(re.search(r"\b(?:пн|вт|ср|чт|пт|сб|вс)\b|будн|выходн|утр|вечер|днем|днём|\d{1,2}:\d{2}", low, re.I))
+    return False
+
+
+def _question_fact_slot_values(slot: str, fact_key: str, fact_text: str, metadata: Mapping[str, Any]) -> set[str]:
+    combined = f"{fact_key} {fact_text} {metadata.get('fact_type') or ''} {metadata.get('product') or ''}"
+    low = combined.casefold().replace("ё", "е")
+    values: set[str] = set()
+    if slot == "format":
+        if re.search(r"\bонлайн\b|\bonline\b|дистанц", low, re.I):
+            values.add("online")
+        if re.search(r"\bочно\b|офлайн|offline|москва|долгопруд", low, re.I):
+            values.add("offline")
+    elif slot == "grade":
+        for start, end in re.findall(r"\b([1-9]|10|11)\s*[-–]\s*([1-9]|10|11)\s*(?:класс|кл|grades?|classes?)", low, re.I):
+            a, b = int(start), int(end)
+            if a > b:
+                a, b = b, a
+            values.add(f"{a}-{b}")
+        for item in re.findall(r"\b([1-9]|10|11)\s*(?:класс|кл\.?|grade|class)\b", low, re.I):
+            values.add(str(int(item)))
+        for start, end in re.findall(r"\b([1-9]|10|11)[._-]([1-9]|10|11)\b", str(fact_key or ""), re.I):
+            a, b = int(start), int(end)
+            if a > b:
+                a, b = b, a
+            values.add(f"{a}-{b}")
+    elif slot == "subject":
+        subject_aliases = {
+            "math": r"математ|матем\b|math",
+            "physics": r"физик|physics",
+            "informatics": r"информат|программирован|informatics|programming",
+            "russian": r"русск",
+        }
+        for name, pattern in subject_aliases.items():
+            if re.search(pattern, low, re.I):
+                values.add(name)
+    elif slot == "time":
+        if re.search(r"\b(?:сб|вс)\b|суббот|воскрес|выходн", low, re.I):
+            values.add("weekend")
+        if re.search(r"\b(?:пн|вт|ср|чт|пт)\b|будн", low, re.I):
+            values.add("weekday")
+        for item in re.findall(r"\b\d{1,2}:\d{2}\b", low):
+            values.add(item)
+        if re.search(r"утр", low, re.I):
+            values.add("morning")
+        if re.search(r"вечер", low, re.I):
+            values.add("evening")
+    return values
+
+
+def _question_fact_fingerprint(text: str) -> str:
+    value = str(text or "")
+    numbers = tuple(dict.fromkeys(match.group(0).strip() for match in PRICE_AMOUNT_RE.finditer(value)))
+    times = tuple(dict.fromkeys(re.findall(r"\b\d{1,2}:\d{2}\b", value)))
+    dates = tuple(dict.fromkeys(re.findall(r"\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b", value)))
+    if numbers or times or dates:
+        return "|".join((*numbers, *times, *dates))
+    return _normalize_fact_match_text(value)[:160]
+
+
+def _question_slot_unlocks(slot: str, facts: Mapping[str, str], fact_metadata: Mapping[str, Any]) -> bool:
+    buckets: dict[str, set[str]] = {}
+    for key, text in facts.items():
+        meta = fact_metadata.get(key) if isinstance(fact_metadata.get(key), Mapping) else {}
+        values = _question_fact_slot_values(slot, str(key), str(text or ""), meta)
+        if not values:
+            continue
+        fingerprint = _question_fact_fingerprint(str(text or ""))
+        for value in values:
+            buckets.setdefault(value, set()).add(fingerprint)
+    if len(buckets) < 2:
+        return False
+    all_fingerprints = {fingerprint for fingerprints in buckets.values() for fingerprint in fingerprints if fingerprint}
+    return len(all_fingerprints) > 1
+
+
+def _question_relevant_slot_candidates(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+    facts: Mapping[str, str],
+    fact_metadata: Mapping[str, Any],
+) -> list[str]:
+    missing_text = " ".join([*result.missing_facts, client_message]).casefold().replace("ё", "е")
+    known = _question_known_slots(context)
+    do_not_reask = _question_do_not_reask_slots(context)
+    already_asked = _question_already_asked_slots(context)
+    if "__budget_exhausted__" in already_asked:
+        return []
+    candidates: list[str] = []
+    for slot in _QUESTION_FAST_SLOT_PRIORITY:
+        if slot in known or slot in do_not_reask or slot in already_asked or _question_slot_present_in_text(slot, client_message):
+            continue
+        aliases = _question_slot_aliases(slot)
+        explicit_missing = any(alias and alias in missing_text for alias in aliases)
+        broad_question = bool(
+            re.search(
+                r"цен|стоим|сколько\s+стоит|распис|заняти|курс|подготов|подбер|вариант|групп|формат",
+                missing_text,
+                re.I,
+            )
+        )
+        if not explicit_missing and not broad_question:
+            continue
+        if _question_slot_unlocks(slot, facts, fact_metadata):
+            candidates.append(slot)
+    return candidates
+
+
+def _question_text_for_slot(slot: str) -> str:
+    if slot == "grade":
+        return "Подскажите, пожалуйста, класс ученика — тогда сориентирую точнее."
+    if slot == "subject":
+        return "Подскажите, пожалуйста, предмет — тогда сориентирую точнее."
+    if slot == "format":
+        return "Подскажите, пожалуйста, какой формат удобнее: очно или онлайн?"
+    if slot == "time":
+        return "Подскажите, пожалуйста, какое время удобнее — будни или выходные?"
+    return ""
+
+
+def _question_handoff_direct_facts(result: SubscriptionDraftResult, context: Optional[Mapping[str, Any]]) -> tuple[dict[str, str], dict[str, Any]]:
+    facts, exact_keys = _deal_action_texts(result, context)
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    fact_metadata = direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {}
+    exact = [str(key) for key in (direct.get("wide_fact_exact_keys") or exact_keys) if str(key).strip()]
+    if exact:
+        exact_facts = {key: facts[key] for key in exact if key in facts}
+        if exact_facts:
+            return exact_facts, {key: fact_metadata.get(key, {}) for key in exact_facts}
+    return dict(facts), {str(key): fact_metadata.get(key, {}) for key in facts}
+
+
+def _question_action_allows_clarification(decision: Mapping[str, Any], client_message: str) -> bool:
+    action = _deal_action_normalize(decision.get("action"))
+    return action == "answer_only"
+
+
+def _question_gate_blocked(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    gate = metadata.get("authoritative_output_gate") if isinstance(metadata.get("authoritative_output_gate"), Mapping) else {}
+    action = str(gate.get("action") or "").strip()
+    return bool(action and action != "pass")
+
+
+def _question_trace(status: str, *, slot: str = "", reason: str = "") -> dict[str, Any]:
+    return {
+        "schema_version": QUESTION_INSTEAD_OF_HANDOFF_SCHEMA_VERSION,
+        "enabled": True,
+        "status": status,
+        "slot": slot,
+        "reason": reason,
+        "budget": 1,
+    }
+
+
+def apply_question_instead_of_handoff_layer(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _question_instead_of_handoff_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+
+    def with_trace(status: str, *, slot: str = "", reason: str = "") -> SubscriptionDraftResult:
+        traced = dict(metadata)
+        traced["question_instead_of_handoff"] = _question_trace(status, slot=slot, reason=reason)
+        return replace(result, metadata=traced)
+
+    if result.route != "draft_for_manager":
+        return with_trace("skipped", reason="route_not_draft_for_manager")
+    p0_required, p0_reason = _deal_action_final_p0(result, client_message=client_message, context=context)
+    if p0_required or result.route == "manager_only" or str(result.risk_level or "").strip().casefold() in {"high", "p0", "critical"}:
+        return with_trace("skipped_p0", reason=p0_reason or "p0_or_high_risk")
+    if _question_gate_blocked(result):
+        return with_trace("skipped", reason="authoritative_gate_not_pass")
+    action_decision = metadata.get("action_decision") if isinstance(metadata.get("action_decision"), Mapping) else {}
+    if not action_decision:
+        return with_trace("skipped", reason="action_decision_missing")
+    if not _question_action_allows_clarification(action_decision, client_message):
+        return with_trace("skipped_manager_action", reason=str(action_decision.get("action") or "unknown"))
+    facts, fact_metadata = _question_handoff_direct_facts(result, context)
+    if not facts:
+        return with_trace("skipped", reason="no_retrieved_facts")
+    slots = _question_relevant_slot_candidates(
+        result,
+        client_message=client_message,
+        context=context,
+        facts=facts,
+        fact_metadata=fact_metadata,
+    )
+    if not slots:
+        return with_trace("skipped", reason="no_unlocking_slot")
+    slot = slots[0]
+    question = _question_text_for_slot(slot)
+    if not question:
+        return with_trace("skipped", reason="empty_question_template")
+
+    new_metadata = dict(metadata)
+    new_metadata["question_instead_of_handoff"] = _question_trace("fired", slot=slot, reason="single_missing_slot_question")
+    decision = dict(action_decision)
+    decision.update(
+        {
+            "action": "answer_only",
+            "confidence": 1.0,
+            "reason": f"question_instead_of_handoff:{slot}",
+            "requires_manager_approval": False,
+            "question_slot": slot,
+        }
+    )
+    new_metadata["action_decision"] = decision
+    direct_meta = new_metadata.get("direct_path") if isinstance(new_metadata.get("direct_path"), Mapping) else {}
+    if direct_meta:
+        direct_copy = dict(direct_meta)
+        direct_copy["question_instead_of_handoff"] = new_metadata["question_instead_of_handoff"]
+        direct_copy["text_composition_source"] = "deterministic_clarification_question"
+        new_metadata["direct_path"] = direct_copy
+    new_metadata["text_composition_source"] = "deterministic_clarification_question"
+
+    safety_flags = tuple(flag for flag in result.safety_flags if flag != "manager_approval_required")
+    candidate = replace(
+        result,
+        route="bot_answer_self_for_pilot" if _direct_path_enabled(context) else "bot_answer_self",
+        draft_text=question,
+        missing_facts=tuple(dict.fromkeys((*result.missing_facts, f"уточнить {slot}"))),
+        safety_flags=tuple(dict.fromkeys((*safety_flags, "question_instead_of_handoff"))),
+        context_used=tuple(dict.fromkeys((*result.context_used, "question_instead_of_handoff"))),
+        manager_followup_required=False,
+        metadata=new_metadata,
+    )
+    gated = apply_authoritative_output_gate(candidate, client_message=client_message, context=context)
+    gated_meta = gated.metadata if isinstance(gated.metadata, Mapping) else {}
+    gate = gated_meta.get("authoritative_output_gate") if isinstance(gated_meta.get("authoritative_output_gate"), Mapping) else {}
+    if str(gate.get("action") or "") != "pass" or gated.route not in {"bot_answer_self", "bot_answer_self_for_pilot"}:
+        return with_trace("skipped", reason=f"regate:{str(gate.get('action') or 'unknown')}")
+    return gated
 
 
 def _answerability_gate_findings(gate: Mapping[str, Any]) -> list[dict[str, str]]:

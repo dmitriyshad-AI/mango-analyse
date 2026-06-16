@@ -50,6 +50,7 @@ QUALITY_COMPOSITE_ALIAS_ENV = "TELEGRAM_COMPOSITE_CONTRACT_FIX"
 QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
 QUALITY_CLARIFY_SCOPE_ENV = "TELEGRAM_Q_CLARIFY_SCOPE"
 QUALITY_USEFUL_HANDOFF_ENV = "TELEGRAM_Q_USEFUL_HANDOFF"
+WRONG_INTENT_FACT_CALIBRATION_ENV = "TELEGRAM_WRONG_INTENT_FACT_CALIBRATION"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 _FAITHFULNESS_SHADOW_CONTEXT_KEY = "_faithfulness_shadow"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
@@ -711,6 +712,12 @@ def quality_useful_handoff_enabled(context: Mapping[str, Any] | None = None) -> 
     if isinstance(context, MappingABC) and context.get(QUALITY_USEFUL_HANDOFF_ENV) is not None:
         return _truthy(context.get(QUALITY_USEFUL_HANDOFF_ENV))
     return _truthy(os.getenv(QUALITY_USEFUL_HANDOFF_ENV))
+
+
+def wrong_intent_fact_calibration_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(WRONG_INTENT_FACT_CALIBRATION_ENV) is not None:
+        return _truthy(context.get(WRONG_INTENT_FACT_CALIBRATION_ENV))
+    return _truthy(os.getenv(WRONG_INTENT_FACT_CALIBRATION_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -4127,7 +4134,15 @@ def verify_output(
     if unsupported_entities:
         findings.append(VerificationFinding("unsupported_entity", f"сущность вне фактов хода: {unsupported_entities}"))
     if contract is not None:
-        findings.extend(_wrong_intent_fact_findings(text, contract=contract, facts=facts))
+        findings.extend(
+            _wrong_intent_fact_findings(
+                text,
+                contract=contract,
+                facts=facts,
+                context=context,
+                client_message=client_message,
+            )
+        )
         if _preemptive_format_choice_finding(low, contract=contract):
             findings.append(
                 VerificationFinding(
@@ -7067,23 +7082,42 @@ def _wrong_intent_fact_findings(
     *,
     contract: AnswerContract,
     facts: Mapping[str, str],
+    context: Mapping[str, Any] | None = None,
+    client_message: str = "",
 ) -> list[VerificationFinding]:
     findings: list[VerificationFinding] = []
-    if _asks_class_schedule_days(contract) and _draft_uses_contact_hours_as_schedule(draft, facts):
+    calibrated = wrong_intent_fact_calibration_enabled(context)
+    effective_contract = (
+        _wrong_intent_effective_contract(contract, context=context, client_message=client_message, facts=facts)
+        if calibrated
+        else contract
+    )
+    schedule_contract = effective_contract if calibrated else contract
+    if _asks_class_schedule_days(schedule_contract) and _draft_uses_contact_hours_as_schedule(draft, facts):
         findings.append(
             VerificationFinding(
                 "wrong_intent_fact",
                 "Контактные часы нельзя выдавать как дни занятий группы.",
             )
         )
-    if not _asks_address(contract) and _draft_uses_address_fact(draft, facts):
+    if _draft_uses_address_fact(draft, facts) and not _address_fact_allowed_for_contract(
+        effective_contract,
+        facts=facts,
+        calibrated=calibrated,
+        client_message=client_message,
+    ):
         findings.append(
             VerificationFinding(
                 "wrong_intent_fact",
                 "Адресный факт нельзя выдавать как ответ на неадресный вопрос.",
             )
         )
-    if not _contract_mentions_camp_or_lvsh(contract) and _draft_uses_camp_or_lvsh_fact(draft, facts):
+    if _draft_uses_camp_or_lvsh_fact(draft, facts) and _camp_fact_wrong_intent(
+        effective_contract,
+        facts=facts,
+        draft=draft,
+        calibrated=calibrated,
+    ):
         findings.append(
             VerificationFinding(
                 "wrong_intent_fact",
@@ -7091,6 +7125,199 @@ def _wrong_intent_fact_findings(
             )
         )
     return findings
+
+
+def _wrong_intent_effective_contract(
+    contract: AnswerContract,
+    *,
+    context: Mapping[str, Any] | None,
+    client_message: str,
+    facts: Mapping[str, str],
+) -> AnswerContract:
+    if not isinstance(context, MappingABC):
+        if contract.current_question or contract.all_needed_fact_keys():
+            return contract
+        return replace(contract, current_question=str(client_message or "").strip()[:300])
+
+    answer_contract = context.get("answer_contract") if isinstance(context.get("answer_contract"), MappingABC) else {}
+    plan = context.get("conversation_intent_plan") if isinstance(context.get("conversation_intent_plan"), MappingABC) else {}
+    facts_context = context.get("facts_context") if isinstance(context.get("facts_context"), MappingABC) else {}
+
+    current_question = (
+        contract.current_question
+        or str(answer_contract.get("direct_question") or "").strip()
+        or str(plan.get("direct_question") or "").strip()
+        or str(client_message or "").strip()
+    )[:300]
+    question_type = (
+        contract.question_type
+        or str(answer_contract.get("primary_intent") or "").strip()
+        or str(plan.get("primary_intent") or "").strip()
+    )[:80]
+    needed = tuple(
+        dict.fromkeys(
+            [
+                *contract.all_needed_fact_keys(),
+                *_mapping_text_tuple(answer_contract, "required_fact_keys"),
+                *_mapping_text_tuple(plan, "required_fact_keys"),
+                *_mapping_text_tuple(facts_context, "required_fact_keys"),
+            ]
+        )
+    )
+    if not needed:
+        return replace(contract, current_question=current_question or contract.current_question, question_type=question_type or contract.question_type)
+    matched_needed = tuple(key for key in needed if _any_fact_matches_required_key(key, facts) or str(key or "").strip())
+    return replace(
+        contract,
+        current_question=current_question or contract.current_question,
+        question_type=question_type or contract.question_type,
+        answerability="answer_self" if contract.answerability == "answer_self" or matched_needed else contract.answerability,
+        subquestions=(
+            Subquestion(
+                text=current_question or contract.current_question,
+                answerable="self",
+                needed_fact_keys=matched_needed,
+                question_type=question_type or contract.question_type,
+                existence_target=contract.existence_target,
+            ),
+        ),
+    )
+
+
+def _mapping_text_tuple(mapping: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    value = mapping.get(key) if isinstance(mapping, MappingABC) else ()
+    if isinstance(value, (str, bytes, bytearray)):
+        return (str(value).strip(),) if str(value).strip() else ()
+    if isinstance(value, SequenceABC):
+        return tuple(str(item or "").strip() for item in value if str(item or "").strip())
+    return ()
+
+
+def _any_fact_matches_required_key(required_key: str, facts: Mapping[str, str]) -> bool:
+    required = str(required_key or "").strip()
+    if not required:
+        return False
+    if any(key_matches(required, str(key or "")) for key in facts):
+        return True
+    required_low = required.casefold().replace("ё", "е")
+    if re.search(r"address|addresses|location|locations|metro|адрес|локац|площадк", required_low, re.I):
+        return any(_is_address_fact_key(str(key or "")) for key in facts)
+    if re.search(r"camp|lvsh|лвш|лагер|смен|летн", required_low, re.I):
+        return any(_is_camp_or_lvsh_fact(str(key), str(value or "")) for key, value in facts.items())
+    return False
+
+
+def _retrieval_from_facts_for_contract(contract: AnswerContract, facts: Mapping[str, str]) -> RetrievalResult:
+    matched: dict[str, tuple[str, ...]] = {}
+    missing: list[str] = []
+    for required in tuple(dict.fromkeys(str(item or "").strip() for item in contract.all_needed_fact_keys() if str(item or "").strip())):
+        exact = tuple(str(key) for key in facts if key_matches(required, str(key)))
+        if not exact and re.search(r"address|addresses|location|locations|metro|адрес|локац|площадк", required, re.I):
+            exact = tuple(str(key) for key in facts if _is_address_fact_key(str(key)))
+        if not exact and re.search(r"camp|lvsh|лвш|лагер|смен|летн", required, re.I):
+            exact = tuple(str(key) for key, value in facts.items() if _is_camp_or_lvsh_fact(str(key), str(value or "")))
+        if exact:
+            matched[required] = exact
+        else:
+            missing.append(required)
+    return RetrievalResult(facts={str(key): str(value) for key, value in facts.items()}, missing=tuple(missing), matched_keys=matched)
+
+
+def _address_fact_allowed_for_contract(
+    contract: AnswerContract,
+    *,
+    facts: Mapping[str, str],
+    calibrated: bool,
+    client_message: str = "",
+) -> bool:
+    if _asks_address(contract, client_message=client_message if calibrated else "", broad=calibrated):
+        return True
+    if not calibrated:
+        return False
+    if _asks_start_or_academic_year_dates(contract, client_message=client_message):
+        return True
+    retrieval = _retrieval_from_facts_for_contract(contract, facts)
+    return _address_fact_has_needed_scope(contract, retrieval)
+
+
+def _asks_start_or_academic_year_dates(contract: AnswerContract, *, client_message: str = "") -> bool:
+    text = " ".join(
+        [
+            client_message,
+            contract.current_question,
+            contract.client_state,
+            contract.question_type,
+            " ".join(contract.all_needed_fact_keys()),
+            " ".join(item.text for item in contract.subquestions),
+            " ".join(item.question_type for item in contract.subquestions),
+            " ".join(" ".join(item.needed_fact_keys) for item in contract.subquestions),
+        ]
+    ).casefold().replace("ё", "е")
+    if not text:
+        return False
+    return bool(
+        re.search(r"учебн\w*\s+год|academic[_-]?year|start[_-]?by[_-]?location|start[_-]?date", text, re.I)
+        and re.search(r"когда|дат[ауы]?|старт|начин|начал|с\s+какого|start", text, re.I)
+    )
+
+
+def _address_fact_has_needed_scope(contract: AnswerContract, retrieval: RetrievalResult) -> bool:
+    if not contract.all_needed_fact_keys():
+        return False
+    for subquestion in _contract_subquestions(contract):
+        keys = tuple(key for key in subquestion.needed_fact_keys if key)
+        if not keys:
+            continue
+        address_keys = tuple(
+            key
+            for key in keys
+            if re.search(r"address|addresses|location|locations|metro|адрес|локац|площадк", str(key), re.I)
+        )
+        if not address_keys:
+            continue
+        if all(_matched_scope_fact_keys_for_required_key(contract, subquestion, retrieval, key) for key in address_keys):
+            return True
+    return False
+
+
+def _camp_fact_wrong_intent(
+    contract: AnswerContract,
+    *,
+    facts: Mapping[str, str],
+    draft: str,
+    calibrated: bool,
+) -> bool:
+    if not calibrated:
+        return not _contract_mentions_camp_or_lvsh(contract)
+    requested_scope = _camp_scope_from_contract(contract)
+    fact_scopes = _camp_fact_scopes_used_in_draft(facts=facts, draft=draft)
+    return bool(requested_scope and any(scope != requested_scope for scope in fact_scopes))
+
+
+def _camp_fact_scopes_used_in_draft(*, facts: Mapping[str, str], draft: str) -> tuple[str, ...]:
+    text = str(draft or "").casefold().replace("ё", "е")
+    result: list[str] = []
+    for key, value in facts.items():
+        fact_text = str(value or "")
+        if not _is_camp_or_lvsh_fact(str(key), fact_text):
+            continue
+        scope = _camp_scope_from_fact(str(key), fact_text)
+        if not scope:
+            continue
+        tail = _fact_tail(fact_text).casefold().replace("ё", "е")
+        if tail and len(tail) >= 5 and tail in text:
+            result.append(scope)
+            continue
+        if (
+            scope == "residential_lvsh"
+            and not re.search(r"без\s+прожив|без\s+ночев", text, re.I)
+            and re.search(r"лвш|lvsh|менделеев|с\s+прожив|проживан|трансфер", text, re.I)
+        ):
+            result.append(scope)
+            continue
+        if scope == "city_day_camp" and re.search(r"городск|дневн|без\s+прожив|без\s+ночев|лш\s+москв|красносельск|долгопрудн", text, re.I):
+            result.append(scope)
+    return tuple(dict.fromkeys(result))
 
 
 def _class_schedule_publication_answer(
@@ -7187,13 +7414,16 @@ def _draft_uses_address_fact(draft: str, facts: Mapping[str, str]) -> bool:
     if not text:
         return False
     for key, value in facts.items():
-        key_low = str(key or "").casefold()
-        if not re.search(r"address|addresses|metro|location", key_low, re.I):
+        if not _is_address_fact_key(str(key or "")):
             continue
         tail = _fact_tail(str(value or "")).casefold().replace("ё", "е")
         if tail and len(tail) >= 4 and tail in text:
             return True
     return False
+
+
+def _is_address_fact_key(key: str) -> bool:
+    return bool(re.search(r"address|addresses|metro|location|locations", str(key or "").casefold(), re.I))
 
 
 def _draft_uses_camp_or_lvsh_fact(draft: str, facts: Mapping[str, str]) -> bool:
@@ -7455,15 +7685,27 @@ def _direct_recording_answer_from_facts(contract: AnswerContract, facts: Mapping
     return ""
 
 
-def _asks_address(contract: AnswerContract) -> bool:
+def _asks_address(contract: AnswerContract, *, client_message: str = "", broad: bool = False) -> bool:
     text = " ".join(
         [
+            client_message if broad else "",
             contract.current_question,
             contract.client_state,
             " ".join(item.text for item in contract.subquestions),
         ]
     ).casefold().replace("ё", "е")
-    return bool(re.search(r"адрес|площадк|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I))
+    if re.search(r"адрес|площадк|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I):
+        return True
+    if not broad:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:где|куда)\b.{0,80}\b(?:курс|курсы|заняти|занятия|приходить|пробн\w*)\b|"
+            r"\b(?:курс|курсы|заняти|занятия|пробн\w*)\b.{0,80}\b(?:где|куда)\b",
+            text,
+            re.I,
+        )
+    )
 
 
 def _asks_price(contract: AnswerContract) -> bool:

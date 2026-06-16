@@ -6,7 +6,9 @@ from mango_mvp.insights.outcome_linker import (
     choose_final_outcome,
     classify_amo_rows,
     classify_tallanto_rows,
+    config_from_args,
     link_chain_outcome,
+    parse_args,
 )
 
 
@@ -112,6 +114,14 @@ def test_outcome_linker_primary_blocks_payment_pending_flip() -> None:
     assert primary["primary_allowed"] is False
     assert primary["primary_applied"] is False
     assert primary["primary_blocked_reason"] == "flip_not_allowlisted"
+
+
+def test_outcome_linker_cli_accepts_b_primary_mode_without_changing_default() -> None:
+    default_config = config_from_args(parse_args([]))
+    primary_config = config_from_args(parse_args(["--outcome-model-mode", "primary"]))
+
+    assert default_config.outcome_model_mode == "off"
+    assert primary_config.outcome_model_mode == "primary"
 
 
 def test_outcome_linker_negated_refusal_does_not_negate_paid_after_dash() -> None:

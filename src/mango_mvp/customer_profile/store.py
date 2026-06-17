@@ -15,7 +15,7 @@ CUSTOMER_PROFILE_SQLITE_SCHEMA_VERSION = "customer_profile_sqlite_v1"
 
 
 def _phone_index_enabled() -> bool:
-    return os.getenv("PROFILE_PHONE_INDEX", "0") == "1"
+    return os.getenv("PROFILE_PHONE_INDEX", "1") == "1"
 
 
 def sha256_file(path: Path) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
@@ -546,7 +547,7 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
             },
         }
 
-        def run_resolve(*, batch_enabled: bool) -> tuple[dict[str, Any], int, int]:
+        def run_resolve(*, batch_enabled: bool | None) -> tuple[dict[str, Any], int, int]:
             fetch_one_calls = 0
             fetch_batch_calls = 0
 
@@ -560,7 +561,8 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
                 fetch_batch_calls += 1
                 return [leads_by_id[int(lead_id)] for lead_id in lead_ids]
 
-            with patch.dict("os.environ", {"AMO_LEADS_BATCH_FETCH": "1" if batch_enabled else "0"}), patch.object(
+            env_patch = {} if batch_enabled is None else {"AMO_LEADS_BATCH_FETCH": "1" if batch_enabled else "0"}
+            with patch.dict("os.environ", env_patch), patch.object(
                 deals_module,
                 "get_phone_context",
                 return_value=phone_context,
@@ -589,18 +591,26 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
                 "fetch_related_leads",
                 side_effect=AssertionError("embedded leads should skip related-leads fetch"),
             ):
+                if batch_enabled is None:
+                    os.environ.pop("AMO_LEADS_BATCH_FETCH", None)
                 result = deals_module.resolve_target_lead(None, phone="+79990001122")  # type: ignore[arg-type]
             return result, fetch_one_calls, fetch_batch_calls
 
         off_result, off_single_calls, off_batch_calls = run_resolve(batch_enabled=False)
         on_result, on_single_calls, on_batch_calls = run_resolve(batch_enabled=True)
+        default_result, default_single_calls, default_batch_calls = run_resolve(batch_enabled=None)
 
+        self.assertEqual(off_result["candidates"], on_result["candidates"])
         self.assertEqual(off_result["selected"], on_result["selected"])
         self.assertEqual(off_result["selected"]["lead_id"], 11)
         self.assertEqual(off_single_calls, 2)
         self.assertEqual(off_batch_calls, 0)
         self.assertEqual(on_single_calls, 0)
         self.assertEqual(on_batch_calls, 1)
+        self.assertEqual(default_result["candidates"], on_result["candidates"])
+        self.assertEqual(default_result["selected"], on_result["selected"])
+        self.assertEqual(default_single_calls, 0)
+        self.assertEqual(default_batch_calls, 1)
 
     def test_write_analysis_to_lead_safe_mode_skips_nonempty_fields(self) -> None:
         with patch.object(

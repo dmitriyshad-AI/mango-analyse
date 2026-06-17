@@ -37,7 +37,7 @@ def _iso_now() -> str:
 
 
 def _batch_fetch_enabled() -> bool:
-    return os.getenv("TALLANTO_BATCH_FETCH", "0") == "1"
+    return os.getenv("TALLANTO_BATCH_FETCH", "1") == "1"
 
 
 def _normalize_base_url(raw_value: str) -> str:

@@ -1,0 +1,15 @@
+src/mango_mvp/amocrm_runtime/deals.py
+src/mango_mvp/amocrm_runtime/tallanto_api.py
+src/mango_mvp/amocrm_runtime/tallanto_context.py
+src/mango_mvp/customer_profile/crm_summary.py
+src/mango_mvp/customer_profile/store.py
+tests/test_amocrm_deals.py
+tests/test_customer_profile_crm_summary.py
+tests/test_tallanto_api.py
+tasks/_done/2026-06-17_TZ33_perf_verify_and_enable_report.md
+audits/_inbox/tz33_perf_verify_enable_20260617/implementation_notes.md
+audits/_inbox/tz33_perf_verify_enable_20260617/changed_files.txt
+audits/_inbox/tz33_perf_verify_enable_20260617/test_output.txt
+audits/_inbox/tz33_perf_verify_enable_20260617/risk_review.md
+audits/_inbox/tz33_perf_verify_enable_20260617/backward_compatibility.md
+audits/_inbox/tz33_perf_verify_enable_20260617/semantic_review.md

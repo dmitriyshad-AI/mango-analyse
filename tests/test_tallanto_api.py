@@ -15,6 +15,12 @@ from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
 import mango_mvp.amocrm_runtime.tallanto_api as tallanto_api_module
 
 
+def test_tallanto_batch_fetch_is_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("TALLANTO_BATCH_FETCH", raising=False)
+
+    assert tallanto_api_module._batch_fetch_enabled()
+
+
 def test_tallanto_client_requests_and_paginates(monkeypatch):
     captured: list[dict] = []
 
@@ -119,8 +125,11 @@ def test_search_contacts_by_phone_returns_after_first_hit_when_batch_fetch_enabl
 def test_build_contact_context_live_card_only_skips_unused_blocks_without_changing_card(monkeypatch):
     client = TallantoApiClient(TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"))
 
-    def build_payload(*, batch_enabled: bool) -> tuple[dict, dict[str, int]]:
-        monkeypatch.setenv("TALLANTO_BATCH_FETCH", "1" if batch_enabled else "0")
+    def build_payload(*, batch_enabled: bool | None) -> tuple[dict, dict[str, int]]:
+        if batch_enabled is None:
+            monkeypatch.delenv("TALLANTO_BATCH_FETCH", raising=False)
+        else:
+            monkeypatch.setenv("TALLANTO_BATCH_FETCH", "1" if batch_enabled else "0")
         calls = {
             "opportunities": 0,
             "requests": 0,
@@ -176,11 +185,14 @@ def test_build_contact_context_live_card_only_skips_unused_blocks_without_changi
 
     full_payload, full_calls = build_payload(batch_enabled=False)
     slim_payload, slim_calls = build_payload(batch_enabled=True)
+    default_payload, default_calls = build_payload(batch_enabled=None)
 
     full_card = build_tallanto_live_card([full_payload["contexts"][0]], active_brand="foton")
     slim_card = build_tallanto_live_card([slim_payload["contexts"][0]], active_brand="foton")
+    default_card = build_tallanto_live_card([default_payload["contexts"][0]], active_brand="foton")
 
     assert full_card == slim_card
+    assert default_card == slim_card
     assert full_calls == {
         "opportunities": 1,
         "requests": 1,
@@ -199,6 +211,7 @@ def test_build_contact_context_live_card_only_skips_unused_blocks_without_changi
         "abonements": 1,
         "classes": 1,
     }
+    assert default_calls == slim_calls
 
 
 def test_classes_by_ids_skips_not_found_errors(monkeypatch):

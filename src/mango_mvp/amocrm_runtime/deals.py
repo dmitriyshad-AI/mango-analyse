@@ -941,7 +941,7 @@ def resolve_target_lead(
         lead_ids = [int(item.get("id") or 0) for item in embedded_leads if int(item.get("id") or 0)]
         leads: list[dict[str, Any]] = []
         if lead_ids:
-            if os.getenv("AMO_LEADS_BATCH_FETCH", "0") == "1":
+            if os.getenv("AMO_LEADS_BATCH_FETCH", "1") == "1":
                 leads = fetch_leads_batch(session, lead_ids=lead_ids, with_fields="contacts")
             else:
                 for lead_id in lead_ids:

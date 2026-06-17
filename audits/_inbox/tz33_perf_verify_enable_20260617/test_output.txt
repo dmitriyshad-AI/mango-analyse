@@ -1,0 +1,26 @@
+Targeted command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_tallanto_api.py tests/test_amocrm_deals.py::AmoCrmDealAnalysisTest::test_fetch_leads_batch_uses_amo_filter_id_contract_and_preserves_input_order tests/test_amocrm_deals.py::AmoCrmDealAnalysisTest::test_resolve_target_lead_batch_fetch_is_flagged_and_keeps_selected_lead tests/test_customer_profile_crm_summary.py
+
+Result:
+21 passed in 0.55s
+
+Full pytest command:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+First result:
+1 failed, 3327 passed, 5 skipped, 1 warning in 50.87s
+
+Failure classification:
+infrastructure/measurement flake outside TZ-33. The mail phone lift preview test asserted that "999" is absent from the whole JSON report; generated_at microseconds contained 999.
+
+Flaky test rerun:
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_productization_mail_archive.py::test_mail_phone_lift_preview_lifts_manual_messages_from_text_phones -vv
+
+Result:
+1 passed in 0.53s
+
+Second full pytest result:
+3328 passed, 5 skipped, 1 warning in 49.71s
+
+Warning:
+urllib3 NotOpenSSLWarning from system Python LibreSSL. Unrelated to TZ-33.

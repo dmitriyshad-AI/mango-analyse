@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mango_mvp.customer_profile.contracts import ProfileFieldCandidate, ProfileSnapshot
-from mango_mvp.customer_profile.crm_summary import CRM_SUMMARY_MAX_CHARS, main, render_crm_summary_from_db
+from mango_mvp.customer_profile.crm_summary import CRM_SUMMARY_MAX_CHARS, _profile_ids_by_phone, main, render_crm_summary_from_db
 from mango_mvp.customer_profile.store import CustomerProfileSQLiteStore
 
 
@@ -143,8 +143,8 @@ def test_empty_profile_gives_clear_placeholder(tmp_path: Path) -> None:
     assert "+***4567" in text
 
 
-def test_profile_phone_index_is_absent_by_default(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("PROFILE_PHONE_INDEX", raising=False)
+def test_profile_phone_index_can_be_disabled(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PROFILE_PHONE_INDEX", "0")
 
     db = _profiles_db(tmp_path, fields=[])
     with sqlite3.connect(db) as con:
@@ -154,8 +154,8 @@ def test_profile_phone_index_is_absent_by_default(tmp_path: Path, monkeypatch) -
     assert "данных пока недостаточно" in render_crm_summary_from_db(db, phone="9991234567")
 
 
-def test_profile_phone_index_flag_adds_norm_column_and_preserves_lookup(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("PROFILE_PHONE_INDEX", "1")
+def test_profile_phone_index_is_enabled_by_default_and_preserves_lookup(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("PROFILE_PHONE_INDEX", raising=False)
 
     db = _profiles_db(tmp_path, fields=[])
     with sqlite3.connect(db) as con:
@@ -167,6 +167,46 @@ def test_profile_phone_index_flag_adds_norm_column_and_preserves_lookup(tmp_path
     assert "idx_customer_profiles_phone_norm" in indexes
     assert row[0] == "+79991234567"
     assert "данных пока недостаточно" in render_crm_summary_from_db(db, phone="9991234567")
+
+
+def test_profile_phone_index_returns_same_ids_as_full_scan_without_tail_overmatch(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PROFILE_PHONE_INDEX", "1")
+    db = tmp_path / "customer_profiles.sqlite"
+    with CustomerProfileSQLiteStore(db) as store:
+        store.replace_profiles(
+            build_id="test-build",
+            built_at=NOW,
+            timeline_db_path=tmp_path / "customer_timeline.sqlite",
+            timeline_db_sha256="0" * 64,
+            profiles=[
+                ProfileSnapshot(
+                    profile_id="cust-1",
+                    tenant_id="foton",
+                    primary_phone="+79991234567",
+                    display_name="Мария",
+                    source_event_count=1,
+                    last_event_at=NOW,
+                ),
+                ProfileSnapshot(
+                    profile_id="cust-overmatch",
+                    tenant_id="foton",
+                    primary_phone="+799912345670",
+                    display_name="Не матчить",
+                    source_event_count=1,
+                    last_event_at=NOW,
+                ),
+            ],
+            fields=[],
+        )
+
+    with sqlite3.connect(db) as con:
+        con.row_factory = sqlite3.Row
+        monkeypatch.setenv("PROFILE_PHONE_INDEX", "0")
+        full_scan_ids = _profile_ids_by_phone(con, "9991234567")
+        monkeypatch.setenv("PROFILE_PHONE_INDEX", "1")
+        indexed_ids = _profile_ids_by_phone(con, "9991234567")
+
+    assert indexed_ids == full_scan_ids == ["cust-1"]
 
 
 def test_phone_with_multiple_profiles_requires_manual_selection_without_first_preview(tmp_path: Path) -> None:

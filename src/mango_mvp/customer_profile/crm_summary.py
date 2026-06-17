@@ -172,7 +172,7 @@ def _profile_ids_by_phone(con: sqlite3.Connection, phone: str) -> list[str]:
     target_tail = last10(phone)
     if not target and not target_tail:
         return []
-    if os.getenv("PROFILE_PHONE_INDEX", "0") == "1" and _has_customer_profile_column(con, "primary_phone_norm"):
+    if os.getenv("PROFILE_PHONE_INDEX", "1") == "1" and _has_customer_profile_column(con, "primary_phone_norm"):
         rows = con.execute(
             """
             SELECT profile_id

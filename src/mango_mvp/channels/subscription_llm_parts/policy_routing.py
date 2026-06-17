@@ -2712,7 +2712,11 @@ def apply_autonomy_matrix_guard(
     flags.append("autonomy_matrix_passed")
     metadata["autonomy_matrix_passed"] = True
     draft_text = result.draft_text
-    if _draft_is_low_value_without_exact_fact(draft_text) and not _is_verified_client_safe_template(draft_text):
+    if (
+        _draft_is_low_value_without_exact_fact(draft_text)
+        and not _is_verified_client_safe_template(draft_text)
+        and not _direct_wow_closing_mode(result)
+    ):
         fact_answer = _promoted_verified_fact_text(result, context=context, client_message=client_message)
         if fact_answer:
             draft_text = fact_answer
@@ -2730,6 +2734,11 @@ def apply_autonomy_matrix_guard(
         manager_checklist=tuple(dict.fromkeys(checklist)),
         metadata=metadata,
     )
+
+def _direct_wow_closing_mode(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_path = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    return bool(direct_path.get("wow_closing_mode") or metadata.get("direct_wow_closing_mode"))
 
 def _is_verified_client_safe_template(draft_text: str) -> bool:
     normalized = " ".join(str(draft_text or "").split())

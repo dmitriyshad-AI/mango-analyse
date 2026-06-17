@@ -6436,6 +6436,37 @@ def test_promoted_autonomous_answer_uses_confirmed_facts_when_original_draft_is_
     assert "подходящий вариант оплаты" in result.draft_text
 
 
+def test_direct_wow_closing_skips_promoted_fact_template_for_weak_draft() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Пожалуйста, рада была помочь.",
+            "message_type": "question",
+            "topic_id": "theme:001_pricing",
+            "confidence_theme": 0.91,
+            "metadata": {"direct_path": {"wow_closing_mode": True}},
+        }
+    )
+
+    result = provider.build_draft(
+        "Поняла, спасибо, подумаю",
+        context={
+            "active_brand": "foton",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:001_pricing"]},
+            "facts_context": {"client_safe": True, "fresh": True},
+            "confirmed_facts": {
+                "fact:semester": "Фотон: 5-11 класс, очно, семестр — 44 600 ₽.",
+                "fact:year": "Фотон: 5-11 класс, очно, год — 74 500 ₽.",
+            },
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "autonomy_matrix_passed" in result.safety_flags
+    assert "autonomy_verified_fact_answer_template_applied" not in result.safety_flags
+    assert result.draft_text == "Пожалуйста, рада была помочь."
+
+
 def test_llm_missing_facts_do_not_block_autonomy_when_context_fact_is_verified() -> None:
     provider = FakeDraftProvider(
         {
@@ -12597,13 +12628,54 @@ def test_direct_wow_tone_prompt_adds_style_only_plain_text_examples(monkeypatch)
     assert "Стиль TELEGRAM_DIRECT_WOW_TONE" in prompt
     assert "Стиль-примеры TELEGRAM_DIRECT_WOW_TONE" in prompt
     assert "plain-text для AMO и Telegram" in prompt
+    assert "Закрытие клиента — отдельный режим" in prompt
+    assert "1 коротким тёплым предложением без CTA" in prompt
+    assert "Нельзя просить класс/предмет/формат" in prompt
+    assert "Пожалуйста, рада была помочь." in prompt
     assert "[цена из фактов]" in prompt
     assert "[формат/курс из фактов]" in prompt
     assert "[механизм из фактов]" in prompt
     assert "все числа, даты, адреса, места" in prompt
     assert "Markdown-жирный" in prompt
+    assert "MTS-Link" in prompt
+    assert "называй только текущую клиентскую платформу" in prompt
     assert "49 000" not in prompt
     assert "Верхняя Красносельская" not in prompt
+
+
+def test_direct_wow_tone_closing_instruction_only_for_short_closing_messages(monkeypatch) -> None:
+    monkeypatch.delenv(subscription_llm.DIRECT_WOW_TONE_ENV, raising=False)
+    context = {
+        "active_brand": "foton",
+        subscription_llm.DIRECT_WOW_TONE_ENV: "1",
+        "recent_messages": ["Клиент: 8 класс физика онлайн", "Бот: Есть онлайн-группа."],
+    }
+    facts = {"schedule": "Фотон: расписание уже есть."}
+
+    closing_prompt = subscription_llm._build_direct_path_prompt("Поняла, спасибо, подумаю", context=context, facts=facts)
+    closing_with_how_prompt = subscription_llm._build_direct_path_prompt(
+        "Поняла, спасибо. Тогда подумаем, как удобнее.",
+        context=context,
+        facts=facts,
+    )
+    closing_with_which_prompt = subscription_llm._build_direct_path_prompt(
+        "Поняла, спасибо. Тогда подумаем, какой вариант удобнее.",
+        context=context,
+        facts=facts,
+    )
+    question_prompt = subscription_llm._build_direct_path_prompt("Спасибо, а сколько стоит?", context=context, facts=facts)
+    how_to_pay_prompt = subscription_llm._build_direct_path_prompt("Спасибо, как оплатить", context=context, facts=facts)
+
+    assert "Текущее сообщение похоже на закрытие без нового вопроса" in closing_prompt
+    assert "Не добавляй новые факты, цену, расписание, группу" in closing_prompt
+    assert "факты намеренно не подаются" in closing_prompt
+    assert "Фотон: расписание уже есть." not in closing_prompt
+    assert "Текущее сообщение похоже на закрытие без нового вопроса" in closing_with_how_prompt
+    assert "Текущее сообщение похоже на закрытие без нового вопроса" in closing_with_which_prompt
+    assert "manager_checklist и missing_facts оставь пустыми" in closing_prompt
+    assert "Текущее сообщение похоже на закрытие без нового вопроса" not in question_prompt
+    assert "Текущее сообщение похоже на закрытие без нового вопроса" not in how_to_pay_prompt
+    assert "Фотон: расписание уже есть." in question_prompt
 
 
 def test_semantic_output_verifier_prompt_calibrates_nonnumeric_product_claims() -> None:

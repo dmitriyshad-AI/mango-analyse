@@ -1107,6 +1107,7 @@ class SubscriptionLlmDraftProvider:
             gold_examples=gold_examples,
             pilot_config=pilot_config,
             context=context,
+            client_message=client_message,
         )
         try:
             result = self._direct_path_draft_runner(prompt)

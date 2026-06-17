@@ -131,7 +131,13 @@ DIRECT_PATH_WOW_TONE_BLOCK = (
     "- Сразу дай суть ответа по подтверждённым фактам, без длинной подводки.\n"
     "- Отделяй стиль от фактов: можно звучать тепло, но нельзя добавлять новые свойства курса, "
     "условия, гарантии, срочность, сравнения, места или процессы без факта текущего хода.\n"
+    "- Не упоминай старые или бывшие платформы и технические названия вроде MTS-Link, МТС Линк или Webinar. "
+    "Если вопрос про платформу, называй только текущую клиентскую платформу из фактов.\n"
     "- Если факта нет, честно скажи, что нужно проверить, и предложи один понятный следующий шаг.\n"
+    "- Закрытие клиента — отдельный режим. Если последняя реплика только благодарит, берёт паузу или отказывается "
+    "без нового вопроса («спасибо», «поняла», «подумаю», «посмотрю», «пока не нужно»), draft_text должен быть "
+    "1 коротким тёплым предложением без CTA. Нельзя просить класс/предмет/формат, предлагать подбор, запись, "
+    "расписание, группу, цену, контакты или новые факты.\n"
     "- Пиши короткими абзацами. Списки используй только для 3+ однородных пунктов. Эмодзи — 0 или 1, "
     "только если он не мешает деловому тону.\n"
     "- Markdown-жирный и служебные пометки не используй: черновик должен быть plain-text для AMO и Telegram."
@@ -148,7 +154,27 @@ DIRECT_PATH_WOW_STYLE_EXAMPLES_BLOCK = (
     "а дальше можно выбрать [безопасный следующий шаг из фактов]. Я бы начала с этого шага.»\n"
     "3. Клиент: «Как записаться?».\n"
     "   Хороший стиль: «Да, можно двигаться к записи. По фактам нужен [шаг из фактов]. "
-    "Напишите [один недостающий параметр], и менеджер сможет оформить всё без лишней переписки.»"
+    "Напишите [один недостающий параметр], и менеджер сможет оформить всё без лишней переписки.»\n"
+    "4. Клиент: «Спасибо, я поняла».\n"
+    "   Хороший стиль: «Пожалуйста, рада была помочь.»\n"
+    "5. Клиент: «Нет, спасибо, пока не нужно».\n"
+    "   Хороший стиль: «Поняла, спасибо за разговор.»"
+)
+
+DIRECT_PATH_WOW_CLOSING_MESSAGE_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:нет,\s*)?спасибо(?:,?\s*(?:я\s*)?(?:понял[аи]?|подума(?:ю|ем)|посмотр(?:ю|им)))?"
+    r"|(?:я\s*)?понял[аи]?"
+    r"|ок(?:ей)?"
+    r"|хорошо(?:,\s*понял[аи]?)?"
+    r"|подума(?:ю|ем)"
+    r"|посмотр(?:ю|им)"
+    r"|пока\s+не\s+нужно"
+    r"|не\s+нужно"
+    r"|не\s+надо"
+    r"|жду\s+ответ(?:а)?\s+менеджера"
+    r")\s*[.!…]*\s*$",
+    re.I,
 )
 
 def _direct_path_mission_text(*, brand_label: str, context: Optional[Mapping[str, Any]]) -> str:
@@ -1615,6 +1641,65 @@ def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str
 def _direct_path_wow_style_examples_block(context: Optional[Mapping[str, Any]]) -> str:
     return DIRECT_PATH_WOW_STYLE_EXAMPLES_BLOCK if _direct_wow_tone_enabled(context) else ""
 
+def _direct_path_wow_closing_instruction(
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    if not _direct_wow_tone_enabled(context):
+        return ""
+    text = " ".join(str(client_message or "").split()).strip()
+    if not text or "?" in text or len(text) > 90:
+        return ""
+    normalized = text.casefold()
+    closing_markers = (
+        "спасибо",
+        "понял",
+        "поняла",
+        "подумаю",
+        "подумаем",
+        "посмотрю",
+        "посмотрим",
+        "пока не нужно",
+        "не нужно",
+        "не надо",
+        "жду ответ",
+    )
+    question_markers = (
+        "сколько",
+        "цена",
+        "стоит",
+        "адрес",
+        "запис",
+        "можно",
+        "как оплат",
+        "как записа",
+        "как оформ",
+        "как добрат",
+        "как попасть",
+        "как начать",
+        "как пройти",
+        "когда",
+        "где",
+        "какой",
+        "какая",
+        "что ",
+        "подскаж",
+    )
+    has_closing_marker = any(marker in normalized for marker in closing_markers)
+    has_question_marker = any(marker in normalized for marker in question_markers)
+    closing_choice_phrase = has_closing_marker and "удобнее" in normalized
+    if not DIRECT_PATH_WOW_CLOSING_MESSAGE_RE.search(text) and (
+        not has_closing_marker
+        or (has_question_marker and not closing_choice_phrase)
+    ):
+        return ""
+    return (
+        "Текущее сообщение похоже на закрытие без нового вопроса. Верни route=\"bot_answer_self_for_pilot\" "
+        "и draft_text одним коротким тёплым предложением. Не отвечай на предыдущие вопросы, не повторяй прежние факты "
+        "и не продолжай подбор. Не добавляй новые факты, цену, расписание, группу, контакты, подбор, запись или просьбу "
+        "прислать данные. manager_checklist и missing_facts оставь пустыми.\n\n"
+    )
+
 def _build_direct_path_prompt(
     client_message: str,
     *,
@@ -1647,6 +1732,10 @@ def _build_direct_path_prompt(
         if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV)
         else client_message
     )
+    wow_closing_instruction = _direct_path_wow_closing_instruction(prompt_client_message, context)
+    if wow_closing_instruction:
+        exact_block = "(закрывающая реплика без нового вопроса: факты намеренно не подаются; не добавляй и не повторяй сведения)"
+        adjacent_block = "(не использовать на закрывающей реплике)"
     slots = _direct_path_prompt_known_slots(context)
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
     memory = _direct_path_prompt_memory_view(context)
@@ -1700,6 +1789,7 @@ def _build_direct_path_prompt(
         f"{assumed_scope_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
+        f"{wow_closing_instruction}"
         + (f"{wow_style_block}\n\n" if wow_style_block else "")
         + (f"{gold_block}\n\n" if gold_block else "")
         +
@@ -1738,6 +1828,7 @@ def _direct_path_metadata(
     reason_evidence: Optional[Mapping[str, Any]] = None,
     pilot_config: str = "",
     context: Optional[Mapping[str, Any]] = None,
+    client_message: str = "",
 ) -> dict[str, Any]:
     gold_ids = [str(item.get("id") or "").strip() for item in gold_examples if str(item.get("id") or "").strip()]
     pack = fact_pack if isinstance(fact_pack, Mapping) else {}
@@ -1772,6 +1863,8 @@ def _direct_path_metadata(
         "rubric_enabled": _route_rubric_enabled(context),
         "rubric_regenerated": False,
         "rubric_reason": "",
+        "wow_tone_enabled": _direct_wow_tone_enabled(context),
+        "wow_closing_mode": bool(_direct_path_wow_closing_instruction(client_message, context)),
         "reason_class": str(reason_class or ""),
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),

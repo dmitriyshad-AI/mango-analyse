@@ -71,6 +71,8 @@ RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
 
 ASSUMED_SCOPE_GUARD_ENV = "TELEGRAM_ASSUMED_SCOPE_GUARD"
 
+DIRECT_WOW_TONE_ENV = "TELEGRAM_DIRECT_WOW_TONE"
+
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
 
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
@@ -123,14 +125,42 @@ DIRECT_PATH_ROUTE_RUBRIC_BLOCK = (
     'Запрещено: выбирать "draft_for_manager" на всякий случай при полных фактах.'
 )
 
+DIRECT_PATH_WOW_TONE_BLOCK = (
+    "Стиль TELEGRAM_DIRECT_WOW_TONE:\n"
+    "- Сначала коротко признай вопрос, сомнение или тревогу клиента; не спорь и не обесценивай.\n"
+    "- Сразу дай суть ответа по подтверждённым фактам, без длинной подводки.\n"
+    "- Отделяй стиль от фактов: можно звучать тепло, но нельзя добавлять новые свойства курса, "
+    "условия, гарантии, срочность, сравнения, места или процессы без факта текущего хода.\n"
+    "- Если факта нет, честно скажи, что нужно проверить, и предложи один понятный следующий шаг.\n"
+    "- Пиши короткими абзацами. Списки используй только для 3+ однородных пунктов. Эмодзи — 0 или 1, "
+    "только если он не мешает деловому тону.\n"
+    "- Markdown-жирный и служебные пометки не используй: черновик должен быть plain-text для AMO и Telegram."
+)
+
+DIRECT_PATH_WOW_STYLE_EXAMPLES_BLOCK = (
+    "Стиль-примеры TELEGRAM_DIRECT_WOW_TONE. Это НЕ источник фактов: все числа, даты, адреса, места, "
+    "состав курса и условия заменяй только фактами текущего хода или опускай.\n"
+    "1. Клиент: «Дорого, не понимаю, за что платим».\n"
+    "   Хороший стиль: «Понимаю вопрос. По фактам это [формат/курс из фактов]: [1-2 ключевые опоры из фактов]. "
+    "Цена — [цена из фактов]. Если хотите, подберу ближайший вариант под класс и предмет.»\n"
+    "2. Клиент: «Ребёнок переживает, вдруг не потянет».\n"
+    "   Хороший стиль: «Понимаю тревогу. По фактам уровень группы подбирают через [механизм из фактов], "
+    "а дальше можно выбрать [безопасный следующий шаг из фактов]. Я бы начала с этого шага.»\n"
+    "3. Клиент: «Как записаться?».\n"
+    "   Хороший стиль: «Да, можно двигаться к записи. По фактам нужен [шаг из фактов]. "
+    "Напишите [один недостающий параметр], и менеджер сможет оформить всё без лишней переписки.»"
+)
+
 def _direct_path_mission_text(*, brand_label: str, context: Optional[Mapping[str, Any]]) -> str:
     mission = DIRECT_PATH_MISSION_TEMPLATE.format(brand=brand_label)
-    if not _route_rubric_enabled(context):
-        return mission
-    return mission.replace(
-        "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»",
-        DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT,
-    )
+    if _route_rubric_enabled(context):
+        mission = mission.replace(
+            "написать «менеджер свяжется» без срока, но нельзя «свяжется завтра/утром/в течение N»",
+            DIRECT_PATH_MISSION_ROUTE_RUBRIC_SCOPE_REPLACEMENT,
+        )
+    if _direct_wow_tone_enabled(context):
+        mission = f"{mission}\n\n{DIRECT_PATH_WOW_TONE_BLOCK}"
+    return mission
 
 def _direct_path_route_rubric_block(context: Optional[Mapping[str, Any]]) -> str:
     return f"{DIRECT_PATH_ROUTE_RUBRIC_BLOCK}\n\n" if _route_rubric_enabled(context) else ""
@@ -180,6 +210,13 @@ def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None)
         context,
         RETRIEVER_MODEL_DRIVEN_ENV,
         aliases=("retriever_model_driven", "retriever_model_driven_enabled"),
+    )
+
+def _direct_wow_tone_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        DIRECT_WOW_TONE_ENV,
+        aliases=("direct_wow_tone", "direct_wow_tone_enabled"),
     )
 
 def _direct_path_answerability_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -1575,6 +1612,9 @@ def _direct_path_gold_prompt_block(examples: Sequence[Mapping[str, Any]]) -> str
             lines.append(f"   Принцип: {note}")
     return "\n".join(lines)
 
+def _direct_path_wow_style_examples_block(context: Optional[Mapping[str, Any]]) -> str:
+    return DIRECT_PATH_WOW_STYLE_EXAMPLES_BLOCK if _direct_wow_tone_enabled(context) else ""
+
 def _build_direct_path_prompt(
     client_message: str,
     *,
@@ -1593,6 +1633,7 @@ def _build_direct_path_prompt(
     exact_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=exact_keys)
     adjacent_block = _direct_path_render_fact_block(fact_items, fact_metadata=fact_metadata, keys=adjacent_keys)
     gold_block = _direct_path_gold_prompt_block(gold_examples)
+    wow_style_block = _direct_path_wow_style_examples_block(context)
     recent_messages = _direct_path_recent_messages(context)
     if _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
         recent_messages = tuple(
@@ -1659,6 +1700,7 @@ def _build_direct_path_prompt(
         f"{assumed_scope_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
+        + (f"{wow_style_block}\n\n" if wow_style_block else "")
         + (f"{gold_block}\n\n" if gold_block else "")
         +
         "Факты по вашему вопросу:\n"

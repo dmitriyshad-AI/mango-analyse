@@ -12561,6 +12561,66 @@ def test_route_rubric_prompt_off_golden_and_on_adds_rubric(monkeypatch) -> None:
     assert "можно\nнаписать «менеджер свяжется» без срока, но нельзя" not in on_prompt
 
 
+def test_direct_wow_tone_default_off_and_not_in_pilot_profile(monkeypatch) -> None:
+    monkeypatch.delenv(subscription_llm.DIRECT_WOW_TONE_ENV, raising=False)
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        "confirmed_facts": {"fact.price": "Фотон: годовой курс стоит 59 000 ₽."},
+        "recent_messages": ["Клиент: Сколько стоит?"],
+    }
+
+    default_prompt = subscription_llm._build_direct_path_prompt("Сколько стоит?", context=context)
+    explicit_off_prompt = subscription_llm._build_direct_path_prompt(
+        "Сколько стоит?",
+        context={**context, subscription_llm.DIRECT_WOW_TONE_ENV: "0"},
+    )
+
+    assert default_prompt == explicit_off_prompt
+    assert subscription_llm.DIRECT_WOW_TONE_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._direct_wow_tone_enabled(context) is False
+    assert subscription_llm._direct_wow_tone_enabled({**context, subscription_llm.DIRECT_WOW_TONE_ENV: "1"}) is True
+    assert "Стиль TELEGRAM_DIRECT_WOW_TONE" not in default_prompt
+
+
+def test_direct_wow_tone_prompt_adds_style_only_plain_text_examples(monkeypatch) -> None:
+    monkeypatch.delenv(subscription_llm.DIRECT_WOW_TONE_ENV, raising=False)
+    context = {
+        "active_brand": "foton",
+        "confirmed_facts": {},
+        "recent_messages": ["Клиент: Подскажите по курсу"],
+        subscription_llm.DIRECT_WOW_TONE_ENV: "1",
+    }
+
+    prompt = subscription_llm._build_direct_path_prompt("Подскажите по курсу", context=context)
+
+    assert "Стиль TELEGRAM_DIRECT_WOW_TONE" in prompt
+    assert "Стиль-примеры TELEGRAM_DIRECT_WOW_TONE" in prompt
+    assert "plain-text для AMO и Telegram" in prompt
+    assert "[цена из фактов]" in prompt
+    assert "[формат/курс из фактов]" in prompt
+    assert "[механизм из фактов]" in prompt
+    assert "все числа, даты, адреса, места" in prompt
+    assert "Markdown-жирный" in prompt
+    assert "49 000" not in prompt
+    assert "Верхняя Красносельская" not in prompt
+
+
+def test_semantic_output_verifier_prompt_calibrates_nonnumeric_product_claims() -> None:
+    prompt = build_semantic_output_verifier_prompt(
+        bot_text="Группы маленькие, ребёнку будет комфортно.",
+        client_message="Ребёнок переживает",
+        facts={"format": "Фотон: курс проходит в группе."},
+        active_brand="foton",
+    )
+
+    assert "Группы маленькие, ребёнку будет комфортно" in prompt
+    assert "куратор, психологическая поддержка и места ещё есть" in prompt
+    assert "Этот формат точно подойдёт тревожному ребёнку" in prompt
+    assert "derived_product_claim, relation_to_base=adjacent" in prompt
+    assert "individual_diagnosis, relation_to_base=absent" in prompt
+
+
 def test_route_rubric_regenerates_unjustified_deferral_once() -> None:
     provider = _DirectPathSequenceProvider(
         SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру."),

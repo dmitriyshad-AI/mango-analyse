@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -20,6 +21,47 @@ from mango_mvp.channels.text_signals import has_marker as _has_marker
 
 
 CONVERSATION_INTENT_PLAN_SCHEMA_VERSION = "conversation_intent_plan_v1_2026_05_23"
+
+DIRECT_PLAN_KNOWN_SLOTS_ENV = "TELEGRAM_DIRECT_PLAN_KNOWN_SLOTS"
+
+_CONFIRMED_SLOT_SOURCES = {"dialogue_memory", "memory_provenance"}
+
+
+def _truthy_flag(value: object) -> bool:
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on", "y", "да"}
+
+
+def _direct_plan_known_slots_enabled(memory: Mapping[str, Any]) -> bool:
+    for key in (DIRECT_PLAN_KNOWN_SLOTS_ENV, "direct_plan_known_slots", "direct_plan_known_slots_enabled"):
+        if key in memory:
+            return _truthy_flag(memory.get(key))
+    if DIRECT_PLAN_KNOWN_SLOTS_ENV in os.environ:
+        return _truthy_flag(os.getenv(DIRECT_PLAN_KNOWN_SLOTS_ENV))
+    return False
+
+
+def _confirmed_slot_keys(memory: Mapping[str, Any]) -> set[str]:
+    result: set[str] = set()
+    provenance = memory.get("slot_provenance")
+    if isinstance(provenance, Mapping):
+        for key, raw in provenance.items():
+            if not isinstance(raw, Mapping):
+                continue
+            source = str(raw.get("source") or "").strip()
+            quote = str(raw.get("quote") or "").strip()
+            if quote and source in _CONFIRMED_SLOT_SOURCES:
+                result.add(str(key))
+    for key, value in (memory.get("client_confirmed_slots") or {}).items() if isinstance(memory.get("client_confirmed_slots"), Mapping) else ():
+        if str(value or "").strip():
+            result.add(str(key))
+    return {key for key in result if key.strip()}
+
+
+def _do_not_reask_slots_for_plan(slots: Mapping[str, Any], memory: Mapping[str, Any]) -> tuple[str, ...]:
+    if not _direct_plan_known_slots_enabled(memory):
+        return tuple(key for key, value in slots.items() if str(value or "").strip())
+    confirmed = _confirmed_slot_keys(memory)
+    return tuple(key for key, value in slots.items() if key in confirmed and str(value or "").strip())
 
 
 @dataclass(frozen=True)
@@ -164,7 +206,7 @@ def build_conversation_intent_plan(
     if primary_intent != "general_consultation":
         resolved_topic = intent_topic
     requested_slots = _requested_slots(normalized, primary_intent=primary_intent)
-    do_not_reask = tuple(key for key, value in slots.items() if str(value or "").strip())
+    do_not_reask = _do_not_reask_slots_for_plan(slots, memory)
     required_fact_keys = _required_fact_keys(
         primary_intent,
         normalized,

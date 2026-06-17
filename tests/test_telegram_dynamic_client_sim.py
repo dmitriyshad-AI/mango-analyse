@@ -2652,6 +2652,10 @@ def test_classify_handoff_bucket_respects_priority_and_uses_existing_signals(mon
         == "closing"
     )
     assert (
+        sim._classify_handoff_bucket(_handoff_turn(retrieved_facts=retrieved, client_message="Спасибо, поняла"))
+        == "closing"
+    )
+    assert (
         sim._classify_handoff_bucket(
             _handoff_turn(
                 retrieved_facts=retrieved,
@@ -2659,6 +2663,18 @@ def test_classify_handoff_bucket_respects_priority_and_uses_existing_signals(mon
                 client_message="Спасибо, а цена?",
             )
         )
+        == "upsell_miss"
+    )
+    assert (
+        sim._classify_handoff_bucket(_handoff_turn(retrieved_facts=retrieved, client_message="Спасибо, а цена?"))
+        == "upsell_miss"
+    )
+    assert (
+        sim._classify_handoff_bucket(_handoff_turn(retrieved_facts=retrieved, client_message="Спасибо, подумаю и вернусь"))
+        == "upsell_miss"
+    )
+    assert (
+        sim._classify_handoff_bucket(_handoff_turn(retrieved_facts=retrieved, client_message="Поняла, но деньги списали"))
         == "upsell_miss"
     )
     assert (
@@ -2766,6 +2782,40 @@ def test_over_handoff_buckets_are_summary_only_and_keep_transcripts_unchanged(tm
     assert summary["over_handoff"]["buckets"]["examples"]["closing"][0]["client_message"] == "Спасибо, поняла"
     rendered = sim.render_summary_md(summary)
     assert "buckets" in rendered
+
+
+def test_over_handoff_closing_keeps_fabrication_audit_visible(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "closing_with_fabrication",
+            "brand": "unpk",
+            "run_status": "completed",
+            "turns": [
+                _handoff_turn(
+                    retrieved_facts={"locations.address": "Адрес: Сретенка, 20."},
+                    client_message="Спасибо, поняла",
+                    number_audit_items=[{"level": "no_match"}],
+                ),
+            ],
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": "closing_with_fabrication", "brand": "unpk", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+        parallel=1,
+    )
+
+    handoff = summary["over_handoff"]
+    assert handoff["buckets"]["counts"]["closing"] == 1
+    assert handoff["buckets"]["closing_fabrication_count"] == 1
+    assert handoff["buckets"]["closing_hard_issue_count"] == 1
+    assert handoff["buckets"]["examples"]["closing"][0]["has_fabrication"] is True
+    assert handoff["buckets"]["examples"]["closing"][0]["has_hard_issue"] is True
+    assert handoff["candidates"][0]["has_fabrication"] is True
+    assert handoff["candidates"][0]["has_hard_issue"] is True
 
 
 def test_number_audit_levels_against_retrieved_client_and_snapshot(tmp_path):

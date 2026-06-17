@@ -14,5 +14,4 @@ Passed:
 Notes:
 
 - This is a formal/runtime pass, not a customer semantic pass.
-- Tallanto early stop has a known edge case for multiple distinct contacts sharing the same phone across fields; OFF override remains.
-
+- Tallanto early stop has known edge cases and data-composition risk; default is OFF after TZ-143 and explicit ON remains only for controlled experiments.

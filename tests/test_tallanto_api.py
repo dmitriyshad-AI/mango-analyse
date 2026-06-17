@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from urllib import parse as url_parse
 from urllib import error as url_error
 import io
@@ -11,14 +12,15 @@ from mango_mvp.amocrm_runtime.tallanto_api import (
     TallantoApiConfig,
     TallantoApiError,
 )
-from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
+from mango_mvp.amocrm_runtime.tallanto_context import build_live_tallanto_context, build_tallanto_live_card
+import mango_mvp.amocrm_runtime.tallanto_context as tallanto_context_module
 import mango_mvp.amocrm_runtime.tallanto_api as tallanto_api_module
 
 
-def test_tallanto_batch_fetch_is_enabled_by_default(monkeypatch):
+def test_tallanto_batch_fetch_is_disabled_by_default(monkeypatch):
     monkeypatch.delenv("TALLANTO_BATCH_FETCH", raising=False)
 
-    assert tallanto_api_module._batch_fetch_enabled()
+    assert not tallanto_api_module._batch_fetch_enabled()
 
 
 def test_tallanto_client_requests_and_paginates(monkeypatch):
@@ -192,7 +194,7 @@ def test_build_contact_context_live_card_only_skips_unused_blocks_without_changi
     default_card = build_tallanto_live_card([default_payload["contexts"][0]], active_brand="foton")
 
     assert full_card == slim_card
-    assert default_card == slim_card
+    assert default_card == full_card
     assert full_calls == {
         "opportunities": 1,
         "requests": 1,
@@ -211,7 +213,65 @@ def test_build_contact_context_live_card_only_skips_unused_blocks_without_changi
         "abonements": 1,
         "classes": 1,
     }
-    assert default_calls == slim_calls
+    assert default_calls == full_calls
+
+
+def test_tallanto_batch_default_off_preserves_compact_counts_for_phone_and_contact_id(monkeypatch):
+    monkeypatch.delenv("TALLANTO_BATCH_FETCH", raising=False)
+    monkeypatch.setattr(tallanto_context_module, "settings", SimpleNamespace(crm_tallanto_mode="http"))
+    client = TallantoApiClient(TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"))
+    calls: list[tuple[str, bool]] = []
+
+    def payload(*, contact_id: str) -> dict:
+        return {
+            "generated_at": "2026-06-18T00:00:00+00:00",
+            "base_url": "https://kmipt.tallanto.com",
+            "contacts_found": 1,
+            "contexts": [
+                {
+                    "contact": {"id": contact_id, "filial": "Фотон"},
+                    "opportunities": [{"id": "O-1", "sales_stage": "В работе"}],
+                    "requests": [{"id": "R-1"}],
+                    "finances": [{"id": "F-1"}],
+                    "course_relations": [{"id": "CR-1", "course_id": "C-1", "contact_id": contact_id}],
+                    "class_relations": [{"id": "REL-1", "class_id": "CL-1", "contact_id": contact_id}],
+                    "abonements": [{"id": "A-1"}],
+                    "classes": [{"id": "CL-1", "status": "active"}],
+                }
+            ],
+        }
+
+    def fake_build_contact_context(phone, *, max_contacts=5, max_related_records=40, live_card_only=False):
+        calls.append(("phone", live_card_only))
+        return payload(contact_id="123")
+
+    def fake_build_contact_context_by_contact_id(contact_id, *, max_related_records=40, live_card_only=False):
+        calls.append(("id", live_card_only))
+        return payload(contact_id=str(contact_id))
+
+    monkeypatch.setattr(client, "build_contact_context", fake_build_contact_context)
+    monkeypatch.setattr(client, "build_contact_context_by_contact_id", fake_build_contact_context_by_contact_id)
+    monkeypatch.setattr(
+        tallanto_context_module,
+        "build_tallanto_api_config",
+        lambda: TallantoApiConfig(base_url="https://kmipt.tallanto.com", api_token="token"),
+    )
+    monkeypatch.setattr(tallanto_context_module, "TallantoApiClient", lambda _config: client)
+
+    by_phone = build_live_tallanto_context(phone="+79000000000", active_brand="foton")
+    by_id = build_live_tallanto_context(
+        phone="+79000000000",
+        tallanto_id="123",
+        tallanto_match_status="exact_phone_single",
+        active_brand="foton",
+    )
+
+    assert calls == [("phone", False), ("id", False)]
+    for result in (by_phone, by_id):
+        assert result["status"] == "ok"
+        compact = result["contexts"][0]
+        assert compact["opportunity_count"] > 0
+        assert compact["course_relation_count"] > 0
 
 
 def test_classes_by_ids_skips_not_found_errors(monkeypatch):

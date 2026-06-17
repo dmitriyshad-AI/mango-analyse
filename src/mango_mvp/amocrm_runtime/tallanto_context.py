@@ -107,7 +107,7 @@ def build_live_tallanto_context(
 
     matched_via = "phone"
     payload: dict[str, Any]
-    live_card_only = os.getenv("TALLANTO_BATCH_FETCH", "1") == "1"
+    live_card_only = os.getenv("TALLANTO_BATCH_FETCH", "0") == "1"
     try:
         if _safe_text(tallanto_id) and _safe_text(tallanto_match_status) in {"exact_phone_single", "manual_confirmed", "id_confirmed"}:
             payload = client.build_contact_context_by_contact_id(

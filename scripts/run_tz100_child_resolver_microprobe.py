@@ -15,8 +15,9 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 from mango_mvp.customer_profile.builder import CustomerProfileBuilder, CustomerProfileBuildOptions
-from mango_mvp.customer_profile.child_resolver_llm import (
+from mango_mvp.customer_profile.child_identity_dedup_llm import (
     DEFAULT_STOPLIST_PATH,
+    PROMPT_VERSION,
     build_child_resolver_cases,
     load_shared_phone_stoplist,
 )
@@ -143,11 +144,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         for item in selected
     ]
     summary = {
-        "schema_version": "tz100_child_resolver_microprobe_v3",
+        "schema_version": "tz31_child_identity_dedup_microprobe_v5",
         "out_root": str(out_root),
         "profiles_db_source": str(profiles_db),
         "timeline_db": str(timeline_db),
         "master_calls_db": str(master_calls_db),
+        "prompt_version": PROMPT_VERSION,
         "model": args.model,
         "provider": args.provider,
         "reasoning": args.reasoning,
@@ -204,7 +206,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run TZ100 v3 child resolver microprobe on 100-150 existing profile families.")
+    parser = argparse.ArgumentParser(description="Run child identity dedup LLM microprobe on 100-150 existing profile families.")
     parser.add_argument("--source-root", default=str(DEFAULT_SOURCE_ROOT))
     parser.add_argument("--profiles-db")
     parser.add_argument("--timeline-db")
@@ -223,7 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def default_out_root() -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("product_data/customer_profiles") / f"tz100_microprobe_v3_{stamp}"
+    return Path("product_data/customer_profiles") / f"tz31_brand_decouple_v5_{stamp}"
 
 
 def build_profiles(

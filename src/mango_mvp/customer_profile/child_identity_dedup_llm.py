@@ -21,7 +21,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 
 NAMESPACE = "child_resolver_v1"
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 PROVIDER_OPENAI = "openai"
 PROVIDER_CODEX_CLI = "codex_cli"
 DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
@@ -34,7 +34,6 @@ CHILD_RESPONSE_KEYS = {
     "name_variants",
     "grades",
     "subjects",
-    "brands",
     "mention_ids",
     "merge_confidence",
 }
@@ -112,7 +111,6 @@ class ChildMention:
             "grade": "; ".join(self.grades),
             "subjects": list(self.subjects),
             "event_at": self.event_at.isoformat(timespec="seconds") if self.event_at else "",
-            "brand": self.brand,
             "evidence": self.source_ref,
         }
 
@@ -410,7 +408,6 @@ def build_child_resolver_prompt(case: ChildResolverCase) -> str:
         "      \"name_variants\": [],\n"
         "      \"grades\": [],\n"
         "      \"subjects\": [],\n"
-        "      \"brands\": [],\n"
         "      \"mention_ids\": [],\n"
         "      \"merge_confidence\": \"high\"\n"
         "    }\n"
@@ -602,7 +599,6 @@ def normalize_child_resolver_response(payload: Mapping[str, Any] | None) -> dict
                 "name_variants": clean_name_variant_list(item.get("name_variants")),
                 "grades": clean_string_list(item.get("grades")),
                 "subjects": clean_string_list(item.get("subjects")),
-                "brands": clean_string_list(item.get("brands")),
                 "mention_ids": mention_ids,
                 "merge_confidence": normalize_merge_confidence(item.get("merge_confidence")),
             }
@@ -765,7 +761,6 @@ def child_resolver_output_json_schema() -> dict[str, Any]:
             "name_variants",
             "grades",
             "subjects",
-            "brands",
             "mention_ids",
             "merge_confidence",
         ],
@@ -775,7 +770,6 @@ def child_resolver_output_json_schema() -> dict[str, Any]:
             "name_variants": {"type": "array", "items": {"type": "string"}},
             "grades": {"type": "array", "items": {"type": "string"}},
             "subjects": {"type": "array", "items": {"type": "string"}},
-            "brands": {"type": "array", "items": {"type": "string"}},
             "mention_ids": {"type": "array", "items": {"type": "string"}},
             "merge_confidence": {"type": "string"},
         },
@@ -983,7 +977,6 @@ def anonymized_trace_event(case: ChildResolverCase, result: ChildResolverFamilyR
                 "name_variants": [anonymize_name(item) for item in clean_string_list(child.get("name_variants"))],
                 "grades": clean_string_list(child.get("grades")),
                 "subjects": clean_string_list(child.get("subjects")),
-                "brands": clean_string_list(child.get("brands")),
                 "mention_ids": clean_string_list(child.get("mention_ids")),
                 "merge_confidence": normalize_merge_confidence(child.get("merge_confidence")),
             }

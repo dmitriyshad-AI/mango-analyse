@@ -10,7 +10,7 @@ import pytest
 from mango_mvp.customer_profile import CustomerProfileBuilder, CustomerProfileBuildOptions
 from mango_mvp.customer_profile.build_cli import safe_field_preview
 from mango_mvp.customer_profile.builder import apply_child_slot_merge_candidates, child_slot_groups
-from mango_mvp.customer_profile.child_resolver_llm import (
+from mango_mvp.customer_profile.child_identity_dedup_llm import (
     ChildResolverConfig,
     ChildResolverError,
     apply_llm_child_resolver_to_fields,
@@ -89,6 +89,7 @@ def _children_payload(prompt: str, children: list[dict[str, object]]) -> dict[st
     mention_ids = _prompt_mention_ids(prompt)
     translated: list[dict[str, object]] = []
     for child in children:
+        child_payload = {key: value for key, value in child.items() if key != "brands"}
         ids = child.get("mention_ids")
         if ids == "all":
             resolved_ids = mention_ids
@@ -96,7 +97,7 @@ def _children_payload(prompt: str, children: list[dict[str, object]]) -> dict[st
             resolved_ids = [mention_ids[int(item)] for item in ids]
         else:
             resolved_ids = ids
-        translated.append({**child, "mention_ids": resolved_ids, "merge_confidence": child.get("merge_confidence", "high")})
+        translated.append({**child_payload, "mention_ids": resolved_ids, "merge_confidence": child.get("merge_confidence", "high")})
     return {"children": translated}
 
 
@@ -438,6 +439,8 @@ def test_llm_child_resolver_schema_and_prompt_include_merge_confidence() -> None
     assert child_schema["additionalProperties"] is False
     assert "merge_confidence" in child_schema["required"]
     assert child_schema["properties"]["merge_confidence"] == {"type": "string"}
+    assert "brands" not in child_schema["required"]
+    assert "brands" not in child_schema["properties"]
 
     fields = [
         _child_field("child_name", "Степан", child_key="child_a", source_ref="mango:1"),
@@ -447,6 +450,8 @@ def test_llm_child_resolver_schema_and_prompt_include_merge_confidence() -> None
     prompt = build_child_resolver_prompt(case)
 
     assert '"merge_confidence": "high"' in prompt
+    assert '"brand"' not in prompt
+    assert '"brands"' not in prompt
     assert "ФИО" in prompt
     assert "high" in prompt
     assert "low" in prompt
@@ -461,7 +466,6 @@ def test_llm_child_resolver_normalizes_confidence_and_dedups_name_variants() -> 
                 "name_variants": ["Стёпа", "Степа", "стёпа"],
                 "grades": [],
                 "subjects": [],
-                "brands": [],
                 "mention_ids": ["m_1"],
                 "merge_confidence": "LOW",
             }
@@ -481,7 +485,6 @@ def test_llm_child_resolver_normalize_rejects_extra_and_missing_fields() -> None
         "name_variants": [],
         "grades": [],
         "subjects": [],
-        "brands": [],
         "mention_ids": ["m_1"],
         "merge_confidence": "high",
     }
@@ -520,7 +523,6 @@ def test_llm_child_resolver_merges_typo_name_variants(tmp_path: Path) -> None:
                         "name_variants": ["Степан", "Стёпа"],
                         "grades": ["7"],
                         "subjects": ["физика"],
-                        "brands": ["foton"],
                         "mention_ids": "all",
                     }
                 ],
@@ -559,7 +561,6 @@ def test_llm_child_resolver_low_confidence_is_logged_without_behavior_change(tmp
                         "name_variants": ["Степан", "Стёпа"],
                         "grades": [],
                         "subjects": [],
-                        "brands": ["foton"],
                         "mention_ids": "all",
                         "merge_confidence": "low",
                     }
@@ -604,7 +605,6 @@ def test_llm_child_resolver_child_key_is_stable_across_canonical_choice(tmp_path
                             "name_variants": ["Дубинина Елизавета Андреевна", "Лиза"],
                             "grades": [],
                             "subjects": [],
-                            "brands": [],
                             "mention_ids": "all",
                             "merge_confidence": "high",
                         }
@@ -629,7 +629,6 @@ def test_llm_child_resolver_child_key_is_stable_across_canonical_choice(tmp_path
                             "name_variants": ["Дубинина Елизавета Андреевна", "Лиза"],
                             "grades": [],
                             "subjects": [],
-                            "brands": [],
                             "mention_ids": "all",
                             "merge_confidence": "high",
                         }
@@ -662,7 +661,6 @@ def test_llm_child_resolver_rejects_children_count_growth_above_input_names(tmp_
                         "name_variants": ["Анна"],
                         "grades": [],
                         "subjects": [],
-                        "brands": [],
                         "mention_ids": [0],
                         "merge_confidence": "high",
                     },
@@ -672,7 +670,6 @@ def test_llm_child_resolver_rejects_children_count_growth_above_input_names(tmp_
                         "name_variants": [],
                         "grades": [],
                         "subjects": ["физика"],
-                        "brands": [],
                         "mention_ids": [1],
                         "merge_confidence": "low",
                     },
@@ -682,7 +679,6 @@ def test_llm_child_resolver_rejects_children_count_growth_above_input_names(tmp_
                         "name_variants": [],
                         "grades": [],
                         "subjects": [],
-                        "brands": [],
                         "mention_ids": [],
                         "merge_confidence": "low",
                     },
@@ -719,7 +715,6 @@ def test_llm_child_resolver_merges_full_name_and_short_name_as_one_child(tmp_pat
                         "name_variants": ["Дубинина Елизавета Андреевна", "Лиза"],
                         "grades": [],
                         "subjects": [],
-                        "brands": [],
                         "mention_ids": "all",
                         "merge_confidence": "high",
                     }
@@ -757,7 +752,6 @@ def test_llm_child_resolver_merges_alias_spellings_as_one_child(tmp_path: Path) 
                         "name_variants": ["Колосов Даниил", "Даня"],
                         "grades": [],
                         "subjects": [],
-                        "brands": [],
                         "mention_ids": "all",
                         "merge_confidence": "high",
                     }
@@ -797,7 +791,6 @@ def test_llm_child_resolver_merges_asr_variant_and_writes_review_diagnostics(tmp
                         "name_variants": ["Майчислав Леонидович", "Вячеслав Леонидович"],
                         "grades": [],
                         "subjects": [],
-                        "brands": [],
                         "mention_ids": "all",
                         "merge_confidence": "low",
                     }
@@ -836,7 +829,6 @@ def test_llm_child_resolver_rejects_extra_response_fields(tmp_path: Path) -> Non
                 "name_variants": [],
                 "grades": ["7"],
                 "subjects": ["физика"],
-                "brands": ["foton"],
                 "mention_ids": [],
                 "merge_confidence": "high",
                 "reason": "debug",
@@ -872,7 +864,6 @@ def test_llm_child_resolver_defaults_invalid_merge_confidence_to_low(tmp_path: P
                         "name_variants": [],
                         "grades": ["7"],
                         "subjects": ["физика"],
-                        "brands": ["foton"],
                         "mention_ids": "all",
                         "merge_confidence": "medium",
                     }
@@ -912,7 +903,6 @@ def test_llm_child_resolver_keeps_different_names_separate(tmp_path: Path) -> No
                         "name_variants": ["Кулаков Никита"],
                         "grades": [],
                         "subjects": [],
-                        "brands": [],
                         "mention_ids": [0],
                     },
                     {
@@ -921,7 +911,6 @@ def test_llm_child_resolver_keeps_different_names_separate(tmp_path: Path) -> No
                         "name_variants": ["Кулакова Дарья"],
                         "grades": [],
                         "subjects": [],
-                        "brands": [],
                         "mention_ids": [1],
                     },
                 ],
@@ -959,7 +948,6 @@ def test_llm_child_resolver_attaches_nameless_mentions_to_named_child(tmp_path: 
                         "name_variants": ["Анна"],
                         "grades": ["7"],
                         "subjects": ["математика"],
-                        "brands": ["foton"],
                         "mention_ids": "all",
                     }
                 ],
@@ -996,7 +984,6 @@ def test_llm_child_resolver_rejects_incompatible_same_period_grades(tmp_path: Pa
                         "name_variants": [],
                         "grades": ["5 класс", "9 класс"],
                         "subjects": [],
-                        "brands": ["foton"],
                         "mention_ids": "all",
                     }
                 ],
@@ -1058,7 +1045,6 @@ def test_llm_child_resolver_allows_grade_progression_9_to_11(tmp_path: Path) -> 
                         "name_variants": ["Анна"],
                         "grades": ["9 класс", "11 класс"],
                         "subjects": [],
-                        "brands": ["foton"],
                         "mention_ids": "all",
                     }
                 ],
@@ -1132,7 +1118,6 @@ def test_llm_child_resolver_rejects_empty_mention_ids(tmp_path: Path) -> None:
                         "name_variants": [],
                         "grades": ["7"],
                         "subjects": ["физика"],
-                        "brands": ["foton"],
                         "mention_ids": [],
                         "merge_confidence": "high",
                     }
@@ -1168,7 +1153,6 @@ def test_llm_child_resolver_uses_cache_on_repeat(tmp_path: Path) -> None:
                         "name_variants": [],
                         "grades": ["7"],
                         "subjects": ["физика"],
-                        "brands": ["foton"],
                         "mention_ids": "all",
                     }
                 ],
@@ -1215,7 +1199,6 @@ def test_llm_child_resolver_preserves_brand_per_row(tmp_path: Path) -> None:
                         "name_variants": ["Анна"],
                         "grades": ["7"],
                         "subjects": [],
-                        "brands": ["unpk", "foton"],
                         "mention_ids": "all",
                     }
                 ],

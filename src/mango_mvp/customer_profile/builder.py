@@ -504,7 +504,7 @@ def apply_child_slot_merge_candidates(
     profile_phones: Mapping[str, str] | None = None,
 ) -> tuple[list[ProfileFieldCandidate], Mapping[str, Any]]:
     if os.getenv("PROFILE_LLM_CHILD_RESOLVER", "0") == "1":
-        from mango_mvp.customer_profile.child_resolver_llm import apply_llm_child_resolver_to_fields
+        from mango_mvp.customer_profile.child_identity_dedup_llm import apply_llm_child_resolver_to_fields
 
         result = apply_llm_child_resolver_to_fields(fields, profile_phones=profile_phones)
         return result.fields, result.summary

@@ -37,6 +37,7 @@ from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_fun
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dialogue_memory, update_dialogue_memory_after_answer
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
+from mango_mvp.channels.subscription_llm_parts.post_layers import _tone_close_detect_is_close_message
 from mango_mvp.insights.tone_score import summarize_tone_scores
 
 
@@ -3542,6 +3543,8 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
     false_handoff: list[dict[str, Any]] = []
     levels: Counter[str] = Counter()
     buckets: Counter[str] = Counter()
+    closing_fabrication_count = 0
+    closing_hard_issue_count = 0
     bucket_examples: dict[str, list[dict[str, Any]]] = {
         "closing": [],
         "legitimate": [],
@@ -3556,8 +3559,15 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
                 continue
             level = _handoff_fact_level(turn)
             bucket = _classify_handoff_bucket(turn)
+            has_fabrication = _turn_has_fabrication(turn)
+            has_hard_issue = _turn_has_hard_issue(turn)
             levels[level] += 1
             buckets[bucket] += 1
+            if bucket == "closing":
+                if has_fabrication:
+                    closing_fabrication_count += 1
+                if has_hard_issue:
+                    closing_hard_issue_count += 1
             item = {
                 "dialog_id": dialog.get("dialog_id"),
                 "brand": dialog.get("brand"),
@@ -3565,6 +3575,8 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
                 "route": turn.get("bot_route"),
                 "fact_level": level,
                 "bucket": bucket,
+                "has_fabrication": has_fabrication,
+                "has_hard_issue": has_hard_issue,
                 "client_message": turn.get("client_message"),
                 "fallback_reason": _turn_primary_fallback_reason(turn),
                 "retrieved_fact_keys": list(((turn.get("bot_dialogue_contract_pipeline") or {}).get("retrieved_facts") or {}).keys())[:8],
@@ -3580,6 +3592,8 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
                         "client_message": turn.get("client_message"),
                         "bot_route": turn.get("bot_route"),
                         "fact_level": level,
+                        "has_fabrication": has_fabrication,
+                        "has_hard_issue": has_hard_issue,
                     }
                 )
             if level == "retrieved_match":
@@ -3597,6 +3611,8 @@ def _over_handoff_metrics(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[s
         "buckets": {
             "counts": bucket_counts,
             "shares": bucket_shares,
+            "closing_fabrication_count": closing_fabrication_count,
+            "closing_hard_issue_count": closing_hard_issue_count,
             "examples": bucket_examples,
         },
         "false_handoff_count": len(false_handoff),
@@ -3609,7 +3625,7 @@ def _classify_handoff_bucket(turn: Mapping[str, Any]) -> str:
     if not _is_over_handoff_turn(turn):
         return "unclassified"
     fact_level = _handoff_fact_level(turn)
-    if _turn_has_close_detect_status(turn) and not _turn_client_message_has_question_signal(turn):
+    if _turn_has_close_signal(turn) and not _turn_client_message_has_question_signal(turn):
         return "closing"
     if _turn_is_real_p0(turn):
         if fact_level == "retrieved_match" and not _turn_is_manager_only_domain(turn):
@@ -3622,19 +3638,72 @@ def _classify_handoff_bucket(turn: Mapping[str, Any]) -> str:
     return "unclassified"
 
 
+def _turn_has_close_signal(turn: Mapping[str, Any]) -> bool:
+    if _turn_has_close_detect_status(turn):
+        return True
+    return _tone_close_detect_is_close_message(
+        str(turn.get("client_message") or ""),
+        context=_turn_close_detect_context(turn),
+    )
+
+
 def _turn_has_close_detect_status(turn: Mapping[str, Any]) -> bool:
     meta = turn.get("bot_close_detect") if isinstance(turn.get("bot_close_detect"), Mapping) else {}
     return str(meta.get("status") or "") in {"fired", "suppressed_handoff", "suppressed_pending"}
 
 
+def _turn_close_detect_context(turn: Mapping[str, Any]) -> Mapping[str, Any]:
+    answer_contract = turn.get("bot_answer_contract") if isinstance(turn.get("bot_answer_contract"), Mapping) else {}
+    pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
+    pipeline_contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
+    contract = answer_contract or pipeline_contract
+    return {"answer_contract": contract} if contract else {}
+
+
 def _turn_client_message_has_question_signal(turn: Mapping[str, Any]) -> bool:
+    answer_contract = turn.get("bot_answer_contract") if isinstance(turn.get("bot_answer_contract"), Mapping) else {}
+    if str(answer_contract.get("message_type") or "").strip() == "question":
+        return True
     pipeline = turn.get("bot_dialogue_contract_pipeline") if isinstance(turn.get("bot_dialogue_contract_pipeline"), Mapping) else {}
     contract = pipeline.get("contract") if isinstance(pipeline.get("contract"), Mapping) else {}
     if str(contract.get("message_type") or "").strip() == "question":
         return True
-    if str(turn.get("bot_message_type") or "").strip() == "question":
-        return True
     return "?" in str(turn.get("client_message") or "")
+
+
+def _turn_has_fabrication(turn: Mapping[str, Any]) -> bool:
+    return bool(_turn_problematic_fact_levels(turn) & {"no_match", "other_brand_match"})
+
+
+def _turn_has_hard_issue(turn: Mapping[str, Any]) -> bool:
+    if _turn_has_fabrication(turn):
+        return True
+    gate = turn.get("bot_authoritative_output_gate") if isinstance(turn.get("bot_authoritative_output_gate"), Mapping) else {}
+    if str(gate.get("action") or "").strip() in {"block", "downgrade", "downgrade_keep_text"}:
+        return True
+    semantic = turn.get("bot_semantic_output_verifier") if isinstance(turn.get("bot_semantic_output_verifier"), Mapping) else {}
+    findings = semantic.get("findings") if isinstance(semantic.get("findings"), Sequence) else ()
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("action") or "").strip() in {"block", "downgrade", "downgrade_keep_text"}:
+            return True
+        if str(item.get("severity") or "").strip() in {"hard", "error", "block"}:
+            return True
+    return False
+
+
+def _turn_problematic_fact_levels(turn: Mapping[str, Any]) -> set[str]:
+    levels: set[str] = set()
+    for key in ("judge_fact_audit", "number_audit"):
+        audit = turn.get(key) if isinstance(turn.get(key), Mapping) else {}
+        for item in audit.get("items") or []:
+            if not isinstance(item, Mapping):
+                continue
+            level = str(item.get("level") or "").strip()
+            if level:
+                levels.add(level)
+    return levels
 
 
 def _turn_is_manager_only_legitimate(turn: Mapping[str, Any], *, fact_level: str) -> bool:

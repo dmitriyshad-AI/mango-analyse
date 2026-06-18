@@ -100,16 +100,16 @@ _PAYMENT_MOVED_PATTERN = (
     r"|(?<!не\s)\b(?:списал[аи]?|списали|списалось|снял[аи]?|сняли)\b"
     r"|\b(?:деньги|оплат\w*|плат[её]ж\w*)\s+(?:ушл\w*|списал\w*|прош[её]л\w*|снял\w*)\b)"
 )
-_PAYMENT_RESULT_TARGET_PATTERN = (
-    r"(?:плат[её]ж\w*|оплат\w*|заняти[еяй]\w*|доступ\w*|курс|кабинет"
-    r"|ссылк\w*|приглашени\w*|логин\w*|парол\w*|платформ\w*)"
-)
-_PAYMENT_RESULT_GAP = r"[^,.:;!?—–\-\n]{0,15}"
+_PAYMENT_RESULT_ACCESS_TARGET_PATTERN = r"(?:ссылк\w*|приглашени\w*|логин\w*|парол\w*|платформ\w*|доступ\w*)"
+_PAYMENT_RESULT_GENERIC_TARGET_PATTERN = r"(?:плат[её]ж\w*|оплат\w*|заняти[еяй]\w*|курс|кабинет)"
+_PAYMENT_RESULT_ACCESS_GAP = r"[^.!?\n]{0,60}"
+_PAYMENT_RESULT_GENERIC_GAP = r"[^,.:;!?—–\-\n]{0,15}"
+_PAYMENT_RESULT_MISS_PATTERN = r"(?:нет|не\s+(?:видн|появ|прош[её]л|зачисл|откр|получ|приш\w*|да(?:ли|ют))|пуст\w*)"
 _PAYMENT_RESULT_MISSING_PATTERN = (
-    rf"(?:(?:{_PAYMENT_RESULT_TARGET_PATTERN})"
-    rf"{_PAYMENT_RESULT_GAP}(?:нет|не\s+(?:видн|появ|прош[её]л|зачисл|откр|получ|приш\w*|да(?:ли|ют))|пуст\w*)"
-    r"|(?:нет|не\s+(?:видн|появ|прош[её]л|зачисл|откр|получ|приш\w*|да(?:ли|ют))|пуст\w*)"
-    rf"{_PAYMENT_RESULT_GAP}(?:{_PAYMENT_RESULT_TARGET_PATTERN}))"
+    rf"(?:(?:{_PAYMENT_RESULT_ACCESS_TARGET_PATTERN}){_PAYMENT_RESULT_ACCESS_GAP}{_PAYMENT_RESULT_MISS_PATTERN}"
+    rf"|{_PAYMENT_RESULT_MISS_PATTERN}{_PAYMENT_RESULT_ACCESS_GAP}(?:{_PAYMENT_RESULT_ACCESS_TARGET_PATTERN})"
+    rf"|(?:{_PAYMENT_RESULT_GENERIC_TARGET_PATTERN}){_PAYMENT_RESULT_GENERIC_GAP}{_PAYMENT_RESULT_MISS_PATTERN}"
+    rf"|{_PAYMENT_RESULT_MISS_PATTERN}{_PAYMENT_RESULT_GENERIC_GAP}(?:{_PAYMENT_RESULT_GENERIC_TARGET_PATTERN}))"
 )
 _PAYMENT_BLOCK_GAP = r"[^.!?\n]{0,100}"
 _PAYMENT_DUPLICATE_CHARGE_PATTERN = (

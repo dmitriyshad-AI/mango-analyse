@@ -578,5 +578,7 @@ def test_contract_inventory_lists_core_types_and_safety() -> None:
 
     assert "TimelineEvent" in inventory["contracts"]
     assert "mango_call" in inventory["event_types"]
+    assert "whatsapp_message" in inventory["event_types"]
     assert "email" in inventory["identity_link_types"]
+    assert "whatsapp_phone" in inventory["identity_link_types"]
     assert inventory["safety"]["write_crm"] is False

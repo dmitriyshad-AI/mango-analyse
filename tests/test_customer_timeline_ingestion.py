@@ -365,6 +365,28 @@ def test_channel_mango_and_amo_normalizers_create_expected_timeline_contracts() 
     assert amo_batch.events[0].event_type.value == "amo_deal_stage"
 
 
+def test_channel_message_normalizer_uses_whatsapp_contract_types() -> None:
+    batch = ChannelMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="channel_snapshot",
+            source_ref="whatsapp#1",
+            payload={
+                "channel": "whatsapp",
+                "channel_thread_id": "+7 999 111-22-33",
+                "channel_message_id": "msg-1",
+                "channel_user_id": "+7 999 111-22-33",
+                "direction": "inbound",
+                "text": "Здравствуйте",
+                "received_at": "2026-05-04T09:00:00+00:00",
+            },
+        )
+    )
+
+    assert batch.events[0].event_type == TimelineEventType.WHATSAPP_MESSAGE
+    assert {link.link_type.value for link in batch.identity_links} == {"whatsapp_user_id", "channel_session_id"}
+    assert batch.bot_context_chunks[0].allowed_for_bot is False
+
+
 def test_importer_safety_contract_and_no_network_or_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fail(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("network/subprocess must not be used")

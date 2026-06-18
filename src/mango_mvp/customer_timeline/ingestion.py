@@ -1747,6 +1747,8 @@ def mail_participants(from_email: Optional[str], to_email: Optional[str]) -> tup
 def channel_link_type(channel: str) -> str:
     if channel.startswith("telegram") or channel == "tg":
         return "telegram_user_id"
+    if channel.startswith("whatsapp") or channel in {"wa", "wappi"}:
+        return "whatsapp_user_id"
     if channel.startswith("max"):
         return "max_user_id"
     if "web" in channel or "site" in channel:
@@ -1757,6 +1759,8 @@ def channel_link_type(channel: str) -> str:
 def channel_event_type(channel: str) -> TimelineEventType:
     if channel.startswith("telegram") or channel == "tg":
         return TimelineEventType.TELEGRAM_MESSAGE
+    if channel.startswith("whatsapp") or channel in {"wa", "wappi"}:
+        return TimelineEventType.WHATSAPP_MESSAGE
     if channel.startswith("max"):
         return TimelineEventType.MAX_MESSAGE
     return TimelineEventType.WEB_CHAT_MESSAGE

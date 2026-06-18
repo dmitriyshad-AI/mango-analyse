@@ -465,6 +465,8 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
                 "callback_query": {"data": "must_not_be_stored"},
                 "tallanto_raw_payload": {"cost": "must_not_be_stored"},
                 "raw_finance": {"payment": "must_not_be_stored"},
+                "whatsapp_update_payload": {"entry": "must_not_be_stored"},
+                "wappi_raw_payload": {"entry": "must_not_be_stored"},
                 "safe_note": "kept",
             },
         },
@@ -474,6 +476,8 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
             "business_message": {"secret": "must_not_be_stored"},
             "most_finances_payload": {"payment_summa": "must_not_be_stored"},
             "most_abonements_payload": {"num_visit_left": "must_not_be_stored"},
+            "whatsapp_raw_message": {"text": "must_not_be_stored"},
+            "wappi_message_payload": {"text": "must_not_be_stored"},
         },
     )
     raw_chunk = replace(
@@ -482,6 +486,8 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
             "telegram_update_payload": {"update_id": "must_not_be_stored"},
             "raw_message": {"text": "must_not_be_stored"},
             "tallanto_api_response": {"records": "must_not_be_stored"},
+            "whatsapp_raw_payload": {"records": "must_not_be_stored"},
+            "wappi_payload": {"records": "must_not_be_stored"},
             "safe_note": "kept",
         },
     )
@@ -534,6 +540,12 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
     assert "raw_finance" not in dump
     assert "most_finances_payload" not in dump
     assert "most_abonements_payload" not in dump
+    assert "whatsapp_update_payload" not in dump
+    assert "whatsapp_raw_message" not in dump
+    assert "whatsapp_raw_payload" not in dump
+    assert "wappi_raw_payload" not in dump
+    assert "wappi_message_payload" not in dump
+    assert "wappi_payload" not in dump
     assert "file_bytes" not in dump
     assert "raw-file-secret" not in dump
     assert str(raw_file) in dump

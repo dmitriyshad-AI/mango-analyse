@@ -280,9 +280,9 @@ def test_canonical_family_phone_keeps_tallanto_students_split_and_conflicted(tmp
 
     report = build_canonical_readonly_customer_timeline(config)
     with sqlite3.connect(config.timeline_db) as con:
-        phone_links = [
+        family_phone_links = [
             json.loads(row[0])
-            for row in con.execute("SELECT record_json FROM identity_links WHERE link_type = 'phone'")
+            for row in con.execute("SELECT record_json FROM identity_links WHERE link_type IN ('phone', 'mango_client_phone')")
         ]
         mango_events = [
             json.loads(row[0])
@@ -302,7 +302,11 @@ def test_canonical_family_phone_keeps_tallanto_students_split_and_conflicted(tmp
     assert report["summary"]["with_mango_calls"] == 2
     assert _table_count(config.timeline_db, "customer_identities") == 2
     assert _table_count(config.timeline_db, "customer_id_mappings") == 4
-    assert len({item["customer_id"] for item in phone_links}) == 2
+    assert len(family_phone_links) == 4
+    assert {item["link_type"] for item in family_phone_links} == {"phone", "mango_client_phone"}
+    assert {item["match_class"] for item in family_phone_links} == {"ambiguous"}
+    assert {item["confidence"] for item in family_phone_links} == {0.55}
+    assert len({item["customer_id"] for item in family_phone_links}) == 2
     assert len(mango_events) == 4
     assert {item["match_status"] for item in mango_events} == {"ambiguous"}
     assert len({item["customer_id"] for item in mango_events}) == 2
@@ -310,7 +314,7 @@ def test_canonical_family_phone_keeps_tallanto_students_split_and_conflicted(tmp
     assert {"tallanto_student:student-1", "tallanto_student:student-2"} <= set(conflicts[0]["entity_refs"])
     assert len(split_mappings) == 2
     assert len({item["old_customer_id"] for item in split_mappings}) == 1
-    assert {item["new_customer_id"] for item in split_mappings} == {item["customer_id"] for item in phone_links}
+    assert {item["new_customer_id"] for item in split_mappings} == {item["customer_id"] for item in family_phone_links}
 
 
 def test_canonical_family_phone_splits_single_row_with_multiple_tallanto_ids(tmp_path: Path) -> None:
@@ -342,9 +346,9 @@ def test_canonical_family_phone_splits_single_row_with_multiple_tallanto_ids(tmp
             json.loads(row[0])
             for row in con.execute("SELECT record_json FROM customer_identities ORDER BY customer_id")
         ]
-        phone_links = [
+        family_phone_links = [
             json.loads(row[0])
-            for row in con.execute("SELECT record_json FROM identity_links WHERE link_type = 'phone'")
+            for row in con.execute("SELECT record_json FROM identity_links WHERE link_type IN ('phone', 'mango_client_phone')")
         ]
         conflicts = [
             json.loads(row[0])
@@ -358,7 +362,10 @@ def test_canonical_family_phone_splits_single_row_with_multiple_tallanto_ids(tmp
     assert report["summary"]["total_customers"] == 3
     assert {item["identity_status"] for item in identities} == {"ambiguous"}
     assert len({item["customer_id"] for item in identities}) == 3
-    assert {item["match_class"] for item in phone_links} == {"ambiguous"}
+    assert len(family_phone_links) == 6
+    assert {item["link_type"] for item in family_phone_links} == {"phone", "mango_client_phone"}
+    assert {item["match_class"] for item in family_phone_links} == {"ambiguous"}
+    assert {item["confidence"] for item in family_phone_links} == {0.55}
     assert len(conflicts) == 1
     assert {"tallanto_student:student-1", "tallanto_student:student-2", "tallanto_student:student-3"} <= set(
         conflicts[0]["entity_refs"]

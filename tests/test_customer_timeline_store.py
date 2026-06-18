@@ -481,6 +481,8 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
             "nested": {
                 "raw_update": {"token": "must_not_be_stored"},
                 "callback_query": {"data": "must_not_be_stored"},
+                "tallanto_raw_payload": {"cost": "must_not_be_stored"},
+                "raw_finance": {"payment": "must_not_be_stored"},
                 "safe_note": "kept",
             },
         },
@@ -488,6 +490,8 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
             **ev.metadata,
             "telegram_raw_message": {"text": "must_not_be_stored"},
             "business_message": {"secret": "must_not_be_stored"},
+            "most_finances_payload": {"payment_summa": "must_not_be_stored"},
+            "most_abonements_payload": {"num_visit_left": "must_not_be_stored"},
         },
     )
     raw_chunk = replace(
@@ -495,6 +499,7 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
         metadata={
             "telegram_update_payload": {"update_id": "must_not_be_stored"},
             "raw_message": {"text": "must_not_be_stored"},
+            "tallanto_api_response": {"records": "must_not_be_stored"},
             "safe_note": "kept",
         },
     )
@@ -542,6 +547,11 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
     assert "raw_message" not in dump
     assert "callback_query" not in dump
     assert "business_message" not in dump
+    assert "tallanto_raw_payload" not in dump
+    assert "tallanto_api_response" not in dump
+    assert "raw_finance" not in dump
+    assert "most_finances_payload" not in dump
+    assert "most_abonements_payload" not in dump
     assert "file_bytes" not in dump
     assert "raw-file-secret" not in dump
     assert str(raw_file) in dump

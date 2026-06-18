@@ -1,0 +1,108 @@
+# Test Output
+
+## B2 module + store NEG
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_import_tallanto_payments_to_timeline.py tests/test_customer_timeline_store.py
+```
+
+Output:
+
+```text
+....................                                                     [100%]
+20 passed in 0.88s
+```
+
+## Safety tests
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_timeline_ingestion.py::test_importer_safety_contract_and_no_network_or_subprocess tests/test_import_tallanto_payments_to_timeline.py::test_importer_safety_contract_and_no_network_or_subprocess
+```
+
+Output:
+
+```text
+..                                                                       [100%]
+2 passed in 0.52s
+```
+
+## B2 focused set
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_import_tallanto_payments_to_timeline.py tests/test_customer_timeline_store.py tests/test_customer_timeline_ingestion.py::test_importer_safety_contract_and_no_network_or_subprocess
+```
+
+Output:
+
+```text
+.....................                                                    [100%]
+21 passed in 0.75s
+```
+
+## Full pytest
+
+Command:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Output:
+
+```text
+3343 passed, 5 skipped, 1 warning in 48.49s
+```
+
+Warning:
+
+```text
+urllib3 v2 only supports OpenSSL 1.1.1+, current ssl module is compiled with LibreSSL 2.8.3.
+```
+
+## Real-data dry-run through crm_call.sh
+
+Command shape:
+
+```bash
+crm_call.sh call tallanto_select '{"module":"most_finances","filters":{},"limit":50}'
+crm_call.sh call tallanto_select '{"module":"most_abonements","filters":{},"limit":50}'
+crm_call.sh call tallanto_select '{"module":"most_class","filters":{},"limit":50}'
+# combined in memory and piped to:
+scripts/import_tallanto_payments_to_timeline.py --source - --timeline-db /tmp/mango_tz139_b2_rerun/customer_timeline.sqlite --allowed-root /tmp/mango_tz139_b2_rerun --tenant-id foton
+```
+
+Aggregated output:
+
+```text
+validation_ok=true
+dry_run=true
+records_loaded=100
+payment_events=50
+abonement_events=50
+class_rows=50
+rejected=0
+bot_context_chunks=0
+bot_safe_amount_leaks=0
+write_product_timeline_db=false
+raw_snapshot_saved_to_disk=false
+```
+
+## Real-data temp apply, repeated same in-memory snapshot
+
+Aggregated output:
+
+```text
+first_validation_ok=true
+second_validation_ok=true
+first_write_status_counts={"created":491,"duplicate":6}
+second_write_status_counts={"duplicate":12,"updated":291}
+row_counts_after_second_apply={"customers":97,"events":100,"payment_events":50,"abonement_events":50,"opportunities":100,"bot_context_chunks":0,"bot_safe_amount_leaks":0,"ingestion_runs":1}
+source_path=stdin
+raw_snapshot_saved_to_disk=false
+```

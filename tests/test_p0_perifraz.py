@@ -132,6 +132,21 @@ def test_tz147_deep_payment_access_cases_are_flagged(monkeypatch: pytest.MonkeyP
     assert len(PAYMENT_DISPUTE_DEEP_POSITIVE_CASES) >= 12
 
 
+@pytest.mark.parametrize(
+    "message",
+    (
+        "оплату оформили, а доступ почему-то заблокирован",
+        "оплату оформили, а доступ заблокирован",
+    ),
+)
+def test_tz147_deep_payment_object_verb_order_is_flagged(monkeypatch: pytest.MonkeyPatch, message: str) -> None:
+    from mango_mvp.channels.p0_recall_spec import codes_from_text
+
+    monkeypatch.setenv("TELEGRAM_P0_DEEP_MATCH", "1")
+
+    assert "payment_dispute" in codes_from_text(message)
+
+
 def test_tz147_deep_payment_access_is_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
     from mango_mvp.channels.p0_recall_spec import PAYMENT_DISPUTE_DEEP_POSITIVE_CASES, codes_from_text
 
@@ -159,3 +174,11 @@ def test_tz147_deep_payment_negatives_stay_non_p0(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("TELEGRAM_P0_DEEP_MATCH", "1")
 
     assert codes_from_text(message) == ()
+
+
+def test_tz147_deep_payment_schedule_anchor_stays_non_p0(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mango_mvp.channels.p0_recall_spec import codes_from_text
+
+    monkeypatch.setenv("TELEGRAM_P0_DEEP_MATCH", "1")
+
+    assert codes_from_text("Оплатила вчера, занятия завтра — в системе пока нет") == ()

@@ -133,7 +133,9 @@ PAYMENT_DISPUTE_RE = re.compile(
     re.I,
 )
 _PAYMENT_MOVED_DEEP_RE = re.compile(
-    rf"(?:{_PAYMENT_MOVED_PATTERN}|(?<!не\s)\bоформил\w*\s+оплат\w*|(?<!не\s)\bоплат\w*\s+прошл\w*)",
+    rf"(?:{_PAYMENT_MOVED_PATTERN}|(?<!не\s)\bоформил\w*\s+оплат\w*"
+    r"|(?<!не\s)\bоплат\w*\s+оформил\w*"
+    r"|(?<!не\s)\bоплат\w*\s+прошл\w*)",
     re.I,
 )
 _PAYMENT_RESULT_ACCESS_TARGET_DEEP_PATTERN = (

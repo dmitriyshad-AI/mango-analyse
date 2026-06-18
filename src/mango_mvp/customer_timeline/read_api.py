@@ -180,11 +180,11 @@ class CustomerTimelineReadApi:
             limit=bounded_limit(bot_context_limit, default=25, max_limit=200),
         )
         conflicts = self.list_conflicts(tenant, customer_id=customer["customer_id"], limit=100)
-        signals = self._records(
-            "derived_signals",
-            "tenant_id = ? AND customer_id = ?",
-            (tenant, customer["customer_id"]),
-            order_by="created_at DESC, signal_id",
+        active_at = datetime.now(timezone.utc)
+        signals = self.store.list_signals_by_customer(
+            tenant,
+            customer["customer_id"],
+            active_at=active_at,
             limit=100,
         )
         readiness = {

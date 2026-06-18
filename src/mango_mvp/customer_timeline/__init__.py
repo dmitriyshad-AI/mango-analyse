@@ -92,8 +92,10 @@ from mango_mvp.customer_timeline.derived_signals import (
     DUPLICATE_CONTACT_SIGNAL,
     HOT_LEAD_SILENT_SIGNAL,
     PAID_NO_ACCESS_SIGNAL,
+    CustomerSignalRecomputeResult,
     DerivedSignalInputs,
     derive_active_signals,
+    recompute_customer_signals,
     signal_expires_at,
 )
 from mango_mvp.customer_timeline.ids import (
@@ -239,6 +241,7 @@ __all__ = [
     "CustomerTimelineSQLiteOpenResult",
     "CustomerTimelineSQLiteStore",
     "CustomerTimelineStoreWriteResult",
+    "CustomerSignalRecomputeResult",
     "DEFAULT_HOT_LEAD_SILENCE_DAYS",
     "DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION",
     "DerivedSignal",
@@ -304,6 +307,7 @@ __all__ = [
     "default_synthetic_preview_cases",
     "dedupe_timeline_events",
     "derive_active_signals",
+    "recompute_customer_signals",
     "build_source_inventory",
     "build_timeline_import_preview",
     "decode_delimiter",

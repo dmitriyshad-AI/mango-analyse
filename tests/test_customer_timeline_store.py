@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -454,6 +455,31 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
     db_path = tmp_path / "customer_timeline.sqlite"
     customer = identity()
     ev = event(customer)
+    ev = replace(
+        ev,
+        record={
+            **ev.record,
+            "telegram_message": {"text": "must_not_be_stored"},
+            "nested": {
+                "raw_update": {"token": "must_not_be_stored"},
+                "callback_query": {"data": "must_not_be_stored"},
+                "safe_note": "kept",
+            },
+        },
+        metadata={
+            **ev.metadata,
+            "telegram_raw_message": {"text": "must_not_be_stored"},
+            "business_message": {"secret": "must_not_be_stored"},
+        },
+    )
+    raw_chunk = replace(
+        chunk(ev),
+        metadata={
+            "telegram_update_payload": {"update_id": "must_not_be_stored"},
+            "raw_message": {"text": "must_not_be_stored"},
+            "safe_note": "kept",
+        },
+    )
     raw_file = tmp_path / "source.json"
     raw_file.write_text("raw-file-secret", encoding="utf-8")
     art = EventArtifact(
@@ -473,17 +499,35 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
     store.upsert_customer(customer)
     store.upsert_event(ev)
     store.upsert_artifact(art)
+    store.upsert_bot_context_chunk(raw_chunk)
     store.close()
 
     with sqlite3.connect(db_path) as con:
-        dump = "\n".join(row[0] for row in con.execute("SELECT record_json FROM timeline_events UNION ALL SELECT record_json FROM event_artifacts"))
+        dump = "\n".join(
+            row[0]
+            for row in con.execute(
+                """
+                SELECT record_json FROM timeline_events
+                UNION ALL SELECT record_json FROM event_artifacts
+                UNION ALL SELECT record_json FROM bot_context_chunks
+                """
+            )
+        )
 
     assert "must_not_be_stored" not in dump
     assert "raw_payload" not in dump
     assert "provider_raw_payload" not in dump
+    assert "telegram_message" not in dump
+    assert "telegram_raw_message" not in dump
+    assert "telegram_update_payload" not in dump
+    assert "raw_update" not in dump
+    assert "raw_message" not in dump
+    assert "callback_query" not in dump
+    assert "business_message" not in dump
     assert "file_bytes" not in dump
     assert "raw-file-secret" not in dump
     assert str(raw_file) in dump
+    assert "safe_note" in dump
 
 
 def test_search_uses_fts_or_fallback_for_events_signals_and_chunks(tmp_path: Path) -> None:

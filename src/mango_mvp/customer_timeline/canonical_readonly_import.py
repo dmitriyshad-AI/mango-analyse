@@ -205,6 +205,8 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                 ingestion_run_id=run.run_id,
                 duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
                 duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
+                phone_match_class=IdentityMatchClass.AMBIGUOUS if phone in family_phones else IdentityMatchClass.STRONG_UNIQUE,
+                phone_confidence=0.55 if phone in family_phones else 0.95,
             ):
                 imported_counts[result.record_type] += 1
                 write_status_counts[result.status] += 1
@@ -445,7 +447,7 @@ def build_customer_index(
         rows_by_phone[phone].append(row)
     for phone, phone_rows in sorted(rows_by_phone.items()):
         if family_phone_group(phone_rows):
-            grouped_rows = tuple((canonical_customer_key(phone, row, idx), row) for idx, row in enumerate(phone_rows, start=1))
+            grouped_rows = family_customer_rows(phone, phone_rows)
         else:
             grouped_rows = ((phone, merge_contact_rows(phone_rows)),)
         for customer_key, row in grouped_rows:
@@ -471,7 +473,7 @@ def build_customer_index_item(
     last_seen = parse_datetime_guess(row.get("Последний звонок")) or first_seen
     email = normalize_email(row.get("Email"))
     display_name = safe_text(row.get("ФИО родителя") or row.get("ФИО родителя Tallanto") or row.get("Контакт Tallanto")) or None
-    status = IdentityStatus.STRONG if phone else IdentityStatus.PARTIAL
+    status = customer_identity_status_from_tallanto(row, phone=phone, email=email)
     brands = tuple(split_ids(row.get("_brand_history"))) or (infer_offline_brand(row),)
     customer = CustomerIdentity(
         tenant_id=tenant_id,
@@ -509,6 +511,22 @@ def legacy_phone_customer_id(tenant_id: str, *, phone: str, row: Mapping[str, st
     ).customer_id
 
 
+def customer_identity_status_from_tallanto(
+    row: Mapping[str, str],
+    *,
+    phone: str,
+    email: str,
+) -> IdentityStatus:
+    match_class = tallanto_match_class(row.get("Статус матчинга Tallanto"))
+    if match_class in {IdentityMatchClass.AMBIGUOUS, IdentityMatchClass.DUPLICATE}:
+        return IdentityStatus.AMBIGUOUS
+    if match_class == IdentityMatchClass.UNMATCHED:
+        return IdentityStatus.PARTIAL if phone or email else IdentityStatus.UNMATCHED
+    if match_class == IdentityMatchClass.STRONG_UNIQUE:
+        return IdentityStatus.STRONG if phone or email else IdentityStatus.PARTIAL
+    return IdentityStatus.PARTIAL if phone or email else IdentityStatus.UNMATCHED
+
+
 def canonical_customer_key(phone: str, row: Mapping[str, str], ordinal: int) -> str:
     tallanto_ids = split_ids(row.get("ID Tallanto"))
     if tallanto_ids:
@@ -531,6 +549,29 @@ def merge_contact_rows(rows: Sequence[Mapping[str, str]]) -> Mapping[str, str]:
     if brands:
         merged["_brand_history"] = ";".join(brands)
     return merged
+
+
+def family_customer_rows(phone: str, rows: Sequence[Mapping[str, str]]) -> tuple[tuple[str, Mapping[str, str]], ...]:
+    by_tallanto_id: dict[str, list[Mapping[str, str]]] = defaultdict(list)
+    no_tallanto_rows: list[Mapping[str, str]] = []
+    for row in rows:
+        tallanto_ids = split_ids(row.get("ID Tallanto"))
+        if not tallanto_ids:
+            no_tallanto_rows.append(row)
+            continue
+        for tallanto_id in tallanto_ids:
+            split_row = dict(row)
+            split_row["ID Tallanto"] = tallanto_id
+            split_row["_family_source_tallanto_ids"] = ";".join(tallanto_ids)
+            by_tallanto_id[tallanto_id].append(split_row)
+
+    result: list[tuple[str, Mapping[str, str]]] = []
+    for tallanto_id in sorted(by_tallanto_id):
+        row = merge_contact_rows(by_tallanto_id[tallanto_id])
+        result.append((f"{phone}:tallanto:{tallanto_id}", row))
+    for ordinal, row in enumerate(no_tallanto_rows, start=1):
+        result.append((canonical_customer_key(phone, row, ordinal), row))
+    return tuple(result)
 
 
 def family_phone_group(rows: Sequence[Mapping[str, str]]) -> bool:
@@ -569,6 +610,8 @@ def upsert_customer_bundle(
     ingestion_run_id: str,
     duplicate_amo_contact_ids: set[str] | None = None,
     duplicate_amo_lead_ids: set[str] | None = None,
+    phone_match_class: IdentityMatchClass = IdentityMatchClass.STRONG_UNIQUE,
+    phone_confidence: float = 0.95,
 ) -> list[Any]:
     results: list[Any] = []
     duplicate_amo_contact_ids = duplicate_amo_contact_ids or set()
@@ -585,8 +628,8 @@ def upsert_customer_bundle(
                     link_value=customer.primary_phone,
                     source_system=MASTER_CONTACT_SOURCE,
                     source_ref=source_ref,
-                    match_class=IdentityMatchClass.STRONG_UNIQUE,
-                    confidence=0.95,
+                    match_class=phone_match_class,
+                    confidence=phone_confidence,
                     first_seen_at=customer.first_seen_at,
                     last_seen_at=customer.last_seen_at,
                 ),
@@ -1547,6 +1590,10 @@ def ordered_datetime_pair(first: datetime, last: datetime) -> tuple[datetime, da
 
 def tallanto_match_class(value: Any) -> IdentityMatchClass:
     text = safe_text(value).lower()
+    if any(marker in text for marker in ("no_exact", "no exact", "not_exact", "not exact", "no_match", "no match", "unmatched")):
+        return IdentityMatchClass.UNMATCHED
+    if text in {"", "missing", "not_found", "none", "нет"}:
+        return IdentityMatchClass.UNMATCHED
     if any(marker in text for marker in ("multiple", "ambiguous", "duplicate", "несколько")):
         return IdentityMatchClass.AMBIGUOUS
     if any(marker in text for marker in ("single", "exact", "strong", "точ")):

@@ -765,6 +765,8 @@ def project_signal(item: Mapping[str, Any]) -> Mapping[str, Any]:
         "event_id": item.get("event_id"),
         "signal_type": item.get("signal_type"),
         "severity": item.get("severity"),
+        "status": item.get("status") or "active",
+        "expires_at": item.get("expires_at"),
         "confidence": item.get("confidence"),
         "evidence_text": item.get("evidence_text"),
         "recommended_action": item.get("recommended_action"),

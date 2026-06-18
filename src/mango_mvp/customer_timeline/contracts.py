@@ -132,6 +132,12 @@ class SignalSeverity(str, Enum):
     CRITICAL = "critical"
 
 
+class SignalStatus(str, Enum):
+    ACTIVE = "active"
+    RESOLVED = "resolved"
+    STALE = "stale"
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -563,6 +569,8 @@ class DerivedSignal:
     confidence: Optional[float] = None
     recommended_action: Optional[str] = None
     requires_manager_review: bool = False
+    status: SignalStatus | str = SignalStatus.ACTIVE
+    expires_at: Optional[datetime] = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=now_utc)
 
@@ -570,7 +578,10 @@ class DerivedSignal:
         tenant_id = normalize_key(self.tenant_id, "tenant_id")
         signal_type = normalize_key(self.signal_type, "signal_type")
         evidence_text = require_text(self.evidence_text, "evidence_text")
+        status = SignalStatus(self.status)
         require_timezone(self.created_at, "created_at")
+        if self.expires_at is not None:
+            require_timezone(self.expires_at, "expires_at")
         source_event_ids = tuple(require_text(item, "source_event_id") for item in self.source_event_ids)
         event_id = optional_text(self.event_id)
         if event_id and event_id not in source_event_ids:
@@ -585,6 +596,8 @@ class DerivedSignal:
         object.__setattr__(self, "source_event_ids", source_event_ids)
         object.__setattr__(self, "confidence", require_confidence(self.confidence))
         object.__setattr__(self, "recommended_action", optional_text(self.recommended_action))
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "expires_at", self.expires_at)
         object.__setattr__(
             self,
             "signal_id",
@@ -614,6 +627,8 @@ class DerivedSignal:
             "evidence_text": self.evidence_text,
             "recommended_action": self.recommended_action,
             "requires_manager_review": self.requires_manager_review,
+            "status": self.status.value,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "metadata": dict(self.metadata),
             "created_at": self.created_at.isoformat(),
         }

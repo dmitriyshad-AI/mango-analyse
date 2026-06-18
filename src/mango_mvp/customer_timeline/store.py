@@ -34,7 +34,7 @@ from mango_mvp.customer_timeline.safety import (
 
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
-CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260512_001_customer_timeline_sqlite"
+CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260618_002_derived_signal_status"
 
 RUNTIME_DB_FILENAMES = {
     "ai_office.db",
@@ -495,6 +495,8 @@ class CustomerTimelineSQLiteStore:
               event_id TEXT,
               signal_type TEXT NOT NULL,
               severity TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'active',
+              expires_at TEXT,
               confidence REAL,
               requires_manager_review INTEGER NOT NULL,
               created_at TEXT NOT NULL,
@@ -629,6 +631,7 @@ class CustomerTimelineSQLiteStore:
               ON audit_log(tenant_id, ingestion_run_id, created_at);
             """
         )
+        self._apply_schema_migrations()
         if sqlite_fts5_available(self._con):
             self._bootstrap_fts()
         self._con.execute(
@@ -640,6 +643,22 @@ class CustomerTimelineSQLiteStore:
         )
         self._commit()
         self._fts_enabled = self._detect_existing_fts()
+
+    def _apply_schema_migrations(self) -> None:
+        derived_signal_columns = {
+            row["name"]
+            for row in self._con.execute("PRAGMA table_info(derived_signals)").fetchall()
+        }
+        if "status" not in derived_signal_columns:
+            self._con.execute("ALTER TABLE derived_signals ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        if "expires_at" not in derived_signal_columns:
+            self._con.execute("ALTER TABLE derived_signals ADD COLUMN expires_at TEXT")
+        self._con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_signals_customer_status_expiry
+              ON derived_signals(tenant_id, customer_id, status, expires_at)
+            """
+        )
 
     def upsert_customer(
         self,
@@ -874,6 +893,8 @@ class CustomerTimelineSQLiteStore:
                 "event_id": signal.event_id,
                 "signal_type": signal.signal_type,
                 "severity": signal.severity.value,
+                "status": signal.status.value,
+                "expires_at": signal.expires_at.isoformat() if signal.expires_at else None,
                 "confidence": signal.confidence,
                 "requires_manager_review": int(signal.requires_manager_review),
                 "created_at": signal.created_at.isoformat(),

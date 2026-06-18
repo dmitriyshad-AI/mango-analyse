@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Optional, Sequence
 
@@ -18,6 +18,7 @@ SIGNAL_TTL_DAYS: Mapping[str, int] = {
     HOT_LEAD_SILENT_SIGNAL: 30,
     DUPLICATE_CONTACT_SIGNAL: 180,
 }
+MANAGED_SIGNAL_TYPES = (PAID_NO_ACCESS_SIGNAL, HOT_LEAD_SILENT_SIGNAL, DUPLICATE_CONTACT_SIGNAL)
 
 INTEREST_MARKERS = (
     "заявк",
@@ -69,6 +70,29 @@ class DerivedSignalInputs:
         object.__setattr__(self, "conflicts", tuple(dict(item) for item in self.conflicts))
 
 
+@dataclass(frozen=True)
+class CustomerSignalRecomputeResult:
+    tenant_id: str
+    customer_id: str
+    apply: bool
+    signals: tuple[DerivedSignal, ...]
+    write_status_counts: Mapping[str, int]
+    status_counts: Mapping[str, int]
+    signal_type_counts: Mapping[str, int]
+
+    def to_json_dict(self) -> Mapping[str, Any]:
+        return {
+            "schema_version": DERIVED_SIGNAL_RECOMPUTE_SCHEMA_VERSION,
+            "tenant_id": self.tenant_id,
+            "customer_id": self.customer_id,
+            "apply": self.apply,
+            "signals": [signal.to_json_dict() for signal in self.signals],
+            "write_status_counts": dict(self.write_status_counts),
+            "status_counts": dict(self.status_counts),
+            "signal_type_counts": dict(self.signal_type_counts),
+        }
+
+
 def derive_active_signals(inputs: DerivedSignalInputs) -> tuple[DerivedSignal, ...]:
     events = tuple(sorted(inputs.events, key=lambda item: (_event_at(item).isoformat(), str(item.get("event_id") or ""))))
     signals: list[DerivedSignal] = []
@@ -80,10 +104,161 @@ def derive_active_signals(inputs: DerivedSignalInputs) -> tuple[DerivedSignal, .
     return tuple(signals)
 
 
+def recompute_customer_signals(
+    store: Any,
+    tenant_id: str,
+    customer_id: str,
+    *,
+    as_of: datetime,
+    apply: bool = False,
+    hot_lead_silence_days: int = DEFAULT_HOT_LEAD_SILENCE_DAYS,
+    actor: str = "derived_signal_recompute",
+) -> CustomerSignalRecomputeResult:
+    require_timezone(as_of, "as_of")
+    tenant = normalize_key(tenant_id, "tenant_id")
+    customer = require_text(customer_id, "customer_id")
+    events = _list_all_customer_events(store, tenant, customer)
+    conflicts = store.list_conflicts_by_customer(tenant, customer, limit=500)
+    current = store.list_signals_by_customer(tenant, customer, signal_types=MANAGED_SIGNAL_TYPES, limit=500)
+    current_by_id = {require_text(item.get("signal_id"), "signal_id"): item for item in current}
+    active_candidates = derive_active_signals(
+        DerivedSignalInputs(
+            tenant_id=tenant,
+            customer_id=customer,
+            events=events,
+            conflicts=conflicts,
+            as_of=as_of,
+            hot_lead_silence_days=hot_lead_silence_days,
+        )
+    )
+
+    desired: list[DerivedSignal] = []
+    desired_ids: set[str] = set()
+    for candidate in active_candidates:
+        status = SignalStatus.STALE if candidate.expires_at and candidate.expires_at <= as_of else SignalStatus.ACTIVE
+        existing = current_by_id.get(candidate.signal_id)
+        desired_signal = _replace_signal_lifecycle(
+            candidate,
+            signal_id=candidate.signal_id,
+            status=status,
+            created_at=_existing_created_at(existing) or candidate.created_at,
+            metadata_extra={"lifecycle_reason": "candidate_active" if status == SignalStatus.ACTIVE else "candidate_expired"},
+        )
+        desired.append(desired_signal)
+        desired_ids.add(require_text(desired_signal.signal_id, "signal_id"))
+
+    for signal_id, existing in current_by_id.items():
+        if signal_id in desired_ids:
+            continue
+        existing_signal = _signal_from_payload(existing)
+        status = SignalStatus.STALE if existing_signal.expires_at and existing_signal.expires_at <= as_of else SignalStatus.RESOLVED
+        desired.append(
+            _replace_signal_lifecycle(
+                existing_signal,
+                signal_id=signal_id,
+                status=status,
+                created_at=existing_signal.created_at,
+                metadata_extra={
+                    "lifecycle_reason": "expired" if status == SignalStatus.STALE else "predicate_resolved",
+                    "lifecycle_as_of": as_of.isoformat(),
+                },
+            )
+        )
+
+    write_status_counts: dict[str, int] = {}
+    if apply:
+        for signal in desired:
+            result = store.upsert_signal(signal, actor=actor)
+            write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
+
+    return CustomerSignalRecomputeResult(
+        tenant_id=tenant,
+        customer_id=customer,
+        apply=bool(apply),
+        signals=tuple(sorted(desired, key=lambda item: (item.signal_type, item.signal_id or ""))),
+        write_status_counts=write_status_counts,
+        status_counts=_count_by_signal_attr(desired, "status"),
+        signal_type_counts=_count_by_signal_attr(desired, "signal_type"),
+    )
+
+
 def signal_expires_at(signal_type: str, event_at: datetime) -> datetime:
     require_timezone(event_at, "event_at")
     ttl_days = SIGNAL_TTL_DAYS[normalize_key(signal_type, "signal_type")]
     return event_at + timedelta(days=ttl_days)
+
+
+def _list_all_customer_events(store: Any, tenant_id: str, customer_id: str) -> tuple[Mapping[str, Any], ...]:
+    events: list[Mapping[str, Any]] = []
+    cursor: Optional[str] = None
+    while True:
+        page = store.list_events_by_customer(tenant_id, customer_id, sort="asc", limit=500, cursor=cursor)
+        events.extend(page.get("items") or ())
+        cursor = optional_text(page.get("next_cursor"))
+        if not cursor:
+            return tuple(events)
+
+
+def _signal_from_payload(payload: Mapping[str, Any]) -> DerivedSignal:
+    return DerivedSignal(
+        tenant_id=payload["tenant_id"],
+        customer_id=payload.get("customer_id"),
+        opportunity_id=payload.get("opportunity_id"),
+        event_id=payload.get("event_id"),
+        source_event_ids=tuple(payload.get("source_event_ids") or ()),
+        signal_type=payload["signal_type"],
+        severity=payload["severity"],
+        evidence_text=payload["evidence_text"],
+        signal_id=payload.get("signal_id"),
+        confidence=payload.get("confidence"),
+        recommended_action=payload.get("recommended_action"),
+        requires_manager_review=bool(payload.get("requires_manager_review")),
+        status=payload.get("status") or SignalStatus.ACTIVE,
+        expires_at=_optional_datetime(payload.get("expires_at"), "expires_at"),
+        metadata=payload.get("metadata") or {},
+        created_at=_parse_datetime(payload.get("created_at"), "created_at"),
+    )
+
+
+def _replace_signal_lifecycle(
+    signal: DerivedSignal,
+    *,
+    signal_id: str,
+    status: SignalStatus,
+    created_at: datetime,
+    metadata_extra: Mapping[str, Any],
+) -> DerivedSignal:
+    metadata = {**dict(signal.metadata), **dict(metadata_extra)}
+    return replace(
+        signal,
+        signal_id=signal_id,
+        status=status,
+        created_at=created_at,
+        metadata=metadata,
+    )
+
+
+def _existing_created_at(existing: Optional[Mapping[str, Any]]) -> Optional[datetime]:
+    if not existing or not existing.get("created_at"):
+        return None
+    return _parse_datetime(existing["created_at"], "created_at")
+
+
+def _optional_datetime(value: Any, field_name: str) -> Optional[datetime]:
+    if not optional_text(value):
+        return None
+    return _parse_datetime(value, field_name)
+
+
+def _count_by_signal_attr(signals: Sequence[DerivedSignal], attr: str) -> Mapping[str, int]:
+    counts: dict[str, int] = {}
+    for signal in signals:
+        value = getattr(signal, attr)
+        if hasattr(value, "value"):
+            value = value.value
+        key = str(value)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _derive_paid_no_access(

@@ -1403,6 +1403,79 @@ class CustomerTimelineSQLiteStore:
             "next_cursor": str(offset + page_limit) if len(rows) > page_limit else None,
         }
 
+    def list_signals_by_customer(
+        self,
+        tenant_id: str,
+        customer_id: str,
+        *,
+        signal_types: Sequence[str] = (),
+        statuses: Sequence[str] = (),
+        active_at: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        clauses = ["tenant_id = ?", "customer_id = ?"]
+        params: list[Any] = [tenant, require_text(customer_id, "customer_id")]
+        append_in_clause(clauses, params, "signal_type", signal_types, normalizer=lambda item: normalize_key(item, "signal_type"))
+        append_in_clause(clauses, params, "status", statuses, normalizer=lambda item: normalize_key(item, "signal_status"))
+        if active_at is not None:
+            require_timezone(active_at, "active_at")
+            clauses.append("status = 'active'")
+            clauses.append("(expires_at IS NULL OR expires_at > ?)")
+            params.append(active_at.isoformat())
+        rows = self._con.execute(
+            f"""
+            SELECT status, expires_at, record_json
+            FROM derived_signals
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC, signal_id
+            LIMIT ?
+            """,
+            (*params, checked_limit(limit, "limit")),
+        ).fetchall()
+        result: list[Mapping[str, Any]] = []
+        for row in rows:
+            item = dict(json_loads(row["record_json"]))
+            item.setdefault("status", row["status"] or "active")
+            item.setdefault("expires_at", row["expires_at"])
+            result.append(item)
+        return tuple(result)
+
+    def list_conflicts_by_customer(
+        self,
+        tenant_id: str,
+        customer_id: str,
+        *,
+        statuses: Sequence[str] = (),
+        conflict_types: Sequence[str] = (),
+        limit: int = 500,
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        customer = require_text(customer_id, "customer_id")
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [tenant]
+        append_in_clause(clauses, params, "status", statuses, normalizer=lambda item: normalize_key(item, "conflict_status"))
+        append_in_clause(
+            clauses,
+            params,
+            "conflict_type",
+            conflict_types,
+            normalizer=lambda item: normalize_key(item, "conflict_type"),
+        )
+        rows = self._con.execute(
+            f"""
+            SELECT record_json FROM timeline_conflicts
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC, conflict_id
+            LIMIT ?
+            """,
+            (*params, checked_limit(limit, "limit")),
+        ).fetchall()
+        items = [json_loads(row["record_json"]) for row in rows]
+        return tuple(
+            item for item in items if customer in json_dumps(item.get("entity_refs") or ())
+        )
+
     def list_ingestion_runs(
         self,
         tenant_id: str,
@@ -1865,15 +1938,23 @@ class CustomerTimelineSQLiteStore:
             ).fetchall()
             result["artifacts"] = [json_loads(row["record_json"]) for row in rows]
         if include_signals:
+            active_at = self._now().isoformat()
             rows = self._con.execute(
                 """
                 SELECT record_json FROM derived_signals
                 WHERE tenant_id = ? AND event_id = ?
+                  AND status = 'active'
+                  AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY severity DESC, signal_type, signal_id
                 """,
-                (tenant_id, event_id),
+                (tenant_id, event_id, active_at),
             ).fetchall()
-            result["signals"] = [json_loads(row["record_json"]) for row in rows]
+            signals = []
+            for row in rows:
+                item = dict(json_loads(row["record_json"]))
+                item.setdefault("status", "active")
+                signals.append(item)
+            result["signals"] = signals
         return result
 
     def _bootstrap_fts(self) -> None:
@@ -2123,8 +2204,14 @@ class CustomerTimelineSQLiteStore:
             ).fetchall()
             hits.extend(search_hit_from_row("bot_context", row) for row in rows)
         if "signals" in scopes:
-            clauses = ["tenant_id = ?", "record_json LIKE ?"]
-            params = [tenant, pattern]
+            active_at = self._now().isoformat()
+            clauses = [
+                "tenant_id = ?",
+                "record_json LIKE ?",
+                "status = 'active'",
+                "(expires_at IS NULL OR expires_at > ?)",
+            ]
+            params = [tenant, pattern, active_at]
             if customer_id:
                 clauses.append("customer_id = ?")
                 params.append(require_text(customer_id, "customer_id"))

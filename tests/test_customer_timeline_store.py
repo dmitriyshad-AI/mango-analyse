@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -183,6 +184,18 @@ def table_names(db_path: Path) -> set[str]:
     return {row[0] for row in rows}
 
 
+def column_names(db_path: Path, table: str) -> set[str]:
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row[1] for row in rows}
+
+
+def index_names(db_path: Path) -> set[str]:
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+    return {row[0] for row in rows}
+
+
 def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
@@ -198,6 +211,8 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert "timeline_events" in names
     assert "timeline_conflicts" in names
     assert "customer_id_mappings" in names
+    assert {"status", "expires_at"} <= column_names(db_path, "derived_signals")
+    assert "ix_signals_customer_status_expiry" in index_names(db_path)
     assert summary["schema_version"] == CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION
     assert summary["backend"] == "sqlite"
     assert summary["counts"]["schema_migrations"] == 1
@@ -212,6 +227,104 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert summary["safety"]["old_to_new_customer_id_mapping_required"] is True
     assert summary["safety"]["brand_blocks_identity_merge"] is False
     assert reopened._con.execute("PRAGMA foreign_key_check").fetchall() == []
+    reopened.close()
+
+
+def test_derived_signal_status_migration_is_idempotent_and_reads_old_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    old_payload = {
+        "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+        "signal_id": "derived_signal:old",
+        "tenant_id": "foton",
+        "customer_id": "customer:old",
+        "opportunity_id": None,
+        "event_id": None,
+        "source_event_ids": [],
+        "signal_type": "price_interest",
+        "severity": "medium",
+        "confidence": 0.7,
+        "evidence_text": "Старая запись сигнала без status/expires_at.",
+        "recommended_action": "Проверить вручную",
+        "requires_manager_review": True,
+        "metadata": {},
+        "created_at": NOW.isoformat(),
+    }
+    with sqlite3.connect(db_path) as con:
+        con.executescript(
+            """
+            CREATE TABLE schema_migrations (
+              migration_id TEXT PRIMARY KEY,
+              schema_version TEXT NOT NULL,
+              applied_at TEXT NOT NULL
+            );
+            CREATE TABLE derived_signals (
+              signal_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
+              opportunity_id TEXT,
+              event_id TEXT,
+              signal_type TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              confidence REAL,
+              requires_manager_review INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO schema_migrations (migration_id, schema_version, applied_at)
+            VALUES (?, ?, ?)
+            """,
+            ("20260512_001_customer_timeline_sqlite", CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION, NOW.isoformat()),
+        )
+        con.execute(
+            """
+            INSERT INTO derived_signals (
+              signal_id, tenant_id, customer_id, opportunity_id, event_id,
+              signal_type, severity, confidence, requires_manager_review,
+              created_at, record_hash, record_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                old_payload["signal_id"],
+                old_payload["tenant_id"],
+                old_payload["customer_id"],
+                old_payload["opportunity_id"],
+                old_payload["event_id"],
+                old_payload["signal_type"],
+                old_payload["severity"],
+                old_payload["confidence"],
+                int(old_payload["requires_manager_review"]),
+                old_payload["created_at"],
+                "old-hash",
+                json.dumps(old_payload, ensure_ascii=False),
+            ),
+        )
+
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    row = store._con.execute(
+        "SELECT status, expires_at, record_json FROM derived_signals WHERE signal_id = ?",
+        (old_payload["signal_id"],),
+    ).fetchone()
+    assert {"status", "expires_at"} <= column_names(db_path, "derived_signals")
+    assert "ix_signals_customer_status_expiry" in index_names(db_path)
+    assert row["status"] == "active"
+    assert row["expires_at"] is None
+    assert "status" not in json.loads(row["record_json"])
+    store.close()
+
+    reopened = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    migration_rows = reopened._con.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE migration_id = ?",
+        (CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID,),
+    ).fetchone()[0]
+    migrated_rows = reopened._con.execute("SELECT COUNT(*) FROM derived_signals WHERE status = 'active'").fetchone()[0]
+    assert migration_rows == 1
+    assert migrated_rows == 1
     reopened.close()
 
 

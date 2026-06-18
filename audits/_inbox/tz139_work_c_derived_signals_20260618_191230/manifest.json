@@ -1,0 +1,18 @@
+{
+  "audit_pack": "tz139_work_c_derived_signals_20260618_191230",
+  "created_at": "2026-06-18T19:12:30+03:00",
+  "branch": "codex/tz139-customer-timeline",
+  "base_commit": "ab4cf72",
+  "head_commit_before_pack_commit": "73a5b79",
+  "scope": "TZ139 Work C DerivedSignal lifecycle",
+  "contains_raw_client_data": false,
+  "files": [
+    "implementation_notes.md",
+    "changed_files.txt",
+    "test_output.txt",
+    "risk_review.md",
+    "backward_compatibility.md",
+    "semantic_review.md",
+    "manifest.json"
+  ]
+}

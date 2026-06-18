@@ -10,6 +10,7 @@ import pytest
 
 from mango_mvp.customer_timeline import (
     CanonicalReadonlyTimelineConfig,
+    CustomerTimelineSQLiteStore,
     build_canonical_readonly_customer_timeline,
     canonical_readonly_timeline_safety_contract,
 )
@@ -238,6 +239,126 @@ def test_builds_canonical_readonly_timeline_with_aggregate_coverage(tmp_path: Pa
     assert coverage["safety"]["telegram_import_enabled"] is False
     assert _table_count(config.timeline_db, "customer_identities") == 2
     assert _table_count(config.timeline_db, "timeline_events") >= 7
+
+
+def test_canonical_family_phone_keeps_tallanto_students_split_and_conflicted(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    runtime_root = tmp_path / "runtime_source"
+    _write_csv(
+        runtime_root / "master_contacts_ru.csv",
+        [
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent-one@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "exact_phone_multiple",
+                "Количество кандидатов Tallanto": "2",
+                "ID Tallanto": "student-1",
+                "Краткая история общения": "Первый ребенок интересуется математикой.",
+                "Рекомендуемый продукт": "Фотон математика",
+            },
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent-two@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "exact_phone_multiple",
+                "Количество кандидатов Tallanto": "2",
+                "ID Tallanto": "student-2",
+                "Краткая история общения": "Второй ребенок интересуется русским.",
+                "Рекомендуемый продукт": "Фотон русский",
+            },
+        ],
+    )
+
+    report = build_canonical_readonly_customer_timeline(config)
+    with sqlite3.connect(config.timeline_db) as con:
+        phone_links = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM identity_links WHERE link_type = 'phone'")
+        ]
+        mango_events = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM timeline_events WHERE event_type = 'mango_call'")
+        ]
+        conflicts = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM timeline_conflicts WHERE conflict_type = 'shared_family_phone'")
+        ]
+        split_mappings = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM customer_id_mappings WHERE mapping_kind = 'split'")
+        ]
+
+    assert report["summary"]["total_customers"] == 2
+    assert report["summary"]["manual_review_customers_estimated"] == 2
+    assert report["summary"]["with_mango_calls"] == 2
+    assert _table_count(config.timeline_db, "customer_identities") == 2
+    assert _table_count(config.timeline_db, "customer_id_mappings") == 4
+    assert len({item["customer_id"] for item in phone_links}) == 2
+    assert len(mango_events) == 4
+    assert {item["match_status"] for item in mango_events} == {"ambiguous"}
+    assert len({item["customer_id"] for item in mango_events}) == 2
+    assert len(conflicts) == 1
+    assert {"tallanto_student:student-1", "tallanto_student:student-2"} <= set(conflicts[0]["entity_refs"])
+    assert len(split_mappings) == 2
+    assert len({item["old_customer_id"] for item in split_mappings}) == 1
+    assert {item["new_customer_id"] for item in split_mappings} == {item["customer_id"] for item in phone_links}
+
+
+def test_canonical_brand_history_does_not_split_same_identity(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    runtime_root = tmp_path / "runtime_source"
+    _write_csv(
+        runtime_root / "master_contacts_ru.csv",
+        [
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "exact_phone_single",
+                "ID Tallanto": "student-1",
+                "Краткая история общения": "Клиент выбирает курс.",
+                "Рекомендуемый продукт": "Фотон математика",
+            },
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "exact_phone_single",
+                "ID Tallanto": "student-1",
+                "Краткая история общения": "Тот же клиент интересуется олимпиадой МФТИ.",
+                "Рекомендуемый продукт": "УНПК олимпиада МФТИ",
+            },
+        ],
+    )
+
+    build_canonical_readonly_customer_timeline(config)
+    store = CustomerTimelineSQLiteStore.open_read_only(config.timeline_db, allowed_root=config.out_root)
+    try:
+        customers = store.list_customers("foton", limit=10)["items"]
+        conflicts = store.summary()["counts"]["timeline_conflicts"]
+    finally:
+        store.close()
+
+    assert len(customers) == 1
+    assert customers[0]["summary"]["brands"] == ["foton", "unpk"]
+    assert conflicts == 0
 
 
 def test_reports_do_not_leak_raw_identity_values(tmp_path: Path) -> None:

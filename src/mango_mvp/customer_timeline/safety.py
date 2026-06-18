@@ -24,6 +24,9 @@ def customer_timeline_safety_contract() -> Mapping[str, Any]:
         "stable_runtime_writes": False,
         "delete_source_artifacts": False,
         "store_raw_files_in_sqlite": False,
+        "identity_conflicts_auto_merge": False,
+        "old_to_new_customer_id_mapping_required": True,
+        "brand_blocks_identity_merge": False,
     }
 
 
@@ -52,6 +55,12 @@ def assert_customer_timeline_safety_contract(contract: Mapping[str, Any]) -> Non
         raise ValueError("customer timeline safety requires read_only_source_systems=True")
     if contract.get("store_raw_files_in_sqlite") is not False:
         raise ValueError("customer timeline safety requires store_raw_files_in_sqlite=False")
+    if contract.get("identity_conflicts_auto_merge") is not False:
+        raise ValueError("customer timeline safety requires identity_conflicts_auto_merge=False")
+    if contract.get("old_to_new_customer_id_mapping_required") is not True:
+        raise ValueError("customer timeline safety requires old_to_new_customer_id_mapping_required=True")
+    if contract.get("brand_blocks_identity_merge") is not False:
+        raise ValueError("customer timeline safety requires brand_blocks_identity_merge=False")
 
 
 def is_stable_runtime_path(path: Path | str) -> bool:

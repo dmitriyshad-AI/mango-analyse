@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 NAMESPACE = "child_resolver_v1"
 PROMPT_VERSION = "v5"
+ESCALATION_PROMPT_VERSION = "v6"
 PROVIDER_OPENAI = "openai"
 PROVIDER_CODEX_CLI = "codex_cli"
 DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
@@ -38,6 +40,67 @@ CHILD_RESPONSE_KEYS = {
     "merge_confidence",
 }
 CHILD_REQUIRED_RESPONSE_KEYS = CHILD_RESPONSE_KEYS - {"merge_confidence"}
+JOINT_NAME_HINTS = {
+    "александр",
+    "александра",
+    "алексей",
+    "алиса",
+    "анастасия",
+    "анна",
+    "артем",
+    "артём",
+    "артемий",
+    "борис",
+    "валентин",
+    "валентина",
+    "варвара",
+    "василий",
+    "вера",
+    "вероника",
+    "виктор",
+    "виктория",
+    "владимир",
+    "вячеслав",
+    "глеб",
+    "даниил",
+    "данил",
+    "дарья",
+    "денида",
+    "дмитрий",
+    "егор",
+    "елена",
+    "елизавета",
+    "иван",
+    "кирилл",
+    "константин",
+    "ксения",
+    "лев",
+    "макар",
+    "мария",
+    "матвей",
+    "михаил",
+    "милана",
+    "никита",
+    "олег",
+    "олеся",
+    "павел",
+    "петр",
+    "пётр",
+    "родион",
+    "роман",
+    "савва",
+    "семен",
+    "семён",
+    "софия",
+    "степан",
+    "тимофей",
+    "тимур",
+    "федор",
+    "фёдор",
+    "юлия",
+    "ярослав",
+}
+JOINT_SEPARATOR_RE = re.compile(r"\s+(?:и)\s+|\s*,\s*", re.IGNORECASE)
 
 
 class ChildResolverError(RuntimeError):
@@ -69,6 +132,13 @@ class ChildResolverConfig:
     project_root: str | Path = "."
     trace_path: str | Path | None = None
     name_diagnostics_path: str | Path | None = None
+    escalation_enabled: bool = False
+    escalation_model: str = "gpt-5.5"
+    escalation_reasoning_effort: str = "high"
+    escalation_max_concurrency: int = 2
+    escalation_request_timeout_seconds: float = 300.0
+    strict_confidence_prompt: bool = False
+    resolver_tier: str = "tier1"
 
     @classmethod
     def from_env(cls) -> "ChildResolverConfig":
@@ -89,6 +159,16 @@ class ChildResolverConfig:
             project_root=os.getenv("PROFILE_LLM_CHILD_RESOLVER_PROJECT_ROOT", ".").strip() or ".",
             trace_path=os.getenv("PROFILE_LLM_CHILD_RESOLVER_TRACE_PATH") or None,
             name_diagnostics_path=os.getenv("PROFILE_LLM_CHILD_RESOLVER_NAME_DIAGNOSTICS_PATH") or None,
+            escalation_enabled=_bool_env("PROFILE_LLM_CHILD_RESOLVER_ESCALATION", False),
+            escalation_model=os.getenv("PROFILE_LLM_CHILD_RESOLVER_ESCALATION_MODEL", "gpt-5.5").strip()
+            or "gpt-5.5",
+            escalation_reasoning_effort=os.getenv("PROFILE_LLM_CHILD_RESOLVER_ESCALATION_REASONING", "high").strip()
+            or "high",
+            escalation_max_concurrency=_int_env("PROFILE_LLM_CHILD_RESOLVER_ESCALATION_MAX_CONCURRENCY", 2),
+            escalation_request_timeout_seconds=_float_env(
+                "PROFILE_LLM_CHILD_RESOLVER_ESCALATION_TIMEOUT_SECONDS",
+                300.0,
+            ),
         )
 
 
@@ -152,6 +232,9 @@ class ChildResolverFamilyResult:
     error_code: str = ""
     error_detail: str = ""
     cache_hit: bool = False
+    tier: str = "tier1"
+    escalated: bool = False
+    manual_review_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -181,6 +264,16 @@ def apply_llm_child_resolver_to_fields(
         client=client,
         cache=resolved_cache,
     )
+    tier1_cache_hits = sum(1 for result in family_results if result.cache_hit)
+    escalation_summary: Mapping[str, Any] = {}
+    if resolved_config.escalation_enabled:
+        family_results, escalation_summary = apply_escalation_to_low_confidence_families(
+            scoped_cases,
+            family_results,
+            config=resolved_config,
+            client=client,
+            cache=resolved_cache,
+        )
     skipped_results = [
         ChildResolverFamilyResult(
             case_id=case.case_id,
@@ -222,7 +315,6 @@ def apply_llm_child_resolver_to_fields(
     profiles_with_2plus_after = sum(1 for count in after_counts.values() if count >= 2)
     accepted = [result for result in all_results if result.accepted]
     failed = [result for result in all_results if not result.accepted and result.error_code != "shared_phone_stoplist"]
-    cache_hits = sum(1 for result in family_results if result.cache_hit)
     confidence_counts = merge_confidence_counts(all_results)
 
     summary = {
@@ -238,8 +330,8 @@ def apply_llm_child_resolver_to_fields(
         "llm_child_resolver_provider": resolved_config.provider,
         "llm_child_resolver_model": resolved_config.model,
         "llm_cases_total": len(all_cases),
-        "llm_calls_total": len(scoped_cases) - cache_hits,
-        "llm_cache_hits": cache_hits,
+        "llm_calls_total": len(scoped_cases) - tier1_cache_hits,
+        "llm_cache_hits": tier1_cache_hits,
         "llm_families_resolved": len(accepted),
         "llm_families_failed_soft": len(failed),
         "llm_families_skipped_shared_phone": len(skipped_shared),
@@ -250,7 +342,124 @@ def apply_llm_child_resolver_to_fields(
         "llm_merge_confidence_low_children": confidence_counts["low"],
         "llm_merge_confidence_missing_children": confidence_counts["missing"],
     }
+    if resolved_config.escalation_enabled:
+        summary.update(escalation_summary)
     return ChildResolverApplyResult(fields=rewritten, summary=summary)
+
+
+def apply_escalation_to_low_confidence_families(
+    cases: Sequence[ChildResolverCase],
+    results: Sequence[ChildResolverFamilyResult],
+    *,
+    config: ChildResolverConfig,
+    client: ChatCompletionClient | None,
+    cache: LLMResponseCache,
+) -> tuple[list[ChildResolverFamilyResult], Mapping[str, Any]]:
+    tier2_config = replace(
+        config,
+        model=config.escalation_model,
+        reasoning_effort=config.escalation_reasoning_effort,
+        max_concurrency=config.escalation_max_concurrency,
+        request_timeout_seconds=config.escalation_request_timeout_seconds,
+        prompt_version=ESCALATION_PROMPT_VERSION,
+        strict_confidence_prompt=True,
+        resolver_tier="tier2",
+        trace_path=None,
+        name_diagnostics_path=None,
+    )
+    final_results: list[ChildResolverFamilyResult] = list(results)
+    escalation_targets: list[tuple[int, ChildResolverCase]] = []
+    counters = Counter()
+    for index, (case, result) in enumerate(zip(cases, results)):
+        reason = name_review_reason(case, result)
+        joint_name = first_joint_child_name(case)
+        if joint_name:
+            final = replace(
+                result,
+                accepted=False,
+                mention_to_child_key={},
+                error_code="joint_mention",
+                error_detail=f"joint child mention detected: {joint_name}"[:500],
+                tier="tier3",
+                manual_review_reason="joint_mention",
+            )
+            counters["llm_escalation_joint_mentions"] += 1
+            if reason == "low_confidence_multi_named":
+                counters["llm_escalation_candidates"] += 1
+                counters["llm_escalation_joint_skipped_escalation"] += 1
+            write_name_review_diagnostic(case, final, config=config)
+            write_trace_event(case, final, config=config)
+            final_results[index] = final
+            continue
+        if reason != "low_confidence_multi_named":
+            continue
+        counters["llm_escalation_candidates"] += 1
+        escalation_targets.append((index, case))
+
+    def worker(item: tuple[int, ChildResolverCase]) -> tuple[int, ChildResolverCase, ChildResolverFamilyResult]:
+        index, case = item
+        return index, case, resolve_child_family(case, config=tier2_config, client=client, cache=cache)
+
+    with ThreadPoolExecutor(max_workers=max(1, int(config.escalation_max_concurrency))) as pool:
+        escalated_items = list(pool.map(worker, escalation_targets))
+
+    for index, case, escalated in escalated_items:
+        counters["llm_escalation_cache_hits"] += 1 if escalated.cache_hit else 0
+        counters["llm_escalation_calls_total"] += 0 if escalated.cache_hit else 1
+        if escalated.accepted and result_all_confidence(escalated, "high"):
+            final = replace(escalated, escalated=True)
+            counters["llm_escalation_resolved_high"] += 1
+            write_name_review_diagnostic(case, final, config=config)
+            write_trace_event(case, final, config=config)
+            final_results[index] = final
+            continue
+
+        if escalated.accepted:
+            final = replace(
+                escalated,
+                accepted=False,
+                mention_to_child_key={},
+                error_code="escalation_low_confidence",
+                error_detail="gpt-5.5 high escalation returned low confidence",
+                tier="tier3",
+                escalated=True,
+                manual_review_reason="escalation_low_confidence",
+            )
+            counters["llm_escalation_still_low"] += 1
+        else:
+            final = replace(
+                escalated,
+                mention_to_child_key={},
+                tier="tier3",
+                escalated=True,
+                manual_review_reason="escalation_validation_failed",
+            )
+            counters["llm_escalation_failed_verification"] += 1
+        write_name_review_diagnostic(case, final, config=config)
+        write_trace_event(case, final, config=config)
+        final_results[index] = final
+
+    return final_results, {
+        "llm_escalation_enabled": 1,
+        "llm_escalation_model": config.escalation_model,
+        "llm_escalation_reasoning": config.escalation_reasoning_effort,
+        "llm_escalation_max_concurrency": config.escalation_max_concurrency,
+        "llm_escalation_timeout_seconds": config.escalation_request_timeout_seconds,
+        "llm_escalation_prompt_version": ESCALATION_PROMPT_VERSION,
+        "llm_escalation_candidates": counters["llm_escalation_candidates"],
+        "llm_escalation_calls_total": counters["llm_escalation_calls_total"],
+        "llm_escalation_cache_hits": counters["llm_escalation_cache_hits"],
+        "llm_escalation_resolved_high": counters["llm_escalation_resolved_high"],
+        "llm_escalation_still_low": counters["llm_escalation_still_low"],
+        "llm_escalation_failed_verification": counters["llm_escalation_failed_verification"],
+        "llm_escalation_joint_mentions": counters["llm_escalation_joint_mentions"],
+        "llm_escalation_joint_skipped_escalation": counters["llm_escalation_joint_skipped_escalation"],
+        "llm_escalation_manual_review": (
+            counters["llm_escalation_still_low"]
+            + counters["llm_escalation_failed_verification"]
+            + counters["llm_escalation_joint_mentions"]
+        ),
+    }
 
 
 def build_child_resolver_cases(
@@ -336,7 +545,7 @@ def resolve_child_family(
     client: ChatCompletionClient | None = None,
     cache: LLMResponseCache,
 ) -> ChildResolverFamilyResult:
-    prompt = build_child_resolver_prompt(case)
+    prompt = build_child_resolver_prompt(case, strict_confidence=config.strict_confidence_prompt)
     reasoning = resolver_reasoning(config)
     cached = cache.get(
         namespace=NAMESPACE,
@@ -353,6 +562,7 @@ def resolve_child_family(
         response_payload = cached if cached is not None else call_llm_json(prompt, config=config, client=client)
         normalized_payload = normalize_child_resolver_response(response_payload)
         result = validate_child_resolver_response(case, normalized_payload, cache_hit=cache_hit)
+        result = replace(result, tier=config.resolver_tier)
         if not cache_hit:
             cache.put(
                 namespace=NAMESPACE,
@@ -376,14 +586,22 @@ def resolve_child_family(
             error_code=child_resolver_error_code(exc),
             error_detail=str(exc)[:500],
             cache_hit=cache_hit,
+            tier=config.resolver_tier,
         )
         write_name_review_diagnostic(case, result, config=config, exc=exc)
         write_trace_event(case, result, config=config)
         return result
 
 
-def build_child_resolver_prompt(case: ChildResolverCase) -> str:
+def build_child_resolver_prompt(case: ChildResolverCase, *, strict_confidence: bool = False) -> str:
     payload_json = json.dumps(case.prompt_input(), ensure_ascii=False, sort_keys=True, indent=2)
+    confidence_rule = (
+        "- Для каждого ребёнка выставь merge_confidence строго одним из двух значений: high или low. "
+        "Никакие другие значения не разрешены.\n"
+        if strict_confidence
+        else "- Для каждого ребёнка выставь merge_confidence: high, если упоминания явно про одного ребёнка; "
+        "low, если есть сомнение, разные имена, слабая связь или безымянные упоминания.\n"
+    )
     return (
         "Ты помогаешь собрать семейную карточку учебного центра. "
         "Нужно понять, сколько реальных детей есть в семье, по уже извлечённым упоминаниям.\n\n"
@@ -396,8 +614,7 @@ def build_child_resolver_prompt(case: ChildResolverCase) -> str:
         "name_variants должны перечислять только входные написания этой группы.\n"
         "- Не отбрасывай упоминания: каждый mention_id должен быть ровно у одного ребёнка.\n"
         "- Если у ребёнка нет имени во входе, canonical_name верни пустой строкой.\n\n"
-        "- Для каждого ребёнка выставь merge_confidence: high, если упоминания явно про одного ребёнка; "
-        "low, если есть сомнение, разные имена, слабая связь или безымянные упоминания.\n"
+        f"{confidence_rule}"
         "- merge_confidence только отражает твою уверенность; оно не меняет формат ответа.\n\n"
         "Верни строго JSON object без markdown:\n"
         "{\n"
@@ -924,6 +1141,41 @@ def merge_confidence_counts(results: Sequence[ChildResolverFamilyResult]) -> dic
     return counts
 
 
+def result_all_confidence(result: ChildResolverFamilyResult, expected: str) -> bool:
+    children = result.raw_response.get("children") if isinstance(result.raw_response, Mapping) else []
+    values = [
+        normalize_merge_confidence(child.get("merge_confidence"))
+        for child in children
+        if isinstance(child, Mapping)
+    ]
+    return bool(values) and all(value == expected for value in values)
+
+
+def first_joint_child_name(case: ChildResolverCase) -> str:
+    for mention in case.mentions:
+        if child_name_has_joint_mention(mention.child_name):
+            return mention.child_name
+    return ""
+
+
+def child_name_has_joint_mention(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    parts = [part for part in JOINT_SEPARATOR_RE.split(text) if part.strip()]
+    if len(parts) < 2:
+        return False
+    for left, right in zip(parts, parts[1:]):
+        if contains_first_name_hint(left) and contains_first_name_hint(right):
+            return True
+    return False
+
+
+def contains_first_name_hint(value: str) -> bool:
+    tokens = re.findall(r"[a-zа-яё]+", str(value or "").lower().replace("ё", "е"), flags=re.IGNORECASE)
+    return any(token in JOINT_NAME_HINTS for token in tokens)
+
+
 _TRACE_LOCK = threading.Lock()
 _NAME_DIAGNOSTIC_LOCK = threading.Lock()
 
@@ -981,7 +1233,7 @@ def anonymized_trace_event(case: ChildResolverCase, result: ChildResolverFamilyR
                 "merge_confidence": normalize_merge_confidence(child.get("merge_confidence")),
             }
         )
-    return {
+    event = {
         "case_id": case.case_id,
         "profile_hash": stable_hash(case.profile_id)[:12],
         "accepted": result.accepted,
@@ -992,6 +1244,13 @@ def anonymized_trace_event(case: ChildResolverCase, result: ChildResolverFamilyR
         "model_children": children,
         "applied_child_keys": dict(sorted(result.mention_to_child_key.items())),
     }
+    if result.tier != "tier1":
+        event["tier"] = result.tier
+    if result.escalated:
+        event["escalated"] = True
+    if result.manual_review_reason:
+        event["manual_review_reason"] = result.manual_review_reason
+    return event
 
 
 def write_name_review_diagnostic(
@@ -1030,6 +1289,8 @@ def name_review_reason(
     result: ChildResolverFamilyResult,
     exc: Exception | None = None,
 ) -> str:
+    if result.manual_review_reason:
+        return result.manual_review_reason
     if exc is not None and child_resolver_error_code(exc) in {"invented_child_name", "children_count_exceeds_name_bound"}:
         return child_resolver_error_code(exc)
     if not result.accepted:

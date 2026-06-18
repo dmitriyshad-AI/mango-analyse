@@ -113,6 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             env={
                 "PROFILE_CHILD_MERGE_BY_TRAIT": "0",
                 "PROFILE_LLM_CHILD_RESOLVER": "0",
+                "PROFILE_LLM_CHILD_RESOLVER_ESCALATION": "0",
                 "PROFILE_PHONE_INDEX": "1",
                 "LLM_CACHE_ENABLED": "1",
                 "CODEX_CLI_COMMAND": str(args.codex_cli_command),
@@ -132,6 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             env={
                 "PROFILE_CHILD_MERGE_BY_TRAIT": "0",
                 "PROFILE_LLM_CHILD_RESOLVER": "1",
+                "PROFILE_LLM_CHILD_RESOLVER_ESCALATION": "0",
                 "PROFILE_LLM_CHILD_RESOLVER_PROVIDER": str(args.provider),
                 "PROFILE_LLM_CHILD_RESOLVER_MODEL": str(args.model),
                 "PROFILE_LLM_CHILD_RESOLVER_REASONING": str(args.reasoning),

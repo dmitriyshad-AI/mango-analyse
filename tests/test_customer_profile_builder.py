@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from mango_mvp.customer_profile.child_identity_dedup_llm import (
     apply_llm_child_resolver_to_fields,
     build_child_resolver_prompt,
     build_child_resolver_cases,
+    child_name_has_joint_mention,
     child_resolver_output_json_schema,
     normalize_child_resolver_response,
 )
@@ -99,6 +101,10 @@ def _children_payload(prompt: str, children: list[dict[str, object]]) -> dict[st
             resolved_ids = ids
         translated.append({**child_payload, "mention_ids": resolved_ids, "merge_confidence": child.get("merge_confidence", "high")})
     return {"children": translated}
+
+
+def assert_strict_confidence_prompt(prompt: str) -> None:
+    assert "merge_confidence строго одним из двух значений: high или low" in prompt
 
 
 def _resolver_config(
@@ -582,6 +588,438 @@ def test_llm_child_resolver_low_confidence_is_logged_without_behavior_change(tmp
     assert result.summary["llm_merge_confidence_low_children"] == 1
     assert len({field.child_key for field in result.fields if field.field == "child_name"}) == 1
     assert trace_event["model_children"][0]["merge_confidence"] == "low"
+    assert "llm_escalation_enabled" not in result.summary
+
+
+def test_llm_child_resolver_escalates_low_confidence_multi_named_to_high(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Степан", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Стёпа", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Степан",
+                        "name_variants": ["Степан", "Стёпа"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            ),
+            lambda prompt: (
+                assert_strict_confidence_prompt(prompt)
+                or _children_payload(
+                    prompt,
+                    [
+                        {
+                            "child_id": "child_1",
+                            "canonical_name": "Степан",
+                            "name_variants": ["Степан", "Стёпа"],
+                            "grades": [],
+                            "subjects": [],
+                            "mention_ids": "all",
+                            "merge_confidence": "high",
+                        }
+                    ],
+                )
+            ),
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=replace(_resolver_config(tmp_path), escalation_enabled=True, escalation_max_concurrency=1),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert client.completions.calls == 2
+    assert len({field.child_key for field in result.fields if field.field == "child_name"}) == 1
+    assert result.summary["llm_escalation_enabled"] == 1
+    assert result.summary["llm_escalation_candidates"] == 1
+    assert result.summary["llm_escalation_calls_total"] == 1
+    assert result.summary["llm_escalation_resolved_high"] == 1
+    assert result.summary["llm_escalation_manual_review"] == 0
+
+
+def test_llm_child_resolver_escalation_low_keeps_original_slots(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Александр Власенко", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Александра Власенко", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Александр Власенко",
+                        "name_variants": ["Александр Власенко", "Александра Власенко"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            ),
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Александр Власенко",
+                        "name_variants": ["Александр Власенко", "Александра Власенко"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            ),
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=replace(_resolver_config(tmp_path), escalation_enabled=True, escalation_max_concurrency=1),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert client.completions.calls == 2
+    assert {field.child_key for field in result.fields if field.field == "child_name"} == {"child_a", "child_b"}
+    assert result.summary["llm_families_failed_soft"] == 1
+    assert result.summary["llm_escalation_still_low"] == 1
+    assert result.summary["llm_escalation_manual_review"] == 1
+
+
+def test_llm_child_resolver_escalation_validation_fail_keeps_original_slots(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Александр Власенко", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Александра Власенко", child_key="child_b", source_ref="mango:2"),
+    ]
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Александр Власенко",
+                        "name_variants": ["Александр Власенко", "Александра Власенко"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            ),
+            lambda prompt: {
+                "children": [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Александр Власенко",
+                        "name_variants": ["Александр Власенко", "Александра Власенко"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": _prompt_mention_ids(prompt),
+                        "merge_confidence": "high",
+                        "debug": "invalid",
+                    }
+                ]
+            },
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=replace(_resolver_config(tmp_path), escalation_enabled=True, escalation_max_concurrency=1),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert {field.child_key for field in result.fields if field.field == "child_name"} == {"child_a", "child_b"}
+    assert result.summary["llm_escalation_failed_verification"] == 1
+    assert result.summary["llm_escalation_manual_review"] == 1
+
+
+def test_llm_child_resolver_escalation_ignores_high_and_single_named_low(tmp_path: Path) -> None:
+    high_fields = [
+        _child_field("child_name", "Колосов Даниил", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Даня", child_key="child_b", source_ref="mango:2"),
+    ]
+    high_client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Колосов Даниил",
+                        "name_variants": ["Колосов Даниил", "Даня"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "high",
+                    }
+                ],
+            )
+        ]
+    )
+    config = replace(_resolver_config(tmp_path), escalation_enabled=True, escalation_max_concurrency=1)
+
+    high_result = apply_llm_child_resolver_to_fields(
+        high_fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=config,
+        client=high_client,
+        cache=LLMResponseCache(enabled=False, root_dir=tmp_path / "cache_high"),
+    )
+
+    single_low_fields = [
+        _child_field("child_name", "Анна", child_key="child_a", source_ref="mango:1"),
+        _child_field("grade", "7", child_key="child_b", source_ref="mango:2"),
+    ]
+    single_low_client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Анна",
+                        "name_variants": ["Анна"],
+                        "grades": ["7"],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            )
+        ]
+    )
+    single_low_result = apply_llm_child_resolver_to_fields(
+        single_low_fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=config,
+        client=single_low_client,
+        cache=LLMResponseCache(enabled=False, root_dir=tmp_path / "cache_single"),
+    )
+
+    assert high_client.completions.calls == 1
+    assert high_result.summary["llm_escalation_candidates"] == 0
+    assert single_low_client.completions.calls == 1
+    assert single_low_result.summary["llm_escalation_candidates"] == 0
+    assert len({field.child_key for field in single_low_result.fields if field.field in {"child_name", "grade"}}) == 1
+
+
+def test_llm_child_resolver_joint_mention_is_not_merged_or_escalated(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Савва и Денида", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Савва", child_key="child_b", source_ref="mango:2"),
+    ]
+    trace_path = tmp_path / "trace.jsonl"
+    diagnostics_path = tmp_path / "diagnostics.jsonl"
+    client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Савва и Денида",
+                        "name_variants": ["Савва и Денида", "Савва"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=replace(
+            _resolver_config(tmp_path, trace_path=trace_path, name_diagnostics_path=diagnostics_path),
+            escalation_enabled=True,
+            escalation_max_concurrency=1,
+        ),
+        client=client,
+        cache=LLMResponseCache(enabled=False, root_dir=tmp_path / "cache"),
+    )
+    trace_events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    diagnostics_events = [json.loads(line) for line in diagnostics_path.read_text(encoding="utf-8").splitlines()]
+
+    assert client.completions.calls == 1
+    assert {field.child_key for field in result.fields if field.field == "child_name"} == {"child_a", "child_b"}
+    assert result.summary["llm_escalation_candidates"] == 1
+    assert result.summary["llm_escalation_calls_total"] == 0
+    assert result.summary["llm_escalation_joint_mentions"] == 1
+    assert result.summary["llm_escalation_manual_review"] == 1
+    assert trace_events[-1]["error_code"] == "joint_mention"
+    assert trace_events[-1]["manual_review_reason"] == "joint_mention"
+    assert diagnostics_events[-1]["reason"] == "joint_mention"
+
+
+def test_llm_child_resolver_escalation_uses_cache_on_repeat(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Степан", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Стёпа", child_key="child_b", source_ref="mango:2"),
+    ]
+    cache = LLMResponseCache(enabled=True, root_dir=tmp_path / "cache")
+    config = replace(_resolver_config(tmp_path), escalation_enabled=True, escalation_max_concurrency=1)
+    first_client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Степан",
+                        "name_variants": ["Степан", "Стёпа"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            ),
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Степан",
+                        "name_variants": ["Степан", "Стёпа"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "high",
+                    }
+                ],
+            ),
+        ]
+    )
+
+    first = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=config,
+        client=first_client,
+        cache=cache,
+    )
+    second_client = _FakeClient([])
+    second = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=config,
+        client=second_client,
+        cache=cache,
+    )
+
+    assert first.summary["llm_escalation_calls_total"] == 1
+    assert first_client.completions.calls == 2
+    assert second.summary["llm_calls_total"] == 0
+    assert second.summary["llm_escalation_calls_total"] == 0
+    assert second.summary["llm_escalation_cache_hits"] == 1
+    assert second_client.completions.calls == 0
+
+
+def test_llm_child_resolver_escalation_preserves_tier1_cache_accounting(tmp_path: Path) -> None:
+    fields = [
+        _child_field("child_name", "Степан", child_key="child_a", source_ref="mango:1"),
+        _child_field("child_name", "Стёпа", child_key="child_b", source_ref="mango:2"),
+    ]
+    cache = LLMResponseCache(enabled=True, root_dir=tmp_path / "cache")
+    tier1_client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Степан",
+                        "name_variants": ["Степан", "Стёпа"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "low",
+                    }
+                ],
+            )
+        ]
+    )
+    apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=_resolver_config(tmp_path),
+        client=tier1_client,
+        cache=cache,
+    )
+    escalation_client = _FakeClient(
+        [
+            lambda prompt: _children_payload(
+                prompt,
+                [
+                    {
+                        "child_id": "child_1",
+                        "canonical_name": "Степан",
+                        "name_variants": ["Степан", "Стёпа"],
+                        "grades": [],
+                        "subjects": [],
+                        "mention_ids": "all",
+                        "merge_confidence": "high",
+                    }
+                ],
+            )
+        ]
+    )
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=replace(_resolver_config(tmp_path), escalation_enabled=True, escalation_max_concurrency=1),
+        client=escalation_client,
+        cache=cache,
+    )
+
+    assert result.summary["llm_cache_hits"] == 1
+    assert result.summary["llm_calls_total"] == 0
+    assert result.summary["llm_escalation_calls_total"] == 1
+    assert escalation_client.completions.calls == 1
+
+
+def test_child_name_has_joint_mention_detector() -> None:
+    positives = [
+        "Савва и Денида",
+        "Савва, Денида",
+        "Глеб и Кирилл Домбровские",
+        "Тимофеева Вероника и Тимофеева Милана",
+        "Макар Коробко и Егор Коробко",
+    ]
+    negatives = [
+        "Иванов Пётр",
+        "Иванов Пётр Сергеевич",
+        "Иванов, Пётр",
+        "Иванов Пётр, 7 класс",
+        "Анна и мама",
+    ]
+
+    assert all(child_name_has_joint_mention(value) for value in positives)
+    assert not any(child_name_has_joint_mention(value) for value in negatives)
 
 
 def test_llm_child_resolver_child_key_is_stable_across_canonical_choice(tmp_path: Path) -> None:

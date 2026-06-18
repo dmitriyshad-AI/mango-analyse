@@ -19,6 +19,11 @@
 | `codex/tz124-slot-anchor` | `/Users/dmitrijfabarisov/Projects/Mango_tz124_slot_anchor` | Slot anchor / bare grade | 2 | 2026-06-23 | Решить после регрейда |
 | `codex/tz20-blacklist57` | `/Users/dmitrijfabarisov/Projects/Mango_tz20_blacklist` | TZ20 blacklist57 локальный прогон | 2 | 2026-06-23 | Решить отдельно от live AMO |
 | `codex/block-a-deal-gold-expanded` | `/Users/dmitrijfabarisov/Projects/Mango_blockA_gold` | Expanded Block A deal gold measurement | 1 | 2026-06-23 | Решить: влить тестовый набор или бросить |
+| `codex/tz135-direct-wow-tone` | `/Users/dmitrijfabarisov/Projects/Mango analyse` | TZ135 direct wow tone | 3 | 2026-06-23 | Зарегистрировано preflight ТЗ-34; решить отдельно |
+| `codex/tz133-handoff-closing-metric` | `/Users/dmitrijfabarisov/Projects/Mango_tz133_handoff_closing` | TZ133 handoff closing metric | 1 | 2026-06-23 | Зарегистрировано preflight ТЗ-34; решить отдельно |
+| `codex/tz137-adr002-direct-slots-fallback` | `/Users/dmitrijfabarisov/Projects/Mango_tz137_behavior_measure` | TZ137 ADR002 direct slots fallback | 1 | 2026-06-23 | Зарегистрировано preflight ТЗ-34; решить отдельно |
+| `codex/tz138-analyze-sweep` | `/Users/dmitrijfabarisov/Projects/Mango_tz138_analyze_sweep` | TZ138 analyze sweep | 1 | 2026-06-23 | Зарегистрировано preflight ТЗ-34; решить отдельно |
+| `codex/tz142-flagb-closing-fix` | `/Users/dmitrijfabarisov/Projects/Mango_tz142_flagb_closing` | TZ142 flag-B closing fix | 2 | 2026-06-23 | Зарегистрировано preflight ТЗ-34; решить отдельно |
 | `codex/tz119-assumed-scope-guard-main` | нет активного worktree | TZ119 assumed-scope guard, грязь сохранена коммитами `a51444c` и `364322f` | 2 | 2026-06-23 | Решить после регрейда TZ119 |
 | `codex/tz20-autoresolver` | `/Users/dmitrijfabarisov/Projects/Mango_tz20_autoresolver` | Живая AMO/autoresolver ветка | 1 | 2026-06-23 | Не трогать; отдельное ТЗ под контролем Дмитрия |
 

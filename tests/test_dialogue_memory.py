@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from mango_mvp.channels.dialogue_memory import (
     MEMORY_PROVENANCE_ENV,
     MEMORY_CHILD_ELLIPSIS_ENV,
@@ -633,6 +635,37 @@ def test_dialogue_memory_latches_active_paid_refund_request() -> None:
     assert memory.p0_latch.active is True
 
 
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    (
+        ("Мы уже оплатили курс, ребёнку не понравилось, верните деньги.", "refund"),
+        ("Преподаватель не объясняет, ребёнок ничего не понимает.", "complaint"),
+    ),
+)
+def test_dialogue_memory_keeps_refund_and_complaint_latches_after_neutral_followups(
+    message: str,
+    expected_code: str,
+) -> None:
+    memory = build_dialogue_memory(
+        current_message=message,
+        active_brand="foton",
+        recent_messages=["Клиент: 6 класс математика онлайн"],
+        session_id=f"s-hard-latch-{expected_code}",
+    )
+
+    for index in range(5):
+        memory = build_dialogue_memory(
+            current_message=f"понял, жду {index}",
+            active_brand="foton",
+            previous_memory=memory,
+            session_id=f"s-hard-latch-{expected_code}",
+        )
+
+    assert expected_code in memory.p0_latch.codes
+    assert memory.p0_latch.active is True
+    assert memory.handoff_state == "required"
+
+
 def test_dialogue_memory_current_terms_safe_next_action_asks_one_missing_slot() -> None:
     memory = build_dialogue_memory(
         current_message="Что нужно для записи по текущей цене?",
@@ -838,7 +871,7 @@ def _build_memory_sequence(messages: list[str], *, session_id: str = "s-p0-auto-
     return memory
 
 
-def test_dialogue_memory_autonomously_releases_refund_latch_after_five_neutral_turns() -> None:
+def test_dialogue_memory_keeps_refund_latch_after_five_neutral_turns() -> None:
     memory = _build_memory_sequence(
         [
             "Верните деньги за курс.",
@@ -850,17 +883,17 @@ def test_dialogue_memory_autonomously_releases_refund_latch_after_five_neutral_t
         ]
     )
 
-    assert memory.p0_latch.active is False
-    assert memory.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
+    assert memory.p0_latch.active is True
+    assert memory.p0_latch.release_event_id == ""
     assert memory.p0_latch.had_hard_p0_claim is True
-    assert "p0" not in memory.risk_flags
-    assert "refund" not in memory.risk_flags
-    assert memory.handoff_state != "required"
-    assert memory.held_state.p0_latched is False
+    assert "p0" in memory.risk_flags
+    assert "refund" in memory.risk_flags
+    assert memory.handoff_state == "required"
+    assert memory.held_state.p0_latched is True
 
 
-def test_dialogue_memory_released_refund_latch_does_not_mute_next_benign_turn() -> None:
-    released = _build_memory_sequence(
+def test_dialogue_memory_refund_latch_keeps_next_benign_turn_manager_only() -> None:
+    latched = _build_memory_sequence(
         [
             "Верните деньги за курс.",
             "А по каким дням занятия?",
@@ -875,18 +908,18 @@ def test_dialogue_memory_released_refund_latch_does_not_mute_next_benign_turn() 
     followup = build_dialogue_memory(
         current_message="И какая цена за семестр?",
         active_brand="foton",
-        previous_memory=released,
+        previous_memory=latched,
         session_id="s-refund-release-next",
     )
 
-    assert released.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
-    assert followup.p0_latch.active is False
+    assert latched.p0_latch.release_event_id == ""
+    assert followup.p0_latch.active is True
     assert followup.p0_latch.had_hard_p0_claim is True
-    assert followup.handoff_state != "required"
-    assert "p0" not in followup.risk_flags
+    assert followup.handoff_state == "required"
+    assert "p0" in followup.risk_flags
 
 
-def test_dialogue_memory_complaint_latch_autonomously_releases_after_five_neutral_turns() -> None:
+def test_dialogue_memory_keeps_complaint_latch_after_five_neutral_turns() -> None:
     memory = _build_memory_sequence(
         [
             "Преподаватель ужасно ведёт занятия, я недовольна.",
@@ -899,9 +932,10 @@ def test_dialogue_memory_complaint_latch_autonomously_releases_after_five_neutra
         session_id="s-complaint-release",
     )
 
-    assert memory.p0_latch.active is False
-    assert memory.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
-    assert memory.handoff_state != "required"
+    assert memory.p0_latch.active is True
+    assert memory.p0_latch.release_event_id == ""
+    assert "complaint" in memory.p0_latch.codes
+    assert memory.handoff_state == "required"
 
 
 def test_dialogue_memory_soft_negative_does_not_start_p0_latch() -> None:
@@ -977,7 +1011,7 @@ def test_dialogue_memory_does_not_autonomously_release_payment_dispute_latch() -
     assert memory.handoff_state == "required"
 
 
-def test_dialogue_memory_autonomous_release_treats_bot_frustration_as_neutral() -> None:
+def test_dialogue_memory_refund_latch_keeps_bot_frustration_followup_manager_only() -> None:
     memory = _build_memory_sequence(
         [
             "Верните деньги за курс.",
@@ -990,7 +1024,7 @@ def test_dialogue_memory_autonomous_release_treats_bot_frustration_as_neutral() 
         session_id="s-refund-plus-frustration",
     )
 
-    assert memory.p0_latch.active is False
-    assert memory.p0_latch.release_event_id == "autonomous_neutral_p0_latch_release_5_turns"
-    assert "p0" not in memory.risk_flags
-    assert memory.handoff_state != "required"
+    assert memory.p0_latch.active is True
+    assert memory.p0_latch.release_event_id == ""
+    assert "p0" in memory.risk_flags
+    assert memory.handoff_state == "required"

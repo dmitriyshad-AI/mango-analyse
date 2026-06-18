@@ -54,6 +54,43 @@ def test_payment_dispute_benign_corpus_does_not_match_runtime_regex(message: str
     assert decision.p0_required is False
 
 
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    (
+        ("Оплатил онлайн-математику — доступа так и нет.", "payment_dispute"),
+        ("Внесли оплату, приглашение не пришло.", "payment_dispute"),
+        ("Оплатили курс, логин и пароль не дали.", "payment_dispute"),
+        ("Оплатил, ссылка на платформу не пришла.", "payment_dispute"),
+        ("Преподаватель не объясняет, ребёнок ничего не понимает.", "complaint"),
+        ("Педагог некомпетентный, ничему не учит.", "complaint"),
+        ("Это безобразие, как ведут занятия.", "complaint"),
+    ),
+)
+def test_tz145_p0_detector_covers_payment_access_and_quality_complaints(message: str, expected_code: str) -> None:
+    decision = classify_answer_safety(client_message=message)
+
+    assert expected_code in decision.risk_codes
+    assert decision.p0_required is True
+    assert decision.manager_only is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Как выбрать преподавателя?",
+        "Ребёнок стесняется отвечать при всех, что посоветуете?",
+        "Оплачу позже.",
+        "Оплатил два курса.",
+    ),
+)
+def test_tz145_p0_detector_keeps_benign_controls_non_p0(message: str) -> None:
+    decision = classify_answer_safety(client_message=message)
+
+    assert codes_from_current_message(message) == ()
+    assert decision.p0_required is False
+    assert decision.manager_only is False
+
+
 def test_answer_safety_active_p0_latch_blocks_semantic_non_p0_repair() -> None:
     decision = classify_answer_safety(
         client_message="А теперь скажите цену на год.",

@@ -133,7 +133,7 @@ CURRENT_TERMS_FORBIDDEN_PROMISES_RU = (
 )
 AUTONOMOUS_P0_LATCH_RELEASE_NEUTRAL_TURNS = 5
 AUTONOMOUS_P0_LATCH_RELEASE_EVENT = "autonomous_neutral_p0_latch_release_5_turns"
-HARD_P0_LATCH_CODES = {"legal", "legal_threat", "payment_dispute"}
+HARD_P0_LATCH_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
 HARD_P0_HISTORY_CODES = {"refund", "legal", "legal_threat", "payment_dispute", "complaint"}
 MEMORY_LLM_RECOMMENDED_REASONING = "low"
 MEMORY_LLM_RECOMMENDED_MODEL_CLASS = "small_fast_memory_model"

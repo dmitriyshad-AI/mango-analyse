@@ -42,6 +42,9 @@ DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV = "TELEGRAM_DIRECT_PATH_KNOWN_SLOTS
 TONE_RICH_FORMAT_ENV = "TELEGRAM_TONE_RICH_FORMAT"
 
 
+TONE_CLOSE_DETECT_ENV = "TELEGRAM_TONE_CLOSE_DETECT"
+
+
 A_RICH_FORMAT_ENV = "TELEGRAM_A_RICH_FORMAT"
 
 
@@ -116,6 +119,7 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     ROUTE_RUBRIC_ENV,
     DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV,
     TONE_RICH_FORMAT_ENV,
+    TONE_CLOSE_DETECT_ENV,
     A_RICH_FORMAT_ENV,
     LLM_RETRIEVE_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
@@ -528,6 +532,7 @@ def _pilot_profile_overrides(context: Optional[Mapping[str, Any]]) -> dict[str, 
         OUTPUT_SANITIZER_ENV: ("output_sanitizer_enabled",),
         SEMANTIC_OUTPUT_VERIFIER_ENV: ("semantic_output_verifier_enabled",),
         ROUTE_RUBRIC_ENV: ("route_rubric_enabled",),
+        TONE_CLOSE_DETECT_ENV: ("tone_close_detect_enabled",),
         LLM_RETRIEVE_ENV: ("llm_retrieve_enabled",),
         VERIFIER_HANDOFF_CLAIMS_ENV: ("verifier_handoff_claims_enabled",),
         TEMPLATE_FROM_KB_ENV: ("template_from_kb",),

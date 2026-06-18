@@ -133,6 +133,7 @@ from mango_mvp.channels.subscription_llm import (
 )
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
+from mango_mvp.channels.tone_block import close_detect_enabled
 
 
 def _trace_rows(path: Path):
@@ -5471,6 +5472,108 @@ def test_tone_close_detect_uses_contact_requested_memory_before_foton_trial_step
     assert "пробн" in closed.draft_text.casefold()
     assert closed.draft_text.startswith("Обращайтесь в любое время!")
     assert "телефон" not in closed.draft_text.casefold()
+
+
+def test_direct_path_applies_tone_close_detect_to_self_route_product_facts() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "На ИТ-направлении ноутбук с собой не обязателен: оборудование предоставляет организатор. "
+                "Ночью компьютерный класс ставится на сигнализацию. На смене есть медсестра."
+            ),
+            topic_id="theme:summer_camp",
+            context_used=("lvsh_it_equipment", "lvsh_medical_support"),
+        )
+    )
+    context = {
+        "active_brand": "unpk",
+        DIRECT_PATH_ENV: "1",
+        TONE_CLOSE_DETECT_ENV: "1",
+        "confirmed_facts": {
+            "lvsh_it_equipment": "На ИТ-направлении оборудование предоставляет организатор.",
+            "lvsh_medical_support": "На смене есть медсестра.",
+        },
+        "dialogue_memory_view": {
+            "recent_turns": [
+                {
+                    "role": "bot",
+                    "text": "В летней выездной школе есть ИТ-направление для 7-10 классов.",
+                }
+            ],
+            "proactive_state": {},
+        },
+    }
+
+    closed = provider.build_draft("Поняла, спасибо.", context=context)
+
+    assert provider.calls == 1
+    assert closed.route == "bot_answer_self_for_pilot"
+    assert closed.metadata["close_detect"]["status"] == "fired"
+    assert closed.metadata["close_detect"]["step"] == "return"
+    lowered = closed.draft_text.casefold()
+    assert "телефон" not in lowered
+    assert "позвоним" not in lowered
+    assert "ноутбук" not in lowered
+    assert "сигнализац" not in lowered
+    assert "медсестр" not in lowered
+
+
+def test_direct_path_tone_close_detect_does_not_cut_confirmed_camp_detail_question() -> None:
+    draft = (
+        "На ИТ-направлении ноутбук с собой не обязателен: оборудование предоставляет организатор. "
+        "Ночью компьютерный класс ставится на сигнализацию. На смене есть медсестра."
+    )
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=draft,
+            topic_id="theme:summer_camp",
+            context_used=("lvsh_it_equipment", "lvsh_medical_support"),
+        )
+    )
+
+    result = provider.build_draft(
+        "А ноутбук нужен на ИТ-направление?",
+        context={
+            "active_brand": "unpk",
+            DIRECT_PATH_ENV: "1",
+            TONE_CLOSE_DETECT_ENV: "1",
+            "confirmed_facts": {
+                "lvsh_it_equipment": "На ИТ-направлении оборудование предоставляет организатор.",
+                "lvsh_medical_support": "На смене есть медсестра.",
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == draft
+    assert "close_detect" not in result.metadata
+
+
+def test_direct_path_tone_close_detect_replaces_cautious_handoff_without_phone_cta() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Передам менеджеру, чтобы уточнить детали.",
+            topic_id="service:S5_general_consultation",
+            safety_flags=("manager_approval_required", "no_auto_send"),
+        )
+    )
+
+    closed = provider.build_draft(
+        "Хорошо, спасибо",
+        context={"active_brand": "unpk", DIRECT_PATH_ENV: "1", TONE_CLOSE_DETECT_ENV: "1"},
+    )
+
+    assert provider.calls == 1
+    assert closed.route == "bot_answer_self_for_pilot"
+    assert closed.metadata["close_detect"]["status"] == "suppressed_handoff"
+    assert closed.metadata["close_detect"]["step"] == "return"
+    lowered = closed.draft_text.casefold()
+    assert "телефон" not in lowered
+    assert "позвоним" not in lowered
 
 
 def test_payment_dispute_handoff_antirepeat_rotates_without_product_promises() -> None:
@@ -13824,6 +13927,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
         subscription_llm.PRICE_AXES_SELECTOR_ENV,
         subscription_llm.PRICE_AXES_CLEAN_DEFER_ENV,
+        TONE_CLOSE_DETECT_ENV,
         ASSUMED_SCOPE_GUARD_ENV,
         RETRIEVER_MODEL_DRIVEN_ENV,
         RETRIEVER_NEED_SHADOW_ENV,
@@ -13843,6 +13947,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm._llm_retrieve_enabled(context) is True
     assert number_gate_scope_aware_enabled(context) is True
     assert _verifier_handoff_claims_enabled(context) is True
+    assert close_detect_enabled(context) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_VERIFIER_FAILSOFT_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_META_RU_ENV) is True
@@ -13853,6 +13958,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm._direct_path_model_p0_enabled(legacy_context) is False
     assert subscription_llm._template_from_kb_enabled(context) is True
     assert TONE_RICH_FORMAT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert TONE_CLOSE_DETECT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.A_RICH_FORMAT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._a2_rich_format_enabled(context) is True
     assert subscription_llm.MEMORY_PROVENANCE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
@@ -13879,6 +13985,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     ) is True
     assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "1"}) is True
     assert subscription_llm._answerability_shadow_enabled({**context, subscription_llm.ANSWERABILITY_SHADOW_ENV: "0"}) is False
+    assert close_detect_enabled({**context, TONE_CLOSE_DETECT_ENV: "0"}) is False
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "1"}) is True
     assert subscription_llm._deal_action_decision_enabled({**context, subscription_llm.DEAL_ACTION_DECISION_ENV: "0"}) is False
     assert subscription_llm._direct_path_model_p0_enabled({**context, subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1"}) is True

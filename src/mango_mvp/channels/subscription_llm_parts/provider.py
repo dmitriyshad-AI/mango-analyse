@@ -952,11 +952,12 @@ class SubscriptionLlmDraftProvider:
             if _deal_action_decision_enabled(context):
                 direct_result = _direct_path_autonomy_matrix_topic_result(direct_result, context=context)
                 direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
-            return apply_deal_action_decision_layer(
+            dealt = apply_deal_action_decision_layer(
                 direct_result,
                 client_message=client_message,
                 context=context,
             )
+            return apply_tone_close_detect_layer(dealt, client_message=client_message, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)

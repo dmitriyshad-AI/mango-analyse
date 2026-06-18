@@ -63,13 +63,13 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
     resolved.out_root.mkdir(parents=True, exist_ok=True)
 
     contacts = read_csv_rows(resolved.master_contacts_csv)
-    phones = sorted({phone for row in contacts if (phone := normalize_phone(row.get("Телефон клиента", "")))})
-    customers_by_phone = build_customer_index(
+    customers_by_key = build_customer_index(
         contacts,
         tenant_id=resolved.tenant_id,
         generated_at=generated_at,
     )
-    known_phones = set(customers_by_phone)
+    customer_phones = tuple(item["phone"] for item in customers_by_key.values())
+    known_phones = set(customer_phones)
     calls_by_phone = read_calls_by_phone(
         resolved.master_calls_csv,
         known_phones=known_phones,
@@ -108,6 +108,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             "sources": source_manifest,
             "tenant_id": resolved.tenant_id,
             "known_phones": len(known_phones),
+            "customer_entries": len(customers_by_key),
             "generated_at": generated_at.isoformat(),
         }
     )
@@ -136,18 +137,62 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             },
             actor="canonical_readonly_timeline_import",
         )
-        for phone in phones:
-            row = customers_by_phone[phone]["row"]
-            customer = customers_by_phone[phone]["customer"]
+        family_groups = shared_family_phone_groups(customers_by_key)
+        family_phones = set(family_groups)
+        family_amo_contact_ids = {
+            phone: {safe_text(contact.get("contact_id")) for contact in amo_contacts_by_phone.get(phone, ()) if safe_text(contact.get("contact_id"))}
+            for phone in family_phones
+        }
+        family_amo_lead_ids = {
+            phone: {
+                lead_id
+                for contact in amo_contacts_by_phone.get(phone, ())
+                for lead_id in split_ids(contact.get("linked_lead_ids"))
+            }
+            for phone in family_phones
+        }
+        for phone, items in family_groups.items():
+            customer_ids = tuple(item["customer"].customer_id for item in items)
+            tallanto_ids = tuple(sorted({tallanto_id for item in items for tallanto_id in split_ids(item["row"].get("ID Tallanto"))}))
+            result = store.record_conflict(
+                resolved.tenant_id,
+                conflict_type="shared_family_phone",
+                entity_refs=(
+                    f"phone_hash:{stable_digest({'phone': phone})[:16]}",
+                    *(f"customer:{customer_id}" for customer_id in customer_ids),
+                    *(f"tallanto_student:{tallanto_id}" for tallanto_id in tallanto_ids),
+                ),
+                severity="high",
+                status="open",
+                summary="One phone is linked to multiple Tallanto students; customers stay split.",
+                metadata={"phone_hash": stable_digest({"phone": phone})[:16], "tallanto_student_ids": list(tallanto_ids)},
+                actor="canonical_readonly_timeline_import",
+                ingestion_run_id=run.run_id,
+            )
+            imported_counts[result.record_type] += 1
+            write_status_counts[result.status] += 1
+            manual_review_counts.update(["shared_family_phone"])
+
+        for customer_key in sorted(customers_by_key):
+            item = customers_by_key[customer_key]
+            phone = item["phone"]
+            row = item["row"]
+            customer = item["customer"]
             brand = infer_offline_brand(row)
             brand_counts[brand] += 1
+            effective_duplicate_amo_contact_ids = set(duplicate_amo_contact_ids)
+            effective_duplicate_amo_lead_ids = set(duplicate_amo_lead_ids)
+            if phone in family_phones:
+                effective_duplicate_amo_contact_ids.update(family_amo_contact_ids.get(phone, set()))
+                effective_duplicate_amo_lead_ids.update(family_amo_lead_ids.get(phone, set()))
             reasons = manual_review_reasons(
                 row=row,
                 calls=calls_by_phone.get(phone, ()),
                 mail=mail_by_phone.get(phone),
-                duplicate_amo_contact_ids=duplicate_amo_contact_ids,
-                duplicate_amo_lead_ids=duplicate_amo_lead_ids,
-                extra_reasons=shared_amo_reasons_by_phone.get(phone, ()),
+                duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
+                duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
+                extra_reasons=tuple(shared_amo_reasons_by_phone.get(phone, ()))
+                + (("shared_family_phone",) if phone in family_phones else ()),
             )
             manual_review_counts.update(reasons)
             for result in upsert_customer_bundle(
@@ -158,11 +203,37 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                 brand=brand,
                 generated_at=generated_at,
                 ingestion_run_id=run.run_id,
-                duplicate_amo_contact_ids=duplicate_amo_contact_ids,
-                duplicate_amo_lead_ids=duplicate_amo_lead_ids,
+                duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
+                duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
             ):
                 imported_counts[result.record_type] += 1
                 write_status_counts[result.status] += 1
+            mapping_result = store.record_customer_id_mapping(
+                resolved.tenant_id,
+                old_customer_id=customer.customer_id,
+                new_customer_id=customer.customer_id,
+                mapping_kind="alias",
+                reason="canonical_readonly_identity",
+                source_refs=(customer.source_ref or customer.customer_id,),
+                actor="canonical_readonly_timeline_import",
+                ingestion_run_id=run.run_id,
+            )
+            imported_counts[mapping_result.record_type] += 1
+            write_status_counts[mapping_result.status] += 1
+            if phone in family_phones:
+                split_mapping = store.record_customer_id_mapping(
+                    resolved.tenant_id,
+                    old_customer_id=legacy_phone_customer_id(resolved.tenant_id, phone=phone, row=row),
+                    new_customer_id=customer.customer_id,
+                    mapping_kind="split",
+                    reason="shared_family_phone",
+                    source_refs=(customer.source_ref or customer.customer_id,),
+                    metadata={"phone_hash": stable_digest({"phone": phone})[:16]},
+                    actor="canonical_readonly_timeline_import",
+                    ingestion_run_id=run.run_id,
+                )
+                imported_counts[split_mapping.record_type] += 1
+                write_status_counts[split_mapping.status] += 1
             source_customer_counts[MASTER_CONTACT_SOURCE] += 1
 
             for call in calls_by_phone.get(phone, ()):
@@ -172,6 +243,9 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                     call=call,
                     brand=brand,
                     fallback_at=generated_at,
+                    source_id_suffix=customer.customer_id if phone in family_phones else None,
+                    match_class=IdentityMatchClass.AMBIGUOUS if phone in family_phones else IdentityMatchClass.STRONG_UNIQUE,
+                    confidence=0.55 if phone in family_phones else 0.9,
                 )
                 result = store.upsert_event(event, actor="canonical_readonly_timeline_import", ingestion_run_id=run.run_id)
                 imported_counts[result.record_type] += 1
@@ -212,8 +286,8 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                     brand=brand,
                     generated_at=generated_at,
                     ingestion_run_id=run.run_id,
-                    duplicate_amo_contact_ids=duplicate_amo_contact_ids,
-                    duplicate_amo_lead_ids=duplicate_amo_lead_ids,
+                    duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
+                    duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
                 ):
                     imported_counts[result.record_type] += 1
                     write_status_counts[result.status] += 1
@@ -236,7 +310,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         store.finish_ingestion_run(
             run.run_id,
             status="completed",
-            accepted_count=len(phones),
+            accepted_count=len(customers_by_key),
             rejected_count=0,
             output_ref=str(resolved.timeline_db),
             finished_at=generated_at,
@@ -255,7 +329,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
                 run.run_id,
                 status="failed",
                 accepted_count=sum(source_customer_counts.values()),
-                rejected_count=max(0, len(phones) - sum(source_customer_counts.values())),
+                rejected_count=max(0, len(customers_by_key) - sum(source_customer_counts.values())),
                 output_ref=str(resolved.timeline_db),
                 error=f"{type(exc).__name__}: {exc}",
                 finished_at=finished_at,
@@ -274,7 +348,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         config=resolved,
         generated_at=generated_at,
         source_manifest=source_manifest,
-        phones=phones,
+        phones=customer_phones,
         calls_by_phone=calls_by_phone,
         amo_contacts_by_phone=amo_contacts_by_phone,
         mail_by_phone=mail_by_phone,
@@ -363,40 +437,125 @@ def build_customer_index(
     generated_at: datetime,
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
+    rows_by_phone: dict[str, list[Mapping[str, str]]] = defaultdict(list)
     for row in rows:
         phone = normalize_phone(row.get("Телефон клиента", ""))
         if not phone:
             continue
-        first_seen = parse_datetime_guess(row.get("Первый звонок")) or generated_at
-        last_seen = parse_datetime_guess(row.get("Последний звонок")) or first_seen
-        email = normalize_email(row.get("Email"))
-        display_name = safe_text(row.get("ФИО родителя") or row.get("ФИО родителя Tallanto") or row.get("Контакт Tallanto")) or None
-        status = IdentityStatus.STRONG if phone else IdentityStatus.PARTIAL
-        customer = CustomerIdentity(
-            tenant_id=tenant_id,
-            identity_status=status,
-            display_name=display_name,
-            primary_phone=phone,
-            primary_email=email or None,
-            source_ref=f"master_contact:{phone}",
-            first_seen_at=first_seen,
-            last_seen_at=last_seen,
-            touch_count=int_or_zero(row.get("Всего звонков в истории")),
-            summary={
-                "source_system": MASTER_CONTACT_SOURCE,
-                "call_count": int_or_zero(row.get("Всего звонков в истории")),
-                "contentful_call_count": int_or_zero(row.get("Содержательных звонков в истории")),
-                "tallanto_match_status": safe_text(row.get("Статус матчинга Tallanto")),
-                "amo_contact_id_count": len(split_ids(row.get("AMO contact IDs"))),
-                "amo_lead_id_count": len(split_ids(row.get("AMO lead IDs"))),
-                "brand": infer_offline_brand(row),
-            },
-            metadata={"source": MASTER_CONTACT_SOURCE},
-            created_at=generated_at,
-            updated_at=generated_at,
-        )
-        result[phone] = {"customer": customer, "row": dict(row)}
+        rows_by_phone[phone].append(row)
+    for phone, phone_rows in sorted(rows_by_phone.items()):
+        if family_phone_group(phone_rows):
+            grouped_rows = tuple((canonical_customer_key(phone, row, idx), row) for idx, row in enumerate(phone_rows, start=1))
+        else:
+            grouped_rows = ((phone, merge_contact_rows(phone_rows)),)
+        for customer_key, row in grouped_rows:
+            result[customer_key] = build_customer_index_item(
+                row,
+                tenant_id=tenant_id,
+                phone=phone,
+                customer_key=customer_key,
+                generated_at=generated_at,
+            )
     return result
+
+
+def build_customer_index_item(
+    row: Mapping[str, str],
+    *,
+    tenant_id: str,
+    phone: str,
+    customer_key: str,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    first_seen = parse_datetime_guess(row.get("Первый звонок")) or generated_at
+    last_seen = parse_datetime_guess(row.get("Последний звонок")) or first_seen
+    email = normalize_email(row.get("Email"))
+    display_name = safe_text(row.get("ФИО родителя") or row.get("ФИО родителя Tallanto") or row.get("Контакт Tallanto")) or None
+    status = IdentityStatus.STRONG if phone else IdentityStatus.PARTIAL
+    brands = tuple(split_ids(row.get("_brand_history"))) or (infer_offline_brand(row),)
+    customer = CustomerIdentity(
+        tenant_id=tenant_id,
+        identity_status=status,
+        display_name=display_name,
+        primary_phone=phone,
+        primary_email=email or None,
+        source_ref=f"master_contact:{customer_key}",
+        first_seen_at=first_seen,
+        last_seen_at=last_seen,
+        touch_count=int_or_zero(row.get("Всего звонков в истории")),
+        summary={
+            "source_system": MASTER_CONTACT_SOURCE,
+            "call_count": int_or_zero(row.get("Всего звонков в истории")),
+            "contentful_call_count": int_or_zero(row.get("Содержательных звонков в истории")),
+            "tallanto_match_status": safe_text(row.get("Статус матчинга Tallanto")),
+            "amo_contact_id_count": len(split_ids(row.get("AMO contact IDs"))),
+            "amo_lead_id_count": len(split_ids(row.get("AMO lead IDs"))),
+            "brand": infer_offline_brand(row),
+            "brands": list(brands),
+        },
+        metadata={"source": MASTER_CONTACT_SOURCE, "brands": list(brands)},
+        created_at=generated_at,
+        updated_at=generated_at,
+    )
+    return {"customer": customer, "row": dict(row), "phone": phone, "customer_key": customer_key}
+
+
+def legacy_phone_customer_id(tenant_id: str, *, phone: str, row: Mapping[str, str]) -> str:
+    return CustomerIdentity(
+        tenant_id=tenant_id,
+        identity_status=IdentityStatus.STRONG,
+        primary_phone=phone,
+        source_ref=f"master_contact:{phone}",
+    ).customer_id
+
+
+def canonical_customer_key(phone: str, row: Mapping[str, str], ordinal: int) -> str:
+    tallanto_ids = split_ids(row.get("ID Tallanto"))
+    if tallanto_ids:
+        return f"{phone}:tallanto:{'+'.join(tallanto_ids)}"
+    return f"{phone}:row:{ordinal}"
+
+
+def merge_contact_rows(rows: Sequence[Mapping[str, str]]) -> Mapping[str, str]:
+    merged: dict[str, str] = {}
+    for row in rows:
+        for key, value in row.items():
+            text = safe_text(value)
+            if text and not merged.get(key):
+                merged[key] = text
+    for key in ("ID Tallanto", "AMO contact IDs", "AMO lead IDs"):
+        values = sorted({item for row in rows for item in split_ids(row.get(key))})
+        if values:
+            merged[key] = ";".join(values)
+    brands = sorted({brand for row in rows if (brand := infer_offline_brand(row)) != "unknown"})
+    if brands:
+        merged["_brand_history"] = ";".join(brands)
+    return merged
+
+
+def family_phone_group(rows: Sequence[Mapping[str, str]]) -> bool:
+    tallanto_ids = {item for row in rows for item in split_ids(row.get("ID Tallanto"))}
+    if len(tallanto_ids) > 1:
+        return True
+    return any(tallanto_multiple_candidate(row) for row in rows)
+
+
+def tallanto_multiple_candidate(row: Mapping[str, str]) -> bool:
+    status = safe_text(row.get("Статус матчинга Tallanto")).casefold()
+    if any(marker in status for marker in ("multiple", "ambiguous", "many", "несколько", "duplicate")):
+        return True
+    return int_or_zero(row.get("Количество кандидатов Tallanto")) > 1
+
+
+def shared_family_phone_groups(customers_by_key: Mapping[str, Mapping[str, Any]]) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for item in customers_by_key.values():
+        grouped[str(item["phone"])].append(item)
+    return {
+        phone: tuple(items)
+        for phone, items in grouped.items()
+        if len(items) > 1 and len({tallanto_id for item in items for tallanto_id in split_ids(item["row"].get("ID Tallanto"))}) > 1
+    }
 
 
 def upsert_customer_bundle(
@@ -648,9 +807,13 @@ def call_event(
     call: Mapping[str, str],
     brand: str,
     fallback_at: datetime,
+    source_id_suffix: Optional[str] = None,
+    match_class: IdentityMatchClass = IdentityMatchClass.STRONG_UNIQUE,
+    confidence: float = 0.9,
 ) -> TimelineEvent:
     event_at = parse_datetime_guess(call.get("Дата и время звонка")) or fallback_at
     call_id = safe_text(call.get("ID звонка")) or stable_digest({"customer_id": customer_id, "event_at": event_at.isoformat()})[:16]
+    source_id = call_id if not source_id_suffix else f"{call_id}:{source_id_suffix}"
     direction = call_direction(call.get("Направление звонка"))
     summary = safe_text(call.get("Краткое резюме разговора") or call.get("Следующий шаг") or call.get("Тип звонка"))[:500]
     return TimelineEvent(
@@ -659,16 +822,16 @@ def call_event(
         event_type=TimelineEventType.MANGO_CALL,
         event_at=event_at,
         source_system=MANGO_SOURCE,
-        source_id=call_id,
-        source_ref=f"mango:{call_id}",
+        source_id=source_id,
+        source_ref=f"mango:{source_id}",
         direction=direction,
         actor_name=safe_text(call.get("Менеджер")),
         subject=safe_text(call.get("Тип звонка") or call.get("Рекомендуемый продукт"))[:160],
         text_preview=summary[:240],
         summary=summary,
         importance=1 if safe_text(call.get("Содержательный звонок")).lower() == "да" else 0,
-        match_status=IdentityMatchClass.STRONG_UNIQUE,
-        confidence=0.9,
+        match_status=match_class,
+        confidence=confidence,
         record={
             "brand": brand,
             "duration_sec": int_or_zero(call.get("Длительность, сек")),
@@ -972,8 +1135,8 @@ def build_coverage_report(
 ) -> Mapping[str, Any]:
     total = len(phones)
     tallanto_count = sum(1 for row in contacts if safe_text(row.get("ID Tallanto")) or safe_text(row.get("Статус матчинга Tallanto")))
-    amo_count = len(amo_contacts_by_phone)
-    mail_count = len(mail_by_phone)
+    amo_count = sum(1 for phone in phones if amo_contacts_by_phone.get(phone))
+    mail_count = sum(1 for phone in phones if mail_by_phone.get(phone))
     call_count = sum(1 for phone in phones if calls_by_phone.get(phone))
     summary = {
         "total_customers": total,
@@ -1098,11 +1261,7 @@ def manual_review_reasons(
     duplicate_amo_lead_ids = duplicate_amo_lead_ids or set()
     if safe_text(row.get("Нужна ручная проверка")).lower() == "да":
         reasons.append("source_manual_review_required")
-    if len(split_ids(row.get("ID Tallanto"))) > 1 or safe_text(row.get("Статус матчинга Tallanto")).lower() in {
-        "multiple",
-        "ambiguous",
-        "many",
-    }:
+    if len(split_ids(row.get("ID Tallanto"))) > 1 or tallanto_multiple_candidate(row):
         reasons.append("multiple_tallanto_candidates")
     if safe_text(row.get("Статус матчинга Tallanto")).lower() in {"", "missing", "not_found", "none", "нет"}:
         reasons.append("missing_tallanto_context")

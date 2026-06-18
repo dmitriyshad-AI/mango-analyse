@@ -502,6 +502,21 @@ class CustomerTimelineSQLiteStore:
               record_json TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS customer_id_mappings (
+              mapping_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              old_customer_id TEXT NOT NULL,
+              new_customer_id TEXT NOT NULL,
+              mapping_kind TEXT NOT NULL,
+              resolution_status TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL,
+              UNIQUE(tenant_id, old_customer_id, new_customer_id)
+            );
+
             CREATE TABLE IF NOT EXISTS audit_log (
               seq INTEGER PRIMARY KEY AUTOINCREMENT,
               audit_id TEXT NOT NULL UNIQUE,
@@ -553,6 +568,10 @@ class CustomerTimelineSQLiteStore:
               ON ingestion_runs(tenant_id, source_system, status, started_at);
             CREATE INDEX IF NOT EXISTS ix_timeline_conflicts_status
               ON timeline_conflicts(tenant_id, status, severity, created_at);
+            CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_old
+              ON customer_id_mappings(tenant_id, old_customer_id, resolution_status);
+            CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_new
+              ON customer_id_mappings(tenant_id, new_customer_id, resolution_status);
             CREATE INDEX IF NOT EXISTS ix_audit_log_entity
               ON audit_log(tenant_id, entity_type, entity_id, created_at);
             CREATE INDEX IF NOT EXISTS ix_audit_log_ingestion
@@ -995,6 +1014,101 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
         )
 
+    def record_customer_id_mapping(
+        self,
+        tenant_id: str,
+        *,
+        old_customer_id: str,
+        new_customer_id: str,
+        reason: str,
+        mapping_kind: str = "alias",
+        resolution_status: str = "active",
+        source_refs: Sequence[str] = (),
+        metadata: Optional[Mapping[str, Any]] = None,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> CustomerTimelineStoreWriteResult:
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        old_id = require_text(old_customer_id, "old_customer_id")
+        new_id = require_text(new_customer_id, "new_customer_id")
+        normalized_reason = normalize_key(reason, "reason")
+        normalized_kind = normalize_key(mapping_kind, "mapping_kind")
+        normalized_status = normalize_key(resolution_status, "resolution_status")
+        self._assert_customer_exists(tenant, new_id)
+        refs = tuple(require_text(item, "source_ref") for item in source_refs)
+        mapping_id = stable_prefixed_id(
+            "customer_id_mapping",
+            {
+                "tenant_id": tenant,
+                "old_customer_id": old_id,
+                "new_customer_id": new_id,
+            },
+        )
+        existing = self._fetch_one(
+            """
+            SELECT record_json FROM customer_id_mappings
+            WHERE tenant_id = ? AND old_customer_id = ? AND resolution_status = 'active'
+            """,
+            (tenant, old_id),
+        )
+        existing_payload = json_loads(existing["record_json"]) if existing is not None else {}
+        if (
+            existing_payload
+            and existing_payload.get("mapping_id") != mapping_id
+            and existing_payload.get("new_customer_id") != new_id
+            and existing_payload.get("mapping_kind") != "split"
+            and normalized_kind != "split"
+        ):
+            raise ValueError(
+                f"old_customer_id already has active mapping: {old_id} -> {existing_payload.get('new_customer_id')}"
+            )
+        created_at = (
+            parse_datetime(existing_payload["created_at"], "created_at")
+            if existing_payload.get("mapping_id") == mapping_id and existing_payload.get("created_at")
+            else self._now()
+        )
+        updated_at = (
+            parse_datetime(existing_payload["updated_at"], "updated_at")
+            if existing_payload.get("mapping_id") == mapping_id and existing_payload.get("updated_at")
+            else self._now()
+        )
+        payload = {
+            "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+            "mapping_id": mapping_id,
+            "tenant_id": tenant,
+            "old_customer_id": old_id,
+            "new_customer_id": new_id,
+            "mapping_kind": normalized_kind,
+            "resolution_status": normalized_status,
+            "reason": normalized_reason,
+            "source_refs": list(refs),
+            "ingestion_run_id": ingestion_run_id,
+            "metadata": dict(metadata or {}),
+            "created_at": created_at.isoformat(),
+            "updated_at": updated_at.isoformat(),
+        }
+        return self._upsert_record(
+            table="customer_id_mappings",
+            key_column="mapping_id",
+            key_value=mapping_id,
+            record_type="customer_id_mapping",
+            tenant_id=tenant,
+            payload=payload,
+            columns={
+                "tenant_id": tenant,
+                "old_customer_id": old_id,
+                "new_customer_id": new_id,
+                "mapping_kind": normalized_kind,
+                "resolution_status": normalized_status,
+                "reason": normalized_reason,
+                "created_at": created_at.isoformat(),
+                "updated_at": updated_at.isoformat(),
+            },
+            actor=actor,
+            ingestion_run_id=ingestion_run_id,
+        )
+
     def append_audit_log(
         self,
         tenant_id: str,
@@ -1119,6 +1233,38 @@ class CustomerTimelineSQLiteStore:
             SELECT record_json FROM identity_links
             WHERE {' AND '.join(clauses)}
             ORDER BY match_class, source_system, source_ref, link_id
+            LIMIT ?
+            """,
+            (*params, checked_limit(limit, "limit"),),
+        ).fetchall()
+        return tuple(json_loads(row["record_json"]) for row in rows)
+
+    def list_customer_id_mappings(
+        self,
+        tenant_id: str,
+        *,
+        old_customer_id: Optional[str] = None,
+        new_customer_id: Optional[str] = None,
+        resolution_status: Optional[str] = None,
+        limit: int = 500,
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [tenant]
+        if old_customer_id:
+            clauses.append("old_customer_id = ?")
+            params.append(require_text(old_customer_id, "old_customer_id"))
+        if new_customer_id:
+            clauses.append("new_customer_id = ?")
+            params.append(require_text(new_customer_id, "new_customer_id"))
+        if resolution_status:
+            clauses.append("resolution_status = ?")
+            params.append(normalize_key(resolution_status, "resolution_status"))
+        rows = self._con.execute(
+            f"""
+            SELECT record_json FROM customer_id_mappings
+            WHERE {' AND '.join(clauses)}
+            ORDER BY old_customer_id, new_customer_id, mapping_id
             LIMIT ?
             """,
             (*params, checked_limit(limit, "limit"),),
@@ -2002,6 +2148,7 @@ REQUIRED_TABLES = (
     "bot_context_chunks",
     "ingestion_runs",
     "timeline_conflicts",
+    "customer_id_mappings",
     "audit_log",
 )
 

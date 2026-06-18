@@ -196,16 +196,20 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert "customer_identities" in names
     assert "timeline_events" in names
     assert "timeline_conflicts" in names
+    assert "customer_id_mappings" in names
     assert summary["schema_version"] == CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION
     assert summary["backend"] == "sqlite"
     assert summary["counts"]["schema_migrations"] == 1
     assert summary["counts"]["timeline_events"] == 0
+    assert summary["counts"]["customer_id_mappings"] == 0
     assert summary["validation_ok"] is True
     assert summary["safety"]["write_crm"] is False
     assert summary["safety"]["write_tallanto"] is False
     assert summary["safety"]["write_runtime_db"] is False
     assert summary["safety"]["stable_runtime_writes"] is False
     assert summary["safety"]["store_raw_files_in_sqlite"] is False
+    assert summary["safety"]["old_to_new_customer_id_mapping_required"] is True
+    assert summary["safety"]["brand_blocks_identity_merge"] is False
     assert reopened._con.execute("PRAGMA foreign_key_check").fetchall() == []
     reopened.close()
 
@@ -365,6 +369,84 @@ def test_upsert_updates_existing_record_without_changing_stable_id(tmp_path: Pat
     assert saved["display_name"] == "Иванова Мария Петровна"
     assert saved["touch_count"] == 2
     assert [item["action"] for item in audit] == ["customer_identity_updated", "customer_identity_created"]
+    store.close()
+
+
+def test_customer_id_mapping_is_reversible_idempotent_and_guarded(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    target = identity(phone="+79160000003")
+    other = identity(phone="+79160000004")
+    store.upsert_customer(target)
+    store.upsert_customer(other)
+
+    first = store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-a",
+        new_customer_id=target.customer_id,
+        mapping_kind="merge",
+        reason="phone_identity_union",
+        source_refs=("amocrm:contact:1", "mango:call:1"),
+        actor="identity_resolver",
+    )
+    second = store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-a",
+        new_customer_id=target.customer_id,
+        mapping_kind="merge",
+        reason="phone_identity_union",
+        source_refs=("amocrm:contact:1", "mango:call:1"),
+        actor="identity_resolver",
+    )
+    store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-b",
+        new_customer_id=target.customer_id,
+        mapping_kind="merge",
+        reason="phone_identity_union",
+        source_refs=("tallanto:student:1",),
+        actor="identity_resolver",
+    )
+
+    mappings = store.list_customer_id_mappings("foton")
+    reverse = {target.customer_id: {item["old_customer_id"] for item in mappings if item["new_customer_id"] == target.customer_id}}
+
+    assert first.created is True
+    assert second.created is False
+    assert second.status == "duplicate"
+    assert store.summary()["counts"]["customer_id_mappings"] == 2
+    assert {item["old_customer_id"] for item in mappings} == {"customer:legacy-a", "customer:legacy-b"}
+    assert reverse == {target.customer_id: {"customer:legacy-a", "customer:legacy-b"}}
+    assert mappings[0]["resolution_status"] == "active"
+    assert mappings[0]["ingestion_run_id"] is None
+    split = store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-a",
+        new_customer_id=other.customer_id,
+        mapping_kind="split",
+        reason="manual_override",
+    )
+    assert split.created is True
+    assert {
+        item["new_customer_id"]
+        for item in store.list_customer_id_mappings("foton", old_customer_id="customer:legacy-a")
+    } == {target.customer_id, other.customer_id}
+    with pytest.raises(ValueError, match="customer does not exist"):
+        store.record_customer_id_mapping(
+            "foton",
+            old_customer_id="customer:legacy-missing",
+            new_customer_id="customer:missing",
+            reason="phone_identity_union",
+        )
+    third = identity(phone="+79160000005")
+    store.upsert_customer(third)
+    with pytest.raises(ValueError, match="already has active mapping"):
+        store.record_customer_id_mapping(
+            "foton",
+            old_customer_id="customer:legacy-b",
+            new_customer_id=third.customer_id,
+            mapping_kind="alias",
+            reason="manual_override",
+        )
     store.close()
 
 

@@ -14,7 +14,7 @@ from mango_mvp.customer_timeline import (
     build_canonical_readonly_customer_timeline,
     canonical_readonly_timeline_safety_contract,
 )
-from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand, infer_offline_brand, split_ids
+from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand, infer_offline_brand, split_ids, tallanto_match_class
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 
 
@@ -311,6 +311,94 @@ def test_canonical_family_phone_keeps_tallanto_students_split_and_conflicted(tmp
     assert len(split_mappings) == 2
     assert len({item["old_customer_id"] for item in split_mappings}) == 1
     assert {item["new_customer_id"] for item in split_mappings} == {item["customer_id"] for item in phone_links}
+
+
+def test_canonical_family_phone_splits_single_row_with_multiple_tallanto_ids(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    runtime_root = tmp_path / "runtime_source"
+    _write_csv(
+        runtime_root / "master_contacts_ru.csv",
+        [
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "exact_phone_multiple",
+                "Количество кандидатов Tallanto": "3",
+                "ID Tallanto": "student-1;student-2;student-3",
+                "Краткая история общения": "В семье несколько учеников.",
+                "Рекомендуемый продукт": "Фотон математика",
+            },
+        ],
+    )
+
+    report = build_canonical_readonly_customer_timeline(config)
+    with sqlite3.connect(config.timeline_db) as con:
+        identities = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM customer_identities ORDER BY customer_id")
+        ]
+        phone_links = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM identity_links WHERE link_type = 'phone'")
+        ]
+        conflicts = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM timeline_conflicts WHERE conflict_type = 'shared_family_phone'")
+        ]
+        split_mappings = [
+            json.loads(row[0])
+            for row in con.execute("SELECT record_json FROM customer_id_mappings WHERE mapping_kind = 'split'")
+        ]
+
+    assert report["summary"]["total_customers"] == 3
+    assert {item["identity_status"] for item in identities} == {"ambiguous"}
+    assert len({item["customer_id"] for item in identities}) == 3
+    assert {item["match_class"] for item in phone_links} == {"ambiguous"}
+    assert len(conflicts) == 1
+    assert {"tallanto_student:student-1", "tallanto_student:student-2", "tallanto_student:student-3"} <= set(
+        conflicts[0]["entity_refs"]
+    )
+    assert len(split_mappings) == 3
+    assert len({item["old_customer_id"] for item in split_mappings}) == 1
+
+
+def test_canonical_no_exact_tallanto_match_is_partial_not_strong(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    runtime_root = tmp_path / "runtime_source"
+    _write_csv(
+        runtime_root / "master_contacts_ru.csv",
+        [
+            {
+                "Телефон клиента": "+79161234567",
+                "Email": "parent@example.com",
+                "ФИО родителя": "Иван Петров",
+                "Первый звонок": "2026-05-01 10:00:00",
+                "Последний звонок": "2026-05-02 11:00:00",
+                "Всего звонков в истории": "2",
+                "Содержательных звонков в истории": "2",
+                "Статус матчинга Tallanto": "no_exact_phone_match",
+                "Краткая история общения": "Клиент выбирает курс математики.",
+                "Рекомендуемый продукт": "Фотон математика",
+            },
+        ],
+    )
+
+    build_canonical_readonly_customer_timeline(config)
+    with sqlite3.connect(config.timeline_db) as con:
+        identity = json.loads(con.execute("SELECT record_json FROM customer_identities").fetchone()[0])
+        tallanto_event = json.loads(
+            con.execute("SELECT record_json FROM timeline_events WHERE event_type = 'tallanto_student_snapshot'").fetchone()[0]
+        )
+
+    assert tallanto_match_class("exact_phone_single").value == "strong_unique"
+    assert tallanto_match_class("no_exact_phone_match").value == "unmatched"
+    assert identity["identity_status"] == "partial"
+    assert tallanto_event["match_status"] == "unmatched"
 
 
 def test_canonical_brand_history_does_not_split_same_identity(tmp_path: Path) -> None:

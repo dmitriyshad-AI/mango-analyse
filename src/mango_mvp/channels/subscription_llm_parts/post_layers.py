@@ -120,6 +120,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS,
+    P0_OUTPUT_MODEL_CARRY_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
@@ -3325,6 +3326,30 @@ def _authoritative_gate_finding(code: str, *, detail: str = "", source: str = ""
     return finding
 
 
+def _p0_output_model_carry_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        P0_OUTPUT_MODEL_CARRY_ENV,
+        aliases=("p0_output_model_carry", "p0_output_model_carry_enabled"),
+    )
+    return bool(explicit)
+
+
+def _authoritative_gate_model_p0_finding(
+    result: SubscriptionDraftResult,
+    context: Optional[Mapping[str, Any]],
+) -> dict[str, str] | None:
+    if not _p0_output_model_carry_enabled(context):
+        return None
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    model_p0 = metadata.get("direct_path_model_p0")
+    if not isinstance(model_p0, Mapping) or not bool(model_p0.get("is_p0")):
+        return None
+    kind = str(model_p0.get("p0_kind") or "model_p0").strip() or "model_p0"
+    source = str(model_p0.get("source") or "direct_path_model_p0").strip() or "direct_path_model_p0"
+    return _authoritative_gate_finding("hard_p0", detail=kind, source=source)
+
+
 def _authoritative_gate_findings(
     result: SubscriptionDraftResult,
     *,
@@ -3337,6 +3362,9 @@ def _authoritative_gate_findings(
     findings.extend(_authoritative_gate_text_guard_findings(result))
     findings.extend(_authoritative_gate_a2_findings(result, client_message=client_message, context=context))
     findings.extend(_authoritative_gate_semantic_output_findings(result))
+    model_p0_finding = _authoritative_gate_model_p0_finding(result, context)
+    if model_p0_finding:
+        findings.append(model_p0_finding)
     if text_only:
         return _dedupe_gate_findings(findings)
 

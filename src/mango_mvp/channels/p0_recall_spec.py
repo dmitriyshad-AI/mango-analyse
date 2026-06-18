@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Sequence
 
@@ -9,6 +10,7 @@ from mango_mvp.channels.semantic_roles import is_negated_refund_topic, tag_messa
 P0_RECALL_SPEC_SCHEMA_VERSION = "p0_recall_spec_v1_2026_05_24"
 HARD_P0_CODES = frozenset({"refund", "legal", "complaint", "payment_dispute"})
 SOFT_P0_CODES = frozenset({"reputation_threat"})
+P0_DEEP_MATCH_ENV = "TELEGRAM_P0_DEEP_MATCH"
 
 # This module is the shared P0 recall source for runtime guards, tests and KB
 # trigger checks. Keep hard signals conservative: false negatives are more
@@ -130,6 +132,24 @@ PAYMENT_DISPUTE_RE = re.compile(
     r"|не\s+буду\s+платить[^.!?\n]{0,80}(?:развод|обман|мошенн))",
     re.I,
 )
+_PAYMENT_MOVED_DEEP_RE = re.compile(
+    rf"(?:{_PAYMENT_MOVED_PATTERN}|(?<!не\s)\bоформил\w*\s+оплат\w*|(?<!не\s)\bоплат\w*\s+прошл\w*)",
+    re.I,
+)
+_PAYMENT_RESULT_ACCESS_TARGET_DEEP_PATTERN = (
+    rf"(?:{_PAYMENT_RESULT_ACCESS_TARGET_PATTERN}|активаци\w*|подключени\w*)"
+)
+_PAYMENT_RESULT_MISS_DEEP_PATTERN = (
+    r"(?:нет|не\s+(?:видн|появ|прош[её]л|зачисл|откр|получ|приш\w*|да(?:ли|ют)"
+    r"|активир\w*|подключ\w*|выслал\w*|назначил\w*)|пуст\w*|заблокир\w*)"
+)
+_PAYMENT_RESULT_MISSING_DEEP_RE = re.compile(
+    rf"(?:(?:{_PAYMENT_RESULT_ACCESS_TARGET_DEEP_PATTERN}){_PAYMENT_RESULT_ACCESS_GAP}{_PAYMENT_RESULT_MISS_DEEP_PATTERN}"
+    rf"|{_PAYMENT_RESULT_MISS_DEEP_PATTERN}{_PAYMENT_RESULT_ACCESS_GAP}(?:{_PAYMENT_RESULT_ACCESS_TARGET_DEEP_PATTERN})"
+    rf"|(?:{_PAYMENT_RESULT_GENERIC_TARGET_PATTERN}){_PAYMENT_RESULT_GENERIC_GAP}{_PAYMENT_RESULT_MISS_DEEP_PATTERN}"
+    rf"|{_PAYMENT_RESULT_MISS_DEEP_PATTERN}{_PAYMENT_RESULT_GENERIC_GAP}(?:{_PAYMENT_RESULT_GENERIC_TARGET_PATTERN}))",
+    re.I,
+)
 
 SOFT_NEGATIVE_ONLY_RE = re.compile(
     r"\b(?:подумаю|обсудить|обсудим|с менеджером обсудить|наверное\s+подумаем)\b",
@@ -174,6 +194,28 @@ PAYMENT_DISPUTE_BENIGN_CASES: tuple[str, ...] = (
     "Где будет видно оплату после платежа?",
     "Занятий в системе нет, это расписание ещё не открыли?",
     "Оплатил два курса.",
+    "Занятия завтра, в системе расписания пока нет.",
+    "Оплату ещё не вносил, доступ не появился — так и должно быть?",
+    "Подключили новую платформу, удобно?",
+    "Ссылку выслали, спасибо!",
+    "Активировали аккаунт, всё работает.",
+    "Списать абонемент за пропуск — нормально?",
+    "Онлайн - очень удобно.",
+)
+
+PAYMENT_DISPUTE_DEEP_POSITIVE_CASES: tuple[str, ...] = (
+    "Оплата прошла. Доступа нет.",
+    "Оплата прошла, но доступ не активировали.",
+    "Оплатили курс. Ссылку не выслали.",
+    "Оплатили, а занятие не назначили.",
+    "Деньги спи-сали, а подключение не активировали.",
+    "Оформили оплату, но доступ заблокирован.",
+    "Платёж прошёл. Логин не выслали.",
+    "Оплатили онлайн, но платформу не подключили.",
+    "Деньги ушли. Активации нет.",
+    "Провели платёж. Кабинет заблокирован.",
+    "Сняли оплату, доступ не открыли.",
+    "Внесли оплату. Приглашение не назначили.",
 )
 
 P0_TRUE_POSITIVE_CASES: tuple[tuple[str, str], ...] = (
@@ -268,23 +310,51 @@ def has_complaint_signal(text: str) -> bool:
     return bool(COMPLAINT_RE.search(text))
 
 
+def _p0_deep_match_enabled() -> bool:
+    return str(os.getenv(P0_DEEP_MATCH_ENV) or "").strip().casefold() in {"1", "true", "yes", "on", "да"}
+
+
+def _p0_normalize_for_match(text: str) -> str:
+    return re.sub(r"(?<=[а-яё])[-‐‑‒–—](?=[а-яё])", "", str(text or ""), flags=re.I)
+
+
+def _payment_dispute_across_sentences(normalized: str) -> bool:
+    segments = [segment.strip() for segment in re.split(r"(?<=[.!?])\s+", str(normalized or "")) if segment.strip()]
+    for left, right in zip(segments, segments[1:]):
+        if (_PAYMENT_MOVED_DEEP_RE.search(left) and _PAYMENT_RESULT_MISSING_DEEP_RE.search(right)) or (
+            _PAYMENT_MOVED_DEEP_RE.search(right) and _PAYMENT_RESULT_MISSING_DEEP_RE.search(left)
+        ):
+            return True
+    return False
+
+
+def _payment_dispute_deep_match(normalized: str) -> bool:
+    segments = [segment.strip() for segment in re.split(r"(?<=[.!?])\s+|\n+", str(normalized or "")) if segment.strip()]
+    for segment in segments:
+        if _PAYMENT_MOVED_DEEP_RE.search(segment) and _PAYMENT_RESULT_MISSING_DEEP_RE.search(segment):
+            return True
+    return _payment_dispute_across_sentences(normalized)
+
+
 def codes_from_text(text: str) -> tuple[str, ...]:
     value = str(text or "")
+    deep_match = _p0_deep_match_enabled()
+    match_value = _p0_normalize_for_match(value) if deep_match else value
     result: list[str] = []
-    refund_frame = tag_message_roles(value).refund_frame
+    refund_frame = tag_message_roles(match_value).refund_frame
     benign_refund_context = refund_frame == "presale_policy"
-    negated_refund_topic = is_negated_refund_topic(value)
-    if refund_frame == "dispute" or (REFUND_RE.search(value) and not benign_refund_context and not negated_refund_topic):
+    negated_refund_topic = is_negated_refund_topic(match_value)
+    if refund_frame == "dispute" or (REFUND_RE.search(match_value) and not benign_refund_context and not negated_refund_topic):
         result.append("refund")
-    if LEGAL_RE.search(value):
+    if LEGAL_RE.search(match_value):
         result.append("legal")
-    if has_complaint_signal(value):
+    if has_complaint_signal(match_value):
         result.append("complaint")
-    if REPUTATION_RE.search(value):
+    if REPUTATION_RE.search(match_value):
         result.append("reputation_threat")
-    if PAYMENT_DISPUTE_RE.search(value):
+    if PAYMENT_DISPUTE_RE.search(match_value) or (deep_match and _payment_dispute_deep_match(match_value)):
         result.append("payment_dispute")
-    if "payment_dispute" in result and REFUND_RE.search(value) and not benign_refund_context and not negated_refund_topic:
+    if "payment_dispute" in result and REFUND_RE.search(match_value) and not benign_refund_context and not negated_refund_topic:
         result.insert(0, "refund")
     return tuple(dict.fromkeys(result))
 

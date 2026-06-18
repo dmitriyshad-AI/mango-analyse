@@ -16,6 +16,8 @@ import os
 import sys
 import types
 
+import pytest
+
 
 def load_codes_from_text():
     # 1) обычный импорт (среда репо с зависимостями)
@@ -117,3 +119,43 @@ if __name__ == "__main__":
 
 def test_p0_perifraz_reference_cases() -> None:
     assert main() == 0
+
+
+def test_tz147_deep_payment_access_cases_are_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mango_mvp.channels.p0_recall_spec import PAYMENT_DISPUTE_DEEP_POSITIVE_CASES, codes_from_text
+
+    monkeypatch.setenv("TELEGRAM_P0_DEEP_MATCH", "1")
+
+    misses = [message for message in PAYMENT_DISPUTE_DEEP_POSITIVE_CASES if "payment_dispute" not in codes_from_text(message)]
+
+    assert misses == []
+    assert len(PAYMENT_DISPUTE_DEEP_POSITIVE_CASES) >= 12
+
+
+def test_tz147_deep_payment_access_is_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mango_mvp.channels.p0_recall_spec import PAYMENT_DISPUTE_DEEP_POSITIVE_CASES, codes_from_text
+
+    monkeypatch.delenv("TELEGRAM_P0_DEEP_MATCH", raising=False)
+
+    assert "payment_dispute" not in codes_from_text("Оплата прошла. Доступа нет.")
+    assert any("payment_dispute" not in codes_from_text(message) for message in PAYMENT_DISPUTE_DEEP_POSITIVE_CASES)
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Занятия завтра, в системе расписания пока нет.",
+        "Оплату ещё не вносил, доступ не появился — так и должно быть?",
+        "Подключили новую платформу, удобно?",
+        "Ссылку выслали, спасибо!",
+        "Активировали аккаунт, всё работает.",
+        "Списать абонемент за пропуск — нормально?",
+        "Онлайн - очень удобно.",
+    ),
+)
+def test_tz147_deep_payment_negatives_stay_non_p0(monkeypatch: pytest.MonkeyPatch, message: str) -> None:
+    from mango_mvp.channels.p0_recall_spec import codes_from_text
+
+    monkeypatch.setenv("TELEGRAM_P0_DEEP_MATCH", "1")
+
+    assert codes_from_text(message) == ()

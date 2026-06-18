@@ -12321,6 +12321,107 @@ def test_direct_path_model_p0_payment_dispute_routes_before_gate_and_replaces_sa
     assert "hard_p0" in {item["code"] for item in gate["findings"]}
 
 
+def test_p0_output_model_carry_is_default_off() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Можем посмотреть варианты обучения.",
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "payment_dispute",
+                "source": "model_p0",
+            }
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Нужна помощь по спорной ситуации с оплатой.",
+        context={"active_brand": "foton"},
+    )
+
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gate["action"] == "pass"
+    assert "hard_p0" not in {item["code"] for item in gate["findings"]}
+
+
+def test_p0_output_model_carry_blocks_when_enabled() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Можем посмотреть варианты обучения.",
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "payment_dispute",
+                "source": "model_p0",
+            }
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Нужна помощь по спорной ситуации с оплатой.",
+        context={"active_brand": "foton", subscription_llm.P0_OUTPUT_MODEL_CARRY_ENV: "1"},
+    )
+
+    gate = gated.metadata["authoritative_output_gate"]
+    findings = gate["findings"]
+    assert gated.route == "manager_only"
+    assert gated.draft_text == SAFE_FALLBACK_DRAFT_TEXT
+    assert gate["action"] == "block"
+    assert any(item["code"] == "hard_p0" and item["detail"] == "payment_dispute" and item["source"] == "model_p0" for item in findings)
+
+
+def test_p0_output_model_carry_context_off_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(subscription_llm.P0_OUTPUT_MODEL_CARRY_ENV, "1")
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Можем посмотреть варианты обучения.",
+        metadata={
+            "direct_path_model_p0": {
+                "is_p0": True,
+                "risk_level": "high",
+                "p0_kind": "payment_dispute",
+            }
+        },
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Нужна помощь по спорной ситуации с оплатой.",
+        context={"active_brand": "foton", subscription_llm.P0_OUTPUT_MODEL_CARRY_ENV: "0"},
+    )
+
+    gate = gated.metadata["authoritative_output_gate"]
+    assert gated.route == "bot_answer_self_for_pilot"
+    assert gate["action"] == "pass"
+    assert "hard_p0" not in {item["code"] for item in gate["findings"]}
+
+
+def test_hard_regex_p0_pre_gate_keeps_manager_only_even_if_direct_model_unavailable() -> None:
+    provider = _DirectPathSequenceProvider(RuntimeError("model unavailable"))
+
+    result = provider.build_draft(
+        "Оплатил, занятий нет — верните деньги.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+        },
+    )
+
+    gate = result.metadata["authoritative_output_gate"]
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert "direct_path_preblocked_p0" in result.safety_flags
+    assert result.metadata["direct_path"]["model_called"] is False
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert gate["action"] == "pass"
+
+
 def test_direct_path_model_p0_latches_next_neutral_turn() -> None:
     first_provider = _DirectPathProvider(
         SubscriptionDraftResult(

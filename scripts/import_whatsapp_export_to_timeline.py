@@ -157,16 +157,30 @@ class WhatsAppParseStats:
 @dataclass(frozen=True)
 class PhoneCustomerLookup:
     unique_customer_ids: Mapping[str, str]
-    ambiguous_phone_matches: int
+    ambiguous_customer_ids: Mapping[str, tuple[str, ...]]
+
+    @property
+    def ambiguous_phone_matches(self) -> int:
+        return len(self.ambiguous_customer_ids)
 
 
 class WhatsAppTimelineNormalizer:
     source_system = SOURCE_SYSTEM
 
-    def __init__(self, *, tenant_id: str, phone_customer_ids: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tenant_id: str,
+        phone_customer_ids: Mapping[str, str] | None = None,
+        ambiguous_phone_customer_ids: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
         self.tenant_id = normalize_key(tenant_id, "tenant_id")
         self._channel_normalizer = ChannelMessageNormalizer(tenant_id=self.tenant_id)
         self._phone_customer_ids = dict(phone_customer_ids or {})
+        self._ambiguous_phone_customer_ids = {
+            str(phone): tuple(sorted(str(customer_id) for customer_id in customer_ids))
+            for phone, customer_ids in (ambiguous_phone_customer_ids or {}).items()
+        }
 
     def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
         batch = self._channel_normalizer.normalize(record)
@@ -176,47 +190,138 @@ class WhatsAppTimelineNormalizer:
 
         customers = batch.customers
         links = batch.identity_links
+        conflicts = batch.conflicts
         customer_id = batch.customers[0].customer_id if batch.customers else ""
         if phone and customers:
+            phone_value = str(phone)
             base_customer = customers[0]
-            existing_customer_id = self._phone_customer_ids.get(str(phone))
-            if existing_customer_id:
-                customer_id = existing_customer_id
-                customers = ()
-            else:
+            existing_customer_id = self._phone_customer_ids.get(phone_value)
+            ambiguous_customer_ids = self._ambiguous_phone_customer_ids.get(phone_value, ())
+            event_at = batch.events[0].event_at if batch.events else base_customer.first_seen_at
+            phone_evidence = {
+                "linked_by_phone": True,
+                "chat_name": payload.get("chat_name"),
+                "source_channel": CHANNEL,
+            }
+            if ambiguous_customer_ids:
                 customer_id = base_customer.customer_id
                 customers = tuple(
-                    replace(item, identity_status=IdentityStatus.STRONG, primary_phone=phone)
+                    replace(
+                        item,
+                        identity_status=IdentityStatus.AMBIGUOUS,
+                        primary_phone=phone_value,
+                        metadata={
+                            **item.metadata,
+                            "identity_conflict": "whatsapp_phone_ambiguous",
+                            "candidate_customer_ids": list(ambiguous_customer_ids),
+                        },
+                    )
                     if item.customer_id == base_customer.customer_id
                     else item
                     for item in customers
                 )
-            event_at = batch.events[0].event_at if batch.events else base_customer.first_seen_at
-            links = tuple(replace(link, customer_id=customer_id) for link in links)
-            links = (
-                *links,
-                IdentityLink(
-                    tenant_id=self.tenant_id,
-                    customer_id=customer_id,
-                    link_type="phone",
-                    link_value=str(phone),
-                    source_system=self.source_system,
-                    source_ref=record.source_ref,
-                    match_class=IdentityMatchClass.STRONG_UNIQUE,
-                    confidence=0.9,
-                    evidence={
-                        "linked_by_phone": True,
-                        "chat_name": payload.get("chat_name"),
+                links = tuple(
+                    replace(
+                        link,
+                        customer_id=customer_id,
+                        match_class=IdentityMatchClass.AMBIGUOUS,
+                        confidence=0.0,
+                        evidence={
+                            **link.evidence,
+                            "ambiguous_phone": True,
+                            "candidate_customer_ids": list(ambiguous_customer_ids),
+                        },
+                    )
+                    for link in links
+                )
+                links = (
+                    *links,
+                    IdentityLink(
+                        tenant_id=self.tenant_id,
+                        customer_id=customer_id,
+                        link_type="whatsapp_phone",
+                        link_value=phone_value,
+                        source_system=self.source_system,
+                        source_ref=record.source_ref,
+                        match_class=IdentityMatchClass.AMBIGUOUS,
+                        confidence=0.0,
+                        evidence={**phone_evidence, "candidate_customer_ids": list(ambiguous_customer_ids)},
+                        first_seen_at=event_at,
+                        last_seen_at=event_at,
+                    ),
+                )
+                conflicts = (
+                    *conflicts,
+                    {
+                        "tenant_id": self.tenant_id,
+                        "conflict_type": "whatsapp_phone_ambiguous",
+                        "entity_refs": (
+                            f"whatsapp_phone:{phone_value}",
+                            record.source_ref,
+                            *ambiguous_customer_ids,
+                        ),
+                        "severity": "medium",
+                        "status": "open",
+                        "summary": "WhatsApp chat phone matches multiple existing customers",
+                        "metadata": {
+                            "phone": phone_value,
+                            "candidate_customer_ids": list(ambiguous_customer_ids),
+                            "source_ref": record.source_ref,
+                        },
                     },
-                    first_seen_at=event_at,
-                    last_seen_at=event_at,
-                ),
-            )
+                )
+            elif existing_customer_id:
+                customer_id = existing_customer_id
+                customers = ()
+                links = tuple(replace(link, customer_id=customer_id) for link in links)
+                links = (
+                    *links,
+                    *self._phone_links(
+                        phone_value,
+                        customer_id=customer_id,
+                        source_ref=record.source_ref,
+                        event_at=event_at,
+                        match_class=IdentityMatchClass.STRONG_UNIQUE,
+                        confidence=0.9,
+                        evidence=phone_evidence,
+                    ),
+                )
+            else:
+                customer_id = base_customer.customer_id
+                customers = tuple(
+                    replace(item, identity_status=IdentityStatus.PARTIAL, primary_phone=phone_value)
+                    if item.customer_id == base_customer.customer_id
+                    else item
+                    for item in customers
+                )
+                links = tuple(replace(link, customer_id=customer_id) for link in links)
+                links = (
+                    *links,
+                    *self._phone_links(
+                        phone_value,
+                        customer_id=customer_id,
+                        source_ref=record.source_ref,
+                        event_at=event_at,
+                        match_class=IdentityMatchClass.STRONG_UNIQUE,
+                        confidence=0.9,
+                        evidence=phone_evidence,
+                    ),
+                )
 
         events = tuple(
             replace(
                 event,
                 customer_id=customer_id or event.customer_id,
+                match_status=IdentityMatchClass.AMBIGUOUS
+                if phone and str(phone) in self._ambiguous_phone_customer_ids
+                else (
+                    IdentityMatchClass.STRONG_UNIQUE
+                    if phone and str(phone) in self._phone_customer_ids
+                    else event.match_status
+                ),
+                confidence=0.0
+                if phone and str(phone) in self._ambiguous_phone_customer_ids
+                else (0.9 if phone and str(phone) in self._phone_customer_ids else event.confidence),
                 metadata={**event.metadata, "brand": brand, "channel": CHANNEL, "channel_shared": True},
             )
             for event in batch.events
@@ -239,7 +344,47 @@ class WhatsAppTimelineNormalizer:
             artifacts=batch.artifacts,
             signals=batch.signals,
             bot_context_chunks=chunks,
-            conflicts=batch.conflicts,
+            conflicts=conflicts,
+        )
+
+    def _phone_links(
+        self,
+        phone: str,
+        *,
+        customer_id: str,
+        source_ref: str,
+        event_at: Any,
+        match_class: IdentityMatchClass,
+        confidence: float,
+        evidence: Mapping[str, Any],
+    ) -> tuple[IdentityLink, IdentityLink]:
+        return (
+            IdentityLink(
+                tenant_id=self.tenant_id,
+                customer_id=customer_id,
+                link_type="phone",
+                link_value=phone,
+                source_system=self.source_system,
+                source_ref=source_ref,
+                match_class=match_class,
+                confidence=confidence,
+                evidence=evidence,
+                first_seen_at=event_at,
+                last_seen_at=event_at,
+            ),
+            IdentityLink(
+                tenant_id=self.tenant_id,
+                customer_id=customer_id,
+                link_type="whatsapp_phone",
+                link_value=phone,
+                source_system=self.source_system,
+                source_ref=source_ref,
+                match_class=match_class,
+                confidence=confidence,
+                evidence=evidence,
+                first_seen_at=event_at,
+                last_seen_at=event_at,
+            ),
         )
 
 
@@ -307,7 +452,11 @@ def run_whatsapp_import(config: WhatsAppImportConfig) -> Mapping[str, Any]:
         phones=phones,
     )
     phone_customer_ids = dict(phone_lookup.unique_customer_ids)
-    normalizer = WhatsAppTimelineNormalizer(tenant_id=config.tenant_id, phone_customer_ids=phone_customer_ids)
+    normalizer = WhatsAppTimelineNormalizer(
+        tenant_id=config.tenant_id,
+        phone_customer_ids=phone_customer_ids,
+        ambiguous_phone_customer_ids=phone_lookup.ambiguous_customer_ids,
+    )
     idempotency_key = stable_digest(
         {
             "tenant_id": config.tenant_id,
@@ -464,7 +613,7 @@ def load_phone_customer_lookup(
     phones: set[str],
 ) -> PhoneCustomerLookup:
     if not phones or not db_path.exists():
-        return PhoneCustomerLookup(unique_customer_ids={}, ambiguous_phone_matches=0)
+        return PhoneCustomerLookup(unique_customer_ids={}, ambiguous_customer_ids={})
     rows = query_existing_phone_rows(db_path, tenant_id=tenant_id, phones=phones)
     by_phone: dict[str, set[str]] = {}
     for phone, customer_id in rows:
@@ -472,7 +621,7 @@ def load_phone_customer_lookup(
             by_phone.setdefault(phone, set()).add(customer_id)
     return PhoneCustomerLookup(
         unique_customer_ids={phone: next(iter(customer_ids)) for phone, customer_ids in by_phone.items() if len(customer_ids) == 1},
-        ambiguous_phone_matches=sum(1 for customer_ids in by_phone.values() if len(customer_ids) > 1),
+        ambiguous_customer_ids={phone: tuple(sorted(customer_ids)) for phone, customer_ids in by_phone.items() if len(customer_ids) > 1},
     )
 
 

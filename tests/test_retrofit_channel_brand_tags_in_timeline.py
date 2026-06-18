@@ -102,7 +102,7 @@ def seed_timeline(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         store.upsert_customer(customer, actor="test")
         for channel, event_type, tags in (
             ("telegram", TimelineEventType.TELEGRAM_MESSAGE, ("telegram", "message", "brand:unknown")),
-            ("whatsapp", TimelineEventType.WEB_CHAT_MESSAGE, ("whatsapp", "message", "unknown")),
+            ("whatsapp", TimelineEventType.WHATSAPP_MESSAGE, ("whatsapp", "message", "unknown")),
             ("max", TimelineEventType.MAX_MESSAGE, ("max", "message", "unknown")),
         ):
             event = TimelineEvent(

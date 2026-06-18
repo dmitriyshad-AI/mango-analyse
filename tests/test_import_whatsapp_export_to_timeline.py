@@ -202,16 +202,20 @@ def test_apply_import_is_idempotent_and_adds_phone_identity_link(tmp_path: Path)
     try:
         summary = store.summary()
         phone_links = store.list_identity_links("foton", link_type="phone", link_value="+79991112233")
+        whatsapp_phone_links = store.list_identity_links("foton", link_type="whatsapp_phone", link_value="+79991112233")
     finally:
         store.close()
     with sqlite3.connect(timeline_db) as con:
         chunk_payload = json.loads(con.execute("SELECT record_json FROM bot_context_chunks LIMIT 1").fetchone()[0])
+        event_types = {row[0] for row in con.execute("SELECT DISTINCT event_type FROM timeline_events").fetchall()}
     assert first["validation_ok"] is True
     assert second["validation_ok"] is True
     assert summary["counts"]["timeline_events"] == 9
     assert summary["counts"]["bot_context_chunks"] == 9
     assert summary["counts"]["ingestion_runs"] == 1
     assert len(phone_links) == 4
+    assert len(whatsapp_phone_links) == 4
+    assert event_types == {"whatsapp_message"}
     assert second["import_report"]["write_status_counts"]["duplicate"] >= 9
     assert "brand:unknown" in chunk_payload["relevance_tags"]
     assert "unknown" not in chunk_payload["relevance_tags"]
@@ -257,11 +261,23 @@ Inbound question
 
     with sqlite3.connect(timeline_db) as con:
         customer_count = con.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0]
-        event_customer_id = con.execute("SELECT customer_id FROM timeline_events").fetchone()[0]
+        event_customer_id, event_type, match_status = con.execute(
+            "SELECT customer_id, event_type, match_status FROM timeline_events"
+        ).fetchone()
+        link_types = {
+            row[0]
+            for row in con.execute(
+                "SELECT link_type FROM identity_links WHERE customer_id = ?",
+                (event_customer_id,),
+            ).fetchall()
+        }
 
     assert report["links"]["unique_existing_phone_matches"] == 1
     assert customer_count == 1
     assert event_customer_id == "existing-customer"
+    assert event_type == "whatsapp_message"
+    assert match_status == "strong_unique"
+    assert {"phone", "whatsapp_phone", "whatsapp_user_id", "channel_session_id"} <= link_types
 
 
 def test_ambiguous_phone_match_is_counted_without_first_match_merge(tmp_path: Path) -> None:
@@ -290,11 +306,33 @@ Inbound question
     )
 
     with sqlite3.connect(timeline_db) as con:
-        event_customer_id = con.execute("SELECT customer_id FROM timeline_events").fetchone()[0]
+        event_customer_id, match_status = con.execute("SELECT customer_id, match_status FROM timeline_events").fetchone()
+        imported_status = con.execute(
+            "SELECT identity_status FROM customer_identities WHERE customer_id = ?",
+            (event_customer_id,),
+        ).fetchone()[0]
+        link_rows = con.execute(
+            """
+            SELECT link_type, match_class
+            FROM identity_links
+            WHERE customer_id = ?
+            ORDER BY link_type
+            """,
+            (event_customer_id,),
+        ).fetchall()
+        conflict_rows = con.execute(
+            "SELECT conflict_type, record_json FROM timeline_conflicts ORDER BY conflict_type"
+        ).fetchall()
 
     assert report["links"]["unique_existing_phone_matches"] == 0
     assert report["links"]["ambiguous_phone_matches"] == 1
     assert event_customer_id not in existing_ids
+    assert match_status == "ambiguous"
+    assert imported_status == "ambiguous"
+    assert ("whatsapp_phone", "ambiguous") in link_rows
+    assert all(row[0] != "phone" for row in link_rows)
+    assert any(row[0] == "whatsapp_phone_ambiguous" for row in conflict_rows)
+    assert all(existing_id in conflict_rows[0][1] for existing_id in existing_ids)
 
 
 def test_phone_and_non_phone_chats_do_not_crash_and_persist_expected_source_ids(tmp_path: Path) -> None:

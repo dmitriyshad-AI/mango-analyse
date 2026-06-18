@@ -1,0 +1,22 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_import_whatsapp_export_to_timeline.py
+8 passed in 0.82s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_timeline_contracts.py tests/test_customer_timeline_ingestion.py tests/test_customer_timeline_store.py tests/test_retrofit_channel_brand_tags_in_timeline.py
+84 passed in 0.99s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 - <<'PY'
+from mango_mvp.customer_timeline import assert_customer_timeline_safety_contract, customer_timeline_safety_contract
+from mango_mvp.customer_timeline.ingestion import timeline_ingestion_safety_contract
+from mango_mvp.customer_timeline.store import customer_timeline_sqlite_safety_contract
+assert_customer_timeline_safety_contract(customer_timeline_safety_contract())
+assert_customer_timeline_safety_contract(timeline_ingestion_safety_contract())
+assert_customer_timeline_safety_contract(customer_timeline_sqlite_safety_contract())
+PY
+customer_timeline_safety_contract: OK
+timeline_ingestion_safety_contract: OK
+customer_timeline_sqlite_safety_contract: OK
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+3344 passed, 5 skipped, 1 warning in 55.33s
+
+Warning: urllib3 NotOpenSSLWarning from local Python/LibreSSL environment.

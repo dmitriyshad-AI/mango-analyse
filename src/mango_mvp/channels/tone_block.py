@@ -52,7 +52,13 @@ def close_detect_enabled(context: Mapping[str, Any] | None = None) -> bool:
         for key in (TONE_CLOSE_DETECT_ENV, "tone_close_detect_enabled"):
             if key in context:
                 return truthy_value(context.get(key))
-    return truthy_value(os.getenv(TONE_CLOSE_DETECT_ENV))
+    if TONE_CLOSE_DETECT_ENV in os.environ:
+        return truthy_value(os.getenv(TONE_CLOSE_DETECT_ENV))
+    if isinstance(context, Mapping):
+        profile = str(context.get(DIRECT_PATH_PILOT_CONFIG_ENV) or context.get("direct_path_pilot_config") or "").strip()
+        if profile == DIRECT_PATH_PILOT_CONFIG_VERSION:
+            return True
+    return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
 
 
 def sell_prompt_enabled(context: Mapping[str, Any] | None = None) -> bool:

@@ -1,0 +1,78 @@
+# TZ-142 Test Output
+
+## Targeted tone/profile tests
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'tone_close_detect or pilot_gold_v1_enables_full_battle_profile_flags'
+```
+
+Результат:
+
+```text
+12 passed, 482 deselected in 1.16s
+```
+
+## Expanded targeted provider tests
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py -k 'direct_keyword_fallback or route_rubric or direct_path_model_p0 or tone_close_detect or pilot_gold_v1'
+```
+
+Результат:
+
+```text
+28 passed, 466 deselected in 1.40s
+```
+
+## Full pytest
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Результат:
+
+```text
+3339 passed, 5 skipped, 1 warning in 44.92s
+```
+
+Предупреждение:
+
+```text
+urllib3 NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the ssl module is compiled with LibreSSL 2.8.3.
+```
+
+## Dynamic behavior runs
+
+Большой OFF-прогон:
+
+```text
+dialogs=36 turns=76 PASS=22 PASS_WITH_NOTES=14 FAIL=0 hard=0
+```
+
+Большой ON-прогон флага B:
+
+```text
+dialogs=36 turns=76 PASS=22 PASS_WITH_NOTES=12 FAIL=2 hard=2
+violated_gates={'made_a_promise': 1, 'p0_mishandled': 1}
+```
+
+Дымовой прогон закрытия после no-CTA фикса:
+
+```text
+dialogs=4 turns=11 PASS=3 PASS_WITH_NOTES=1 FAIL=0 hard=0
+close_detect.contact_requested=0
+```
+
+ON-перепроверка регрессий после no-CTA фикса:
+
+```text
+dialogs=4 turns=9 PASS=2 PASS_WITH_NOTES=1 FAIL=1 hard=1
+violated_gates={'p0_mishandled': 1}
+```

@@ -1,0 +1,12 @@
+src/mango_mvp/channels/subscription_llm_parts/provider.py
+src/mango_mvp/channels/subscription_llm_parts/post_layers.py
+src/mango_mvp/channels/subscription_llm_parts/support.py
+src/mango_mvp/channels/tone_block.py
+tests/test_subscription_llm_draft_provider.py
+audits/_inbox/tz142_flagb_closing_20260618/implementation_notes.md
+audits/_inbox/tz142_flagb_closing_20260618/changed_files.txt
+audits/_inbox/tz142_flagb_closing_20260618/test_output.txt
+audits/_inbox/tz142_flagb_closing_20260618/semantic_review.md
+audits/_inbox/tz142_flagb_closing_20260618/risk_review.md
+audits/_inbox/tz142_flagb_closing_20260618/backward_compatibility.md
+audits/_inbox/tz142_flagb_closing_20260618/failure_classes.md

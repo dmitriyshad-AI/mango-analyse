@@ -1,0 +1,17 @@
+B1 scope since B0 commit 2dc721e:
+
+M scripts/import_telegram_export_to_timeline.py
+M src/mango_mvp/customer_timeline/store.py
+M tests/test_customer_timeline_store.py
+M tests/test_import_telegram_export_to_timeline.py
+
+Audit pack:
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/changed_files.txt
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/git_context.txt
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/implementation_notes.md
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/realdata_report.md
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/risk_review.md
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/backward_compatibility.md
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/semantic_review.md
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/test_output.txt
+A audits/_inbox/tz139_work_b1_telegram_20260618151853/manifest.json

@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityStatus
+from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityLink, IdentityMatchClass, IdentityStatus
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 from scripts.import_telegram_export_to_timeline import (
@@ -36,6 +36,7 @@ def test_mapper_builds_channel_payload_with_thread_source_id_and_phone() -> None
     assert payload["text"] == "Добрый день"
     assert payload["brand_hint"] == "foton"
     assert payload["dialog_phone_normalized"] == "+79991112233"
+    assert payload["dialog_username"] is None
     assert payload["timeline_source_id"] == "telegram:123:456"
 
 
@@ -183,13 +184,16 @@ def test_out_message_imports_as_outbound_and_keeps_brand_tag(tmp_path: Path) -> 
         )
     )
 
-    event = fetch_one_json(timeline_db, "timeline_events")
+    event = fetch_event(timeline_db, "telegram_message")
+    dialog_event = fetch_event(timeline_db, "telegram_dialog")
     chunk = fetch_one_json(timeline_db, "bot_context_chunks")
     assert report["counters"]["imported"] == 1
     assert report["counters"]["session_only"] == 1
     assert event["direction"] == "outbound"
     assert event["source_id"] == "telegram:100:200"
+    assert dialog_event["source_id"] == "telegram_dialog:100"
     assert "brand:unpk" in chunk["relevance_tags"]
+    assert chunk["allowed_for_bot"] is False
 
 
 def test_phone_null_does_not_crash_and_stays_session_only(tmp_path: Path) -> None:
@@ -221,14 +225,17 @@ def test_phone_null_does_not_crash_and_stays_session_only(tmp_path: Path) -> Non
         )
     )
 
-    event = fetch_one_json(timeline_db, "timeline_events")
+    event = fetch_event(timeline_db, "telegram_message")
     chunk = fetch_one_json(timeline_db, "bot_context_chunks")
+    customer = fetch_one_json(timeline_db, "customer_identities")
     links = fetch_all_json(timeline_db, "identity_links")
     assert report["counters"]["imported"] == 1
     assert report["summary"]["brand"] == "unpk"
     assert report["counters"]["linked_by_phone"] == 0
     assert report["counters"]["session_only"] == 1
     assert event["metadata"]["brand"] == "unpk"
+    assert event["match_status"] == "unmatched"
+    assert customer["identity_status"] == "unmatched"
     assert "brand:unpk" in chunk["relevance_tags"]
     assert {item["link_type"] for item in links} == {"telegram_user_id", "channel_session_id"}
 
@@ -265,14 +272,14 @@ def test_phone_links_existing_customer_and_repeat_import_does_not_duplicate(tmp_
     first = run_telegram_export_import(config)
     second = run_telegram_export_import(config)
 
-    event = fetch_one_json(timeline_db, "timeline_events")
+    event = fetch_event(timeline_db, "telegram_message")
     assert first["counters"]["imported"] == 1
     assert first["counters"]["linked_by_phone"] == 1
     assert first["counters"]["duplicates"] == 0
     assert second["counters"]["imported"] == 0
     assert second["counters"]["duplicates"] == 1
     assert event["customer_id"] == existing_customer_id
-    assert count_rows(timeline_db, "timeline_events") == 1
+    assert count_rows(timeline_db, "timeline_events") == 2
 
 
 def test_ambiguous_phone_match_is_counted_without_first_match_merge(tmp_path: Path) -> None:
@@ -307,11 +314,19 @@ def test_ambiguous_phone_match_is_counted_without_first_match_merge(tmp_path: Pa
         )
     )
 
-    event = fetch_one_json(timeline_db, "timeline_events")
+    event = fetch_event(timeline_db, "telegram_message")
+    phone_link = next(
+        item
+        for item in fetch_all_json(timeline_db, "identity_links")
+        if item["link_type"] == "phone" and item["source_system"] == "telegram_history"
+    )
     assert report["links"]["unique_existing_phone_matches"] == 0
     assert report["links"]["ambiguous_phone_matches"] == 1
+    assert report["links"]["message_match_counts"]["ambiguous_dialogs"] == 1
+    assert event["match_status"] == "ambiguous"
     assert event["customer_id"] not in existing_ids
-    assert count_rows(timeline_db, "timeline_events") == 1
+    assert phone_link["match_class"] == "ambiguous"
+    assert count_rows(timeline_db, "timeline_events") == 2
 
 
 def test_readonly_lookup_handles_timeline_db_path_with_spaces(tmp_path: Path) -> None:
@@ -350,9 +365,96 @@ def test_readonly_lookup_handles_timeline_db_path_with_spaces(tmp_path: Path) ->
         )
     )
 
-    event = fetch_one_json(timeline_db, "timeline_events")
+    event = fetch_event(timeline_db, "telegram_message")
     assert report["validation_ok"] is True
     assert event["customer_id"] == existing_customer_id
+
+
+def test_username_links_existing_customer_without_phone(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "timeline.sqlite"
+    existing_customer_id = seed_customer(timeline_db, tmp_path, phone="+79991112233")
+    seed_identity_link(
+        timeline_db,
+        tmp_path,
+        customer_id=existing_customer_id,
+        link_type="telegram_username",
+        link_value="foton_parent",
+    )
+    export_dir = write_export(
+        tmp_path,
+        dialogs=[
+            {"dialog_id": 150, "name": "TG User", "peer_kind": "user", "username": "@foton_parent", "phone": None},
+        ],
+        messages=[
+            {
+                "dialog_id": 150,
+                "dialog_name": "TG User",
+                "peer_kind": "user",
+                "message_id": 250,
+                "date": "2026-03-28T09:38:18+00:00",
+                "sender_id": 150,
+                "text": "Напомните оплату",
+                "out": False,
+                "sender_username": "foton_parent",
+            }
+        ],
+    )
+
+    report = run_telegram_export_import(
+        TelegramExportImportConfig(
+            export_dir=export_dir,
+            allowed_root=tmp_path,
+            timeline_db=timeline_db,
+            brand="foton",
+            apply=True,
+        )
+    )
+
+    event = fetch_event(timeline_db, "telegram_message")
+    assert report["links"]["unique_existing_username_matches"] == 1
+    assert report["links"]["message_match_counts"]["strong_unique_dialogs"] == 1
+    assert event["customer_id"] == existing_customer_id
+    assert event["match_status"] == "strong_unique"
+
+
+def test_sidecar_identity_dialogs_are_used_without_changing_message_count(tmp_path: Path) -> None:
+    export_dir = write_export(
+        tmp_path,
+        dialogs=[
+            {"dialog_id": 180, "name": "TG User", "peer_kind": "user", "phone": None},
+        ],
+        messages=[
+            {
+                "dialog_id": 180,
+                "dialog_name": "TG User",
+                "peer_kind": "user",
+                "message_id": 280,
+                "date": "2026-03-28T09:38:18+00:00",
+                "sender_id": 180,
+                "text": "Здравствуйте",
+                "out": False,
+            }
+        ],
+    )
+    identity_dir = tmp_path / "telegram_export_max"
+    identity_dir.mkdir()
+    write_jsonl(
+        identity_dir / "dialogs.jsonl",
+        [{"dialog_id": 180, "name": "TG User", "peer_kind": "user", "username": "sidecar_user", "phone": "9991112233"}],
+    )
+
+    report = run_telegram_export_import(
+        TelegramExportImportConfig(
+            export_dir=export_dir,
+            allowed_root=tmp_path,
+            timeline_db=tmp_path / "timeline.sqlite",
+        )
+    )
+
+    assert report["source"]["identity_export_dir"] == str(identity_dir.resolve(strict=False))
+    assert report["counters"]["messages"] == 1
+    assert report["counters"]["linked_by_phone"] == 1
+    assert report["counters"]["linked_by_username"] == 1
 
 
 def write_export(
@@ -419,8 +521,41 @@ def seed_duplicate_phone_customers(db_path: Path, allowed_root: Path, *, phone: 
     return {customer.customer_id for customer in customers}
 
 
+def seed_identity_link(
+    db_path: Path,
+    allowed_root: Path,
+    *,
+    customer_id: str,
+    link_type: str,
+    link_value: str,
+    match_class: IdentityMatchClass = IdentityMatchClass.STRONG_UNIQUE,
+) -> None:
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root)
+    try:
+        store.upsert_identity_link(
+            IdentityLink(
+                tenant_id="foton",
+                customer_id=customer_id,
+                link_type=link_type,
+                link_value=link_value,
+                source_system="seed",
+                source_ref=f"seed:{link_type}:{link_value}",
+                match_class=match_class,
+                confidence=0.95,
+            )
+        )
+    finally:
+        store.close()
+
+
 def fetch_one_json(db_path: Path, table: str) -> dict[str, object]:
     rows = fetch_all_json(db_path, table)
+    assert len(rows) == 1
+    return rows[0]
+
+
+def fetch_event(db_path: Path, event_type: str) -> dict[str, object]:
+    rows = [item for item in fetch_all_json(db_path, "timeline_events") if item["event_type"] == event_type]
     assert len(rows) == 1
     return rows[0]
 

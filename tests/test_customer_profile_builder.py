@@ -336,7 +336,8 @@ def test_builder_opens_read_only_sources_under_path_with_space(tmp_path: Path) -
         assert any(row["field"] == "grade" for row in store.active_fields("cust-1"))
 
 
-def test_builder_marks_duplicate_child_slots_as_merge_candidate(tmp_path: Path) -> None:
+def test_builder_marks_duplicate_child_slots_as_merge_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROFILE_LLM_CHILD_RESOLVER", "0")
     timeline_db = _timeline_db(tmp_path)
     master_db = _master_calls_db(
         tmp_path,
@@ -1002,6 +1003,25 @@ def test_llm_child_resolver_escalation_preserves_tier1_cache_accounting(tmp_path
     assert escalation_client.completions.calls == 1
 
 
+def test_llm_child_resolver_cache_only_does_not_call_on_miss(tmp_path: Path) -> None:
+    fields = [_child_field("grade", "7", child_key="child_a"), _child_field("subject", "физика", child_key="child_b")]
+    client = _FakeClient([])
+
+    result = apply_llm_child_resolver_to_fields(
+        fields,
+        profile_phones={"cust-1": "+79990000000"},
+        config=replace(_resolver_config(tmp_path), cache_only=True),
+        client=client,
+        cache=LLMResponseCache(enabled=True, root_dir=tmp_path / "cache"),
+    )
+
+    assert client.completions.calls == 0
+    assert result.summary["llm_cases_total"] == 1
+    assert result.summary["llm_calls_total"] == 0
+    assert result.summary["llm_cache_misses_without_call"] == 1
+    assert result.summary["llm_families_failed_soft"] == 1
+
+
 def test_child_name_has_joint_mention_detector() -> None:
     positives = [
         "Савва и Денида",
@@ -1657,7 +1677,10 @@ def test_llm_child_resolver_preserves_brand_per_row(tmp_path: Path) -> None:
     assert result.summary["llm_brand_changed_fields"] == 0
 
 
-def test_builder_does_not_merge_different_children_or_ambiguous_diminutive(tmp_path: Path) -> None:
+def test_builder_does_not_merge_different_children_or_ambiguous_diminutive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PROFILE_LLM_CHILD_RESOLVER", "0")
     timeline_db = _timeline_db(tmp_path)
     master_db = _master_calls_db(
         tmp_path,

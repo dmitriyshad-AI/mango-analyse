@@ -122,6 +122,7 @@ class ChildResolverConfig:
     prompt_version: str = PROMPT_VERSION
     cache_enabled: bool = True
     cache_root_dir: str | Path = ".cache/llm_responses"
+    cache_only: bool = False
     max_concurrency: int = 4
     max_retries: int = 2
     retry_initial_seconds: float = 0.5
@@ -149,6 +150,7 @@ class ChildResolverConfig:
             reasoning_effort=os.getenv("PROFILE_LLM_CHILD_RESOLVER_REASONING", "medium").strip() or "medium",
             cache_enabled=_bool_env("LLM_CACHE_ENABLED", True),
             cache_root_dir=os.getenv("LLM_CACHE_DIR", ".cache/llm_responses").strip() or ".cache/llm_responses",
+            cache_only=_bool_env("PROFILE_LLM_CHILD_RESOLVER_CACHE_ONLY", False),
             max_concurrency=_int_env("PROFILE_LLM_CHILD_RESOLVER_MAX_CONCURRENCY", 4),
             max_retries=_int_env("PROFILE_LLM_CHILD_RESOLVER_MAX_RETRIES", 2),
             request_timeout_seconds=_float_env("PROFILE_LLM_CHILD_RESOLVER_TIMEOUT_SECONDS", 180.0),
@@ -232,6 +234,7 @@ class ChildResolverFamilyResult:
     error_code: str = ""
     error_detail: str = ""
     cache_hit: bool = False
+    llm_attempted: bool = False
     tier: str = "tier1"
     escalated: bool = False
     manual_review_reason: str = ""
@@ -265,6 +268,7 @@ def apply_llm_child_resolver_to_fields(
         cache=resolved_cache,
     )
     tier1_cache_hits = sum(1 for result in family_results if result.cache_hit)
+    tier1_llm_attempts = sum(1 for result in family_results if result.llm_attempted)
     escalation_summary: Mapping[str, Any] = {}
     if resolved_config.escalation_enabled:
         family_results, escalation_summary = apply_escalation_to_low_confidence_families(
@@ -330,8 +334,12 @@ def apply_llm_child_resolver_to_fields(
         "llm_child_resolver_provider": resolved_config.provider,
         "llm_child_resolver_model": resolved_config.model,
         "llm_cases_total": len(all_cases),
-        "llm_calls_total": len(scoped_cases) - tier1_cache_hits,
+        "llm_calls_total": tier1_llm_attempts,
         "llm_cache_hits": tier1_cache_hits,
+        "llm_cache_only": 1 if resolved_config.cache_only else 0,
+        "llm_cache_misses_without_call": sum(
+            1 for result in family_results if result.error_code == "cache_miss_cache_only"
+        ),
         "llm_families_resolved": len(accepted),
         "llm_families_failed_soft": len(failed),
         "llm_families_skipped_shared_phone": len(skipped_shared),
@@ -405,7 +413,7 @@ def apply_escalation_to_low_confidence_families(
 
     for index, case, escalated in escalated_items:
         counters["llm_escalation_cache_hits"] += 1 if escalated.cache_hit else 0
-        counters["llm_escalation_calls_total"] += 0 if escalated.cache_hit else 1
+        counters["llm_escalation_calls_total"] += 1 if escalated.llm_attempted else 0
         if escalated.accepted and result_all_confidence(escalated, "high"):
             final = replace(escalated, escalated=True)
             counters["llm_escalation_resolved_high"] += 1
@@ -556,13 +564,17 @@ def resolve_child_family(
         prompt=prompt,
     )
     cache_hit = cached is not None
+    llm_attempted = False
     response_payload: Mapping[str, Any] = cached or {}
     normalized_payload: Mapping[str, Any] | None = None
     try:
+        if cached is None and config.cache_only:
+            raise ChildResolverError("cache_miss_cache_only")
+        llm_attempted = cached is None
         response_payload = cached if cached is not None else call_llm_json(prompt, config=config, client=client)
         normalized_payload = normalize_child_resolver_response(response_payload)
         result = validate_child_resolver_response(case, normalized_payload, cache_hit=cache_hit)
-        result = replace(result, tier=config.resolver_tier)
+        result = replace(result, tier=config.resolver_tier, llm_attempted=llm_attempted)
         if not cache_hit:
             cache.put(
                 namespace=NAMESPACE,
@@ -586,6 +598,7 @@ def resolve_child_family(
             error_code=child_resolver_error_code(exc),
             error_detail=str(exc)[:500],
             cache_hit=cache_hit,
+            llm_attempted=llm_attempted,
             tier=config.resolver_tier,
         )
         write_name_review_diagnostic(case, result, config=config, exc=exc)
@@ -1240,6 +1253,7 @@ def anonymized_trace_event(case: ChildResolverCase, result: ChildResolverFamilyR
         "error_code": result.error_code,
         "error_detail": result.error_detail,
         "cache_hit": result.cache_hit,
+        "llm_attempted": result.llm_attempted,
         "input_mentions": input_mentions,
         "model_children": children,
         "applied_child_keys": dict(sorted(result.mention_to_child_key.items())),

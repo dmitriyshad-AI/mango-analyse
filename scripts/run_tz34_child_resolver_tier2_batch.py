@@ -80,6 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run_resolve_analyze": False,
         "codex_cli_command": str(args.codex_cli_command),
         "codex_home": str(args.codex_home or ""),
+        "cache_only": bool(args.cache_only),
     }
     prepare_out_root(out_root, run_config, resume=args.resume)
 
@@ -139,6 +140,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stoplist", default=str(DEFAULT_STOPLIST_PATH))
     parser.add_argument("--codex-cli-command", default="codex")
     parser.add_argument("--codex-home", default="")
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="Use only existing child resolver cache; cache misses become fail-soft without an LLM call.",
+    )
     parser.add_argument(
         "--no-seed-tier1-cache",
         action="store_true",
@@ -370,6 +376,7 @@ def run_escalation_rebuild(
                 "PROFILE_LLM_CHILD_RESOLVER_MAX_CONCURRENCY": str(args.max_concurrency),
                 "PROFILE_LLM_CHILD_RESOLVER_MAX_RETRIES": str(args.max_retries),
                 "PROFILE_LLM_CHILD_RESOLVER_TIMEOUT_SECONDS": str(args.timeout_seconds),
+                "PROFILE_LLM_CHILD_RESOLVER_CACHE_ONLY": "1" if args.cache_only else "0",
                 "PROFILE_LLM_CHILD_RESOLVER_ESCALATION_MODEL": str(args.escalation_model),
                 "PROFILE_LLM_CHILD_RESOLVER_ESCALATION_REASONING": str(args.escalation_reasoning),
                 "PROFILE_LLM_CHILD_RESOLVER_ESCALATION_MAX_CONCURRENCY": str(args.escalation_max_concurrency),

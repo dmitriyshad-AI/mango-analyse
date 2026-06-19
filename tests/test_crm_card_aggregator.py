@@ -23,6 +23,24 @@ def _profile(tmp_path: Path) -> dict:
 
 def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: Path) -> None:
     profile = _profile(tmp_path)
+    profile["manager_projection"] = {
+        "amo_contact_ids": ["123"],
+        "amo_lead_ids": ["456"],
+        "identity_links": [
+            {"link_type": "amo_contact_id", "link_value": "123", "match_class": "strong_unique"},
+            {"link_type": "amo_lead_id", "link_value": "456", "match_class": "strong_unique"},
+        ],
+        "opportunities": [
+            {
+                "opportunity_id": "opp-manager",
+                "opportunity_type": "amo_deal",
+                "source_system": "amocrm_snapshot",
+                "source_id": "456",
+                "title": "ЕГЭ математика",
+                "status": "open",
+            }
+        ],
+    }
 
     card = build_crm_card_projection(
         profile,
@@ -42,6 +60,73 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
     assert card["deal_card"]["fields"]["AI-бюджет диапазон"] == "50k_100k"
     assert card["deal_card"]["fields"]["AI-дата обновления сделки"] == profile["snapshot_as_of"]
     assert card["bot_safety"]["money_fields_manager_only"] is True
+
+
+def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None:
+    live_summary = "Полный разбор живого звонка. " + ("Клиент обсуждал курс и оплату. " * 20)
+    profile = {
+        "found": True,
+        "customer_id": "customer:call-analysis",
+        "snapshot_as_of": "2026-06-18T10:00:00+00:00",
+        "last_event_at": "2026-06-18T10:00:00+00:00",
+        "customer": {"customer_id": "customer:call-analysis", "identity_status": "strong", "summary": {}},
+        "customer_id_mappings": [],
+        "identity_links": [{"match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [{"opportunity_id": "opp1", "opportunity_type": "amo_deal", "source_system": "amocrm_snapshot", "source_id": "456"}],
+        },
+        "opportunities": [],
+        "timeline": {
+            "items": [
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-18T10:00:00+00:00",
+                    "source_system": "mango",
+                    "summary": "Недозвон не должен попасть в историю",
+                    "call_type": "non_conversation",
+                    "call_history_eligible": False,
+                    "call_analysis": {
+                        "history_summary": "Недозвон не должен попасть в историю",
+                        "call_type": "non_conversation",
+                        "call_history_eligible": False,
+                    },
+                },
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-17T10:00:00+00:00",
+                    "source_system": "mango",
+                    "summary": live_summary,
+                    "call_type": "sales_call",
+                    "call_history_eligible": True,
+                    "call_analysis": {
+                        "history_summary": live_summary,
+                        "call_type": "sales_call",
+                        "call_history_eligible": True,
+                        "objections": ["цена"],
+                        "next_step": "Перезвонить завтра",
+                        "pain_points": ["нет времени"],
+                        "interests": ["математика"],
+                        "target_product": "годовой курс",
+                    },
+                },
+            ]
+        },
+        "signals": [],
+        "bot_context": {"items": []},
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+    }
+
+    card = build_crm_card_projection(profile)
+    history = card["deal_card"]["fields"]["AI-история по сделке"]
+
+    assert "Полный разбор живого звонка" in history
+    assert "Возражения: цена" in history
+    assert "Следующий шаг: Перезвонить завтра" in history
+    assert "Недозвон не должен попасть" not in history
+    assert card["workbook"]["ready"] == "да"
 
 
 def test_crm_card_empty_timeline_falls_back_to_analyze_and_is_idempotent() -> None:

@@ -126,27 +126,30 @@ def build_crm_card_projection(
     conflicts = [_mapping(item) for item in _sequence(profile.get("conflicts", {}).get("items"))]
     identity_links = [_mapping(item) for item in _sequence(profile.get("identity_links"))]
     opportunities = [_mapping(item) for item in _sequence(profile.get("opportunities"))]
+    manager_projection = _mapping(profile.get("manager_projection"))
+    manager_opportunities = [_mapping(item) for item in _sequence(manager_projection.get("opportunities"))]
     bot_items = [_mapping(item) for item in _sequence(profile.get("bot_context", {}).get("items"))]
+    history_items = _history_events(timeline_items)
 
     generated_at = _snapshot_time(profile, customer)
     identity_status = _safe_text(customer.get("identity_status")) or "unknown"
     identity_ambiguous = _identity_is_ambiguous(identity_status, identity_links, conflicts)
     blockers = _base_blockers(profile, identity_ambiguous=identity_ambiguous)
-    lead_id = _safe_text(selected_amo_lead_id or facts.amo_lead_id or _identity_value(identity_links, "amo_lead_id"))
-    contact_id = _safe_text(facts.amo_contact_id or _identity_value(identity_links, "amo_contact_id"))
+    lead_id = _safe_text(selected_amo_lead_id or facts.amo_lead_id or _manager_amo_id(manager_projection, "amo_lead_ids") or _identity_value(identity_links, "amo_lead_id"))
+    contact_id = _safe_text(facts.amo_contact_id or _manager_amo_id(manager_projection, "amo_contact_ids") or _identity_value(identity_links, "amo_contact_id"))
     source_counts = _source_counts(timeline_items)
     what_collected = _what_collected(customer, timeline_items, signals, conflicts, bot_items)
-    latest_summary = _latest_summary(timeline_items, facts)
+    latest_summary = _latest_summary(history_items or timeline_items, facts)
     next_step = _next_step(signals, facts)
-    objections = _objections(facts, timeline_items)
+    objections = _objections(facts, history_items or timeline_items)
     auto_history = _contact_auto_history(
         latest_summary=latest_summary,
-        timeline_items=timeline_items,
+        timeline_items=history_items or timeline_items,
         signals=signals,
         facts=facts,
         objections=objections,
     )
-    priority = _priority(signals, facts, timeline_items)
+    priority = _priority(signals, facts, history_items or timeline_items)
     match_status = _match_status(identity_status, identity_links, conflicts)
     contact_payload = {
         "Статус матчинга": match_status,
@@ -157,7 +160,7 @@ def build_crm_card_projection(
     }
     contact_payload = _drop_empty(contact_payload)
 
-    selected_opportunity = _select_opportunity(opportunities, lead_id)
+    selected_opportunity = _select_opportunity(manager_opportunities or opportunities, lead_id)
     deal_blockers = list(blockers)
     if identity_ambiguous:
         deal_blockers.append("p9_ambiguous_identity_manual_review")
@@ -167,17 +170,17 @@ def build_crm_card_projection(
         deal_blockers.append("amo_lead_id_masked_in_read_api")
     if not lead_id and not selected_opportunity:
         deal_blockers.append("amo_lead_id_not_available_in_profile")
-    deal_events = _deal_events(timeline_items, selected_opportunity.get("opportunity_id"))
+    deal_events = _deal_events(history_items or timeline_items, selected_opportunity.get("opportunity_id"))
     history_scope = "история по сделке" if selected_opportunity.get("opportunity_id") else "история по клиенту, не по конкретной сделке"
     deal_payload = {
-        "AI-сводка по сделке": fit_text(_deal_summary(selected_opportunity, timeline_items, latest_summary, history_scope), 1600),
-        "AI-история по сделке": fit_text(_deal_history(deal_events or timeline_items, history_scope=history_scope), DEAL_HISTORY_LIMIT),
+        "AI-сводка по сделке": fit_text(_deal_summary(selected_opportunity, history_items or timeline_items, latest_summary, history_scope), 1600),
+        "AI-история по сделке": fit_text(_deal_history(deal_events or history_items or timeline_items, history_scope=history_scope), DEAL_HISTORY_LIMIT),
         "AI-рекомендованный следующий шаг": fit_text(next_step, SHORT_FIELD_LIMIT),
         "AI-дата следующего касания": fit_text(facts.follow_up_date or _followup_from_signal(signals), SHORT_FIELD_LIMIT),
         "AI-фактический статус сделки": fit_text(_deal_status(selected_opportunity, facts), DEFAULT_TEXT_LIMIT),
         "AI-приоритет сделки": fit_text(_deal_priority(priority, signals), SHORT_FIELD_LIMIT),
         "AI-актуальные возражения": fit_text(objections or "Актуальные возражения в истории не выделены.", DEFAULT_TEXT_LIMIT),
-        "AI-основание рекомендации": fit_text(_recommendation_reason(signals, timeline_items, facts), DEFAULT_TEXT_LIMIT),
+        "AI-основание рекомендации": fit_text(_recommendation_reason(signals, history_items or timeline_items, facts), DEFAULT_TEXT_LIMIT),
         "AI-качество привязки к сделке": fit_text(_binding_quality(identity_status, identity_links, selected_opportunity, history_scope), DEFAULT_TEXT_LIMIT),
         "AI-предупреждение по сделке": fit_text(_warnings(deal_blockers, conflicts, signals), DEFAULT_TEXT_LIMIT),
         "AI-Tallanto статус по сделке": fit_text(_tallanto_status(timeline_items, facts), 1600),
@@ -402,6 +405,15 @@ def _identity_value(identity_links: Sequence[Mapping[str, Any]], link_type: str)
     return ""
 
 
+def _manager_amo_id(manager_projection: Mapping[str, Any], key: str) -> str:
+    values = _sequence(manager_projection.get(key))
+    for value in values:
+        text = _safe_text(value)
+        if text:
+            return text
+    return ""
+
+
 def _match_status(
     identity_status: str,
     identity_links: Sequence[Mapping[str, Any]],
@@ -443,7 +455,7 @@ def _what_collected(
 
 def _latest_summary(events: Sequence[Mapping[str, Any]], facts: ManagerFacts) -> str:
     for event in sorted(events, key=lambda item: _safe_text(item.get("event_at")), reverse=True):
-        summary = _safe_text(event.get("summary") or event.get("text_preview"))
+        summary = _event_history_summary(event)
         if summary and summary not in {"no_exact_phone_match"}:
             return summary
     return facts.summary or facts.history
@@ -479,7 +491,11 @@ def _objections(facts: ManagerFacts, events: Sequence[Mapping[str, Any]]) -> str
     raw = facts.objections
     if not raw:
         for event in events:
-            summary = _safe_text(event.get("summary"))
+            call_analysis = _mapping(event.get("call_analysis"))
+            raw = _join_values(call_analysis.get("objections"))
+            if raw:
+                break
+            summary = _event_history_summary(event)
             if re.search(r"\b(?:возраж|дорого|стоимост|цена|сомнева)\w*", summary, re.I):
                 raw = summary
                 break
@@ -536,15 +552,72 @@ def _chronology_text(events: Sequence[Mapping[str, Any]], *, limit: int = 5) -> 
     for event in sorted(events, key=lambda item: _safe_text(item.get("event_at")), reverse=True)[:limit]:
         event_at = _safe_text(event.get("event_at"))[:10] or "дата не указана"
         source = _safe_text(event.get("source_system") or event.get("event_type"))
-        summary = _safe_text(event.get("summary") or event.get("text_preview"))
+        summary = _event_history_summary(event)
         if not summary:
             continue
         brand = _brand_from_event(event)
         prefix = f"{event_at} {source}"
         if brand:
             prefix += f" [{brand}]"
-        lines.append(f"{prefix}: {summary}")
+        structured = _call_analysis_lines(event)
+        suffix = "\n" + "\n".join(structured) if structured else ""
+        lines.append(f"{prefix}: {summary}{suffix}")
     return "\n".join(lines)
+
+
+def _history_events(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    result: list[Mapping[str, Any]] = []
+    for event in events:
+        if _safe_text(event.get("event_type")) == "mango_call":
+            if event.get("call_history_eligible") is True:
+                result.append(event)
+            continue
+        result.append(event)
+    return result
+
+
+def _event_history_summary(event: Mapping[str, Any]) -> str:
+    call_analysis = _mapping(event.get("call_analysis"))
+    return _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+
+
+def _call_analysis_lines(event: Mapping[str, Any]) -> list[str]:
+    call_analysis = _mapping(event.get("call_analysis"))
+    if not call_analysis:
+        return []
+    lines: list[str] = []
+    objections = _join_values(call_analysis.get("objections"))
+    next_step = _safe_text(call_analysis.get("next_step"))
+    pain_points = _join_values(call_analysis.get("pain_points"))
+    interests = _join_values(call_analysis.get("interests"))
+    target_product = _safe_text(call_analysis.get("target_product"))
+    budget = _join_values(call_analysis.get("budget"))
+    if objections:
+        lines.append(f"Возражения: {objections}")
+    if next_step:
+        lines.append(f"Следующий шаг: {next_step}")
+    if pain_points:
+        lines.append(f"Боли/ограничения: {pain_points}")
+    if interests:
+        lines.append(f"Интересы: {interests}")
+    if target_product:
+        lines.append(f"Целевой продукт: {target_product}")
+    if budget:
+        lines.append(f"Бюджет: {budget}")
+    return lines
+
+
+def _join_values(value: Any) -> str:
+    if isinstance(value, Mapping):
+        parts = []
+        for key, item in value.items():
+            text = _join_values(item)
+            if text:
+                parts.append(f"{key}: {text}")
+        return "; ".join(parts)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return "; ".join(_safe_text(item) for item in value if _safe_text(item))
+    return _safe_text(value)
 
 
 def _brand_from_event(event: Mapping[str, Any]) -> str:

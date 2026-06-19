@@ -99,8 +99,20 @@ def run_derive_customer_timeline_signals(config: DeriveCustomerTimelineSignalsCo
 
 
 def _list_customer_ids(store: CustomerTimelineSQLiteStore, tenant_id: str, limit: int) -> tuple[str, ...]:
-    page = store.list_customers(tenant_id, limit=limit)
-    return tuple(str(item["customer_id"]) for item in page["items"])
+    remaining = int(limit)
+    cursor: Optional[str] = None
+    customer_ids: list[str] = []
+    while remaining > 0:
+        page = store.list_customers(tenant_id, limit=min(remaining, 500), cursor=cursor)
+        items = tuple(page["items"])
+        if not items:
+            break
+        customer_ids.extend(str(item["customer_id"]) for item in items)
+        remaining = int(limit) - len(customer_ids)
+        cursor = page.get("next_cursor")
+        if not cursor:
+            break
+    return tuple(customer_ids)
 
 
 def _merge_results(results: Sequence[Any]) -> Mapping[str, Any]:

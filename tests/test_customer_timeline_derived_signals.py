@@ -23,6 +23,7 @@ from mango_mvp.customer_timeline import (
 )
 from scripts.derive_customer_timeline_signals import (
     DeriveCustomerTimelineSignalsConfig,
+    _list_customer_ids,
     run_derive_customer_timeline_signals,
 )
 
@@ -252,6 +253,35 @@ def test_derive_signals_cli_dry_run_is_read_only_and_apply_writes_only_timeline_
     assert applied["safety"]["llm_calls"] is False
     assert applied["safety"]["network_calls"] is False
     assert count_rows(db_path, "derived_signals") == 1
+
+
+def test_derive_signals_customer_listing_paginates_until_limit(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path)
+    try:
+        for index in range(3):
+            store.upsert_customer(
+                CustomerIdentity(
+                    tenant_id=TENANT,
+                    customer_id=f"customer:{index}",
+                    identity_status=IdentityStatus.STRONG,
+                    display_name=f"Тестовый клиент {index}",
+                    source_ref=f"test:{index}",
+                    first_seen_at=NOW,
+                    last_seen_at=NOW + timedelta(minutes=index),
+                    touch_count=1,
+                    created_at=NOW,
+                    updated_at=NOW + timedelta(minutes=index),
+                )
+            )
+
+        customer_ids = _list_customer_ids(store, TENANT, 2)
+        all_customer_ids = _list_customer_ids(store, TENANT, 10)
+    finally:
+        store.close()
+
+    assert len(customer_ids) == 2
+    assert len(all_customer_ids) == 3
+    assert len(set(all_customer_ids)) == 3
 
 
 def tallanto_payment(

@@ -1,0 +1,12 @@
+branch: codex/etap1-crm-card-assembler
+rev: 43134ae
+
+ M scripts/write_amo_ready_contacts.py
+ M src/mango_mvp/amocrm_runtime/amo_integration.py
+ M src/mango_mvp/deal_aware/deal_text_builder.py
+ M tests/test_amo_writeback_guards.py
+ M tests/test_deal_aware_structured_objections.py
+?? scripts/build_crm_customer_card_workbook.py
+?? src/mango_mvp/crm_card_aggregator.py
+?? src/mango_mvp/crm_card_workbook.py
+?? tests/test_crm_card_aggregator.py

@@ -1,0 +1,31 @@
+{
+  "slug": "etap1_crm_card_assembler",
+  "created_at": "2026-06-19T21:11:33",
+  "repo_head": "43134ae",
+  "semantic_required": true,
+  "client_paths": [
+    "product_data/knowledge_base/",
+    "src/mango_mvp/channels/",
+    "src/mango_mvp/integrations/draft_loop.py",
+    "scripts/run_amo_wappi_draft_loop.py",
+    "scripts/run_telegram_public_pilot_bots.py",
+    "product_data/telegram_dynamic_test_sets/"
+  ],
+  "files_written_before_manifest": [
+    "changed_files.txt",
+    "git_context.txt",
+    "test_output.txt",
+    "implementation_notes.md",
+    "risk_review.md",
+    "backward_compatibility.md",
+    "semantic_review.md",
+    "dry_run_report.md",
+    "rollback_contract.md",
+    "readback_plan.md",
+    "not_written_live.md"
+  ],
+  "pii_redaction": [
+    "ru_phone",
+    "email"
+  ]
+}

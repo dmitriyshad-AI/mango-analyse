@@ -1,0 +1,15 @@
+M	scripts/write_amo_ready_contacts.py
+A	scripts/build_crm_customer_card_workbook.py
+M	src/mango_mvp/amocrm_runtime/amo_integration.py
+M	src/mango_mvp/deal_aware/deal_text_builder.py
+A	src/mango_mvp/crm_card_aggregator.py
+A	src/mango_mvp/crm_card_workbook.py
+M	tests/test_amo_writeback_guards.py
+M	tests/test_deal_aware_structured_objections.py
+A	tests/test_crm_card_aggregator.py
+A	audits/_inbox/etap1_crm_card_assembler_20260619211133/
+
+External transient artifacts, not committed:
+- /Users/dmitrijfabarisov/Claude Projects/Foton/2026-06-19_Etap1_Block4_crm_customer_cards_preview_codex.xlsx
+- /Users/dmitrijfabarisov/Claude Projects/Foton/2026-06-19_Etap1_Block4_crm_customer_cards_preview_codex.csv
+- /Users/dmitrijfabarisov/Claude Projects/Foton/2026-06-19_Etap1_Block4_crm_customer_cards_preview_codex.summary.json

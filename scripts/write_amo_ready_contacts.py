@@ -18,6 +18,7 @@ from mango_mvp.quality.crm_text_quality_detector import (
     has_blocking_crm_text_findings,
 )
 from mango_mvp.quality.tenant_text_normalizer import normalize_manager_text
+from mango_mvp.crm_card_aggregator import apply_contact_card_payload, contact_ready_blocker
 from mango_mvp.utils.phone import normalize_phone
 
 try:
@@ -216,7 +217,15 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
     if probability:
         facts.append(f"Вероятность продажи, %: {probability}")
     if chronology:
-        facts.append("Хронология: есть в полной рабочей таблице")
+        if os.getenv("CRM_AUTO_HISTORY_CHRONOLOGY_TEXT", "0") == "1" and not _is_redundant_history_block(
+            history, chronology
+        ):
+            facts.append(
+                "Хронология:\n"
+                + _compact_without_ellipsis(chronology, limit=max(200, MAX_AUTO_HISTORY_CHARS // 2))
+            )
+        else:
+            facts.append("Хронология: есть в полной рабочей таблице")
     if facts:
         blocks.append("\n".join(facts))
 
@@ -291,6 +300,9 @@ def _contact_row_guard_reasons(row: dict[str, Any]) -> list[str]:
     blockers = _safe_text(row.get("CRM writeback blockers"))
     if blockers:
         reasons.append(f"crm_writeback_blockers:{blockers}")
+    card_blocker = contact_ready_blocker(row)
+    if card_blocker:
+        reasons.append(card_blocker)
     return reasons
 
 
@@ -321,6 +333,9 @@ def _contact_field_catalog_guard_reasons(field_catalog: list[dict[str, Any]]) ->
 
 
 def _build_contact_payload(row: dict[str, Any]) -> dict[str, Any]:
+    card_payload = apply_contact_card_payload(row)
+    if card_payload is not None:
+        return card_payload
     payload = {
         "Статус матчинга": _safe_text(row.get("Статус матчинга Tallanto")),
         "AI-приоритет": _safe_text(row.get("Приоритет лида")),

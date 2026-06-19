@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from mango_mvp.crm_card_aggregator import apply_deal_card_payload
 from mango_mvp.customer_timeline.context_provider import get_customer_context_for_phone
 from mango_mvp.deal_aware.stage1_snapshot import quote_ident, read_csv, safe_text, stringify, write_csv
 from mango_mvp.quality.crm_text_quality_detector import (
@@ -452,6 +453,7 @@ def build_deal_payload(
     tallanto_context: dict[str, Any],
     generated_at: str,
     analysis_date: str,
+    card_fields: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     mode = safe_text(candidate.get("deal_writeback_mode"))
     status = safe_text(candidate.get("selected_status_name"))
@@ -526,6 +528,7 @@ def build_deal_payload(
         "AI-дата обновления сделки": generated_at,
     }
     payload.update(commercial_payload)
+    payload = apply_deal_card_payload(payload, card_fields)
     return {field: fit_text(normalize_manager_text(value), field_limit(field)) for field, value in payload.items()}
 
 
@@ -1110,7 +1113,9 @@ def hydrate_policy_calls(policy_rows: list[dict[str, str]], call_by_id: dict[str
 
 
 def normalize_manager_text(value: Any) -> str:
-    keep_mark = os.getenv("CRM_KEEP_TRUNCATION_MARK", "0") == "1"
+    keep_mark = os.getenv("CRM_KEEP_TRUNCATION_MARK", "0") == "1" or os.getenv(
+        "CRM_DEAL_OBJECTION_EXPLICIT_COMPACT", "0"
+    ) == "1"
     text = safe_text(value)
     has_truncation_mark = bool(re.search(r"\[(?:сжато|truncated)\]", text, flags=re.I))
     if keep_mark:
@@ -1345,12 +1350,13 @@ def normalize_objection(value: Any) -> str:
 def compact_objection(text: str, *, max_chars: int = 90) -> str:
     if len(text) <= max_chars:
         return text
-    budget = max(20, max_chars - 1)
+    suffix = " [сжато]" if os.getenv("CRM_DEAL_OBJECTION_EXPLICIT_COMPACT", "0") == "1" else "…"
+    budget = max(20, max_chars - len(suffix))
     chunk = text[:budget].rstrip()
     cut = max(chunk.rfind(" "), chunk.rfind(","), chunk.rfind(";"))
     if cut >= int(budget * 0.6):
         chunk = chunk[:cut]
-    return chunk.rstrip(" ,;:.") + "…"
+    return chunk.rstrip(" ,;:.") + suffix
 
 
 def split_pipe(value: Any) -> list[str]:

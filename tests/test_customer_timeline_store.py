@@ -178,6 +178,11 @@ def open_store(tmp_path: Path) -> CustomerTimelineSQLiteStore:
     return CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=StepClock())
 
 
+def fts_snapshot(db_path: Path, table: str, id_column: str) -> list[tuple]:
+    with sqlite3.connect(db_path) as con:
+        return con.execute(f"SELECT * FROM {table} ORDER BY {id_column}").fetchall()
+
+
 def table_names(db_path: Path) -> set[str]:
     with sqlite3.connect(db_path) as con:
         rows = con.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')").fetchall()
@@ -701,6 +706,54 @@ def test_search_uses_fts_or_fallback_for_events_signals_and_chunks(tmp_path: Pat
     assert "bot_context" in scopes
     assert all(item["record"]["tenant_id"] == "foton" for item in result["items"])
     store.close()
+
+
+def test_deferred_fts_rebuild_matches_post_row_sync(tmp_path: Path) -> None:
+    row_root = tmp_path / "row_sync"
+    deferred_root = tmp_path / "deferred_sync"
+    row_root.mkdir()
+    deferred_root.mkdir()
+
+    def populate(store: CustomerTimelineSQLiteStore) -> None:
+        customer = identity()
+        ev = event(customer, summary="Клиент спросил стоимость и формат занятий.")
+        store.upsert_customer(customer)
+        store.upsert_event(ev)
+        store.upsert_bot_context_chunk(
+            replace(
+                chunk(ev),
+                source_ref="deferred-fts-context",
+                text="Клиент спрашивал стоимость и онлайн формат.",
+                summary="Стоимость и формат",
+            )
+        )
+
+    row_store = CustomerTimelineSQLiteStore(row_root / "customer_timeline.sqlite", allowed_root=row_root, clock=StepClock())
+    populate(row_store)
+    row_counts = row_store.fts_index_counts()
+    row_store.close()
+
+    deferred_store = CustomerTimelineSQLiteStore(
+        deferred_root / "customer_timeline.sqlite",
+        allowed_root=deferred_root,
+        defer_fts_sync=True,
+        clock=StepClock(),
+    )
+    populate(deferred_store)
+    deferred_counts = deferred_store.rebuild_fts_indexes()
+    result = deferred_store.search_timeline("foton", "стоимость", limit=10, mode="fts")
+    deferred_store.close()
+
+    assert deferred_counts == row_counts
+    assert deferred_counts["timeline_event_fts"] == deferred_counts["timeline_events"]
+    assert deferred_counts["bot_context_chunk_fts"] == deferred_counts["bot_context_chunks"]
+    assert fts_snapshot(row_root / "customer_timeline.sqlite", "timeline_event_fts", "event_id") == fts_snapshot(
+        deferred_root / "customer_timeline.sqlite", "timeline_event_fts", "event_id"
+    )
+    assert fts_snapshot(row_root / "customer_timeline.sqlite", "bot_context_chunk_fts", "chunk_id") == fts_snapshot(
+        deferred_root / "customer_timeline.sqlite", "bot_context_chunk_fts", "chunk_id"
+    )
+    assert {item["scope"] for item in result["items"]} == {"event", "bot_context"}
 
 
 def test_bot_context_search_filters_blocked_chunks_in_fts_and_fallback(tmp_path: Path) -> None:

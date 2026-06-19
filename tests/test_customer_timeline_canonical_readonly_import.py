@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
@@ -285,6 +287,19 @@ def _table_count(db_path: Path, table: str) -> int:
         return int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
+def _with_output(config: CanonicalReadonlyTimelineConfig, name: str, **kwargs: object) -> CanonicalReadonlyTimelineConfig:
+    out_root = config.project_root / "product_data" / "customer_timeline" / name
+    return replace(config, out_root=out_root, timeline_db=out_root / "customer_timeline.sqlite", **kwargs)
+
+
+def _source_cache_statuses(report: Mapping[str, object]) -> dict[str, str]:
+    performance = report["performance"]
+    assert isinstance(performance, dict)
+    source_cache = performance["source_cache"]
+    assert isinstance(source_cache, dict)
+    return {name: str(item["status"]) for name, item in source_cache.items()}
+
+
 def test_builds_canonical_readonly_timeline_with_aggregate_coverage(tmp_path: Path) -> None:
     config = _config(tmp_path)
 
@@ -304,6 +319,9 @@ def test_builds_canonical_readonly_timeline_with_aggregate_coverage(tmp_path: Pa
     assert coverage["safety"]["timeline_primary_read_enabled_allowed"] is False
     assert coverage["safety"]["write_crm"] is False
     assert coverage["safety"]["telegram_import_enabled"] is False
+    assert coverage["performance"]["fts_counts"]["timeline_event_fts"] == _table_count(config.timeline_db, "timeline_events")
+    assert coverage["performance"]["fts_counts"]["bot_context_chunk_fts"] == _table_count(config.timeline_db, "bot_context_chunks")
+    assert {"parse_time_seconds", "normalize_time_seconds", "write_time_seconds", "fts_time_seconds"} <= set(report["performance"])
     with sqlite3.connect(config.timeline_db) as con:
         row = con.execute(
             "SELECT summary, record_json FROM timeline_events WHERE event_type = 'mango_call' AND source_id = 'call-1'"
@@ -568,6 +586,58 @@ def test_idempotent_rerun_keeps_store_counts_stable(tmp_path: Path) -> None:
     assert first["summary"] == second["summary"]
     assert _table_count(config.timeline_db, "customer_identities") == 2
     assert _table_count(config.timeline_db, "timeline_events") >= 7
+
+
+def test_source_cache_hits_and_normalizer_version_invalidates_all_sources(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    first = build_canonical_readonly_customer_timeline(config)
+    second = build_canonical_readonly_customer_timeline(_with_output(config, "canonical_readonly_test_second"))
+    changed_version = build_canonical_readonly_customer_timeline(
+        _with_output(config, "canonical_readonly_test_changed_version", normalizer_version="cache_test_v2")
+    )
+
+    assert set(_source_cache_statuses(first).values()) == {"miss"}
+    assert set(_source_cache_statuses(second).values()) == {"hit"}
+    assert set(_source_cache_statuses(changed_version).values()) == {"miss"}
+    assert _table_count(config.timeline_db, "customer_identities") == _table_count(
+        config.project_root / "product_data" / "customer_timeline" / "canonical_readonly_test_second" / "customer_timeline.sqlite",
+        "customer_identities",
+    )
+
+
+def test_source_cache_misses_only_changed_source_file(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    build_canonical_readonly_customer_timeline(config)
+    amo_deals_csv = config.amo_deals_csv
+    assert amo_deals_csv is not None
+    with amo_deals_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    rows.append(
+        {
+            "lead_id": "lead-2",
+            "lead_name": "Фотон физика",
+            "linked_contact_ids": "contact-1",
+            "pipeline_name": "Сделки B2C",
+            "status_name": "Новая",
+            "created_at": "1770007200",
+            "updated_at": "1770007200",
+        }
+    )
+    _write_csv(amo_deals_csv, rows)
+
+    changed = build_canonical_readonly_customer_timeline(_with_output(config, "canonical_readonly_test_amo_changed"))
+    statuses = _source_cache_statuses(changed)
+
+    assert statuses["amo_deals"] == "miss"
+    assert {
+        name: status for name, status in statuses.items() if name != "amo_deals"
+    } == {
+        "master_contacts": "hit",
+        "master_calls": "hit",
+        "amo_contacts": "hit",
+        "mail_bridge": "hit",
+    }
 
 
 def test_built_timeline_is_readable_by_existing_read_api(tmp_path: Path) -> None:

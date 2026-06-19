@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mango_mvp.customer_timeline.canonical_readonly_import import (  # noqa: E402
+    CANONICAL_READONLY_NORMALIZER_VERSION,
     DEFAULT_OUT_ROOT,
     CanonicalReadonlyTimelineConfig,
     build_canonical_readonly_customer_timeline,
@@ -41,6 +42,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mail-handoff-db")
     parser.add_argument("--mail-bridge-db")
     parser.add_argument("--max-call-events-per-contact", type=int, default=0)
+    parser.add_argument("--source-cache-dir", help="Directory for normalized source-batch cache.")
+    parser.add_argument(
+        "--normalizer-version",
+        default=CANONICAL_READONLY_NORMALIZER_VERSION,
+        help="Cache normalizer version. Changing it invalidates all source-batch cache entries.",
+    )
+    parser.add_argument("--disable-source-cache", action="store_true", help="Parse all sources even when cache entries exist.")
     parser.add_argument(
         "--generated-at",
         help="UTC ISO timestamp for deterministic tests/rebuilds. Defaults to current UTC time.",
@@ -76,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         mail_bridge_db=optional_path(args.mail_bridge_db),
         generated_at=parse_generated_at(args.generated_at),
         max_call_events_per_contact=max(0, int(args.max_call_events_per_contact)),
+        source_cache_dir=optional_path(args.source_cache_dir),
+        normalizer_version=args.normalizer_version,
+        disable_source_cache=bool(args.disable_source_cache),
     )
     report = build_canonical_readonly_customer_timeline(config)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))

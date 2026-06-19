@@ -310,6 +310,7 @@ class CustomerTimelineSQLiteStore:
         *,
         allowed_root: Optional[Path | str] = None,
         read_only: bool = False,
+        defer_fts_sync: bool = False,
         clock: Optional[Clock] = None,
     ) -> None:
         raw_path = Path(db_path).expanduser()
@@ -321,6 +322,8 @@ class CustomerTimelineSQLiteStore:
         self._clock = clock or now_utc
         self._bulk_write_depth = 0
         self._bulk_write_dirty = False
+        self._defer_fts_sync = bool(defer_fts_sync)
+        self._fts_sync_deferred = False
         self._writer_lock_path: Optional[Path] = None
         self._writer_lock_handle: Any = None
         if not self.read_only:
@@ -782,7 +785,7 @@ class CustomerTimelineSQLiteStore:
             (event.dedupe_key,),
         )
         payload = event.to_json_dict()
-        record_hash = stable_digest(payload)
+        record_hash = stable_digest(scrub_timeline_persisted_json(payload))
         if existing_by_dedupe is not None and existing_by_dedupe["event_id"] != event.event_id:
             return CustomerTimelineStoreWriteResult(
                 record_type="timeline_event",
@@ -2001,6 +2004,9 @@ class CustomerTimelineSQLiteStore:
         return row is not None
 
     def _sync_event_fts(self, event: TimelineEvent, payload: Mapping[str, Any], record_hash: str) -> None:
+        if self._defer_fts_sync:
+            self._fts_sync_deferred = True
+            return
         if not self._fts_enabled and not self._detect_existing_fts():
             return
         record_for_fts = event_record_for_fts(payload)
@@ -2033,6 +2039,9 @@ class CustomerTimelineSQLiteStore:
         self._fts_enabled = True
 
     def _sync_chunk_fts(self, chunk: BotContextChunk, record_hash: str) -> None:
+        if self._defer_fts_sync:
+            self._fts_sync_deferred = True
+            return
         if not self._fts_enabled and not self._detect_existing_fts():
             return
         self._con.execute("DELETE FROM bot_context_chunk_fts WHERE chunk_id = ?", (chunk.chunk_id,))
@@ -2056,6 +2065,96 @@ class CustomerTimelineSQLiteStore:
             ),
         )
         self._fts_enabled = True
+
+    def rebuild_fts_indexes(self) -> Mapping[str, Any]:
+        """Rebuild FTS tables from persisted rows in one deterministic pass."""
+        self._ensure_writable()
+        if not self._detect_existing_fts():
+            return {"fts_enabled": False, "timeline_event_fts": 0, "bot_context_chunk_fts": 0}
+        self._bootstrap_fts()
+        self._con.execute("DELETE FROM timeline_event_fts")
+        self._con.execute("DELETE FROM bot_context_chunk_fts")
+        self._con.execute("DELETE FROM timeline_event_fts_keys")
+        event_rows = self._con.execute(
+            """
+            SELECT tenant_id, event_id, customer_id, opportunity_id, event_type,
+                   source_system, event_at, subject, text_preview, summary,
+                   record_hash, record_json
+            FROM timeline_events
+            ORDER BY tenant_id, event_at, event_id
+            """
+        ).fetchall()
+        for row in event_rows:
+            payload = json_loads(row["record_json"])
+            record_for_fts = event_record_for_fts(payload)
+            self._con.execute(
+                """
+                INSERT INTO timeline_event_fts (
+                  tenant_id, event_id, customer_id, opportunity_id, event_type,
+                  source_system, event_at, subject, text_preview, summary, record_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["tenant_id"],
+                    row["event_id"],
+                    row["customer_id"],
+                    row["opportunity_id"],
+                    row["event_type"],
+                    row["source_system"],
+                    row["event_at"],
+                    row["subject"],
+                    row["text_preview"],
+                    row["summary"],
+                    json_dumps({"hash": row["record_hash"], "record": record_for_fts}),
+                ),
+            )
+            self._con.execute("INSERT OR REPLACE INTO timeline_event_fts_keys(event_id) VALUES (?)", (row["event_id"],))
+        chunk_rows = self._con.execute(
+            """
+            SELECT tenant_id, chunk_id, customer_id, opportunity_id, event_id,
+                   event_at, record_hash, record_json
+            FROM bot_context_chunks
+            ORDER BY tenant_id, COALESCE(event_at, created_at), chunk_id
+            """
+        ).fetchall()
+        for row in chunk_rows:
+            payload = json_loads(row["record_json"])
+            self._con.execute(
+                """
+                INSERT INTO bot_context_chunk_fts (
+                  tenant_id, chunk_id, customer_id, opportunity_id, event_id,
+                  event_at, text, summary
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["tenant_id"],
+                    row["chunk_id"],
+                    row["customer_id"],
+                    row["opportunity_id"],
+                    row["event_id"],
+                    row["event_at"] or "",
+                    payload.get("text") or "",
+                    f"{payload.get('summary') or ''} {row['record_hash']}",
+                ),
+            )
+        self._con.execute("INSERT INTO timeline_event_fts(timeline_event_fts) VALUES ('integrity-check')")
+        self._con.execute("INSERT INTO bot_context_chunk_fts(bot_context_chunk_fts) VALUES ('integrity-check')")
+        self._fts_enabled = True
+        self._fts_sync_deferred = False
+        self._commit()
+        return self.fts_index_counts()
+
+    def fts_index_counts(self) -> Mapping[str, int]:
+        if not self._detect_existing_fts():
+            return {"timeline_event_fts": 0, "bot_context_chunk_fts": 0}
+        return {
+            "timeline_events": self._table_count("timeline_events"),
+            "timeline_event_fts": self._table_count("timeline_event_fts"),
+            "bot_context_chunks": self._table_count("bot_context_chunks"),
+            "bot_context_chunk_fts": self._table_count("bot_context_chunk_fts"),
+        }
 
     def _search_fts(
         self,

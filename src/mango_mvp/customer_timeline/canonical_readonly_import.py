@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from mango_mvp.utils.phone import normalize_phone
 
 
 CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION = "canonical_readonly_customer_timeline_v1"
+CANONICAL_READONLY_NORMALIZER_VERSION = "canonical_readonly_source_normalizers_v1"
 DEFAULT_OUT_ROOT = Path("product_data/customer_timeline/canonical_readonly_20260521_v5")
 OFFLINE_BRAND_INFER_MODE = "cyrillic_v2"
 MASTER_CONTACT_SOURCE = "master_contacts_snapshot"
@@ -57,43 +59,101 @@ class CanonicalReadonlyTimelineConfig:
     mail_bridge_db: Optional[Path] = None
     generated_at: Optional[datetime] = None
     max_call_events_per_contact: int = 0
+    source_cache_dir: Optional[Path] = None
+    normalizer_version: str = CANONICAL_READONLY_NORMALIZER_VERSION
+    disable_source_cache: bool = False
+
+
+@dataclass(frozen=True)
+class SourceCacheLoad:
+    name: str
+    value: Any
+    cache_status: str
+    cache_key: str
+    elapsed_seconds: float
+    path: Optional[Path]
+
+
+class SourceBatchCache:
+    """Small JSON cache for normalized source batches keyed by source checksum."""
+
+    def __init__(self, cache_dir: Optional[Path], *, normalizer_version: str, enabled: bool = True) -> None:
+        self.cache_dir = cache_dir
+        self.normalizer_version = safe_text(normalizer_version) or CANONICAL_READONLY_NORMALIZER_VERSION
+        self.enabled = bool(enabled and cache_dir is not None)
+        if self.enabled and self.cache_dir is not None:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def load(self, name: str, *, sources: Mapping[str, Optional[Path]], builder: Any) -> SourceCacheLoad:
+        started = time.perf_counter()
+        cache_key = self._cache_key(name, sources)
+        cache_path = self._cache_path(name, cache_key)
+        if self.enabled and cache_path is not None and cache_path.exists():
+            value = json.loads(cache_path.read_text(encoding="utf-8"))
+            return SourceCacheLoad(
+                name=name,
+                value=value,
+                cache_status="hit",
+                cache_key=cache_key,
+                elapsed_seconds=time.perf_counter() - started,
+                path=cache_path,
+            )
+        value = builder()
+        if self.enabled and cache_path is not None:
+            cache_path.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n",
+                encoding="utf-8",
+            )
+        return SourceCacheLoad(
+            name=name,
+            value=value,
+            cache_status="miss" if self.enabled else "disabled",
+            cache_key=cache_key,
+            elapsed_seconds=time.perf_counter() - started,
+            path=cache_path,
+        )
+
+    def _cache_key(self, name: str, sources: Mapping[str, Optional[Path]]) -> str:
+        fingerprints: dict[str, Any] = {}
+        for label, path in sorted(sources.items()):
+            if path is None:
+                fingerprints[label] = {"exists": False}
+                continue
+            resolved = Path(path).expanduser().resolve(strict=False)
+            fingerprints[label] = {
+                "path_name": resolved.name,
+                "exists": resolved.exists(),
+                "sha256": file_sha256(resolved) if resolved.exists() and resolved.is_file() else "",
+            }
+        return stable_digest(
+            {
+                "source_name": name,
+                "normalizer_version": self.normalizer_version,
+                "sources": fingerprints,
+            }
+        )
+
+    def _cache_path(self, name: str, cache_key: str) -> Optional[Path]:
+        if self.cache_dir is None:
+            return None
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", safe_text(name)) or "source"
+        return self.cache_dir / f"{safe_name}_{cache_key}.json"
+
+
+def source_cache_timing(load: SourceCacheLoad) -> Mapping[str, Any]:
+    return {
+        "status": load.cache_status,
+        "cache_key": load.cache_key,
+        "elapsed_seconds": round(load.elapsed_seconds, 6),
+        "cache_path": str(load.path) if load.path is not None else None,
+    }
 
 
 def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimelineConfig) -> Mapping[str, Any]:
+    build_started = time.perf_counter()
     resolved = resolve_config(config)
     generated_at = resolved.generated_at or datetime.now(timezone.utc)
     resolved.out_root.mkdir(parents=True, exist_ok=True)
-
-    contacts = read_csv_rows(resolved.master_contacts_csv)
-    customers_by_key = build_customer_index(
-        contacts,
-        tenant_id=resolved.tenant_id,
-        generated_at=generated_at,
-    )
-    customer_phones = tuple(item["phone"] for item in customers_by_key.values())
-    known_phones = set(customer_phones)
-    calls_by_phone = read_calls_by_phone(
-        resolved.master_calls_csv,
-        known_phones=known_phones,
-        max_per_phone=resolved.max_call_events_per_contact,
-        canonical_calls_db=resolved.canonical_calls_db,
-    )
-    amo_contacts_by_phone = read_amo_contacts_by_phone(resolved.amo_contacts_csv, known_phones=known_phones)
-    amo_deals_by_contact_id = read_amo_deals_by_contact_id(resolved.amo_deals_csv)
-    duplicate_amo_contact_ids, duplicate_amo_lead_ids = duplicate_amo_ids_across_sources(
-        contacts,
-        amo_contacts_by_phone=amo_contacts_by_phone,
-        amo_deals_by_contact_id=amo_deals_by_contact_id,
-    )
-    shared_amo_reasons_by_phone = shared_amo_reasons_by_phone_from_sources(
-        contacts,
-        amo_contacts_by_phone=amo_contacts_by_phone,
-        amo_deals_by_contact_id=amo_deals_by_contact_id,
-        duplicate_amo_contact_ids=duplicate_amo_contact_ids,
-        duplicate_amo_lead_ids=duplicate_amo_lead_ids,
-    )
-    mail_by_phone = read_mail_aggregates_by_phone(resolved.mail_bridge_db, known_phones=known_phones)
-
     source_manifest = build_source_manifest(
         {
             "current_runtime_json": resolved.current_runtime_json,
@@ -106,6 +166,90 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             "mail_bridge_db": resolved.mail_bridge_db,
         }
     )
+    source_cache = SourceBatchCache(
+        resolved.source_cache_dir,
+        normalizer_version=resolved.normalizer_version,
+        enabled=not resolved.disable_source_cache,
+    )
+    source_timings: dict[str, Mapping[str, Any]] = {}
+
+    contacts_load = source_cache.load(
+        "master_contacts",
+        sources={"master_contacts_csv": resolved.master_contacts_csv},
+        builder=lambda: read_csv_rows(resolved.master_contacts_csv),
+    )
+    contacts = contacts_load.value
+    source_timings[contacts_load.name] = source_cache_timing(contacts_load)
+
+    normalize_started = time.perf_counter()
+    customers_by_key = build_customer_index(
+        contacts,
+        tenant_id=resolved.tenant_id,
+        generated_at=generated_at,
+    )
+    customer_phones = tuple(item["phone"] for item in customers_by_key.values())
+    known_phones = set(customer_phones)
+    normalize_time = time.perf_counter() - normalize_started
+
+    call_rows_load = source_cache.load(
+        "master_calls",
+        sources={"master_calls_csv": resolved.master_calls_csv, "canonical_calls_db": resolved.canonical_calls_db},
+        builder=lambda: read_call_rows(resolved.master_calls_csv, canonical_calls_db=resolved.canonical_calls_db),
+    )
+    call_rows = call_rows_load.value
+    source_timings[call_rows_load.name] = source_cache_timing(call_rows_load)
+    normalize_started = time.perf_counter()
+    calls_by_phone = group_calls_by_phone(
+        call_rows,
+        known_phones=known_phones,
+        max_per_phone=resolved.max_call_events_per_contact,
+    )
+    normalize_time += time.perf_counter() - normalize_started
+
+    amo_contacts_load = source_cache.load(
+        "amo_contacts",
+        sources={"amo_contacts_csv": resolved.amo_contacts_csv},
+        builder=lambda: read_csv_rows(resolved.amo_contacts_csv),
+    )
+    amo_contacts_rows = amo_contacts_load.value
+    source_timings[amo_contacts_load.name] = source_cache_timing(amo_contacts_load)
+    normalize_started = time.perf_counter()
+    amo_contacts_by_phone = group_amo_contacts_by_phone(amo_contacts_rows, known_phones=known_phones)
+    normalize_time += time.perf_counter() - normalize_started
+
+    amo_deals_load = source_cache.load(
+        "amo_deals",
+        sources={"amo_deals_csv": resolved.amo_deals_csv},
+        builder=lambda: read_csv_rows(resolved.amo_deals_csv),
+    )
+    amo_deals_rows = amo_deals_load.value
+    source_timings[amo_deals_load.name] = source_cache_timing(amo_deals_load)
+    normalize_started = time.perf_counter()
+    amo_deals_by_contact_id = group_amo_deals_by_contact_id(amo_deals_rows)
+    duplicate_amo_contact_ids, duplicate_amo_lead_ids = duplicate_amo_ids_across_sources(
+        contacts,
+        amo_contacts_by_phone=amo_contacts_by_phone,
+        amo_deals_by_contact_id=amo_deals_by_contact_id,
+    )
+    shared_amo_reasons_by_phone = shared_amo_reasons_by_phone_from_sources(
+        contacts,
+        amo_contacts_by_phone=amo_contacts_by_phone,
+        amo_deals_by_contact_id=amo_deals_by_contact_id,
+        duplicate_amo_contact_ids=duplicate_amo_contact_ids,
+        duplicate_amo_lead_ids=duplicate_amo_lead_ids,
+    )
+    normalize_time += time.perf_counter() - normalize_started
+
+    mail_rows_load = source_cache.load(
+        "mail_bridge",
+        sources={"mail_bridge_db": resolved.mail_bridge_db},
+        builder=lambda: read_mail_aggregate_rows(resolved.mail_bridge_db),
+    )
+    mail_rows = mail_rows_load.value
+    source_timings[mail_rows_load.name] = source_cache_timing(mail_rows_load)
+    normalize_started = time.perf_counter()
+    mail_by_phone = group_mail_aggregates_by_phone(mail_rows, known_phones=known_phones)
+    normalize_time += time.perf_counter() - normalize_started
     input_hash = stable_digest(
         {
             "schema_version": CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION,
@@ -117,7 +261,10 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         }
     )
 
-    store = CustomerTimelineSQLiteStore(resolved.timeline_db, allowed_root=resolved.out_root)
+    write_started = time.perf_counter()
+    fts_time = 0.0
+    fts_counts: Mapping[str, Any] = {}
+    store = CustomerTimelineSQLiteStore(resolved.timeline_db, allowed_root=resolved.out_root, defer_fts_sync=True)
     imported_counts: Counter[str] = Counter()
     write_status_counts: Counter[str] = Counter()
     manual_review_counts: Counter[str] = Counter()
@@ -327,8 +474,13 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             },
             actor="canonical_readonly_timeline_import",
         )
+        write_time = time.perf_counter() - write_started
+        fts_started = time.perf_counter()
+        fts_counts = store.rebuild_fts_indexes()
+        fts_time = time.perf_counter() - fts_started
         store_summary = store.summary()
     except Exception as exc:
+        write_time = time.perf_counter() - write_started
         if run is not None:
             finished_at = max(generated_at, datetime.now(timezone.utc))
             store.finish_ingestion_run(
@@ -350,6 +502,19 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
     finally:
         store.close()
 
+    performance_report = {
+        "parse_time_seconds": round(sum(float(item.get("elapsed_seconds") or 0.0) for item in source_timings.values()), 6),
+        "normalize_time_seconds": round(normalize_time, 6),
+        "write_time_seconds": round(write_time, 6),
+        "fts_time_seconds": round(fts_time, 6),
+        "total_time_seconds": round(time.perf_counter() - build_started, 6),
+        "source_cache": source_timings,
+        "fts_counts": dict(fts_counts),
+        "normalizer_version": resolved.normalizer_version,
+        "source_cache_dir": str(resolved.source_cache_dir) if resolved.source_cache_dir is not None else None,
+        "source_cache_enabled": not resolved.disable_source_cache,
+    }
+
     coverage = build_coverage_report(
         config=resolved,
         generated_at=generated_at,
@@ -370,6 +535,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         duplicate_amo_lead_ids=duplicate_amo_lead_ids,
         shared_amo_reasons_by_phone=shared_amo_reasons_by_phone,
     )
+    coverage["performance"] = performance_report
     import_report = {
         "schema_version": CANONICAL_READONLY_TIMELINE_SCHEMA_VERSION,
         "generated_at": generated_at.isoformat(),
@@ -384,6 +550,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             "import_report_json": str(resolved.out_root / "import_report.json"),
         },
         "summary": coverage["summary"],
+        "performance": performance_report,
         "safety": canonical_readonly_timeline_safety_contract(write_customer_timeline_db=True),
     }
     write_json(resolved.out_root / "source_manifest.json", source_manifest)
@@ -398,6 +565,11 @@ def resolve_config(config: CanonicalReadonlyTimelineConfig) -> CanonicalReadonly
     out_root = guard_customer_timeline_output_path(project_root / config.out_root if not config.out_root.is_absolute() else config.out_root, project_root)
     timeline_db = config.timeline_db or out_root / "customer_timeline.sqlite"
     timeline_db = guard_customer_timeline_output_path(timeline_db, out_root)
+    source_cache_dir = config.source_cache_dir or project_root / "product_data" / "customer_timeline" / ".canonical_source_cache"
+    source_cache_dir = guard_customer_timeline_output_path(
+        project_root / source_cache_dir if not source_cache_dir.is_absolute() else source_cache_dir,
+        project_root,
+    )
     current_runtime = resolve_existing(config.current_runtime_json or project_root / "stable_runtime" / "CURRENT_RUNTIME.json")
     runtime = json.loads(current_runtime.read_text(encoding="utf-8"))
     paths = runtime.get("paths") if isinstance(runtime.get("paths"), Mapping) else {}
@@ -434,6 +606,9 @@ def resolve_config(config: CanonicalReadonlyTimelineConfig) -> CanonicalReadonly
         mail_bridge_db=mail_bridge,
         generated_at=config.generated_at,
         max_call_events_per_contact=max(0, int(config.max_call_events_per_contact)),
+        source_cache_dir=source_cache_dir,
+        normalizer_version=safe_text(config.normalizer_version) or CANONICAL_READONLY_NORMALIZER_VERSION,
+        disable_source_cache=bool(config.disable_source_cache),
     )
 
 
@@ -840,15 +1015,50 @@ def read_calls_by_phone(
     max_per_phone: int = 0,
     canonical_calls_db: Optional[Path] = None,
 ) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    return group_calls_by_phone(
+        read_call_rows(path, canonical_calls_db=canonical_calls_db),
+        known_phones=known_phones,
+        max_per_phone=max_per_phone,
+    )
+
+
+def read_call_rows(path: Path, *, canonical_calls_db: Optional[Path] = None) -> list[dict[str, Any]]:
     canonical_by_ref = read_canonical_call_analysis_by_ref(canonical_calls_db) if canonical_calls_db else {}
-    grouped: dict[str, list[Mapping[str, str]]] = defaultdict(list)
+    rows: list[dict[str, Any]] = []
     for row in read_csv_rows(path):
+        rows.append(dict(enrich_call_row_with_canonical_analysis(row, canonical_by_ref)))
+    return sorted(
+        rows,
+        key=lambda row: (
+            safe_text(row.get("Телефон клиента")),
+            (parse_datetime_guess(row.get("Дата и время звонка")) or datetime.min.replace(tzinfo=timezone.utc)).isoformat(),
+            safe_text(row.get("ID звонка")),
+            safe_text(row.get("Имя исходного файла")),
+        ),
+    )
+
+
+def group_calls_by_phone(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    known_phones: set[str],
+    max_per_phone: int = 0,
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
         phone = normalize_phone(row.get("Телефон клиента", ""))
         if phone and phone in known_phones:
-            grouped[phone].append(enrich_call_row_with_canonical_analysis(row, canonical_by_ref))
+            grouped[phone].append(dict(row))
     result: dict[str, tuple[Mapping[str, Any], ...]] = {}
-    for phone, rows in grouped.items():
-        rows_sorted = sorted(rows, key=lambda row: parse_datetime_guess(row.get("Дата и время звонка")) or datetime.min.replace(tzinfo=timezone.utc))
+    for phone, phone_rows in sorted(grouped.items()):
+        rows_sorted = sorted(
+            phone_rows,
+            key=lambda row: (
+                parse_datetime_guess(row.get("Дата и время звонка")) or datetime.min.replace(tzinfo=timezone.utc),
+                safe_text(row.get("ID звонка")),
+                safe_text(row.get("Имя исходного файла")),
+            ),
+        )
         if max_per_phone:
             rows_sorted = rows_sorted[-max_per_phone:]
         result[phone] = tuple(rows_sorted)
@@ -868,6 +1078,7 @@ def read_canonical_call_analysis_by_ref(path: Optional[Path]) -> dict[str, Mappi
             SELECT source_filename, source_file, canonical_call_id, amocrm_contact_id, amocrm_lead_id, analysis_json
             FROM canonical_calls
             WHERE analysis_json IS NOT NULL AND analysis_json != ''
+            ORDER BY source_filename, source_file, canonical_call_id
             """
         ).fetchall()
     for row in rows:
@@ -1032,21 +1243,41 @@ def json_safe_value(value: Any) -> Any:
 
 
 def read_amo_contacts_by_phone(path: Path, *, known_phones: set[str]) -> dict[str, tuple[Mapping[str, str], ...]]:
+    return group_amo_contacts_by_phone(read_csv_rows(path), known_phones=known_phones)
+
+
+def group_amo_contacts_by_phone(
+    rows: Sequence[Mapping[str, str]],
+    *,
+    known_phones: set[str],
+) -> dict[str, tuple[Mapping[str, str], ...]]:
     grouped: dict[str, list[Mapping[str, str]]] = defaultdict(list)
-    for row in read_csv_rows(path):
+    for row in rows:
         phones = extract_phones_from_text(row.get("phones", ""))
         for phone in phones:
             if phone in known_phones:
-                grouped[phone].append(row)
-    return {phone: tuple(rows) for phone, rows in grouped.items()}
+                grouped[phone].append(dict(row))
+    return {
+        phone: tuple(sorted(phone_rows, key=lambda row: safe_text(row.get("contact_id"))))
+        for phone, phone_rows in sorted(grouped.items())
+    }
 
 
 def read_amo_deals_by_contact_id(path: Path) -> dict[str, tuple[Mapping[str, str], ...]]:
+    return group_amo_deals_by_contact_id(read_csv_rows(path))
+
+
+def group_amo_deals_by_contact_id(rows: Sequence[Mapping[str, str]]) -> dict[str, tuple[Mapping[str, str], ...]]:
     grouped: dict[str, list[Mapping[str, str]]] = defaultdict(list)
-    for row in read_csv_rows(path):
+    for row in rows:
         for contact_id in split_ids(row.get("linked_contact_ids")):
-            grouped[contact_id].append(row)
-    return {contact_id: tuple(rows) for contact_id, rows in grouped.items()}
+            grouped[contact_id].append(dict(row))
+    return {
+        contact_id: tuple(
+            sorted(deal_rows, key=lambda row: (safe_text(row.get("lead_id")), safe_text(row.get("updated_at"))))
+        )
+        for contact_id, deal_rows in sorted(grouped.items())
+    }
 
 
 def upsert_amo_snapshot(
@@ -1205,9 +1436,13 @@ def upsert_amo_snapshot(
 
 
 def read_mail_aggregates_by_phone(path: Path, *, known_phones: set[str]) -> dict[str, Mapping[str, Any]]:
+    return group_mail_aggregates_by_phone(read_mail_aggregate_rows(path), known_phones=known_phones)
+
+
+def read_mail_aggregate_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
-        return {}
-    by_phone: dict[str, dict[str, Any]] = {}
+        return []
+    rows: list[dict[str, Any]] = []
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only = ON")
@@ -1224,33 +1459,45 @@ def read_mail_aggregates_by_phone(path: Path, *, known_phones: set[str]) -> dict
             FROM candidate_phone_refs p
             JOIN candidate_mango_preview c ON c.candidate_key = p.candidate_key
             WHERE p.phone_match_class = 'strong_unique'
+            ORDER BY p.normalized_phone, c.candidate_key
         """
         for row in con.execute(query):
-            phone = normalize_phone(row["normalized_phone"])
-            if not phone or phone not in known_phones:
-                continue
-            current = by_phone.setdefault(
-                phone,
-                {
-                    "candidate_count": 0,
-                    "mail_message_count": 0,
-                    "first_mail_date_iso": "",
-                    "last_mail_date_iso": "",
-                    "bridge_status_counts": Counter(),
-                    "blocked_reason_counts": Counter(),
-                },
-            )
-            current["candidate_count"] += 1
-            current["mail_message_count"] += int_or_zero(row["mail_message_count"])
-            current["bridge_status_counts"][safe_text(row["bridge_status"]) or "unknown"] += 1
-            if safe_text(row["blocked_reason"]):
-                current["blocked_reason_counts"][safe_text(row["blocked_reason"])] += 1
-            first = safe_text(row["first_mail_date_iso"])
-            last = safe_text(row["last_mail_date_iso"])
-            if first and (not current["first_mail_date_iso"] or first < current["first_mail_date_iso"]):
-                current["first_mail_date_iso"] = first
-            if last and (not current["last_mail_date_iso"] or last > current["last_mail_date_iso"]):
-                current["last_mail_date_iso"] = last
+            rows.append(dict(row))
+    return rows
+
+
+def group_mail_aggregates_by_phone(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    known_phones: set[str],
+) -> dict[str, Mapping[str, Any]]:
+    by_phone: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        phone = normalize_phone(row["normalized_phone"])
+        if not phone or phone not in known_phones:
+            continue
+        current = by_phone.setdefault(
+            phone,
+            {
+                "candidate_count": 0,
+                "mail_message_count": 0,
+                "first_mail_date_iso": "",
+                "last_mail_date_iso": "",
+                "bridge_status_counts": Counter(),
+                "blocked_reason_counts": Counter(),
+            },
+        )
+        current["candidate_count"] += 1
+        current["mail_message_count"] += int_or_zero(row["mail_message_count"])
+        current["bridge_status_counts"][safe_text(row["bridge_status"]) or "unknown"] += 1
+        if safe_text(row["blocked_reason"]):
+            current["blocked_reason_counts"][safe_text(row["blocked_reason"])] += 1
+        first = safe_text(row["first_mail_date_iso"])
+        last = safe_text(row["last_mail_date_iso"])
+        if first and (not current["first_mail_date_iso"] or first < current["first_mail_date_iso"]):
+            current["first_mail_date_iso"] = first
+        if last and (not current["last_mail_date_iso"] or last > current["last_mail_date_iso"]):
+            current["last_mail_date_iso"] = last
     return {
         phone: {
             **value,
@@ -1423,6 +1670,15 @@ def render_coverage_markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Manual Review Reasons",
     ]
+    performance = report.get("performance")
+    if isinstance(performance, Mapping):
+        lines.insert(
+            -2,
+            "- build_timing_sec: "
+            f"parse=`{performance.get('parse_time_seconds')}`, normalize=`{performance.get('normalize_time_seconds')}`, "
+            f"write=`{performance.get('write_time_seconds')}`, fts=`{performance.get('fts_time_seconds')}`, "
+            f"total=`{performance.get('total_time_seconds')}`",
+        )
     for key, value in sorted(report.get("manual_review_reason_counts", {}).items()):
         lines.append(f"- `{key}`: `{value}`")
     lines.extend(["", "## Primary Read Blockers"])

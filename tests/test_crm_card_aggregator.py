@@ -81,6 +81,27 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
         "timeline": {
             "items": [
                 {
+                    "event_type": "amo_contact_snapshot",
+                    "event_at": "2026-06-19T10:00:00+00:00",
+                    "source_system": "amocrm_snapshot",
+                    "summary": "Read-only AMO contact snapshot",
+                    "text_preview": "Read-only AMO contact snapshot",
+                },
+                {
+                    "event_type": "tallanto_student_snapshot",
+                    "event_at": "2026-06-19T09:00:00+00:00",
+                    "source_system": "tallanto_snapshot",
+                    "summary": "exact_phone_single",
+                    "text_preview": "exact_phone_single",
+                },
+                {
+                    "event_type": "amo_deal_stage",
+                    "event_at": "2026-06-19T08:00:00+00:00",
+                    "source_system": "amocrm_snapshot",
+                    "summary": "Закрыто и не реализовано",
+                    "stage_after": "Закрыто и не реализовано",
+                },
+                {
                     "event_type": "mango_call",
                     "event_at": "2026-06-18T10:00:00+00:00",
                     "source_system": "mango",
@@ -121,11 +142,27 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
 
     card = build_crm_card_projection(profile)
     history = card["deal_card"]["fields"]["AI-история по сделке"]
+    auto_history = card["contact_card"]["fields"]["Авто история общения"]
+    preview = card["workbook"]["what_goes_to_amo"]
 
     assert "Полный разбор живого звонка" in history
     assert "Возражения: цена" in history
     assert "Следующий шаг: Перезвонить завтра" in history
     assert "Недозвон не должен попасть" not in history
+    assert "Read-only AMO contact snapshot" not in history
+    assert "Read-only AMO contact snapshot" not in auto_history
+    assert "exact_phone_single" not in history
+    assert "exact_phone_single" not in auto_history
+    assert "Закрыто и не реализовано" not in history
+    assert "Закрыто и не реализовано" in card["deal_card"]["fields"]["AI-фактический статус сделки"]
+    assert card["contact_card"]["fields"]["Последняя AI-сводка"] == live_summary.strip()
+    assert card["contact_card"]["fields"]["AI-рекомендованный следующий шаг"] == "Перезвонить завтра"
+    assert card["deal_card"]["fields"]["AI-актуальные возражения"] == "цена"
+    assert "Интересы: математика" in auto_history
+    assert "Целевой продукт: годовой курс" in auto_history
+    assert "Read-only AMO contact snapshot" not in preview
+    assert "exact_phone_single" not in preview
+    assert card["deal_card"]["fields"]["AI-Tallanto статус по сделке"] == "Tallanto: найден один ученик по телефону."
     assert card["workbook"]["ready"] == "да"
 
 

@@ -55,6 +55,7 @@ COMPACTION_SUFFIX = " [сжато]"
 PAYMENT_SIGNAL_TYPES = {"paid_no_access", "tallanto_payment", "payment_without_access"}
 HOT_SIGNAL_TYPES = {"hot_lead_silent_7d", "price_interest", "paid_no_access"}
 IDENTITY_CONFLICT_MARKERS = ("ambiguous", "duplicate", "shared", "family")
+SERVICE_SNAPSHOT_EVENT_TYPES = {"amo_contact_snapshot", "tallanto_student_snapshot", "amo_deal_stage"}
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,7 @@ def build_crm_card_projection(
     manager_opportunities = [_mapping(item) for item in _sequence(manager_projection.get("opportunities"))]
     bot_items = [_mapping(item) for item in _sequence(profile.get("bot_context", {}).get("items"))]
     history_items = _history_events(timeline_items)
+    latest_call = _latest_history_call(timeline_items)
 
     generated_at = _snapshot_time(profile, customer)
     identity_status = _safe_text(customer.get("identity_status")) or "unknown"
@@ -139,15 +141,19 @@ def build_crm_card_projection(
     contact_id = _safe_text(facts.amo_contact_id or _manager_amo_id(manager_projection, "amo_contact_ids") or _identity_value(identity_links, "amo_contact_id"))
     source_counts = _source_counts(timeline_items)
     what_collected = _what_collected(customer, timeline_items, signals, conflicts, bot_items)
-    latest_summary = _latest_summary(history_items or timeline_items, facts)
-    next_step = _next_step(signals, facts)
-    objections = _objections(facts, history_items or timeline_items)
+    latest_summary = _latest_summary(latest_call, facts, history_items)
+    next_step = _next_step(signals, facts, latest_call)
+    objections = _objections(facts, latest_call)
+    call_interests = _call_analysis_field(latest_call, "interests")
+    call_target_product = _call_analysis_field(latest_call, "target_product")
     auto_history = _contact_auto_history(
         latest_summary=latest_summary,
-        timeline_items=history_items or timeline_items,
+        timeline_items=history_items,
         signals=signals,
         facts=facts,
         objections=objections,
+        interests=call_interests,
+        target_product=call_target_product,
     )
     priority = _priority(signals, facts, history_items or timeline_items)
     match_status = _match_status(identity_status, identity_links, conflicts)
@@ -170,17 +176,17 @@ def build_crm_card_projection(
         deal_blockers.append("amo_lead_id_masked_in_read_api")
     if not lead_id and not selected_opportunity:
         deal_blockers.append("amo_lead_id_not_available_in_profile")
-    deal_events = _deal_events(history_items or timeline_items, selected_opportunity.get("opportunity_id"))
+    deal_events = _deal_events(history_items, selected_opportunity.get("opportunity_id"))
     history_scope = "история по сделке" if selected_opportunity.get("opportunity_id") else "история по клиенту, не по конкретной сделке"
     deal_payload = {
-        "AI-сводка по сделке": fit_text(_deal_summary(selected_opportunity, history_items or timeline_items, latest_summary, history_scope), 1600),
-        "AI-история по сделке": fit_text(_deal_history(deal_events or history_items or timeline_items, history_scope=history_scope), DEAL_HISTORY_LIMIT),
+        "AI-сводка по сделке": fit_text(_deal_summary(selected_opportunity, history_items, latest_summary, history_scope), 1600),
+        "AI-история по сделке": fit_text(_deal_history(deal_events or history_items, history_scope=history_scope), DEAL_HISTORY_LIMIT),
         "AI-рекомендованный следующий шаг": fit_text(next_step, SHORT_FIELD_LIMIT),
         "AI-дата следующего касания": fit_text(facts.follow_up_date or _followup_from_signal(signals), SHORT_FIELD_LIMIT),
-        "AI-фактический статус сделки": fit_text(_deal_status(selected_opportunity, facts), DEFAULT_TEXT_LIMIT),
+        "AI-фактический статус сделки": fit_text(_deal_status(selected_opportunity, facts, timeline_items), DEFAULT_TEXT_LIMIT),
         "AI-приоритет сделки": fit_text(_deal_priority(priority, signals), SHORT_FIELD_LIMIT),
         "AI-актуальные возражения": fit_text(objections or "Актуальные возражения в истории не выделены.", DEFAULT_TEXT_LIMIT),
-        "AI-основание рекомендации": fit_text(_recommendation_reason(signals, history_items or timeline_items, facts), DEFAULT_TEXT_LIMIT),
+        "AI-основание рекомендации": fit_text(_recommendation_reason(signals, history_items, facts), DEFAULT_TEXT_LIMIT),
         "AI-качество привязки к сделке": fit_text(_binding_quality(identity_status, identity_links, selected_opportunity, history_scope), DEFAULT_TEXT_LIMIT),
         "AI-предупреждение по сделке": fit_text(_warnings(deal_blockers, conflicts, signals), DEFAULT_TEXT_LIMIT),
         "AI-Tallanto статус по сделке": fit_text(_tallanto_status(timeline_items, facts), 1600),
@@ -453,15 +459,23 @@ def _what_collected(
     return "; ".join(part for part in parts if part)
 
 
-def _latest_summary(events: Sequence[Mapping[str, Any]], facts: ManagerFacts) -> str:
-    for event in sorted(events, key=lambda item: _safe_text(item.get("event_at")), reverse=True):
+def _latest_summary(latest_call: Mapping[str, Any], facts: ManagerFacts, history_items: Sequence[Mapping[str, Any]]) -> str:
+    summary = _event_history_summary(latest_call)
+    if summary and summary not in {"no_exact_phone_match"}:
+        return summary
+    if facts.summary or facts.history:
+        return facts.summary or facts.history
+    for event in sorted(history_items, key=lambda item: _safe_text(item.get("event_at")), reverse=True):
         summary = _event_history_summary(event)
         if summary and summary not in {"no_exact_phone_match"}:
             return summary
-    return facts.summary or facts.history
+    return ""
 
 
-def _next_step(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts) -> str:
+def _next_step(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts, latest_call: Mapping[str, Any]) -> str:
+    call_next_step = _call_analysis_field(latest_call, "next_step")
+    if call_next_step:
+        return call_next_step
     for signal in sorted(signals, key=lambda item: _safe_text(item.get("created_at")), reverse=True):
         action = _safe_text(signal.get("recommended_action"))
         if _safe_text(signal.get("status") or "active") == "active" and action:
@@ -487,18 +501,10 @@ def _deal_priority(contact_priority: str, signals: Sequence[Mapping[str, Any]]) 
     return contact_priority or "review"
 
 
-def _objections(facts: ManagerFacts, events: Sequence[Mapping[str, Any]]) -> str:
+def _objections(facts: ManagerFacts, latest_call: Mapping[str, Any]) -> str:
     raw = facts.objections
     if not raw:
-        for event in events:
-            call_analysis = _mapping(event.get("call_analysis"))
-            raw = _join_values(call_analysis.get("objections"))
-            if raw:
-                break
-            summary = _event_history_summary(event)
-            if re.search(r"\b(?:возраж|дорого|стоимост|цена|сомнева)\w*", summary, re.I):
-                raw = summary
-                break
+        raw = _call_analysis_field(latest_call, "objections")
     parts = [compact_objection_explicit(part) for part in split_parts(raw)]
     return "; ".join(_dedupe(part for part in parts if part))
 
@@ -510,6 +516,8 @@ def _contact_auto_history(
     signals: Sequence[Mapping[str, Any]],
     facts: ManagerFacts,
     objections: str,
+    interests: str = "",
+    target_product: str = "",
 ) -> str:
     blocks: list[str] = []
     if latest_summary:
@@ -517,8 +525,12 @@ def _contact_auto_history(
     facts_lines: list[str] = []
     if facts.recommended_product:
         facts_lines.append(f"Рекомендуемый продукт: {facts.recommended_product}")
+    elif target_product:
+        facts_lines.append(f"Целевой продукт: {target_product}")
     if facts.products_interest:
         facts_lines.append(f"Продукты интереса: {facts.products_interest}")
+    elif interests:
+        facts_lines.append(f"Интересы: {interests}")
     if objections:
         facts_lines.append(f"Возражения: {objections}")
     if facts.next_step:
@@ -568,12 +580,26 @@ def _chronology_text(events: Sequence[Mapping[str, Any]], *, limit: int = 5) -> 
 def _history_events(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     result: list[Mapping[str, Any]] = []
     for event in events:
-        if _safe_text(event.get("event_type")) == "mango_call":
+        event_type = _safe_text(event.get("event_type"))
+        if event_type in SERVICE_SNAPSHOT_EVENT_TYPES:
+            continue
+        if event_type == "mango_call":
             if event.get("call_history_eligible") is True:
                 result.append(event)
             continue
         result.append(event)
     return result
+
+
+def _latest_history_call(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    calls = [
+        event
+        for event in events
+        if _safe_text(event.get("event_type")) == "mango_call" and event.get("call_history_eligible") is True
+    ]
+    if not calls:
+        return {}
+    return sorted(calls, key=lambda item: _safe_text(item.get("event_at")), reverse=True)[0]
 
 
 def _event_history_summary(event: Mapping[str, Any]) -> str:
@@ -605,6 +631,11 @@ def _call_analysis_lines(event: Mapping[str, Any]) -> list[str]:
     if budget:
         lines.append(f"Бюджет: {budget}")
     return lines
+
+
+def _call_analysis_field(event: Mapping[str, Any], key: str) -> str:
+    call_analysis = _mapping(event.get("call_analysis"))
+    return _join_values(call_analysis.get(key))
 
 
 def _join_values(value: Any) -> str:
@@ -654,8 +685,7 @@ def _deal_summary(
     history_scope: str,
 ) -> str:
     title = _safe_text(opportunity.get("title")) or "сделка не выбрана"
-    status = _safe_text(opportunity.get("status")) or "статус не указан"
-    return f"Сделка: {title}. Статус: {status}. Основа: {history_scope}. Последняя сводка: {latest_summary or 'нет событий'}."
+    return f"Сделка: {title}. Основа: {history_scope}. Последняя содержательная сводка: {latest_summary or 'нет событий'}."
 
 
 def _deal_history(events: Sequence[Mapping[str, Any]], *, history_scope: str) -> str:
@@ -665,15 +695,36 @@ def _deal_history(events: Sequence[Mapping[str, Any]], *, history_scope: str) ->
     return f"{history_scope}:\n{chronology}"
 
 
-def _deal_status(opportunity: Mapping[str, Any], facts: ManagerFacts) -> str:
+def _deal_status(opportunity: Mapping[str, Any], facts: ManagerFacts, events: Sequence[Mapping[str, Any]]) -> str:
+    stage = _latest_amo_deal_stage(events)
     if opportunity:
-        return (
+        status = (
             f"AMO opportunity: {_safe_text(opportunity.get('title')) or 'без названия'}; "
             f"статус {_safe_text(opportunity.get('status')) or 'не указан'}."
         )
+        return f"{status} Последний этап AMO: {stage}." if stage else status
     if facts.amo_lead_id:
-        return f"AMO lead {facts.amo_lead_id}: статус нужно сверить в AMO snapshot."
+        base = f"AMO lead {facts.amo_lead_id}: статус нужно сверить в AMO snapshot."
+        return f"{base} Последний этап AMO: {stage}." if stage else base
+    if stage:
+        return f"Последний этап AMO: {stage}."
     return "AMO сделка не подтверждена в read_api profile."
+
+
+def _latest_amo_deal_stage(events: Sequence[Mapping[str, Any]]) -> str:
+    for event in sorted(events, key=lambda item: _safe_text(item.get("event_at")), reverse=True):
+        if _safe_text(event.get("event_type")) != "amo_deal_stage":
+            continue
+        before = _safe_text(event.get("stage_before"))
+        after = _safe_text(event.get("stage_after"))
+        summary = _safe_text(event.get("summary") or event.get("text_preview"))
+        if after and before:
+            return f"{before} → {after}"
+        if after:
+            return after
+        if summary:
+            return summary
+    return ""
 
 
 def _followup_from_signal(signals: Sequence[Mapping[str, Any]]) -> str:
@@ -733,11 +784,21 @@ def _tallanto_status(events: Sequence[Mapping[str, Any]], facts: ManagerFacts) -
     if facts.tallanto_history:
         return facts.tallanto_history
     tallanto = [
-        _safe_text(event.get("summary") or event.get("text_preview"))
+        _tallanto_snapshot_text(event)
         for event in events
         if _safe_text(event.get("event_type")).startswith("tallanto_") or _safe_text(event.get("source_system")) == "tallanto_snapshot"
     ]
     return "; ".join(_dedupe(item for item in tallanto if item))[:1600]
+
+
+def _tallanto_snapshot_text(event: Mapping[str, Any]) -> str:
+    text = _safe_text(event.get("summary") or event.get("text_preview"))
+    normalized = text.casefold()
+    if normalized == "exact_phone_single":
+        return "Tallanto: найден один ученик по телефону."
+    if normalized == "no_exact_phone_match":
+        return "Tallanto: точного совпадения по телефону нет."
+    return text
 
 
 def _what_already_in_amo(

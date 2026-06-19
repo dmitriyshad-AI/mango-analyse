@@ -47,6 +47,9 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         assert profile["last_event_at"] == (NOW + timedelta(minutes=1)).isoformat()
         assert profile["customer"]["primary_phone"] == "+***4567"
         assert profile["customer"]["primary_email"] == "p***@example.com"
+        assert profile["manager_projection"]["amo_contact_ids"] == ["contact-raw-1"]
+        assert profile["manager_projection"]["amo_lead_ids"] == ["lead-1", "lead-raw-1"]
+        assert {item["link_value"] for item in profile["manager_projection"]["identity_links"]} == {"contact-raw-1", "lead-raw-1"}
         assert profile["customer_id_mappings"] == [
             {
                 "mapping_id": profile["customer_id_mappings"][0]["mapping_id"],
@@ -63,6 +66,10 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         ]
         assert profile["timeline"]["items"][0]["allowed_for_bot"] is False
         assert profile["timeline"]["items"][0]["requires_manager_review"] is True
+        assert len(profile["timeline"]["items"][0]["summary"]) > 500
+        assert profile["timeline"]["items"][0]["call_analysis"]["structured_fields"]["student"]["grade_current"] == "9"
+        assert profile["timeline"]["items"][0]["call_type"] == "sales_call"
+        assert profile["timeline"]["items"][0]["call_history_eligible"] is True
         assert profile["timeline"]["items"][0]["artifacts"][0]["has_path"] is True
         assert profile["timeline"]["items"][0]["signals"][0]["allowed_for_bot"] is False
         assert profile["timeline"]["items"][0]["signals"][0]["requires_manager_review"] is True
@@ -262,6 +269,34 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
             last_seen_at=NOW,
         )
     )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            link_type="amo_contact_id",
+            link_value="contact-raw-1",
+            source_system="amocrm_snapshot",
+            source_ref="amo:contact:contact-raw-1",
+            match_class="strong_unique",
+            confidence=0.9,
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+    )
+    store.upsert_identity_link(
+        IdentityLink(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            link_type="amo_lead_id",
+            link_value="lead-raw-1",
+            source_system="amocrm_snapshot",
+            source_ref="amo:lead:lead-raw-1",
+            match_class="strong_unique",
+            confidence=0.85,
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+    )
     store.record_customer_id_mapping(
         "foton",
         old_customer_id="customer:legacy-phone",
@@ -283,6 +318,7 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
         evidence={"raw_payload": {"hidden": True}},
     )
     store.upsert_opportunity(opportunity)
+    long_call_summary = "Полный разбор звонка. " + ("Клиент обсуждал цену, формат и следующий шаг. " * 30)
     event = TimelineEvent(
         tenant_id="foton",
         customer_id=customer.customer_id,
@@ -296,11 +332,24 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
         actor_ref="client-phone-1234567",
         subject="Вопрос про стоимость",
         text_preview="Сколько стоит подготовка к ЕГЭ?",
-        summary="Клиент спросил стоимость курса и попросил перезвонить.",
+        summary=long_call_summary,
         importance=3,
         match_status="strong_unique",
         confidence=0.9,
-        record={"raw_payload": {"hidden": True}, "audio_path": "/secret/audio.mp3"},
+        record={
+            "raw_payload": {"hidden": True},
+            "audio_path": "/secret/audio.mp3",
+            "call_analysis": {
+                "history_summary": long_call_summary,
+                "structured_fields": {"student": {"grade_current": "9"}},
+                "call_type": "sales_call",
+                "call_history_eligible": True,
+                "objections": ["цена"],
+                "next_step": "Перезвонить",
+            },
+            "call_type": "sales_call",
+            "call_history_eligible": True,
+        },
         metadata={"provider_raw_payload": {"hidden": True}},
         created_at=NOW + timedelta(minutes=1),
     )

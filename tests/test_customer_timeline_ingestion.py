@@ -403,6 +403,7 @@ def test_channel_message_normalizer_uses_whatsapp_contract_types() -> None:
     assert batch.events[0].event_type == TimelineEventType.WHATSAPP_MESSAGE
     assert {link.link_type.value for link in batch.identity_links} == {"whatsapp_user_id", "channel_session_id"}
     assert batch.bot_context_chunks[0].allowed_for_bot is False
+    assert batch.bot_context_chunks[0].requires_manager_review is True
 
 
 def test_importer_safety_contract_and_no_network_or_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

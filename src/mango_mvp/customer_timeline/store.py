@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import re
 import sqlite3
@@ -281,10 +282,18 @@ class CustomerTimelineSQLiteStore:
         self._clock = clock or now_utc
         self._bulk_write_depth = 0
         self._bulk_write_dirty = False
-        self._con = self._connect()
+        self._writer_lock_path: Optional[Path] = None
+        self._writer_lock_handle: Any = None
         if not self.read_only:
-            self.bootstrap()
-        self._fts_enabled = self._detect_existing_fts()
+            self._acquire_writer_lock()
+        try:
+            self._con = self._connect()
+            if not self.read_only:
+                self.bootstrap()
+            self._fts_enabled = self._detect_existing_fts()
+        except Exception:
+            self._release_writer_lock()
+            raise
 
     @classmethod
     def open_read_only(
@@ -297,7 +306,10 @@ class CustomerTimelineSQLiteStore:
         return cls(db_path, allowed_root=allowed_root, read_only=True, clock=clock)
 
     def close(self) -> None:
-        self._con.close()
+        try:
+            self._con.close()
+        finally:
+            self._release_writer_lock()
 
     def __enter__(self) -> "CustomerTimelineSQLiteStore":
         return self
@@ -1553,6 +1565,29 @@ class CustomerTimelineSQLiteStore:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
         return con
+
+    def _acquire_writer_lock(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.db_path.with_suffix(self.db_path.suffix + ".writer.lock")
+        handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.close()
+            raise RuntimeError(f"customer timeline writer lock is already held: {lock_path}") from exc
+        self._writer_lock_path = lock_path
+        self._writer_lock_handle = handle
+
+    def _release_writer_lock(self) -> None:
+        handle = self._writer_lock_handle
+        if handle is None:
+            return
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+            self._writer_lock_handle = None
+            self._writer_lock_path = None
 
     def _ensure_writable(self) -> None:
         if self.read_only:

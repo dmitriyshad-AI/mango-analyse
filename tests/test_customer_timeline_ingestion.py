@@ -325,6 +325,21 @@ def test_channel_mango_and_amo_normalizers_create_expected_timeline_contracts() 
             },
         )
     )
+    max_batch = ChannelMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="channel_snapshot",
+            source_ref="max#1",
+            payload={
+                "channel": "max",
+                "channel_thread_id": "max-thread-1",
+                "channel_message_id": "max-msg-1",
+                "channel_user_id": "max-user-1",
+                "direction": "inbound",
+                "text": "Нужна консультация по оплате",
+                "received_at": "2026-05-04T09:05:00+00:00",
+            },
+        )
+    )
     mango_batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
         TimelineSourceRecord(
             source_system="mango_processed_summary",
@@ -358,6 +373,9 @@ def test_channel_mango_and_amo_normalizers_create_expected_timeline_contracts() 
     assert channel_batch.events[0].event_type.value == "telegram_message"
     assert channel_batch.bot_context_chunks[0].allowed_for_bot is False
     assert channel_batch.bot_context_chunks[0].requires_manager_review is True
+    assert max_batch.events[0].event_type.value == "max_message"
+    assert max_batch.bot_context_chunks[0].allowed_for_bot is False
+    assert max_batch.bot_context_chunks[0].requires_manager_review is True
     assert mango_batch.events[0].event_type.value == "mango_call"
     assert mango_batch.artifacts[0].artifact_type.value == "call_audio"
     assert mango_batch.signals[0].signal_type == "sales_next_step"

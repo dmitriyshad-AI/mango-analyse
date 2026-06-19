@@ -257,22 +257,6 @@ class TimelineImportService:
         )
         source_inventory_before = build_source_inventory(normalized_records)
         run_id: Optional[str] = None
-        if not dry_run:
-            run = self.store.start_ingestion_run(
-                tenant_id=tenant,
-                source_system=source_system,
-                source_ref=normalized_source_ref,
-                run_kind="timeline_import",
-                idempotency_key=idempotency_key or input_hash,
-                input_hash=input_hash,
-                metadata={
-                    "schema_version": CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION,
-                    "records": len(normalized_records),
-                    "safety": timeline_ingestion_safety_contract(),
-                },
-                actor=actor,
-            )
-            run_id = run.run_id
 
         accepted = 0
         errors: list[TimelineImportError] = []
@@ -301,6 +285,21 @@ class TimelineImportService:
         normalized_counts["conflicts"] = normalized_counts.get("conflicts", 0) + len(inferred_conflicts)
         if not dry_run:
             with self.store.bulk_write():
+                run = self.store.start_ingestion_run(
+                    tenant_id=tenant,
+                    source_system=source_system,
+                    source_ref=normalized_source_ref,
+                    run_kind="timeline_import",
+                    idempotency_key=idempotency_key or input_hash,
+                    input_hash=input_hash,
+                    metadata={
+                        "schema_version": CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION,
+                        "records": len(normalized_records),
+                        "safety": timeline_ingestion_safety_contract(),
+                    },
+                    actor=actor,
+                )
+                run_id = run.run_id
                 for batch in batches:
                     for result in self._apply_batch(batch, actor=actor, ingestion_run_id=run_id):
                         write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1

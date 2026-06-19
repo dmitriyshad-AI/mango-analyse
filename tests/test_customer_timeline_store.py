@@ -230,6 +230,24 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     reopened.close()
 
 
+def test_sqlite_store_allows_single_writer_and_read_only_observers(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    writer = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    try:
+        with pytest.raises(RuntimeError, match="writer lock"):
+            CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+        reader = CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path, clock=StepClock())
+        try:
+            assert reader.read_only is True
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+
+    reopened = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    reopened.close()
+
+
 def test_derived_signal_status_migration_is_idempotent_and_reads_old_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     old_payload = {
@@ -682,6 +700,55 @@ def test_search_uses_fts_or_fallback_for_events_signals_and_chunks(tmp_path: Pat
     assert "signal" in scopes
     assert "bot_context" in scopes
     assert all(item["record"]["tenant_id"] == "foton" for item in result["items"])
+    store.close()
+
+
+def test_bot_context_search_filters_blocked_chunks_in_fts_and_fallback(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    ev = event(customer)
+    safe_chunk = replace(
+        chunk(ev),
+        chunk_id=None,
+        source_ref="safe-context",
+        text="Единый маркер контекста доступен боту.",
+        summary="Единый маркер",
+        allowed_for_bot=True,
+        requires_manager_review=False,
+    )
+    blocked_chunk = replace(
+        chunk(ev),
+        chunk_id=None,
+        source_ref="blocked-channel-context",
+        text="Единый маркер контекста из канала требует проверки менеджера.",
+        summary="Единый маркер",
+        allowed_for_bot=False,
+        requires_manager_review=True,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(ev)
+    store.upsert_bot_context_chunk(safe_chunk)
+    store.upsert_bot_context_chunk(blocked_chunk)
+
+    for mode in ("fts", "fallback"):
+        bot_safe = store.search_timeline(
+            "foton",
+            "маркер",
+            scopes=("bot_context",),
+            allowed_for_bot=True,
+            mode=mode,
+            limit=10,
+        )
+        blocked = store.search_timeline(
+            "foton",
+            "маркер",
+            scopes=("bot_context",),
+            allowed_for_bot=False,
+            mode=mode,
+            limit=10,
+        )
+        assert [item["record"]["source_ref"] for item in bot_safe["items"]] == ["safe-context"]
+        assert [item["record"]["source_ref"] for item in blocked["items"]] == ["blocked-channel-context"]
     store.close()
 
 

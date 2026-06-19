@@ -194,6 +194,7 @@ def test_out_message_imports_as_outbound_and_keeps_brand_tag(tmp_path: Path) -> 
     assert dialog_event["source_id"] == "telegram_dialog:100"
     assert "brand:unpk" in chunk["relevance_tags"]
     assert chunk["allowed_for_bot"] is False
+    assert chunk["requires_manager_review"] is True
 
 
 def test_phone_null_does_not_crash_and_stays_session_only(tmp_path: Path) -> None:
@@ -237,6 +238,8 @@ def test_phone_null_does_not_crash_and_stays_session_only(tmp_path: Path) -> Non
     assert event["match_status"] == "unmatched"
     assert customer["identity_status"] == "unmatched"
     assert "brand:unpk" in chunk["relevance_tags"]
+    assert chunk["allowed_for_bot"] is False
+    assert chunk["requires_manager_review"] is True
     assert {item["link_type"] for item in links} == {"telegram_user_id", "channel_session_id"}
 
 

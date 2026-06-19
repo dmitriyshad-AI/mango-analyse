@@ -220,6 +220,8 @@ def test_apply_import_is_idempotent_and_adds_phone_identity_link(tmp_path: Path)
     assert "brand:unknown" in chunk_payload["relevance_tags"]
     assert "unknown" not in chunk_payload["relevance_tags"]
     assert "channel_shared:true" in chunk_payload["relevance_tags"]
+    assert chunk_payload["allowed_for_bot"] is False
+    assert chunk_payload["requires_manager_review"] is True
 
 
 def test_apply_import_links_phone_chat_to_existing_customer_without_duplicate_profile(tmp_path: Path) -> None:

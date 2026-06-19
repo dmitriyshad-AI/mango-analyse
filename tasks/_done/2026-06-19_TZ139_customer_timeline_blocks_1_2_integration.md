@@ -113,3 +113,15 @@ Wappi Max read-only проба:
 
 Примечание: предупреждение pytest одно и то же, `urllib3 NotOpenSSLWarning` из локального LibreSSL Python.
 
+## Addendum: customer_profile contract for manager card
+
+Добавлено в конце A:
+
+- `customer_profile.snapshot_as_of` и `customer_profile.last_event_at` — детерминированная точка снимка от последнего события клиента, без `now()`.
+- `customer_profile.customer_id_mappings` — read-only проекция `old_customer_id -> new_customer_id`.
+- `timeline.items`, `signals`, `bot_context.items` явно несут `allowed_for_bot` и `requires_manager_review`.
+
+Тесты:
+
+- targeted: `tests/test_customer_timeline_read_api.py::test_read_api_profile_projects_safe_customer_timeline` → `1 passed`
+- full: `3362 passed, 5 skipped`

@@ -41,6 +41,7 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     MailAttachmentTextExtractConfig,
     MailAttachmentTextIndexConfig,
     MailCustomerHistoryHandoffConfig,
+    MailCustomerRelinkPreviewConfig,
     MailMangoBridgePreviewConfig,
     MailPhoneLiftPreviewConfig,
     MangoPhoneIndexPreviewConfig,
@@ -57,6 +58,7 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     build_mail_attachment_text_extract,
     build_mail_attachment_text_index,
     build_mail_customer_history_handoff,
+    build_mail_customer_relink_preview,
     build_mail_mango_bridge_preview,
     build_mail_phone_lift_preview,
     build_mango_phone_index_preview,
@@ -102,6 +104,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return run_mango_phone_index_preview(args)
     if args.command == "phone-lift-preview":
         return run_phone_lift_preview(args)
+    if args.command == "customer-relink-preview":
+        return run_customer_relink_preview(args)
     if args.command == "attachment-parse-plan":
         return run_attachment_parse_plan(args)
     if args.command == "attachment-text-extract":
@@ -333,6 +337,38 @@ def run_phone_lift_preview(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # noqa: BLE001
         print(f"MAIL phone lift preview failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_customer_relink_preview(args: argparse.Namespace) -> int:
+    live_lookup = None
+    if args.live_tallanto_lookup:
+        load_dotenv_file(Path(args.dotenv)) if args.dotenv else None
+        from mango_mvp.amocrm_runtime.tallanto_api import TallantoApiClient, build_tallanto_api_config
+
+        client = TallantoApiClient(build_tallanto_api_config())
+        live_lookup = lambda phone: client.search_contacts_by_phone(  # noqa: E731
+            phone,
+            max_records=args.live_max_records,
+        )
+    try:
+        report = build_mail_customer_relink_preview(
+            MailCustomerRelinkPreviewConfig(
+                mail_handoff_db_path=Path(args.mail_handoff_db),
+                identity_db_path=Path(args.identity_db),
+                out_dir=Path(args.out_dir),
+                classification_index_path=(
+                    Path(args.classification_index) if args.classification_index else None
+                ),
+                live_phone_lookup=live_lookup,
+                require_real_correspondence=not args.allow_non_real_correspondence,
+                max_text_chars_per_message=args.max_text_chars_per_message,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL customer relink preview failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     print_summary(report)
     return 0
@@ -802,6 +838,28 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     phone_lift.add_argument("--identity-db", required=True)
     phone_lift.add_argument("--out-dir", required=True)
     phone_lift.add_argument("--max-text-chars-per-message", type=int, default=250_000)
+
+    relink = subparsers.add_parser(
+        "customer-relink-preview",
+        help="Preview conservative mail relinking through tallanto_id address book.",
+    )
+    relink.add_argument("--mail-handoff-db", required=True)
+    relink.add_argument("--identity-db", required=True)
+    relink.add_argument("--out-dir", required=True)
+    relink.add_argument("--classification-index")
+    relink.add_argument("--max-text-chars-per-message", type=int, default=250_000)
+    relink.add_argument(
+        "--allow-non-real-correspondence",
+        action="store_true",
+        help="Do not block messages classified as newsletters/service. Use only for diagnostics.",
+    )
+    relink.add_argument(
+        "--live-tallanto-lookup",
+        action="store_true",
+        help="Use configured Tallanto API for read-only phone lookup when local identity map misses.",
+    )
+    relink.add_argument("--live-max-records", type=int, default=10)
+    relink.add_argument("--dotenv", default=".env", help="Optional dotenv file for live Tallanto lookup.")
 
     attachment_plan = subparsers.add_parser(
         "attachment-parse-plan",

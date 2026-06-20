@@ -48,6 +48,7 @@ TALLANTO_IDENTITY_MAP_SCHEMA_VERSION = "tallanto_email_identity_map_v1"
 MAIL_MATCHING_REPORT_SCHEMA_VERSION = "mail_matching_report_v1"
 MAIL_MANGO_BRIDGE_PREVIEW_SCHEMA_VERSION = "mail_mango_bridge_preview_v1"
 MAIL_PHONE_LIFT_PREVIEW_SCHEMA_VERSION = "mail_phone_lift_preview_v1"
+MAIL_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION = "mail_customer_relink_preview_v1"
 MAIL_ATTACHMENT_PARSE_PLAN_SCHEMA_VERSION = "mail_attachment_parse_plan_v1"
 MAIL_ATTACHMENT_TEXT_EXTRACT_SCHEMA_VERSION = "mail_attachment_text_extract_v1"
 MAIL_ATTACHMENT_PDF_EXTRACT_SCHEMA_VERSION = "mail_attachment_pdf_extract_v1"
@@ -76,6 +77,7 @@ DEFAULT_TALLANTO_CANDIDATE_COLUMNS = (
     "Фамилия",
     "ФИО родителя",
     "Тип ученика",
+    "Филиал",
     "Ответственный(ая)",
     "Ответственный(ая) (ID)",
     "Группа(ID)",
@@ -319,6 +321,17 @@ class MailPhoneLiftPreviewConfig:
     archive_db_paths: Sequence[Path]
     identity_db_path: Path
     out_dir: Path
+    max_text_chars_per_message: int = 250_000
+
+
+@dataclass(frozen=True)
+class MailCustomerRelinkPreviewConfig:
+    mail_handoff_db_path: Path
+    identity_db_path: Path
+    out_dir: Path
+    classification_index_path: Optional[Path] = None
+    live_phone_lookup: Optional[Any] = None
+    require_real_correspondence: bool = True
     max_text_chars_per_message: int = 250_000
 
 
@@ -2167,6 +2180,808 @@ def build_mail_phone_lift_preview(config: MailPhoneLiftPreviewConfig) -> Mapping
     }
     write_json(report_path, report)
     return report
+
+
+def build_mail_customer_relink_preview(config: MailCustomerRelinkPreviewConfig) -> Mapping[str, Any]:
+    guard_not_stable_runtime(config.mail_handoff_db_path, "mail handoff database")
+    guard_not_stable_runtime(config.identity_db_path, "identity database")
+    guard_not_stable_runtime(config.out_dir, "mail customer relink preview output directory")
+    if config.classification_index_path is not None:
+        guard_not_stable_runtime(config.classification_index_path, "mail classification index")
+    out_dir = config.out_dir.resolve(strict=False)
+    guard_external_handoffs_output(out_dir, "mail customer relink preview output directory")
+    guard_git_ignored_output(out_dir, "mail customer relink preview output directory")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_db_path = out_dir / "mail_customer_relink_preview.sqlite"
+    report_path = out_dir / "mail_customer_relink_preview_report.json"
+
+    for source_path, label in (
+        (config.mail_handoff_db_path, "mail handoff database"),
+        (config.identity_db_path, "identity database"),
+        (config.classification_index_path, "mail classification index"),
+    ):
+        if source_path is not None and not Path(source_path).exists():
+            raise FileNotFoundError(f"{label} not found: {source_path}")
+
+    address_book = load_tallanto_customer_address_book(config.identity_db_path)
+    classification = load_mail_classification_index(config.classification_index_path)
+    source_archives, manual_rows, baseline_counts = load_manual_mail_handoff_rows(config.mail_handoff_db_path)
+
+    decisions: list[dict[str, Any]] = []
+    learned_rows: dict[str, dict[str, Any]] = {}
+    archive_cache: dict[str, sqlite3.Connection] = {}
+    reason_counts: Counter[str] = Counter()
+    decision_counts: Counter[str] = Counter()
+    live_counts: Counter[str] = Counter()
+
+    try:
+        for row in manual_rows:
+            message_sha = clean_text(row["message_sha256"])
+            archive_path = Path(source_archives[int(row["source_archive_id"])])
+            message, participants = read_archive_message_for_relink(
+                archive_path,
+                message_sha256=message_sha,
+                cache=archive_cache,
+            )
+            class_row = classification.get(message_sha, {})
+            decision = decide_mail_customer_relink(
+                row=row,
+                archive_path=archive_path,
+                message=message,
+                participants=participants,
+                address_book=address_book,
+                classification=class_row,
+                internal_domains=DEFAULT_INTERNAL_DOMAINS,
+                live_phone_lookup=config.live_phone_lookup,
+                live_counts=live_counts,
+                require_real_correspondence=config.require_real_correspondence,
+                max_text_chars_per_message=config.max_text_chars_per_message,
+            )
+            decisions.append(decision)
+            decision_counts[decision["decision"]] += 1
+            reason_counts[decision["reason"] or "linked"] += 1
+            for learned in decision.get("learned_values", []):
+                learned_rows.setdefault(clean_text(learned["idempotency_key"]), learned)
+    finally:
+        for con in archive_cache.values():
+            con.close()
+
+    with sqlite3.connect(str(out_db_path)) as out:
+        out.row_factory = sqlite3.Row
+        out.executescript(
+            """
+            PRAGMA journal_mode=DELETE;
+            CREATE TABLE IF NOT EXISTS meta (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS address_book_clients (
+              tallanto_id TEXT PRIMARY KEY,
+              candidate_count INTEGER NOT NULL,
+              duplicate_tallanto_id INTEGER NOT NULL,
+              emails_json TEXT NOT NULL,
+              phones_json TEXT NOT NULL,
+              common_emails_json TEXT NOT NULL,
+              common_phones_json TEXT NOT NULL,
+              brand_scope_json TEXT NOT NULL,
+              amocrm_ids_json TEXT NOT NULL,
+              names_json TEXT NOT NULL,
+              managers_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS address_book_values (
+              kind TEXT NOT NULL,
+              value TEXT NOT NULL,
+              value_sha256 TEXT NOT NULL,
+              match_class TEXT NOT NULL,
+              candidate_count INTEGER NOT NULL,
+              tallanto_ids_json TEXT NOT NULL,
+              brand_scope_json TEXT NOT NULL,
+              common_value INTEGER NOT NULL,
+              PRIMARY KEY (kind, value)
+            );
+            CREATE TABLE IF NOT EXISTS mail_relink_decisions (
+              source_archive_id INTEGER NOT NULL,
+              source_archive_path TEXT NOT NULL,
+              message_sha256 TEXT NOT NULL,
+              message_date_iso TEXT,
+              original_match_class TEXT NOT NULL,
+              original_candidate_keys_json TEXT NOT NULL,
+              decision TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              tallanto_id TEXT,
+              candidate_keys_json TEXT NOT NULL,
+              signal_kind TEXT NOT NULL,
+              signal_value_sha256 TEXT NOT NULL,
+              phones_found_count INTEGER NOT NULL,
+              external_email_count INTEGER NOT NULL,
+              brand_signal TEXT NOT NULL,
+              brand_source TEXT NOT NULL,
+              message_classification TEXT NOT NULL,
+              learned_values_json TEXT NOT NULL,
+              evaluated_at TEXT NOT NULL,
+              PRIMARY KEY (source_archive_id, message_sha256)
+            );
+            CREATE TABLE IF NOT EXISTS learned_address_book_values (
+              idempotency_key TEXT PRIMARY KEY,
+              tallanto_id TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              value TEXT NOT NULL,
+              value_sha256 TEXT NOT NULL,
+              message_sha256 TEXT NOT NULL,
+              signal_kind TEXT NOT NULL,
+              source TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            DELETE FROM meta;
+            DELETE FROM address_book_clients;
+            DELETE FROM address_book_values;
+            DELETE FROM mail_relink_decisions;
+            DELETE FROM learned_address_book_values;
+            """
+        )
+        out.executemany(
+            "INSERT INTO meta (key, value) VALUES (?, ?)",
+            [
+                ("schema_version", MAIL_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION),
+                ("created_at", utc_now()),
+                ("mail_handoff_db_path", str(config.mail_handoff_db_path)),
+                ("identity_db_path", str(config.identity_db_path)),
+                ("classification_index_path", str(config.classification_index_path or "")),
+                ("live_tallanto_lookup", "1" if config.live_phone_lookup is not None else "0"),
+            ],
+        )
+        for client in address_book["clients"].values():
+            out.execute(
+                """
+                INSERT INTO address_book_clients (
+                  tallanto_id, candidate_count, duplicate_tallanto_id,
+                  emails_json, phones_json, common_emails_json, common_phones_json,
+                  brand_scope_json, amocrm_ids_json, names_json, managers_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    client["tallanto_id"],
+                    len(client["candidate_keys"]),
+                    int(client["duplicate_tallanto_id"]),
+                    json.dumps(sorted(client["emails"]), ensure_ascii=False),
+                    json.dumps(sorted(client["phones"]), ensure_ascii=False),
+                    json.dumps(sorted(client["common_emails"]), ensure_ascii=False),
+                    json.dumps(sorted(client["common_phones"]), ensure_ascii=False),
+                    json.dumps(sorted(client["brand_scope"]), ensure_ascii=False),
+                    json.dumps(sorted(client["amocrm_ids"]), ensure_ascii=False),
+                    json.dumps(sorted(client["names"]), ensure_ascii=False),
+                    json.dumps(sorted(client["managers"]), ensure_ascii=False),
+                ),
+            )
+        for values_by_kind in address_book["values"].values():
+            for item in values_by_kind.values():
+                out.execute(
+                    """
+                    INSERT INTO address_book_values (
+                      kind, value, value_sha256, match_class, candidate_count,
+                      tallanto_ids_json, brand_scope_json, common_value
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["kind"],
+                        item["value"],
+                        stable_value_hash(item["value"]),
+                        item["match_class"],
+                        int(item["candidate_count"]),
+                        json.dumps(sorted(item["tallanto_ids"]), ensure_ascii=False),
+                        json.dumps(sorted(item["brand_scope"]), ensure_ascii=False),
+                        int(item["common_value"]),
+                    ),
+                )
+        for decision in decisions:
+            out.execute(
+                """
+                INSERT INTO mail_relink_decisions (
+                  source_archive_id, source_archive_path, message_sha256, message_date_iso,
+                  original_match_class, original_candidate_keys_json, decision, reason,
+                  tallanto_id, candidate_keys_json, signal_kind, signal_value_sha256,
+                  phones_found_count, external_email_count, brand_signal, brand_source,
+                  message_classification, learned_values_json, evaluated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(decision["source_archive_id"]),
+                    decision["source_archive_path"],
+                    decision["message_sha256"],
+                    decision["message_date_iso"],
+                    decision["original_match_class"],
+                    decision["original_candidate_keys_json"],
+                    decision["decision"],
+                    decision["reason"],
+                    decision["tallanto_id"],
+                    json.dumps(decision["candidate_keys"], ensure_ascii=False),
+                    decision["signal_kind"],
+                    decision["signal_value_sha256"],
+                    int(decision["phones_found_count"]),
+                    int(decision["external_email_count"]),
+                    decision["brand_signal"],
+                    decision["brand_source"],
+                    decision["message_classification"],
+                    json.dumps(decision["learned_values"], ensure_ascii=False, sort_keys=True),
+                    decision["evaluated_at"],
+                ),
+            )
+        for learned in learned_rows.values():
+            out.execute(
+                """
+                INSERT INTO learned_address_book_values (
+                  idempotency_key, tallanto_id, kind, value, value_sha256,
+                  message_sha256, signal_kind, source, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    learned["idempotency_key"],
+                    learned["tallanto_id"],
+                    learned["kind"],
+                    learned["value"],
+                    stable_value_hash(learned["value"]),
+                    learned["message_sha256"],
+                    learned["signal_kind"],
+                    learned["source"],
+                    learned["created_at"],
+                ),
+            )
+        out.executescript(
+            """
+            CREATE VIEW IF NOT EXISTS v_linked_mail_relinks AS
+            SELECT * FROM mail_relink_decisions WHERE decision = 'linked';
+            CREATE VIEW IF NOT EXISTS v_unmatched_mail_relinks AS
+            SELECT * FROM mail_relink_decisions WHERE decision <> 'linked';
+            """
+        )
+        out.commit()
+
+    remove_sqlite_sidecars(out_db_path)
+    ready_before = int(baseline_counts.get("ready", 0))
+    manual_before = int(baseline_counts.get("manual_review", 0))
+    linkable_before = ready_before + manual_before
+    linked_new = int(decision_counts.get("linked", 0))
+    ready_after = ready_before + linked_new
+    report = {
+        "schema_version": MAIL_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION,
+        "created_at": utc_now(),
+        "paths": {
+            "preview_db": str(out_db_path),
+            "report": str(report_path),
+            "mail_handoff_db": str(config.mail_handoff_db_path),
+            "identity_db": str(config.identity_db_path),
+            "classification_index": str(config.classification_index_path or ""),
+        },
+        "baseline": {
+            "ready": ready_before,
+            "manual_review": manual_before,
+            "excluded": int(baseline_counts.get("excluded", 0)),
+            "linkable_messages": linkable_before,
+            "ready_share": ready_before / linkable_before if linkable_before else 0.0,
+        },
+        "after_preview": {
+            "new_links": linked_new,
+            "ready": ready_after,
+            "manual_review_remaining": max(0, manual_before - linked_new),
+            "linkable_messages": linkable_before,
+            "ready_share": ready_after / linkable_before if linkable_before else 0.0,
+        },
+        "address_book": {
+            "clients": len(address_book["clients"]),
+            "values": sum(len(values) for values in address_book["values"].values()),
+            "duplicate_tallanto_ids": int(address_book["duplicate_tallanto_ids"]),
+            "learned_values": len(learned_rows),
+        },
+        "decision_counts": dict(sorted(decision_counts.items())),
+        "unmatched_reasons": dict(sorted((k, v) for k, v in reason_counts.items() if k != "linked")),
+        "live_tallanto": {
+            "enabled": config.live_phone_lookup is not None,
+            "counts": dict(sorted(live_counts.items())),
+        },
+        "review_examples": build_relink_review_examples(decisions, limit=20),
+        "safety": {
+            "live_crm_reads": config.live_phone_lookup is not None,
+            "read_only_identity_db": True,
+            "read_only_source_archives": True,
+            "source_sqlite_mode": "mode=ro",
+            "source_sqlite_query_only": True,
+            "write_crm": False,
+            "write_tallanto": False,
+            "runtime_db_writes": False,
+            "stable_runtime_writes": False,
+            "store_raw_files_in_sqlite": False,
+            "raw_personal_values_in_public_report": False,
+        },
+    }
+    write_json(report_path, report)
+    return report
+
+
+def load_tallanto_customer_address_book(identity_db_path: Path) -> dict[str, Any]:
+    clients: dict[str, dict[str, Any]] = {}
+    candidate_to_tallanto: dict[str, str] = {}
+    with open_sqlite_readonly(identity_db_path) as con:
+        for row in con.execute(
+            """
+            SELECT candidate_key, tallanto_id, amocrm_id, first_name, last_name,
+                   parent_name, manager, candidate_json
+            FROM identity_candidates
+            ORDER BY tallanto_id, candidate_key
+            """
+        ):
+            tallanto_id = clean_text(row["tallanto_id"])
+            if not tallanto_id:
+                continue
+            candidate_key = clean_text(row["candidate_key"])
+            candidate_to_tallanto[candidate_key] = tallanto_id
+            payload = parse_json_object(row["candidate_json"])
+            brand_scope = infer_brand_scope(payload, row)
+            client = clients.setdefault(
+                tallanto_id,
+                {
+                    "tallanto_id": tallanto_id,
+                    "candidate_keys": set(),
+                    "emails": set(),
+                    "phones": set(),
+                    "common_emails": set(),
+                    "common_phones": set(),
+                    "brand_scope": set(),
+                    "amocrm_ids": set(),
+                    "names": set(),
+                    "managers": set(),
+                    "duplicate_tallanto_id": False,
+                },
+            )
+            client["candidate_keys"].add(candidate_key)
+            client["brand_scope"].update(brand_scope)
+            for key in ("amocrm_id", "manager"):
+                if clean_text(row[key]):
+                    client[f"{key}s" if key == "amocrm_id" else "managers"].add(clean_text(row[key]))
+            for name in (row["first_name"], row["last_name"], row["parent_name"]):
+                if clean_text(name):
+                    client["names"].add(clean_text(name))
+
+        for client in clients.values():
+            client["duplicate_tallanto_id"] = len(client["candidate_keys"]) > 1
+
+        values: dict[str, dict[str, dict[str, Any]]] = {"email": {}, "phone": {}}
+        for row in con.execute(
+            """
+            SELECT il.kind, il.value, il.candidate_key, iv.match_class, iv.candidate_count
+            FROM identity_links il
+            JOIN identity_values iv
+              ON iv.kind = il.kind AND iv.value = il.value
+            WHERE il.kind IN ('email', 'phone')
+            ORDER BY il.kind, il.value, il.candidate_key
+            """
+        ):
+            kind = clean_text(row["kind"])
+            value = clean_text(row["value"])
+            candidate_key = clean_text(row["candidate_key"])
+            tallanto_id = candidate_to_tallanto.get(candidate_key, "")
+            if not tallanto_id:
+                continue
+            item = values[kind].setdefault(
+                value,
+                {
+                    "kind": kind,
+                    "value": value,
+                    "candidate_keys": set(),
+                    "tallanto_ids": set(),
+                    "brand_scope": set(),
+                    "match_class": clean_text(row["match_class"]),
+                    "candidate_count": int(row["candidate_count"]),
+                    "common_value": clean_text(row["match_class"]) != "strong_unique",
+                },
+            )
+            item["candidate_keys"].add(candidate_key)
+            item["tallanto_ids"].add(tallanto_id)
+            item["brand_scope"].update(clients[tallanto_id]["brand_scope"])
+            item["candidate_count"] = max(int(item["candidate_count"]), int(row["candidate_count"]))
+            if clean_text(row["match_class"]) != "strong_unique":
+                item["common_value"] = True
+            target = "emails" if kind == "email" else "phones"
+            common_target = "common_emails" if kind == "email" else "common_phones"
+            clients[tallanto_id][target].add(value)
+            if item["common_value"]:
+                clients[tallanto_id][common_target].add(value)
+        duplicate_tallanto_ids = sum(1 for client in clients.values() if client["duplicate_tallanto_id"])
+    return {
+        "clients": clients,
+        "values": values,
+        "duplicate_tallanto_ids": duplicate_tallanto_ids,
+    }
+
+
+def load_mail_classification_index(path: Optional[Path]) -> dict[str, dict[str, str]]:
+    if path is None or not path.exists():
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    with Path(path).open("r", encoding="utf-8", newline="", errors="replace") as fh:
+        for row in csv.DictReader(fh):
+            message_sha = clean_text(row.get("message_sha256"))
+            if not message_sha:
+                continue
+            result[message_sha] = {
+                "brand": clean_text(row.get("brand")),
+                "brand_source": clean_text(row.get("brand_source")),
+                "klass": clean_text(row.get("klass")),
+            }
+    return result
+
+
+def load_manual_mail_handoff_rows(path: Path) -> tuple[dict[int, str], list[sqlite3.Row], dict[str, int]]:
+    with open_sqlite_readonly(path) as con:
+        sources = {
+            int(row["source_archive_id"]): clean_text(row["archive_db_path"])
+            for row in con.execute("SELECT source_archive_id, archive_db_path FROM source_archives")
+        }
+        rows = list(
+            con.execute(
+                """
+                SELECT *
+                FROM mail_customer_links
+                WHERE match_class IN ('ambiguous', 'missing')
+                ORDER BY message_date_iso, message_sha256
+                """
+            )
+        )
+        baseline_counts = {
+            clean_text(row["link_status"]): int(row["count"])
+            for row in con.execute(
+                "SELECT link_status, COUNT(*) AS count FROM mail_customer_links GROUP BY link_status"
+            )
+        }
+    return sources, rows, baseline_counts
+
+
+def read_archive_message_for_relink(
+    archive_path: Path,
+    *,
+    message_sha256: str,
+    cache: dict[str, sqlite3.Connection],
+) -> tuple[sqlite3.Row | None, list[sqlite3.Row]]:
+    key = str(Path(archive_path).resolve(strict=False))
+    con = cache.get(key)
+    if con is None:
+        con = open_sqlite_readonly(Path(archive_path))
+        cache[key] = con
+    message = con.execute("SELECT * FROM messages WHERE sha256 = ?", (message_sha256,)).fetchone()
+    participants = list(
+        con.execute(
+            "SELECT * FROM message_participants WHERE message_sha256 = ?",
+            (message_sha256,),
+        )
+    )
+    return message, participants
+
+
+def decide_mail_customer_relink(
+    *,
+    row: Mapping[str, Any],
+    archive_path: Path,
+    message: sqlite3.Row | None,
+    participants: Sequence[Mapping[str, Any]],
+    address_book: Mapping[str, Any],
+    classification: Mapping[str, str],
+    internal_domains: Sequence[str],
+    live_phone_lookup: Optional[Any],
+    live_counts: Counter[str],
+    require_real_correspondence: bool,
+    max_text_chars_per_message: int,
+) -> dict[str, Any]:
+    message_sha = clean_text(row["message_sha256"])
+    brand_signal = normalize_brand_token(classification.get("brand"))
+    brand_source = clean_text(classification.get("brand_source"))
+    klass = clean_text(classification.get("klass"))
+    base = {
+        "source_archive_id": int(row["source_archive_id"]),
+        "source_archive_path": str(archive_path),
+        "message_sha256": message_sha,
+        "message_date_iso": clean_text(row["message_date_iso"]),
+        "original_match_class": clean_text(row["match_class"]),
+        "original_candidate_keys_json": clean_text(row["candidate_keys_json"]) or "[]",
+        "decision": "unmatched",
+        "reason": "",
+        "tallanto_id": "",
+        "candidate_keys": [],
+        "signal_kind": "",
+        "signal_value_sha256": "",
+        "phones_found_count": 0,
+        "external_email_count": 0,
+        "brand_signal": brand_signal or "unknown",
+        "brand_source": brand_source,
+        "message_classification": klass,
+        "learned_values": [],
+        "evaluated_at": utc_now(),
+    }
+    if require_real_correspondence and klass and klass != "real_correspondence":
+        return {**base, "reason": f"classification_{klass}"}
+    if message is None:
+        return {**base, "reason": "message_not_found"}
+
+    text, text_status = read_safe_extracted_text(
+        message["extracted_text_path"],
+        archive_db_path=archive_path,
+        max_chars=max_text_chars_per_message,
+    )
+    if text_status != "read":
+        return {**base, "reason": f"text_{text_status}"}
+    phones = extract_phone_numbers(text)
+    external_emails = external_participant_emails(participants, internal_domains=internal_domains)
+    base["phones_found_count"] = len(phones)
+    base["external_email_count"] = len(external_emails)
+    if not phones:
+        return {**base, "reason": "no_phone_signal"}
+
+    linked: list[dict[str, Any]] = []
+    blocked: list[str] = []
+    for phone in phones:
+        resolved = resolve_address_book_value(
+            address_book,
+            kind="phone",
+            value=phone,
+            message_brand=brand_signal,
+        )
+        if resolved["status"] == "linked":
+            linked.append({**resolved, "signal_kind": "phone", "signal_value": phone})
+            continue
+        if resolved["reason"] == "identity_value_missing" and live_phone_lookup is not None:
+            live = resolve_live_tallanto_phone(
+                phone,
+                live_phone_lookup=live_phone_lookup,
+                message_brand=brand_signal,
+                live_counts=live_counts,
+            )
+            if live["status"] == "linked":
+                linked.append({**live, "signal_kind": "live_phone", "signal_value": phone})
+                continue
+            blocked.append(live["reason"])
+            continue
+        blocked.append(resolved["reason"])
+
+    target_ids = sorted({item["tallanto_id"] for item in linked if item.get("tallanto_id")})
+    if len(target_ids) != 1:
+        reason = "multiple_identity_targets" if len(target_ids) > 1 else most_common_reason(blocked) or "phone_no_identity_match"
+        return {**base, "reason": reason}
+
+    selected = next(item for item in linked if item["tallanto_id"] == target_ids[0])
+    learned = learned_values_for_message(
+        address_book,
+        tallanto_id=selected["tallanto_id"],
+        message_sha256=message_sha,
+        signal_kind=selected["signal_kind"],
+        external_emails=external_emails,
+        phones=phones if selected["signal_kind"] == "live_phone" else (),
+    )
+    return {
+        **base,
+        "decision": "linked",
+        "reason": "linked",
+        "tallanto_id": selected["tallanto_id"],
+        "candidate_keys": sorted(selected.get("candidate_keys") or []),
+        "signal_kind": selected["signal_kind"],
+        "signal_value_sha256": stable_value_hash(selected["signal_value"]),
+        "learned_values": learned,
+    }
+
+
+def resolve_address_book_value(
+    address_book: Mapping[str, Any],
+    *,
+    kind: str,
+    value: str,
+    message_brand: str,
+) -> dict[str, Any]:
+    item = address_book["values"].get(kind, {}).get(value)
+    if not item:
+        return {"status": "blocked", "reason": "identity_value_missing"}
+    if len(item["brand_scope"]) > 1:
+        return {"status": "blocked", "reason": "brand_conflict"}
+    if item["common_value"] or item["match_class"] != "strong_unique":
+        return {"status": "blocked", "reason": "duplicate_identity_value"}
+    tallanto_ids = sorted(item["tallanto_ids"])
+    if len(tallanto_ids) != 1:
+        return {"status": "blocked", "reason": "ambiguous_tallanto_id"}
+    tallanto_id = tallanto_ids[0]
+    client = address_book["clients"].get(tallanto_id)
+    if not client:
+        return {"status": "blocked", "reason": "missing_address_book_client"}
+    if client["duplicate_tallanto_id"]:
+        return {"status": "blocked", "reason": "duplicate_tallanto_id"}
+    if not brand_is_compatible(client["brand_scope"], message_brand):
+        return {"status": "blocked", "reason": "brand_conflict"}
+    return {
+        "status": "linked",
+        "reason": "linked",
+        "tallanto_id": tallanto_id,
+        "candidate_keys": sorted(item["candidate_keys"]),
+    }
+
+
+def resolve_live_tallanto_phone(
+    phone: str,
+    *,
+    live_phone_lookup: Any,
+    message_brand: str,
+    live_counts: Counter[str],
+) -> dict[str, Any]:
+    live_counts["queries"] += 1
+    try:
+        records = list(live_phone_lookup(phone) or [])
+    except Exception as exc:  # noqa: BLE001
+        live_counts["errors"] += 1
+        return {"status": "blocked", "reason": f"live_lookup_error:{type(exc).__name__}"}
+    if not records:
+        live_counts["empty"] += 1
+        return {"status": "blocked", "reason": "live_no_contact"}
+    ids = {
+        clean_text(record.get("tallanto_id") or record.get("id") or record.get("contact_id"))
+        for record in records
+        if clean_text(record.get("tallanto_id") or record.get("id") or record.get("contact_id"))
+    }
+    if len(ids) != 1:
+        live_counts["ambiguous"] += 1
+        return {"status": "blocked", "reason": "live_multiple_contacts"}
+    brand_scope = set()
+    for record in records:
+        brand_scope.update(infer_brand_scope(record, record))
+    if not brand_is_compatible(brand_scope, message_brand):
+        live_counts["brand_conflict"] += 1
+        return {"status": "blocked", "reason": "live_brand_conflict"}
+    live_counts["linked"] += 1
+    return {
+        "status": "linked",
+        "reason": "linked",
+        "tallanto_id": sorted(ids)[0],
+        "candidate_keys": [],
+    }
+
+
+def learned_values_for_message(
+    address_book: Mapping[str, Any],
+    *,
+    tallanto_id: str,
+    message_sha256: str,
+    signal_kind: str,
+    external_emails: Sequence[str],
+    phones: Sequence[str],
+) -> list[dict[str, str]]:
+    learned: list[dict[str, str]] = []
+    for kind, values in (("email", external_emails), ("phone", phones)):
+        for value in values:
+            current = address_book["values"].get(kind, {}).get(value)
+            if current:
+                current_ids = set(current["tallanto_ids"])
+                if current_ids != {tallanto_id} or current["common_value"]:
+                    continue
+                continue
+            key = hashlib.sha256(
+                f"{tallanto_id}|{kind}|{value}|{message_sha256}".encode("utf-8")
+            ).hexdigest()
+            learned.append(
+                {
+                    "idempotency_key": key,
+                    "tallanto_id": tallanto_id,
+                    "kind": kind,
+                    "value": value,
+                    "message_sha256": message_sha256,
+                    "signal_kind": signal_kind,
+                    "source": "mail_customer_relink_preview",
+                    "created_at": utc_now(),
+                }
+            )
+    return learned
+
+
+def external_participant_emails(
+    participants: Sequence[Mapping[str, Any]],
+    *,
+    internal_domains: Sequence[str],
+) -> list[str]:
+    domains = normalize_domains(internal_domains, "")
+    result: list[str] = []
+    for row in participants:
+        value = normalize_email(
+            mapping_get(row, "email_normalized")
+            or mapping_get(row, "email")
+            or mapping_get(row, "address")
+        )
+        if not value or email_domain_is_internal(value, domains):
+            continue
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def parse_json_object(value: object) -> dict[str, Any]:
+    try:
+        decoded = json.loads(clean_text(value) or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def mapping_get(source: Mapping[str, Any], key: str, default: Any = "") -> Any:
+    if hasattr(source, "get"):
+        return source.get(key, default)
+    if isinstance(source, sqlite3.Row) and key in source.keys():
+        return source[key]
+    return default
+
+
+def infer_brand_scope(*sources: Mapping[str, Any]) -> set[str]:
+    def iter_items(source: Mapping[str, Any]) -> Sequence[tuple[str, Any]]:
+        if hasattr(source, "items"):
+            return tuple(source.items())
+        if isinstance(source, sqlite3.Row):
+            return tuple((key, source[key]) for key in source.keys())
+        return ()
+
+    text = " ".join(
+        clean_text(value)
+        for source in sources
+        for key, value in iter_items(source)
+        if key and value is not None
+    ).casefold()
+    brands: set[str] = set()
+    if re.search(r"\b(?:foton|фотон|цдпо)\b", text):
+        brands.add("foton")
+    if re.search(r"\b(?:unpk|унпк|мфти|kmipt)\b", text):
+        brands.add("unpk")
+    return brands
+
+
+def normalize_brand_token(value: object) -> str:
+    text = clean_text(value).casefold()
+    if text in {"foton", "фотон"}:
+        return "foton"
+    if text in {"unpk", "унпк"}:
+        return "unpk"
+    return "unknown" if not text or text == "unknown" else text
+
+
+def brand_is_compatible(client_brand_scope: set[str], message_brand: str) -> bool:
+    brand = normalize_brand_token(message_brand)
+    if not brand or brand == "unknown":
+        return True
+    if not client_brand_scope:
+        return True
+    return brand in client_brand_scope
+
+
+def stable_value_hash(value: object) -> str:
+    return hashlib.sha256(clean_text(value).encode("utf-8")).hexdigest()
+
+
+def most_common_reason(reasons: Sequence[str]) -> str:
+    if not reasons:
+        return ""
+    return Counter(reason for reason in reasons if reason).most_common(1)[0][0]
+
+
+def build_relink_review_examples(decisions: Sequence[Mapping[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    linked = [row for row in decisions if row.get("decision") == "linked"]
+    unmatched = [row for row in decisions if row.get("decision") != "linked"]
+    for row in (linked[: max(0, limit // 2)] + unmatched[: max(0, limit - len(linked[: max(0, limit // 2)]))]):
+        result.append(
+            {
+                "message_sha256": clean_text(row.get("message_sha256"))[:16],
+                "date": clean_text(row.get("message_date_iso")),
+                "decision": clean_text(row.get("decision")),
+                "reason": clean_text(row.get("reason")),
+                "tallanto_id_hash": stable_value_hash(row.get("tallanto_id"))[:16] if row.get("tallanto_id") else "",
+                "signal_kind": clean_text(row.get("signal_kind")),
+                "signal_value_sha256": clean_text(row.get("signal_value_sha256"))[:16],
+                "brand_signal": clean_text(row.get("brand_signal")),
+                "message_classification": clean_text(row.get("message_classification")),
+                "source_archive_path": clean_text(row.get("source_archive_path")),
+            }
+        )
+        if len(result) >= limit:
+            break
+    return result
 
 
 def build_mail_attachment_parse_plan(config: MailAttachmentParsePlanConfig) -> Mapping[str, Any]:
@@ -8004,6 +8819,7 @@ __all__ = [
     "MAIL_ATTACHMENT_TEXT_EXTRACT_SCHEMA_VERSION",
     "MAIL_ATTACHMENT_TEXT_INDEX_SCHEMA_VERSION",
     "MAIL_MANGO_BRIDGE_PREVIEW_SCHEMA_VERSION",
+    "MAIL_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION",
     "MAIL_MATCHING_REPORT_SCHEMA_VERSION",
     "MAIL_PHONE_LIFT_PREVIEW_SCHEMA_VERSION",
     "MANGO_PHONE_INDEX_PREVIEW_SCHEMA_VERSION",
@@ -8020,6 +8836,7 @@ __all__ = [
     "MailAttachmentTextExtractConfig",
     "MailAttachmentTextIndexConfig",
     "MailCustomerHistoryHandoffConfig",
+    "MailCustomerRelinkPreviewConfig",
     "MailMangoBridgePreviewConfig",
     "MailMatchingReportConfig",
     "MailPhoneLiftPreviewConfig",
@@ -8036,6 +8853,7 @@ __all__ = [
     "build_mail_attachment_text_extract",
     "build_mail_attachment_text_index",
     "build_mail_customer_history_handoff",
+    "build_mail_customer_relink_preview",
     "build_mail_mango_bridge_preview",
     "build_mail_matching_report",
     "build_mail_phone_lift_preview",

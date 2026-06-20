@@ -255,6 +255,24 @@ class TallantoIdentityMapConfig:
 
 
 @dataclass(frozen=True)
+class TallantoIdentityMapUnionSourceConfig:
+    label: str
+    tallanto_csv_path: Path
+    encoding: str = "cp1251"
+    delimiter: str = "\t"
+
+
+@dataclass(frozen=True)
+class TallantoIdentityMapUnionConfig:
+    sources: Sequence[TallantoIdentityMapUnionSourceConfig]
+    out_dir: Path
+    db_filename: str = "tallanto_identity_map_union_20260620.sqlite"
+    email_columns: Sequence[str] = DEFAULT_TALLANTO_EMAIL_COLUMNS
+    phone_columns: Sequence[str] = DEFAULT_TALLANTO_PHONE_COLUMNS
+    candidate_columns: Sequence[str] = DEFAULT_TALLANTO_CANDIDATE_COLUMNS
+
+
+@dataclass(frozen=True)
 class MailArchiveIngestConfig:
     out_dir: Path
     mailbox: str = "INBOX"
@@ -620,6 +638,213 @@ def build_tallanto_identity_map(config: TallantoIdentityMapConfig) -> Mapping[st
         config=config,
         duplicate_tallanto_id_values=sum(1 for count in tallanto_id_counts.values() if count > 1),
     )
+    write_json(report_path, report)
+    return report
+
+
+def build_tallanto_identity_map_union(config: TallantoIdentityMapUnionConfig) -> Mapping[str, Any]:
+    guard_not_stable_runtime(config.out_dir, "identity map union output directory")
+    if not config.sources:
+        raise ValueError("identity map union requires at least one source")
+    out_dir = config.out_dir.resolve(strict=False)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    db_path = out_dir / config.db_filename
+    report_path = out_dir / "tallanto_identity_map_union_report.json"
+    source_manifest_path = out_dir / "tallanto_identity_map_union_sources.json"
+
+    source_rows: list[dict[str, Any]] = []
+    source_reports: list[dict[str, Any]] = []
+    per_source_id_counts: dict[str, Counter[str]] = {}
+    for source in config.sources:
+        rows = read_tallanto_rows(
+            source.tallanto_csv_path,
+            encoding=source.encoding,
+            delimiter=source.delimiter,
+        )
+        id_counts = Counter(tallanto_id_for_row(row) for row in rows if tallanto_id_for_row(row))
+        per_source_id_counts[source.label] = id_counts
+        source_reports.append(
+            {
+                "label": source.label,
+                "path": str(source.tallanto_csv_path),
+                "encoding": source.encoding,
+                "delimiter": source.delimiter,
+                "row_count": len(rows),
+                "sha256": sha256_file(source.tallanto_csv_path)
+                if source.tallanto_csv_path.exists()
+                else "",
+                "duplicate_tallanto_id_values": sum(1 for count in id_counts.values() if count > 1),
+            }
+        )
+        for row_number, row in enumerate(rows, start=2):
+            source_rows.append(
+                {
+                    "source": source,
+                    "source_label": source.label,
+                    "row_number": row_number,
+                    "row": row,
+                }
+            )
+
+    groups: dict[str, dict[str, Any]] = {}
+    for item in source_rows:
+        row = item["row"]
+        source_label = item["source_label"]
+        row_number = int(item["row_number"])
+        tallanto_id = tallanto_id_for_row(row)
+        candidate_key = union_candidate_key_for_row(
+            row_number,
+            row,
+            source_label=source_label,
+            tallanto_id_counts=per_source_id_counts[source_label],
+        )
+        group = groups.setdefault(
+            candidate_key,
+            {
+                "candidate_key": candidate_key,
+                "tallanto_id": tallanto_id,
+                "rows": [],
+                "source_labels": set(),
+                "source_rows": [],
+            },
+        )
+        if tallanto_id and not group.get("tallanto_id"):
+            group["tallanto_id"] = tallanto_id
+        group["rows"].append(row)
+        group["source_labels"].add(source_label)
+        group["source_rows"].append({"source": source_label, "row_number": row_number})
+
+    candidate_rows: list[dict[str, Any]] = []
+    identity_links: dict[tuple[str, str], dict[str, Any]] = {}
+    row_identity_classes: dict[str, dict[str, str]] = {}
+    id_identity_conflicts: list[dict[str, Any]] = []
+
+    for ordinal, candidate_key in enumerate(sorted(groups), start=1):
+        group = groups[candidate_key]
+        rows = list(group["rows"])
+        candidate_payload = union_candidate_payload(
+            rows,
+            candidate_columns=config.candidate_columns,
+            source_rows=group["source_rows"],
+            source_labels=sorted(group["source_labels"]),
+        )
+        tallanto_id = clean_text(group.get("tallanto_id"))
+        if tallanto_id:
+            candidate_payload.setdefault("ID", tallanto_id)
+        id_conflict = group_has_name_identity_conflict(rows)
+        if id_conflict:
+            candidate_payload["id_identity_conflict"] = True
+            id_identity_conflicts.append(
+                {
+                    "candidate_key_hash": stable_value_hash(candidate_key)[:16],
+                    "tallanto_id_hash": stable_value_hash(tallanto_id)[:16] if tallanto_id else "",
+                    "sources": sorted(group["source_labels"]),
+                    "source_row_count": len(rows),
+                }
+            )
+
+        candidate_rows.append(
+            {
+                "candidate_key": candidate_key,
+                "row_number": ordinal,
+                "tallanto_id": tallanto_id,
+                "amocrm_id": candidate_payload.get("amoCRM ID", ""),
+                "first_name": candidate_payload.get("Имя", ""),
+                "last_name": candidate_payload.get("Фамилия", ""),
+                "parent_name": candidate_payload.get("ФИО родителя", ""),
+                "student_type": candidate_payload.get("Тип ученика", ""),
+                "manager": candidate_payload.get("Ответственный(ая)", ""),
+                "manager_id": candidate_payload.get("Ответственный(ая) (ID)", ""),
+                "group_id": candidate_payload.get("Группа(ID)", ""),
+                "candidate_json": json.dumps(
+                    candidate_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            }
+        )
+
+        email_values = union_identity_values(
+            rows,
+            labels=[entry["source"] for entry in group["source_rows"]],
+            columns=config.email_columns,
+            extractor=extract_email_addresses,
+        )
+        phone_values = union_identity_values(
+            rows,
+            labels=[entry["source"] for entry in group["source_rows"]],
+            columns=config.phone_columns,
+            extractor=extract_phone_numbers,
+        )
+        for value, columns in email_values.items():
+            append_identity_link(identity_links, "email", value, candidate_key, columns)
+        for value, columns in phone_values.items():
+            append_identity_link(identity_links, "phone", value, candidate_key, columns)
+        row_identity_classes[candidate_key] = {
+            "email": "missing" if not email_values else "pending",
+            "phone": "missing" if not phone_values else "pending",
+        }
+
+    finalize_identity_classes(identity_links, row_identity_classes)
+
+    source_manifest = {
+        "created_at": utc_now(),
+        "schema_version": "tallanto_identity_map_union_sources_v1",
+        "sources": source_reports,
+    }
+    write_json(source_manifest_path, source_manifest)
+
+    duplicate_tallanto_id_values = count_duplicate_tallanto_ids(candidate_rows)
+    write_identity_map_db(
+        db_path,
+        source_path=source_manifest_path,
+        candidate_rows=candidate_rows,
+        identity_links=identity_links,
+        row_identity_classes=row_identity_classes,
+    )
+    remove_sqlite_sidecars(db_path)
+
+    report_config = TallantoIdentityMapConfig(
+        tallanto_csv_path=source_manifest_path,
+        out_dir=out_dir,
+        email_columns=config.email_columns,
+        phone_columns=config.phone_columns,
+        candidate_columns=config.candidate_columns,
+    )
+    report = dict(
+        build_identity_map_report(
+            db_path=db_path,
+            report_path=report_path,
+            source_path=source_manifest_path,
+            candidate_rows=candidate_rows,
+            identity_links=identity_links,
+            row_identity_classes=row_identity_classes,
+            config=report_config,
+            duplicate_tallanto_id_values=duplicate_tallanto_id_values,
+        )
+    )
+    report["schema_version"] = "tallanto_identity_map_union_v1"
+    report["union"] = {
+        "sources": source_reports,
+        "source_input_rows_total": sum(item["row_count"] for item in source_reports),
+        "source_rows_read": len(source_rows),
+        "candidate_rows_after_tallanto_id_dedup": len(candidate_rows),
+        "deduped_by_tallanto_id": len(source_rows) - len(candidate_rows),
+        "duplicate_tallanto_id_values_after_union": duplicate_tallanto_id_values,
+        "id_identity_conflict_count": len(id_identity_conflicts),
+        "id_identity_conflict_examples": id_identity_conflicts[:20],
+    }
+    report["paths"]["source_manifest"] = str(source_manifest_path)
+    report["pii_artifacts"]["source_csv"] = {
+        "path": "union.sources[].path",
+        "contains_pii": True,
+        "commit_safe": False,
+    }
+    report["pii_artifacts"]["source_manifest"] = {
+        "path": str(source_manifest_path),
+        "contains_pii": False,
+        "commit_safe": False,
+    }
     write_json(report_path, report)
     return report
 
@@ -5616,6 +5841,114 @@ def append_identity_link(
             item["columns_by_candidate"][candidate_key].append(column)
 
 
+def finalize_identity_classes(
+    identity_links: Mapping[tuple[str, str], Mapping[str, Any]],
+    row_identity_classes: dict[str, dict[str, str]],
+) -> None:
+    for item in identity_links.values():
+        candidate_count = len(item["candidate_keys"])
+        item["match_class"] = "strong_unique" if candidate_count == 1 else "duplicate"
+        for candidate_key in item["candidate_keys"]:
+            kind = item["kind"]
+            current = row_identity_classes[candidate_key][kind]
+            if current == "missing":
+                row_identity_classes[candidate_key][kind] = item["match_class"]
+            elif item["match_class"] == "duplicate":
+                row_identity_classes[candidate_key][kind] = "duplicate"
+            elif current == "pending":
+                row_identity_classes[candidate_key][kind] = "strong_unique"
+
+    for classes in row_identity_classes.values():
+        for kind in ("email", "phone"):
+            if classes[kind] == "pending":
+                classes[kind] = "strong_unique"
+
+
+def union_candidate_key_for_row(
+    row_number: int,
+    row: Mapping[str, Any],
+    *,
+    source_label: str,
+    tallanto_id_counts: Mapping[str, int],
+) -> str:
+    tallanto_id = tallanto_id_for_row(row)
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", clean_text(source_label) or "source")
+    if tallanto_id:
+        if int(tallanto_id_counts.get(tallanto_id) or 0) > 1:
+            return f"tallanto:{tallanto_id}:{safe_label}:row:{row_number}"
+        return f"tallanto:{tallanto_id}"
+    digest = hashlib.sha256(
+        json.dumps(row, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{safe_label}:row:{row_number}:{digest}"
+
+
+def union_candidate_payload(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    candidate_columns: Sequence[str],
+    source_rows: Sequence[Mapping[str, Any]],
+    source_labels: Sequence[str],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    merged_values: dict[str, list[str]] = {}
+    for row in rows:
+        for column in candidate_columns:
+            if column not in row:
+                continue
+            value = clean_text(row.get(column))
+            if not value:
+                continue
+            merged_values.setdefault(column, [])
+            if value not in merged_values[column]:
+                merged_values[column].append(value)
+            # Sources are passed oldest -> freshest; the freshest non-empty
+            # value is the display value, while candidate_json keeps all values.
+            payload[column] = value
+    payload["_union_sources"] = list(source_labels)
+    payload["_union_source_rows"] = [dict(item) for item in source_rows]
+    payload["_union_values"] = merged_values
+    return payload
+
+
+def union_identity_values(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    labels: Sequence[str],
+    columns: Sequence[str],
+    extractor: Any,
+) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for row, label in zip(rows, labels):
+        row_values = collect_row_identity_values(row, columns=columns, extractor=extractor)
+        for value, source_columns in row_values.items():
+            values.setdefault(value, [])
+            for column in source_columns:
+                tagged_column = f"{label}:{column}"
+                if tagged_column not in values[value]:
+                    values[value].append(tagged_column)
+    return values
+
+
+def group_has_name_identity_conflict(rows: Sequence[Mapping[str, Any]]) -> bool:
+    signatures: set[str] = set()
+    for row in rows:
+        parts = [
+            clean_text(row.get("Имя")).casefold(),
+            clean_text(row.get("Фамилия")).casefold(),
+            clean_text(row.get("ФИО родителя")).casefold(),
+        ]
+        signature = "|".join(parts).strip("|")
+        if signature:
+            signatures.add(signature)
+    return len(signatures) > 1
+
+
+def count_duplicate_tallanto_ids(candidate_rows: Sequence[Mapping[str, Any]]) -> int:
+    counts = Counter(clean_text(row.get("tallanto_id")) for row in candidate_rows if clean_text(row.get("tallanto_id")))
+    return sum(1 for count in counts.values() if count > 1)
+
+
 def write_identity_map_db(
     db_path: Path,
     *,
@@ -9221,6 +9554,8 @@ __all__ = [
     "MailPhoneLiftPreviewConfig",
     "MangoPhoneIndexPreviewConfig",
     "TallantoIdentityMapConfig",
+    "TallantoIdentityMapUnionConfig",
+    "TallantoIdentityMapUnionSourceConfig",
     "build_mail_archive_ingest",
     "build_mail_archive_preflight",
     "build_mail_attachment_image_ocr_plan",
@@ -9239,6 +9574,7 @@ __all__ = [
     "build_mail_phone_lift_preview",
     "build_mango_phone_index_preview",
     "build_tallanto_identity_map",
+    "build_tallanto_identity_map_union",
     "extract_email_addresses",
     "extract_phone_numbers",
     "normalize_email",

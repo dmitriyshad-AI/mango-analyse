@@ -34,6 +34,8 @@ from mango_mvp.productization.mail_archive import (
     MailPhoneLiftPreviewConfig,
     MangoPhoneIndexPreviewConfig,
     TallantoIdentityMapConfig,
+    TallantoIdentityMapUnionConfig,
+    TallantoIdentityMapUnionSourceConfig,
     build_mail_archive_ingest,
     build_mail_archive_preflight,
     build_mail_attachment_image_ocr_plan,
@@ -52,10 +54,12 @@ from mango_mvp.productization.mail_archive import (
     build_mail_phone_lift_preview,
     build_mango_phone_index_preview,
     build_tallanto_identity_map,
+    build_tallanto_identity_map_union,
     extract_email_addresses,
     extract_phone_numbers,
     iter_attachment_parts,
     is_transient_imap_fetch_error,
+    load_tallanto_customer_address_book,
     message_metadata,
     message_participants,
     normalize_extracted_attachment_text,
@@ -267,6 +271,160 @@ def test_mail_archive_identity_map_duplicate_handling(tmp_path: Path) -> None:
         assert row == ("duplicate", 2)
     assert not (tmp_path / "identity" / "tallanto_email_identity_map.sqlite-wal").exists()
     assert not (tmp_path / "identity" / "tallanto_email_identity_map.sqlite-shm").exists()
+
+
+def test_mail_archive_identity_map_union_deduplicates_same_tallanto_id_across_sources(
+    tmp_path: Path,
+) -> None:
+    old_csv = tmp_path / "old_students.tsv"
+    fresh_csv = tmp_path / "fresh_contacts.csv"
+    _write_tallanto_csv(
+        old_csv,
+        [
+            {
+                "ID": "T-1",
+                "Имя": "Петр",
+                "Фамилия": "Иванов",
+                "E-mail": "old@example.com",
+            }
+        ],
+    )
+    _write_csv(
+        fresh_csv,
+        [
+            {
+                "ID Tallanto": "T-1",
+                "Имя": "Павел",
+                "Фамилия": "Иванов",
+                "Другой E-mail": "fresh@example.com",
+                "Тел. (родителя)": "+7 999 000-00-00",
+            }
+        ],
+        delimiter=",",
+    )
+
+    report = build_tallanto_identity_map_union(
+        TallantoIdentityMapUnionConfig(
+            sources=[
+                TallantoIdentityMapUnionSourceConfig(
+                    label="old",
+                    tallanto_csv_path=old_csv,
+                    encoding="utf-8",
+                    delimiter="\t",
+                ),
+                TallantoIdentityMapUnionSourceConfig(
+                    label="fresh",
+                    tallanto_csv_path=fresh_csv,
+                    encoding="utf-8",
+                    delimiter=",",
+                ),
+            ],
+            out_dir=tmp_path / "identity_union",
+        )
+    )
+
+    assert report["union"]["source_input_rows_total"] == 2
+    assert report["union"]["candidate_rows_after_tallanto_id_dedup"] == 1
+    assert report["union"]["deduped_by_tallanto_id"] == 1
+    assert report["identity_values"]["email"] == {"duplicate": 0, "strong_unique": 2}
+    assert report["identity_values"]["phone"] == {"duplicate": 0, "strong_unique": 1}
+    assert report["union"]["id_identity_conflict_count"] == 1
+    with sqlite3.connect(Path(report["paths"]["identity_db"])) as con:
+        assert con.execute("select count(*) from identity_candidates").fetchone()[0] == 1
+        rows = con.execute(
+            "select value, match_class, candidate_count from identity_values order by value"
+        ).fetchall()
+        assert rows == [
+            ("+79990000000", "strong_unique", 1),
+            ("fresh@example.com", "strong_unique", 1),
+            ("old@example.com", "strong_unique", 1),
+        ]
+        payload = json.loads(
+            con.execute("select candidate_json from identity_candidates").fetchone()[0]
+        )
+        assert payload["id_identity_conflict"] is True
+
+
+def test_mail_archive_identity_map_union_recomputes_common_values_on_union(
+    tmp_path: Path,
+) -> None:
+    old_csv = tmp_path / "old_students.tsv"
+    fresh_csv = tmp_path / "fresh_contacts.csv"
+    _write_tallanto_csv(
+        old_csv,
+        [{"ID": "T-1", "E-mail": "shared@example.com"}],
+    )
+    _write_csv(
+        fresh_csv,
+        [{"ID Tallanto": "T-2", "E-mail": "shared@example.com"}],
+        delimiter=",",
+    )
+
+    report = build_tallanto_identity_map_union(
+        TallantoIdentityMapUnionConfig(
+            sources=[
+                TallantoIdentityMapUnionSourceConfig(
+                    label="old",
+                    tallanto_csv_path=old_csv,
+                    encoding="utf-8",
+                    delimiter="\t",
+                ),
+                TallantoIdentityMapUnionSourceConfig(
+                    label="fresh",
+                    tallanto_csv_path=fresh_csv,
+                    encoding="utf-8",
+                    delimiter=",",
+                ),
+            ],
+            out_dir=tmp_path / "identity_union",
+        )
+    )
+
+    assert report["row_count"] == 2
+    assert report["identity_values"]["email"] == {"duplicate": 1, "strong_unique": 0}
+    with sqlite3.connect(Path(report["paths"]["identity_db"])) as con:
+        assert con.execute(
+            "select match_class, candidate_count from identity_values where kind = 'email'"
+        ).fetchone() == ("duplicate", 2)
+
+
+def test_mail_archive_identity_map_union_keeps_source_duplicate_tallanto_id_block(
+    tmp_path: Path,
+) -> None:
+    old_csv = tmp_path / "old_students.tsv"
+    fresh_csv = tmp_path / "fresh_contacts.csv"
+    _write_tallanto_csv(
+        old_csv,
+        [
+            {"ID": "T-DUP", "E-mail": "first@example.com"},
+            {"ID": "T-DUP", "E-mail": "second@example.com"},
+        ],
+    )
+    _write_csv(fresh_csv, [{"ID Tallanto": "T-OK", "E-mail": "ok@example.com"}], delimiter=",")
+
+    report = build_tallanto_identity_map_union(
+        TallantoIdentityMapUnionConfig(
+            sources=[
+                TallantoIdentityMapUnionSourceConfig(
+                    label="old",
+                    tallanto_csv_path=old_csv,
+                    encoding="utf-8",
+                    delimiter="\t",
+                ),
+                TallantoIdentityMapUnionSourceConfig(
+                    label="fresh",
+                    tallanto_csv_path=fresh_csv,
+                    encoding="utf-8",
+                    delimiter=",",
+                ),
+            ],
+            out_dir=tmp_path / "identity_union",
+        )
+    )
+
+    assert report["union"]["duplicate_tallanto_id_values_after_union"] == 1
+    address_book = load_tallanto_customer_address_book(Path(report["paths"]["identity_db"]))
+    assert address_book["clients"]["T-DUP"]["duplicate_tallanto_id"] is True
 
 
 def test_mail_archive_identity_map_accepts_tallanto_id_alias_and_does_not_trust_filial_brand(
@@ -4739,6 +4897,15 @@ def _write_tallanto_csv(path: Path, rows: list[dict[str, str]]) -> None:
     fieldnames = sorted({key for row in rows for key in row})
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_csv(path: Path, rows: list[dict[str, str]], *, delimiter: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = sorted({key for row in rows for key in row})
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=delimiter)
         writer.writeheader()
         writer.writerows(rows)
 

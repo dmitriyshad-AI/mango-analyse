@@ -48,6 +48,8 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     MangoPhoneIndexPreviewConfig,
     MailMatchingReportConfig,
     TallantoIdentityMapConfig,
+    TallantoIdentityMapUnionConfig,
+    TallantoIdentityMapUnionSourceConfig,
     build_mail_archive_ingest,
     build_mail_archive_preflight,
     build_mail_attachment_image_ocr_plan,
@@ -66,6 +68,7 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     build_mango_phone_index_preview,
     build_mail_matching_report,
     build_tallanto_identity_map,
+    build_tallanto_identity_map_union,
     valid_env_var_name,
     verify_mail_archive_pilot,
 )
@@ -90,6 +93,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     if args.command == "identity-map":
         return run_identity_map(args)
+    if args.command == "identity-map-union":
+        return run_identity_map_union(args)
     if args.command == "preflight":
         return run_preflight(args)
     if args.command == "ingest":
@@ -141,6 +146,35 @@ def run_identity_map(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # noqa: BLE001
         print(f"MAIL identity map failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_identity_map_union(args: argparse.Namespace) -> int:
+    try:
+        report = build_tallanto_identity_map_union(
+            TallantoIdentityMapUnionConfig(
+                sources=[
+                    TallantoIdentityMapUnionSourceConfig(
+                        label="old_students_20260512",
+                        tallanto_csv_path=Path(args.old_tallanto_csv),
+                        encoding=args.old_encoding,
+                        delimiter=args.old_delimiter,
+                    ),
+                    TallantoIdentityMapUnionSourceConfig(
+                        label="contacts_20260620",
+                        tallanto_csv_path=Path(args.fresh_tallanto_csv),
+                        encoding=args.fresh_encoding,
+                        delimiter=args.fresh_delimiter,
+                    ),
+                ],
+                out_dir=Path(args.out_dir),
+                db_filename=args.db_filename,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL identity map union failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     print_summary(report)
     return 0
@@ -758,6 +792,22 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     identity.add_argument("--encoding", default="cp1251")
     identity.add_argument("--delimiter", default="\t")
     identity.add_argument("--account-label", default=DEFAULT_ACCOUNT_LABEL)
+
+    identity_union = subparsers.add_parser(
+        "identity-map-union",
+        help="Build one Tallanto identity map from old students TSV and fresh contacts CSV.",
+    )
+    identity_union.add_argument("--old-tallanto-csv", required=True)
+    identity_union.add_argument("--fresh-tallanto-csv", required=True)
+    identity_union.add_argument("--out-dir", required=True)
+    identity_union.add_argument("--old-encoding", default="cp1251")
+    identity_union.add_argument("--old-delimiter", default="\t")
+    identity_union.add_argument("--fresh-encoding", default="utf-8-sig")
+    identity_union.add_argument("--fresh-delimiter", default=",")
+    identity_union.add_argument(
+        "--db-filename",
+        default="tallanto_identity_map_union_20260620.sqlite",
+    )
 
     preflight = subparsers.add_parser("preflight", help="Check a live IMAP pilot without network calls.")
     preflight.add_argument("--host", help=f"Defaults to MAIL_IMAP_HOST or {DEFAULT_HOST}.")

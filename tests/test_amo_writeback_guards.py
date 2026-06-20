@@ -465,7 +465,9 @@ def test_contact_field_catalog_guard_allows_regular_textarea_targets() -> None:
     assert reasons == []
 
 
-def test_contact_update_ai_allowlist_off_keeps_previous_payload_filtering(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_contact_update_ai_allowlist_env_off_still_uses_strict_payload_filtering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("CRM_CONTACT_WRITEBACK_AI_ALLOWLIST", raising=False)
     calls: list[dict] = []
 
@@ -483,9 +485,10 @@ def test_contact_update_ai_allowlist_off_keeps_previous_payload_filtering(monkey
         amo_integration,
         "fetch_contact_field_catalog",
         lambda _session: [
-            {"id": 1, "name": "Email", "type": "text"},
-            {"id": 2, "name": "Внешнее поле", "type": "text"},
-            {"id": 3, "name": "Id Tallanto", "type": "text"},
+            {"id": 1, "name": "AI-рекомендованный следующий шаг", "type": "text"},
+            {"id": 2, "name": "Email", "type": "text"},
+            {"id": 3, "name": "Внешнее поле", "type": "text"},
+            {"id": 4, "name": "Id Tallanto", "type": "text"},
         ],
     )
 
@@ -499,17 +502,15 @@ def test_contact_update_ai_allowlist_off_keeps_previous_payload_filtering(monkey
         FakeSession(),
         contact_id=123,
         field_payload={
+            "AI-рекомендованный следующий шаг": "Позвонить",
             "Email": "parent@example.com",
             "Внешнее поле": "старое поведение",
             "Id Tallanto": "protected",
         },
     )
 
-    assert result["updated_fields"] == ["Email", "Внешнее поле"]
-    assert calls[0]["body"]["custom_fields_values"] == [
-        {"field_id": 1, "values": [{"value": "parent@example.com"}]},
-        {"field_id": 2, "values": [{"value": "старое поведение"}]},
-    ]
+    assert result["updated_fields"] == ["AI-рекомендованный следующий шаг"]
+    assert calls[0]["body"]["custom_fields_values"] == [{"field_id": 1, "values": [{"value": "Позвонить"}]}]
 
 
 def test_contact_update_ai_allowlist_blocks_manual_and_identity_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -556,6 +557,44 @@ def test_contact_update_ai_allowlist_blocks_manual_and_identity_fields(monkeypat
 
     assert result["updated_fields"] == ["AI-рекомендованный следующий шаг"]
     assert calls[0]["body"]["custom_fields_values"] == [{"field_id": 1, "values": [{"value": "Позвонить"}]}]
+
+
+def test_contact_write_payload_allowlist_blocks_identity_and_manual_fields() -> None:
+    payload = amo_integration.sanitize_contact_write_payload(
+        {
+            "AI-рекомендованный следующий шаг": "Позвонить",
+            "Последняя AI-сводка": "Сводка",
+            "Авто история общения": "История",
+            "Email": "parent@example.com",
+            "ФИО": "Иванов",
+            "История общения": "ручное поле",
+            "Статус матчинга": "exact",
+        }
+    )
+
+    assert payload == {
+        "AI-рекомендованный следующий шаг": "Позвонить",
+        "Последняя AI-сводка": "Сводка",
+        "Авто история общения": "История",
+    }
+
+
+def test_lead_write_payload_allowlist_blocks_status_and_responsible_fields() -> None:
+    payload = amo_integration.sanitize_lead_write_payload(
+        {
+            "AI-сводка по сделке": "Сводка",
+            "AI-рекомендованный следующий шаг": "Позвонить",
+            "status_id": "123",
+            "pipeline_id": "456",
+            "Ответственный": "manager",
+            "Email": "parent@example.com",
+        }
+    )
+
+    assert payload == {
+        "AI-сводка по сделке": "Сводка",
+        "AI-рекомендованный следующий шаг": "Позвонить",
+    }
 
 
 def test_deal_writeback_script_requires_live_confirmation() -> None:

@@ -170,7 +170,46 @@ def test_live_write_saves_snapshot_before_patch(tmp_path: Path) -> None:
     )
 
     assert code == 0
-    assert events[:4] == ["fetch", "snapshot", "patch", "commit"]
+    assert events[:5] == ["fetch", "snapshot", "fetch", "patch", "commit"]
+
+
+def test_live_write_blocks_patch_when_current_value_changed_after_snapshot(tmp_path: Path) -> None:
+    input_csv, stage5_summary, field_catalog, approval, out = _live_files(tmp_path)
+    events: list[str] = []
+    fetch_values = [
+        {field: f"old {field}" for field in DEAL_AI_FIELDS},
+        {field: f"manual {field}" for field in DEAL_AI_FIELDS},
+    ]
+
+    def fetcher(session: FakeSession, *, lead_id: int) -> dict[str, object]:
+        events.append("fetch")
+        return _lead_with_values(fetch_values.pop(0))
+
+    def updater(session: FakeSession, *, lead_id: int, field_payload: dict[str, object]) -> dict[str, object]:
+        events.append("patch")
+        return {"updated_fields": sorted(field_payload)}
+
+    code = run_live_write(
+        input_csv=input_csv,
+        stage5_summary=stage5_summary,
+        field_catalog_cache=field_catalog,
+        out_root=out,
+        live_confirmation="WRITE_AMO_DEAL_AWARE_LIVE",
+        expected_written=None,
+        operator_approval=approval,
+        analysis_date="2026-05-13",
+        delay_ms=0,
+        session_factory=lambda: FakeSession(events),
+        preflight_func=lambda session: (True, ""),
+        fetch_lead_func=fetcher,
+        send_update_func=updater,
+    )
+    report = json.loads((out / "live_write_report.json").read_text(encoding="utf-8"))
+
+    assert code == 0
+    assert "patch" not in events
+    assert report["rows"][0]["status"] == "skipped"
+    assert "clobber_protected" in report["rows"][0]["reason"]
 
 
 def test_live_write_skips_patch_when_snapshot_fails(tmp_path: Path) -> None:
@@ -319,6 +358,31 @@ def test_rollback_apply_touches_only_snapshot_field() -> None:
 
     assert rows[0]["rollback_status"] == "restored"
     assert calls == [{"lead_id": 123, "field_payload": {"AI-сводка по сделке": "old"}}]
+
+
+def test_rollback_apply_can_restore_contact_snapshot() -> None:
+    calls: list[dict[str, object]] = []
+    snapshot = {
+        "entity_type": "contact",
+        "entity_id": "777",
+        "lead_id": "777",
+        "field_name": "Авто история общения",
+        "old_value": "old",
+        "new_value": "new",
+    }
+
+    rows = run_rollback(
+        snapshot_rows=[snapshot],
+        fetch_lead=lambda lead_id: pytest.fail("lead fetch must not be used for contact snapshot"),
+        fetch_entity=lambda entity_type, entity_id: _lead_with_values({"Авто история общения": "new"}),
+        send_entity_update=lambda **kwargs: calls.append(kwargs) or {"ok": True},
+        apply=True,
+        confirmation=ROLLBACK_CONFIRMATION,
+        retry_policy=RetryPolicy(max_retries=0, delay_ms=0, sleep_func=lambda seconds: None),
+    )
+
+    assert rows[0]["rollback_status"] == "restored"
+    assert calls == [{"entity_type": "contact", "entity_id": 777, "field_payload": {"Авто история общения": "old"}}]
 
 
 def test_retry_retries_429_and_5xx() -> None:

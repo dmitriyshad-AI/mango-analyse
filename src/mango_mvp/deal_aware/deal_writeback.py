@@ -31,6 +31,21 @@ PROTECTED_LEAD_FIELDS = {
     "Телефон клиента",
     "ФИО",
     "Email",
+    "История общения",
+    "Статус",
+    "Этап",
+    "Воронка",
+    "Ответственный",
+    "status_id",
+    "pipeline_id",
+    "responsible_user_id",
+}
+BRAND_FIELD_ALIASES = {
+    "foton": "foton",
+    "фотон": "foton",
+    "unpk": "unpk",
+    "унпк": "unpk",
+    "уник": "unpk",
 }
 
 
@@ -138,6 +153,16 @@ def build_dry_run_row(
         status = "blocked"
         reason = "stage5_decision_is_not_allow_stage6_dry_run"
         findings.append(finding(row_index, review_id, lead_id, "stage5_decision_not_allowed", "P1", "stage5_decision", safe_text(row.get("stage5_decision"))))
+    brand_reason = brand_writeback_guard_reason(row)
+    if brand_reason:
+        status = "blocked"
+        reason = brand_reason
+        findings.append(finding(row_index, review_id, lead_id, brand_reason, "P1", "brand", brand_reason))
+    open_deals_reason = multiple_open_deals_guard_reason(row)
+    if open_deals_reason:
+        status = "blocked"
+        reason = open_deals_reason
+        findings.append(finding(row_index, review_id, lead_id, open_deals_reason, "P1", "open_deals", open_deals_reason))
     if not lead_id.isdigit():
         status = "blocked"
         reason = "missing_selected_deal_id"
@@ -225,6 +250,69 @@ def build_dry_run_row(
         "stage6_live_write_allowed_now": "Нет",
     }
     return report_row, dedupe_findings(findings)
+
+
+def _first_text(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = safe_text(row.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _normalized_brand(value: Any) -> str:
+    text = safe_text(value).casefold()
+    if not text:
+        return ""
+    for marker, brand in BRAND_FIELD_ALIASES.items():
+        if marker in text:
+            return brand
+    return text
+
+
+def brand_writeback_guard_reason(row: dict[str, Any]) -> str:
+    channel_brand = _normalized_brand(
+        _first_text(
+            row,
+            (
+                "channel_brand",
+                "active_brand",
+                "brand_from_channel",
+                "source_channel_brand",
+                "Бренд канала",
+            ),
+        )
+    )
+    deal_brand = _normalized_brand(
+        _first_text(
+            row,
+            (
+                "deal_brand",
+                "selected_deal_brand",
+                "amo_deal_brand",
+                "Бренд сделки",
+            ),
+        )
+    )
+    if channel_brand and deal_brand and channel_brand != deal_brand:
+        return "brand_conflict_channel_deal"
+    return ""
+
+
+def multiple_open_deals_guard_reason(row: dict[str, Any]) -> str:
+    count_text = _first_text(
+        row,
+        (
+            "open_deal_count",
+            "open_deals_count",
+            "candidate_open_deal_count",
+            "amo_open_deal_count",
+            "Количество открытых сделок",
+        ),
+    )
+    if count_text and int_or_zero(count_text) > 1:
+        return "multiple_open_deals"
+    return ""
 
 
 def choose_stage20_candidates(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:

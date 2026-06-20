@@ -124,6 +124,72 @@ def test_stage6_preflight_blocks_missing_field_catalog_field(tmp_path: Path) -> 
     assert summary["field_catalog_guard"]["missing_fields"]
 
 
+def test_stage6_preflight_blocks_channel_deal_brand_conflict(tmp_path: Path) -> None:
+    input_csv = tmp_path / "candidates.csv"
+    stage5_summary = tmp_path / "stage5_summary.json"
+    field_catalog = tmp_path / "lead_field_catalog_cache.json"
+    out = tmp_path / "out"
+    row = {**_candidate_row(), "channel_brand": "foton", "deal_brand": "unpk"}
+    _write_csv(input_csv, [row])
+    stage5_summary.write_text(
+        json.dumps(
+            {
+                "readiness": {"passed_for_stage6_dry_run": True, "passed_for_live_writeback": False},
+                "outputs": {"dry_run_candidates_csv": str(input_csv.resolve())},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    field_catalog.write_text(json.dumps(_field_catalog(), ensure_ascii=False), encoding="utf-8")
+
+    summary = run_deal_aware_stage6_preflight(
+        DealAwareStage6Paths(
+            input_csv=input_csv,
+            stage5_summary_json=stage5_summary,
+            field_catalog_cache_json=field_catalog,
+            out_root=out,
+            stage20_size=1,
+        )
+    )
+
+    assert summary["coverage"]["blocked_rows"] == 1
+    assert "brand_conflict_channel_deal" in (out / "deal_stage6_findings.csv").read_text(encoding="utf-8")
+
+
+def test_stage6_preflight_blocks_multiple_open_deals(tmp_path: Path) -> None:
+    input_csv = tmp_path / "candidates.csv"
+    stage5_summary = tmp_path / "stage5_summary.json"
+    field_catalog = tmp_path / "lead_field_catalog_cache.json"
+    out = tmp_path / "out"
+    row = {**_candidate_row(), "open_deal_count": "2"}
+    _write_csv(input_csv, [row])
+    stage5_summary.write_text(
+        json.dumps(
+            {
+                "readiness": {"passed_for_stage6_dry_run": True, "passed_for_live_writeback": False},
+                "outputs": {"dry_run_candidates_csv": str(input_csv.resolve())},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    field_catalog.write_text(json.dumps(_field_catalog(), ensure_ascii=False), encoding="utf-8")
+
+    summary = run_deal_aware_stage6_preflight(
+        DealAwareStage6Paths(
+            input_csv=input_csv,
+            stage5_summary_json=stage5_summary,
+            field_catalog_cache_json=field_catalog,
+            out_root=out,
+            stage20_size=1,
+        )
+    )
+
+    assert summary["coverage"]["blocked_rows"] == 1
+    assert "multiple_open_deals" in (out / "deal_stage6_findings.csv").read_text(encoding="utf-8")
+
+
 def test_deal_readback_treats_iso_datetime_and_amo_timestamp_as_equivalent() -> None:
     assert values_equivalent("1778673453", "2026-05-13T11:57:33+00:00")
     findings = readback_findings(

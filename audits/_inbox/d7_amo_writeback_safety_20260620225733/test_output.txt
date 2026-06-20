@@ -1,0 +1,44 @@
+# Тесты
+
+## Точечный набор
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
+  tests/test_amocrm_deals.py::AmoCrmDealAnalysisTest::test_send_contact_custom_field_update_uses_contact_allowlist_and_protected_fields \
+  tests/test_amo_write_safety.py \
+  tests/test_deal_aware_amo_rollback.py \
+  tests/test_deal_aware_stage6_writeback.py \
+  tests/test_amo_writeback_guards.py
+```
+
+Результат:
+
+```text
+60 passed in 1.76s
+```
+
+## Полный pytest
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Результат:
+
+```text
+3372 passed, 5 skipped, 1 warning in 51.36s
+```
+
+Warning:
+
+```text
+NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, current ssl module is compiled with LibreSSL 2.8.3.
+```
+
+## Diff hygiene
+
+```bash
+git diff --check
+```
+
+Результат: без вывода.

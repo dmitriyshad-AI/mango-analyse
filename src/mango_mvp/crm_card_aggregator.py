@@ -43,6 +43,17 @@ PAYMENT_SIGNAL_TYPES = {"paid_no_access", "tallanto_payment", "payment_without_a
 HOT_SIGNAL_TYPES = {"hot_lead_silent_7d", "price_interest", "paid_no_access"}
 IDENTITY_CONFLICT_MARKERS = ("ambiguous", "duplicate", "shared", "family")
 SERVICE_SNAPSHOT_EVENT_TYPES = {"amo_contact_snapshot", "tallanto_student_snapshot", "amo_deal_stage"}
+BLOCKER_MESSAGES = {
+    "p9_ambiguous_identity_manual_review": "На телефоне несколько человек — проверьте, к кому относится",
+    "open_conflicts_require_manager_review": "Есть открытые конфликты в истории — проверьте вручную",
+    "amo_contact_id_not_available_in_profile": "Не найден контакт в AMO",
+    "amo_lead_id_not_available_in_profile": "Не найдена сделка в AMO",
+    "amo_contact_id_masked_in_read_api": "ID контакта AMO недоступен во внутренней проекции",
+    "amo_lead_id_masked_in_read_api": "ID сделки AMO недоступен во внутренней проекции",
+    "selected_deal_not_confirmed_by_amocrm_opportunity": "Выбранная сделка не подтверждена снимком AMO",
+    "customer_profile_not_found": "Профиль клиента не найден",
+    "manual_review_required": "Нужна ручная проверка",
+}
 
 
 @dataclass(frozen=True)
@@ -133,7 +144,7 @@ def build_crm_card_projection(
     objections = _objections(facts, latest_call)
     call_interests = _call_analysis_field(latest_call, "interests")
     call_target_product = _call_analysis_field(latest_call, "target_product")
-    request_summary = _request_summary(customer, facts, call_interests=call_interests, call_target_product=call_target_product)
+    request_summary = _request_summary(latest_call, facts, call_interests=call_interests, call_target_product=call_target_product)
     latest_call_key = _event_key(latest_call)
     auto_history = _contact_auto_history(
         latest_summary=latest_summary,
@@ -149,8 +160,8 @@ def build_crm_card_projection(
     match_status = _match_status(identity_status, identity_links, conflicts)
     contact_payload = {
         "Запрос": fit_text(request_summary, 700),
-        "Последняя сводка": fit_text(latest_summary, 1200),
-        "История общения": fit_text(auto_history, CONTACT_AUTO_HISTORY_LIMIT),
+        "Последняя сводка": fit_multiline_text(_summary_block(latest_summary), 1200),
+        "История общения": fit_multiline_text(auto_history, CONTACT_AUTO_HISTORY_LIMIT),
     }
     contact_payload = _drop_empty(contact_payload)
 
@@ -166,12 +177,12 @@ def build_crm_card_projection(
         deal_blockers.append("amo_lead_id_not_available_in_profile")
     deal_events = _deal_events(history_items, selected_opportunity.get("opportunity_id"))
     history_scope = "история по сделке" if selected_opportunity.get("opportunity_id") else "история по клиенту, не по конкретной сделке"
-    warnings_text = _warnings(deal_blockers, conflicts, signals)
+    warnings_text = _warnings(conflicts, signals)
     deal_payload = {
         "Статус сделки": fit_text(_deal_status(selected_opportunity, facts, timeline_items), DEFAULT_TEXT_LIMIT),
         "Возражения": fit_text(objections, DEFAULT_TEXT_LIMIT),
         "Следующий шаг": fit_text(next_step, SHORT_FIELD_LIMIT),
-        "Tallanto": fit_text(_tallanto_status(timeline_items, facts), 1600),
+        "Tallanto": fit_multiline_text(_tallanto_status(timeline_items, facts), 1600),
         "Предупреждения": fit_text(warnings_text, DEFAULT_TEXT_LIMIT),
     }
     deal_payload = _drop_empty(deal_payload)
@@ -209,7 +220,7 @@ def build_crm_card_projection(
         },
         "workbook": {
             "ready": "да" if ready and deal_ready else "нет",
-            "blockers": " | ".join(_dedupe(blockers + deal_blockers)),
+            "blockers": " | ".join(_translate_blockers(_dedupe(blockers + deal_blockers))),
             "phone": _manager_phone(manager_projection),
             "what_goes_to_amo": render_payload_preview(contact_payload, deal_payload),
         },
@@ -287,6 +298,37 @@ def fit_history_text(value: Any, limit: int) -> str:
     return chunk.rstrip(" ,;:.") + HISTORY_TRUNCATION_SUFFIX
 
 
+def fit_multiline_text(value: Any, limit: int) -> str:
+    text = normalize_manager_multiline_text(value)
+    if len(text) <= limit:
+        return text
+    budget = max(20, limit - len(HISTORY_TRUNCATION_SUFFIX))
+    chunk = text[:budget].rstrip()
+    cut = max(chunk.rfind("\n\n"), chunk.rfind("\n"), chunk.rfind(". "), chunk.rfind("; "), chunk.rfind(", "), chunk.rfind(" "))
+    if cut >= int(budget * 0.58):
+        chunk = chunk[:cut]
+    return chunk.rstrip(" ,;:.") + HISTORY_TRUNCATION_SUFFIX
+
+
+def normalize_manager_multiline_text(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return ""
+    lines = [normalize_manager_text(line) for line in text.splitlines()]
+    result: list[str] = []
+    blank = False
+    for line in lines:
+        if line:
+            result.append(line)
+            blank = False
+        elif not blank and result:
+            result.append("")
+            blank = True
+    while result and result[-1] == "":
+        result.pop()
+    return "\n".join(result)
+
+
 def compact_objection_explicit(value: Any, *, limit: int = OBJECTION_LIMIT) -> str:
     text = normalize_manager_text(value).strip(" .;:")
     if len(text) <= limit:
@@ -340,7 +382,7 @@ def _missing_profile_projection(
         "deal_card": {"fields": {}, "ready_for_amo": False, "blockers": blockers, "scope": "нет профиля"},
         "workbook": {
             "ready": "нет",
-            "blockers": " | ".join(blockers),
+            "blockers": " | ".join(_translate_blockers(blockers)),
             "phone": "",
             "what_goes_to_amo": render_payload_preview(contact_payload, {}),
         },
@@ -465,7 +507,8 @@ def _latest_summary(latest_call: Mapping[str, Any], facts: ManagerFacts, history
 def _next_step(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts, latest_call: Mapping[str, Any]) -> str:
     call_next_step = _call_analysis_field(latest_call, "next_step")
     if call_next_step:
-        return call_next_step
+        date = _format_date_ru(_safe_text(latest_call.get("event_at")))
+        return f"{call_next_step} (от {date})" if date else call_next_step
     for signal in sorted(signals, key=lambda item: _safe_text(item.get("created_at")), reverse=True):
         action = _safe_text(signal.get("recommended_action"))
         if _safe_text(signal.get("status") or "active") == "active" and action:
@@ -474,23 +517,59 @@ def _next_step(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts, latest
 
 
 def _request_summary(
-    customer: Mapping[str, Any],
+    latest_call: Mapping[str, Any],
     facts: ManagerFacts,
     *,
     call_interests: str,
     call_target_product: str,
 ) -> str:
     parts: list[str] = []
-    display_name = _safe_text(customer.get("display_name"))
-    if display_name:
-        parts.append(display_name)
+    student = _student_label_from_call(latest_call)
+    if student:
+        parts.append(student)
     product = facts.recommended_product or call_target_product
     if product:
         parts.append(product)
     interests = facts.products_interest or call_interests
-    if interests and interests != product:
-        parts.append(interests)
+    for item in split_parts(interests):
+        if item:
+            parts.append(item)
     return "; ".join(_dedupe(parts))
+
+
+def _student_label_from_call(event: Mapping[str, Any]) -> str:
+    call_analysis = _call_analysis(event)
+    structured = _mapping(call_analysis.get("structured_fields"))
+    crm_blocks = _mapping(call_analysis.get("crm_blocks"))
+    people = _mapping(structured.get("people")) or _mapping(crm_blocks.get("people"))
+    student = _mapping(structured.get("student")) or _mapping(crm_blocks.get("student"))
+    child_name = _safe_text(people.get("child_fio") or people.get("child_name") or people.get("student_name"))
+    grade = _safe_text(
+        student.get("grade_current")
+        or student.get("grade")
+        or structured.get("student_grade")
+        or call_analysis.get("student_grade")
+    )
+    parts: list[str] = []
+    if child_name:
+        parts.append(child_name)
+    if grade:
+        grade_text = grade if "класс" in grade.casefold() else f"{grade} класс"
+        parts.append(grade_text)
+    return ", ".join(_dedupe(parts))
+
+
+def _summary_block(summary: str) -> str:
+    return f"Сводка:\n{summary}" if _safe_text(summary) else ""
+
+
+def _format_date_ru(value: str) -> str:
+    text = _safe_text(value)
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", text)
+    if not match:
+        return ""
+    year, month, day = match.groups()
+    return f"{day}.{month}.{year}"
 
 
 def _manager_phone(manager_projection: Mapping[str, Any]) -> str:
@@ -543,35 +622,7 @@ def _contact_auto_history(
 ) -> str:
     blocks: list[str] = []
     if latest_summary:
-        blocks.append("Последняя содержательная сводка: см. поле «Последняя AI-сводка».")
-    facts_lines: list[str] = []
-    if facts.recommended_product:
-        facts_lines.append(f"Рекомендуемый продукт: {facts.recommended_product}")
-    elif target_product:
-        facts_lines.append(f"Целевой продукт: {target_product}")
-    if facts.products_interest:
-        facts_lines.append(f"Продукты интереса: {facts.products_interest}")
-    elif interests:
-        facts_lines.append(f"Интересы: {interests}")
-    if objections:
-        facts_lines.append(f"Возражения: {objections}")
-    if facts.next_step:
-        facts_lines.append(f"Следующий шаг: {facts.next_step}")
-    if facts.follow_up_date:
-        facts_lines.append(f"Рекомендуемая дата следующего контакта: {facts.follow_up_date}")
-    if facts.priority:
-        facts_lines.append(f"Приоритет лида: {facts.priority}")
-    if facts.probability:
-        facts_lines.append(f"Вероятность продажи, %: {facts.probability}")
-    active_actions = [
-        _safe_text(signal.get("recommended_action"))
-        for signal in signals
-        if _safe_text(signal.get("recommended_action")) and _safe_text(signal.get("status") or "active") == "active"
-    ]
-    if active_actions:
-        facts_lines.append("Активные сигналы: " + "; ".join(_dedupe(active_actions[:3])))
-    if facts_lines:
-        blocks.append("\n".join(facts_lines))
+        blocks.append("Сводка:\nСм. поле «Последняя сводка».")
     latest_call_key = _event_key(latest_call)
     chronology = _chronology_text(
         timeline_items,
@@ -580,7 +631,7 @@ def _contact_auto_history(
     )
     if chronology:
         blocks.append("Хронология:\n" + chronology)
-    return fit_history_text("\n\n".join(blocks), CONTACT_AUTO_HISTORY_LIMIT)
+    return fit_multiline_text("\n\n".join(blocks), CONTACT_AUTO_HISTORY_LIMIT)
 
 
 def _chronology_text(
@@ -670,39 +721,48 @@ def _normalized_text(value: Any) -> str:
 
 def _compact_event_reference(*, latest: bool) -> str:
     if latest:
-        return "последний содержательный звонок; полная сводка в поле «Последняя AI-сводка»"
+        return "последний содержательный звонок; полная сводка в поле «Последняя сводка»"
     return "содержательный звонок; полный текст есть в контактной автоистории; ниже краткие детали"
 
 
 def _call_analysis_lines(event: Mapping[str, Any]) -> list[str]:
-    call_analysis = _mapping(event.get("call_analysis"))
+    call_analysis = _call_analysis(event)
     if not call_analysis:
         return []
     lines: list[str] = []
-    objections = _join_values(call_analysis.get("objections"))
     next_step = _safe_text(call_analysis.get("next_step"))
     pain_points = _join_values(call_analysis.get("pain_points"))
-    interests = _join_values(call_analysis.get("interests"))
-    target_product = _safe_text(call_analysis.get("target_product"))
     budget = _join_values(call_analysis.get("budget"))
-    if objections:
-        lines.append(f"Возражения: {objections}")
     if next_step:
-        lines.append(f"Следующий шаг: {next_step}")
+        date = _format_date_ru(_safe_text(event.get("event_at")))
+        lines.append(f"Шаг: {next_step} (от {date})" if date else f"Шаг: {next_step}")
     if pain_points:
         lines.append(f"Боли/ограничения: {pain_points}")
-    if interests:
-        lines.append(f"Интересы: {interests}")
-    if target_product:
-        lines.append(f"Целевой продукт: {target_product}")
     if budget:
         lines.append(f"Бюджет: {budget}")
     return lines
 
 
 def _call_analysis_field(event: Mapping[str, Any], key: str) -> str:
-    call_analysis = _mapping(event.get("call_analysis"))
+    call_analysis = _call_analysis(event)
+    if key == "interests":
+        structured = _mapping(call_analysis.get("structured_fields"))
+        crm_blocks = _mapping(call_analysis.get("crm_blocks"))
+        interest_block = _mapping(structured.get("interests")) or _mapping(crm_blocks.get("interests"))
+        values: list[str] = []
+        for field in ("products", "format", "subjects", "exam_targets"):
+            values.extend(split_parts(_join_values(interest_block.get(field))))
+        values.extend(split_parts(_join_values(call_analysis.get("interests"))))
+        return "; ".join(_dedupe(values))
     return _join_values(call_analysis.get(key))
+
+
+def _call_analysis(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    call_analysis = _mapping(event.get("call_analysis"))
+    if call_analysis:
+        return call_analysis
+    record = _mapping(event.get("record"))
+    return _mapping(record.get("call_analysis"))
 
 
 def _join_values(value: Any) -> str:
@@ -756,9 +816,9 @@ def _deal_summary(
     if latest_summary:
         last_at = _safe_text(latest_call.get("event_at"))[:10] if latest_call else ""
         last_part = (
-            f"Последний содержательный звонок {last_at}: полная сводка вынесена в поле «Последняя AI-сводка»."
+            f"Последний содержательный звонок {last_at}: полная сводка вынесена в поле «Последняя сводка»."
             if last_at
-            else "Последняя содержательная сводка вынесена в поле «Последняя AI-сводка»."
+            else "Последняя содержательная сводка вынесена в поле «Последняя сводка»."
         )
     else:
         last_part = "Содержательных событий не найдено."
@@ -852,21 +912,46 @@ def _binding_quality(
     return f"Identity: {identity_status}; links: {quality}; opportunity: {opp}; {history_scope}."
 
 
-def _warnings(
-    blockers: Sequence[str],
-    conflicts: Sequence[Mapping[str, Any]],
-    signals: Sequence[Mapping[str, Any]],
-) -> str:
+def _warnings(conflicts: Sequence[Mapping[str, Any]], signals: Sequence[Mapping[str, Any]]) -> str:
     warnings: list[str] = []
-    if blockers:
-        warnings.append("Блокеры: " + "; ".join(_dedupe(blockers)))
     for conflict in conflicts[:3]:
         if _safe_text(conflict.get("status")).casefold() == "open":
-            warnings.append("Открытый конфликт: " + (_safe_text(conflict.get("summary")) or _safe_text(conflict.get("conflict_type"))))
+            warning = _humanize_conflict(conflict)
+            if warning:
+                warnings.append(warning)
     for signal in signals[:3]:
         if _safe_text(signal.get("signal_type")) == "paid_no_access":
             warnings.append("Есть сигнал оплаты без подтвержденного доступа; перед действием сверить Tallanto.")
     return " ".join(_dedupe(warnings))
+
+
+def _humanize_conflict(conflict: Mapping[str, Any]) -> str:
+    summary = _safe_text(conflict.get("summary"))
+    conflict_type = _safe_text(conflict.get("conflict_type"))
+    text = _translate_blocker(summary) or _translate_blocker(conflict_type)
+    if text:
+        return text
+    return f"Открытый конфликт: {summary or conflict_type}" if (summary or conflict_type) else ""
+
+
+def _translate_blockers(blockers: Sequence[str]) -> list[str]:
+    return [_translate_blocker(blocker) or _safe_text(blocker) for blocker in blockers if _safe_text(blocker)]
+
+
+def _translate_blocker(value: Any) -> str:
+    text = _safe_text(value)
+    if not text:
+        return ""
+    if text in BLOCKER_MESSAGES:
+        return BLOCKER_MESSAGES[text]
+    if text.startswith("crm_card_not_ready:"):
+        tail = text.split(":", 1)[1]
+        translated = "; ".join(_translate_blockers([part.strip() for part in tail.split("|")]))
+        return "Карточка не готова: " + translated if translated else "Карточка не готова"
+    for code, message in BLOCKER_MESSAGES.items():
+        if code in text:
+            return message
+    return ""
 
 
 def _tallanto_status(events: Sequence[Mapping[str, Any]], facts: ManagerFacts) -> str:
@@ -882,12 +967,30 @@ def _tallanto_status(events: Sequence[Mapping[str, Any]], facts: ManagerFacts) -
 
 def _tallanto_snapshot_text(event: Mapping[str, Any]) -> str:
     text = _safe_text(event.get("summary") or event.get("text_preview"))
+    preview = _safe_text(event.get("text_preview"))
     normalized = text.casefold()
     if normalized == "exact_phone_single":
-        return "Tallanto: найден один ученик по телефону."
+        return _humanize_tallanto_text(preview) or "Один ученик найден по телефону."
+    if normalized == "exact_phone_multiple":
+        return "На телефоне несколько учеников — проверить вручную."
     if normalized == "no_exact_phone_match":
-        return "Tallanto: точного совпадения по телефону нет."
-    return text
+        return "Точного совпадения по телефону в Tallanto нет."
+    return _humanize_tallanto_text(text) or text
+
+
+def _humanize_tallanto_text(text: str) -> str:
+    if not text:
+        return ""
+    replacements = {
+        "Статус: exact_phone_single": "Один ученик по телефону",
+        "Статус: exact_phone_multiple": "На телефоне несколько учеников — проверить вручную",
+        "Статус: no_exact_phone_match": "Точного совпадения по телефону нет",
+    }
+    result = text
+    for old, new in replacements.items():
+        result = result.replace(old, new)
+    result = result.replace(" | ", "\n")
+    return result.strip()
 
 
 def _what_already_in_amo(

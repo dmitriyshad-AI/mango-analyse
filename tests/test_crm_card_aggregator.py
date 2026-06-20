@@ -55,7 +55,7 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
     )
 
     assert card["snapshot_as_of"] == profile["snapshot_as_of"]
-    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить"
+    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить (от 12.05.2026)"
     assert "AI-бюджет диапазон" not in card["deal_card"]["fields"]
     assert "AI-дата обновления сделки" not in card["deal_card"]["fields"]
     assert set(card["contact_card"]["fields"]).issubset({"Запрос", "Последняя сводка", "История общения"})
@@ -71,7 +71,7 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
         "customer_id": "customer:call-analysis",
         "snapshot_as_of": "2026-06-18T10:00:00+00:00",
         "last_event_at": "2026-06-18T10:00:00+00:00",
-        "customer": {"customer_id": "customer:call-analysis", "identity_status": "strong", "summary": {}},
+        "customer": {"customer_id": "customer:call-analysis", "identity_status": "strong", "display_name": "Татьяна Николаевна", "summary": {}},
         "customer_id_mappings": [],
         "identity_links": [{"match_class": "strong_unique"}],
         "manager_projection": {
@@ -94,7 +94,7 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
                     "event_at": "2026-06-19T09:00:00+00:00",
                     "source_system": "tallanto_snapshot",
                     "summary": "exact_phone_single",
-                    "text_preview": "exact_phone_single",
+                    "text_preview": "Статус: exact_phone_single | Тип ученика: 7 класс | Филиал: Фотон",
                 },
                 {
                     "event_type": "amo_deal_stage",
@@ -130,8 +130,16 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
                         "objections": ["цена"],
                         "next_step": "Перезвонить завтра",
                         "pain_points": ["нет времени"],
-                        "interests": ["математика"],
+                        "interests": ["математика", "математика"],
                         "target_product": "годовой курс",
+                        "structured_fields": {
+                            "people": {"child_fio": "Анна"},
+                            "student": {"grade_current": "7"},
+                            "interests": {
+                                "products": ["годовой курс", "годовой курс"],
+                                "subjects": ["математика"],
+                            },
+                        },
                     },
                 },
                 {
@@ -161,27 +169,28 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
     history = card["contact_card"]["fields"]["История общения"]
     preview = card["workbook"]["what_goes_to_amo"]
 
-    assert card["contact_card"]["fields"]["Последняя сводка"] == live_summary.strip()
+    assert card["contact_card"]["fields"]["Запрос"] == "Анна, 7 класс; годовой курс; математика"
+    assert "Татьяна Николаевна" not in card["contact_card"]["fields"]["Запрос"]
+    assert card["contact_card"]["fields"]["Последняя сводка"] == "Сводка:\n" + live_summary.strip()
     assert "Полный разбор живого звонка" not in history
     assert preview.count("Полный разбор живого звонка") == 1
     assert older_summary in history
     assert preview.count(older_summary) == 1
-    assert "Возражения: цена" in history
-    assert "Следующий шаг: Перезвонить завтра" in history
+    assert "Возражения: цена" not in history
+    assert "Интересы: математика" not in history
+    assert "Шаг: Перезвонить завтра (от 17.06.2026)" in history
     assert "Недозвон не должен попасть" not in history
     assert "Read-only AMO contact snapshot" not in history
     assert "exact_phone_single" not in history
     assert "Закрыто и не реализовано" not in history
     assert "Закрыто и не реализовано" in card["deal_card"]["fields"]["Статус сделки"]
-    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить завтра"
+    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить завтра (от 17.06.2026)"
     assert card["deal_card"]["fields"]["Возражения"] == "цена"
-    assert "Интересы: математика" in history
-    assert "Целевой продукт: годовой курс" in history
     assert "[сжато]" not in history
     assert "Read-only AMO contact snapshot" not in preview
     assert "exact_phone_single" not in preview
     assert "Tallanto: найден один ученик по телефону." not in history
-    assert card["deal_card"]["fields"]["Tallanto"] == "Tallanto: найден один ученик по телефону."
+    assert card["deal_card"]["fields"]["Tallanto"] == "Один ученик по телефону\nТип ученика: 7 класс\nФилиал: Фотон"
     assert card["workbook"]["ready"] == "да"
 
 
@@ -211,7 +220,7 @@ def test_crm_card_empty_timeline_falls_back_to_analyze_and_is_idempotent() -> No
     second = build_crm_card_projection(profile, manager_facts=facts)
 
     assert first == second
-    assert first["contact_card"]["fields"]["Последняя сводка"] == "Клиент интересовался курсом."
+    assert first["contact_card"]["fields"]["Последняя сводка"] == "Сводка:\nКлиент интересовался курсом."
     assert first["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить и уточнить предмет."
 
 
@@ -233,9 +242,9 @@ def test_crm_card_ambiguous_identity_blocks_ready_and_keeps_family_summary() -> 
 
     card = build_crm_card_projection(profile, manager_facts={"AMO contact IDs": "123", "selected_deal_id": "456"})
 
-    assert card["contact_card"]["fields"]["Последняя сводка"] == "Семейный контакт: несколько учеников."
+    assert card["contact_card"]["fields"]["Последняя сводка"] == "Сводка:\nСемейный контакт: несколько учеников."
     assert card["workbook"]["ready"] == "нет"
-    assert "p9_ambiguous_identity_manual_review" in card["workbook"]["blockers"]
+    assert "На телефоне несколько человек — проверьте, к кому относится" in card["workbook"]["blockers"]
     assert card["deal_card"]["ready_for_amo"] is False
 
 

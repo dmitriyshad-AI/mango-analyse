@@ -2,7 +2,10 @@
   "block": "tz_uskoreniya_3_punkta",
   "created_at": "2026-06-20T12:46:23+03:00",
   "branch": "codex/tz-uskoreniya-3-punkta",
-  "head_after_code": "df43ad0",
+  "head_after_code": "294f42fa32df7a3778e2755ab84a76aa41878748",
+  "post_rebase_base": "43134ae1db2c33bdf059e93fb2a85d5fcb32440a",
+  "head_after_rebase_before_post_report": "edf3d266a44b74b9c05ac045ae61768f5e21dcf5",
+  "post_rebase_verification": "post_rebase_verification.md",
   "formal_pass": true,
   "semantic_pass": "not_applicable",
   "live_writes": false

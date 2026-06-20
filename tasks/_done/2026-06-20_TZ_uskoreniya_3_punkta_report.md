@@ -2,7 +2,8 @@
 
 Дата: 2026-06-20
 Ветка: `codex/tz-uskoreniya-3-punkta`
-База: `0e0c7b7 customer-profile: record combined cache rerun`
+Исходная база разработки: `0e0c7b7 customer-profile: record combined cache rerun`
+Post-rebase база: `43134ae TZ139: expose customer profile card projection fields`
 
 ## Что сделано
 
@@ -25,9 +26,10 @@
 
 ## Коммиты
 
-- `c5f4160 Add pytest-xdist dev dependency`
-- `73f9b24 Batch canonical timeline import writes`
-- `df43ad0 Parallelize analysis schema migration compute`
+- `b20bf47 Add pytest-xdist dev dependency`
+- `6aa4f7f Batch canonical timeline import writes`
+- `294f42f Parallelize analysis schema migration compute`
+- `edf3d26 Report three acceleration measurements`
 
 ## Замеры и детерминизм
 
@@ -126,3 +128,49 @@ rows_equal: true
 - `pytest -n auto` теперь явно быстрее, но не включён в `addopts`: команда остаётся явной, чтобы CI/локальные сценарии не поменялись молча.
 - `bulk_write` меняет failure-семантику canonical import: при исключении доменные записи внутри batch откатываются, а failed-run сохраняется отдельно. Это ожидаемое поведение для batch-write, но отличается от прежних частичных коммитов.
 - `migrate-analysis-schema --workers N` копирует payload/transcript в процессы; на очень больших batch стоит подбирать `--workers` и `--limit`, а не ставить максимум CPU.
+
+## Post-rebase проверка на текущем main
+
+Дата: 2026-06-20
+
+Rebase выполнен на текущий канон:
+
+```text
+origin/main: 43134ae1db2c33bdf059e93fb2a85d5fcb32440a
+branch HEAD after rebase: edf3d266a44b74b9c05ac045ae61768f5e21dcf5
+merge-base: 43134ae1db2c33bdf059e93fb2a85d5fcb32440a
+```
+
+Полный pytest после rebase:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+3365 passed, 5 skipped, 1 warning in 55.03s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q -n auto
+3365 passed, 5 skipped, 16 warnings in 21.00s
+```
+
+Повторный `bulk_write`-замер на текущем `origin/main` против HEAD, 300 синтетических клиентов:
+
+```text
+before origin/main: 2.7820s
+after HEAD: 1.3749s
+logical_hash_equal: true
+logical_hash: ef2ec0dc32ff8444c7a2a1c9c9cf56212bf42e6a6a2c0d2f61e0eb3911e50d75
+logical_row_count: 6000
+```
+
+Примечание по измерителю: после TZ139 таблица `customer_id_mappings` содержит `created_at`, `updated_at` и `ingestion_run_id` в `record_hash`. Поэтому post-rebase стенд использовал общий подготовленный вход, один `out_root.name` и фиксированный `CustomerTimelineSQLiteStore._now` в тестовом процессе. Это не правка продукта, а устранение runtime-шума в измерении логической эквивалентности.
+
+Повторный замер параллельного регрейда, 2500 синтетических `analysis_json`:
+
+```text
+before origin/main sequential: 4.1315s
+after HEAD --workers 4: 2.1332s
+old_report: code=0 row_count=2500 workers=1
+new_report: code=0 row_count=2500 workers=4
+rows_equal: true
+```
+
+Семантика отката `bulk_write` подтверждена как осознанное изменение: успешный импорт пишет batch-коммитом; при исключении доменные записи внутри batch откатываются целиком, а failed ingestion-run сохраняется отдельно, потому что `start_ingestion_run` оставлен вне batch и `finish_ingestion_run(status="failed")` остаётся в `except`.

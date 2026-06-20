@@ -142,7 +142,8 @@ def build_crm_card_projection(
     source_counts = _source_counts(timeline_items)
     what_collected = _what_collected(customer, timeline_items, signals, conflicts, bot_items)
     latest_summary = _latest_summary(latest_call, facts, history_items)
-    next_step = _next_step(signals, facts, latest_call)
+    timeline_next_step = _mapping(profile.get("next_step_resolution")) or _mapping(manager_projection.get("next_step_resolution"))
+    next_step = _next_step(signals, facts, latest_call, timeline_next_step=timeline_next_step)
     objections = _objections(facts, latest_call)
     call_interests = _call_analysis_field(latest_call, "interests")
     call_target_product = _call_analysis_field(latest_call, "target_product")
@@ -506,7 +507,18 @@ def _latest_summary(latest_call: Mapping[str, Any], facts: ManagerFacts, history
     return ""
 
 
-def _next_step(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts, latest_call: Mapping[str, Any]) -> str:
+def _next_step(
+    signals: Sequence[Mapping[str, Any]],
+    facts: ManagerFacts,
+    latest_call: Mapping[str, Any],
+    *,
+    timeline_next_step: Mapping[str, Any] | None = None,
+) -> str:
+    resolved = _mapping(timeline_next_step)
+    resolved_status = _safe_text(resolved.get("status"))
+    resolved_text = _safe_text(resolved.get("display_text") or resolved.get("action"))
+    if resolved_status in {"active", "closed", "needs_manager_review"} and resolved_text:
+        return resolved_text
     call_next_step = _call_analysis_field(latest_call, "next_step")
     if call_next_step:
         date = _format_date_ru(_safe_text(latest_call.get("event_at")))

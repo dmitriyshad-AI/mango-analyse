@@ -44,6 +44,16 @@ DEFAULT_STAGE2_DELTA_EVENTS = Path(
     "_external_handoffs/mail_archive_2026-06-20/regru_edu/incremental_20260513_to_20260620/"
     "stage2_delta_ingest_20260621/stage2_delta_full_events.jsonl"
 )
+DEFAULT_FRESH_RELINK_ROOT = Path(
+    "/Users/dmitrijfabarisov/Projects/mango-tz33-perf/_external_handoffs/"
+    "mail_archive_2026-06-20/regru_edu/stage2_customer_relink_contacts_20260620"
+)
+DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS = (
+    DEFAULT_FRESH_RELINK_ROOT / "corpus_27009" / "mail_stage2_customer_relink_preview_decisions.csv"
+)
+DEFAULT_STAGE2_DELTA_RELINK_DECISIONS = (
+    DEFAULT_FRESH_RELINK_ROOT / "delta_3084" / "mail_stage2_customer_relink_preview_decisions.csv"
+)
 CANONICAL_SOURCE_SYSTEMS = (
     MASTER_CONTACT_SOURCE,
     MANGO_SOURCE,
@@ -61,6 +71,10 @@ class FullMemoryIngestConfig:
     tenant_id: str = "foton"
     identity_db: Path = DEFAULT_FRESH_IDENTITY_DB
     event_jsonl_paths: Sequence[Path] = (DEFAULT_STAGE2_CORPUS_EVENTS, DEFAULT_STAGE2_DELTA_EVENTS)
+    relink_decision_paths: Sequence[Path] = (
+        DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS,
+        DEFAULT_STAGE2_DELTA_RELINK_DECISIONS,
+    )
     generated_at: Optional[datetime] = None
     email_limit: Optional[int] = None
     max_call_events_per_contact: int = 0
@@ -87,6 +101,13 @@ class FullMemoryIngestConfig:
                 item = root / item
             paths.append(item.resolve(strict=False))
         object.__setattr__(self, "event_jsonl_paths", tuple(paths))
+        decision_paths: list[Path] = []
+        for path in self.relink_decision_paths:
+            item = Path(path).expanduser()
+            if not item.is_absolute():
+                item = root / item
+            decision_paths.append(item.resolve(strict=False))
+        object.__setattr__(self, "relink_decision_paths", tuple(decision_paths))
 
     @property
     def test_timeline_db(self) -> Path:
@@ -114,6 +135,7 @@ def make_mail_config(config: FullMemoryIngestConfig) -> MailStage2IngestConfig:
         allowed_root=config.test_out_root,
         identity_db_path=config.identity_db,
         event_jsonl_paths=config.event_jsonl_paths,
+        relink_decision_paths=config.relink_decision_paths,
         out_dir=config.reports_root / "mail_stage2",
         backup_root=config.backup_root,
         tenant_id=config.tenant_id,
@@ -127,7 +149,7 @@ def assert_safe_test_target(config: FullMemoryIngestConfig) -> None:
         raise RuntimeError("test timeline DB must not be the appointed production DB")
     if config.test_timeline_db.exists():
         raise FileExistsError(f"test timeline DB already exists; choose a fresh test_out_root: {config.test_timeline_db}")
-    for path in (config.identity_db, *config.event_jsonl_paths):
+    for path in (config.identity_db, *config.event_jsonl_paths, *config.relink_decision_paths):
         if not path.exists() or not path.is_file():
             raise FileNotFoundError(f"required input file is missing: {path}")
 
@@ -350,6 +372,7 @@ def run_full_memory_test_procedure(config: FullMemoryIngestConfig) -> Mapping[st
         "inputs": {
             "identity_db": str(config.identity_db),
             "event_jsonl_paths": [str(path) for path in config.event_jsonl_paths],
+            "relink_decision_paths": [str(path) for path in config.relink_decision_paths],
             "email_limit": config.email_limit,
             "generated_at": config.generated_at.isoformat() if config.generated_at else None,
         },

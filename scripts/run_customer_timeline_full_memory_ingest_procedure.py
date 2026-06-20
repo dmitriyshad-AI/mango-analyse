@@ -15,7 +15,9 @@ if str(SRC) not in sys.path:
 from mango_mvp.customer_timeline.full_memory_ingest import (  # noqa: E402
     DEFAULT_FRESH_IDENTITY_DB,
     DEFAULT_PRODUCTION_DB,
+    DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS,
     DEFAULT_STAGE2_CORPUS_EVENTS,
+    DEFAULT_STAGE2_DELTA_RELINK_DECISIONS,
     DEFAULT_STAGE2_DELTA_EVENTS,
     FullMemoryIngestConfig,
     parse_generated_at,
@@ -44,6 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tenant-id", default="foton")
     parser.add_argument("--identity-db", type=Path, default=DEFAULT_FRESH_IDENTITY_DB)
     parser.add_argument("--event-jsonl", type=Path, action="append")
+    parser.add_argument("--relink-decision-csv", type=Path, action="append")
     parser.add_argument("--generated-at", default="2026-06-21T00:00:00+00:00")
     parser.add_argument("--email-limit", type=int)
     parser.add_argument("--max-call-events-per-contact", type=int, default=0)
@@ -53,6 +56,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     event_paths = tuple(args.event_jsonl or (DEFAULT_STAGE2_CORPUS_EVENTS, DEFAULT_STAGE2_DELTA_EVENTS))
+    decision_paths = tuple(
+        args.relink_decision_csv
+        or (DEFAULT_STAGE2_CORPUS_RELINK_DECISIONS, DEFAULT_STAGE2_DELTA_RELINK_DECISIONS)
+    )
     config = FullMemoryIngestConfig(
         project_root=args.project_root,
         production_db=args.production_db,
@@ -60,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         tenant_id=args.tenant_id,
         identity_db=args.identity_db,
         event_jsonl_paths=event_paths,
+        relink_decision_paths=decision_paths,
         generated_at=parse_generated_at(args.generated_at),
         email_limit=args.email_limit,
         max_call_events_per_contact=args.max_call_events_per_contact,

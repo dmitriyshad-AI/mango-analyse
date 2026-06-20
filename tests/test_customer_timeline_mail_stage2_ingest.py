@@ -13,6 +13,7 @@ from mango_mvp.customer_timeline.mail_stage2_ingest import (
     plan_stage2_mail_ingest,
     restore_timeline_backup,
 )
+from mango_mvp.customer_timeline.contracts import CustomerIdentity, IdentityLink, IdentityStatus
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 from mango_mvp.productization.mail_archive import TallantoIdentityMapConfig, build_tallanto_identity_map
 from scripts.run_mail_stage2_timeline_ingest_procedure import main as ingest_cli_main
@@ -106,6 +107,35 @@ def _make_config(tmp_path: Path) -> MailStage2IngestConfig:
     )
 
 
+def _write_decisions_csv(path: Path, rows: list[dict[str, object]]) -> Path:
+    fieldnames = [
+        "source_file",
+        "line_number",
+        "message_sha256",
+        "date_iso",
+        "subject_hash",
+        "baseline_linked",
+        "old_customer_id_hash",
+        "old_match_method",
+        "decision",
+        "reason",
+        "tallanto_id_hash",
+        "signal_kind",
+        "signal_value_sha256",
+        "email_signal_count",
+        "phone_signal_count",
+        "brand_signal",
+        "brand_source",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
+    return path
+
+
 def _count_rows(db_path: Path, table: str) -> int:
     with sqlite3.connect(db_path) as con:
         return int(con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
@@ -129,6 +159,127 @@ def test_mail_stage2_plan_uses_fresh_relink_and_does_not_trust_existing_customer
     assert unmatched.event.customer_id is None
     assert unmatched.event.metadata["pending_attribution"] is True
     assert unmatched.chunk is None
+
+
+def test_mail_stage2_plan_can_join_authoritative_relink_decision_without_jsonl_signals(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    event_path = _write_jsonl(
+        tmp_path / "_external_handoffs" / "mail" / "stage2_signal_less.jsonl",
+        [
+            {
+                "message_sha256": "c" * 64,
+                "customer_id": "interim:stale",
+                "date_iso": "2026-06-20T10:00:00+00:00",
+                "subject": "Физика 8 класс",
+                "brand": "foton",
+                "brand_source": "mailbox",
+            }
+        ],
+    )
+    decision_path = _write_decisions_csv(
+        tmp_path / "decisions.csv",
+        [
+            {
+                "message_sha256": "c" * 64,
+                "decision": "linked",
+                "reason": "linked",
+                "tallanto_id_hash": "cd4a8a25abc253aa",
+                "signal_kind": "email",
+                "signal_value_sha256": "hash-only",
+            }
+        ],
+    )
+    config = MailStage2IngestConfig(
+        timeline_db_path=config.timeline_db_path,
+        allowed_root=config.allowed_root,
+        identity_db_path=config.identity_db_path,
+        event_jsonl_paths=(event_path,),
+        relink_decision_paths=(decision_path,),
+        out_dir=config.out_dir,
+        backup_root=config.backup_root,
+        tenant_id=config.tenant_id,
+        source_ref=config.source_ref,
+    )
+
+    plans, counters = plan_stage2_mail_ingest(config)
+
+    assert counters["input_events"] == 1
+    assert counters["linked"] == 1
+    assert counters["unmatched"] == 0
+    assert counters["relink_decisions_loaded"] == 1
+    assert plans[0].event.customer_id == "tallanto:T-1"
+    assert plans[0].event.record["fresh_relink_decision"]["authority"] == "fresh_relink_tallanto_id_hash"
+    assert "interim:stale" not in plans[0].event.customer_id
+
+
+def test_mail_stage2_plan_uses_existing_tallanto_customer_id_when_available(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    canonical = CustomerIdentity(
+        tenant_id="foton",
+        customer_id="customer:canonical",
+        identity_status=IdentityStatus.STRONG,
+        display_name="Canonical",
+        first_seen_at=None,
+        last_seen_at=None,
+        touch_count=1,
+    )
+    link = IdentityLink(
+        tenant_id="foton",
+        customer_id=canonical.customer_id,
+        link_type="tallanto_student_id",
+        link_value="T-1",
+        source_system="canonical",
+        source_ref="test",
+        match_class="strong_unique",
+        confidence=0.95,
+    )
+    store = CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=config.allowed_root)
+    try:
+        store.upsert_customer(canonical)
+        store.upsert_identity_link(link)
+    finally:
+        store.close()
+    decision_path = _write_decisions_csv(
+        tmp_path / "decisions.csv",
+        [
+            {
+                "message_sha256": "a" * 64,
+                "decision": "linked",
+                "reason": "linked",
+                "tallanto_id_hash": "cd4a8a25abc253aa",
+            }
+        ],
+    )
+    config = MailStage2IngestConfig(
+        timeline_db_path=config.timeline_db_path,
+        allowed_root=config.allowed_root,
+        identity_db_path=config.identity_db_path,
+        event_jsonl_paths=config.event_jsonl_paths,
+        relink_decision_paths=(decision_path,),
+        out_dir=config.out_dir,
+        backup_root=config.backup_root,
+        tenant_id=config.tenant_id,
+        source_ref=config.source_ref,
+    )
+
+    plans, counters = plan_stage2_mail_ingest(config)
+    linked = next(plan for plan in plans if plan.event.source_id == "a" * 64)
+
+    assert counters["linked"] == 1
+    assert linked.customer is None
+    assert linked.event.customer_id == "customer:canonical"
+    assert linked.identity_links[0].customer_id == "customer:canonical"
+
+    backup = create_timeline_backup(config, label="existing")
+    applied = apply_stage2_mail_ingest(config, backup_manifest_path=Path(str(backup["manifest_path"])))
+
+    assert applied["counts"]["created_events"] == 2
+    with sqlite3.connect(config.timeline_db_path) as con:
+        linked_rows = con.execute(
+            "SELECT customer_id FROM timeline_events WHERE source_id = ?",
+            ("a" * 64,),
+        ).fetchall()
+    assert linked_rows == [("customer:canonical",)]
 
 
 def test_mail_stage2_procedure_requires_backup_and_is_idempotent_then_restores(tmp_path: Path) -> None:

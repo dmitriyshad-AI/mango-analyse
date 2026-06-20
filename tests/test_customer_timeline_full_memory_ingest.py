@@ -26,6 +26,7 @@ def test_full_memory_ingest_refuses_to_use_production_db_as_test_target(tmp_path
         test_out_root=test_out,
         identity_db=identity,
         event_jsonl_paths=events,
+        relink_decision_paths=(),
     )
 
     with pytest.raises(RuntimeError, match="must not be the appointed production DB"):
@@ -43,6 +44,7 @@ def test_full_memory_ingest_test_copy_runs_stages_in_order_and_never_production_
         test_out_root=tmp_path / "testcopy",
         identity_db=identity,
         event_jsonl_paths=events,
+        relink_decision_paths=(),
     )
     calls: list[str] = []
 

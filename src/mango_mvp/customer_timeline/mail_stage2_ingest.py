@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import shutil
 import sqlite3
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -50,6 +52,7 @@ class MailStage2IngestConfig:
     identity_db_path: Path
     event_jsonl_paths: Sequence[Path]
     out_dir: Path
+    relink_decision_paths: Sequence[Path] = ()
     backup_root: Optional[Path] = None
     tenant_id: str = "mango"
     source_ref: str = "mail_stage2_fresh_relink_20260621"
@@ -64,6 +67,11 @@ class MailStage2IngestConfig:
             self,
             "event_jsonl_paths",
             tuple(Path(path).expanduser() for path in self.event_jsonl_paths),
+        )
+        object.__setattr__(
+            self,
+            "relink_decision_paths",
+            tuple(Path(path).expanduser() for path in self.relink_decision_paths),
         )
         object.__setattr__(self, "out_dir", Path(self.out_dir).expanduser())
         if self.backup_root is not None:
@@ -80,6 +88,38 @@ class PlannedMailStage2Event:
     opportunity: Optional[CustomerOpportunity]
     chunk: Optional[BotContextChunk]
     decision: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class MailStage2RelinkDecision:
+    message_sha256: str
+    decision: str
+    reason: str
+    tallanto_id: Optional[str]
+    authority: str
+    source_csv: str
+    line_number: int
+    tallanto_id_hash: str = ""
+    signal_kind: str = ""
+    signal_value_sha256: str = ""
+
+    @property
+    def resolved(self) -> bool:
+        return bool(self.tallanto_id)
+
+    def to_decision_mapping(self) -> Mapping[str, Any]:
+        return {
+            "message_sha256": self.message_sha256,
+            "decision": "linked" if self.resolved else self.decision,
+            "reason": self.reason,
+            "tallanto_id": self.tallanto_id or "",
+            "tallanto_id_hash": self.tallanto_id_hash,
+            "signal_kind": self.signal_kind,
+            "signal_value_sha256": self.signal_value_sha256,
+            "authority": self.authority,
+            "source_csv": self.source_csv,
+            "line_number": self.line_number,
+        }
 
 
 def file_sha256(path: Path) -> str:
@@ -141,6 +181,10 @@ def _message_sha(event: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(fallback, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _sha16(value: str) -> str:
+    return hashlib.sha256(clean_text(value).encode("utf-8")).hexdigest()[:16]
+
+
 def _safe_text_summary(event: Mapping[str, Any], *, max_chars: int) -> tuple[str, str]:
     text, status = read_safe_stage2_event_text(event.get("extracted_text_path"), max_chars=max_chars)
     if text:
@@ -156,6 +200,7 @@ def _customer_from_fresh_relink(
     address_book: Mapping[str, Any],
     source_ref: str,
     event_at: datetime,
+    customer_id: Optional[str] = None,
 ) -> CustomerIdentity:
     clients = address_book.get("clients") or {}
     client = clients.get(tallanto_id) or {}
@@ -168,7 +213,7 @@ def _customer_from_fresh_relink(
     names = sorted(str(item) for item in client.get("names", set()) if item)
     return CustomerIdentity(
         tenant_id=tenant_id,
-        customer_id=f"tallanto:{tallanto_id}",
+        customer_id=customer_id or f"tallanto:{tallanto_id}",
         identity_status=IdentityStatus.STRONG,
         display_name=names[0] if names else None,
         primary_email=primary_email,
@@ -256,8 +301,146 @@ def prepare_stage2_events(
     return prepared, load_tallanto_customer_address_book(config.identity_db_path), build_stage2_value_brand_scope(prepared)
 
 
+def load_tallanto_hash_index(identity_db_path: Path) -> tuple[dict[str, str], Mapping[str, Any]]:
+    raw: dict[str, set[str]] = defaultdict(set)
+    with sqlite3.connect(f"file:{identity_db_path}?mode=ro", uri=True, timeout=15) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        rows = con.execute(
+            """
+            SELECT tallanto_id
+            FROM identity_candidates
+            WHERE tallanto_id IS NOT NULL AND tallanto_id != ''
+            """
+        ).fetchall()
+    for row in rows:
+        tallanto_id = clean_text(row["tallanto_id"])
+        if not tallanto_id:
+            continue
+        for variant in (tallanto_id, f"tallanto:{tallanto_id}", f"tallanto:student:{tallanto_id}"):
+            raw[_sha16(variant)].add(tallanto_id)
+    resolved = {key: next(iter(values)) for key, values in raw.items() if len(values) == 1}
+    ambiguous = {key: sorted(values) for key, values in raw.items() if len(values) > 1}
+    return resolved, {
+        "identity_db": str(identity_db_path),
+        "candidates": len(rows),
+        "hashes_resolved": len(resolved),
+        "hashes_ambiguous": len(ambiguous),
+        "read_only_sqlite": True,
+    }
+
+
+def resolve_tallanto_id_from_relink_row(
+    row: Mapping[str, str],
+    tallanto_hash_index: Mapping[str, str],
+) -> tuple[Optional[str], str]:
+    decision = clean_text(row.get("decision"))
+    tallanto_hash = clean_text(row.get("tallanto_id_hash"))
+    if decision == "linked" and tallanto_hash and tallanto_hash in tallanto_hash_index:
+        return tallanto_hash_index[tallanto_hash], "fresh_relink_tallanto_id_hash"
+    old_hash = clean_text(row.get("old_customer_id_hash"))
+    if decision == "already_linked" and old_hash and old_hash in tallanto_hash_index:
+        return tallanto_hash_index[old_hash], "fresh_relink_old_customer_id_hash"
+    if decision in {"linked", "already_linked"}:
+        return None, "fresh_relink_unresolved_hash"
+    return None, "fresh_relink_unmatched"
+
+
+def load_relink_decisions(
+    decision_paths: Sequence[Path],
+    *,
+    tallanto_hash_index: Mapping[str, str],
+) -> tuple[dict[str, MailStage2RelinkDecision], Mapping[str, Any]]:
+    decisions: dict[str, MailStage2RelinkDecision] = {}
+    decision_counts: Counter[str] = Counter()
+    authority_counts: Counter[str] = Counter()
+    duplicate_message_sha256 = 0
+    for path in decision_paths:
+        with Path(path).open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                message_sha = clean_text(row.get("message_sha256"))
+                if not message_sha:
+                    continue
+                tallanto_id, authority = resolve_tallanto_id_from_relink_row(row, tallanto_hash_index)
+                item = MailStage2RelinkDecision(
+                    message_sha256=message_sha,
+                    decision=clean_text(row.get("decision")),
+                    reason=clean_text(row.get("reason")),
+                    tallanto_id=tallanto_id,
+                    authority=authority,
+                    source_csv=str(path),
+                    line_number=int(clean_text(row.get("line_number")) or "0"),
+                    tallanto_id_hash=clean_text(row.get("tallanto_id_hash")),
+                    signal_kind=clean_text(row.get("signal_kind")),
+                    signal_value_sha256=clean_text(row.get("signal_value_sha256")),
+                )
+                existing = decisions.get(message_sha)
+                if existing is not None:
+                    duplicate_message_sha256 += 1
+                    if existing.resolved or not item.resolved:
+                        continue
+                decisions[message_sha] = item
+                decision_counts[item.decision] += 1
+                authority_counts[item.authority] += 1
+    return decisions, {
+        "decisions_loaded": len(decisions),
+        "decision_counts": dict(sorted(decision_counts.items())),
+        "authority_counts": dict(sorted(authority_counts.items())),
+        "duplicate_message_sha256": duplicate_message_sha256,
+    }
+
+
+def load_existing_tallanto_customer_map(timeline_db_path: Path, *, tenant_id: str) -> dict[str, str]:
+    path = Path(timeline_db_path)
+    if not path.exists():
+        return {}
+    grouped: dict[str, set[str]] = defaultdict(set)
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=15) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        tables = {row["name"] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "identity_links" not in tables:
+            return {}
+        for row in con.execute(
+            """
+            SELECT link_value, customer_id
+            FROM identity_links
+            WHERE tenant_id = ? AND link_type = 'tallanto_student_id'
+            """,
+            (tenant_id,),
+        ):
+            grouped[clean_text(row["link_value"])].add(str(row["customer_id"]))
+    return {tallanto_id: next(iter(customer_ids)) for tallanto_id, customer_ids in grouped.items() if len(customer_ids) == 1}
+
+
+def relink_decision_for_stage2_event(
+    *,
+    message_sha: str,
+    fallback_decision: Mapping[str, Any],
+    relink_decisions: Mapping[str, MailStage2RelinkDecision],
+) -> Mapping[str, Any]:
+    if not relink_decisions:
+        return fallback_decision
+    decision = relink_decisions.get(message_sha)
+    if decision is None:
+        return {
+            "message_sha256": message_sha,
+            "decision": "unmatched",
+            "reason": "message_sha256_not_found_in_relink_decisions",
+            "tallanto_id": "",
+            "authority": "missing_decision",
+        }
+    return decision.to_decision_mapping()
+
+
 def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[PlannedMailStage2Event], Mapping[str, int]]:
     prepared, address_book, value_brand_scope = prepare_stage2_events(config)
+    tallanto_hash_index, hash_index_report = load_tallanto_hash_index(config.identity_db_path)
+    relink_decisions, relink_report = load_relink_decisions(
+        config.relink_decision_paths,
+        tallanto_hash_index=tallanto_hash_index,
+    )
+    existing_customer_by_tallanto_id = load_existing_tallanto_customer_map(config.timeline_db_path, tenant_id=config.tenant_id)
     plans: list[PlannedMailStage2Event] = []
     counters = {
         "input_events": len(prepared),
@@ -265,6 +448,9 @@ def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[Planne
         "unmatched": 0,
         "chunks": 0,
         "fallback_sha": 0,
+        "relink_decisions_loaded": int(relink_report.get("decisions_loaded", 0)),
+        "relink_existing_customer_map": len(existing_customer_by_tallanto_id),
+        "relink_hashes_resolved": int(hash_index_report.get("hashes_resolved", 0)),
     }
     for item in prepared:
         event = item["event"]
@@ -277,12 +463,17 @@ def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[Planne
         text, text_status = _safe_text_summary(event, max_chars=config.text_max_chars)
         event_for_fresh_relink = dict(event)
         event_for_fresh_relink["customer_id"] = ""
-        decision = decide_stage2_event_customer_relink(
+        fallback_decision = decide_stage2_event_customer_relink(
             event_for_fresh_relink,
             emails=item["emails"],
             phones=item["phones"],
             address_book=address_book,
             value_brand_scope=value_brand_scope,
+        )
+        decision = relink_decision_for_stage2_event(
+            message_sha=message_sha,
+            fallback_decision=fallback_decision,
+            relink_decisions=relink_decisions,
         )
         subject = compact_text(event.get("subject"), limit=160) or "Email message"
         record = {
@@ -300,21 +491,28 @@ def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[Planne
                 "tallanto_id_hash": clean_text(decision.get("tallanto_id_hash")),
                 "signal_kind": clean_text(decision.get("signal_kind")),
                 "signal_value_sha256": clean_text(decision.get("signal_value_sha256")),
+                "authority": clean_text(decision.get("authority")),
+                "source_csv": clean_text(decision.get("source_csv")),
                 "old_customer_id_hash": stable_value_hash(event.get("customer_id"))[:16] if event.get("customer_id") else "",
             },
         }
         if decision.get("decision") == "linked" and clean_text(decision.get("tallanto_id")):
             tallanto_id = clean_text(decision.get("tallanto_id"))
-            customer = _customer_from_fresh_relink(
-                tenant_id=config.tenant_id,
-                tallanto_id=tallanto_id,
-                address_book=address_book,
-                source_ref=source_ref,
-                event_at=event_at,
-            )
+            existing_customer_id = existing_customer_by_tallanto_id.get(tallanto_id)
+            customer = None
+            customer_id = existing_customer_id
+            if not customer_id:
+                customer = _customer_from_fresh_relink(
+                    tenant_id=config.tenant_id,
+                    tallanto_id=tallanto_id,
+                    address_book=address_book,
+                    source_ref=source_ref,
+                    event_at=event_at,
+                )
+                customer_id = customer.customer_id
             links = _build_links(
                 tenant_id=config.tenant_id,
-                customer_id=customer.customer_id,
+                customer_id=customer_id,
                 tallanto_id=tallanto_id,
                 decision=decision,
                 source_ref=source_ref,
@@ -322,7 +520,7 @@ def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[Planne
             )
             opportunity = CustomerOpportunity(
                 tenant_id=config.tenant_id,
-                customer_id=customer.customer_id,
+                customer_id=customer_id,
                 opportunity_type=OpportunityType.MAIL_THREAD,
                 source_system=MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
                 source_id=clean_text(event.get("thread_id") or event.get("conversation_id")) or message_sha,
@@ -334,7 +532,7 @@ def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[Planne
             )
             timeline_event = TimelineEvent(
                 tenant_id=config.tenant_id,
-                customer_id=customer.customer_id,
+                customer_id=customer_id,
                 opportunity_id=opportunity.opportunity_id,
                 event_type=TimelineEventType.EMAIL_MESSAGE,
                 event_at=event_at,
@@ -355,7 +553,7 @@ def plan_stage2_mail_ingest(config: MailStage2IngestConfig) -> tuple[list[Planne
             if text:
                 chunk = BotContextChunk(
                     tenant_id=config.tenant_id,
-                    customer_id=customer.customer_id,
+                    customer_id=customer_id,
                     opportunity_id=opportunity.opportunity_id,
                     event_id=timeline_event.event_id,
                     source_ref=source_ref,
@@ -440,6 +638,7 @@ def input_fingerprint(config: MailStage2IngestConfig) -> str:
         "schema_version": MAIL_STAGE2_TIMELINE_INGEST_SCHEMA_VERSION,
         "identity_db": file_sha256(config.identity_db_path),
         "event_jsonl": [(str(path), file_sha256(path)) for path in config.event_jsonl_paths],
+        "relink_decisions": [(str(path), file_sha256(path)) for path in config.relink_decision_paths],
         "tenant_id": config.tenant_id,
         "source_ref": config.source_ref,
         "limit": config.limit,
@@ -514,7 +713,8 @@ def dry_run_stage2_mail_ingest(config: MailStage2IngestConfig) -> Mapping[str, A
         "created_at": datetime.now(timezone.utc).isoformat(),
         "timeline_db_path": str(config.timeline_db_path),
         "identity_db_path": str(config.identity_db_path),
-        "identity_mode": "fresh_relink_bacdd96f",
+        "relink_decision_paths": [str(path) for path in config.relink_decision_paths],
+        "identity_mode": "fresh_relink_decision_join_bacdd96f" if config.relink_decision_paths else "fresh_relink_bacdd96f",
         "union_identity_db_used": False,
         "input_hash": input_fingerprint(config),
         "counts": {
@@ -560,7 +760,8 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
         "created_at": datetime.now(timezone.utc).isoformat(),
         "timeline_db_path": str(config.timeline_db_path),
         "identity_db_path": str(config.identity_db_path),
-        "identity_mode": "fresh_relink_bacdd96f",
+        "relink_decision_paths": [str(path) for path in config.relink_decision_paths],
+        "identity_mode": "fresh_relink_decision_join_bacdd96f" if config.relink_decision_paths else "fresh_relink_bacdd96f",
         "union_identity_db_used": False,
         "input_hash": input_fingerprint(config),
         "backup_manifest_path": str(Path(backup_manifest_path)),
@@ -595,18 +796,18 @@ def apply_stage2_mail_ingest(config: MailStage2IngestConfig, *, backup_manifest_
             for plan in selected:
                 if plan.customer is not None:
                     store.upsert_customer(plan.customer, actor="mail_stage2_ingest_procedure", ingestion_run_id=run.run_id)
-                    for link in plan.identity_links:
-                        store.upsert_identity_link(
-                            link,
-                            actor="mail_stage2_ingest_procedure",
-                            ingestion_run_id=run.run_id,
-                        )
-                    if plan.opportunity is not None:
-                        store.upsert_opportunity(
-                            plan.opportunity,
-                            actor="mail_stage2_ingest_procedure",
-                            ingestion_run_id=run.run_id,
-                        )
+                for link in plan.identity_links:
+                    store.upsert_identity_link(
+                        link,
+                        actor="mail_stage2_ingest_procedure",
+                        ingestion_run_id=run.run_id,
+                    )
+                if plan.opportunity is not None:
+                    store.upsert_opportunity(
+                        plan.opportunity,
+                        actor="mail_stage2_ingest_procedure",
+                        ingestion_run_id=run.run_id,
+                    )
                 event_result = store.upsert_event(
                     plan.event,
                     actor="mail_stage2_ingest_procedure",

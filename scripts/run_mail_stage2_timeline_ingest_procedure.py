@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allowed-root", required=True, type=Path)
     parser.add_argument("--identity-db", required=True, type=Path)
     parser.add_argument("--event-jsonl", action="append", required=True, type=Path)
+    parser.add_argument("--relink-decision-csv", action="append", type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--backup-root", type=Path)
     parser.add_argument("--backup-manifest", type=Path)
@@ -41,6 +42,7 @@ def make_config(args: argparse.Namespace) -> MailStage2IngestConfig:
         allowed_root=args.allowed_root,
         identity_db_path=args.identity_db,
         event_jsonl_paths=tuple(args.event_jsonl),
+        relink_decision_paths=tuple(args.relink_decision_csv or ()),
         out_dir=args.out_dir,
         backup_root=args.backup_root,
         tenant_id=args.tenant_id,

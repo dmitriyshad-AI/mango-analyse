@@ -17,6 +17,7 @@
 | `codex/tz147-p0-deep-output-carry` | `/Users/dmitrijfabarisov/Projects/Mango_tz147_p0_deep` | TZ147 P0 deep output carry | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/tz148-env-isolation` | `/Users/dmitrijfabarisov/Projects/Mango_tz148_env_isolation` | TZ148 env isolation | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/tz-uskoreniya-3-punkta` | `/Users/dmitrijfabarisov/Projects/Mango_uskoreniya_3_punkta` | Ускорения 3 пункта | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/etap3-botsafe-layer` | `/Users/dmitrijfabarisov/Projects/Mango_etap3_botsafe` | Этап 3 Фаза 0 bot-safe слой customer_timeline | 0 | 2026-06-28 | Жива до регрейда bot-safe слоя |
 | `codex/tz139-customer-timeline` | `/Users/dmitrijfabarisov/Projects/Mango_tz139_customer_timeline` | TZ139 customer_timeline Step 0 + Work A | 0 | 2026-06-25 | Жива до ревью Work A; потом решать Work B |
 | `codex/tz135-direct-wow-tone` | `/Users/dmitrijfabarisov/Projects/Mango analyse` | TZ135 direct wow tone, основная папка сейчас не main | 4 | 2026-06-25 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/tz133-handoff-closing-metric` | `/Users/dmitrijfabarisov/Projects/Mango_tz133_handoff_closing` | TZ133 handoff closing metric | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |

@@ -65,6 +65,7 @@ FORBIDDEN_IMPORT_HINTS = (
     "mango_mvp.amocrm_runtime.tallanto_api",
 )
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
+BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset({"mail_archive", "channel_snapshot"})
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ class TimelineNormalizedBatch:
         object.__setattr__(self, "signals", tuple(self.signals))
         object.__setattr__(self, "bot_context_chunks", tuple(self.bot_context_chunks))
         object.__setattr__(self, "conflicts", tuple(dict(item) for item in self.conflicts))
+        assert_bot_context_not_allowed_for_restricted_source(self)
 
     def counts(self) -> Mapping[str, int]:
         return {
@@ -723,24 +725,60 @@ class MailMessageNormalizer:
 
     def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
         payload = record.payload
-        message_id = require_text(first_value(payload, ("message_id", "id", "uid")) or record.source_ref, "message_id")
+        message_id = require_text(first_value(payload, ("message_sha256", "sha256", "message_id", "id", "uid")) or record.source_ref, "message_id")
         from_email = safe_email(first_value(payload, ("from_email", "from", "sender", "sender_email")))
         to_email = safe_email(first_value(payload, ("to_email", "to", "recipient", "recipient_email")))
         direction = infer_mail_direction(payload, from_email)
         customer_email = from_email if direction == TimelineDirection.INBOUND else to_email
-        event_at = parse_source_datetime(first_value(payload, ("date", "sent_at", "received_at", "event_at")), record.observed_at)
+        event_at = parse_source_datetime(
+            first_value(payload, ("date", "date_last", "date_first", "sent_at", "received_at", "event_at")),
+            record.observed_at,
+        )
         source_ref = f"mail:{message_id}"
+        resolved_customer_id = optional_text(
+            first_value(
+                payload,
+                (
+                    "resolved_customer_id",
+                    "customer_id_resolved",
+                    "fresh_relink_customer_id",
+                    "_resolved_customer_id",
+                ),
+            )
+        )
+        resolved_tallanto_id = optional_text(
+            first_value(payload, ("resolved_tallanto_id", "tallanto_id", "fresh_relink_tallanto_id", "_resolved_tallanto_id"))
+        )
+        resolved_customer_exists = truthy_flag(first_value(payload, ("resolved_customer_exists", "_resolved_customer_exists")))
+        if not resolved_customer_id:
+            return TimelineNormalizedBatch(
+                source_record=record,
+                conflicts=(
+                    pending_attribution_conflict(
+                        self.tenant_id,
+                        payload,
+                        source_ref,
+                        message_id=message_id,
+                    ),
+                ),
+            )
         customer = CustomerIdentity(
             tenant_id=self.tenant_id,
-            identity_status=IdentityStatus.STRONG if customer_email else IdentityStatus.PARTIAL,
+            customer_id=resolved_customer_id,
+            identity_status=IdentityStatus.STRONG if resolved_tallanto_id or customer_email else IdentityStatus.PARTIAL,
             display_name=optional_text(first_value(payload, ("name", "display_name", "from_name", "to_name"))),
             primary_email=customer_email,
-            source_ref=source_ref,
+            source_ref=f"tallanto:student:{resolved_tallanto_id}" if resolved_tallanto_id else source_ref,
             first_seen_at=event_at,
             last_seen_at=event_at,
             touch_count=1,
-            summary={"source_system": self.source_system, "direction": direction.value},
-            metadata={"message_id": message_id, "payload_hash": record.payload_hash},
+            summary={"source_system": self.source_system, "direction": direction.value, "identity_authority": "fresh_relink"},
+            metadata={
+                "message_id": message_id,
+                "payload_hash": record.payload_hash,
+                "identity_authority": "fresh_relink",
+                "resolved_tallanto_id_present": bool(resolved_tallanto_id),
+            },
             created_at=event_at,
             updated_at=event_at,
         )
@@ -750,13 +788,29 @@ class MailMessageNormalizer:
             source_ref=source_ref,
             email=customer_email,
         )
+        if resolved_tallanto_id:
+            links.append(
+                IdentityLink(
+                    tenant_id=self.tenant_id,
+                    customer_id=customer.customer_id,
+                    link_type="tallanto_student_id",
+                    link_value=resolved_tallanto_id,
+                    source_system=self.source_system,
+                    source_ref=source_ref,
+                    match_class=IdentityMatchClass.STRONG_UNIQUE,
+                    confidence=1.0,
+                    first_seen_at=event_at,
+                    last_seen_at=event_at,
+                )
+            )
         thread_id = optional_text(first_value(payload, ("thread_id", "conversation_id", "subject"))) or message_id
+        mail_thread_source_id = f"{thread_id}:{customer.customer_id}"
         opportunity = CustomerOpportunity(
             tenant_id=self.tenant_id,
             customer_id=customer.customer_id,
             opportunity_type=OpportunityType.MAIL_THREAD,
             source_system=self.source_system,
-            source_id=thread_id,
+            source_id=mail_thread_source_id,
             title=compact_text(first_value(payload, ("subject", "thread_subject")), limit=120) or "Email thread",
             status="open",
             opened_at=event_at,
@@ -777,15 +831,15 @@ class MailMessageNormalizer:
             subject=compact_text(first_value(payload, ("subject", "thread_subject")), limit=160),
             text_preview=compact_text(first_value(payload, ("text_preview", "snippet", "body_preview")), limit=240),
             summary=compact_text(first_value(payload, ("summary", "text_preview", "snippet")), limit=240),
-            match_status=IdentityMatchClass.STRONG_UNIQUE if customer_email else IdentityMatchClass.INFERRED,
-            confidence=0.75 if customer_email else 0.5,
+            match_status=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=0.95 if resolved_tallanto_id else 0.8,
             record={"message": scrub_timeline_persisted_json(dict(payload))},
             created_at=event_at,
         )
         artifacts = mail_artifacts(self.tenant_id, event, payload, event_at)
         return TimelineNormalizedBatch(
             source_record=record,
-            customers=(customer,),
+            customers=() if resolved_customer_exists else (customer,),
             identity_links=tuple(links),
             opportunities=(opportunity,),
             events=(event,),
@@ -1168,6 +1222,31 @@ def conflict_from_payload(tenant_id: str, payload: Mapping[str, Any], source_ref
             "metadata": {"source_ref": source_ref, "identifier": identifier},
         },
     )
+
+
+def pending_attribution_conflict(
+    tenant_id: str,
+    payload: Mapping[str, Any],
+    source_ref: str,
+    *,
+    message_id: str,
+) -> Mapping[str, Any]:
+    message_sha256 = optional_text(first_value(payload, ("message_sha256", "sha256"))) or message_id
+    return {
+        "tenant_id": tenant_id,
+        "conflict_type": "pending_attribution",
+        "entity_refs": (source_ref, f"message_sha256:{message_sha256}"),
+        "severity": "low",
+        "status": "open",
+        "summary": "Email message has no authoritative fresh relink customer attribution.",
+        "metadata": {
+            "source_ref": source_ref,
+            "message_sha256": message_sha256,
+            "relink_decision": optional_text(first_value(payload, ("relink_decision", "decision"))),
+            "relink_reason": optional_text(first_value(payload, ("relink_reason", "reason"))),
+            "identity_authority": "fresh_relink_required",
+        },
+    }
 
 
 def resolve_customer_identity_batches(
@@ -1890,6 +1969,45 @@ def zero_normalized_counts() -> dict[str, int]:
 def merge_counts(target: dict[str, int], source: Mapping[str, int]) -> None:
     for key, value in source.items():
         target[key] = target.get(key, 0) + int(value)
+
+
+def assert_bot_context_not_allowed_for_restricted_source(batch: TimelineNormalizedBatch) -> None:
+    source_system = batch.source_record.source_system
+    if source_system not in BOT_FORBIDDEN_SOURCE_SYSTEMS:
+        return
+    if contains_allowed_for_bot_true(batch.source_record.payload):
+        raise ValueError(f"{source_system} source records must be loaded with allowed_for_bot=False")
+    for event in batch.events:
+        if event.source_system in BOT_FORBIDDEN_SOURCE_SYSTEMS and contains_allowed_for_bot_true(event.record):
+            raise ValueError(f"{event.source_system} timeline events must be loaded with allowed_for_bot=False")
+    for chunk in batch.bot_context_chunks:
+        if chunk.source_system in BOT_FORBIDDEN_SOURCE_SYSTEMS and chunk.allowed_for_bot:
+            raise ValueError(f"{chunk.source_system} bot context chunks must be loaded with allowed_for_bot=False")
+
+
+def contains_allowed_for_bot_true(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if key == "allowed_for_bot" and truthy_allowed_for_bot(item):
+                return True
+            if contains_allowed_for_bot_true(item):
+                return True
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return any(contains_allowed_for_bot_true(item) for item in value)
+    return False
+
+
+def truthy_allowed_for_bot(value: Any) -> bool:
+    return truthy_flag(value)
+
+
+def truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, 0):
+        return False
+    text = str(value).strip().casefold()
+    return text in {"1", "true", "yes", "y", "да", "allowed"}
 
 
 def _assert_sequence_type(values: Sequence[Any], expected_type: type, field_name: str) -> None:

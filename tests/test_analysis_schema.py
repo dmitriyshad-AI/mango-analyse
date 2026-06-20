@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from argparse import Namespace
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,12 @@ from unittest.mock import patch
 from mango_mvp import cli as cli_module
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
-from mango_mvp.services.analyze import AnalyzeService, NON_CONVERSATION_ADVISORY_ENV
+from mango_mvp.services.analyze import (
+    NON_CONVERSATION_ADVISORY_ENV,
+    AnalyzeService,
+    build_analysis_migration_call_snapshot,
+    migrate_analysis_payload,
+)
 from mango_mvp.services.sync_amocrm import _build_custom_fields
 from tests.test_dialogue_format import make_settings
 
@@ -47,6 +53,60 @@ class AnalysisSchemaTest(unittest.TestCase):
         self.assertEqual(migrated["crm_blocks"]["student"]["grade_current"], "10")
         self.assertIn("математика", migrated["crm_blocks"]["interests"]["subjects"])
         self.assertNotIn("analysis_meta", migrated)
+
+    def test_top_level_migrate_analysis_payload_matches_service_adapter(self) -> None:
+        service = AnalyzeService(make_settings())
+        call = CallRecord(
+            source_file="/tmp/call3.mp3",
+            source_filename="2026-02-10__13-02-47__79161042660__Леонов Алексей_33.mp3",
+            phone="+79161042660",
+            manager_name="Леонов Алексей",
+            transcript_text=(
+                "[00:01.0] Клиент: Интересует математика для 10 класса.\n"
+                "[00:02.4] Менеджер: Мы можем отправить программу в Telegram.\n"
+            ),
+        )
+        payload = {
+            "summary": "Клиент спрашивает программу.",
+            "next_step": "Отправить программу",
+            "follow_up_score": 70,
+        }
+
+        service_result = service.migrate_analysis_payload(call, payload)
+        top_level_result = migrate_analysis_payload(
+            build_analysis_migration_call_snapshot(call),
+            payload,
+            non_conversation_advisory_enabled=False,
+        )
+
+        self.assertEqual(top_level_result, service_result)
+
+    def test_top_level_migrate_analysis_payload_is_process_pool_picklable(self) -> None:
+        calls = [
+            CallRecord(
+                source_file=f"/tmp/call-pool-{idx}.mp3",
+                source_filename=f"2026-02-10__13-02-47__7916104266{idx}__Леонов Алексей_33.mp3",
+                phone=f"+7916104266{idx}",
+                manager_name="Леонов Алексей",
+                transcript_text=(
+                    "[00:01.0] Клиент: Интересует математика для 10 класса.\n"
+                    "[00:02.4] Менеджер: Можно отправить материалы.\n"
+                ),
+            )
+            for idx in range(2)
+        ]
+        snapshots = [build_analysis_migration_call_snapshot(call) for call in calls]
+        payloads = [
+            {"summary": "Клиент спрашивает программу.", "next_step": "Отправить программу"},
+            {"summary": "Клиент просит материалы.", "next_step": "Отправить материалы"},
+        ]
+
+        with ProcessPoolExecutor(max_workers=2) as executor:
+            migrated = list(executor.map(migrate_analysis_payload, snapshots, payloads))
+
+        self.assertEqual([item["analysis_schema_version"] for item in migrated], ["v2", "v2"])
+        self.assertEqual(migrated[0]["next_step"], "Отправить программу")
+        self.assertEqual(migrated[1]["next_step"], "Отправить материалы")
 
     def test_normalize_analysis_emits_v2_blocks_and_legacy(self) -> None:
         service = AnalyzeService(make_settings())
@@ -769,6 +829,7 @@ class AnalysisSchemaTest(unittest.TestCase):
                         only_done=True,
                         dry_run=False,
                         force=True,
+                        workers=2,
                     )
                 )
             finally:

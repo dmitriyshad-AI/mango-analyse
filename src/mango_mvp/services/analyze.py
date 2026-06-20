@@ -11,7 +11,8 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from types import SimpleNamespace
+from typing import Any, Dict, Mapping, Optional
 
 from openai import OpenAI
 from sqlalchemy import or_, select, text
@@ -240,6 +241,58 @@ PROMPT_COMPACTION_REPEAT_RE = re.compile(
 def _truthy_env_flag(name: str) -> bool:
     value = os.getenv(name)
     return str(value or "").strip().casefold() in TRUE_ENV_VALUES
+
+
+def _parse_migration_datetime(value: Any) -> Optional[datetime]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    raise TypeError(f"unsupported datetime value: {type(value)!r}")
+
+
+def build_analysis_migration_call_snapshot(call: CallRecord) -> Dict[str, Any]:
+    return {
+        "source_file": str(call.source_file or ""),
+        "source_filename": str(call.source_filename or ""),
+        "phone": str(call.phone or ""),
+        "manager_name": str(call.manager_name or ""),
+        "direction": str(call.direction or ""),
+        "started_at": call.started_at.isoformat() if call.started_at is not None else None,
+        "duration_sec": call.duration_sec,
+        "transcript_text": str(call.transcript_text or ""),
+        "transcript_variants_json": str(call.transcript_variants_json or ""),
+    }
+
+
+def migrate_analysis_payload(
+    call_snapshot: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    *,
+    non_conversation_advisory_enabled: Optional[bool] = None,
+) -> Dict[str, Any]:
+    call = SimpleNamespace(
+        source_file=str(call_snapshot.get("source_file") or ""),
+        source_filename=str(call_snapshot.get("source_filename") or ""),
+        phone=str(call_snapshot.get("phone") or ""),
+        manager_name=str(call_snapshot.get("manager_name") or ""),
+        direction=str(call_snapshot.get("direction") or ""),
+        started_at=_parse_migration_datetime(call_snapshot.get("started_at")),
+        duration_sec=call_snapshot.get("duration_sec"),
+        transcript_text=str(call_snapshot.get("transcript_text") or ""),
+        transcript_variants_json=str(call_snapshot.get("transcript_variants_json") or ""),
+    )
+    service = AnalyzeService.__new__(AnalyzeService)
+    text = call.transcript_text.strip()
+    raw = dict(payload) if isinstance(payload, Mapping) else {}
+    return service._normalize_analysis(
+        call,
+        text,
+        raw,
+        non_conversation_advisory_enabled=non_conversation_advisory_enabled,
+    )
 
 
 class AnalyzeService:
@@ -1662,6 +1715,8 @@ class AnalyzeService:
         call: CallRecord,
         text: str,
         raw_analysis: Dict[str, Any],
+        *,
+        non_conversation_advisory_enabled: Optional[bool] = None,
     ) -> Dict[str, Any]:
         raw = raw_analysis if isinstance(raw_analysis, dict) else {}
         blocks = self._nested_dict(raw, "crm_blocks")
@@ -1787,7 +1842,8 @@ class AnalyzeService:
             transcript_text=text,
             duration_sec=getattr(call, "duration_sec", None),
         )
-        non_conversation_advisory_enabled = _truthy_env_flag(NON_CONVERSATION_ADVISORY_ENV)
+        if non_conversation_advisory_enabled is None:
+            non_conversation_advisory_enabled = _truthy_env_flag(NON_CONVERSATION_ADVISORY_ENV)
         pre_llm_non_conversation_advisory = (
             non_conversation_advisory_enabled and next_step_signals.should_force_non_conversation
         )
@@ -2064,9 +2120,10 @@ class AnalyzeService:
         return value or "v1"
 
     def migrate_analysis_payload(self, call: CallRecord, payload: Dict[str, Any]) -> Dict[str, Any]:
-        text = (call.transcript_text or "").strip()
-        raw = payload if isinstance(payload, dict) else {}
-        return self._normalize_analysis(call, text, raw)
+        return migrate_analysis_payload(
+            build_analysis_migration_call_snapshot(call),
+            payload if isinstance(payload, dict) else {},
+        )
 
     def _analysis_model_for_provider(self, provider: str) -> str:
         if provider == "codex_cli":

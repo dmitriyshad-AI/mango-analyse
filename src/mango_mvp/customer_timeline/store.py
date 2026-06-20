@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import re
 import sqlite3
@@ -33,7 +34,7 @@ from mango_mvp.customer_timeline.safety import (
 
 
 CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION = "customer_timeline_sqlite_v1"
-CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260512_001_customer_timeline_sqlite"
+CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID = "20260618_002_derived_signal_status"
 
 RUNTIME_DB_FILENAMES = {
     "ai_office.db",
@@ -57,7 +58,46 @@ FORBIDDEN_PERSISTED_PAYLOAD_KEYS = {
     "webhook_payload",
     "telegram_update",
     "telegram_raw_update",
+    "telegram_update_payload",
+    "telegram_raw_payload",
+    "telegram_message",
+    "telegram_message_payload",
+    "telegram_raw_message",
+    "whatsapp_update",
+    "whatsapp_raw_update",
+    "whatsapp_update_payload",
+    "whatsapp_raw_payload",
+    "whatsapp_message_payload",
+    "whatsapp_raw_message",
+    "wappi_payload",
+    "wappi_raw_payload",
+    "wappi_message_payload",
+    "wappi_raw_message",
+    "raw_update",
+    "raw_message",
+    "raw_messages",
+    "updates",
+    "callback_query",
+    "edited_message",
+    "business_message",
+    "channel_post",
+    "edited_channel_post",
+    "inline_query",
+    "chosen_inline_result",
+    "poll",
+    "pre_checkout_query",
     "crm_dialog_payload",
+    "tallanto_raw_payload",
+    "tallanto_payload",
+    "tallanto_api_response",
+    "tallanto_response",
+    "raw_finance",
+    "raw_finances",
+    "raw_abonement",
+    "raw_abonements",
+    "most_finances_payload",
+    "most_abonements_payload",
+    "most_class_payload",
     "email_raw_body",
     "raw_body",
     "raw_file",
@@ -281,10 +321,18 @@ class CustomerTimelineSQLiteStore:
         self._clock = clock or now_utc
         self._bulk_write_depth = 0
         self._bulk_write_dirty = False
-        self._con = self._connect()
+        self._writer_lock_path: Optional[Path] = None
+        self._writer_lock_handle: Any = None
         if not self.read_only:
-            self.bootstrap()
-        self._fts_enabled = self._detect_existing_fts()
+            self._acquire_writer_lock()
+        try:
+            self._con = self._connect()
+            if not self.read_only:
+                self.bootstrap()
+            self._fts_enabled = self._detect_existing_fts()
+        except Exception:
+            self._release_writer_lock()
+            raise
 
     @classmethod
     def open_read_only(
@@ -297,7 +345,10 @@ class CustomerTimelineSQLiteStore:
         return cls(db_path, allowed_root=allowed_root, read_only=True, clock=clock)
 
     def close(self) -> None:
-        self._con.close()
+        try:
+            self._con.close()
+        finally:
+            self._release_writer_lock()
 
     def __enter__(self) -> "CustomerTimelineSQLiteStore":
         return self
@@ -444,6 +495,8 @@ class CustomerTimelineSQLiteStore:
               event_id TEXT,
               signal_type TEXT NOT NULL,
               severity TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'active',
+              expires_at TEXT,
               confidence REAL,
               requires_manager_review INTEGER NOT NULL,
               created_at TEXT NOT NULL,
@@ -502,6 +555,21 @@ class CustomerTimelineSQLiteStore:
               record_json TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS customer_id_mappings (
+              mapping_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              old_customer_id TEXT NOT NULL,
+              new_customer_id TEXT NOT NULL,
+              mapping_kind TEXT NOT NULL,
+              resolution_status TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL,
+              UNIQUE(tenant_id, old_customer_id, new_customer_id)
+            );
+
             CREATE TABLE IF NOT EXISTS audit_log (
               seq INTEGER PRIMARY KEY AUTOINCREMENT,
               audit_id TEXT NOT NULL UNIQUE,
@@ -553,12 +621,17 @@ class CustomerTimelineSQLiteStore:
               ON ingestion_runs(tenant_id, source_system, status, started_at);
             CREATE INDEX IF NOT EXISTS ix_timeline_conflicts_status
               ON timeline_conflicts(tenant_id, status, severity, created_at);
+            CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_old
+              ON customer_id_mappings(tenant_id, old_customer_id, resolution_status);
+            CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_new
+              ON customer_id_mappings(tenant_id, new_customer_id, resolution_status);
             CREATE INDEX IF NOT EXISTS ix_audit_log_entity
               ON audit_log(tenant_id, entity_type, entity_id, created_at);
             CREATE INDEX IF NOT EXISTS ix_audit_log_ingestion
               ON audit_log(tenant_id, ingestion_run_id, created_at);
             """
         )
+        self._apply_schema_migrations()
         if sqlite_fts5_available(self._con):
             self._bootstrap_fts()
         self._con.execute(
@@ -570,6 +643,22 @@ class CustomerTimelineSQLiteStore:
         )
         self._commit()
         self._fts_enabled = self._detect_existing_fts()
+
+    def _apply_schema_migrations(self) -> None:
+        derived_signal_columns = {
+            row["name"]
+            for row in self._con.execute("PRAGMA table_info(derived_signals)").fetchall()
+        }
+        if "status" not in derived_signal_columns:
+            self._con.execute("ALTER TABLE derived_signals ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        if "expires_at" not in derived_signal_columns:
+            self._con.execute("ALTER TABLE derived_signals ADD COLUMN expires_at TEXT")
+        self._con.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_signals_customer_status_expiry
+              ON derived_signals(tenant_id, customer_id, status, expires_at)
+            """
+        )
 
     def upsert_customer(
         self,
@@ -804,6 +893,8 @@ class CustomerTimelineSQLiteStore:
                 "event_id": signal.event_id,
                 "signal_type": signal.signal_type,
                 "severity": signal.severity.value,
+                "status": signal.status.value,
+                "expires_at": signal.expires_at.isoformat() if signal.expires_at else None,
                 "confidence": signal.confidence,
                 "requires_manager_review": int(signal.requires_manager_review),
                 "created_at": signal.created_at.isoformat(),
@@ -995,6 +1086,101 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
         )
 
+    def record_customer_id_mapping(
+        self,
+        tenant_id: str,
+        *,
+        old_customer_id: str,
+        new_customer_id: str,
+        reason: str,
+        mapping_kind: str = "alias",
+        resolution_status: str = "active",
+        source_refs: Sequence[str] = (),
+        metadata: Optional[Mapping[str, Any]] = None,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> CustomerTimelineStoreWriteResult:
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        old_id = require_text(old_customer_id, "old_customer_id")
+        new_id = require_text(new_customer_id, "new_customer_id")
+        normalized_reason = normalize_key(reason, "reason")
+        normalized_kind = normalize_key(mapping_kind, "mapping_kind")
+        normalized_status = normalize_key(resolution_status, "resolution_status")
+        self._assert_customer_exists(tenant, new_id)
+        refs = tuple(require_text(item, "source_ref") for item in source_refs)
+        mapping_id = stable_prefixed_id(
+            "customer_id_mapping",
+            {
+                "tenant_id": tenant,
+                "old_customer_id": old_id,
+                "new_customer_id": new_id,
+            },
+        )
+        existing = self._fetch_one(
+            """
+            SELECT record_json FROM customer_id_mappings
+            WHERE tenant_id = ? AND old_customer_id = ? AND resolution_status = 'active'
+            """,
+            (tenant, old_id),
+        )
+        existing_payload = json_loads(existing["record_json"]) if existing is not None else {}
+        if (
+            existing_payload
+            and existing_payload.get("mapping_id") != mapping_id
+            and existing_payload.get("new_customer_id") != new_id
+            and existing_payload.get("mapping_kind") != "split"
+            and normalized_kind != "split"
+        ):
+            raise ValueError(
+                f"old_customer_id already has active mapping: {old_id} -> {existing_payload.get('new_customer_id')}"
+            )
+        created_at = (
+            parse_datetime(existing_payload["created_at"], "created_at")
+            if existing_payload.get("mapping_id") == mapping_id and existing_payload.get("created_at")
+            else self._now()
+        )
+        updated_at = (
+            parse_datetime(existing_payload["updated_at"], "updated_at")
+            if existing_payload.get("mapping_id") == mapping_id and existing_payload.get("updated_at")
+            else self._now()
+        )
+        payload = {
+            "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+            "mapping_id": mapping_id,
+            "tenant_id": tenant,
+            "old_customer_id": old_id,
+            "new_customer_id": new_id,
+            "mapping_kind": normalized_kind,
+            "resolution_status": normalized_status,
+            "reason": normalized_reason,
+            "source_refs": list(refs),
+            "ingestion_run_id": ingestion_run_id,
+            "metadata": dict(metadata or {}),
+            "created_at": created_at.isoformat(),
+            "updated_at": updated_at.isoformat(),
+        }
+        return self._upsert_record(
+            table="customer_id_mappings",
+            key_column="mapping_id",
+            key_value=mapping_id,
+            record_type="customer_id_mapping",
+            tenant_id=tenant,
+            payload=payload,
+            columns={
+                "tenant_id": tenant,
+                "old_customer_id": old_id,
+                "new_customer_id": new_id,
+                "mapping_kind": normalized_kind,
+                "resolution_status": normalized_status,
+                "reason": normalized_reason,
+                "created_at": created_at.isoformat(),
+                "updated_at": updated_at.isoformat(),
+            },
+            actor=actor,
+            ingestion_run_id=ingestion_run_id,
+        )
+
     def append_audit_log(
         self,
         tenant_id: str,
@@ -1125,6 +1311,38 @@ class CustomerTimelineSQLiteStore:
         ).fetchall()
         return tuple(json_loads(row["record_json"]) for row in rows)
 
+    def list_customer_id_mappings(
+        self,
+        tenant_id: str,
+        *,
+        old_customer_id: Optional[str] = None,
+        new_customer_id: Optional[str] = None,
+        resolution_status: Optional[str] = None,
+        limit: int = 500,
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [tenant]
+        if old_customer_id:
+            clauses.append("old_customer_id = ?")
+            params.append(require_text(old_customer_id, "old_customer_id"))
+        if new_customer_id:
+            clauses.append("new_customer_id = ?")
+            params.append(require_text(new_customer_id, "new_customer_id"))
+        if resolution_status:
+            clauses.append("resolution_status = ?")
+            params.append(normalize_key(resolution_status, "resolution_status"))
+        rows = self._con.execute(
+            f"""
+            SELECT record_json FROM customer_id_mappings
+            WHERE {' AND '.join(clauses)}
+            ORDER BY old_customer_id, new_customer_id, mapping_id
+            LIMIT ?
+            """,
+            (*params, checked_limit(limit, "limit"),),
+        ).fetchall()
+        return tuple(json_loads(row["record_json"]) for row in rows)
+
     def list_events_by_customer(
         self,
         tenant_id: str,
@@ -1184,6 +1402,79 @@ class CustomerTimelineSQLiteStore:
             "items": items,
             "next_cursor": str(offset + page_limit) if len(rows) > page_limit else None,
         }
+
+    def list_signals_by_customer(
+        self,
+        tenant_id: str,
+        customer_id: str,
+        *,
+        signal_types: Sequence[str] = (),
+        statuses: Sequence[str] = (),
+        active_at: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        clauses = ["tenant_id = ?", "customer_id = ?"]
+        params: list[Any] = [tenant, require_text(customer_id, "customer_id")]
+        append_in_clause(clauses, params, "signal_type", signal_types, normalizer=lambda item: normalize_key(item, "signal_type"))
+        append_in_clause(clauses, params, "status", statuses, normalizer=lambda item: normalize_key(item, "signal_status"))
+        if active_at is not None:
+            require_timezone(active_at, "active_at")
+            clauses.append("status = 'active'")
+            clauses.append("(expires_at IS NULL OR expires_at > ?)")
+            params.append(active_at.isoformat())
+        rows = self._con.execute(
+            f"""
+            SELECT status, expires_at, record_json
+            FROM derived_signals
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC, signal_id
+            LIMIT ?
+            """,
+            (*params, checked_limit(limit, "limit")),
+        ).fetchall()
+        result: list[Mapping[str, Any]] = []
+        for row in rows:
+            item = dict(json_loads(row["record_json"]))
+            item.setdefault("status", row["status"] or "active")
+            item.setdefault("expires_at", row["expires_at"])
+            result.append(item)
+        return tuple(result)
+
+    def list_conflicts_by_customer(
+        self,
+        tenant_id: str,
+        customer_id: str,
+        *,
+        statuses: Sequence[str] = (),
+        conflict_types: Sequence[str] = (),
+        limit: int = 500,
+    ) -> tuple[Mapping[str, Any], ...]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        customer = require_text(customer_id, "customer_id")
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [tenant]
+        append_in_clause(clauses, params, "status", statuses, normalizer=lambda item: normalize_key(item, "conflict_status"))
+        append_in_clause(
+            clauses,
+            params,
+            "conflict_type",
+            conflict_types,
+            normalizer=lambda item: normalize_key(item, "conflict_type"),
+        )
+        rows = self._con.execute(
+            f"""
+            SELECT record_json FROM timeline_conflicts
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC, conflict_id
+            LIMIT ?
+            """,
+            (*params, checked_limit(limit, "limit")),
+        ).fetchall()
+        items = [json_loads(row["record_json"]) for row in rows]
+        return tuple(
+            item for item in items if customer in json_dumps(item.get("entity_refs") or ())
+        )
 
     def list_ingestion_runs(
         self,
@@ -1408,6 +1699,29 @@ class CustomerTimelineSQLiteStore:
         con.execute("PRAGMA foreign_keys = ON")
         return con
 
+    def _acquire_writer_lock(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.db_path.with_suffix(self.db_path.suffix + ".writer.lock")
+        handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.close()
+            raise RuntimeError(f"customer timeline writer lock is already held: {lock_path}") from exc
+        self._writer_lock_path = lock_path
+        self._writer_lock_handle = handle
+
+    def _release_writer_lock(self) -> None:
+        handle = self._writer_lock_handle
+        if handle is None:
+            return
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+            self._writer_lock_handle = None
+            self._writer_lock_path = None
+
     def _ensure_writable(self) -> None:
         if self.read_only:
             raise PermissionError("CustomerTimelineSQLiteStore is opened in read-only mode")
@@ -1624,15 +1938,23 @@ class CustomerTimelineSQLiteStore:
             ).fetchall()
             result["artifacts"] = [json_loads(row["record_json"]) for row in rows]
         if include_signals:
+            active_at = self._now().isoformat()
             rows = self._con.execute(
                 """
                 SELECT record_json FROM derived_signals
                 WHERE tenant_id = ? AND event_id = ?
+                  AND status = 'active'
+                  AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY severity DESC, signal_type, signal_id
                 """,
-                (tenant_id, event_id),
+                (tenant_id, event_id, active_at),
             ).fetchall()
-            result["signals"] = [json_loads(row["record_json"]) for row in rows]
+            signals = []
+            for row in rows:
+                item = dict(json_loads(row["record_json"]))
+                item.setdefault("status", "active")
+                signals.append(item)
+            result["signals"] = signals
         return result
 
     def _bootstrap_fts(self) -> None:
@@ -1882,8 +2204,14 @@ class CustomerTimelineSQLiteStore:
             ).fetchall()
             hits.extend(search_hit_from_row("bot_context", row) for row in rows)
         if "signals" in scopes:
-            clauses = ["tenant_id = ?", "record_json LIKE ?"]
-            params = [tenant, pattern]
+            active_at = self._now().isoformat()
+            clauses = [
+                "tenant_id = ?",
+                "record_json LIKE ?",
+                "status = 'active'",
+                "(expires_at IS NULL OR expires_at > ?)",
+            ]
+            params = [tenant, pattern, active_at]
             if customer_id:
                 clauses.append("customer_id = ?")
                 params.append(require_text(customer_id, "customer_id"))
@@ -2002,6 +2330,7 @@ REQUIRED_TABLES = (
     "bot_context_chunks",
     "ingestion_runs",
     "timeline_conflicts",
+    "customer_id_mappings",
     "audit_log",
 )
 

@@ -43,9 +43,33 @@ def test_read_api_profile_projects_safe_customer_timeline(tmp_path: Path) -> Non
         assert api.store._con.execute("PRAGMA query_only").fetchone()[0] == 1
         assert health["read_only"] is True
         assert profile["found"] is True
+        assert profile["snapshot_as_of"] == (NOW + timedelta(minutes=1)).isoformat()
+        assert profile["last_event_at"] == (NOW + timedelta(minutes=1)).isoformat()
         assert profile["customer"]["primary_phone"] == "+***4567"
         assert profile["customer"]["primary_email"] == "p***@example.com"
+        assert profile["customer_id_mappings"] == [
+            {
+                "mapping_id": profile["customer_id_mappings"][0]["mapping_id"],
+                "tenant_id": "foton",
+                "old_customer_id": "customer:legacy-phone",
+                "new_customer_id": customer_id,
+                "mapping_kind": "alias",
+                "resolution_status": "active",
+                "reason": "family_phone_ambiguous",
+                "source_refs": ["fixture:legacy"],
+                "created_at": profile["customer_id_mappings"][0]["created_at"],
+                "updated_at": profile["customer_id_mappings"][0]["updated_at"],
+            }
+        ]
+        assert profile["timeline"]["items"][0]["allowed_for_bot"] is False
+        assert profile["timeline"]["items"][0]["requires_manager_review"] is True
         assert profile["timeline"]["items"][0]["artifacts"][0]["has_path"] is True
+        assert profile["timeline"]["items"][0]["signals"][0]["allowed_for_bot"] is False
+        assert profile["timeline"]["items"][0]["signals"][0]["requires_manager_review"] is True
+        assert profile["signals"][0]["allowed_for_bot"] is False
+        assert profile["signals"][0]["requires_manager_review"] is True
+        assert {item["allowed_for_bot"] for item in profile["bot_context"]["items"]} == {False, True}
+        assert {item["requires_manager_review"] for item in profile["bot_context"]["items"]} == {False, True}
         assert "path" not in profile["timeline"]["items"][0]["artifacts"][0]
         assert profile["readiness"]["bot_allowed_chunks"] == 1
         assert profile["readiness"]["bot_review_required_chunks"] == 1
@@ -66,6 +90,20 @@ def test_read_api_lists_customers_paginates_searches_and_filters_bot_context(tmp
         allowed_context = api.bot_context("foton", customer_id, allowed_only=True)
         all_context = api.bot_context("foton", customer_id, allowed_only=False)
         search = api.search("foton", "стоимость", customer_id=customer_id, scopes=("events", "bot_context", "signals"))
+        blocked_context_search = api.search(
+            "foton",
+            "проверки",
+            customer_id=customer_id,
+            scopes=("bot_context",),
+            allowed_for_bot=False,
+        )
+        bot_safe_context_search = api.search(
+            "foton",
+            "проверки",
+            customer_id=customer_id,
+            scopes=("bot_context",),
+            allowed_for_bot=True,
+        )
         timeline = api.customer_timeline("foton", customer_id, event_types=("mango_call",), source_systems=("mango",), limit=5)
 
     assert filtered["items"][0]["customer_id"] == customer_id
@@ -76,6 +114,10 @@ def test_read_api_lists_customers_paginates_searches_and_filters_bot_context(tmp
     assert allowed_context["items"][0]["customer_id"] is None
     assert all_context["summary"]["visible_chunks"] == 2
     assert search["result"]["items"]
+    assert len(blocked_context_search["result"]["items"]) == 1
+    assert blocked_context_search["result"]["items"][0]["record"]["allowed_for_bot"] is False
+    assert blocked_context_search["result"]["items"][0]["record"]["requires_manager_review"] is True
+    assert bot_safe_context_search["result"]["items"] == []
     assert search["result"]["items"][0]["record"]
     assert "raw_payload" not in json.dumps(search, ensure_ascii=False)
     assert timeline["items"][0]["event_type"] == "mango_call"
@@ -219,6 +261,14 @@ def seed_timeline_db(tmp_path: Path) -> tuple[Path, str]:
             first_seen_at=NOW,
             last_seen_at=NOW,
         )
+    )
+    store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-phone",
+        new_customer_id=customer.customer_id,
+        reason="family_phone_ambiguous",
+        source_refs=("fixture:legacy",),
+        actor="test",
     )
     opportunity = CustomerOpportunity(
         tenant_id="foton",

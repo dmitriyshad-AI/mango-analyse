@@ -8,6 +8,13 @@
 
 | Ветка | Worktree | Тема | Уникальных коммитов к `origin/main` | СТОП-дата | Решение |
 |---|---|---|---:|---|---|
+| `codex/tz139-customer-timeline` | `/Users/dmitrijfabarisov/Projects/Mango_tz139_customer_timeline` | TZ139 customer_timeline Step 0 + Work A | 0 | 2026-06-25 | Жива до ревью Work A; потом решать Work B |
+| `codex/tz135-direct-wow-tone` | `/Users/dmitrijfabarisov/Projects/Mango analyse` | TZ135 direct wow tone, основная папка сейчас не main | 4 | 2026-06-25 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/tz133-handoff-closing-metric` | `/Users/dmitrijfabarisov/Projects/Mango_tz133_handoff_closing` | TZ133 handoff closing metric | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
+| `codex/tz137-adr002-direct-slots-fallback` | `/Users/dmitrijfabarisov/Projects/Mango_tz137_behavior_measure` | TZ137 ADR002 direct slots fallback | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
+| `codex/tz138-analyze-sweep` | `/Users/dmitrijfabarisov/Projects/Mango_tz138_analyze_sweep` | TZ138 analyze sweep | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
+| `codex/tz142-flagb-closing-fix` | `/Users/dmitrijfabarisov/Projects/Mango_tz142_flagb_closing` | TZ142 flag B closing fix | 2 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
+| `codex/tz34-child-escalation` | `/Users/dmitrijfabarisov/Projects/Mango_tz31_child_identity` | TZ34 child escalation | 3 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
 | `codex/measure-flags-honest` | `/Users/dmitrijfabarisov/Projects/Mango_measure_flags_honest` | Флаговый бандл/замер TZ122+TZ123+TZ124 с честной метрикой | 12 | 2026-06-23 | Жива до флагового регрейда; потом влить/бросить |
 | `codex/measure-tz122-tz123-tz124` | `/Users/dmitrijfabarisov/Projects/Mango_measure_tz122_tz123_tz124` | Предыдущая замерная ветка TZ122+TZ123+TZ124 | 11 | 2026-06-23 | Сравнить с `measure-flags-honest`, затем бросить/архивировать |
 | `codex/tz118-group4-primary-d` | `/Users/dmitrijfabarisov/Projects/Mango_tz118_primary` | Группа 4 primary-D | 10 | 2026-06-23 | Решить: влить или бросить |

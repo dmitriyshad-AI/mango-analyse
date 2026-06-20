@@ -13,10 +13,18 @@ import pytest
 from mango_mvp.customer_timeline import (
     AmoSnapshotNormalizer,
     ChannelMessageNormalizer,
+    CustomerIdentity,
+    IdentityLink,
+    IdentityMatchClass,
+    IdentityStatus,
     MailMessageNormalizer,
     MangoCallSummaryNormalizer,
     TallantoSnapshotNormalizer,
+    TimelineDirection,
+    TimelineEvent,
+    TimelineEventType,
     TimelineImportService,
+    TimelineNormalizedBatch,
     TimelineSourceRecord,
     file_sha256,
     load_local_source_records,
@@ -83,10 +91,107 @@ def test_tallanto_csv_import_is_idempotent_preserves_source_and_records_conflict
     assert summary["counts"]["customer_identities"] == 2
     assert summary["counts"]["identity_links"] == 6
     assert summary["counts"]["timeline_conflicts"] == 1
+    assert summary["counts"]["customer_id_mappings"] == 2
     assert summary["counts"]["ingestion_runs"] == 1
     assert len({item["customer_id"] for item in email_links}) == 2
+    assert {item["reason"] for item in store.list_customer_id_mappings("foton")} == {"family_phone_ambiguous"}
     assert conflicts[0]["action"] == "timeline_conflict_created"
     assert second.write_status_counts["duplicate"] >= first.write_status_counts["created"]
+    store.close()
+
+
+def test_phone_identity_union_writes_complete_mapping_and_keeps_brand_history(tmp_path: Path) -> None:
+    records = (
+        TimelineSourceRecord(
+            source_system="brand_test",
+            source_ref="amo#1",
+            payload={"source_id": "amo-1", "phone": "+7 916 222-33-44", "brand": "foton", "name": "Иван"},
+            observed_at=NOW,
+        ),
+        TimelineSourceRecord(
+            source_system="brand_test",
+            source_ref="mango#1",
+            payload={"source_id": "call-1", "phone": "+79162223344", "brand": "unpk", "name": "Иван"},
+            observed_at=NOW,
+        ),
+    )
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    report = TimelineImportService(store).import_records(
+        records,
+        normalizer=BrandHistoryNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="brand-history",
+        idempotency_key="brand-history-v1",
+        actor="test",
+    )
+    customers = store.list_customers("foton", limit=10)["items"]
+    mappings = store.list_customer_id_mappings("foton")
+    links = store.list_identity_links("foton", link_type="phone", link_value="+79162223344")
+
+    assert report.validation_ok is True
+    assert report.normalized_counts["customer_id_mappings"] == 2
+    assert store.summary()["counts"]["customer_identities"] == 1
+    assert store.summary()["counts"]["timeline_conflicts"] == 0
+    assert customers[0]["summary"]["brands"] == ["foton", "unpk"]
+    assert {item["reason"] for item in mappings} == {"phone_identity_union"}
+    assert {item["old_customer_id"] for item in mappings}
+    assert {item["new_customer_id"] for item in mappings} == {customers[0]["customer_id"]}
+    assert len({item["customer_id"] for item in links}) == 1
+    store.close()
+
+
+def test_phone_identity_union_uses_existing_store_customer_across_import_runs(tmp_path: Path) -> None:
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    service = TimelineImportService(store)
+    amo = TimelineSourceRecord(
+        source_system="amocrm_snapshot",
+        source_ref="lead#1",
+        payload={
+            "entity_id": "lead-1",
+            "entity_type": "lead",
+            "name": "Сделка ЕГЭ",
+            "phone": "+7 916 333-44-55",
+            "updated_at": "2026-05-04T11:00:00+00:00",
+        },
+    )
+    mango = TimelineSourceRecord(
+        source_system="mango_processed_summary",
+        source_ref="call#1",
+        payload={
+            "call_id": "call-1",
+            "client_phone": "+79163334455",
+            "call_at": "2026-05-04T12:00:00+00:00",
+            "summary": "Клиент уточнил стоимость.",
+        },
+    )
+
+    service.import_records(
+        (amo,),
+        normalizer=AmoSnapshotNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="amo-run",
+        idempotency_key="amo-run",
+        actor="test",
+    )
+    service.import_records(
+        (mango,),
+        normalizer=MangoCallSummaryNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="mango-run",
+        idempotency_key="mango-run",
+        actor="test",
+    )
+
+    customers = store.list_customers("foton", limit=10)["items"]
+    customer_id = customers[0]["customer_id"]
+    events = store.list_events_by_customer("foton", customer_id, limit=10)["items"]
+    mappings = store.list_customer_id_mappings("foton")
+
+    assert store.summary()["counts"]["customer_identities"] == 1
+    assert store.summary()["counts"]["timeline_conflicts"] == 0
+    assert {item["event_type"] for item in events} == {"amo_deal_stage", "mango_call"}
+    assert {item["new_customer_id"] for item in mappings} == {customer_id}
+    assert {item["reason"] for item in mappings} >= {"phone_identity_union", "unchanged"}
     store.close()
 
 
@@ -220,6 +325,21 @@ def test_channel_mango_and_amo_normalizers_create_expected_timeline_contracts() 
             },
         )
     )
+    max_batch = ChannelMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="channel_snapshot",
+            source_ref="max#1",
+            payload={
+                "channel": "max",
+                "channel_thread_id": "max-thread-1",
+                "channel_message_id": "max-msg-1",
+                "channel_user_id": "max-user-1",
+                "direction": "inbound",
+                "text": "Нужна консультация по оплате",
+                "received_at": "2026-05-04T09:05:00+00:00",
+            },
+        )
+    )
     mango_batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
         TimelineSourceRecord(
             source_system="mango_processed_summary",
@@ -253,11 +373,37 @@ def test_channel_mango_and_amo_normalizers_create_expected_timeline_contracts() 
     assert channel_batch.events[0].event_type.value == "telegram_message"
     assert channel_batch.bot_context_chunks[0].allowed_for_bot is False
     assert channel_batch.bot_context_chunks[0].requires_manager_review is True
+    assert max_batch.events[0].event_type.value == "max_message"
+    assert max_batch.bot_context_chunks[0].allowed_for_bot is False
+    assert max_batch.bot_context_chunks[0].requires_manager_review is True
     assert mango_batch.events[0].event_type.value == "mango_call"
     assert mango_batch.artifacts[0].artifact_type.value == "call_audio"
     assert mango_batch.signals[0].signal_type == "sales_next_step"
     assert amo_batch.opportunities[0].opportunity_type.value == "amo_deal"
     assert amo_batch.events[0].event_type.value == "amo_deal_stage"
+
+
+def test_channel_message_normalizer_uses_whatsapp_contract_types() -> None:
+    batch = ChannelMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="channel_snapshot",
+            source_ref="whatsapp#1",
+            payload={
+                "channel": "whatsapp",
+                "channel_thread_id": "+7 999 111-22-33",
+                "channel_message_id": "msg-1",
+                "channel_user_id": "+7 999 111-22-33",
+                "direction": "inbound",
+                "text": "Здравствуйте",
+                "received_at": "2026-05-04T09:00:00+00:00",
+            },
+        )
+    )
+
+    assert batch.events[0].event_type == TimelineEventType.WHATSAPP_MESSAGE
+    assert {link.link_type.value for link in batch.identity_links} == {"whatsapp_user_id", "channel_session_id"}
+    assert batch.bot_context_chunks[0].allowed_for_bot is False
+    assert batch.bot_context_chunks[0].requires_manager_review is True
 
 
 def test_importer_safety_contract_and_no_network_or_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -342,3 +488,64 @@ def source_snapshot(path: Path) -> dict[str, object]:
         "mtime_ns": stat.st_mtime_ns,
         "sha256": file_sha256(path),
     }
+
+
+class BrandHistoryNormalizer:
+    source_system = "brand_test"
+
+    def __init__(self, *, tenant_id: str) -> None:
+        self.tenant_id = tenant_id
+
+    def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
+        payload = record.payload
+        phone = str(payload["phone"])
+        source_id = str(payload["source_id"])
+        brand = str(payload["brand"])
+        customer = CustomerIdentity(
+            tenant_id=self.tenant_id,
+            identity_status=IdentityStatus.STRONG,
+            display_name=str(payload["name"]),
+            primary_phone=phone,
+            source_ref=record.source_ref,
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+            touch_count=1,
+            summary={"source_system": self.source_system, "brand": brand},
+            metadata={"brand": brand},
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        link = IdentityLink(
+            tenant_id=self.tenant_id,
+            customer_id=customer.customer_id,
+            link_type="phone",
+            link_value=phone,
+            source_system=self.source_system,
+            source_ref=record.source_ref,
+            match_class=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=0.95,
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+        event = TimelineEvent(
+            tenant_id=self.tenant_id,
+            customer_id=customer.customer_id,
+            event_type=TimelineEventType.AMO_CONTACT_SNAPSHOT,
+            event_at=NOW,
+            source_system=self.source_system,
+            source_id=source_id,
+            source_ref=record.source_ref,
+            direction=TimelineDirection.SYSTEM,
+            subject=f"{brand} snapshot",
+            match_status=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=0.9,
+            record={"brand": brand},
+            metadata={"brand": brand},
+            created_at=NOW,
+        )
+        return TimelineNormalizedBatch(
+            source_record=record,
+            customers=(customer,),
+            identity_links=(link,),
+            events=(event,),
+        )

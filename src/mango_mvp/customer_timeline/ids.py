@@ -75,7 +75,7 @@ def normalize_identity_value(link_type: str, value: Any) -> str:
         if not normalized:
             raise ValueError(f"invalid email identity value: {value!r}")
         return normalized
-    if kind in {"phone", "mango_client_phone", "primary_phone"}:
+    if kind in {"phone", "mango_client_phone", "whatsapp_phone", "primary_phone"}:
         normalized_phone = normalize_phone(text)
         if not normalized_phone:
             raise ValueError(f"invalid phone identity value: {value!r}")

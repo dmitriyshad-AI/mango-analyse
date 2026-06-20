@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -182,6 +184,18 @@ def table_names(db_path: Path) -> set[str]:
     return {row[0] for row in rows}
 
 
+def column_names(db_path: Path, table: str) -> set[str]:
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row[1] for row in rows}
+
+
+def index_names(db_path: Path) -> set[str]:
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+    return {row[0] for row in rows}
+
+
 def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
@@ -196,17 +210,121 @@ def test_sqlite_store_bootstraps_reopens_and_reports_safety(tmp_path: Path) -> N
     assert "customer_identities" in names
     assert "timeline_events" in names
     assert "timeline_conflicts" in names
+    assert "customer_id_mappings" in names
+    assert {"status", "expires_at"} <= column_names(db_path, "derived_signals")
+    assert "ix_signals_customer_status_expiry" in index_names(db_path)
     assert summary["schema_version"] == CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION
     assert summary["backend"] == "sqlite"
     assert summary["counts"]["schema_migrations"] == 1
     assert summary["counts"]["timeline_events"] == 0
+    assert summary["counts"]["customer_id_mappings"] == 0
     assert summary["validation_ok"] is True
     assert summary["safety"]["write_crm"] is False
     assert summary["safety"]["write_tallanto"] is False
     assert summary["safety"]["write_runtime_db"] is False
     assert summary["safety"]["stable_runtime_writes"] is False
     assert summary["safety"]["store_raw_files_in_sqlite"] is False
+    assert summary["safety"]["old_to_new_customer_id_mapping_required"] is True
+    assert summary["safety"]["brand_blocks_identity_merge"] is False
     assert reopened._con.execute("PRAGMA foreign_key_check").fetchall() == []
+    reopened.close()
+
+
+def test_derived_signal_status_migration_is_idempotent_and_reads_old_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    old_payload = {
+        "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+        "signal_id": "derived_signal:old",
+        "tenant_id": "foton",
+        "customer_id": "customer:old",
+        "opportunity_id": None,
+        "event_id": None,
+        "source_event_ids": [],
+        "signal_type": "price_interest",
+        "severity": "medium",
+        "confidence": 0.7,
+        "evidence_text": "Старая запись сигнала без status/expires_at.",
+        "recommended_action": "Проверить вручную",
+        "requires_manager_review": True,
+        "metadata": {},
+        "created_at": NOW.isoformat(),
+    }
+    with sqlite3.connect(db_path) as con:
+        con.executescript(
+            """
+            CREATE TABLE schema_migrations (
+              migration_id TEXT PRIMARY KEY,
+              schema_version TEXT NOT NULL,
+              applied_at TEXT NOT NULL
+            );
+            CREATE TABLE derived_signals (
+              signal_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
+              opportunity_id TEXT,
+              event_id TEXT,
+              signal_type TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              confidence REAL,
+              requires_manager_review INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              record_hash TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO schema_migrations (migration_id, schema_version, applied_at)
+            VALUES (?, ?, ?)
+            """,
+            ("20260512_001_customer_timeline_sqlite", CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION, NOW.isoformat()),
+        )
+        con.execute(
+            """
+            INSERT INTO derived_signals (
+              signal_id, tenant_id, customer_id, opportunity_id, event_id,
+              signal_type, severity, confidence, requires_manager_review,
+              created_at, record_hash, record_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                old_payload["signal_id"],
+                old_payload["tenant_id"],
+                old_payload["customer_id"],
+                old_payload["opportunity_id"],
+                old_payload["event_id"],
+                old_payload["signal_type"],
+                old_payload["severity"],
+                old_payload["confidence"],
+                int(old_payload["requires_manager_review"]),
+                old_payload["created_at"],
+                "old-hash",
+                json.dumps(old_payload, ensure_ascii=False),
+            ),
+        )
+
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    row = store._con.execute(
+        "SELECT status, expires_at, record_json FROM derived_signals WHERE signal_id = ?",
+        (old_payload["signal_id"],),
+    ).fetchone()
+    assert {"status", "expires_at"} <= column_names(db_path, "derived_signals")
+    assert "ix_signals_customer_status_expiry" in index_names(db_path)
+    assert row["status"] == "active"
+    assert row["expires_at"] is None
+    assert "status" not in json.loads(row["record_json"])
+    store.close()
+
+    reopened = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    migration_rows = reopened._con.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE migration_id = ?",
+        (CUSTOMER_TIMELINE_SQLITE_MIGRATION_ID,),
+    ).fetchone()[0]
+    migrated_rows = reopened._con.execute("SELECT COUNT(*) FROM derived_signals WHERE status = 'active'").fetchone()[0]
+    assert migration_rows == 1
+    assert migrated_rows == 1
     reopened.close()
 
 
@@ -228,6 +346,24 @@ def test_sqlite_store_uses_wal_and_read_only_mode_blocks_mutations(tmp_path: Pat
         readonly.append_audit_log("foton", action="manual_note", entity_type="customer_identity")
     assert readonly.summary()["counts"]["customer_identities"] == 1
     readonly.close()
+
+
+def test_sqlite_store_allows_single_writer_and_read_only_observers(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    writer = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    try:
+        with pytest.raises(RuntimeError, match="writer lock"):
+            CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+        reader = CustomerTimelineSQLiteStore.open_read_only(db_path, allowed_root=tmp_path, clock=StepClock())
+        try:
+            assert reader.read_only is True
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+
+    reopened = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path, clock=StepClock())
+    reopened.close()
 
 
 def test_read_only_missing_db_fails_without_creating_file(tmp_path: Path) -> None:
@@ -368,10 +504,124 @@ def test_upsert_updates_existing_record_without_changing_stable_id(tmp_path: Pat
     store.close()
 
 
+def test_customer_id_mapping_is_reversible_idempotent_and_guarded(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    target = identity(phone="+79160000003")
+    other = identity(phone="+79160000004")
+    store.upsert_customer(target)
+    store.upsert_customer(other)
+
+    first = store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-a",
+        new_customer_id=target.customer_id,
+        mapping_kind="merge",
+        reason="phone_identity_union",
+        source_refs=("amocrm:contact:1", "mango:call:1"),
+        actor="identity_resolver",
+    )
+    second = store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-a",
+        new_customer_id=target.customer_id,
+        mapping_kind="merge",
+        reason="phone_identity_union",
+        source_refs=("amocrm:contact:1", "mango:call:1"),
+        actor="identity_resolver",
+    )
+    store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-b",
+        new_customer_id=target.customer_id,
+        mapping_kind="merge",
+        reason="phone_identity_union",
+        source_refs=("tallanto:student:1",),
+        actor="identity_resolver",
+    )
+
+    mappings = store.list_customer_id_mappings("foton")
+    reverse = {target.customer_id: {item["old_customer_id"] for item in mappings if item["new_customer_id"] == target.customer_id}}
+
+    assert first.created is True
+    assert second.created is False
+    assert second.status == "duplicate"
+    assert store.summary()["counts"]["customer_id_mappings"] == 2
+    assert {item["old_customer_id"] for item in mappings} == {"customer:legacy-a", "customer:legacy-b"}
+    assert reverse == {target.customer_id: {"customer:legacy-a", "customer:legacy-b"}}
+    assert mappings[0]["resolution_status"] == "active"
+    assert mappings[0]["ingestion_run_id"] is None
+    split = store.record_customer_id_mapping(
+        "foton",
+        old_customer_id="customer:legacy-a",
+        new_customer_id=other.customer_id,
+        mapping_kind="split",
+        reason="manual_override",
+    )
+    assert split.created is True
+    assert {
+        item["new_customer_id"]
+        for item in store.list_customer_id_mappings("foton", old_customer_id="customer:legacy-a")
+    } == {target.customer_id, other.customer_id}
+    with pytest.raises(ValueError, match="customer does not exist"):
+        store.record_customer_id_mapping(
+            "foton",
+            old_customer_id="customer:legacy-missing",
+            new_customer_id="customer:missing",
+            reason="phone_identity_union",
+        )
+    third = identity(phone="+79160000005")
+    store.upsert_customer(third)
+    with pytest.raises(ValueError, match="already has active mapping"):
+        store.record_customer_id_mapping(
+            "foton",
+            old_customer_id="customer:legacy-b",
+            new_customer_id=third.customer_id,
+            mapping_kind="alias",
+            reason="manual_override",
+        )
+    store.close()
+
+
 def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path) -> None:
     db_path = tmp_path / "customer_timeline.sqlite"
     customer = identity()
     ev = event(customer)
+    ev = replace(
+        ev,
+        record={
+            **ev.record,
+            "telegram_message": {"text": "must_not_be_stored"},
+            "nested": {
+                "raw_update": {"token": "must_not_be_stored"},
+                "callback_query": {"data": "must_not_be_stored"},
+                "tallanto_raw_payload": {"cost": "must_not_be_stored"},
+                "raw_finance": {"payment": "must_not_be_stored"},
+                "whatsapp_update_payload": {"entry": "must_not_be_stored"},
+                "wappi_raw_payload": {"entry": "must_not_be_stored"},
+                "safe_note": "kept",
+            },
+        },
+        metadata={
+            **ev.metadata,
+            "telegram_raw_message": {"text": "must_not_be_stored"},
+            "business_message": {"secret": "must_not_be_stored"},
+            "most_finances_payload": {"payment_summa": "must_not_be_stored"},
+            "most_abonements_payload": {"num_visit_left": "must_not_be_stored"},
+            "whatsapp_raw_message": {"text": "must_not_be_stored"},
+            "wappi_message_payload": {"text": "must_not_be_stored"},
+        },
+    )
+    raw_chunk = replace(
+        chunk(ev),
+        metadata={
+            "telegram_update_payload": {"update_id": "must_not_be_stored"},
+            "raw_message": {"text": "must_not_be_stored"},
+            "tallanto_api_response": {"records": "must_not_be_stored"},
+            "whatsapp_raw_payload": {"records": "must_not_be_stored"},
+            "wappi_payload": {"records": "must_not_be_stored"},
+            "safe_note": "kept",
+        },
+    )
     raw_file = tmp_path / "source.json"
     raw_file.write_text("raw-file-secret", encoding="utf-8")
     art = EventArtifact(
@@ -391,17 +641,46 @@ def test_store_never_persists_raw_payload_or_reads_artifact_files(tmp_path: Path
     store.upsert_customer(customer)
     store.upsert_event(ev)
     store.upsert_artifact(art)
+    store.upsert_bot_context_chunk(raw_chunk)
     store.close()
 
     with sqlite3.connect(db_path) as con:
-        dump = "\n".join(row[0] for row in con.execute("SELECT record_json FROM timeline_events UNION ALL SELECT record_json FROM event_artifacts"))
+        dump = "\n".join(
+            row[0]
+            for row in con.execute(
+                """
+                SELECT record_json FROM timeline_events
+                UNION ALL SELECT record_json FROM event_artifacts
+                UNION ALL SELECT record_json FROM bot_context_chunks
+                """
+            )
+        )
 
     assert "must_not_be_stored" not in dump
     assert "raw_payload" not in dump
     assert "provider_raw_payload" not in dump
+    assert "telegram_message" not in dump
+    assert "telegram_raw_message" not in dump
+    assert "telegram_update_payload" not in dump
+    assert "raw_update" not in dump
+    assert "raw_message" not in dump
+    assert "callback_query" not in dump
+    assert "business_message" not in dump
+    assert "tallanto_raw_payload" not in dump
+    assert "tallanto_api_response" not in dump
+    assert "raw_finance" not in dump
+    assert "most_finances_payload" not in dump
+    assert "most_abonements_payload" not in dump
+    assert "whatsapp_update_payload" not in dump
+    assert "whatsapp_raw_message" not in dump
+    assert "whatsapp_raw_payload" not in dump
+    assert "wappi_raw_payload" not in dump
+    assert "wappi_message_payload" not in dump
+    assert "wappi_payload" not in dump
     assert "file_bytes" not in dump
     assert "raw-file-secret" not in dump
     assert str(raw_file) in dump
+    assert "safe_note" in dump
 
 
 def test_search_uses_fts_or_fallback_for_events_signals_and_chunks(tmp_path: Path) -> None:
@@ -421,6 +700,55 @@ def test_search_uses_fts_or_fallback_for_events_signals_and_chunks(tmp_path: Pat
     assert "signal" in scopes
     assert "bot_context" in scopes
     assert all(item["record"]["tenant_id"] == "foton" for item in result["items"])
+    store.close()
+
+
+def test_bot_context_search_filters_blocked_chunks_in_fts_and_fallback(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    ev = event(customer)
+    safe_chunk = replace(
+        chunk(ev),
+        chunk_id=None,
+        source_ref="safe-context",
+        text="Единый маркер контекста доступен боту.",
+        summary="Единый маркер",
+        allowed_for_bot=True,
+        requires_manager_review=False,
+    )
+    blocked_chunk = replace(
+        chunk(ev),
+        chunk_id=None,
+        source_ref="blocked-channel-context",
+        text="Единый маркер контекста из канала требует проверки менеджера.",
+        summary="Единый маркер",
+        allowed_for_bot=False,
+        requires_manager_review=True,
+    )
+    store.upsert_customer(customer)
+    store.upsert_event(ev)
+    store.upsert_bot_context_chunk(safe_chunk)
+    store.upsert_bot_context_chunk(blocked_chunk)
+
+    for mode in ("fts", "fallback"):
+        bot_safe = store.search_timeline(
+            "foton",
+            "маркер",
+            scopes=("bot_context",),
+            allowed_for_bot=True,
+            mode=mode,
+            limit=10,
+        )
+        blocked = store.search_timeline(
+            "foton",
+            "маркер",
+            scopes=("bot_context",),
+            allowed_for_bot=False,
+            mode=mode,
+            limit=10,
+        )
+        assert [item["record"]["source_ref"] for item in bot_safe["items"]] == ["safe-context"]
+        assert [item["record"]["source_ref"] for item in blocked["items"]] == ["blocked-channel-context"]
     store.close()
 
 

@@ -173,6 +173,9 @@ class CustomerTimelineReadApi:
             include_signals=include_children,
             limit=bounded_limit(event_limit, default=25, max_limit=200),
         )
+        last_event_at = self._last_event_at(tenant, customer["customer_id"])
+        snapshot_as_of = last_event_at or first_text(customer, ("last_seen_at", "updated_at", "created_at"))
+        snapshot_dt = parse_iso_datetime(snapshot_as_of)
         bot_context = self.bot_context(
             tenant,
             customer["customer_id"],
@@ -180,13 +183,13 @@ class CustomerTimelineReadApi:
             limit=bounded_limit(bot_context_limit, default=25, max_limit=200),
         )
         conflicts = self.list_conflicts(tenant, customer_id=customer["customer_id"], limit=100)
-        signals = self._records(
-            "derived_signals",
-            "tenant_id = ? AND customer_id = ?",
-            (tenant, customer["customer_id"]),
-            order_by="created_at DESC, signal_id",
+        signals = self.store.list_signals_by_customer(
+            tenant,
+            customer["customer_id"],
+            active_at=snapshot_dt,
             limit=100,
         )
+        mappings = self._customer_id_mappings_for_profile(tenant, customer["customer_id"])
         readiness = {
             "events": len(events["items"]),
             "identity_links": len(links),
@@ -203,8 +206,11 @@ class CustomerTimelineReadApi:
             "endpoint": "GET /customer",
             "tenant_id": tenant,
             "customer_id": customer["customer_id"],
+            "snapshot_as_of": snapshot_as_of,
+            "last_event_at": last_event_at,
             "found": True,
             "customer": project_customer(customer),
+            "customer_id_mappings": [project_customer_id_mapping(item) for item in mappings],
             "identity_links": [project_identity_link(item, audience="ui") for item in links],
             "opportunities": [project_opportunity(item) for item in opportunities],
             "timeline": {
@@ -218,6 +224,28 @@ class CustomerTimelineReadApi:
             "redaction": redaction_summary(bot_safe=False),
             "safety": customer_timeline_read_api_safety_contract(),
         }
+
+    def _last_event_at(self, tenant_id: str, customer_id: str) -> Optional[str]:
+        page = self.store.list_events_by_customer(
+            tenant_id,
+            customer_id,
+            sort="desc",
+            include_artifacts=False,
+            include_signals=False,
+            limit=1,
+        )
+        items = page.get("items") or ()
+        if not items:
+            return None
+        return str(items[0].get("event_at") or "") or None
+
+    def _customer_id_mappings_for_profile(self, tenant_id: str, customer_id: str) -> tuple[Mapping[str, Any], ...]:
+        by_id: dict[str, Mapping[str, Any]] = {}
+        for item in self.store.list_customer_id_mappings(tenant_id, new_customer_id=customer_id, limit=500):
+            by_id[str(item.get("mapping_id") or f"new:{len(by_id)}")] = item
+        for item in self.store.list_customer_id_mappings(tenant_id, old_customer_id=customer_id, limit=500):
+            by_id[str(item.get("mapping_id") or f"old:{len(by_id)}")] = item
+        return tuple(by_id[key] for key in sorted(by_id))
 
     def customer_timeline(
         self,
@@ -722,6 +750,8 @@ def project_event(
         "importance": item.get("importance"),
         "match_status": item.get("match_status"),
         "confidence": item.get("confidence"),
+        "allowed_for_bot": False,
+        "requires_manager_review": True,
         "created_at": item.get("created_at"),
     }
     if include_artifacts:
@@ -765,9 +795,12 @@ def project_signal(item: Mapping[str, Any]) -> Mapping[str, Any]:
         "event_id": item.get("event_id"),
         "signal_type": item.get("signal_type"),
         "severity": item.get("severity"),
+        "status": item.get("status") or "active",
+        "expires_at": item.get("expires_at"),
         "confidence": item.get("confidence"),
         "evidence_text": item.get("evidence_text"),
         "recommended_action": item.get("recommended_action"),
+        "allowed_for_bot": False,
         "requires_manager_review": bool(item.get("requires_manager_review")),
         "created_at": item.get("created_at"),
     }
@@ -805,6 +838,21 @@ def project_conflict(item: Mapping[str, Any]) -> Mapping[str, Any]:
     }
 
 
+def project_customer_id_mapping(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {
+        "mapping_id": item.get("mapping_id"),
+        "tenant_id": item.get("tenant_id"),
+        "old_customer_id": item.get("old_customer_id"),
+        "new_customer_id": item.get("new_customer_id"),
+        "mapping_kind": item.get("mapping_kind"),
+        "resolution_status": item.get("resolution_status"),
+        "reason": item.get("reason"),
+        "source_refs": list(item.get("source_refs") or ()),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+
+
 def project_search_hit(item: Mapping[str, Any]) -> Mapping[str, Any]:
     scope = item.get("scope")
     record = item.get("record") or {}
@@ -823,6 +871,26 @@ def project_search_hit(item: Mapping[str, Any]) -> Mapping[str, Any]:
         "record": projected,
         "highlight": item.get("highlight"),
     }
+
+
+def first_text(item: Mapping[str, Any], keys: Sequence[str]) -> Optional[str]:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def safe_mapping(value: Any) -> Mapping[str, Any]:

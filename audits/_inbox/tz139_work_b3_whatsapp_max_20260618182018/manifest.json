@@ -1,0 +1,18 @@
+{
+  "schema_version": "audit_pack_manifest_v1",
+  "block": "tz139_work_b3_whatsapp_max",
+  "created_at": "2026-06-18T18:20:18+03:00",
+  "branch": "codex/tz139-customer-timeline",
+  "head_before": "fc4edef",
+  "status": "formal_pass_pending_claude_regrade",
+  "files": [
+    "implementation_notes.md",
+    "changed_files.txt",
+    "test_output.txt",
+    "source_discovery.md",
+    "realdata_dry_run.md",
+    "semantic_review.md",
+    "risk_review.md",
+    "backward_compatibility.md"
+  ]
+}

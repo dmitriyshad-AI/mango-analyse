@@ -3,9 +3,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import sqlite3
 import re
-from dataclasses import asdict, dataclass, field
+import sqlite3
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol, Sequence
@@ -33,6 +33,7 @@ from mango_mvp.customer_timeline.ids import (
     normalize_key,
     optional_text,
     require_text,
+    stable_customer_id,
     stable_digest,
 )
 from mango_mvp.customer_timeline.safety import (
@@ -141,6 +142,34 @@ class TimelineNormalizedBatch:
 
 
 @dataclass(frozen=True)
+class CustomerIdResolutionMapping:
+    tenant_id: str
+    old_customer_id: str
+    new_customer_id: str
+    reason: str
+    source_refs: Sequence[str] = field(default_factory=tuple)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
+        object.__setattr__(self, "old_customer_id", require_text(self.old_customer_id, "old_customer_id"))
+        object.__setattr__(self, "new_customer_id", require_text(self.new_customer_id, "new_customer_id"))
+        object.__setattr__(self, "reason", normalize_key(self.reason, "reason"))
+        object.__setattr__(self, "source_refs", tuple(require_text(item, "source_ref") for item in self.source_refs))
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True)
+class CustomerIdResolutionResult:
+    batches: Sequence[TimelineNormalizedBatch]
+    mappings: Sequence[CustomerIdResolutionMapping]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "batches", tuple(self.batches))
+        object.__setattr__(self, "mappings", tuple(self.mappings))
+
+
+@dataclass(frozen=True)
 class TimelineImportError:
     source_ref: str
     error_type: str
@@ -228,33 +257,16 @@ class TimelineImportService:
         )
         source_inventory_before = build_source_inventory(normalized_records)
         run_id: Optional[str] = None
-        if not dry_run:
-            run = self.store.start_ingestion_run(
-                tenant_id=tenant,
-                source_system=source_system,
-                source_ref=normalized_source_ref,
-                run_kind="timeline_import",
-                idempotency_key=idempotency_key or input_hash,
-                input_hash=input_hash,
-                metadata={
-                    "schema_version": CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION,
-                    "records": len(normalized_records),
-                    "safety": timeline_ingestion_safety_contract(),
-                },
-                actor=actor,
-            )
-            run_id = run.run_id
 
         accepted = 0
         errors: list[TimelineImportError] = []
         normalized_counts = zero_normalized_counts()
         write_status_counts: dict[str, int] = {}
-        batches: list[TimelineNormalizedBatch] = []
+        raw_batches: list[TimelineNormalizedBatch] = []
         for record in normalized_records:
             try:
                 batch = normalizer.normalize(record)
-                batches.append(batch)
-                merge_counts(normalized_counts, batch.counts())
+                raw_batches.append(batch)
                 accepted += 1
             except Exception as exc:  # noqa: BLE001 - report per-record import errors, do not hide the batch.
                 errors.append(
@@ -264,10 +276,30 @@ class TimelineImportService:
                         message=str(exc),
                     )
                 )
+        resolution = resolve_customer_identity_batches(raw_batches, store=self.store if not dry_run else None)
+        batches = tuple(resolution.batches)
+        for batch in batches:
+            merge_counts(normalized_counts, batch.counts())
+        normalized_counts["customer_id_mappings"] = len(resolution.mappings)
         inferred_conflicts = infer_identity_conflicts(batches)
         normalized_counts["conflicts"] = normalized_counts.get("conflicts", 0) + len(inferred_conflicts)
         if not dry_run:
             with self.store.bulk_write():
+                run = self.store.start_ingestion_run(
+                    tenant_id=tenant,
+                    source_system=source_system,
+                    source_ref=normalized_source_ref,
+                    run_kind="timeline_import",
+                    idempotency_key=idempotency_key or input_hash,
+                    input_hash=input_hash,
+                    metadata={
+                        "schema_version": CUSTOMER_TIMELINE_INGESTION_SCHEMA_VERSION,
+                        "records": len(normalized_records),
+                        "safety": timeline_ingestion_safety_contract(),
+                    },
+                    actor=actor,
+                )
+                run_id = run.run_id
                 for batch in batches:
                     for result in self._apply_batch(batch, actor=actor, ingestion_run_id=run_id):
                         write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
@@ -280,6 +312,18 @@ class TimelineImportService:
                         status=conflict.get("status") or "open",
                         summary=conflict.get("summary"),
                         metadata=conflict.get("metadata") or {},
+                        actor=actor,
+                        ingestion_run_id=run_id,
+                    )
+                    write_status_counts[result.status] = write_status_counts.get(result.status, 0) + 1
+                for mapping in resolution.mappings:
+                    result = self.store.record_customer_id_mapping(
+                        mapping.tenant_id,
+                        old_customer_id=mapping.old_customer_id,
+                        new_customer_id=mapping.new_customer_id,
+                        reason=mapping.reason,
+                        source_refs=mapping.source_refs,
+                        metadata=mapping.metadata,
                         actor=actor,
                         ingestion_run_id=run_id,
                     )
@@ -1126,6 +1170,412 @@ def conflict_from_payload(tenant_id: str, payload: Mapping[str, Any], source_ref
     )
 
 
+def resolve_customer_identity_batches(
+    batches: Sequence[TimelineNormalizedBatch],
+    *,
+    store: Optional[CustomerTimelineSQLiteStore] = None,
+) -> CustomerIdResolutionResult:
+    normalized_batches = tuple(batches)
+    customers_by_id: dict[str, CustomerIdentity] = {}
+    links_by_customer: dict[str, list[IdentityLink]] = {}
+    source_refs_by_customer: dict[str, set[str]] = {}
+    phone_to_customers: dict[tuple[str, str], set[str]] = {}
+    phone_to_tallanto_students: dict[tuple[str, str], set[str]] = {}
+    existing_customer_ids: set[str] = set()
+
+    for batch in normalized_batches:
+        for customer in batch.customers:
+            customers_by_id[customer.customer_id] = customer
+            refs = source_refs_by_customer.setdefault(customer.customer_id, set())
+            if customer.source_ref:
+                refs.add(customer.source_ref)
+        for link in batch.identity_links:
+            if not link.customer_id:
+                continue
+            links_by_customer.setdefault(link.customer_id, []).append(link)
+            source_refs_by_customer.setdefault(link.customer_id, set()).add(link.source_ref)
+            if link.link_type.value in {"phone", "mango_client_phone"}:
+                phone_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(link.customer_id)
+    if store is not None:
+        existing_customer_ids = _load_existing_identity_context(
+            store=store,
+            customers_by_id=customers_by_id,
+            links_by_customer=links_by_customer,
+            source_refs_by_customer=source_refs_by_customer,
+            phone_to_customers=phone_to_customers,
+        )
+
+    tallanto_by_customer: dict[str, set[str]] = {}
+    for customer_id, links in links_by_customer.items():
+        for link in links:
+            if link.link_type.value == "tallanto_student_id":
+                tallanto_by_customer.setdefault(customer_id, set()).add(link.link_value)
+    for phone_key, customer_ids in phone_to_customers.items():
+        students: set[str] = set()
+        for customer_id in customer_ids:
+            students.update(tallanto_by_customer.get(customer_id, set()))
+        if students:
+            phone_to_tallanto_students[phone_key] = students
+
+    family_phone_keys = {
+        phone_key
+        for phone_key, student_ids in phone_to_tallanto_students.items()
+        if len(student_ids) > 1
+    }
+
+    parent = {customer_id: customer_id for customer_id in customers_by_id}
+
+    def find(customer_id: str) -> str:
+        while parent[customer_id] != customer_id:
+            parent[customer_id] = parent[parent[customer_id]]
+            customer_id = parent[customer_id]
+        return customer_id
+
+    def union(left: str, right: str) -> None:
+        root_left = find(left)
+        root_right = find(right)
+        if root_left == root_right:
+            return
+        keep, move = sorted((root_left, root_right))
+        parent[move] = keep
+
+    for phone_key, customer_ids in sorted(phone_to_customers.items()):
+        if phone_key in family_phone_keys or len(customer_ids) < 2:
+            continue
+        ordered_ids = sorted(customer_ids)
+        for customer_id in ordered_ids[1:]:
+            union(ordered_ids[0], customer_id)
+
+    groups: dict[str, list[str]] = {}
+    for customer_id in sorted(customers_by_id):
+        groups.setdefault(find(customer_id), []).append(customer_id)
+
+    new_id_by_old: dict[str, str] = {}
+    reason_by_old: dict[str, str] = {}
+    merged_customers: dict[str, CustomerIdentity] = {}
+    for members in groups.values():
+        shared_phone = _single_shared_phone(members, phone_to_customers, family_phone_keys)
+        tenant_id = customers_by_id[members[0]].tenant_id
+        if len(members) > 1 and shared_phone:
+            existing_members = sorted(customer_id for customer_id in members if customer_id in existing_customer_ids)
+            new_customer_id = existing_members[0] if existing_members else stable_customer_id(tenant_id=tenant_id, primary_phone=shared_phone)
+            reason = "phone_identity_union"
+        elif any(_customer_has_family_phone(member, phone_to_customers, family_phone_keys) for member in members):
+            new_customer_id = members[0]
+            reason = "family_phone_ambiguous"
+        else:
+            new_customer_id = members[0]
+            reason = "unchanged"
+        for old_customer_id in members:
+            new_id_by_old[old_customer_id] = new_customer_id
+            reason_by_old[old_customer_id] = reason
+        merged_customers[new_customer_id] = _merge_customers(
+            tuple(customers_by_id[customer_id] for customer_id in members),
+            new_customer_id=new_customer_id,
+            reason=reason,
+            source_refs=tuple(sorted(set().union(*(source_refs_by_customer.get(customer_id, set()) for customer_id in members)))),
+            links=tuple(link for customer_id in members for link in links_by_customer.get(customer_id, ())),
+        )
+
+    resolved_batches: list[TimelineNormalizedBatch] = []
+    mappings: list[CustomerIdResolutionMapping] = []
+    for batch in normalized_batches:
+        opportunity_id_by_old: dict[str, str] = {}
+        rewritten_customers: list[CustomerIdentity] = []
+        seen_customer_ids: set[str] = set()
+        for customer in batch.customers:
+            new_customer_id = new_id_by_old[customer.customer_id]
+            if new_customer_id not in seen_customer_ids:
+                rewritten_customers.append(merged_customers[new_customer_id])
+                seen_customer_ids.add(new_customer_id)
+            mappings.append(
+                CustomerIdResolutionMapping(
+                    tenant_id=customer.tenant_id,
+                    old_customer_id=customer.customer_id,
+                    new_customer_id=new_customer_id,
+                    reason=reason_by_old[customer.customer_id],
+                    source_refs=tuple(sorted(source_refs_by_customer.get(customer.customer_id, ()))),
+                    metadata={
+                        "brand_history": _customer_brand_values(customer),
+                        "changed": customer.customer_id != new_customer_id,
+                    },
+                )
+            )
+
+        rewritten_links = tuple(
+            replace(link, customer_id=new_id_by_old.get(link.customer_id, link.customer_id))
+            for link in batch.identity_links
+        )
+        rewritten_opportunities: list[CustomerOpportunity] = []
+        for opportunity in batch.opportunities:
+            new_customer_id = new_id_by_old.get(opportunity.customer_id, opportunity.customer_id)
+            changed = new_customer_id != opportunity.customer_id
+            rewritten = replace(
+                opportunity,
+                customer_id=new_customer_id,
+                opportunity_id=None if changed else opportunity.opportunity_id,
+            )
+            opportunity_id_by_old[opportunity.opportunity_id] = rewritten.opportunity_id
+            rewritten_opportunities.append(rewritten)
+        rewritten_events = tuple(
+            replace(
+                event,
+                customer_id=new_id_by_old.get(event.customer_id, event.customer_id) if event.customer_id else None,
+                opportunity_id=opportunity_id_by_old.get(event.opportunity_id, event.opportunity_id)
+                if event.opportunity_id
+                else None,
+            )
+            for event in batch.events
+        )
+        rewritten_signals = tuple(
+            replace(
+                signal,
+                customer_id=new_id_by_old.get(signal.customer_id, signal.customer_id) if signal.customer_id else None,
+                opportunity_id=opportunity_id_by_old.get(signal.opportunity_id, signal.opportunity_id)
+                if signal.opportunity_id
+                else None,
+                signal_id=None
+                if (
+                    (signal.customer_id and new_id_by_old.get(signal.customer_id, signal.customer_id) != signal.customer_id)
+                    or (signal.opportunity_id and opportunity_id_by_old.get(signal.opportunity_id, signal.opportunity_id) != signal.opportunity_id)
+                )
+                else signal.signal_id,
+            )
+            for signal in batch.signals
+        )
+        rewritten_chunks = tuple(
+            replace(
+                chunk,
+                customer_id=new_id_by_old.get(chunk.customer_id, chunk.customer_id),
+                opportunity_id=opportunity_id_by_old.get(chunk.opportunity_id, chunk.opportunity_id)
+                if chunk.opportunity_id
+                else None,
+                chunk_id=None
+                if (
+                    new_id_by_old.get(chunk.customer_id, chunk.customer_id) != chunk.customer_id
+                    or (chunk.opportunity_id and opportunity_id_by_old.get(chunk.opportunity_id, chunk.opportunity_id) != chunk.opportunity_id)
+                )
+                else chunk.chunk_id,
+            )
+            for chunk in batch.bot_context_chunks
+        )
+        resolved_batches.append(
+            TimelineNormalizedBatch(
+                source_record=batch.source_record,
+                customers=tuple(rewritten_customers),
+                identity_links=rewritten_links,
+                opportunities=tuple(rewritten_opportunities),
+                events=rewritten_events,
+                artifacts=batch.artifacts,
+                signals=rewritten_signals,
+                bot_context_chunks=rewritten_chunks,
+                conflicts=batch.conflicts,
+            )
+        )
+    return CustomerIdResolutionResult(batches=tuple(resolved_batches), mappings=tuple(mappings))
+
+
+def _load_existing_identity_context(
+    *,
+    store: CustomerTimelineSQLiteStore,
+    customers_by_id: dict[str, CustomerIdentity],
+    links_by_customer: dict[str, list[IdentityLink]],
+    source_refs_by_customer: dict[str, set[str]],
+    phone_to_customers: dict[tuple[str, str], set[str]],
+) -> set[str]:
+    existing_customer_ids: set[str] = set()
+    identity_queries: set[tuple[str, str, str]] = set()
+    for links in links_by_customer.values():
+        for link in links:
+            if link.link_type.value == "mango_client_phone":
+                identity_queries.add((link.tenant_id, "phone", link.link_value))
+                identity_queries.add((link.tenant_id, "mango_client_phone", link.link_value))
+            elif link.link_type.value in {"phone", "email"}:
+                identity_queries.add((link.tenant_id, link.link_type.value, link.link_value))
+    for tenant_id, link_type, link_value in sorted(identity_queries):
+        for payload in store.list_identity_links(tenant_id, link_type=link_type, link_value=link_value, limit=500):
+            customer_id = optional_text(payload.get("customer_id"))
+            if not customer_id:
+                continue
+            existing_customer_ids.add(customer_id)
+            if customer_id not in customers_by_id:
+                customer_payload = store.get_customer(tenant_id, customer_id)
+                if customer_payload:
+                    customers_by_id[customer_id] = customer_identity_from_json(customer_payload)
+            link = identity_link_from_json(payload)
+            links_by_customer.setdefault(customer_id, []).append(link)
+            source_refs_by_customer.setdefault(customer_id, set()).add(link.source_ref)
+            if link.link_type.value in {"phone", "mango_client_phone"}:
+                phone_to_customers.setdefault((link.tenant_id, link.link_value), set()).add(customer_id)
+            for tallanto_payload in store.list_identity_links(tenant_id, customer_id=customer_id, link_type="tallanto_student_id", limit=500):
+                tallanto_link = identity_link_from_json(tallanto_payload)
+                links_by_customer.setdefault(customer_id, []).append(tallanto_link)
+                source_refs_by_customer.setdefault(customer_id, set()).add(tallanto_link.source_ref)
+    return existing_customer_ids
+
+
+def customer_identity_from_json(payload: Mapping[str, Any]) -> CustomerIdentity:
+    return CustomerIdentity(
+        tenant_id=payload["tenant_id"],
+        identity_status=payload["identity_status"],
+        customer_id=payload["customer_id"],
+        display_name=payload.get("display_name"),
+        primary_phone=payload.get("primary_phone"),
+        primary_email=payload.get("primary_email"),
+        source_ref=payload.get("source_ref"),
+        first_seen_at=parse_source_datetime(payload.get("first_seen_at")) if payload.get("first_seen_at") else None,
+        last_seen_at=parse_source_datetime(payload.get("last_seen_at")) if payload.get("last_seen_at") else None,
+        touch_count=int(payload.get("touch_count") or 0),
+        summary=payload.get("summary") or {},
+        metadata=payload.get("metadata") or {},
+        created_at=parse_source_datetime(payload.get("created_at")),
+        updated_at=parse_source_datetime(payload.get("updated_at")),
+    )
+
+
+def identity_link_from_json(payload: Mapping[str, Any]) -> IdentityLink:
+    return IdentityLink(
+        tenant_id=payload["tenant_id"],
+        link_id=payload.get("link_id"),
+        customer_id=payload.get("customer_id"),
+        link_type=payload["link_type"],
+        link_value=payload["link_value"],
+        source_system=payload["source_system"],
+        source_ref=payload["source_ref"],
+        match_class=payload.get("match_class") or IdentityMatchClass.STRONG_UNIQUE,
+        confidence=payload.get("confidence"),
+        evidence=payload.get("evidence") or {},
+        first_seen_at=parse_source_datetime(payload.get("first_seen_at")) if payload.get("first_seen_at") else None,
+        last_seen_at=parse_source_datetime(payload.get("last_seen_at")) if payload.get("last_seen_at") else None,
+    )
+
+
+def _single_shared_phone(
+    customer_ids: Sequence[str],
+    phone_to_customers: Mapping[tuple[str, str], set[str]],
+    family_phone_keys: set[tuple[str, str]],
+) -> Optional[str]:
+    member_set = set(customer_ids)
+    phones = [
+        phone
+        for phone_key, owners in phone_to_customers.items()
+        for _tenant_id, phone in (phone_key,)
+        if phone_key not in family_phone_keys and len(member_set & owners) >= 2
+    ]
+    unique_phones = sorted(set(phones))
+    return unique_phones[0] if len(unique_phones) == 1 else None
+
+
+def _customer_has_family_phone(
+    customer_id: str,
+    phone_to_customers: Mapping[tuple[str, str], set[str]],
+    family_phone_keys: set[tuple[str, str]],
+) -> bool:
+    return any(customer_id in phone_to_customers[phone_key] for phone_key in family_phone_keys)
+
+
+def _merge_customers(
+    customers: Sequence[CustomerIdentity],
+    *,
+    new_customer_id: str,
+    reason: str,
+    source_refs: Sequence[str],
+    links: Sequence[IdentityLink],
+) -> CustomerIdentity:
+    ordered = tuple(sorted(customers, key=lambda item: (item.first_seen_at or item.created_at, item.customer_id)))
+    first = ordered[0]
+    phones = sorted({link.link_value for link in links if link.link_type.value in {"phone", "mango_client_phone"}})
+    emails = sorted({link.link_value for link in links if link.link_type.value == "email"})
+    first_seen = min((item.first_seen_at for item in ordered if item.first_seen_at), default=None)
+    last_seen = max((item.last_seen_at for item in ordered if item.last_seen_at), default=None)
+    brands = sorted({brand for item in ordered for brand in _customer_brand_values(item)})
+    source_systems = sorted({str(item.summary.get("source_system")) for item in ordered if item.summary.get("source_system")})
+    source_customer_ids = tuple(item.customer_id for item in ordered)
+    summary = dict(first.summary)
+    summary.update(
+        {
+            "identity_resolution": reason,
+            "source_customer_ids": list(source_customer_ids),
+            "source_systems": source_systems,
+        }
+    )
+    if brands:
+        summary["brands"] = brands
+    metadata = dict(first.metadata)
+    metadata.update(
+        {
+            "identity_resolution": reason,
+            "source_customer_ids": list(source_customer_ids),
+            "source_refs": list(source_refs),
+        }
+    )
+    if brands:
+        metadata["brands"] = brands
+    return CustomerIdentity(
+        tenant_id=first.tenant_id,
+        identity_status=_merged_identity_status(ordered, primary_phone=phones[0] if phones else None, primary_email=emails[0] if emails else None),
+        customer_id=new_customer_id,
+        display_name=next((item.display_name for item in ordered if item.display_name), None),
+        primary_phone=phones[0] if len(phones) == 1 else first.primary_phone,
+        primary_email=emails[0] if len(emails) == 1 else first.primary_email,
+        source_ref=f"identity_resolution:{new_customer_id}",
+        first_seen_at=first_seen,
+        last_seen_at=last_seen,
+        touch_count=sum(item.touch_count for item in ordered),
+        summary=summary,
+        metadata=metadata,
+        created_at=min(item.created_at for item in ordered),
+        updated_at=max(item.updated_at for item in ordered),
+    )
+
+
+def _merged_identity_status(
+    customers: Sequence[CustomerIdentity],
+    *,
+    primary_phone: Optional[str],
+    primary_email: Optional[str],
+) -> IdentityStatus:
+    statuses = {item.identity_status for item in customers}
+    if IdentityStatus.AMBIGUOUS in statuses:
+        return IdentityStatus.AMBIGUOUS
+    if IdentityStatus.UNMATCHED in statuses and len(statuses) == 1:
+        return IdentityStatus.UNMATCHED
+    return IdentityStatus.STRONG if primary_phone or primary_email else IdentityStatus.PARTIAL
+
+
+def _customer_brand_values(customer: CustomerIdentity) -> tuple[str, ...]:
+    values: set[str] = set()
+    for source in (customer.summary, customer.metadata):
+        raw = source.get("brands") or source.get("brand")
+        if isinstance(raw, str):
+            values.update(brand_values_from_text(raw))
+        elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+            for item in raw:
+                values.update(brand_values_from_text(item))
+    return tuple(sorted(values))
+
+
+def brand_values_from_text(value: Any) -> tuple[str, ...]:
+    text = optional_text(value)
+    if not text:
+        return ()
+    values: set[str] = set()
+    for raw_part in re.split(r"[,;|/]+", text):
+        part = raw_part.strip().casefold()
+        if not part or part == "unknown":
+            continue
+        if part in {"foton", "фотон"} or "фотон" in part:
+            values.add("foton")
+        elif part in {"unpk", "унпк"} or "унпк" in part or "мфти" in part:
+            values.add("unpk")
+        else:
+            try:
+                values.add(normalize_key(part, "brand"))
+            except ValueError:
+                continue
+    return tuple(sorted(values))
+
+
 def infer_identity_conflicts(batches: Sequence[TimelineNormalizedBatch]) -> tuple[Mapping[str, Any], ...]:
     by_identity_value: dict[tuple[str, str, str], set[str]] = {}
     refs_by_identity_value: dict[tuple[str, str, str], set[str]] = {}
@@ -1296,6 +1746,8 @@ def mail_participants(from_email: Optional[str], to_email: Optional[str]) -> tup
 def channel_link_type(channel: str) -> str:
     if channel.startswith("telegram") or channel == "tg":
         return "telegram_user_id"
+    if channel.startswith("whatsapp") or channel in {"wa", "wappi"}:
+        return "whatsapp_user_id"
     if channel.startswith("max"):
         return "max_user_id"
     if "web" in channel or "site" in channel:
@@ -1306,6 +1758,8 @@ def channel_link_type(channel: str) -> str:
 def channel_event_type(channel: str) -> TimelineEventType:
     if channel.startswith("telegram") or channel == "tg":
         return TimelineEventType.TELEGRAM_MESSAGE
+    if channel.startswith("whatsapp") or channel in {"wa", "wappi"}:
+        return TimelineEventType.WHATSAPP_MESSAGE
     if channel.startswith("max"):
         return TimelineEventType.MAX_MESSAGE
     return TimelineEventType.WEB_CHAT_MESSAGE

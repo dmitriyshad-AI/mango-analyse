@@ -1,0 +1,10 @@
+pyproject.toml
+uv.lock
+src/mango_mvp/customer_timeline/canonical_readonly_import.py
+src/mango_mvp/services/analyze.py
+src/mango_mvp/cli.py
+tests/test_customer_timeline_canonical_readonly_import.py
+tests/test_analysis_schema.py
+tasks/_done/2026-06-20_TZ_uskoreniya_3_punkta_report.md
+audits/_inbox/tz_uskoreniya_3_punkta_20260620_124623/manifest.json
+audits/_inbox/tz_uskoreniya_3_punkta_20260620_124623/post_rebase_verification.md

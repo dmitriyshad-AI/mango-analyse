@@ -19,6 +19,7 @@ from mango_mvp.customer_timeline import (
     IdentityStatus,
     OpportunityType,
     SignalSeverity,
+    SignalStatus,
     TimelineDirection,
     TimelineEvent,
     TimelineEventType,
@@ -441,8 +442,42 @@ def test_derived_signal_supports_multiple_source_events_and_serializes() -> None
     assert signal.signal_id.startswith("derived_signal:")
     assert signal.source_event_ids == ("timeline_event:1", "timeline_event:2")
     assert payload["severity"] == "medium"
+    assert payload["status"] == "active"
+    assert payload["expires_at"] is None
     assert payload["requires_manager_review"] is True
     json.dumps(payload, ensure_ascii=False)
+
+
+def test_derived_signal_status_and_expires_at_are_serialized_but_not_in_stable_id() -> None:
+    base = DerivedSignal(
+        tenant_id="foton",
+        customer_id="customer:1",
+        event_id="timeline_event:1",
+        source_event_ids=("timeline_event:1",),
+        signal_type="paid_no_access",
+        severity=SignalSeverity.HIGH,
+        evidence_text="Оплата есть, активного доступа нет.",
+        status=SignalStatus.ACTIVE,
+        expires_at=NOW + timedelta(days=14),
+        created_at=NOW,
+    )
+    resolved = DerivedSignal(
+        tenant_id="foton",
+        customer_id="customer:1",
+        event_id="timeline_event:1",
+        source_event_ids=("timeline_event:1",),
+        signal_type="paid_no_access",
+        severity=SignalSeverity.HIGH,
+        evidence_text="Оплата есть, активного доступа нет.",
+        status=SignalStatus.RESOLVED,
+        expires_at=NOW + timedelta(days=30),
+        created_at=NOW,
+    )
+
+    assert base.signal_id == resolved.signal_id
+    assert base.to_json_dict()["status"] == "active"
+    assert resolved.to_json_dict()["status"] == "resolved"
+    assert base.to_json_dict()["expires_at"] == "2026-05-26T12:00:00+00:00"
 
 
 @pytest.mark.parametrize(
@@ -450,9 +485,11 @@ def test_derived_signal_supports_multiple_source_events_and_serializes() -> None
     [
         ({"signal_type": ""}, "signal_type must not be empty"),
         ({"severity": "urgent"}, "'urgent' is not a valid SignalSeverity"),
+        ({"status": "closed"}, "'closed' is not a valid SignalStatus"),
         ({"evidence_text": ""}, "evidence_text must not be empty"),
         ({"confidence": -0.1}, "confidence must be between 0 and 1"),
         ({"created_at": datetime(2026, 5, 12, 12, 0)}, "created_at must be timezone-aware"),
+        ({"expires_at": datetime(2026, 5, 19, 12, 0)}, "expires_at must be timezone-aware"),
     ],
 )
 def test_derived_signal_validation(kwargs: dict, error: str) -> None:
@@ -578,5 +615,7 @@ def test_contract_inventory_lists_core_types_and_safety() -> None:
 
     assert "TimelineEvent" in inventory["contracts"]
     assert "mango_call" in inventory["event_types"]
+    assert "whatsapp_message" in inventory["event_types"]
     assert "email" in inventory["identity_link_types"]
+    assert "whatsapp_phone" in inventory["identity_link_types"]
     assert inventory["safety"]["write_crm"] is False

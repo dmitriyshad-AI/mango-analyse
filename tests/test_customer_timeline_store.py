@@ -399,6 +399,25 @@ def test_bulk_write_defers_commit_and_rolls_back_on_error(tmp_path: Path) -> Non
     store.close()
 
 
+def test_bulk_write_rebuilds_fts_after_commit(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    customer = identity()
+    ev = event(customer)
+
+    with store.bulk_write():
+        store.upsert_customer(customer)
+        store.upsert_event(ev)
+        store.upsert_bot_context_chunk(chunk(ev))
+
+    result = store.search_timeline("foton", "стоимость", limit=10)
+    scopes = {item["scope"] for item in result["items"]}
+
+    assert result["backend"] in {"fts5", "fallback_like"}
+    assert "event" in scopes
+    assert "bot_context" in scopes
+    store.close()
+
+
 def test_path_guard_rejects_runtime_outside_and_stable_runtime_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="stable_runtime"):
         CustomerTimelineSQLiteStore(tmp_path / "stable_runtime" / "customer_timeline.sqlite", allowed_root=tmp_path)

@@ -321,6 +321,7 @@ class CustomerTimelineSQLiteStore:
         self._clock = clock or now_utc
         self._bulk_write_depth = 0
         self._bulk_write_dirty = False
+        self._bulk_fts_dirty = False
         self._writer_lock_path: Optional[Path] = None
         self._writer_lock_handle: Any = None
         if not self.read_only:
@@ -361,6 +362,8 @@ class CustomerTimelineSQLiteStore:
         """Defer per-record commits until the end of a local batch write."""
         self._ensure_writable()
         outermost = self._bulk_write_depth == 0
+        if outermost:
+            self._bulk_fts_dirty = False
         self._bulk_write_depth += 1
         try:
             yield self
@@ -368,14 +371,18 @@ class CustomerTimelineSQLiteStore:
             if outermost:
                 self._con.rollback()
                 self._bulk_write_dirty = False
+                self._bulk_fts_dirty = False
             raise
         else:
             if outermost and self._bulk_write_dirty:
+                if self._bulk_fts_dirty:
+                    self._rebuild_fts_indexes()
                 self._con.commit()
         finally:
             self._bulk_write_depth -= 1
             if outermost:
                 self._bulk_write_dirty = False
+                self._bulk_fts_dirty = False
 
     @property
     def open_result(self) -> CustomerTimelineSQLiteOpenResult:
@@ -822,7 +829,9 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
             commit=False,
         )
-        if result.status != "duplicate":
+        if result.status != "duplicate" and self._bulk_write_depth > 0:
+            self._bulk_fts_dirty = True
+        elif result.status != "duplicate":
             self._sync_event_fts(event, payload, record_hash)
         self._commit()
         return result
@@ -947,7 +956,9 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
             commit=False,
         )
-        if result.status != "duplicate":
+        if result.status != "duplicate" and self._bulk_write_depth > 0:
+            self._bulk_fts_dirty = True
+        elif result.status != "duplicate":
             self._sync_chunk_fts(chunk, record_hash)
         self._commit()
         return result
@@ -2001,6 +2012,79 @@ class CustomerTimelineSQLiteStore:
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'timeline_event_fts'"
         )
         return row is not None
+
+    def _rebuild_fts_indexes(self) -> None:
+        if not sqlite_fts5_available(self._con):
+            self._fts_enabled = False
+            return
+        self._bootstrap_fts()
+        self._con.execute("DELETE FROM timeline_event_fts")
+        self._con.execute("DELETE FROM timeline_event_fts_keys")
+        for row in self._con.execute(
+            """
+            SELECT
+              tenant_id, event_id, customer_id, opportunity_id, event_type,
+              source_system, event_at, subject, text_preview, summary, record_json, record_hash
+            FROM timeline_events
+            ORDER BY event_at, event_id
+            """
+        ):
+            payload = json_loads(row["record_json"])
+            record_for_fts = event_record_for_fts(payload)
+            self._con.execute(
+                """
+                INSERT INTO timeline_event_fts (
+                  tenant_id, event_id, customer_id, opportunity_id, event_type,
+                  source_system, event_at, subject, text_preview, summary, record_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["tenant_id"],
+                    row["event_id"],
+                    row["customer_id"],
+                    row["opportunity_id"],
+                    row["event_type"],
+                    row["source_system"],
+                    row["event_at"],
+                    row["subject"],
+                    row["text_preview"],
+                    row["summary"],
+                    json_dumps({"hash": row["record_hash"], "record": record_for_fts}),
+                ),
+            )
+            self._con.execute("INSERT OR REPLACE INTO timeline_event_fts_keys(event_id) VALUES (?)", (row["event_id"],))
+        self._con.execute("DELETE FROM bot_context_chunk_fts")
+        for row in self._con.execute(
+            """
+            SELECT
+              tenant_id, chunk_id, customer_id, opportunity_id, event_id,
+              event_at, record_json, record_hash
+            FROM bot_context_chunks
+            ORDER BY event_at, chunk_id
+            """
+        ):
+            payload = json_loads(row["record_json"])
+            self._con.execute(
+                """
+                INSERT INTO bot_context_chunk_fts (
+                  tenant_id, chunk_id, customer_id, opportunity_id, event_id,
+                  event_at, text, summary
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["tenant_id"],
+                    row["chunk_id"],
+                    row["customer_id"],
+                    row["opportunity_id"],
+                    row["event_id"],
+                    row["event_at"] or "",
+                    payload.get("text") or "",
+                    f"{payload.get('summary') or ''} {row['record_hash']}",
+                ),
+            )
+        self._fts_enabled = True
 
     def _sync_event_fts(self, event: TimelineEvent, payload: Mapping[str, Any], record_hash: str) -> None:
         if not self._fts_enabled and not self._detect_existing_fts():

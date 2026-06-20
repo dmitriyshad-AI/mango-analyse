@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from mango_mvp.customer_timeline import (
 )
 from mango_mvp.customer_timeline.canonical_readonly_import import infer_brand, infer_offline_brand, split_ids, tallanto_match_class
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore
 
 
 NOW = datetime(2026, 5, 21, 9, 0, tzinfo=timezone.utc)
@@ -216,6 +219,32 @@ def _config(tmp_path: Path) -> CanonicalReadonlyTimelineConfig:
 def _table_count(db_path: Path, table: str) -> int:
     with sqlite3.connect(db_path) as con:
         return int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def _logical_timeline_hash(db_path: Path) -> str:
+    table_keys = {
+        "customer_identities": "customer_id",
+        "identity_links": "link_id",
+        "customer_opportunities": "opportunity_id",
+        "timeline_events": "event_id",
+        "event_artifacts": "artifact_id",
+        "derived_signals": "signal_id",
+        "bot_context_chunks": "chunk_id",
+        "timeline_conflicts": "conflict_id",
+    }
+    digest = hashlib.sha256()
+    with sqlite3.connect(db_path) as con:
+        for table, key_column in sorted(table_keys.items()):
+            rows = con.execute(
+                f"SELECT {key_column}, record_hash FROM {table} ORDER BY {key_column}"
+            ).fetchall()
+            digest.update(table.encode("utf-8"))
+            for key, record_hash in rows:
+                digest.update(str(key).encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(str(record_hash).encode("utf-8"))
+                digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def test_builds_canonical_readonly_timeline_with_aggregate_coverage(tmp_path: Path) -> None:
@@ -474,11 +503,33 @@ def test_idempotent_rerun_keeps_store_counts_stable(tmp_path: Path) -> None:
     config = _config(tmp_path)
 
     first = build_canonical_readonly_customer_timeline(config)
+    first_hash = _logical_timeline_hash(config.timeline_db)
     second = build_canonical_readonly_customer_timeline(config)
+    second_hash = _logical_timeline_hash(config.timeline_db)
 
     assert first["summary"] == second["summary"]
+    assert first_hash == second_hash
     assert _table_count(config.timeline_db, "customer_identities") == 2
     assert _table_count(config.timeline_db, "timeline_events") >= 7
+
+
+def test_canonical_import_uses_single_bulk_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config(tmp_path)
+    original_bulk_write = CustomerTimelineSQLiteStore.bulk_write
+    calls = 0
+
+    @contextmanager
+    def counted_bulk_write(self: CustomerTimelineSQLiteStore):
+        nonlocal calls
+        calls += 1
+        with original_bulk_write(self) as bulk_store:
+            yield bulk_store
+
+    monkeypatch.setattr(CustomerTimelineSQLiteStore, "bulk_write", counted_bulk_write)
+
+    build_canonical_readonly_customer_timeline(config)
+
+    assert calls == 1
 
 
 def test_built_timeline_is_readable_by_existing_read_api(tmp_path: Path) -> None:

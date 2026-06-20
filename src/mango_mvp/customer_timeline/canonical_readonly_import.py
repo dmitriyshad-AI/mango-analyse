@@ -137,192 +137,199 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             },
             actor="canonical_readonly_timeline_import",
         )
-        family_groups = shared_family_phone_groups(customers_by_key)
-        family_phones = set(family_groups)
-        family_amo_contact_ids = {
-            phone: {safe_text(contact.get("contact_id")) for contact in amo_contacts_by_phone.get(phone, ()) if safe_text(contact.get("contact_id"))}
-            for phone in family_phones
-        }
-        family_amo_lead_ids = {
-            phone: {
-                lead_id
-                for contact in amo_contacts_by_phone.get(phone, ())
-                for lead_id in split_ids(contact.get("linked_lead_ids"))
+        with store.bulk_write():
+            family_groups = shared_family_phone_groups(customers_by_key)
+            family_phones = set(family_groups)
+            family_amo_contact_ids = {
+                phone: {
+                    safe_text(contact.get("contact_id"))
+                    for contact in amo_contacts_by_phone.get(phone, ())
+                    if safe_text(contact.get("contact_id"))
+                }
+                for phone in family_phones
             }
-            for phone in family_phones
-        }
-        for phone, items in family_groups.items():
-            customer_ids = tuple(item["customer"].customer_id for item in items)
-            tallanto_ids = tuple(sorted({tallanto_id for item in items for tallanto_id in split_ids(item["row"].get("ID Tallanto"))}))
-            result = store.record_conflict(
-                resolved.tenant_id,
-                conflict_type="shared_family_phone",
-                entity_refs=(
-                    f"phone_hash:{stable_digest({'phone': phone})[:16]}",
-                    *(f"customer:{customer_id}" for customer_id in customer_ids),
-                    *(f"tallanto_student:{tallanto_id}" for tallanto_id in tallanto_ids),
-                ),
-                severity="high",
-                status="open",
-                summary="One phone is linked to multiple Tallanto students; customers stay split.",
-                metadata={"phone_hash": stable_digest({"phone": phone})[:16], "tallanto_student_ids": list(tallanto_ids)},
-                actor="canonical_readonly_timeline_import",
-                ingestion_run_id=run.run_id,
-            )
-            imported_counts[result.record_type] += 1
-            write_status_counts[result.status] += 1
-            manual_review_counts.update(["shared_family_phone"])
-
-        for customer_key in sorted(customers_by_key):
-            item = customers_by_key[customer_key]
-            phone = item["phone"]
-            row = item["row"]
-            customer = item["customer"]
-            brand = infer_offline_brand(row)
-            brand_counts[brand] += 1
-            effective_duplicate_amo_contact_ids = set(duplicate_amo_contact_ids)
-            effective_duplicate_amo_lead_ids = set(duplicate_amo_lead_ids)
-            if phone in family_phones:
-                effective_duplicate_amo_contact_ids.update(family_amo_contact_ids.get(phone, set()))
-                effective_duplicate_amo_lead_ids.update(family_amo_lead_ids.get(phone, set()))
-            reasons = manual_review_reasons(
-                row=row,
-                calls=calls_by_phone.get(phone, ()),
-                mail=mail_by_phone.get(phone),
-                duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
-                duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
-                extra_reasons=tuple(shared_amo_reasons_by_phone.get(phone, ()))
-                + (("shared_family_phone",) if phone in family_phones else ()),
-            )
-            manual_review_counts.update(reasons)
-            for result in upsert_customer_bundle(
-                store,
-                tenant_id=resolved.tenant_id,
-                customer=customer,
-                row=row,
-                brand=brand,
-                generated_at=generated_at,
-                ingestion_run_id=run.run_id,
-                duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
-                duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
-                phone_match_class=IdentityMatchClass.AMBIGUOUS if phone in family_phones else IdentityMatchClass.STRONG_UNIQUE,
-                phone_confidence=0.55 if phone in family_phones else 0.95,
-            ):
-                imported_counts[result.record_type] += 1
-                write_status_counts[result.status] += 1
-            mapping_result = store.record_customer_id_mapping(
-                resolved.tenant_id,
-                old_customer_id=customer.customer_id,
-                new_customer_id=customer.customer_id,
-                mapping_kind="alias",
-                reason="canonical_readonly_identity",
-                source_refs=(customer.source_ref or customer.customer_id,),
-                actor="canonical_readonly_timeline_import",
-                ingestion_run_id=run.run_id,
-            )
-            imported_counts[mapping_result.record_type] += 1
-            write_status_counts[mapping_result.status] += 1
-            if phone in family_phones:
-                split_mapping = store.record_customer_id_mapping(
+            family_amo_lead_ids = {
+                phone: {
+                    lead_id
+                    for contact in amo_contacts_by_phone.get(phone, ())
+                    for lead_id in split_ids(contact.get("linked_lead_ids"))
+                }
+                for phone in family_phones
+            }
+            for phone, items in family_groups.items():
+                customer_ids = tuple(item["customer"].customer_id for item in items)
+                tallanto_ids = tuple(
+                    sorted({tallanto_id for item in items for tallanto_id in split_ids(item["row"].get("ID Tallanto"))})
+                )
+                result = store.record_conflict(
                     resolved.tenant_id,
-                    old_customer_id=legacy_phone_customer_id(resolved.tenant_id, phone=phone, row=row),
-                    new_customer_id=customer.customer_id,
-                    mapping_kind="split",
-                    reason="shared_family_phone",
-                    source_refs=(customer.source_ref or customer.customer_id,),
-                    metadata={"phone_hash": stable_digest({"phone": phone})[:16]},
+                    conflict_type="shared_family_phone",
+                    entity_refs=(
+                        f"phone_hash:{stable_digest({'phone': phone})[:16]}",
+                        *(f"customer:{customer_id}" for customer_id in customer_ids),
+                        *(f"tallanto_student:{tallanto_id}" for tallanto_id in tallanto_ids),
+                    ),
+                    severity="high",
+                    status="open",
+                    summary="One phone is linked to multiple Tallanto students; customers stay split.",
+                    metadata={"phone_hash": stable_digest({"phone": phone})[:16], "tallanto_student_ids": list(tallanto_ids)},
                     actor="canonical_readonly_timeline_import",
                     ingestion_run_id=run.run_id,
                 )
-                imported_counts[split_mapping.record_type] += 1
-                write_status_counts[split_mapping.status] += 1
-            source_customer_counts[MASTER_CONTACT_SOURCE] += 1
-
-            for call in calls_by_phone.get(phone, ()):
-                event = call_event(
-                    tenant_id=resolved.tenant_id,
-                    customer_id=customer.customer_id,
-                    call=call,
-                    brand=brand,
-                    fallback_at=generated_at,
-                    source_id_suffix=customer.customer_id if phone in family_phones else None,
-                    match_class=IdentityMatchClass.AMBIGUOUS if phone in family_phones else IdentityMatchClass.STRONG_UNIQUE,
-                    confidence=0.55 if phone in family_phones else 0.9,
-                )
-                result = store.upsert_event(event, actor="canonical_readonly_timeline_import", ingestion_run_id=run.run_id)
                 imported_counts[result.record_type] += 1
                 write_status_counts[result.status] += 1
-                source_event_counts[MANGO_SOURCE] += 1
-                if event.summary:
-                    chunk = BotContextChunk(
-                        tenant_id=resolved.tenant_id,
-                        customer_id=customer.customer_id,
-                        event_id=event.event_id,
-                        source_ref=event.source_ref,
-                        source_system=MANGO_SOURCE,
-                        chunk_type="mango_call_summary",
-                        text=event.summary,
-                        summary=event.summary[:160],
-                        event_at=event.event_at,
-                        freshness_score=0.8,
-                        relevance_tags=("mango", "call", brand),
-                        allowed_for_bot=False,
-                        requires_manager_review=True,
-                        created_at=generated_at,
-                    )
-                    result = store.upsert_bot_context_chunk(
-                        chunk,
-                        actor="canonical_readonly_timeline_import",
-                        ingestion_run_id=run.run_id,
-                    )
-                    imported_counts[result.record_type] += 1
-                    write_status_counts[result.status] += 1
+                manual_review_counts.update(["shared_family_phone"])
 
-            for amo_contact in amo_contacts_by_phone.get(phone, ()):
-                for result in upsert_amo_snapshot(
+            for customer_key in sorted(customers_by_key):
+                item = customers_by_key[customer_key]
+                phone = item["phone"]
+                row = item["row"]
+                customer = item["customer"]
+                brand = infer_offline_brand(row)
+                brand_counts[brand] += 1
+                effective_duplicate_amo_contact_ids = set(duplicate_amo_contact_ids)
+                effective_duplicate_amo_lead_ids = set(duplicate_amo_lead_ids)
+                if phone in family_phones:
+                    effective_duplicate_amo_contact_ids.update(family_amo_contact_ids.get(phone, set()))
+                    effective_duplicate_amo_lead_ids.update(family_amo_lead_ids.get(phone, set()))
+                reasons = manual_review_reasons(
+                    row=row,
+                    calls=calls_by_phone.get(phone, ()),
+                    mail=mail_by_phone.get(phone),
+                    duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
+                    duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
+                    extra_reasons=tuple(shared_amo_reasons_by_phone.get(phone, ()))
+                    + (("shared_family_phone",) if phone in family_phones else ()),
+                )
+                manual_review_counts.update(reasons)
+                for result in upsert_customer_bundle(
                     store,
                     tenant_id=resolved.tenant_id,
-                    customer_id=customer.customer_id,
-                    amo_contact=amo_contact,
-                    deals_by_contact_id=amo_deals_by_contact_id,
+                    customer=customer,
+                    row=row,
                     brand=brand,
                     generated_at=generated_at,
                     ingestion_run_id=run.run_id,
                     duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
                     duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
+                    phone_match_class=IdentityMatchClass.AMBIGUOUS if phone in family_phones else IdentityMatchClass.STRONG_UNIQUE,
+                    phone_confidence=0.55 if phone in family_phones else 0.95,
                 ):
                     imported_counts[result.record_type] += 1
                     write_status_counts[result.status] += 1
-                source_event_counts[AMO_SOURCE] += 1
-
-            mail = mail_by_phone.get(phone)
-            if mail:
-                event = mail_aggregate_event(
-                    tenant_id=resolved.tenant_id,
-                    customer_id=customer.customer_id,
-                    mail=mail,
-                    brand=brand,
-                    fallback_at=generated_at,
+                mapping_result = store.record_customer_id_mapping(
+                    resolved.tenant_id,
+                    old_customer_id=customer.customer_id,
+                    new_customer_id=customer.customer_id,
+                    mapping_kind="alias",
+                    reason="canonical_readonly_identity",
+                    source_refs=(customer.source_ref or customer.customer_id,),
+                    actor="canonical_readonly_timeline_import",
+                    ingestion_run_id=run.run_id,
                 )
-                result = store.upsert_event(event, actor="canonical_readonly_timeline_import", ingestion_run_id=run.run_id)
-                imported_counts[result.record_type] += 1
-                write_status_counts[result.status] += 1
-                source_event_counts[MAIL_SOURCE] += 1
+                imported_counts[mapping_result.record_type] += 1
+                write_status_counts[mapping_result.status] += 1
+                if phone in family_phones:
+                    split_mapping = store.record_customer_id_mapping(
+                        resolved.tenant_id,
+                        old_customer_id=legacy_phone_customer_id(resolved.tenant_id, phone=phone, row=row),
+                        new_customer_id=customer.customer_id,
+                        mapping_kind="split",
+                        reason="shared_family_phone",
+                        source_refs=(customer.source_ref or customer.customer_id,),
+                        metadata={"phone_hash": stable_digest({"phone": phone})[:16]},
+                        actor="canonical_readonly_timeline_import",
+                        ingestion_run_id=run.run_id,
+                    )
+                    imported_counts[split_mapping.record_type] += 1
+                    write_status_counts[split_mapping.status] += 1
+                source_customer_counts[MASTER_CONTACT_SOURCE] += 1
 
-        store.finish_ingestion_run(
-            run.run_id,
-            status="completed",
-            accepted_count=len(customers_by_key),
-            rejected_count=0,
-            output_ref=str(resolved.timeline_db),
-            finished_at=generated_at,
-            metadata={
-                "imported_counts": dict(imported_counts),
-                "write_status_counts": dict(write_status_counts),
-                "manual_review_counts": dict(manual_review_counts),
-            },
-            actor="canonical_readonly_timeline_import",
-        )
+                for call in calls_by_phone.get(phone, ()):
+                    event = call_event(
+                        tenant_id=resolved.tenant_id,
+                        customer_id=customer.customer_id,
+                        call=call,
+                        brand=brand,
+                        fallback_at=generated_at,
+                        source_id_suffix=customer.customer_id if phone in family_phones else None,
+                        match_class=IdentityMatchClass.AMBIGUOUS if phone in family_phones else IdentityMatchClass.STRONG_UNIQUE,
+                        confidence=0.55 if phone in family_phones else 0.9,
+                    )
+                    result = store.upsert_event(event, actor="canonical_readonly_timeline_import", ingestion_run_id=run.run_id)
+                    imported_counts[result.record_type] += 1
+                    write_status_counts[result.status] += 1
+                    source_event_counts[MANGO_SOURCE] += 1
+                    if event.summary:
+                        chunk = BotContextChunk(
+                            tenant_id=resolved.tenant_id,
+                            customer_id=customer.customer_id,
+                            event_id=event.event_id,
+                            source_ref=event.source_ref,
+                            source_system=MANGO_SOURCE,
+                            chunk_type="mango_call_summary",
+                            text=event.summary,
+                            summary=event.summary[:160],
+                            event_at=event.event_at,
+                            freshness_score=0.8,
+                            relevance_tags=("mango", "call", brand),
+                            allowed_for_bot=False,
+                            requires_manager_review=True,
+                            created_at=generated_at,
+                        )
+                        result = store.upsert_bot_context_chunk(
+                            chunk,
+                            actor="canonical_readonly_timeline_import",
+                            ingestion_run_id=run.run_id,
+                        )
+                        imported_counts[result.record_type] += 1
+                        write_status_counts[result.status] += 1
+
+                for amo_contact in amo_contacts_by_phone.get(phone, ()):
+                    for result in upsert_amo_snapshot(
+                        store,
+                        tenant_id=resolved.tenant_id,
+                        customer_id=customer.customer_id,
+                        amo_contact=amo_contact,
+                        deals_by_contact_id=amo_deals_by_contact_id,
+                        brand=brand,
+                        generated_at=generated_at,
+                        ingestion_run_id=run.run_id,
+                        duplicate_amo_contact_ids=effective_duplicate_amo_contact_ids,
+                        duplicate_amo_lead_ids=effective_duplicate_amo_lead_ids,
+                    ):
+                        imported_counts[result.record_type] += 1
+                        write_status_counts[result.status] += 1
+                    source_event_counts[AMO_SOURCE] += 1
+
+                mail = mail_by_phone.get(phone)
+                if mail:
+                    event = mail_aggregate_event(
+                        tenant_id=resolved.tenant_id,
+                        customer_id=customer.customer_id,
+                        mail=mail,
+                        brand=brand,
+                        fallback_at=generated_at,
+                    )
+                    result = store.upsert_event(event, actor="canonical_readonly_timeline_import", ingestion_run_id=run.run_id)
+                    imported_counts[result.record_type] += 1
+                    write_status_counts[result.status] += 1
+                    source_event_counts[MAIL_SOURCE] += 1
+
+            store.finish_ingestion_run(
+                run.run_id,
+                status="completed",
+                accepted_count=len(customers_by_key),
+                rejected_count=0,
+                output_ref=str(resolved.timeline_db),
+                finished_at=generated_at,
+                metadata={
+                    "imported_counts": dict(imported_counts),
+                    "write_status_counts": dict(write_status_counts),
+                    "manual_review_counts": dict(manual_review_counts),
+                },
+                actor="canonical_readonly_timeline_import",
+            )
         store_summary = store.summary()
     except Exception as exc:
         if run is not None:

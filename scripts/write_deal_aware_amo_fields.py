@@ -46,6 +46,15 @@ from mango_mvp.deal_aware.amo_rollback import (  # noqa: E402
     call_with_retries,
     write_rollback_manifest,
 )
+from mango_mvp.deal_aware.amo_write_safety import (  # noqa: E402
+    DEFAULT_AMO_WRITEBACK_JOURNAL,
+    allowed_payload_after_pre_patch,
+    append_write_journal_rows,
+    blocking_pre_patch_reasons,
+    journal_rows_from_decisions,
+    load_last_written_sha,
+    pre_patch_write_decisions,
+)
 from mango_mvp.deal_aware.deal_writeback import (  # noqa: E402
     DealAwareStage6Paths,
     LIVE_CONFIRMATION,
@@ -81,6 +90,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume-from-report", default="")
     parser.add_argument("--require-commercial-fields", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument(
+        "--journal-path",
+        default=str(DEFAULT_AMO_WRITEBACK_JOURNAL),
+        help="JSONL журнал writeback-попыток. По умолчанию ~/.mango_local/amo_writeback/journal.jsonl.",
+    )
     return parser.parse_args(argv)
 
 
@@ -108,6 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             resume_from_report=Path(args.resume_from_report).expanduser().resolve() if args.resume_from_report else None,
             require_commercial_fields=args.require_commercial_fields,
             fail_fast=args.fail_fast,
+            journal_path=Path(args.journal_path).expanduser().resolve() if args.journal_path else None,
         )
 
     summary = run_deal_aware_stage6_preflight(
@@ -142,6 +157,7 @@ def run_live_write(
     resume_from_report: Path | None = None,
     require_commercial_fields: bool = False,
     fail_fast: bool = False,
+    journal_path: Path | None = None,
     session_factory=None,
     preflight_func=None,
     fetch_lead_func=None,
@@ -239,6 +255,9 @@ def run_live_write(
                 "preview_payload": dry_row.get("preview_payload", "{}"),
                 "snapshot_status": "",
                 "snapshot_rows": 0,
+                "pre_patch_status": "",
+                "pre_patch_reasons": "",
+                "journal_path": str(journal_path) if journal_path else "",
             }
             resume_key = f"{index}|{report_row['lead_id']}"
             if resume_key in resume_keys:
@@ -300,18 +319,72 @@ def run_live_write(
                     current_lead=current_lead,
                     field_catalog=field_catalog,
                     operator_approval_path=operator_approval,
+                    entity_type="lead",
+                    entity_id=report_row["lead_id"],
                 )
                 snapshot_writer(out_root, snapshot_rows)
                 report_row["snapshot_status"] = "saved"
                 report_row["snapshot_rows"] = len(snapshot_rows)
+                fresh_lead = call_with_retries(lambda: fetch_lead_func(session, lead_id=lead_id), retry_policy=retry_policy)
+                last_written = load_last_written_sha(journal_path, entity_type="lead", entity_id=lead_id)
+                decisions = pre_patch_write_decisions(
+                    snapshot_rows=snapshot_rows,
+                    current_entity=fresh_lead,
+                    last_written_sha=last_written,
+                )
+                allowed_payload = allowed_payload_after_pre_patch(payload, decisions)
+                blocked_reasons = blocking_pre_patch_reasons(decisions)
+                report_row["pre_patch_status"] = "allowed" if allowed_payload else "blocked"
+                report_row["pre_patch_reasons"] = " | ".join(blocked_reasons)
+                if not allowed_payload:
+                    report_row["status"] = "skipped"
+                    report_row["reason"] = "pre_patch_guard:" + " | ".join(blocked_reasons)
+                    append_write_journal_rows(
+                        journal_path,
+                        journal_rows_from_decisions(
+                            decisions,
+                            action_for_allowed="skipped",
+                            reason_for_allowed="pre_patch_not_allowed",
+                            snapshot_path=out_root / "pre_write_snapshot.jsonl",
+                            deal_id=lead_id,
+                        ),
+                    )
+                    report_rows.append(report_row)
+                    write_live_outputs(
+                        out_root,
+                        report_rows,
+                        live_summary(
+                            out_root,
+                            input_csv,
+                            rows,
+                            report_rows,
+                            preflight_failed=False,
+                            preflight_error="",
+                            expected_written=expected_written,
+                            batch_size=batch_size,
+                            delay_ms=delay_ms,
+                            max_retries=max_retries,
+                        ),
+                    )
+                    continue
                 result = call_with_retries(
-                    lambda: send_update_func(session, lead_id=lead_id, field_payload=payload),
+                    lambda: send_update_func(session, lead_id=lead_id, field_payload=allowed_payload),
                     retry_policy=retry_policy,
                 )
                 session.commit()
                 report_row["status"] = "written"
                 report_row["reason"] = "ok"
-                report_row["updated_fields"] = " | ".join(result.get("updated_fields") or list(DEAL_AI_FIELDS))
+                report_row["updated_fields"] = " | ".join(result.get("updated_fields") or list(allowed_payload))
+                append_write_journal_rows(
+                    journal_path,
+                    journal_rows_from_decisions(
+                        decisions,
+                        action_for_allowed="written",
+                        reason_for_allowed="patch_committed",
+                        snapshot_path=out_root / "pre_write_snapshot.jsonl",
+                        deal_id=lead_id,
+                    ),
+                )
                 if delay_ms > 0:
                     retry_policy.sleep_func(delay_ms / 1000)
             except Exception as exc:  # noqa: BLE001

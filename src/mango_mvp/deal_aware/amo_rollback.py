@@ -26,6 +26,8 @@ SNAPSHOT_FIELDNAMES = [
     "input_sha256",
     "row_index",
     "review_id",
+    "entity_type",
+    "entity_id",
     "lead_id",
     "field_name",
     "field_id",
@@ -43,6 +45,8 @@ ROLLBACK_REPORT_FIELDNAMES = [
     "snapshot_key",
     "row_index",
     "review_id",
+    "entity_type",
+    "entity_id",
     "lead_id",
     "field_name",
     "field_id",
@@ -73,6 +77,17 @@ def sha256_text(value: Any) -> str:
 
 
 def snapshot_key(row: dict[str, Any]) -> str:
+    entity_type = snapshot_entity_type(row)
+    entity_id = snapshot_entity_id(row)
+    if entity_type != "lead":
+        return "|".join(
+            [
+                entity_type,
+                entity_id,
+                safe_text(row.get("field_name")),
+                safe_text(row.get("new_value_sha256")),
+            ]
+        )
     return "|".join(
         [
             safe_text(row.get("lead_id")),
@@ -80,6 +95,15 @@ def snapshot_key(row: dict[str, Any]) -> str:
             safe_text(row.get("new_value_sha256")),
         ]
     )
+
+
+def snapshot_entity_type(row: dict[str, Any]) -> str:
+    entity_type = safe_text(row.get("entity_type")) or "lead"
+    return entity_type if entity_type in {"lead", "contact"} else "lead"
+
+
+def snapshot_entity_id(row: dict[str, Any]) -> str:
+    return safe_text(row.get("entity_id")) or safe_text(row.get("lead_id"))
 
 
 def field_catalog_by_name(field_catalog: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -118,10 +142,14 @@ def build_pre_write_snapshot_rows(
     field_catalog: list[dict[str, Any]],
     operator_approval_path: Path | None,
     snapshot_taken_at: str | None = None,
+    entity_type: str = "lead",
+    entity_id: str | None = None,
 ) -> list[dict[str, Any]]:
     by_name = field_catalog_by_name(field_catalog)
     current_values = extract_custom_field_values(current_lead)
     taken_at = snapshot_taken_at or utc_now_iso()
+    resolved_entity_type = safe_text(entity_type) or "lead"
+    resolved_entity_id = safe_text(entity_id) or safe_text(lead_id)
     rows = []
     for field_name, raw_new_value in payload.items():
         meta = by_name.get(field_name) or {}
@@ -136,6 +164,8 @@ def build_pre_write_snapshot_rows(
                 "input_sha256": input_sha256,
                 "row_index": row_index,
                 "review_id": review_id,
+                "entity_type": resolved_entity_type,
+                "entity_id": resolved_entity_id,
                 "lead_id": lead_id,
                 "field_name": field_name,
                 "field_id": field_id,
@@ -274,6 +304,8 @@ def rollback_decision(snapshot_row: dict[str, Any], current_lead: dict[str, Any]
         "snapshot_key": snapshot_key(snapshot_row),
         "row_index": safe_text(snapshot_row.get("row_index")),
         "review_id": safe_text(snapshot_row.get("review_id")),
+        "entity_type": snapshot_entity_type(snapshot_row),
+        "entity_id": snapshot_entity_id(snapshot_row),
         "lead_id": safe_text(snapshot_row.get("lead_id")),
         "field_name": field_name,
         "field_id": field_id,
@@ -307,6 +339,8 @@ def run_rollback(
     snapshot_rows: Iterable[dict[str, Any]],
     fetch_lead: Callable[[int], dict[str, Any]],
     send_update: Callable[..., dict[str, Any]] | None = None,
+    fetch_entity: Callable[[str, int], dict[str, Any]] | None = None,
+    send_entity_update: Callable[..., dict[str, Any]] | None = None,
     apply: bool = False,
     confirmation: str = "",
     max_rows: int | None = None,
@@ -318,7 +352,8 @@ def run_rollback(
     if apply and confirmation != ROLLBACK_CONFIRMATION:
         raise ValueError(f"--rollback-confirmation must be {ROLLBACK_CONFIRMATION!r} for --apply.")
     if apply and send_update is None:
-        raise ValueError("send_update is required for rollback apply.")
+        if send_entity_update is None:
+            raise ValueError("send_update or send_entity_update is required for rollback apply.")
     policy = retry_policy or RetryPolicy()
     resume_keys = resume_success_keys or set()
     result = []
@@ -333,6 +368,8 @@ def run_rollback(
                     "snapshot_key": key,
                     "row_index": safe_text(snapshot_row.get("row_index")),
                     "review_id": safe_text(snapshot_row.get("review_id")),
+                    "entity_type": snapshot_entity_type(snapshot_row),
+                    "entity_id": snapshot_entity_id(snapshot_row),
                     "lead_id": safe_text(snapshot_row.get("lead_id")),
                     "field_name": safe_text(snapshot_row.get("field_name")),
                     "field_id": safe_text(snapshot_row.get("field_id")),
@@ -350,13 +387,25 @@ def run_rollback(
             if progress_writer is not None:
                 progress_writer(result)
             continue
-        lead_id = int(safe_text(snapshot_row.get("lead_id")))
+        entity_type = snapshot_entity_type(snapshot_row)
+        entity_id = int(snapshot_entity_id(snapshot_row))
         try:
-            current_lead = call_with_retries(lambda: fetch_lead(lead_id), retry_policy=policy)
-            decision = rollback_decision(snapshot_row, current_lead)
+            if fetch_entity is not None:
+                current_entity = call_with_retries(lambda: fetch_entity(entity_type, entity_id), retry_policy=policy)
+            else:
+                if entity_type != "lead":
+                    raise ValueError("fetch_entity is required for non-lead rollback rows.")
+                current_entity = call_with_retries(lambda: fetch_lead(entity_id), retry_policy=policy)
+            decision = rollback_decision(snapshot_row, current_entity)
             if apply and decision["rollback_status"] == "dry_run_ready":
                 payload = {decision["field_name"]: decision["old_value"]}
-                call_with_retries(lambda: send_update(lead_id=lead_id, field_payload=payload), retry_policy=policy)  # type: ignore[misc]
+                if send_entity_update is not None:
+                    call_with_retries(
+                        lambda: send_entity_update(entity_type=entity_type, entity_id=entity_id, field_payload=payload),
+                        retry_policy=policy,
+                    )
+                else:
+                    call_with_retries(lambda: send_update(lead_id=entity_id, field_payload=payload), retry_policy=policy)  # type: ignore[misc]
                 decision["rollback_status"] = "restored"
                 decision["reason"] = "restored_old_value"
                 if policy.delay_ms > 0:
@@ -371,6 +420,8 @@ def run_rollback(
                     "snapshot_key": key,
                     "row_index": safe_text(snapshot_row.get("row_index")),
                     "review_id": safe_text(snapshot_row.get("review_id")),
+                    "entity_type": snapshot_entity_type(snapshot_row),
+                    "entity_id": snapshot_entity_id(snapshot_row),
                     "lead_id": safe_text(snapshot_row.get("lead_id")),
                     "field_name": safe_text(snapshot_row.get("field_name")),
                     "field_id": safe_text(snapshot_row.get("field_id")),

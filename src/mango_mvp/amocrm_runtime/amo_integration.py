@@ -40,10 +40,55 @@ DEFAULT_REQUIRED_AMO_LEAD_FIELDS = (
     "AI-дата следующего касания",
     "AI-сводка по сделке",
 )
+CONTACT_WRITE_ALLOWED_FIELDS = frozenset(
+    {
+        "AI-рекомендованный следующий шаг",
+        "Последняя AI-сводка",
+        "Авто история общения",
+    }
+)
+LEAD_WRITE_ALLOWED_FIELDS = frozenset(
+    {
+        "AI-сводка по сделке",
+        "AI-история по сделке",
+        "AI-рекомендованный следующий шаг",
+        "AI-дата следующего касания",
+        "AI-фактический статус сделки",
+        "AI-приоритет сделки",
+        "AI-актуальные возражения",
+        "AI-основание рекомендации",
+        "AI-качество привязки к сделке",
+        "AI-предупреждение по сделке",
+        "AI-Tallanto статус по сделке",
+        "AI-дата обновления сделки",
+        "AI-бюджет диапазон",
+        "AI-бюджет комментарий",
+        "AI-чувствительность к цене",
+        "AI-интерес к скидке",
+    }
+)
 CONTACT_WRITE_PROTECTED_FIELDS = frozenset(
     {
         "Id Tallanto",
         "Филиал Tallanto",
+        "Телефон",
+        "Телефон клиента",
+        "ФИО",
+        "Email",
+        "История общения",
+        "Статус",
+        "Этап",
+        "Воронка",
+        "Ответственный",
+    }
+)
+LEAD_WRITE_PROTECTED_FIELDS = CONTACT_WRITE_PROTECTED_FIELDS | frozenset(
+    {
+        "status_id",
+        "pipeline_id",
+        "responsible_user_id",
+        "Название сделки",
+        "Бюджет",
     }
 )
 
@@ -870,6 +915,22 @@ def build_custom_fields_values(
     return custom_fields_values
 
 
+def sanitize_contact_write_payload(field_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field_name: value
+        for field_name, value in field_payload.items()
+        if field_name in CONTACT_WRITE_ALLOWED_FIELDS and field_name not in CONTACT_WRITE_PROTECTED_FIELDS
+    }
+
+
+def sanitize_lead_write_payload(field_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field_name: value
+        for field_name, value in field_payload.items()
+        if field_name in LEAD_WRITE_ALLOWED_FIELDS and field_name not in LEAD_WRITE_PROTECTED_FIELDS
+    }
+
+
 def send_contact_custom_field_update(
     session: Session,
     *,
@@ -878,11 +939,7 @@ def send_contact_custom_field_update(
 ) -> dict[str, Any]:
     context = resolve_amo_access_context(session)
     field_catalog = fetch_contact_field_catalog(session)
-    sanitized_payload = {
-        field_name: value
-        for field_name, value in field_payload.items()
-        if field_name not in CONTACT_WRITE_PROTECTED_FIELDS
-    }
+    sanitized_payload = sanitize_contact_write_payload(field_payload)
     custom_fields_values = build_custom_fields_values(sanitized_payload, field_catalog)
     if not custom_fields_values:
         raise AmoIntegrationError("No AMO custom field values were prepared for update.", status_code=400)
@@ -994,7 +1051,8 @@ def send_lead_custom_field_update(
 ) -> dict[str, Any]:
     context = resolve_amo_access_context(session)
     field_catalog = fetch_lead_field_catalog(session)
-    custom_fields_values = build_custom_fields_values(field_payload, field_catalog)
+    sanitized_payload = sanitize_lead_write_payload(field_payload)
+    custom_fields_values = build_custom_fields_values(sanitized_payload, field_catalog)
     if not custom_fields_values:
         raise AmoIntegrationError("No AMO lead custom field values were prepared for update.", status_code=400)
     result = _amo_http_request(
@@ -1011,7 +1069,7 @@ def send_lead_custom_field_update(
         "account_base_url": context.account_base_url,
         "entity_type": "lead",
         "entity_id": int(lead_id),
-        "updated_fields": sorted(field_payload.keys()),
+        "updated_fields": sorted(sanitized_payload.keys()),
         "custom_fields_values": custom_fields_values,
         "amo_response": result,
     }

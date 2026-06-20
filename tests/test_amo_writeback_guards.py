@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from mango_mvp.amocrm_runtime import amo_integration
 from mango_mvp.amocrm_runtime.auth import DEFAULT_DEV_CONTEXT, require_api_key
 from mango_mvp.amocrm_runtime.db import get_db
 from mango_mvp.amocrm_runtime.routers import deals as deals_router_module
@@ -376,6 +377,44 @@ def test_contact_field_catalog_guard_allows_regular_textarea_targets() -> None:
     )
 
     assert reasons == []
+
+
+def test_contact_write_payload_allowlist_blocks_identity_and_manual_fields() -> None:
+    payload = amo_integration.sanitize_contact_write_payload(
+        {
+            "AI-рекомендованный следующий шаг": "Позвонить",
+            "Последняя AI-сводка": "Сводка",
+            "Авто история общения": "История",
+            "Email": "parent@example.com",
+            "ФИО": "Иванов",
+            "История общения": "ручное поле",
+            "Статус матчинга": "exact",
+        }
+    )
+
+    assert payload == {
+        "AI-рекомендованный следующий шаг": "Позвонить",
+        "Последняя AI-сводка": "Сводка",
+        "Авто история общения": "История",
+    }
+
+
+def test_lead_write_payload_allowlist_blocks_status_and_responsible_fields() -> None:
+    payload = amo_integration.sanitize_lead_write_payload(
+        {
+            "AI-сводка по сделке": "Сводка",
+            "AI-рекомендованный следующий шаг": "Позвонить",
+            "status_id": "123",
+            "pipeline_id": "456",
+            "Ответственный": "manager",
+            "Email": "parent@example.com",
+        }
+    )
+
+    assert payload == {
+        "AI-сводка по сделке": "Сводка",
+        "AI-рекомендованный следующий шаг": "Позвонить",
+    }
 
 
 def test_deal_writeback_script_requires_live_confirmation() -> None:

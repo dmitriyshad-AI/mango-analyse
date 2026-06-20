@@ -1,0 +1,16 @@
+branch: codex/d7-amo-writeback-safety
+rev: 43134ae
+
+A  audits/_inbox/d7_amo_writeback_safety_20260620225733/
+M  scripts/rollback_deal_aware_amo_fields.py
+M  scripts/write_amo_ready_contacts.py
+M  scripts/write_deal_aware_amo_fields.py
+M  src/mango_mvp/amocrm_runtime/amo_integration.py
+M  src/mango_mvp/deal_aware/amo_rollback.py
+A  src/mango_mvp/deal_aware/amo_write_safety.py
+M  src/mango_mvp/deal_aware/deal_writeback.py
+A  tests/test_amo_write_safety.py
+M  tests/test_amo_writeback_guards.py
+M  tests/test_amocrm_deals.py
+M  tests/test_deal_aware_amo_rollback.py
+M  tests/test_deal_aware_stage6_writeback.py

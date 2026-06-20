@@ -704,7 +704,7 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         self.assertEqual(result["reason"], "safe_mode_prevented_overwrite")
         send_mock.assert_not_called()
 
-    def test_send_contact_custom_field_update_skips_tallanto_identity_fields(self) -> None:
+    def test_send_contact_custom_field_update_uses_contact_allowlist_and_protected_fields(self) -> None:
         catalog = [
             {"id": 1, "name": "Id Tallanto", "type": "text"},
             {"id": 2, "name": "Филиал Tallanto", "type": "multiselect"},
@@ -742,8 +742,8 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
 
         body = request_mock.call_args.kwargs["body"]
         field_ids = [item["field_id"] for item in body["custom_fields_values"]]
-        self.assertEqual(field_ids, [3, 4])
-        self.assertEqual(result["updated_fields"], ["AI-приоритет", "Авто история общения"])
+        self.assertEqual(field_ids, [4])
+        self.assertEqual(result["updated_fields"], ["Авто история общения"])
 
     def test_refresh_connection_marks_reauthorization_required_on_revoked_token(self) -> None:
         connection = SimpleNamespace(

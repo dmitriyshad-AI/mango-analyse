@@ -17,6 +17,20 @@ from mango_mvp.quality.crm_text_quality_detector import (
     detect_crm_text_quality_risks,
     has_blocking_crm_text_findings,
 )
+from mango_mvp.deal_aware.amo_rollback import (
+    append_snapshot_rows,
+    build_pre_write_snapshot_rows,
+    write_rollback_manifest,
+)
+from mango_mvp.deal_aware.amo_write_safety import (
+    DEFAULT_AMO_WRITEBACK_JOURNAL,
+    allowed_payload_after_pre_patch,
+    append_write_journal_rows,
+    blocking_pre_patch_reasons,
+    journal_rows_from_decisions,
+    load_last_written_sha,
+    pre_patch_write_decisions,
+)
 from mango_mvp.quality.tenant_text_normalizer import normalize_manager_text
 from mango_mvp.utils.phone import normalize_phone
 
@@ -36,8 +50,6 @@ CANONICAL_EXPORT_POINTER = PROJECT_ROOT / "stable_runtime" / "CANONICAL_EXPORT.t
 LEGACY_ROOT_AMO_READY_XLSX = PROJECT_ROOT / "АКТУАЛЬНО_AMO_ready.xlsx"
 REPORT_ROOT = PROJECT_ROOT / "stable_runtime" / "amocrm_runtime" / "contact_writebacks"
 TARGET_CONTACT_FIELDS = (
-    "Статус матчинга",
-    "AI-приоритет",
     "AI-рекомендованный следующий шаг",
     "Последняя AI-сводка",
     "Авто история общения",
@@ -322,8 +334,6 @@ def _contact_field_catalog_guard_reasons(field_catalog: list[dict[str, Any]]) ->
 
 def _build_contact_payload(row: dict[str, Any]) -> dict[str, Any]:
     payload = {
-        "Статус матчинга": _safe_text(row.get("Статус матчинга Tallanto")),
-        "AI-приоритет": _safe_text(row.get("Приоритет лида")),
         "AI-рекомендованный следующий шаг": _compact_without_ellipsis(
             row.get("Следующий шаг"),
             limit=MAX_NEXT_STEP_CHARS,
@@ -337,6 +347,14 @@ def _build_contact_payload(row: dict[str, Any]) -> dict[str, Any]:
 def _payload_sha256(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _read_rows(path: Path) -> list[dict[str, Any]]:
@@ -486,6 +504,11 @@ def main() -> int:
     )
     parser.add_argument("--expected-written", type=int, default=None, help="Fail if live written count differs.")
     parser.add_argument("--expected-dry-run", type=int, default=None, help="Fail if dry-run count differs.")
+    parser.add_argument(
+        "--journal-path",
+        default=str(DEFAULT_AMO_WRITEBACK_JOURNAL),
+        help="JSONL журнал writeback-попыток. По умолчанию ~/.mango_local/amo_writeback/journal.jsonl.",
+    )
     args = parser.parse_args()
     if args.offline_preview and args.execute_live_write:
         print("Refusing live amoCRM writeback: --offline-preview cannot be combined with --execute-live-write.", file=sys.stderr)
@@ -497,13 +520,17 @@ def main() -> int:
         return 2
 
     search_contacts_by_phone = None
+    fetch_contact = None
     send_contact_custom_field_update = None
+    sanitize_contact_write_payload = None
     SessionLocal = None
     if not args.offline_preview:
         _load_env_files()
 
         from mango_mvp.amocrm_runtime.amo_integration import (
+            fetch_contact,
             fetch_contact_field_catalog,
+            sanitize_contact_write_payload,
             search_contacts_by_phone,
             send_contact_custom_field_update,
         )
@@ -513,6 +540,8 @@ def main() -> int:
     rows = _read_rows(input_path)
     if args.limit is not None:
         rows = rows[: max(0, args.limit)]
+    input_sha256 = _file_sha256(input_path)
+    journal_path = Path(args.journal_path).expanduser().resolve() if args.journal_path else None
 
     skip_phones = _load_skip_phones(Path(args.skip_written_from_report).resolve()) if args.skip_written_from_report else set()
 
@@ -552,6 +581,19 @@ def main() -> int:
                 return 2
             field_catalog = fetch_contact_field_catalog(session, force_refresh=True)
             catalog_guard_reasons = _contact_field_catalog_guard_reasons(field_catalog)
+            field_catalog_cache = run_dir / "contact_field_catalog_cache.json"
+            field_catalog_cache.write_text(
+                json.dumps({"fields": field_catalog}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            write_rollback_manifest(
+                run_dir,
+                batch_id=run_id,
+                input_csv=input_path,
+                input_sha256=input_sha256,
+                field_catalog_cache=field_catalog_cache,
+                operator_approval_path=None,
+            )
             if catalog_guard_reasons:
                 summary = {
                     "run_id": run_id,
@@ -593,6 +635,11 @@ def main() -> int:
                 "updated_fields": [],
                 "preview_payload": {},
                 "payload_sha256": "",
+                "snapshot_status": "",
+                "snapshot_rows": 0,
+                "pre_patch_status": "",
+                "pre_patch_reasons": "",
+                "journal_path": str(journal_path) if journal_path else "",
             }
             if not phone:
                 report_row["status"] = "skipped"
@@ -639,7 +686,9 @@ def main() -> int:
             try:
                 assert session is not None
                 assert search_contacts_by_phone is not None
+                assert fetch_contact is not None
                 assert send_contact_custom_field_update is not None
+                assert sanitize_contact_write_payload is not None
                 contacts = _call_with_retry(search_contacts_by_phone, session, phone=phone, limit=10)
                 if not contacts:
                     report_row["status"] = "skipped"
@@ -664,12 +713,78 @@ def main() -> int:
                     report_row["contact_name"] = contact_name
                     report_rows.append(report_row)
                     continue
+                payload = sanitize_contact_write_payload(payload)
+                if not payload:
+                    report_row["status"] = "skipped"
+                    report_row["reason"] = "empty_payload_after_allowlist"
+                    report_rows.append(report_row)
+                    continue
+                current_contact = _call_with_retry(fetch_contact, session, contact_id=contact_id)
+                snapshot_rows = build_pre_write_snapshot_rows(
+                    batch_id=run_id,
+                    input_csv=input_path,
+                    input_sha256=input_sha256,
+                    row_index=index,
+                    review_id=_safe_text(source_row.get("review_id")) or f"contact-row-{index}",
+                    lead_id=str(contact_id),
+                    payload=payload,
+                    current_lead=current_contact,
+                    field_catalog=field_catalog,
+                    operator_approval_path=None,
+                    entity_type="contact",
+                    entity_id=str(contact_id),
+                )
+                append_snapshot_rows(run_dir, snapshot_rows)
+                report_row["snapshot_status"] = "saved"
+                report_row["snapshot_rows"] = len(snapshot_rows)
+                fresh_contact = _call_with_retry(fetch_contact, session, contact_id=contact_id)
+                last_written = load_last_written_sha(journal_path, entity_type="contact", entity_id=contact_id)
+                decisions = pre_patch_write_decisions(
+                    snapshot_rows=snapshot_rows,
+                    current_entity=fresh_contact,
+                    last_written_sha=last_written,
+                )
+                allowed_payload = allowed_payload_after_pre_patch(payload, decisions)
+                blocked_reasons = blocking_pre_patch_reasons(decisions)
+                report_row["pre_patch_status"] = "allowed" if allowed_payload else "blocked"
+                report_row["pre_patch_reasons"] = " | ".join(blocked_reasons)
                 if not live_write:
-                    report_row["status"] = "dry_run"
-                    report_row["reason"] = "live_write_not_confirmed"
+                    if not allowed_payload:
+                        report_row["status"] = "skipped"
+                        report_row["reason"] = "pre_patch_guard:" + " | ".join(blocked_reasons)
+                    else:
+                        report_row["status"] = "dry_run"
+                        report_row["reason"] = "live_write_not_confirmed"
                     report_row["contact_id"] = contact_id
                     report_row["contact_name"] = contact_name
-                    report_row["updated_fields"] = list(payload.keys())
+                    report_row["updated_fields"] = list(allowed_payload.keys())
+                    append_write_journal_rows(
+                        journal_path,
+                        journal_rows_from_decisions(
+                            decisions,
+                            action_for_allowed="written-dry",
+                            reason_for_allowed="dry_run_no_patch",
+                            snapshot_path=run_dir / "pre_write_snapshot.jsonl",
+                            contact_id=contact_id,
+                        ),
+                    )
+                    report_rows.append(report_row)
+                    continue
+                if not allowed_payload:
+                    report_row["status"] = "skipped"
+                    report_row["reason"] = "pre_patch_guard:" + " | ".join(blocked_reasons)
+                    report_row["contact_id"] = contact_id
+                    report_row["contact_name"] = contact_name
+                    append_write_journal_rows(
+                        journal_path,
+                        journal_rows_from_decisions(
+                            decisions,
+                            action_for_allowed="skipped",
+                            reason_for_allowed="pre_patch_not_allowed",
+                            snapshot_path=run_dir / "pre_write_snapshot.jsonl",
+                            contact_id=contact_id,
+                        ),
+                    )
                     report_rows.append(report_row)
                     continue
 
@@ -677,13 +792,23 @@ def main() -> int:
                     send_contact_custom_field_update,
                     session,
                     contact_id=contact_id,
-                    field_payload=payload,
+                    field_payload=allowed_payload,
                 )
                 session.commit()
                 report_row["status"] = "written"
                 report_row["contact_id"] = contact_id
                 report_row["contact_name"] = contact_name
                 report_row["updated_fields"] = result.get("updated_fields") or []
+                append_write_journal_rows(
+                    journal_path,
+                    journal_rows_from_decisions(
+                        decisions,
+                        action_for_allowed="written",
+                        reason_for_allowed="patch_committed",
+                        snapshot_path=run_dir / "pre_write_snapshot.jsonl",
+                        contact_id=contact_id,
+                    ),
+                )
             except Exception as exc:
                 session.rollback()
                 report_row["status"] = "failed"

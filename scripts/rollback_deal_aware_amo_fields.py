@@ -29,6 +29,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rollback deal-aware AMO lead AI fields from a pre-write snapshot.")
     parser.add_argument("--live-run-root", required=True)
     parser.add_argument("--pre-write-snapshot", default="")
+    parser.add_argument("--snapshot", default="", help="Alias for --pre-write-snapshot.")
+    parser.add_argument("--contact", default="", help="Rollback only snapshot rows for this AMO contact id.")
+    parser.add_argument("--lead", default="", help="Rollback only snapshot rows for this AMO lead id.")
     parser.add_argument("--live-report", default="")
     parser.add_argument("--field-catalog-cache", default="")
     parser.add_argument("--rollback-confirmation", default="")
@@ -42,10 +45,33 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _filter_snapshot_rows(rows: list[dict], *, contact_id: str = "", lead_id: str = "") -> list[dict]:
+    contact_id = str(contact_id or "").strip()
+    lead_id = str(lead_id or "").strip()
+    if contact_id and lead_id:
+        raise ValueError("Use either --contact or --lead, not both.")
+    if contact_id:
+        return [
+            row
+            for row in rows
+            if str(row.get("entity_type") or "").strip() == "contact"
+            and str(row.get("entity_id") or row.get("lead_id") or "").strip() == contact_id
+        ]
+    if lead_id:
+        return [
+            row
+            for row in rows
+            if str(row.get("entity_type") or "lead").strip() == "lead"
+            and str(row.get("entity_id") or row.get("lead_id") or "").strip() == lead_id
+        ]
+    return rows
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     live_run_root = Path(args.live_run_root).expanduser().resolve()
-    snapshot_path = Path(args.pre_write_snapshot).expanduser().resolve() if args.pre_write_snapshot else live_run_root / "pre_write_snapshot.jsonl"
+    snapshot_arg = args.pre_write_snapshot or args.snapshot
+    snapshot_path = Path(snapshot_arg).expanduser().resolve() if snapshot_arg else live_run_root / "pre_write_snapshot.jsonl"
     resume_path = Path(args.resume_from_report).expanduser().resolve() if args.resume_from_report else None
     apply = bool(args.apply)
     if args.dry_run and args.apply:
@@ -55,13 +81,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Refusing rollback apply: --rollback-confirmation must be {ROLLBACK_CONFIRMATION!r}.", file=sys.stderr)
         return 2
 
-    snapshot_rows = load_snapshot_rows(snapshot_path)
+    snapshot_rows = _filter_snapshot_rows(load_snapshot_rows(snapshot_path), contact_id=args.contact, lead_id=args.lead)
     resume_keys = load_successful_rollback_keys(resume_path)
 
     from scripts.write_amo_ready_contacts import _load_env_files, _preflight_runtime_db  # noqa: PLC0415
 
     _load_env_files()
-    from mango_mvp.amocrm_runtime.amo_integration import fetch_lead, send_lead_custom_field_update  # noqa: PLC0415
+    from mango_mvp.amocrm_runtime.amo_integration import (  # noqa: PLC0415
+        fetch_contact,
+        fetch_lead,
+        send_contact_custom_field_update,
+        send_lead_custom_field_update,
+    )
     from mango_mvp.amocrm_runtime.db import SessionLocal  # noqa: PLC0415
 
     session = SessionLocal()
@@ -87,6 +118,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         def updater(*, lead_id: int, field_payload: dict) -> dict:
             return send_lead_custom_field_update(session, lead_id=lead_id, field_payload=field_payload)
 
+        def fetch_entity(entity_type: str, entity_id: int) -> dict:
+            if entity_type == "contact":
+                return fetch_contact(session, contact_id=entity_id)
+            return fetch_lead(session, lead_id=entity_id)
+
+        def update_entity(*, entity_type: str, entity_id: int, field_payload: dict) -> dict:
+            if entity_type == "contact":
+                return send_contact_custom_field_update(session, contact_id=entity_id, field_payload=field_payload)
+            return send_lead_custom_field_update(session, lead_id=entity_id, field_payload=field_payload)
+
         def progress_writer(current_rows: list[dict]) -> None:
             current_summary = rollback_summary(
                 rows=current_rows,
@@ -103,6 +144,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             snapshot_rows=snapshot_rows,
             fetch_lead=fetcher,
             send_update=updater,
+            fetch_entity=fetch_entity,
+            send_entity_update=update_entity,
             apply=apply,
             confirmation=args.rollback_confirmation,
             max_rows=args.max_rollback_rows,

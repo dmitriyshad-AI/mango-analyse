@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from mango_mvp.amocrm_runtime import amo_integration
 from mango_mvp.amocrm_runtime.auth import DEFAULT_DEV_CONTEXT, require_api_key
 from mango_mvp.amocrm_runtime.db import get_db
 from mango_mvp.amocrm_runtime.routers import deals as deals_router_module
@@ -222,26 +223,26 @@ def test_contact_auto_history_skips_redundant_chronology_block() -> None:
     assert "Хронология общения" not in payload
 
 
-def test_contact_last_summary_compacts_without_ellipsis() -> None:
+def test_contact_last_summary_keeps_textarea_sized_text_without_old_cap() -> None:
     payload = write_amo_ready_contacts._compose_last_summary(
         {"Краткая история общения": " ".join(["Клиент интересуется летним лагерем"] * 80)}
     )
 
     assert "..." not in payload
     assert "…" not in payload
-    assert payload.endswith("[сжато]")
-    assert len(payload) <= write_amo_ready_contacts.MAX_LAST_SUMMARY_CHARS
+    assert not payload.endswith("[сжато]")
+    assert len(payload) > 1200
 
 
-def test_contact_last_summary_compacts_fresh_summary_to_amo_text_capacity() -> None:
+def test_contact_last_summary_compacts_only_at_textarea_capacity() -> None:
     payload = write_amo_ready_contacts._compose_last_summary(
-        {"Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает оплату"] * 90)}
+        {"Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает оплату"] * 4000)}
     )
 
     assert "..." not in payload
     assert "…" not in payload
     assert payload.endswith("[сжато]")
-    assert len(payload) <= write_amo_ready_contacts.MAX_LAST_SUMMARY_CHARS
+    assert len(payload) <= write_amo_ready_contacts.AMO_TEXTAREA_FIELD_CHAR_LIMIT
 
 
 def test_contact_payload_compacts_short_text_fields_for_amo_readback() -> None:
@@ -250,16 +251,75 @@ def test_contact_payload_compacts_short_text_fields_for_amo_readback() -> None:
             "Статус матчинга Tallanto": "exact_phone_single",
             "Приоритет лида": "warm",
             "Следующий шаг": " ".join(["Отправить подробные материалы и согласовать дату следующего звонка"] * 20),
-            "Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает летний лагерь"] * 30),
+            "Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает летний лагерь"] * 31),
             "Краткая история общения": "Полная история должна оставаться в длинном textarea-поле. " * 20,
         }
     )
 
-    assert len(payload["AI-рекомендованный следующий шаг"]) <= write_amo_ready_contacts.MAX_NEXT_STEP_CHARS
+    assert len(payload["AI-рекомендованный следующий шаг"]) > 800
     assert len(payload["AI-рекомендованный следующий шаг"]) > write_amo_ready_contacts.MAX_AMO_TEXT_FIELD_CHARS
-    assert len(payload["Последняя AI-сводка"]) <= write_amo_ready_contacts.MAX_LAST_SUMMARY_CHARS
+    assert len(payload["Последняя AI-сводка"]) > 1200
     assert len(payload["Последняя AI-сводка"]) > write_amo_ready_contacts.MAX_AMO_TEXT_FIELD_CHARS
     assert len(payload["Авто история общения"]) > write_amo_ready_contacts.MAX_AMO_TEXT_FIELD_CHARS
+
+
+def test_contact_payload_ignores_card_aggregator_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRM_CARD_AGGREGATOR_ENABLED", raising=False)
+
+    payload = write_amo_ready_contacts._build_contact_payload(
+        {
+            "crm_card_contact_payload_json": json.dumps({"AI-рекомендованный следующий шаг": "Новый шаг"}),
+            "Статус матчинга Tallanto": "exact_phone_single",
+            "Приоритет лида": "warm",
+            "Следующий шаг": "Старый шаг",
+            "Краткое резюме последнего свежего звонка": "Старая сводка",
+        }
+    )
+
+    assert payload["AI-рекомендованный следующий шаг"] == "Старый шаг"
+    assert payload["Последняя AI-сводка"] == "Старая сводка"
+
+
+def test_contact_payload_uses_card_aggregator_when_flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_CARD_AGGREGATOR_ENABLED", "1")
+
+    payload = write_amo_ready_contacts._build_contact_payload(
+        {
+            "crm_card_contact_payload_json": json.dumps(
+                {
+                    "Запрос": "8 класс, физика, онлайн",
+                    "Последняя сводка": "Новая сводка",
+                    "История общения": "Новая история",
+                },
+                ensure_ascii=False,
+            ),
+            "Статус матчинга Tallanto": "old",
+            "Приоритет лида": "old",
+            "Следующий шаг": "Старый шаг",
+        }
+    )
+
+    assert payload == {
+        "Запрос": "8 класс, физика, онлайн",
+        "Последняя сводка": "Новая сводка",
+        "История общения": "Новая история",
+    }
+
+
+def test_contact_row_guard_blocks_card_not_ready_when_flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_CARD_AGGREGATOR_ENABLED", "1")
+
+    reasons = write_amo_ready_contacts._contact_row_guard_reasons(
+        {
+            "Готово к записи в AMO": "Да",
+            "Тип последнего свежего звонка": "sales_call",
+            "AMO contact IDs": "123",
+            "crm_card_ready": "нет",
+            "crm_card_blockers": "p9_ambiguous_identity_manual_review",
+        }
+    )
+
+    assert "crm_card_not_ready:p9_ambiguous_identity_manual_review" in reasons
 
 
 def test_contact_auto_history_uses_compact_chronology_marker_without_ellipsis() -> None:
@@ -275,9 +335,39 @@ def test_contact_auto_history_uses_compact_chronology_marker_without_ellipsis() 
     assert "Хронология: есть в полной рабочей таблице" in payload
 
 
-def test_contact_auto_history_hard_limit_is_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CRM_AUTO_HISTORY_HARD_LIMIT", raising=False)
+def test_contact_auto_history_keeps_old_marker_when_chronology_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRM_AUTO_HISTORY_CHRONOLOGY_TEXT", raising=False)
+    repeated = "Клиент интересуется летним лагерем."
 
+    payload = write_amo_ready_contacts._compose_auto_history(
+        {
+            "Краткая история общения": repeated,
+            "Хронология общения (последние 5 касаний)": repeated,
+            "Следующий шаг": "Перезвонить",
+        }
+    )
+
+    assert "Хронология: есть в полной рабочей таблице" in payload
+    assert "Хронология:\n" not in payload
+
+
+def test_contact_auto_history_writes_chronology_text_when_flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_AUTO_HISTORY_CHRONOLOGY_TEXT", "1")
+
+    payload = write_amo_ready_contacts._compose_auto_history(
+        {
+            "Краткая история общения": "Клиент интересуется летним лагерем.",
+            "Хронология общения (последние 5 касаний)": "01.05.2026: клиент оставил заявку.\n02.05.2026: менеджер отправил материалы.",
+            "Следующий шаг": "Перезвонить",
+        }
+    )
+
+    assert "Хронология:\n01.05.2026" in payload
+    assert "есть в полной рабочей таблице" not in payload
+    assert len(payload) > 0
+
+
+def test_contact_auto_history_no_longer_uses_old_1600_hard_limit() -> None:
     payload = write_amo_ready_contacts._compose_auto_history(
         {
             "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 120),
@@ -285,27 +375,24 @@ def test_contact_auto_history_hard_limit_is_enabled_by_default(monkeypatch: pyte
             "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 80),
         }
     )
-    stored_payload = payload
 
-    assert len(payload) <= write_amo_ready_contacts.MAX_AUTO_HISTORY_CHARS
-    assert payload.endswith("[сжато]")
+    assert len(payload) > 1600
+    assert not payload.endswith("[сжато]")
     assert "..." not in payload
     assert "…" not in payload
-    assert stored_payload == payload
 
 
-def test_contact_auto_history_keeps_old_length_when_hard_limit_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CRM_AUTO_HISTORY_HARD_LIMIT", "0")
-
+def test_contact_auto_history_compacts_at_textarea_capacity() -> None:
     payload = write_amo_ready_contacts._compose_auto_history(
         {
-            "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 120),
+            "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 7000),
             "Следующий шаг": "Отправить подробные материалы",
-            "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 80),
+            "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 7000),
         }
     )
 
-    assert len(payload) > write_amo_ready_contacts.MAX_AUTO_HISTORY_CHARS
+    assert len(payload) <= write_amo_ready_contacts.AMO_TEXTAREA_FIELD_CHAR_LIMIT
+    assert payload.endswith("[сжато]")
 
 
 def test_contact_writeback_runtime_db_preflight_reports_error_before_row_loop() -> None:
@@ -376,6 +463,99 @@ def test_contact_field_catalog_guard_allows_regular_textarea_targets() -> None:
     )
 
     assert reasons == []
+
+
+def test_contact_update_ai_allowlist_off_keeps_previous_payload_filtering(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CRM_CONTACT_WRITEBACK_AI_ALLOWLIST", raising=False)
+    calls: list[dict] = []
+
+    monkeypatch.setattr(
+        amo_integration,
+        "resolve_amo_access_context",
+        lambda _session: amo_integration.AmoAccessContext(
+            account_base_url="https://example.amocrm.ru",
+            access_token="token",
+            token_source="test",
+            connection=None,
+        ),
+    )
+    monkeypatch.setattr(
+        amo_integration,
+        "fetch_contact_field_catalog",
+        lambda _session: [
+            {"id": 1, "name": "Email", "type": "text"},
+            {"id": 2, "name": "Внешнее поле", "type": "text"},
+            {"id": 3, "name": "Id Tallanto", "type": "text"},
+        ],
+    )
+
+    def fake_http_request(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(amo_integration, "_amo_http_request", fake_http_request)
+
+    result = amo_integration.send_contact_custom_field_update(
+        FakeSession(),
+        contact_id=123,
+        field_payload={
+            "Email": "parent@example.com",
+            "Внешнее поле": "старое поведение",
+            "Id Tallanto": "protected",
+        },
+    )
+
+    assert result["updated_fields"] == ["Email", "Внешнее поле"]
+    assert calls[0]["body"]["custom_fields_values"] == [
+        {"field_id": 1, "values": [{"value": "parent@example.com"}]},
+        {"field_id": 2, "values": [{"value": "старое поведение"}]},
+    ]
+
+
+def test_contact_update_ai_allowlist_blocks_manual_and_identity_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_CONTACT_WRITEBACK_AI_ALLOWLIST", "1")
+    calls: list[dict] = []
+
+    monkeypatch.setattr(
+        amo_integration,
+        "resolve_amo_access_context",
+        lambda _session: amo_integration.AmoAccessContext(
+            account_base_url="https://example.amocrm.ru",
+            access_token="token",
+            token_source="test",
+            connection=None,
+        ),
+    )
+    monkeypatch.setattr(
+        amo_integration,
+        "fetch_contact_field_catalog",
+        lambda _session: [
+            {"id": 1, "name": "AI-рекомендованный следующий шаг", "type": "text"},
+            {"id": 2, "name": "Email", "type": "text"},
+            {"id": 3, "name": "История общения", "type": "textarea"},
+            {"id": 4, "name": "Внешнее поле", "type": "text"},
+        ],
+    )
+
+    def fake_http_request(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(amo_integration, "_amo_http_request", fake_http_request)
+
+    result = amo_integration.send_contact_custom_field_update(
+        FakeSession(),
+        contact_id=123,
+        field_payload={
+            "AI-рекомендованный следующий шаг": "Позвонить",
+            "Email": "parent@example.com",
+            "История общения": "ручное поле",
+            "Внешнее поле": "лишнее",
+        },
+    )
+
+    assert result["updated_fields"] == ["AI-рекомендованный следующий шаг"]
+    assert calls[0]["body"]["custom_fields_values"] == [{"field_id": 1, "values": [{"value": "Позвонить"}]}]
 
 
 def test_deal_writeback_script_requires_live_confirmation() -> None:

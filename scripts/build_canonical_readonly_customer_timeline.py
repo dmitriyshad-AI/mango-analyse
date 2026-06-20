@@ -35,6 +35,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--current-runtime-json")
     parser.add_argument("--master-contacts-csv")
     parser.add_argument("--master-calls-csv")
+    parser.add_argument("--canonical-calls-db")
     parser.add_argument("--amo-contacts-csv")
     parser.add_argument("--amo-deals-csv")
     parser.add_argument("--mail-handoff-db")
@@ -68,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         current_runtime_json=optional_path(args.current_runtime_json),
         master_contacts_csv=optional_path(args.master_contacts_csv),
         master_calls_csv=optional_path(args.master_calls_csv),
+        canonical_calls_db=optional_path(args.canonical_calls_db),
         amo_contacts_csv=optional_path(args.amo_contacts_csv),
         amo_deals_csv=optional_path(args.amo_deals_csv),
         mail_handoff_db=optional_path(args.mail_handoff_db),

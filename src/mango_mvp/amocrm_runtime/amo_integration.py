@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import ssl
 import time
@@ -44,6 +45,24 @@ CONTACT_WRITE_PROTECTED_FIELDS = frozenset(
     {
         "Id Tallanto",
         "Филиал Tallanto",
+    }
+)
+CONTACT_WRITE_EXTRA_PROTECTED_FIELDS = frozenset(
+    {
+        "Телефон",
+        "Телефон клиента",
+        "ФИО",
+        "Email",
+        "История общения",
+    }
+)
+CONTACT_WRITE_ALLOWED_AI_FIELDS = frozenset(
+    {
+        "Статус матчинга",
+        "AI-приоритет",
+        "AI-рекомендованный следующий шаг",
+        "Последняя AI-сводка",
+        "Авто история общения",
     }
 )
 
@@ -878,10 +897,15 @@ def send_contact_custom_field_update(
 ) -> dict[str, Any]:
     context = resolve_amo_access_context(session)
     field_catalog = fetch_contact_field_catalog(session)
+    allowlist_enabled = os.getenv("CRM_CONTACT_WRITEBACK_AI_ALLOWLIST", "0").strip().lower() in {"1", "true", "yes", "on"}
+    protected_fields = CONTACT_WRITE_PROTECTED_FIELDS | (
+        CONTACT_WRITE_EXTRA_PROTECTED_FIELDS if allowlist_enabled else frozenset()
+    )
     sanitized_payload = {
         field_name: value
         for field_name, value in field_payload.items()
-        if field_name not in CONTACT_WRITE_PROTECTED_FIELDS
+        if field_name not in protected_fields
+        and (not allowlist_enabled or field_name in CONTACT_WRITE_ALLOWED_AI_FIELDS)
     }
     custom_fields_values = build_custom_fields_values(sanitized_payload, field_catalog)
     if not custom_fields_values:

@@ -182,6 +182,38 @@ def test_long_objection_keeps_old_drop_behavior_when_compaction_disabled(monkeyp
     )
 
 
+def test_long_objection_uses_explicit_compaction_marker_when_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CRM_DEAL_OBJECTION_EXPLICIT_COMPACT", "1")
+    text = (
+        "клиент подробно сомневается из-за стоимости программы и хочет сначала обсудить бюджет "
+        "с родителями перед оплатой"
+    )
+
+    normalized = normalize_objection(text)
+    payload = build_deal_payload(
+        {
+            "selected_deal_id": "100",
+            "selected_deal_name": "ЛВШ",
+            "selected_status_name": "Перспектива",
+            "selected_pipeline_name": "Сделки B2C",
+            "deal_writeback_mode": "full_active",
+            "candidate_call_count": "1",
+            "candidate_phone_count": "1",
+            "last_call_at": "2026-05-05 10:00:00",
+        },
+        [],
+        [_call(objections=text)],
+        tallanto_context={"text": "Tallanto: нет точного сопоставления."},
+        generated_at="2026-05-13T00:00:00+00:00",
+        analysis_date="2026-05-13",
+    )
+
+    assert len(normalized) <= 90
+    assert normalized.endswith("[сжато]")
+    assert "…" not in normalized
+    assert "[сжато]" in payload["AI-актуальные возражения"]
+
+
 def test_short_dictionary_objection_remains_backward_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CRM_OBJECTION_COMPACT", raising=False)
 

@@ -18,6 +18,7 @@ from mango_mvp.quality.crm_text_quality_detector import (
     has_blocking_crm_text_findings,
 )
 from mango_mvp.quality.tenant_text_normalizer import normalize_manager_text
+from mango_mvp.crm_card_aggregator import apply_contact_card_payload, contact_ready_blocker
 from mango_mvp.utils.phone import normalize_phone
 
 try:
@@ -65,9 +66,7 @@ def _default_amo_ready_input() -> Path:
 LIVE_WRITE_CONFIRMATION = "WRITE_AMO_LIVE"
 TEXT_COMPACTION_SUFFIX = " [сжато]"
 MAX_AMO_TEXT_FIELD_CHARS = 240
-MAX_NEXT_STEP_CHARS = 800
-MAX_LAST_SUMMARY_CHARS = 1200
-MAX_AUTO_HISTORY_CHARS = 1600
+AMO_TEXTAREA_FIELD_CHAR_LIMIT = 60000
 
 
 def _quality_gate_summary_passed(path_value: str | None) -> bool:
@@ -176,11 +175,11 @@ def _load_env_files() -> None:
 def _compose_last_summary(row: dict[str, Any]) -> str:
     summary = _safe_text(row.get("Краткое резюме последнего свежего звонка"))
     if summary:
-        return _compact_without_ellipsis(summary, limit=MAX_LAST_SUMMARY_CHARS)
+        return _compact_without_ellipsis(summary, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
     history = _safe_text(row.get("Краткая история общения"))
     if not history:
         return ""
-    return _compact_without_ellipsis(history, limit=MAX_LAST_SUMMARY_CHARS)
+    return _compact_without_ellipsis(history, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
 
 
 def _compose_auto_history(row: dict[str, Any]) -> str:
@@ -216,7 +215,15 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
     if probability:
         facts.append(f"Вероятность продажи, %: {probability}")
     if chronology:
-        facts.append("Хронология: есть в полной рабочей таблице")
+        if os.getenv("CRM_AUTO_HISTORY_CHRONOLOGY_TEXT", "0") == "1" and not _is_redundant_history_block(
+            history, chronology
+        ):
+            facts.append(
+                "Хронология:\n"
+                + _compact_without_ellipsis(chronology, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
+            )
+        else:
+            facts.append("Хронология: есть в полной рабочей таблице")
     if facts:
         blocks.append("\n".join(facts))
 
@@ -224,8 +231,8 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
         blocks.append("История общения Tallanto:\n" + tallanto_history)
 
     composed = "\n\n".join(block for block in blocks if block.strip()).strip()
-    if os.getenv("CRM_AUTO_HISTORY_HARD_LIMIT", "1") == "1" and len(composed) > MAX_AUTO_HISTORY_CHARS:
-        composed = _compact_without_ellipsis(composed, limit=MAX_AUTO_HISTORY_CHARS)
+    if len(composed) > AMO_TEXTAREA_FIELD_CHAR_LIMIT:
+        composed = _compact_without_ellipsis(composed, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
     return composed
 
 
@@ -291,6 +298,9 @@ def _contact_row_guard_reasons(row: dict[str, Any]) -> list[str]:
     blockers = _safe_text(row.get("CRM writeback blockers"))
     if blockers:
         reasons.append(f"crm_writeback_blockers:{blockers}")
+    card_blocker = contact_ready_blocker(row)
+    if card_blocker:
+        reasons.append(card_blocker)
     return reasons
 
 
@@ -321,12 +331,15 @@ def _contact_field_catalog_guard_reasons(field_catalog: list[dict[str, Any]]) ->
 
 
 def _build_contact_payload(row: dict[str, Any]) -> dict[str, Any]:
+    card_payload = apply_contact_card_payload(row)
+    if card_payload is not None:
+        return card_payload
     payload = {
         "Статус матчинга": _safe_text(row.get("Статус матчинга Tallanto")),
         "AI-приоритет": _safe_text(row.get("Приоритет лида")),
         "AI-рекомендованный следующий шаг": _compact_without_ellipsis(
             row.get("Следующий шаг"),
-            limit=MAX_NEXT_STEP_CHARS,
+            limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT,
         ),
         "Последняя AI-сводка": _compose_last_summary(row),
         "Авто история общения": _compose_auto_history(row),

@@ -213,6 +213,12 @@ class CustomerTimelineReadApi:
             "customer_id_mappings": [project_customer_id_mapping(item) for item in mappings],
             "identity_links": [project_identity_link(item, audience="ui") for item in links],
             "opportunities": [project_opportunity(item) for item in opportunities],
+            "manager_projection": project_manager_projection(
+                customer=customer,
+                links=links,
+                opportunities=opportunities,
+                events=events["items"],
+            ),
             "timeline": {
                 **events,
                 "items": [project_event(item, include_artifacts=include_children, include_signals=include_children) for item in events["items"]],
@@ -308,12 +314,16 @@ class CustomerTimelineReadApi:
             order_by="event_at DESC, created_at DESC, ordinal, chunk_id",
             limit=bounded_limit(limit, default=50, max_limit=200),
         )
-        all_chunks = self._records(
+        total_chunks = self._count("bot_context_chunks", "tenant_id = ? AND customer_id = ?", (tenant, customer_id))
+        allowed_chunks = self._count(
             "bot_context_chunks",
-            "tenant_id = ? AND customer_id = ?",
+            "tenant_id = ? AND customer_id = ? AND allowed_for_bot = 1 AND requires_manager_review = 0",
             (tenant, customer_id),
-            order_by="event_at DESC, created_at DESC, ordinal, chunk_id",
-            limit=500,
+        )
+        review_required_chunks = self._count(
+            "bot_context_chunks",
+            "tenant_id = ? AND customer_id = ? AND requires_manager_review = 1",
+            (tenant, customer_id),
         )
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
@@ -324,10 +334,10 @@ class CustomerTimelineReadApi:
             "items": [project_bot_context(item, audience="bot" if allowed_only else "ui") for item in raw_items],
             "summary": {
                 "visible_chunks": len(raw_items),
-                "total_chunks": len(all_chunks),
-                "allowed_chunks": sum(1 for item in all_chunks if bool(item.get("allowed_for_bot")) and not bool(item.get("requires_manager_review"))),
-                "review_required_chunks": sum(1 for item in all_chunks if bool(item.get("requires_manager_review"))),
-                "blocked_chunks": sum(1 for item in all_chunks if not bool(item.get("allowed_for_bot"))),
+                "total_chunks": total_chunks,
+                "allowed_chunks": allowed_chunks,
+                "review_required_chunks": review_required_chunks,
+                "blocked_chunks": total_chunks - allowed_chunks,
             },
             "redaction": redaction_summary(bot_safe=allowed_only),
             "safety": customer_timeline_read_api_safety_contract(),
@@ -724,6 +734,94 @@ def project_opportunity(item: Mapping[str, Any]) -> Mapping[str, Any]:
     }
 
 
+def project_manager_projection(
+    *,
+    customer: Mapping[str, Any],
+    links: Sequence[Mapping[str, Any]],
+    opportunities: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    phone_values = sorted(
+        {
+            str(item.get("link_value"))
+            for item in links
+            if item.get("link_type") in {"phone", "mango_client_phone"} and item.get("link_value") not in (None, "")
+        }
+    )
+    if customer.get("primary_phone") not in (None, ""):
+        phone_values.append(str(customer.get("primary_phone")))
+    phone_values = sorted(set(phone_values))
+    amo_contact_ids = sorted(
+        {
+            str(item.get("link_value"))
+            for item in links
+            if item.get("link_type") == "amo_contact_id" and item.get("link_value") not in (None, "")
+        }
+    )
+    amo_lead_ids = {
+        str(item.get("link_value"))
+        for item in links
+        if item.get("link_type") == "amo_lead_id" and item.get("link_value") not in (None, "")
+    }
+    amo_lead_ids.update(
+        str(item.get("source_id"))
+        for item in opportunities
+        if item.get("source_system") == "amocrm_snapshot" and item.get("source_id") not in (None, "")
+    )
+    for event in events:
+        record = event.get("record") if isinstance(event.get("record"), Mapping) else {}
+        contact_id = first_text(record, ("canonical_amocrm_contact_id",))
+        lead_id = first_text(record, ("canonical_amocrm_lead_id",))
+        if contact_id:
+            amo_contact_ids.append(contact_id)
+        if lead_id:
+            amo_lead_ids.add(lead_id)
+    return {
+        "schema_version": "customer_profile_manager_projection_v1",
+        "audience": "manager_internal",
+        "primary_phone": str(customer.get("primary_phone") or ""),
+        "primary_email": str(customer.get("primary_email") or ""),
+        "phone_numbers": phone_values,
+        "amo_contact_ids": sorted(set(amo_contact_ids)),
+        "amo_lead_ids": sorted(amo_lead_ids),
+        "identity_links": [
+            project_identity_link_manager(item)
+            for item in links
+            if item.get("link_type") in {"amo_contact_id", "amo_lead_id"}
+        ],
+        "opportunities": [project_opportunity_manager(item) for item in opportunities if item.get("source_system") == "amocrm_snapshot"],
+    }
+
+
+def project_identity_link_manager(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {
+        "link_id": item.get("link_id"),
+        "customer_id": item.get("customer_id"),
+        "link_type": item.get("link_type"),
+        "link_value": item.get("link_value"),
+        "source_system": item.get("source_system"),
+        "match_class": item.get("match_class"),
+        "confidence": item.get("confidence"),
+        "first_seen_at": item.get("first_seen_at"),
+        "last_seen_at": item.get("last_seen_at"),
+    }
+
+
+def project_opportunity_manager(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {
+        "opportunity_id": item.get("opportunity_id"),
+        "customer_id": item.get("customer_id"),
+        "opportunity_type": item.get("opportunity_type"),
+        "source_system": item.get("source_system"),
+        "source_id": item.get("source_id"),
+        "title": item.get("title"),
+        "status": item.get("status"),
+        "opened_at": item.get("opened_at"),
+        "closed_at": item.get("closed_at"),
+        "confidence": item.get("confidence"),
+    }
+
+
 def project_event(
     item: Mapping[str, Any],
     *,
@@ -758,6 +856,12 @@ def project_event(
         projected["artifacts"] = [project_artifact(artifact) for artifact in item.get("artifacts") or ()]
     if include_signals:
         projected["signals"] = [project_signal(signal) for signal in item.get("signals") or ()]
+    record = item.get("record") if isinstance(item.get("record"), Mapping) else {}
+    call_analysis = record.get("call_analysis") if isinstance(record.get("call_analysis"), Mapping) else {}
+    if call_analysis:
+        projected["call_analysis"] = safe_nested_value(call_analysis)
+        projected["call_type"] = record.get("call_type") or call_analysis.get("call_type")
+        projected["call_history_eligible"] = bool(record.get("call_history_eligible"))
     return projected
 
 
@@ -897,6 +1001,14 @@ def safe_mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return {str(key): value[key] for key in value if str(key).casefold() not in FORBIDDEN_OUTPUT_KEYS}
     return {}
+
+
+def safe_nested_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): safe_nested_value(value[key]) for key in value if str(key).casefold() not in FORBIDDEN_OUTPUT_KEYS}
+    if isinstance(value, (list, tuple)):
+        return [safe_nested_value(item) for item in value]
+    return value
 
 
 def mask_phone(value: Any) -> Optional[str]:

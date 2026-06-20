@@ -1984,6 +1984,13 @@ class CustomerTimelineSQLiteStore:
               text,
               summary
             );
+
+            CREATE TABLE IF NOT EXISTS timeline_event_fts_keys (
+              event_id TEXT PRIMARY KEY
+            );
+
+            INSERT OR IGNORE INTO timeline_event_fts_keys(event_id)
+            SELECT event_id FROM timeline_event_fts;
             """
         )
 
@@ -1996,7 +2003,10 @@ class CustomerTimelineSQLiteStore:
     def _sync_event_fts(self, event: TimelineEvent, payload: Mapping[str, Any], record_hash: str) -> None:
         if not self._fts_enabled and not self._detect_existing_fts():
             return
-        self._con.execute("DELETE FROM timeline_event_fts WHERE event_id = ?", (event.event_id,))
+        record_for_fts = event_record_for_fts(payload)
+        existing_fts = self._fetch_one("SELECT 1 FROM timeline_event_fts_keys WHERE event_id = ?", (event.event_id,))
+        if existing_fts is not None:
+            self._con.execute("DELETE FROM timeline_event_fts WHERE event_id = ?", (event.event_id,))
         self._con.execute(
             """
             INSERT INTO timeline_event_fts (
@@ -2016,9 +2026,10 @@ class CustomerTimelineSQLiteStore:
                 event.subject,
                 event.text_preview,
                 event.summary,
-                json_dumps({"hash": record_hash, "record": payload.get("record") or {}}),
+                json_dumps({"hash": record_hash, "record": record_for_fts}),
             ),
         )
+        self._con.execute("INSERT OR REPLACE INTO timeline_event_fts_keys(event_id) VALUES (?)", (event.event_id,))
         self._fts_enabled = True
 
     def _sync_chunk_fts(self, chunk: BotContextChunk, record_hash: str) -> None:
@@ -2378,6 +2389,24 @@ def json_loads(value: str) -> Mapping[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("stored customer timeline JSON record must be an object")
     return parsed
+
+
+def event_record_for_fts(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    record = payload.get("record")
+    if not isinstance(record, Mapping):
+        return {}
+    if payload.get("event_type") != "mango_call":
+        return record
+    result = dict(record)
+    result.pop("canonical_amocrm_contact_id", None)
+    result.pop("canonical_amocrm_lead_id", None)
+    call_analysis = result.get("call_analysis")
+    if isinstance(call_analysis, Mapping):
+        compact_analysis = dict(call_analysis)
+        # The full call narrative is already indexed through timeline_events.summary.
+        compact_analysis.pop("history_summary", None)
+        result["call_analysis"] = compact_analysis
+    return result
 
 
 def scrub_timeline_persisted_json(value: Any) -> Any:

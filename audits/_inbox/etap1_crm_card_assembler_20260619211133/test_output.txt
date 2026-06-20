@@ -1,0 +1,67 @@
+# Тесты
+
+## Точечные тесты
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_amo_writeback_guards.py tests/test_crm_card_aggregator.py tests/test_deal_aware_structured_objections.py
+```
+
+Результат:
+
+```text
+56 passed in 1.71s
+```
+
+## Полный pytest
+
+Команда:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Результат:
+
+```text
+3376 passed, 5 skipped, 1 warning in 52.55s
+```
+
+Warning:
+
+```text
+NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the ssl module is compiled with LibreSSL 2.8.3.
+```
+
+## Workbook validation
+
+Команда:
+
+```bash
+python3 - <<'PY'
+from openpyxl import load_workbook
+...
+PY
+```
+
+Результат:
+
+```text
+sheets= ['Сводка', 'Клиенты']
+clients_rows= 201 clients_cols= 13
+summary_generated_at= 2026-05-21T08:57:42+00:00
+rows= 200 ready_yes= 0 ready_no= 200
+blockers= {"amo_contact_id_masked_in_read_api": 162, "amo_contact_id_not_available_in_profile": 38, "amo_lead_id_masked_in_read_api": 126, "amo_lead_id_not_available_in_profile": 74, "open_conflicts_require_manager_review": 10, "p9_ambiguous_identity_manual_review": 91}
+safety= {"live_network_calls": false, "new_storage_table": false, "read_only": true, "write_amo": false, "write_customer_timeline": false, "write_tallanto": false}
+```
+
+## Diff hygiene
+
+Команда:
+
+```bash
+git diff --check
+```
+
+Результат: без вывода.

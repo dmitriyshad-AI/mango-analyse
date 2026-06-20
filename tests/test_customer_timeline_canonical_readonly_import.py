@@ -107,6 +107,68 @@ def _write_mail_handoff(path: Path) -> None:
         con.executemany("INSERT INTO mail_customer_links DEFAULT VALUES", [(), (), ()])
 
 
+def _write_canonical_calls_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    long_history = "Полный разбор звонка. " + ("Клиент обсуждал расписание, формат и следующий шаг. " * 30)
+    analysis = {
+        "analysis_schema_version": "test_v1",
+        "history_summary": long_history,
+        "history_short": "Клиент выбирает курс.",
+        "summary": "Краткая версия полного разбора.",
+        "structured_fields": {"student": {"grade_current": "8"}, "interests": {"subject": "физика"}},
+        "objections": ["цена"],
+        "pain_points": ["расписание"],
+        "next_step": "Подобрать группу",
+        "interests": ["физика", "онлайн"],
+        "target_product": "годовой курс",
+        "budget": {"mentioned": False},
+        "quality_flags": {"call_type": "sales_call"},
+    }
+    non_conversation_analysis = {
+        "history_summary": "Сервисный недозвон без содержательного разговора.",
+        "quality_flags": {"call_type": "non_conversation"},
+    }
+    with sqlite3.connect(path) as con:
+        con.execute(
+            """
+            CREATE TABLE canonical_calls (
+                source_filename TEXT,
+                source_file TEXT,
+                canonical_call_id INTEGER,
+                amocrm_contact_id TEXT,
+                amocrm_lead_id TEXT,
+                analysis_json TEXT
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO canonical_calls VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "call-1.mp3",
+                "/audio/call-1.mp3",
+                101,
+                "raw-contact-from-call",
+                "raw-lead-from-call",
+                json.dumps(analysis, ensure_ascii=False),
+            ),
+        )
+        con.execute(
+            """
+            INSERT INTO canonical_calls VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "call-2.mp3",
+                "/audio/call-2.mp3",
+                102,
+                "",
+                "",
+                json.dumps(non_conversation_analysis, ensure_ascii=False),
+            ),
+        )
+
+
 def _config(tmp_path: Path) -> CanonicalReadonlyTimelineConfig:
     runtime_root = tmp_path / "runtime_source"
     current_runtime = tmp_path / "stable_runtime" / "CURRENT_RUNTIME.json"
@@ -148,6 +210,7 @@ def _config(tmp_path: Path) -> CanonicalReadonlyTimelineConfig:
                 "ID звонка": "call-1",
                 "Дата и время звонка": "2026-05-01 10:00:00",
                 "Телефон клиента": "+79161234567",
+                "Имя исходного файла": "call-1.mp3",
                 "Менеджер": "Анна",
                 "Направление звонка": "Входящий",
                 "Длительность, сек": "120",
@@ -159,6 +222,7 @@ def _config(tmp_path: Path) -> CanonicalReadonlyTimelineConfig:
                 "ID звонка": "call-2",
                 "Дата и время звонка": "2026-05-02 11:00:00",
                 "Телефон клиента": "+79161234567",
+                "Имя исходного файла": "call-2.mp3",
                 "Менеджер": "Анна",
                 "Направление звонка": "Исходящий",
                 "Длительность, сек": "90",
@@ -200,8 +264,10 @@ def _config(tmp_path: Path) -> CanonicalReadonlyTimelineConfig:
     )
     mail_handoff = tmp_path / "mail" / "mail_customer_history_handoff.sqlite"
     mail_bridge = tmp_path / "mail" / "mail_mango_bridge_preview.sqlite"
+    canonical_calls_db = tmp_path / "canonical_calls" / "canonical_calls_master.db"
     _write_mail_handoff(mail_handoff)
     _write_mail_bridge(mail_bridge)
+    _write_canonical_calls_db(canonical_calls_db)
     out_root = tmp_path / "product_data" / "customer_timeline" / "canonical_readonly_test"
     return CanonicalReadonlyTimelineConfig(
         project_root=tmp_path,
@@ -210,6 +276,7 @@ def _config(tmp_path: Path) -> CanonicalReadonlyTimelineConfig:
         current_runtime_json=current_runtime,
         amo_contacts_csv=amo_root / "amo_contacts_snapshot.csv",
         amo_deals_csv=amo_root / "amo_deals_snapshot.csv",
+        canonical_calls_db=canonical_calls_db,
         mail_handoff_db=mail_handoff,
         mail_bridge_db=mail_bridge,
         generated_at=NOW,
@@ -266,6 +333,28 @@ def test_builds_canonical_readonly_timeline_with_aggregate_coverage(tmp_path: Pa
     assert coverage["safety"]["timeline_primary_read_enabled_allowed"] is False
     assert coverage["safety"]["write_crm"] is False
     assert coverage["safety"]["telegram_import_enabled"] is False
+    with sqlite3.connect(config.timeline_db) as con:
+        row = con.execute(
+            "SELECT summary, record_json FROM timeline_events WHERE event_type = 'mango_call' AND source_id = 'call-1'"
+        ).fetchone()
+    assert row is not None
+    assert len(row[0]) > 500
+    record = json.loads(row[1])["record"]
+    assert record["call_analysis"]["history_summary"] == row[0]
+    assert record["call_analysis"]["structured_fields"]["student"]["grade_current"] == "8"
+    assert record["call_analysis"]["call_type"] == "sales_call"
+    assert record["call_analysis"]["call_history_eligible"] is True
+    assert record["call_type"] == "sales_call"
+    assert record["call_history_eligible"] is True
+    assert record["canonical_amocrm_contact_id"] == "raw-contact-from-call"
+    assert record["canonical_amocrm_lead_id"] == "raw-lead-from-call"
+    with sqlite3.connect(config.timeline_db) as con:
+        row = con.execute(
+            "SELECT record_json FROM timeline_events WHERE event_type = 'mango_call' AND source_id = 'call-2'"
+        ).fetchone()
+    record = json.loads(row[0])["record"]
+    assert record["call_type"] == "non_conversation"
+    assert record["call_history_eligible"] is False
     assert _table_count(config.timeline_db, "customer_identities") == 2
     assert _table_count(config.timeline_db, "timeline_events") >= 7
 

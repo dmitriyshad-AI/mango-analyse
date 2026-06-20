@@ -38,6 +38,7 @@ AMO_SOURCE = "amocrm_snapshot"
 TALLANTO_SOURCE = "tallanto_snapshot"
 MAIL_SOURCE = "mail_archive"
 DEFAULT_TENANT_ID = "foton"
+HISTORY_CALL_TYPES = frozenset({"sales_call", "existing_client_progress", "technical_call"})
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class CanonicalReadonlyTimelineConfig:
     current_runtime_json: Optional[Path] = None
     master_contacts_csv: Optional[Path] = None
     master_calls_csv: Optional[Path] = None
+    canonical_calls_db: Optional[Path] = None
     amo_contacts_csv: Optional[Path] = None
     amo_deals_csv: Optional[Path] = None
     mail_handoff_db: Optional[Path] = None
@@ -74,6 +76,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
         resolved.master_calls_csv,
         known_phones=known_phones,
         max_per_phone=resolved.max_call_events_per_contact,
+        canonical_calls_db=resolved.canonical_calls_db,
     )
     amo_contacts_by_phone = read_amo_contacts_by_phone(resolved.amo_contacts_csv, known_phones=known_phones)
     amo_deals_by_contact_id = read_amo_deals_by_contact_id(resolved.amo_deals_csv)
@@ -96,6 +99,7 @@ def build_canonical_readonly_customer_timeline(config: CanonicalReadonlyTimeline
             "current_runtime_json": resolved.current_runtime_json,
             "master_contacts_csv": resolved.master_contacts_csv,
             "master_calls_csv": resolved.master_calls_csv,
+            "canonical_calls_db": resolved.canonical_calls_db,
             "amo_contacts_csv": resolved.amo_contacts_csv,
             "amo_deals_csv": resolved.amo_deals_csv,
             "mail_handoff_db": resolved.mail_handoff_db,
@@ -430,6 +434,7 @@ def resolve_config(config: CanonicalReadonlyTimelineConfig) -> CanonicalReadonly
         current_runtime_json=current_runtime,
         master_contacts_csv=master_contacts,
         master_calls_csv=master_calls,
+        canonical_calls_db=resolve_existing(config.canonical_calls_db) if config.canonical_calls_db else None,
         amo_contacts_csv=amo_contacts,
         amo_deals_csv=amo_deals,
         mail_handoff_db=mail_handoff,
@@ -835,13 +840,20 @@ def upsert_customer_bundle(
     return results
 
 
-def read_calls_by_phone(path: Path, *, known_phones: set[str], max_per_phone: int = 0) -> dict[str, tuple[Mapping[str, str], ...]]:
+def read_calls_by_phone(
+    path: Path,
+    *,
+    known_phones: set[str],
+    max_per_phone: int = 0,
+    canonical_calls_db: Optional[Path] = None,
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    canonical_by_ref = read_canonical_call_analysis_by_ref(canonical_calls_db) if canonical_calls_db else {}
     grouped: dict[str, list[Mapping[str, str]]] = defaultdict(list)
     for row in read_csv_rows(path):
         phone = normalize_phone(row.get("Телефон клиента", ""))
         if phone and phone in known_phones:
-            grouped[phone].append(row)
-    result: dict[str, tuple[Mapping[str, str], ...]] = {}
+            grouped[phone].append(enrich_call_row_with_canonical_analysis(row, canonical_by_ref))
+    result: dict[str, tuple[Mapping[str, Any], ...]] = {}
     for phone, rows in grouped.items():
         rows_sorted = sorted(rows, key=lambda row: parse_datetime_guess(row.get("Дата и время звонка")) or datetime.min.replace(tzinfo=timezone.utc))
         if max_per_phone:
@@ -850,11 +862,73 @@ def read_calls_by_phone(path: Path, *, known_phones: set[str], max_per_phone: in
     return result
 
 
+def read_canonical_call_analysis_by_ref(path: Optional[Path]) -> dict[str, Mapping[str, Any]]:
+    if path is None:
+        return {}
+    if not path.exists():
+        return {}
+    result: dict[str, Mapping[str, Any]] = {}
+    with sqlite3.connect(path) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT source_filename, source_file, canonical_call_id, amocrm_contact_id, amocrm_lead_id, analysis_json
+            FROM canonical_calls
+            WHERE analysis_json IS NOT NULL AND analysis_json != ''
+            """
+        ).fetchall()
+    for row in rows:
+        try:
+            analysis = json.loads(str(row["analysis_json"] or "{}"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(analysis, Mapping):
+            continue
+        payload = {
+            "analysis": dict(analysis),
+            "canonical_call_id": row["canonical_call_id"],
+            "amocrm_contact_id": row["amocrm_contact_id"],
+            "amocrm_lead_id": row["amocrm_lead_id"],
+        }
+        for ref in (row["source_filename"], row["source_file"]):
+            text = safe_text(ref)
+            if text:
+                result[text] = payload
+                result[Path(text).name] = payload
+    return result
+
+
+def enrich_call_row_with_canonical_analysis(
+    row: Mapping[str, str],
+    canonical_by_ref: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    if not canonical_by_ref:
+        return dict(row)
+    refs = (
+        safe_text(row.get("Имя исходного файла")),
+        safe_text(row.get("Путь к записи")),
+        Path(safe_text(row.get("Путь к записи"))).name if safe_text(row.get("Путь к записи")) else "",
+    )
+    match: Mapping[str, Any] | None = None
+    for ref in refs:
+        if ref and ref in canonical_by_ref:
+            match = canonical_by_ref[ref]
+            break
+    if match is None:
+        return dict(row)
+    enriched: dict[str, Any] = dict(row)
+    enriched["__canonical_call_analysis"] = match.get("analysis") or {}
+    enriched["__canonical_call_id"] = match.get("canonical_call_id")
+    enriched["__canonical_amocrm_contact_id"] = match.get("amocrm_contact_id")
+    enriched["__canonical_amocrm_lead_id"] = match.get("amocrm_lead_id")
+    return enriched
+
+
 def call_event(
     *,
     tenant_id: str,
     customer_id: str,
-    call: Mapping[str, str],
+    call: Mapping[str, Any],
     brand: str,
     fallback_at: datetime,
     source_id_suffix: Optional[str] = None,
@@ -865,7 +939,33 @@ def call_event(
     call_id = safe_text(call.get("ID звонка")) or stable_digest({"customer_id": customer_id, "event_at": event_at.isoformat()})[:16]
     source_id = call_id if not source_id_suffix else f"{call_id}:{source_id_suffix}"
     direction = call_direction(call.get("Направление звонка"))
-    summary = safe_text(call.get("Краткое резюме разговора") or call.get("Следующий шаг") or call.get("Тип звонка"))[:500]
+    call_analysis = canonical_call_analysis_for_event(call)
+    summary = safe_text(
+        call_analysis.get("history_summary")
+        or call.get("Краткое резюме разговора")
+        or call_analysis.get("summary")
+        or call.get("Следующий шаг")
+        or call.get("Тип звонка")
+    )
+    record: dict[str, Any] = {
+        "brand": brand,
+        "duration_sec": int_or_zero(call.get("Длительность, сек")),
+        "contentful": safe_text(call.get("Содержательный звонок")),
+        "manual_review_required": safe_text(call.get("Нужна ручная проверка")),
+    }
+    if call_analysis:
+        record["call_analysis"] = call_analysis
+        record["call_type"] = call_analysis.get("call_type")
+        record["call_history_eligible"] = bool(call_analysis.get("call_history_eligible"))
+    canonical_call_id = call.get("__canonical_call_id")
+    if canonical_call_id not in (None, ""):
+        record["canonical_call_id"] = canonical_call_id
+    canonical_amo_contact_id = safe_text(call.get("__canonical_amocrm_contact_id"))
+    canonical_amo_lead_id = safe_text(call.get("__canonical_amocrm_lead_id"))
+    if canonical_amo_contact_id:
+        record["canonical_amocrm_contact_id"] = canonical_amo_contact_id
+    if canonical_amo_lead_id:
+        record["canonical_amocrm_lead_id"] = canonical_amo_lead_id
     return TimelineEvent(
         tenant_id=tenant_id,
         customer_id=customer_id,
@@ -882,15 +982,60 @@ def call_event(
         importance=1 if safe_text(call.get("Содержательный звонок")).lower() == "да" else 0,
         match_status=match_class,
         confidence=confidence,
-        record={
-            "brand": brand,
-            "duration_sec": int_or_zero(call.get("Длительность, сек")),
-            "contentful": safe_text(call.get("Содержательный звонок")),
-            "manual_review_required": safe_text(call.get("Нужна ручная проверка")),
-        },
+        record=record,
         metadata={"brand": brand},
         created_at=fallback_at,
     )
+
+
+def canonical_call_analysis_for_event(call: Mapping[str, Any]) -> Mapping[str, Any]:
+    raw = call.get("__canonical_call_analysis")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        "history_summary": safe_text(raw.get("history_summary")),
+        "history_short": safe_text(raw.get("history_short")),
+        "summary": safe_text(raw.get("summary")),
+        "structured_fields": json_safe_value(raw.get("structured_fields")),
+        "crm_blocks": json_safe_value(raw.get("crm_blocks")),
+        "objections": json_safe_value(raw.get("objections")),
+        "pain_points": json_safe_value(raw.get("pain_points")),
+        "next_step": safe_text(raw.get("next_step")),
+        "interests": json_safe_value(raw.get("interests")),
+        "target_product": safe_text(raw.get("target_product")),
+        "budget": json_safe_value(raw.get("budget")),
+        "student_grade": safe_text(raw.get("student_grade")),
+        "follow_up_score": json_safe_value(raw.get("follow_up_score")),
+        "follow_up_reason": safe_text(raw.get("follow_up_reason")),
+        "needs_review": json_safe_value(raw.get("needs_review")),
+        "review_reasons": json_safe_value(raw.get("review_reasons")),
+        "quality_flags": json_safe_value(raw.get("quality_flags")),
+        "call_type": canonical_call_type(raw),
+        "call_history_eligible": canonical_call_type(raw) in HISTORY_CALL_TYPES,
+        "analysis_schema_version": safe_text(raw.get("analysis_schema_version")),
+    }
+
+
+def canonical_call_type(analysis: Mapping[str, Any]) -> str:
+    quality_current = analysis.get("call_quality_current")
+    if isinstance(quality_current, Mapping):
+        call_type = safe_text(quality_current.get("call_type"))
+        if call_type:
+            return call_type
+    quality_flags = analysis.get("quality_flags")
+    if isinstance(quality_flags, Mapping):
+        return safe_text(quality_flags.get("call_type"))
+    return ""
+
+
+def json_safe_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {safe_text(key): json_safe_value(item) for key, item in value.items() if safe_text(key)}
+    if isinstance(value, (list, tuple)):
+        return [json_safe_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return safe_text(value)
 
 
 def read_amo_contacts_by_phone(path: Path, *, known_phones: set[str]) -> dict[str, tuple[Mapping[str, str], ...]]:

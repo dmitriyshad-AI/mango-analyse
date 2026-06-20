@@ -813,6 +813,7 @@ def _select_confirmed_facts(
             fact_scope=fact_scope,
             active_brand=active_brand,
         ),
+        query=query,
         k=10,
     )
     for candidate in selected:

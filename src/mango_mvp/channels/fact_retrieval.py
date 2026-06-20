@@ -8,6 +8,11 @@ blocking facts from explicitly forbidden neighbouring scopes.
 
 from typing import Mapping, Sequence
 
+from mango_mvp.knowledge_base.price_axes_catalog import (
+    price_axes_selector_enabled,
+    select_price_fact_for_query,
+)
+
 
 FACT_RETRIEVAL_SCHEMA_VERSION = "fact_retrieval_v1_2026_05_25"
 
@@ -64,12 +69,29 @@ def select_confirmed_facts(
     required_fact_keys: Sequence[str] = (),
     active_topics: Sequence[str] = (),
     blocked_scopes: Sequence[str] = (),
+    query: str = "",
     k: int = 10,
 ) -> list[Mapping[str, object]]:
     required = [str(item) for item in required_fact_keys if str(item or "").strip()]
     topics = {str(item) for item in active_topics if str(item or "").strip()}
     blocked = {str(item) for item in blocked_scopes if str(item or "").strip()}
     brand = str(active_brand or "").strip()
+
+    virtual_price_facts: list[Mapping[str, object]] = []
+    if query and price_axes_selector_enabled() and any(str(key or "").split(".", 1)[0] == "prices" for key in required):
+        raw_facts = [fact.get("__fact") if isinstance(fact.get("__fact"), Mapping) else fact for fact in candidates]
+        selected_price_fact = select_price_fact_for_query(raw_facts, active_brand=brand, query=query)
+        if selected_price_fact:
+            virtual_price_facts.append(
+                {
+                    "__fact": selected_price_fact,
+                    "__score": 10_000,
+                    "__index": -1,
+                    "brand": str(selected_price_fact.get("brand") or "").strip(),
+                    "fact_key": str(selected_price_fact.get("fact_key") or "").strip(),
+                    "scopes": set(),
+                }
+            )
 
     answer_facts: list[tuple[int, int, Mapping[str, object]]] = []
     rest: list[tuple[int, Mapping[str, object]]] = []
@@ -94,6 +116,18 @@ def select_confirmed_facts(
 
     answer_facts.sort(key=lambda item: (item[0], -item[1]))
     rest.sort(key=lambda item: -item[0])
-    result = [fact for _, _, fact in answer_facts] + [fact for _, fact in rest]
+    result = [*virtual_price_facts, *[fact for _, _, fact in answer_facts], *[fact for _, fact in rest]]
+    if virtual_price_facts:
+        seen_ids: set[str] = set()
+        deduped: list[Mapping[str, object]] = []
+        for fact in result:
+            raw_fact = fact.get("__fact") if isinstance(fact.get("__fact"), Mapping) else fact
+            fact_id = str(raw_fact.get("fact_id") or raw_fact.get("id") or raw_fact.get("fact_key") or "")
+            if fact_id and fact_id in seen_ids:
+                continue
+            if fact_id:
+                seen_ids.add(fact_id)
+            deduped.append(fact)
+        result = deduped
     limit = max(k, len(answer_facts))
     return result[:limit]

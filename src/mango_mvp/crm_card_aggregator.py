@@ -51,6 +51,7 @@ SHORT_FIELD_LIMIT = 350
 DEFAULT_TEXT_LIMIT = 1300
 OBJECTION_LIMIT = 90
 COMPACTION_SUFFIX = " [сжато]"
+HISTORY_TRUNCATION_SUFFIX = "…"
 
 PAYMENT_SIGNAL_TYPES = {"paid_no_access", "tallanto_payment", "payment_without_access"}
 HOT_SIGNAL_TYPES = {"hot_lead_silent_7d", "price_interest", "paid_no_access"}
@@ -146,8 +147,10 @@ def build_crm_card_projection(
     objections = _objections(facts, latest_call)
     call_interests = _call_analysis_field(latest_call, "interests")
     call_target_product = _call_analysis_field(latest_call, "target_product")
+    latest_call_key = _event_key(latest_call)
     auto_history = _contact_auto_history(
         latest_summary=latest_summary,
+        latest_call=latest_call,
         timeline_items=history_items,
         signals=signals,
         facts=facts,
@@ -179,8 +182,16 @@ def build_crm_card_projection(
     deal_events = _deal_events(history_items, selected_opportunity.get("opportunity_id"))
     history_scope = "история по сделке" if selected_opportunity.get("opportunity_id") else "история по клиенту, не по конкретной сделке"
     deal_payload = {
-        "AI-сводка по сделке": fit_text(_deal_summary(selected_opportunity, history_items, latest_summary, history_scope), 1600),
-        "AI-история по сделке": fit_text(_deal_history(deal_events or history_items, history_scope=history_scope), DEAL_HISTORY_LIMIT),
+        "AI-сводка по сделке": fit_text(_deal_summary(selected_opportunity, history_items, latest_call, latest_summary, history_scope), 1600),
+        "AI-история по сделке": fit_history_text(
+            _deal_history(
+                deal_events or history_items,
+                history_scope=history_scope,
+                compact_event_keys={latest_call_key} if latest_call_key else set(),
+                compact_full_texts={_normalized_text(latest_summary)} if latest_summary else set(),
+            ),
+            DEAL_HISTORY_LIMIT,
+        ),
         "AI-рекомендованный следующий шаг": fit_text(next_step, SHORT_FIELD_LIMIT),
         "AI-дата следующего касания": fit_text(facts.follow_up_date or _followup_from_signal(signals), SHORT_FIELD_LIMIT),
         "AI-фактический статус сделки": fit_text(_deal_status(selected_opportunity, facts, timeline_items), DEFAULT_TEXT_LIMIT),
@@ -294,6 +305,18 @@ def fit_text(value: Any, limit: int) -> str:
     if cut >= int(budget * 0.58):
         chunk = chunk[:cut]
     return chunk.rstrip(" ,;:.") + COMPACTION_SUFFIX
+
+
+def fit_history_text(value: Any, limit: int) -> str:
+    text = normalize_manager_text(value)
+    if len(text) <= limit:
+        return text
+    budget = max(20, limit - len(HISTORY_TRUNCATION_SUFFIX))
+    chunk = text[:budget].rstrip()
+    cut = max(chunk.rfind("\n"), chunk.rfind(". "), chunk.rfind("; "), chunk.rfind(", "), chunk.rfind(" "))
+    if cut >= int(budget * 0.58):
+        chunk = chunk[:cut]
+    return chunk.rstrip(" ,;:.") + HISTORY_TRUNCATION_SUFFIX
 
 
 def compact_objection_explicit(value: Any, *, limit: int = OBJECTION_LIMIT) -> str:
@@ -512,6 +535,7 @@ def _objections(facts: ManagerFacts, latest_call: Mapping[str, Any]) -> str:
 def _contact_auto_history(
     *,
     latest_summary: str,
+    latest_call: Mapping[str, Any],
     timeline_items: Sequence[Mapping[str, Any]],
     signals: Sequence[Mapping[str, Any]],
     facts: ManagerFacts,
@@ -521,7 +545,7 @@ def _contact_auto_history(
 ) -> str:
     blocks: list[str] = []
     if latest_summary:
-        blocks.append("Сводка клиента:\n" + latest_summary)
+        blocks.append("Последняя содержательная сводка: см. поле «Последняя AI-сводка».")
     facts_lines: list[str] = []
     if facts.recommended_product:
         facts_lines.append(f"Рекомендуемый продукт: {facts.recommended_product}")
@@ -550,29 +574,49 @@ def _contact_auto_history(
         facts_lines.append("Активные сигналы: " + "; ".join(_dedupe(active_actions[:3])))
     if facts_lines:
         blocks.append("\n".join(facts_lines))
-    chronology = _chronology_text(timeline_items)
+    latest_call_key = _event_key(latest_call)
+    chronology = _chronology_text(
+        timeline_items,
+        compact_event_keys={latest_call_key} if latest_call_key else set(),
+        compact_full_texts={_normalized_text(latest_summary)} if latest_summary else set(),
+    )
     if chronology:
         blocks.append("Хронология:\n" + chronology)
     tallanto = _tallanto_status(timeline_items, facts)
     if tallanto:
         blocks.append("Tallanto:\n" + tallanto)
-    return fit_text("\n\n".join(blocks), CONTACT_AUTO_HISTORY_LIMIT)
+    return fit_history_text("\n\n".join(blocks), CONTACT_AUTO_HISTORY_LIMIT)
 
 
-def _chronology_text(events: Sequence[Mapping[str, Any]], *, limit: int = 5) -> str:
+def _chronology_text(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    limit: int = 5,
+    compact_event_keys: set[str] | None = None,
+    compact_full_texts: set[str] | None = None,
+    compact_call_summaries: bool = False,
+) -> str:
     lines: list[str] = []
+    compact_event_keys = compact_event_keys or set()
+    compact_full_texts = compact_full_texts or set()
     for event in sorted(events, key=lambda item: _safe_text(item.get("event_at")), reverse=True)[:limit]:
         event_at = _safe_text(event.get("event_at"))[:10] or "дата не указана"
         source = _safe_text(event.get("source_system") or event.get("event_type"))
         summary = _event_history_summary(event)
         if not summary:
             continue
+        latest_compact = _event_key(event) in compact_event_keys or _normalized_text(summary) in compact_full_texts
+        compact_summary = _safe_text(event.get("event_type")) == "mango_call" and (
+            compact_call_summaries or latest_compact
+        )
         brand = _brand_from_event(event)
         prefix = f"{event_at} {source}"
         if brand:
             prefix += f" [{brand}]"
         structured = _call_analysis_lines(event)
         suffix = "\n" + "\n".join(structured) if structured else ""
+        if compact_summary:
+            summary = _compact_event_reference(latest=latest_compact)
         lines.append(f"{prefix}: {summary}{suffix}")
     return "\n".join(lines)
 
@@ -605,6 +649,34 @@ def _latest_history_call(events: Sequence[Mapping[str, Any]]) -> Mapping[str, An
 def _event_history_summary(event: Mapping[str, Any]) -> str:
     call_analysis = _mapping(event.get("call_analysis"))
     return _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+
+
+def _event_key(event: Mapping[str, Any]) -> str:
+    if not event:
+        return ""
+    for key in ("event_id", "source_ref", "source_id"):
+        value = _safe_text(event.get(key))
+        if value:
+            return f"{_safe_text(event.get('source_system') or event.get('event_type'))}:{value}"
+    return stable_text_key(
+        _safe_text(event.get("event_type")),
+        _safe_text(event.get("event_at")),
+        _event_history_summary(event),
+    )
+
+
+def stable_text_key(*parts: str) -> str:
+    return "|".join(_normalized_text(part) for part in parts if _safe_text(part))
+
+
+def _normalized_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", _safe_text(value)).strip().casefold()
+
+
+def _compact_event_reference(*, latest: bool) -> str:
+    if latest:
+        return "последний содержательный звонок; полная сводка в поле «Последняя AI-сводка»"
+    return "содержательный звонок; полный текст есть в контактной автоистории; ниже краткие детали"
 
 
 def _call_analysis_lines(event: Mapping[str, Any]) -> list[str]:
@@ -681,15 +753,37 @@ def _deal_events(events: Sequence[Mapping[str, Any]], opportunity_id: Any) -> li
 def _deal_summary(
     opportunity: Mapping[str, Any],
     events: Sequence[Mapping[str, Any]],
+    latest_call: Mapping[str, Any],
     latest_summary: str,
     history_scope: str,
 ) -> str:
     title = _safe_text(opportunity.get("title")) or "сделка не выбрана"
-    return f"Сделка: {title}. Основа: {history_scope}. Последняя содержательная сводка: {latest_summary or 'нет событий'}."
+    if latest_summary:
+        last_at = _safe_text(latest_call.get("event_at"))[:10] if latest_call else ""
+        last_part = (
+            f"Последний содержательный звонок {last_at}: полная сводка вынесена в поле «Последняя AI-сводка»."
+            if last_at
+            else "Последняя содержательная сводка вынесена в поле «Последняя AI-сводка»."
+        )
+    else:
+        last_part = "Содержательных событий не найдено."
+    return f"Сделка: {title}. Основа: {history_scope}. {last_part}"
 
 
-def _deal_history(events: Sequence[Mapping[str, Any]], *, history_scope: str) -> str:
-    chronology = _chronology_text(events, limit=10)
+def _deal_history(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    history_scope: str,
+    compact_event_keys: set[str] | None = None,
+    compact_full_texts: set[str] | None = None,
+) -> str:
+    chronology = _chronology_text(
+        events,
+        limit=10,
+        compact_event_keys=compact_event_keys,
+        compact_full_texts=compact_full_texts,
+        compact_call_summaries=True,
+    )
     if not chronology:
         return f"{history_scope}: релевантные события не найдены."
     return f"{history_scope}:\n{chronology}"

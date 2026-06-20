@@ -64,6 +64,7 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
 
 def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None:
     live_summary = "Полный разбор живого звонка. " + ("Клиент обсуждал курс и оплату. " * 20)
+    older_summary = "Полный разбор предыдущего звонка: семья выбирала формат и предмет."
     profile = {
         "found": True,
         "customer_id": "customer:call-analysis",
@@ -132,6 +133,21 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
                         "target_product": "годовой курс",
                     },
                 },
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-16T10:00:00+00:00",
+                    "source_system": "mango",
+                    "summary": older_summary,
+                    "call_type": "sales_call",
+                    "call_history_eligible": True,
+                    "call_analysis": {
+                        "history_summary": older_summary,
+                        "call_type": "sales_call",
+                        "call_history_eligible": True,
+                        "next_step": "Дождаться выбора формата",
+                        "interests": ["физика"],
+                    },
+                },
             ]
         },
         "signals": [],
@@ -145,7 +161,15 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
     auto_history = card["contact_card"]["fields"]["Авто история общения"]
     preview = card["workbook"]["what_goes_to_amo"]
 
-    assert "Полный разбор живого звонка" in history
+    assert card["contact_card"]["fields"]["Последняя AI-сводка"] == live_summary.strip()
+    assert "Полный разбор живого звонка" not in history
+    assert "Полный разбор живого звонка" not in auto_history
+    assert preview.count("Полный разбор живого звонка") == 1
+    assert older_summary in auto_history
+    assert older_summary not in history
+    assert preview.count(older_summary) == 1
+    assert "полная сводка в поле «Последняя AI-сводка»" in history
+    assert "Последняя содержательная сводка: см. поле «Последняя AI-сводка»" in auto_history
     assert "Возражения: цена" in history
     assert "Следующий шаг: Перезвонить завтра" in history
     assert "Недозвон не должен попасть" not in history
@@ -155,11 +179,12 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
     assert "exact_phone_single" not in auto_history
     assert "Закрыто и не реализовано" not in history
     assert "Закрыто и не реализовано" in card["deal_card"]["fields"]["AI-фактический статус сделки"]
-    assert card["contact_card"]["fields"]["Последняя AI-сводка"] == live_summary.strip()
     assert card["contact_card"]["fields"]["AI-рекомендованный следующий шаг"] == "Перезвонить завтра"
     assert card["deal_card"]["fields"]["AI-актуальные возражения"] == "цена"
     assert "Интересы: математика" in auto_history
     assert "Целевой продукт: годовой курс" in auto_history
+    assert "[сжато]" not in history
+    assert "[сжато]" not in auto_history
     assert "Read-only AMO contact snapshot" not in preview
     assert "exact_phone_single" not in preview
     assert card["deal_card"]["fields"]["AI-Tallanto статус по сделке"] == "Tallanto: найден один ученик по телефону."

@@ -8,6 +8,15 @@
 
 | Ветка | Worktree | Тема | Уникальных коммитов к `origin/main` | СТОП-дата | Решение |
 |---|---|---|---:|---|---|
+| `codex/tz-email-timeline-bridge` | `/Users/dmitrijfabarisov/Projects/Mango_tz_email_timeline_bridge` | D4 мост письма+звонки в тестовую customer_timeline | 0 | 2026-06-25 | Жива до регрейда D4 по ТЗ 2026-06-21 |
+| `codex/etap2-step1-address-book` | `/Users/dmitrijfabarisov/Projects/mango-tz33-perf` | Etap2 address book / fresh relink артефакты | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/d7-amo-safety` | `/Users/dmitrijfabarisov/Projects/Mango_d7_amo_safety` | D7 AMO safety | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/etap1-crm-card-assembler` | `/Users/dmitrijfabarisov/Projects/Mango_etap1_crm_cards` | Etap1 CRM card assembler | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/f8-clean-defer-scenarios` | `/Users/dmitrijfabarisov/Projects/Mango_f8_axes_catalog` | F8 clean defer scenarios | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/foton-next-step` | `/Users/dmitrijfabarisov/Projects/Mango_foton_next_step` | Foton next step | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/tz147-p0-deep-output-carry` | `/Users/dmitrijfabarisov/Projects/Mango_tz147_p0_deep` | TZ147 P0 deep output carry | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/tz148-env-isolation` | `/Users/dmitrijfabarisov/Projects/Mango_tz148_env_isolation` | TZ148 env isolation | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
+| `codex/tz-uskoreniya-3-punkta` | `/Users/dmitrijfabarisov/Projects/Mango_uskoreniya_3_punkta` | Ускорения 3 пункта | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/tz139-customer-timeline` | `/Users/dmitrijfabarisov/Projects/Mango_tz139_customer_timeline` | TZ139 customer_timeline Step 0 + Work A | 0 | 2026-06-25 | Жива до ревью Work A; потом решать Work B |
 | `codex/tz135-direct-wow-tone` | `/Users/dmitrijfabarisov/Projects/Mango analyse` | TZ135 direct wow tone, основная папка сейчас не main | 4 | 2026-06-25 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/tz133-handoff-closing-metric` | `/Users/dmitrijfabarisov/Projects/Mango_tz133_handoff_closing` | TZ133 handoff closing metric | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |

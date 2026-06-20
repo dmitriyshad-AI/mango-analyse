@@ -259,12 +259,14 @@ def test_local_sqlite_source_loader_is_read_only_and_mail_import_uses_metadata_o
               text_preview TEXT,
               raw_eml_path TEXT,
               sha256 TEXT,
-              raw_size_bytes INTEGER
+              raw_size_bytes INTEGER,
+              resolved_customer_id TEXT,
+              resolved_tallanto_id TEXT
             )
             """
         )
         con.execute(
-            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "m-1",
                 "2026-05-03T09:00:00+00:00",
@@ -275,6 +277,8 @@ def test_local_sqlite_source_loader_is_read_only_and_mail_import_uses_metadata_o
                 "/archive/raw/m-1.eml",
                 SHA,
                 2048,
+                "customer:fresh-relink-1",
+                "student-1",
             ),
         )
     before = source_snapshot(source_db)
@@ -307,6 +311,152 @@ def test_local_sqlite_source_loader_is_read_only_and_mail_import_uses_metadata_o
     with pytest.raises(ValueError, match="read-only"):
         load_sqlite_source_records(source_db, allowed_root=tmp_path, source_system="mail_archive", table_name="messages", where_sql="delete from messages")
     store.close()
+
+
+def test_mail_normalizer_uses_fresh_relink_customer_id_and_ignores_inline_customer_id() -> None:
+    batch = MailMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mail_archive",
+            source_ref="mail#1",
+            payload={
+                "message_sha256": SHA,
+                "customer_id": "interim-inline-id-must-not-be-used",
+                "resolved_customer_id": "customer:fresh-relink-42",
+                "resolved_tallanto_id": "student-42",
+                "from_email": "client@example.com",
+                "to_email": "edu@kmipt.ru",
+                "subject": "Стоимость курса",
+                "text_preview": "Подскажите стоимость курса",
+                "date_last": "2026-05-03T09:00:00+00:00",
+                "allowed_for_bot": False,
+            },
+        )
+    )
+
+    assert batch.customers[0].customer_id == "customer:fresh-relink-42"
+    assert batch.events[0].customer_id == "customer:fresh-relink-42"
+    assert batch.events[0].source_id == SHA
+    assert {link.link_type.value for link in batch.identity_links} == {"email", "tallanto_student_id"}
+    assert "interim-inline-id-must-not-be-used" != batch.customers[0].customer_id
+
+
+def test_mail_normalizer_does_not_overwrite_existing_seed_customer_identity() -> None:
+    batch = MailMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mail_archive",
+            source_ref="mail#existing",
+            payload={
+                "message_sha256": SHA,
+                "resolved_customer_id": "customer:from-seed-timeline",
+                "resolved_customer_exists": True,
+                "resolved_tallanto_id": "student-from-seed",
+                "subject": "Стоимость курса",
+                "date_last": "2026-05-03T09:00:00+00:00",
+                "allowed_for_bot": False,
+            },
+        )
+    )
+
+    assert batch.customers == ()
+    assert batch.events[0].customer_id == "customer:from-seed-timeline"
+    assert batch.opportunities[0].customer_id == "customer:from-seed-timeline"
+    assert {link.link_type.value for link in batch.identity_links} == {"tallanto_student_id"}
+
+
+def test_mail_normalizer_without_fresh_relink_goes_to_pending_attribution_only() -> None:
+    batch = MailMessageNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mail_archive",
+            source_ref="mail#pending",
+            payload={
+                "message_sha256": SHA,
+                "customer_id": "interim-inline-id-must-not-be-used",
+                "from_email": "client@example.com",
+                "to_email": "edu@kmipt.ru",
+                "date_last": "2026-05-03T09:00:00+00:00",
+                "relink_decision": "unmatched",
+                "relink_reason": "duplicate_identity_value",
+                "allowed_for_bot": False,
+            },
+        )
+    )
+
+    assert batch.customers == ()
+    assert batch.identity_links == ()
+    assert batch.opportunities == ()
+    assert batch.events == ()
+    assert batch.conflicts[0]["conflict_type"] == "pending_attribution"
+    assert batch.conflicts[0]["metadata"]["relink_decision"] == "unmatched"
+
+
+def test_mail_thread_opportunity_source_id_includes_customer_to_avoid_cross_customer_collision() -> None:
+    normalizer = MailMessageNormalizer(tenant_id="foton")
+
+    first = normalizer.normalize(
+        TimelineSourceRecord(
+            source_system="mail_archive",
+            source_ref="mail#1",
+            payload={
+                "message_sha256": "a" * 64,
+                "thread_id": "shared-thread",
+                "resolved_customer_id": "customer:fresh-relink-a",
+                "resolved_tallanto_id": "student-a",
+                "allowed_for_bot": False,
+            },
+        )
+    )
+    second = normalizer.normalize(
+        TimelineSourceRecord(
+            source_system="mail_archive",
+            source_ref="mail#2",
+            payload={
+                "message_sha256": "b" * 64,
+                "thread_id": "shared-thread",
+                "resolved_customer_id": "customer:fresh-relink-b",
+                "resolved_tallanto_id": "student-b",
+                "allowed_for_bot": False,
+            },
+        )
+    )
+
+    assert first.opportunities[0].source_id == "shared-thread:customer:fresh-relink-a"
+    assert second.opportunities[0].source_id == "shared-thread:customer:fresh-relink-b"
+    assert first.opportunities[0].source_id != second.opportunities[0].source_id
+
+
+def test_mail_and_channel_sources_reject_allowed_for_bot_true() -> None:
+    with pytest.raises(ValueError, match="allowed_for_bot=False"):
+        MailMessageNormalizer(tenant_id="foton").normalize(
+            TimelineSourceRecord(
+                source_system="mail_archive",
+                source_ref="mail#unsafe",
+                payload={
+                    "message_sha256": SHA,
+                    "resolved_customer_id": "customer:fresh-relink-unsafe",
+                    "resolved_tallanto_id": "student-unsafe",
+                    "from_email": "client@example.com",
+                    "to_email": "edu@kmipt.ru",
+                    "date_last": "2026-05-03T09:00:00+00:00",
+                    "allowed_for_bot": True,
+                },
+            )
+        )
+
+    with pytest.raises(ValueError, match="allowed_for_bot=False"):
+        ChannelMessageNormalizer(tenant_id="foton").normalize(
+            TimelineSourceRecord(
+                source_system="channel_snapshot",
+                source_ref="telegram#unsafe",
+                payload={
+                    "channel": "telegram",
+                    "channel_thread_id": "thread-1",
+                    "channel_message_id": "msg-1",
+                    "channel_user_id": "tg-100",
+                    "text": "Здравствуйте",
+                    "allowed_for_bot": True,
+                },
+            )
+        )
 
 
 def test_channel_mango_and_amo_normalizers_create_expected_timeline_contracts() -> None:

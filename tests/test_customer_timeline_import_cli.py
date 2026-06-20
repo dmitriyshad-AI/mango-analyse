@@ -155,12 +155,14 @@ def test_sqlite_source_is_read_only_and_imports_mail_metadata(tmp_path: Path) ->
               text_preview TEXT,
               raw_eml_path TEXT,
               sha256 TEXT,
-              raw_size_bytes INTEGER
+              raw_size_bytes INTEGER,
+              resolved_customer_id TEXT,
+              resolved_tallanto_id TEXT
             )
             """
         )
         con.execute(
-            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "m-1",
                 "2026-05-03T09:00:00+00:00",
@@ -171,6 +173,8 @@ def test_sqlite_source_is_read_only_and_imports_mail_metadata(tmp_path: Path) ->
                 "/mail/raw/m-1.eml",
                 SHA,
                 2048,
+                "customer:fresh-relink-cli",
+                "student-cli",
             ),
         )
     before = source_snapshot(source_db)

@@ -822,7 +822,8 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
             commit=False,
         )
-        self._sync_event_fts(event, payload, record_hash)
+        if result.status != "duplicate":
+            self._sync_event_fts(event, payload, record_hash)
         self._commit()
         return result
 
@@ -946,7 +947,8 @@ class CustomerTimelineSQLiteStore:
             ingestion_run_id=ingestion_run_id,
             commit=False,
         )
-        self._sync_chunk_fts(chunk, record_hash)
+        if result.status != "duplicate":
+            self._sync_chunk_fts(chunk, record_hash)
         self._commit()
         return result
 

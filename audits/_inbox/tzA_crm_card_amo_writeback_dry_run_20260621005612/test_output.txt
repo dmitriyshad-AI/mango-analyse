@@ -1,0 +1,47 @@
+# Тесты
+
+## Точечный набор
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q \
+  tests/test_crm_card_amo_writeback.py \
+  tests/test_crm_card_aggregator.py \
+  tests/test_amo_write_safety.py \
+  tests/test_amo_writeback_guards.py \
+  tests/test_deal_aware_stage6_writeback.py
+```
+
+Результат:
+
+```text
+62 passed in 2.11s
+```
+
+## Полный pytest
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+```
+
+Результат:
+
+```text
+3466 passed, 5 skipped, 1 warning in 55.01s
+```
+
+Warning:
+
+```text
+NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, current ssl module is compiled with LibreSSL 2.8.3.
+```
+
+## CLI dry-run
+
+```bash
+DATABASE_URL="sqlite:////Users/dmitrijfabarisov/Projects/Mango analyse/stable_runtime/amocrm_runtime/amo_runtime.db" \
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/dry_run_crm_card_amo_writeback.py \
+  --sample-size 5 \
+  --out-dir audits/_inbox/tzA_crm_card_amo_dry_run_main_runtime_20260620215416
+```
+
+Результат: exit code `2`, controlled `blocked`, live writes `0`.

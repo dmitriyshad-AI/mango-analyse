@@ -1,0 +1,7 @@
+branch: codex/tzA-amo-card-dry-run
+rev: 716cbcd
+
+A scripts/dry_run_crm_card_amo_writeback.py
+A src/mango_mvp/crm_card_amo_writeback.py
+A tests/test_crm_card_amo_writeback.py
+A audits/_inbox/tzA_crm_card_amo_writeback_dry_run_20260621005612/

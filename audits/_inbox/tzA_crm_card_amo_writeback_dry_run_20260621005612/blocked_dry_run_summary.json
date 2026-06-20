@@ -1,0 +1,21 @@
+{
+  "allowed_root": "/Users/dmitrijfabarisov/Projects/Mango_tz139_customer_timeline/product_data/customer_timeline/canonical_readonly_20260621_with_channels",
+  "generated_at": "2026-06-20T21:54:17+00:00",
+  "outputs": {
+    "summary_json": "/Users/dmitrijfabarisov/Projects/Mango_tzA_amo_card_writeback/audits/_inbox/tzA_crm_card_amo_dry_run_main_runtime_20260620215416/summary.json"
+  },
+  "reason": "AMO read-only dry-run blocked: active OAuth connection is missing.",
+  "safety": {
+    "dry_run_only": true,
+    "patch_function_available": false,
+    "refresh_oauth_token": false,
+    "send_messages": false,
+    "write_amo": false,
+    "write_stable_runtime": false,
+    "write_tallanto": false
+  },
+  "schema_version": "crm_card_amo_writeback_dry_run_blocked_v1",
+  "status": "blocked",
+  "tenant_id": "foton",
+  "timeline_db": "/Users/dmitrijfabarisov/Projects/Mango_tz139_customer_timeline/product_data/customer_timeline/canonical_readonly_20260621_with_channels/customer_timeline.sqlite"
+}

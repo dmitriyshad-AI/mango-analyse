@@ -15,6 +15,8 @@ from typing import Any, Mapping, Sequence
 
 PRICE_AXES_SELECTOR_ENV = "TELEGRAM_PRICE_AXES_SELECTOR"
 PRICE_AXES_CLEAN_DEFER_ENV = "TELEGRAM_PRICE_AXES_CLEAN_DEFER"
+DIRECT_PATH_PILOT_CONFIG_ENV = "TELEGRAM_DIRECT_PATH_PILOT_CONFIG"
+DIRECT_PATH_PILOT_CONFIG_VERSION = "pilot_gold_v1"
 PRICE_AXES_SCHEMA_VERSION = "price_axes_catalog_v1_2026_06_21"
 KC_SOURCE_DOCUMENT_ID = "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo"
 KC_SOURCE_TITLE = "База знаний КЦ"
@@ -103,11 +105,17 @@ class PriceAxisEntry:
 
 
 def price_axes_selector_enabled() -> bool:
-    return _truthy(os.getenv(PRICE_AXES_SELECTOR_ENV))
+    return _flag_enabled_with_pilot_profile(PRICE_AXES_SELECTOR_ENV)
 
 
 def price_axes_clean_defer_enabled() -> bool:
-    return _truthy(os.getenv(PRICE_AXES_CLEAN_DEFER_ENV))
+    return _flag_enabled_with_pilot_profile(PRICE_AXES_CLEAN_DEFER_ENV)
+
+
+def _flag_enabled_with_pilot_profile(env_name: str) -> bool:
+    if env_name in os.environ:
+        return _truthy(os.getenv(env_name))
+    return str(os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION
 
 
 def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

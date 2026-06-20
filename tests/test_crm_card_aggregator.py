@@ -56,7 +56,7 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
     )
 
     assert card["snapshot_as_of"] == profile["snapshot_as_of"]
-    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить (от 12.05.2026)"
+    assert card["deal_card"]["fields"]["Следующий шаг"] == "Уточнить у менеджера: открыт конфликт идентичности"
     assert "AI-бюджет диапазон" not in card["deal_card"]["fields"]
     assert "AI-дата обновления сделки" not in card["deal_card"]["fields"]
     assert set(card["contact_card"]["fields"]).issubset({"Запрос", "Последняя сводка", "История общения"})

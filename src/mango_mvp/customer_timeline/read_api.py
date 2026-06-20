@@ -10,6 +10,7 @@ from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from mango_mvp.customer_timeline.ids import normalize_key, require_text, require_timezone
+from mango_mvp.customer_timeline.next_step_resolver import resolve_customer_next_step
 from mango_mvp.customer_timeline.safety import blocked_live_actions, guard_customer_timeline_output_path
 from mango_mvp.customer_timeline.store import (
     CustomerTimelineSQLiteStore,
@@ -189,6 +190,14 @@ class CustomerTimelineReadApi:
             active_at=snapshot_dt,
             limit=100,
         )
+        next_step_events = self.store.list_events_by_customer(
+            tenant,
+            customer["customer_id"],
+            sort="asc",
+            include_artifacts=False,
+            include_signals=False,
+            limit=500,
+        )
         mappings = self._customer_id_mappings_for_profile(tenant, customer["customer_id"])
         readiness = {
             "events": len(events["items"]),
@@ -201,6 +210,12 @@ class CustomerTimelineReadApi:
             "open_conflicts": conflicts["summary"]["open_conflicts"],
             "safe_for_automatic_bot": bot_context["summary"]["allowed_chunks"] > 0 and conflicts["summary"]["open_conflicts"] == 0,
         }
+        next_step_resolution = resolve_customer_next_step(
+            next_step_events["items"],
+            readiness=readiness,
+            conflicts=conflicts["items"],
+            customer_id=customer["customer_id"],
+        ).to_json_dict()
         return {
             "schema_version": CUSTOMER_TIMELINE_READ_API_SCHEMA_VERSION,
             "endpoint": "GET /customer",
@@ -218,6 +233,7 @@ class CustomerTimelineReadApi:
                 links=links,
                 opportunities=opportunities,
                 events=events["items"],
+                next_step_resolution=next_step_resolution,
             ),
             "timeline": {
                 **events,
@@ -227,6 +243,7 @@ class CustomerTimelineReadApi:
             "bot_context": bot_context,
             "conflicts": conflicts,
             "readiness": readiness,
+            "next_step_resolution": next_step_resolution,
             "redaction": redaction_summary(bot_safe=False),
             "safety": customer_timeline_read_api_safety_contract(),
         }
@@ -740,6 +757,7 @@ def project_manager_projection(
     links: Sequence[Mapping[str, Any]],
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
+    next_step_resolution: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     phone_values = sorted(
         {
@@ -790,6 +808,7 @@ def project_manager_projection(
             if item.get("link_type") in {"amo_contact_id", "amo_lead_id"}
         ],
         "opportunities": [project_opportunity_manager(item) for item in opportunities if item.get("source_system") == "amocrm_snapshot"],
+        "next_step_resolution": dict(next_step_resolution or {}),
     }
 
 

@@ -15,6 +15,15 @@
 | `codex/tz138-analyze-sweep` | `/Users/dmitrijfabarisov/Projects/Mango_tz138_analyze_sweep` | TZ138 analyze sweep | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
 | `codex/tz142-flagb-closing-fix` | `/Users/dmitrijfabarisov/Projects/Mango_tz142_flagb_closing` | TZ142 flag B closing fix | 2 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
 | `codex/tz34-child-escalation` | `/Users/dmitrijfabarisov/Projects/Mango_tz31_child_identity` | TZ34 child escalation | 3 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
+| `codex/foton-next-step-resolver` | `/Users/dmitrijfabarisov/Projects/Mango_foton_next_step` | Foton D8 deterministic next_step resolver | 0 | 2026-06-27 | Жива до отчёта и ревью |
+| `codex/etap2-step1-address-book` | `/Users/dmitrijfabarisov/Projects/mango-tz33-perf` | Etap2 address book/perf worktree | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/d7-amo-writeback-safety` | `/Users/dmitrijfabarisov/Projects/Mango_d7_amo_safety` | D7 AMO writeback safety | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/etap1-crm-card-assembler` | `/Users/dmitrijfabarisov/Projects/Mango_etap1_crm_cards` | Etap1 CRM card assembler | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/f8-clean-defer-scenarios` | `/Users/dmitrijfabarisov/Projects/Mango_f8_axes_catalog` | F8 axes/catalog scenarios | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/tz147-p0-deep-output-carry` | `/Users/dmitrijfabarisov/Projects/Mango_tz147_p0_deep` | TZ147 P0 deep output carry | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/tz148-env-isolation` | `/Users/dmitrijfabarisov/Projects/Mango_tz148_env_isolation` | TZ148 env isolation | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/tz-email-timeline-bridge` | `/Users/dmitrijfabarisov/Projects/Mango_tz_email_timeline_bridge` | Email timeline bridge | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/tz-uskoreniya-3-punkta` | `/Users/dmitrijfabarisov/Projects/Mango_uskoreniya_3_punkta` | ТЗ ускорения 3 пункта | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/measure-flags-honest` | `/Users/dmitrijfabarisov/Projects/Mango_measure_flags_honest` | Флаговый бандл/замер TZ122+TZ123+TZ124 с честной метрикой | 12 | 2026-06-23 | Жива до флагового регрейда; потом влить/бросить |
 | `codex/measure-tz122-tz123-tz124` | `/Users/dmitrijfabarisov/Projects/Mango_measure_tz122_tz123_tz124` | Предыдущая замерная ветка TZ122+TZ123+TZ124 | 11 | 2026-06-23 | Сравнить с `measure-flags-honest`, затем бросить/архивировать |
 | `codex/tz118-group4-primary-d` | `/Users/dmitrijfabarisov/Projects/Mango_tz118_primary` | Группа 4 primary-D | 10 | 2026-06-23 | Решить: влить или бросить |

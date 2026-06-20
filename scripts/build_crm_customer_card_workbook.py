@@ -25,6 +25,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sample_size=args.sample_size,
         manager_facts_csv=Path(args.manager_facts_csv) if args.manager_facts_csv else None,
         amo_base_url=args.amo_base_url,
+        history_summary_provider=args.history_summary_provider,
+        history_summary_cache_dir=Path(args.history_summary_cache_dir) if args.history_summary_cache_dir else None,
+        history_summary_model=args.history_summary_model,
+        history_summary_reasoning=args.history_summary_reasoning,
+        history_summary_timeout_sec=args.history_summary_timeout_sec,
     )
     summary = build_crm_card_workbook(config)
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
@@ -44,6 +49,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Optional old analyze fallback facts keyed by customer_id/new_customer_id/old_customer_id. No phone join.",
     )
     parser.add_argument("--amo-base-url", default="https://educent.amocrm.ru")
+    parser.add_argument(
+        "--history-summary-provider",
+        default="off",
+        choices=("off", "rule", "codex_cli"),
+        help="Build 'История общения' through cached summarizer. codex_cli calls local Codex CLI.",
+    )
+    parser.add_argument("--history-summary-cache-dir", default="")
+    parser.add_argument("--history-summary-model", default="gpt-5.5")
+    parser.add_argument("--history-summary-reasoning", default="low")
+    parser.add_argument("--history-summary-timeout-sec", type=int, default=120)
     return parser.parse_args(argv)
 
 

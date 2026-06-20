@@ -66,9 +66,7 @@ def _default_amo_ready_input() -> Path:
 LIVE_WRITE_CONFIRMATION = "WRITE_AMO_LIVE"
 TEXT_COMPACTION_SUFFIX = " [сжато]"
 MAX_AMO_TEXT_FIELD_CHARS = 240
-MAX_NEXT_STEP_CHARS = 800
-MAX_LAST_SUMMARY_CHARS = 1200
-MAX_AUTO_HISTORY_CHARS = 1600
+AMO_TEXTAREA_FIELD_CHAR_LIMIT = 60000
 
 
 def _quality_gate_summary_passed(path_value: str | None) -> bool:
@@ -177,11 +175,11 @@ def _load_env_files() -> None:
 def _compose_last_summary(row: dict[str, Any]) -> str:
     summary = _safe_text(row.get("Краткое резюме последнего свежего звонка"))
     if summary:
-        return _compact_without_ellipsis(summary, limit=MAX_LAST_SUMMARY_CHARS)
+        return _compact_without_ellipsis(summary, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
     history = _safe_text(row.get("Краткая история общения"))
     if not history:
         return ""
-    return _compact_without_ellipsis(history, limit=MAX_LAST_SUMMARY_CHARS)
+    return _compact_without_ellipsis(history, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
 
 
 def _compose_auto_history(row: dict[str, Any]) -> str:
@@ -222,7 +220,7 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
         ):
             facts.append(
                 "Хронология:\n"
-                + _compact_without_ellipsis(chronology, limit=max(200, MAX_AUTO_HISTORY_CHARS // 2))
+                + _compact_without_ellipsis(chronology, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
             )
         else:
             facts.append("Хронология: есть в полной рабочей таблице")
@@ -233,8 +231,8 @@ def _compose_auto_history(row: dict[str, Any]) -> str:
         blocks.append("История общения Tallanto:\n" + tallanto_history)
 
     composed = "\n\n".join(block for block in blocks if block.strip()).strip()
-    if os.getenv("CRM_AUTO_HISTORY_HARD_LIMIT", "1") == "1" and len(composed) > MAX_AUTO_HISTORY_CHARS:
-        composed = _compact_without_ellipsis(composed, limit=MAX_AUTO_HISTORY_CHARS)
+    if len(composed) > AMO_TEXTAREA_FIELD_CHAR_LIMIT:
+        composed = _compact_without_ellipsis(composed, limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT)
     return composed
 
 
@@ -341,7 +339,7 @@ def _build_contact_payload(row: dict[str, Any]) -> dict[str, Any]:
         "AI-приоритет": _safe_text(row.get("Приоритет лида")),
         "AI-рекомендованный следующий шаг": _compact_without_ellipsis(
             row.get("Следующий шаг"),
-            limit=MAX_NEXT_STEP_CHARS,
+            limit=AMO_TEXTAREA_FIELD_CHAR_LIMIT,
         ),
         "Последняя AI-сводка": _compose_last_summary(row),
         "Авто история общения": _compose_auto_history(row),

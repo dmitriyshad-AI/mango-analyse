@@ -223,26 +223,26 @@ def test_contact_auto_history_skips_redundant_chronology_block() -> None:
     assert "Хронология общения" not in payload
 
 
-def test_contact_last_summary_compacts_without_ellipsis() -> None:
+def test_contact_last_summary_keeps_textarea_sized_text_without_old_cap() -> None:
     payload = write_amo_ready_contacts._compose_last_summary(
         {"Краткая история общения": " ".join(["Клиент интересуется летним лагерем"] * 80)}
     )
 
     assert "..." not in payload
     assert "…" not in payload
-    assert payload.endswith("[сжато]")
-    assert len(payload) <= write_amo_ready_contacts.MAX_LAST_SUMMARY_CHARS
+    assert not payload.endswith("[сжато]")
+    assert len(payload) > 1200
 
 
-def test_contact_last_summary_compacts_fresh_summary_to_amo_text_capacity() -> None:
+def test_contact_last_summary_compacts_only_at_textarea_capacity() -> None:
     payload = write_amo_ready_contacts._compose_last_summary(
-        {"Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает оплату"] * 90)}
+        {"Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает оплату"] * 4000)}
     )
 
     assert "..." not in payload
     assert "…" not in payload
     assert payload.endswith("[сжато]")
-    assert len(payload) <= write_amo_ready_contacts.MAX_LAST_SUMMARY_CHARS
+    assert len(payload) <= write_amo_ready_contacts.AMO_TEXTAREA_FIELD_CHAR_LIMIT
 
 
 def test_contact_payload_compacts_short_text_fields_for_amo_readback() -> None:
@@ -251,14 +251,14 @@ def test_contact_payload_compacts_short_text_fields_for_amo_readback() -> None:
             "Статус матчинга Tallanto": "exact_phone_single",
             "Приоритет лида": "warm",
             "Следующий шаг": " ".join(["Отправить подробные материалы и согласовать дату следующего звонка"] * 20),
-            "Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает летний лагерь"] * 30),
+            "Краткое резюме последнего свежего звонка": " ".join(["Клиент подробно обсуждает летний лагерь"] * 31),
             "Краткая история общения": "Полная история должна оставаться в длинном textarea-поле. " * 20,
         }
     )
 
-    assert len(payload["AI-рекомендованный следующий шаг"]) <= write_amo_ready_contacts.MAX_NEXT_STEP_CHARS
+    assert len(payload["AI-рекомендованный следующий шаг"]) > 800
     assert len(payload["AI-рекомендованный следующий шаг"]) > write_amo_ready_contacts.MAX_AMO_TEXT_FIELD_CHARS
-    assert len(payload["Последняя AI-сводка"]) <= write_amo_ready_contacts.MAX_LAST_SUMMARY_CHARS
+    assert len(payload["Последняя AI-сводка"]) > 1200
     assert len(payload["Последняя AI-сводка"]) > write_amo_ready_contacts.MAX_AMO_TEXT_FIELD_CHARS
     assert len(payload["Авто история общения"]) > write_amo_ready_contacts.MAX_AMO_TEXT_FIELD_CHARS
 
@@ -364,12 +364,10 @@ def test_contact_auto_history_writes_chronology_text_when_flag_on(monkeypatch: p
 
     assert "Хронология:\n01.05.2026" in payload
     assert "есть в полной рабочей таблице" not in payload
-    assert len(payload) <= write_amo_ready_contacts.MAX_AUTO_HISTORY_CHARS
+    assert len(payload) > 0
 
 
-def test_contact_auto_history_hard_limit_is_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CRM_AUTO_HISTORY_HARD_LIMIT", raising=False)
-
+def test_contact_auto_history_no_longer_uses_old_1600_hard_limit() -> None:
     payload = write_amo_ready_contacts._compose_auto_history(
         {
             "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 120),
@@ -377,27 +375,24 @@ def test_contact_auto_history_hard_limit_is_enabled_by_default(monkeypatch: pyte
             "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 80),
         }
     )
-    stored_payload = payload
 
-    assert len(payload) <= write_amo_ready_contacts.MAX_AUTO_HISTORY_CHARS
-    assert payload.endswith("[сжато]")
+    assert len(payload) > 1600
+    assert not payload.endswith("[сжато]")
     assert "..." not in payload
     assert "…" not in payload
-    assert stored_payload == payload
 
 
-def test_contact_auto_history_keeps_old_length_when_hard_limit_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CRM_AUTO_HISTORY_HARD_LIMIT", "0")
-
+def test_contact_auto_history_compacts_at_textarea_capacity() -> None:
     payload = write_amo_ready_contacts._compose_auto_history(
         {
-            "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 120),
+            "Краткая история общения": " ".join(["Клиент подробно обсуждает программу и оплату"] * 7000),
             "Следующий шаг": "Отправить подробные материалы",
-            "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 80),
+            "Хронология общения (последние 5 касаний)": " ".join(["01.05.2026 подробная строка общения"] * 7000),
         }
     )
 
-    assert len(payload) > write_amo_ready_contacts.MAX_AUTO_HISTORY_CHARS
+    assert len(payload) <= write_amo_ready_contacts.AMO_TEXTAREA_FIELD_CHAR_LIMIT
+    assert payload.endswith("[сжато]")
 
 
 def test_contact_writeback_runtime_db_preflight_reports_error_before_row_loop() -> None:

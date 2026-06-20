@@ -5,8 +5,9 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
+from mango_mvp.crm_card_history_summary import clean_history_source_text
 from mango_mvp.quality.tenant_text_normalizer import normalize_manager_text
 
 
@@ -31,7 +32,6 @@ DEAL_CARD_OPTIONAL_FIELDS: tuple[str, ...] = ()
 
 MANUAL_HISTORY_FIELD = "История общения"
 CONTACT_AMO_HISTORY_FIELD = "Авто история общения"
-CONTACT_AUTO_HISTORY_LIMIT = 1600
 DEAL_HISTORY_LIMIT = 4500
 SHORT_FIELD_LIMIT = 350
 DEFAULT_TEXT_LIMIT = 1300
@@ -43,6 +43,7 @@ PAYMENT_SIGNAL_TYPES = {"paid_no_access", "tallanto_payment", "payment_without_a
 HOT_SIGNAL_TYPES = {"hot_lead_silent_7d", "price_interest", "paid_no_access"}
 IDENTITY_CONFLICT_MARKERS = ("ambiguous", "duplicate", "shared", "family")
 SERVICE_SNAPSHOT_EVENT_TYPES = {"amo_contact_snapshot", "tallanto_student_snapshot", "amo_deal_stage"}
+EMAIL_STUB_EVENT_TYPES = {"email_message"}
 BLOCKER_MESSAGES = {
     "p9_ambiguous_identity_manual_review": "На телефоне несколько человек — проверьте, к кому относится",
     "open_conflicts_require_manager_review": "Есть открытые конфликты в истории — проверьте вручную",
@@ -112,6 +113,7 @@ def build_crm_card_projection(
     manager_facts: Mapping[str, Any] | ManagerFacts | None = None,
     selected_amo_lead_id: str | None = None,
     existing_amo_fields: Mapping[str, Any] | None = None,
+    history_summarizer: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     facts = manager_facts if isinstance(manager_facts, ManagerFacts) else manager_facts_from_row(manager_facts)
     if existing_amo_fields is None:
@@ -155,13 +157,14 @@ def build_crm_card_projection(
         objections=objections,
         interests=call_interests,
         target_product=call_target_product,
+        history_summarizer=history_summarizer,
     )
     priority = _priority(signals, facts, history_items or timeline_items)
     match_status = _match_status(identity_status, identity_links, conflicts)
     contact_payload = {
-        "Запрос": fit_text(request_summary, 700),
-        "Последняя сводка": fit_multiline_text(_summary_block(latest_summary), 1200),
-        "История общения": fit_multiline_text(auto_history, CONTACT_AUTO_HISTORY_LIMIT),
+        "Запрос": normalize_manager_text(request_summary),
+        "Последняя сводка": normalize_manager_multiline_text(_summary_block(latest_summary)),
+        "История общения": normalize_manager_multiline_text(auto_history),
     }
     contact_payload = _drop_empty(contact_payload)
 
@@ -179,11 +182,11 @@ def build_crm_card_projection(
     history_scope = "история по сделке" if selected_opportunity.get("opportunity_id") else "история по клиенту, не по конкретной сделке"
     warnings_text = _warnings(conflicts, signals)
     deal_payload = {
-        "Статус сделки": fit_text(_deal_status(selected_opportunity, facts, timeline_items), DEFAULT_TEXT_LIMIT),
-        "Возражения": fit_text(objections, DEFAULT_TEXT_LIMIT),
-        "Следующий шаг": fit_text(next_step, SHORT_FIELD_LIMIT),
-        "Tallanto": fit_multiline_text(_tallanto_status(timeline_items, facts), 1600),
-        "Предупреждения": fit_text(warnings_text, DEFAULT_TEXT_LIMIT),
+        "Статус сделки": normalize_manager_text(_deal_status(selected_opportunity, facts, timeline_items)),
+        "Возражения": normalize_manager_text(objections),
+        "Следующий шаг": normalize_manager_text(next_step),
+        "Tallanto": normalize_manager_multiline_text(_tallanto_status(timeline_items, facts)),
+        "Предупреждения": normalize_manager_text(warnings_text),
     }
     deal_payload = _drop_empty(deal_payload)
 
@@ -354,7 +357,7 @@ def _missing_profile_projection(
         {
             "Запрос": facts.products_interest or facts.recommended_product,
             "Последняя сводка": fallback_summary,
-            "История общения": fit_text(
+            "История общения": normalize_manager_multiline_text(
                 "\n\n".join(
                     part
                     for part in (
@@ -363,8 +366,7 @@ def _missing_profile_projection(
                         f"Следующий шаг: {facts.next_step}" if facts.next_step else "",
                     )
                     if part
-                ),
-                CONTACT_AUTO_HISTORY_LIMIT,
+                )
             ),
         }
     )
@@ -619,7 +621,23 @@ def _contact_auto_history(
     objections: str,
     interests: str = "",
     target_product: str = "",
+    history_summarizer: Callable[[str], str] | None = None,
 ) -> str:
+    source = _history_summary_source(
+        latest_summary=latest_summary,
+        latest_call=latest_call,
+        timeline_items=timeline_items,
+        signals=signals,
+        facts=facts,
+        objections=objections,
+        interests=interests,
+        target_product=target_product,
+    )
+    if history_summarizer is not None and source:
+        summary = history_summarizer(source)
+        if summary:
+            return normalize_manager_multiline_text(summary)
+
     blocks: list[str] = []
     if latest_summary:
         blocks.append("Сводка:\nСм. поле «Последняя сводка».")
@@ -631,7 +649,47 @@ def _contact_auto_history(
     )
     if chronology:
         blocks.append("Хронология:\n" + chronology)
-    return fit_multiline_text("\n\n".join(blocks), CONTACT_AUTO_HISTORY_LIMIT)
+    return normalize_manager_multiline_text("\n\n".join(blocks))
+
+
+def _history_summary_source(
+    *,
+    latest_summary: str,
+    latest_call: Mapping[str, Any],
+    timeline_items: Sequence[Mapping[str, Any]],
+    signals: Sequence[Mapping[str, Any]],
+    facts: ManagerFacts,
+    objections: str,
+    interests: str = "",
+    target_product: str = "",
+) -> str:
+    blocks: list[str] = []
+    request_parts = [part for part in (target_product, interests, objections, facts.next_step) if _safe_text(part)]
+    if request_parts:
+        blocks.append("Контекст карточки:\n" + "\n".join(f"- {part}" for part in _dedupe(request_parts)))
+    if latest_summary:
+        blocks.append("Последний содержательный звонок:\n" + latest_summary)
+    for event in sorted(timeline_items, key=lambda item: _safe_text(item.get("event_at")), reverse=True):
+        if _is_email_stub_event(event):
+            continue
+        summary = _event_history_summary(event)
+        if not summary:
+            continue
+        event_key = _event_key(event)
+        if event_key and event_key == _event_key(latest_call):
+            continue
+        event_at = _safe_text(event.get("event_at"))[:10] or "дата не указана"
+        event_type = _safe_text(event.get("event_type") or event.get("source_system") or "событие")
+        lines = [f"{event_at} {event_type}: {summary}"]
+        lines.extend(_call_analysis_lines(event))
+        blocks.append("\n".join(lines))
+    for signal in sorted(signals, key=lambda item: _safe_text(item.get("created_at")), reverse=True)[:8]:
+        signal_type = _safe_text(signal.get("signal_type"))
+        evidence = _safe_text(signal.get("evidence_text"))
+        action = _safe_text(signal.get("recommended_action"))
+        if signal_type or evidence or action:
+            blocks.append("Сигнал:\n" + "\n".join(part for part in (signal_type, evidence, action) if part))
+    return clean_history_source_text("\n\n".join(blocks))
 
 
 def _chronology_text(
@@ -671,6 +729,8 @@ def _history_events(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, An
     result: list[Mapping[str, Any]] = []
     for event in events:
         event_type = _safe_text(event.get("event_type"))
+        if event_type in EMAIL_STUB_EVENT_TYPES:
+            continue
         if event_type in SERVICE_SNAPSHOT_EVENT_TYPES:
             continue
         if event_type == "mango_call":
@@ -695,6 +755,15 @@ def _latest_history_call(events: Sequence[Mapping[str, Any]]) -> Mapping[str, An
 def _event_history_summary(event: Mapping[str, Any]) -> str:
     call_analysis = _mapping(event.get("call_analysis"))
     return _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+
+
+def _is_email_stub_event(event: Mapping[str, Any]) -> bool:
+    event_type = _safe_text(event.get("event_type"))
+    source = _safe_text(event.get("source_system"))
+    summary = _safe_text(event.get("summary") or event.get("text_preview")).casefold()
+    if event_type in EMAIL_STUB_EVENT_TYPES or source == "mail_archive":
+        return True
+    return "email handoff" in summary and "сообщен" in summary
 
 
 def _event_key(event: Mapping[str, Any]) -> str:
@@ -962,7 +1031,7 @@ def _tallanto_status(events: Sequence[Mapping[str, Any]], facts: ManagerFacts) -
         for event in events
         if _safe_text(event.get("event_type")).startswith("tallanto_") or _safe_text(event.get("source_system")) == "tallanto_snapshot"
     ]
-    return "; ".join(_dedupe(item for item in tallanto if item))[:1600]
+    return "; ".join(_dedupe(item for item in tallanto if item))
 
 
 def _tallanto_snapshot_text(event: Mapping[str, Any]) -> str:

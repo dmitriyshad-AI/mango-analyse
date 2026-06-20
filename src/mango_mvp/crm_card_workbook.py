@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from mango_mvp.crm_card_aggregator import build_crm_card_projection
+from mango_mvp.crm_card_history_summary import CrmHistorySummaryConfig, CrmHistorySummarizer
 from mango_mvp.customer_timeline.read_api import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
 
 
@@ -48,6 +49,11 @@ class CrmCardWorkbookConfig:
     manager_facts_csv: Path | None = None
     amo_base_url: str = DEFAULT_AMO_BASE_URL
     generated_at: datetime | None = None
+    history_summary_provider: str = "off"
+    history_summary_cache_dir: Path | None = None
+    history_summary_model: str = "gpt-5.5"
+    history_summary_reasoning: str = "low"
+    history_summary_timeout_sec: int = 120
 
 
 def build_crm_card_workbook(config: CrmCardWorkbookConfig) -> Mapping[str, Any]:
@@ -66,6 +72,7 @@ def build_crm_card_workbook(config: CrmCardWorkbookConfig) -> Mapping[str, Any]:
     )
     rows: list[dict[str, Any]] = []
     profiles_seen = 0
+    history_summarizer = _history_summarizer_from_config(config)
     with CustomerTimelineReadApi.open(read_config) as api:
         health = api.health()
         customer_ids = _sample_customer_ids(api, config.tenant_id, sample_size)
@@ -73,7 +80,11 @@ def build_crm_card_workbook(config: CrmCardWorkbookConfig) -> Mapping[str, Any]:
             profile = api.customer_profile(config.tenant_id, customer_id, event_limit=50, bot_context_limit=1)
             profiles_seen += 1
             manager_facts = _facts_for_profile(profile, facts_by_customer_id)
-            projection = build_crm_card_projection(profile, manager_facts=manager_facts)
+            projection = build_crm_card_projection(
+                profile,
+                manager_facts=manager_facts,
+                history_summarizer=history_summarizer,
+            )
             rows.append(_workbook_row(profile, projection, amo_base_url=config.amo_base_url))
 
     generated_at = _stable_generated_at(rows, override=config.generated_at)
@@ -105,9 +116,26 @@ def build_crm_card_workbook(config: CrmCardWorkbookConfig) -> Mapping[str, Any]:
             "new_storage_table": False,
             "live_network_calls": False,
         },
+        "history_summary": history_summarizer.summary() if history_summarizer is not None else {"provider": "off"},
     }
     summary_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return summary
+
+
+def _history_summarizer_from_config(config: CrmCardWorkbookConfig) -> CrmHistorySummarizer | None:
+    provider = str(config.history_summary_provider or "off").strip().casefold()
+    if provider in {"", "off", "none"}:
+        return None
+    cache_dir = config.history_summary_cache_dir or config.out_xlsx.with_suffix(".history_summary_cache")
+    return CrmHistorySummarizer(
+        CrmHistorySummaryConfig(
+            provider=provider,
+            cache_dir=cache_dir,
+            model=config.history_summary_model,
+            reasoning_effort=config.history_summary_reasoning,
+            timeout_sec=config.history_summary_timeout_sec,
+        )
+    )
 
 
 def _stable_generated_at(rows: Sequence[Mapping[str, Any]], *, override: datetime | None = None) -> str:

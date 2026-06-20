@@ -49,6 +49,7 @@ MAIL_MATCHING_REPORT_SCHEMA_VERSION = "mail_matching_report_v1"
 MAIL_MANGO_BRIDGE_PREVIEW_SCHEMA_VERSION = "mail_mango_bridge_preview_v1"
 MAIL_PHONE_LIFT_PREVIEW_SCHEMA_VERSION = "mail_phone_lift_preview_v1"
 MAIL_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION = "mail_customer_relink_preview_v1"
+MAIL_STAGE2_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION = "mail_stage2_customer_relink_preview_v1"
 MAIL_ATTACHMENT_PARSE_PLAN_SCHEMA_VERSION = "mail_attachment_parse_plan_v1"
 MAIL_ATTACHMENT_TEXT_EXTRACT_SCHEMA_VERSION = "mail_attachment_text_extract_v1"
 MAIL_ATTACHMENT_PDF_EXTRACT_SCHEMA_VERSION = "mail_attachment_pdf_extract_v1"
@@ -72,6 +73,7 @@ DEFAULT_TALLANTO_PHONE_COLUMNS = (
 )
 DEFAULT_TALLANTO_CANDIDATE_COLUMNS = (
     "ID",
+    "ID Tallanto",
     "amoCRM ID",
     "Имя",
     "Фамилия",
@@ -82,6 +84,7 @@ DEFAULT_TALLANTO_CANDIDATE_COLUMNS = (
     "Ответственный(ая) (ID)",
     "Группа(ID)",
 )
+TALLANTO_ID_COLUMNS = ("ID", "ID Tallanto", "Tallanto ID", "ID ученика")
 DEFAULT_INTERNAL_DOMAINS = ("kmipt.ru",)
 SERVICE_LOCAL_PARTS = (
     "no-reply",
@@ -336,6 +339,15 @@ class MailCustomerRelinkPreviewConfig:
 
 
 @dataclass(frozen=True)
+class MailStage2CustomerRelinkPreviewConfig:
+    event_jsonl_paths: Sequence[Path]
+    identity_db_path: Path
+    out_dir: Path
+    internal_domains: Sequence[str] = DEFAULT_INTERNAL_DOMAINS
+    max_text_chars_per_message: int = 250_000
+
+
+@dataclass(frozen=True)
 class MailAttachmentParsePlanConfig:
     archive_db_paths: Sequence[Path]
     out_dir: Path
@@ -516,7 +528,7 @@ def build_tallanto_identity_map(config: TallantoIdentityMapConfig) -> Mapping[st
         encoding=config.encoding,
         delimiter=config.delimiter,
     )
-    tallanto_id_counts = Counter(clean_text(row.get("ID")) for row in rows if clean_text(row.get("ID")))
+    tallanto_id_counts = Counter(tallanto_id_for_row(row) for row in rows if tallanto_id_for_row(row))
     candidate_rows: list[dict[str, Any]] = []
     identity_links: dict[tuple[str, str], dict[str, Any]] = {}
     row_identity_classes: dict[str, dict[str, str]] = {}
@@ -528,11 +540,14 @@ def build_tallanto_identity_map(config: TallantoIdentityMapConfig) -> Mapping[st
             for column in config.candidate_columns
             if column in row
         }
+        tallanto_id = tallanto_id_for_row(row)
+        if tallanto_id:
+            candidate_payload.setdefault("ID", tallanto_id)
         candidate_rows.append(
             {
                 "candidate_key": candidate_key,
                 "row_number": row_number,
-                "tallanto_id": candidate_payload.get("ID", ""),
+                "tallanto_id": tallanto_id,
                 "amocrm_id": candidate_payload.get("amoCRM ID", ""),
                 "first_name": candidate_payload.get("Имя", ""),
                 "last_name": candidate_payload.get("Фамилия", ""),
@@ -2473,7 +2488,13 @@ def build_mail_customer_relink_preview(config: MailCustomerRelinkPreviewConfig) 
             "learned_values": len(learned_rows),
         },
         "decision_counts": dict(sorted(decision_counts.items())),
-        "unmatched_reasons": dict(sorted((k, v) for k, v in reason_counts.items() if k != "linked")),
+        "unmatched_reasons": dict(
+            sorted(
+                (k, v)
+                for k, v in reason_counts.items()
+                if k not in {"linked", "already_linked"}
+            )
+        ),
         "live_tallanto": {
             "enabled": config.live_phone_lookup is not None,
             "counts": dict(sorted(live_counts.items())),
@@ -2497,6 +2518,351 @@ def build_mail_customer_relink_preview(config: MailCustomerRelinkPreviewConfig) 
     return report
 
 
+def build_mail_stage2_customer_relink_preview(
+    config: MailStage2CustomerRelinkPreviewConfig,
+) -> Mapping[str, Any]:
+    guard_not_stable_runtime(config.identity_db_path, "identity database")
+    guard_not_stable_runtime(config.out_dir, "stage2 relink preview output directory")
+    for path in config.event_jsonl_paths:
+        guard_not_stable_runtime(path, "stage2 event jsonl")
+        if not Path(path).exists():
+            raise FileNotFoundError(f"stage2 event jsonl not found: {path}")
+    out_dir = config.out_dir.resolve(strict=False)
+    guard_external_handoffs_output(out_dir, "stage2 relink preview output directory")
+    guard_git_ignored_output(out_dir, "stage2 relink preview output directory")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = out_dir / "mail_stage2_customer_relink_preview_report.json"
+    decisions_path = out_dir / "mail_stage2_customer_relink_preview_decisions.csv"
+
+    address_book = load_tallanto_customer_address_book(config.identity_db_path)
+    events = load_stage2_mail_events(config.event_jsonl_paths)
+    prepared_events = [
+        {
+            "event": event,
+            "emails": stage2_event_external_emails(
+                event,
+                internal_domains=config.internal_domains,
+            ),
+            "phones": stage2_event_phone_signals(
+                event,
+                max_chars=config.max_text_chars_per_message,
+            ),
+        }
+        for event in events
+    ]
+    value_brand_scope = build_stage2_value_brand_scope(prepared_events)
+
+    decisions: list[dict[str, Any]] = []
+    decision_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    source_counts: Counter[str] = Counter()
+    old_match_counts: Counter[str] = Counter()
+    baseline_linked = 0
+    for prepared in prepared_events:
+        decision = decide_stage2_event_customer_relink(
+            prepared["event"],
+            emails=prepared["emails"],
+            phones=prepared["phones"],
+            address_book=address_book,
+            value_brand_scope=value_brand_scope,
+        )
+        decisions.append(decision)
+        decision_counts[decision["decision"]] += 1
+        reason_counts[decision["reason"] or "linked"] += 1
+        source_counts[decision["source_file"]] += 1
+        old_match_counts[decision["old_match_method"]] += 1
+        baseline_linked += int(decision["baseline_linked"])
+
+    write_stage2_relink_decisions_csv(decisions_path, decisions)
+    new_links = int(decision_counts.get("linked", 0))
+    event_count = len(decisions)
+    report = {
+        "schema_version": MAIL_STAGE2_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION,
+        "created_at": utc_now(),
+        "paths": {
+            "report": str(report_path),
+            "decisions_csv": str(decisions_path),
+            "identity_db": str(config.identity_db_path),
+            "event_jsonl": [str(path) for path in config.event_jsonl_paths],
+        },
+        "input": {
+            "events": event_count,
+            "source_files": dict(sorted(source_counts.items())),
+            "old_match_methods": dict(sorted(old_match_counts.items())),
+        },
+        "baseline": {
+            "linked": baseline_linked,
+            "unlinked": max(0, event_count - baseline_linked),
+            "linked_share": baseline_linked / event_count if event_count else 0.0,
+        },
+        "after_preview": {
+            "new_links": new_links,
+            "linked": baseline_linked + new_links,
+            "unlinked_remaining": max(0, event_count - baseline_linked - new_links),
+            "linked_share": (baseline_linked + new_links) / event_count if event_count else 0.0,
+        },
+        "address_book": {
+            "clients": len(address_book["clients"]),
+            "values": sum(len(values) for values in address_book["values"].values()),
+            "duplicate_tallanto_ids": int(address_book["duplicate_tallanto_ids"]),
+            "brand_from_tallanto_trusted": False,
+        },
+        "decision_counts": dict(sorted(decision_counts.items())),
+        "unmatched_reasons": dict(
+            sorted(
+                (k, v)
+                for k, v in reason_counts.items()
+                if k not in {"linked", "already_linked"}
+            )
+        ),
+        "cross_brand_signal_values": {
+            kind: sum(1 for brands in values.values() if len(brands) > 1)
+            for kind, values in value_brand_scope.items()
+        },
+        "review_examples": build_stage2_relink_review_examples(decisions, limit=20),
+        "safety": {
+            "read_only_identity_db": True,
+            "read_only_stage2_jsonl": True,
+            "source_sqlite_query_only": False,
+            "write_crm": False,
+            "write_tallanto": False,
+            "runtime_db_writes": False,
+            "stable_runtime_writes": False,
+            "raw_personal_values_in_public_report": False,
+            "brand_source": "mail_event_channel_only",
+        },
+    }
+    write_json(report_path, report)
+    return report
+
+
+def load_stage2_mail_events(paths: Sequence[Path]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for path in paths:
+        with Path(path).open("r", encoding="utf-8") as fh:
+            for line_number, line in enumerate(fh, start=1):
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    continue
+                payload = dict(payload)
+                payload["_source_file"] = Path(path).name
+                payload["_line_number"] = line_number
+                events.append(payload)
+    return events
+
+
+def stage2_event_external_emails(
+    event: Mapping[str, Any],
+    *,
+    internal_domains: Sequence[str],
+) -> list[str]:
+    domains = normalize_domains(internal_domains, "")
+    result: list[str] = []
+
+    def add_value(value: object) -> None:
+        for email_value in extract_email_addresses(value):
+            if email_domain_is_internal(email_value, domains):
+                continue
+            if email_value not in result:
+                result.append(email_value)
+
+    def walk(value: object) -> None:
+        if isinstance(value, Mapping):
+            add_value(value.get("email") or value.get("address") or value.get("email_normalized"))
+            return
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for item in value:
+                walk(item)
+            return
+        add_value(value)
+
+    for key in ("from", "to", "cc", "bcc", "reply_to", "participants"):
+        if key in event:
+            walk(event.get(key))
+    return result
+
+
+def stage2_event_phone_signals(event: Mapping[str, Any], *, max_chars: int) -> list[str]:
+    text, status = read_safe_stage2_event_text(
+        event.get("extracted_text_path"),
+        max_chars=max_chars,
+    )
+    if status != "read":
+        return []
+    return extract_phone_numbers(text)
+
+
+def read_safe_stage2_event_text(value: object, *, max_chars: int) -> tuple[str, str]:
+    raw_path = clean_text(value)
+    if not raw_path:
+        return "", "missing"
+    path = Path(raw_path).resolve(strict=False)
+    if "_external_handoffs" not in path.parts:
+        return "", "rejected"
+    if "stable_runtime" in {part.casefold() for part in path.parts}:
+        return "", "rejected"
+    if "extracted_text" not in path.parts:
+        return "", "rejected"
+    if path.suffix.casefold() != ".txt":
+        return "", "rejected"
+    if not path.exists():
+        return "", "missing"
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[: max(0, int(max_chars))], "read"
+    except OSError:
+        return "", "unreadable"
+
+
+def build_stage2_value_brand_scope(
+    prepared_events: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, set[str]]]:
+    value_brand_scope: dict[str, dict[str, set[str]]] = {"email": {}, "phone": {}}
+    for prepared in prepared_events:
+        event = prepared["event"]
+        brand = normalize_brand_token(event.get("brand") or event.get("brand_signal"))
+        if brand not in {"foton", "unpk"}:
+            continue
+        for kind in ("email", "phone"):
+            for value in prepared[f"{kind}s"]:
+                value_brand_scope[kind].setdefault(value, set()).add(brand)
+    return value_brand_scope
+
+
+def normalize_existing_customer_id(value: object) -> str:
+    text = clean_text(value)
+    if text.startswith("tallanto:"):
+        return text.removeprefix("tallanto:")
+    return text
+
+
+def decide_stage2_event_customer_relink(
+    event: Mapping[str, Any],
+    *,
+    emails: Sequence[str],
+    phones: Sequence[str],
+    address_book: Mapping[str, Any],
+    value_brand_scope: Mapping[str, Mapping[str, set[str]]],
+) -> dict[str, Any]:
+    message_sha = clean_text(event.get("message_sha256") or event.get("sha"))
+    baseline_customer_id = normalize_existing_customer_id(event.get("customer_id"))
+    old_match_method = clean_text(event.get("match_method") or event.get("match") or "unknown")
+    brand_signal = normalize_brand_token(event.get("brand") or event.get("brand_signal"))
+    base = {
+        "source_file": clean_text(event.get("_source_file")),
+        "line_number": int(event.get("_line_number") or 0),
+        "message_sha256": message_sha,
+        "date_iso": clean_text(event.get("date_iso") or event.get("date_first") or event.get("date")),
+        "subject_hash": stable_value_hash(event.get("subject"))[:16] if event.get("subject") else "",
+        "baseline_linked": bool(baseline_customer_id),
+        "old_customer_id_hash": stable_value_hash(baseline_customer_id)[:16] if baseline_customer_id else "",
+        "old_match_method": old_match_method,
+        "decision": "already_linked" if baseline_customer_id else "unmatched",
+        "reason": "",
+        "tallanto_id": "",
+        "tallanto_id_hash": "",
+        "signal_kind": "",
+        "signal_value_sha256": "",
+        "email_signal_count": len(emails),
+        "phone_signal_count": len(phones),
+        "brand_signal": brand_signal or "unknown",
+        "brand_source": clean_text(event.get("brand_source") or event.get("brand_src") or event.get("brand_note")),
+    }
+    if baseline_customer_id:
+        return {**base, "reason": "already_linked"}
+    blocked: list[str] = []
+    for kind, values in (("email", emails), ("phone", phones)):
+        linked: list[dict[str, Any]] = []
+        for value in values:
+            brands = value_brand_scope.get(kind, {}).get(value, set())
+            if len(brands) > 1:
+                blocked.append("cross_brand_signal")
+                continue
+            resolved = resolve_address_book_value(
+                address_book,
+                kind=kind,
+                value=value,
+                message_brand=brand_signal,
+            )
+            if resolved["status"] == "linked":
+                linked.append({**resolved, "signal_kind": kind, "signal_value": value})
+                continue
+            blocked.append(resolved["reason"])
+        target_ids = sorted({item["tallanto_id"] for item in linked if item.get("tallanto_id")})
+        if len(target_ids) == 1:
+            selected = next(item for item in linked if item["tallanto_id"] == target_ids[0])
+            return {
+                **base,
+                "decision": "linked",
+                "reason": "linked",
+                "tallanto_id": selected["tallanto_id"],
+                "tallanto_id_hash": stable_value_hash(selected["tallanto_id"])[:16],
+                "signal_kind": selected["signal_kind"],
+                "signal_value_sha256": stable_value_hash(selected["signal_value"]),
+            }
+        if len(target_ids) > 1:
+            return {**base, "reason": "multiple_identity_targets", "decision": "unmatched"}
+    reason = most_common_reason(blocked) or "no_identity_signal"
+    return {**base, "reason": reason, "decision": "unmatched"}
+
+
+def write_stage2_relink_decisions_csv(path: Path, decisions: Sequence[Mapping[str, Any]]) -> None:
+    fieldnames = [
+        "source_file",
+        "line_number",
+        "message_sha256",
+        "date_iso",
+        "subject_hash",
+        "baseline_linked",
+        "old_customer_id_hash",
+        "old_match_method",
+        "decision",
+        "reason",
+        "tallanto_id_hash",
+        "signal_kind",
+        "signal_value_sha256",
+        "email_signal_count",
+        "phone_signal_count",
+        "brand_signal",
+        "brand_source",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in decisions:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
+
+
+def build_stage2_relink_review_examples(
+    decisions: Sequence[Mapping[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    linked = [row for row in decisions if row.get("decision") == "linked"]
+    unmatched = [row for row in decisions if row.get("decision") == "unmatched"]
+    result: list[dict[str, Any]] = []
+    for row in linked[: max(0, limit // 2)] + unmatched[: max(0, limit - min(len(linked), limit // 2))]:
+        result.append(
+            {
+                "source_file": clean_text(row.get("source_file")),
+                "line_number": int(row.get("line_number") or 0),
+                "message_sha256": clean_text(row.get("message_sha256"))[:16],
+                "date": clean_text(row.get("date_iso")),
+                "decision": clean_text(row.get("decision")),
+                "reason": clean_text(row.get("reason")),
+                "old_match_method": clean_text(row.get("old_match_method")),
+                "tallanto_id_hash": clean_text(row.get("tallanto_id_hash")),
+                "signal_kind": clean_text(row.get("signal_kind")),
+                "signal_value_sha256": clean_text(row.get("signal_value_sha256"))[:16],
+                "brand_signal": clean_text(row.get("brand_signal")),
+            }
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+
 def load_tallanto_customer_address_book(identity_db_path: Path) -> dict[str, Any]:
     clients: dict[str, dict[str, Any]] = {}
     candidate_to_tallanto: dict[str, str] = {}
@@ -2515,7 +2881,10 @@ def load_tallanto_customer_address_book(identity_db_path: Path) -> dict[str, Any
             candidate_key = clean_text(row["candidate_key"])
             candidate_to_tallanto[candidate_key] = tallanto_id
             payload = parse_json_object(row["candidate_json"])
-            brand_scope = infer_brand_scope(payload, row)
+            # Tallanto "Филиал" is a location field and is not a reliable Foton/UNPK
+            # brand source. Mail relink brand isolation is derived from the mail
+            # channel/event, never from Tallanto branch-like fields.
+            brand_scope: set[str] = set()
             client = clients.setdefault(
                 tallanto_id,
                 {
@@ -5195,6 +5564,14 @@ def read_tallanto_rows(path: Path, *, encoding: str, delimiter: str) -> list[dic
     with path.open("r", encoding=encoding, newline="", errors="replace") as fh:
         reader = csv.DictReader(fh, delimiter=delimiter)
         return [dict(row) for row in reader]
+
+
+def tallanto_id_for_row(row: Mapping[str, Any]) -> str:
+    for column in TALLANTO_ID_COLUMNS:
+        value = clean_text(row.get(column))
+        if value:
+            return value
+    return ""
 
 
 def collect_row_identity_values(
@@ -8720,7 +9097,7 @@ def candidate_key_for_row(
     *,
     tallanto_id_counts: Mapping[str, int],
 ) -> str:
-    tallanto_id = clean_text(row.get("ID"))
+    tallanto_id = tallanto_id_for_row(row)
     if tallanto_id:
         if int(tallanto_id_counts.get(tallanto_id) or 0) > 1:
             return f"tallanto:{tallanto_id}:row:{row_number}"
@@ -8820,6 +9197,7 @@ __all__ = [
     "MAIL_ATTACHMENT_TEXT_INDEX_SCHEMA_VERSION",
     "MAIL_MANGO_BRIDGE_PREVIEW_SCHEMA_VERSION",
     "MAIL_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION",
+    "MAIL_STAGE2_CUSTOMER_RELINK_PREVIEW_SCHEMA_VERSION",
     "MAIL_MATCHING_REPORT_SCHEMA_VERSION",
     "MAIL_PHONE_LIFT_PREVIEW_SCHEMA_VERSION",
     "MANGO_PHONE_INDEX_PREVIEW_SCHEMA_VERSION",
@@ -8837,6 +9215,7 @@ __all__ = [
     "MailAttachmentTextIndexConfig",
     "MailCustomerHistoryHandoffConfig",
     "MailCustomerRelinkPreviewConfig",
+    "MailStage2CustomerRelinkPreviewConfig",
     "MailMangoBridgePreviewConfig",
     "MailMatchingReportConfig",
     "MailPhoneLiftPreviewConfig",
@@ -8854,6 +9233,7 @@ __all__ = [
     "build_mail_attachment_text_index",
     "build_mail_customer_history_handoff",
     "build_mail_customer_relink_preview",
+    "build_mail_stage2_customer_relink_preview",
     "build_mail_mango_bridge_preview",
     "build_mail_matching_report",
     "build_mail_phone_lift_preview",

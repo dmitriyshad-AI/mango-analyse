@@ -27,11 +27,15 @@ from mango_mvp.productization.mail_archive import (
     MailAttachmentTextExtractConfig,
     MailAttachmentTextIndexConfig,
     MailCustomerHistoryHandoffConfig,
+    MailCustomerRelinkPreviewConfig,
+    MailStage2CustomerRelinkPreviewConfig,
     MailMangoBridgePreviewConfig,
     MailMatchingReportConfig,
     MailPhoneLiftPreviewConfig,
     MangoPhoneIndexPreviewConfig,
     TallantoIdentityMapConfig,
+    TallantoIdentityMapUnionConfig,
+    TallantoIdentityMapUnionSourceConfig,
     build_mail_archive_ingest,
     build_mail_archive_preflight,
     build_mail_attachment_image_ocr_plan,
@@ -43,15 +47,19 @@ from mango_mvp.productization.mail_archive import (
     build_mail_attachment_text_extract,
     build_mail_attachment_text_index,
     build_mail_customer_history_handoff,
+    build_mail_customer_relink_preview,
+    build_mail_stage2_customer_relink_preview,
     build_mail_mango_bridge_preview,
     build_mail_matching_report,
     build_mail_phone_lift_preview,
     build_mango_phone_index_preview,
     build_tallanto_identity_map,
+    build_tallanto_identity_map_union,
     extract_email_addresses,
     extract_phone_numbers,
     iter_attachment_parts,
     is_transient_imap_fetch_error,
+    load_tallanto_customer_address_book,
     message_metadata,
     message_participants,
     normalize_extracted_attachment_text,
@@ -263,6 +271,211 @@ def test_mail_archive_identity_map_duplicate_handling(tmp_path: Path) -> None:
         assert row == ("duplicate", 2)
     assert not (tmp_path / "identity" / "tallanto_email_identity_map.sqlite-wal").exists()
     assert not (tmp_path / "identity" / "tallanto_email_identity_map.sqlite-shm").exists()
+
+
+def test_mail_archive_identity_map_union_deduplicates_same_tallanto_id_across_sources(
+    tmp_path: Path,
+) -> None:
+    old_csv = tmp_path / "old_students.tsv"
+    fresh_csv = tmp_path / "fresh_contacts.csv"
+    _write_tallanto_csv(
+        old_csv,
+        [
+            {
+                "ID": "T-1",
+                "Имя": "Петр",
+                "Фамилия": "Иванов",
+                "E-mail": "old@example.com",
+            }
+        ],
+    )
+    _write_csv(
+        fresh_csv,
+        [
+            {
+                "ID Tallanto": "T-1",
+                "Имя": "Павел",
+                "Фамилия": "Иванов",
+                "Другой E-mail": "fresh@example.com",
+                "Тел. (родителя)": "+7 999 000-00-00",
+            }
+        ],
+        delimiter=",",
+    )
+
+    report = build_tallanto_identity_map_union(
+        TallantoIdentityMapUnionConfig(
+            sources=[
+                TallantoIdentityMapUnionSourceConfig(
+                    label="old",
+                    tallanto_csv_path=old_csv,
+                    encoding="utf-8",
+                    delimiter="\t",
+                ),
+                TallantoIdentityMapUnionSourceConfig(
+                    label="fresh",
+                    tallanto_csv_path=fresh_csv,
+                    encoding="utf-8",
+                    delimiter=",",
+                ),
+            ],
+            out_dir=tmp_path / "identity_union",
+        )
+    )
+
+    assert report["union"]["source_input_rows_total"] == 2
+    assert report["union"]["candidate_rows_after_tallanto_id_dedup"] == 1
+    assert report["union"]["deduped_by_tallanto_id"] == 1
+    assert report["identity_values"]["email"] == {"duplicate": 0, "strong_unique": 2}
+    assert report["identity_values"]["phone"] == {"duplicate": 0, "strong_unique": 1}
+    assert report["union"]["id_identity_conflict_count"] == 1
+    with sqlite3.connect(Path(report["paths"]["identity_db"])) as con:
+        assert con.execute("select count(*) from identity_candidates").fetchone()[0] == 1
+        rows = con.execute(
+            "select value, match_class, candidate_count from identity_values order by value"
+        ).fetchall()
+        assert rows == [
+            ("+79990000000", "strong_unique", 1),
+            ("fresh@example.com", "strong_unique", 1),
+            ("old@example.com", "strong_unique", 1),
+        ]
+        payload = json.loads(
+            con.execute("select candidate_json from identity_candidates").fetchone()[0]
+        )
+        assert payload["id_identity_conflict"] is True
+
+
+def test_mail_archive_identity_map_union_recomputes_common_values_on_union(
+    tmp_path: Path,
+) -> None:
+    old_csv = tmp_path / "old_students.tsv"
+    fresh_csv = tmp_path / "fresh_contacts.csv"
+    _write_tallanto_csv(
+        old_csv,
+        [{"ID": "T-1", "E-mail": "shared@example.com"}],
+    )
+    _write_csv(
+        fresh_csv,
+        [{"ID Tallanto": "T-2", "E-mail": "shared@example.com"}],
+        delimiter=",",
+    )
+
+    report = build_tallanto_identity_map_union(
+        TallantoIdentityMapUnionConfig(
+            sources=[
+                TallantoIdentityMapUnionSourceConfig(
+                    label="old",
+                    tallanto_csv_path=old_csv,
+                    encoding="utf-8",
+                    delimiter="\t",
+                ),
+                TallantoIdentityMapUnionSourceConfig(
+                    label="fresh",
+                    tallanto_csv_path=fresh_csv,
+                    encoding="utf-8",
+                    delimiter=",",
+                ),
+            ],
+            out_dir=tmp_path / "identity_union",
+        )
+    )
+
+    assert report["row_count"] == 2
+    assert report["identity_values"]["email"] == {"duplicate": 1, "strong_unique": 0}
+    with sqlite3.connect(Path(report["paths"]["identity_db"])) as con:
+        assert con.execute(
+            "select match_class, candidate_count from identity_values where kind = 'email'"
+        ).fetchone() == ("duplicate", 2)
+
+
+def test_mail_archive_identity_map_union_keeps_source_duplicate_tallanto_id_block(
+    tmp_path: Path,
+) -> None:
+    old_csv = tmp_path / "old_students.tsv"
+    fresh_csv = tmp_path / "fresh_contacts.csv"
+    _write_tallanto_csv(
+        old_csv,
+        [
+            {"ID": "T-DUP", "E-mail": "first@example.com"},
+            {"ID": "T-DUP", "E-mail": "second@example.com"},
+        ],
+    )
+    _write_csv(fresh_csv, [{"ID Tallanto": "T-OK", "E-mail": "ok@example.com"}], delimiter=",")
+
+    report = build_tallanto_identity_map_union(
+        TallantoIdentityMapUnionConfig(
+            sources=[
+                TallantoIdentityMapUnionSourceConfig(
+                    label="old",
+                    tallanto_csv_path=old_csv,
+                    encoding="utf-8",
+                    delimiter="\t",
+                ),
+                TallantoIdentityMapUnionSourceConfig(
+                    label="fresh",
+                    tallanto_csv_path=fresh_csv,
+                    encoding="utf-8",
+                    delimiter=",",
+                ),
+            ],
+            out_dir=tmp_path / "identity_union",
+        )
+    )
+
+    assert report["union"]["duplicate_tallanto_id_values_after_union"] == 1
+    address_book = load_tallanto_customer_address_book(Path(report["paths"]["identity_db"]))
+    assert address_book["clients"]["T-DUP"]["duplicate_tallanto_id"] is True
+
+
+def test_mail_archive_identity_map_accepts_tallanto_id_alias_and_does_not_trust_filial_brand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.git_check_ignored",
+        lambda _path: True,
+    )
+    tallanto_csv = tmp_path / "contacts.csv"
+    _write_tallanto_csv(
+        tallanto_csv,
+        [
+            {
+                "ID Tallanto": "T-ALIAS",
+                "Филиал": "МФТИ",
+                "E-mail": "alias@example.com",
+            }
+        ],
+    )
+    event_jsonl = _write_jsonl(
+        tmp_path / "_external_handoffs" / "stage2" / "events.jsonl",
+        [
+            {
+                "message_sha256": "m-alias",
+                "brand": "foton",
+                "from": {"email": "alias@example.com"},
+            }
+        ],
+    )
+
+    identity_report = build_tallanto_identity_map(
+        TallantoIdentityMapConfig(
+            tallanto_csv_path=tallanto_csv,
+            out_dir=tmp_path / "identity_alias",
+            encoding="utf-8",
+            delimiter="\t",
+        )
+    )
+    report = build_mail_stage2_customer_relink_preview(
+        MailStage2CustomerRelinkPreviewConfig(
+            event_jsonl_paths=[event_jsonl],
+            identity_db_path=Path(identity_report["paths"]["identity_db"]),
+            out_dir=tmp_path / "_external_handoffs" / "stage2_relink_alias",
+        )
+    )
+
+    assert identity_report["row_count"] == 1
+    assert report["after_preview"]["new_links"] == 1
+    assert report["address_book"]["brand_from_tallanto_trusted"] is False
 
 
 def test_mail_archive_ingest_rerun_is_idempotent_and_does_not_leak_password(
@@ -1135,6 +1348,279 @@ def test_mail_phone_lift_preview_blocks_missing_inputs_and_unsafe_output(
         )
     assert not missing_identity.exists()
     assert not (tmp_path / "_external_handoffs" / "phone_lift_preview_missing").exists()
+
+
+def test_mail_customer_relink_preview_links_only_unique_tallanto_phone_and_learns_email(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.git_check_ignored",
+        lambda _path: True,
+    )
+    archive_db, identity_db = _build_phone_lift_archive(tmp_path)
+    handoff = build_mail_customer_history_handoff(
+        MailCustomerHistoryHandoffConfig(
+            archive_db_paths=[archive_db],
+            identity_db_path=identity_db,
+            out_dir=tmp_path / "history_handoff",
+            mailbox_email="school@kmipt.ru",
+            internal_domains=("kmipt.ru",),
+        )
+    )
+
+    config = MailCustomerRelinkPreviewConfig(
+        mail_handoff_db_path=Path(handoff["paths"]["handoff_db"]),
+        identity_db_path=identity_db,
+        out_dir=tmp_path / "_external_handoffs" / "customer_relink_preview",
+    )
+    report = build_mail_customer_relink_preview(config)
+    rerun = build_mail_customer_relink_preview(config)
+
+    assert report["schema_version"] == "mail_customer_relink_preview_v1"
+    assert report["baseline"]["manual_review"] == 5
+    assert report["after_preview"]["new_links"] == 2
+    assert report["address_book"]["learned_values"] == 1
+    assert report["unmatched_reasons"]["duplicate_identity_value"] == 1
+    assert report["unmatched_reasons"]["identity_value_missing"] == 1
+    assert report["unmatched_reasons"]["no_phone_signal"] == 1
+    assert rerun["after_preview"] == report["after_preview"]
+    assert rerun["address_book"]["learned_values"] == report["address_book"]["learned_values"]
+    assert report["safety"]["write_tallanto"] is False
+    assert report["safety"]["write_crm"] is False
+    assert report["safety"]["raw_personal_values_in_public_report"] is False
+
+    preview_db = tmp_path / "_external_handoffs" / "customer_relink_preview" / "mail_customer_relink_preview.sqlite"
+    with sqlite3.connect(preview_db) as con:
+        linked = con.execute("select count(*) from v_linked_mail_relinks").fetchone()[0]
+        learned = con.execute("select kind, value from learned_address_book_values").fetchall()
+        duplicate_reason = con.execute(
+            "select reason from mail_relink_decisions where reason = 'duplicate_identity_value'"
+        ).fetchone()
+    assert linked == 2
+    assert learned == [("email", "missing@example.com")]
+    assert duplicate_reason == ("duplicate_identity_value",)
+    assert not (preview_db.parent / "mail_customer_relink_preview.sqlite-wal").exists()
+
+
+def test_mail_customer_relink_preview_blocks_common_phone_without_trusting_tallanto_filial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.git_check_ignored",
+        lambda _path: True,
+    )
+    tallanto_csv = tmp_path / "brand_students.csv"
+    _write_tallanto_csv(
+        tallanto_csv,
+        [
+            {
+                "ID": "F-1",
+                "Филиал": "Фотон",
+                "E-mail": "foton@example.com",
+                "Тел. (родителя)": "+7 999 100-00-00",
+            },
+            {
+                "ID": "U-1",
+                "Филиал": "УНПК МФТИ",
+                "E-mail": "unpk@example.com",
+                "Тел. (родителя)": "8 999 100 00 00",
+            },
+        ],
+    )
+    identity_report = build_tallanto_identity_map(
+        TallantoIdentityMapConfig(
+            tallanto_csv_path=tallanto_csv,
+            out_dir=tmp_path / "identity_brand",
+            encoding="utf-8",
+            delimiter="\t",
+        )
+    )
+    fake_imap = FakeImapClient(
+        [
+            _raw_message(
+                message_id="m-cross-brand",
+                from_addr="Missing <missing@example.com>",
+                body="Подскажите по оплате, телефон +7 999 100-00-00.",
+            )
+        ]
+    )
+    ingest_report = build_mail_archive_ingest(
+        credentials=MailImapCredentials(
+            host="mail.example.test",
+            port=993,
+            email_address="school@kmipt.ru",
+            password="not-written",
+        ),
+        config=MailArchiveIngestConfig(
+            out_dir=tmp_path / "_external_handoffs" / "brand_archive",
+            mailbox="INBOX",
+            mailbox_label="INBOX",
+            since_days=7,
+            max_messages=1,
+            account_label="test",
+            internal_domains=("kmipt.ru",),
+        ),
+        client=fake_imap,
+    )
+    handoff = build_mail_customer_history_handoff(
+        MailCustomerHistoryHandoffConfig(
+            archive_db_paths=[Path(ingest_report["paths"]["archive_db"])],
+            identity_db_path=Path(identity_report["paths"]["identity_db"]),
+            out_dir=tmp_path / "brand_handoff",
+            mailbox_email="school@kmipt.ru",
+            internal_domains=("kmipt.ru",),
+        )
+    )
+
+    report = build_mail_customer_relink_preview(
+        MailCustomerRelinkPreviewConfig(
+            mail_handoff_db_path=Path(handoff["paths"]["handoff_db"]),
+            identity_db_path=Path(identity_report["paths"]["identity_db"]),
+            out_dir=tmp_path / "_external_handoffs" / "brand_relink",
+        )
+    )
+
+    assert report["after_preview"]["new_links"] == 0
+    assert report["unmatched_reasons"] == {"duplicate_identity_value": 1}
+
+
+def test_mail_stage2_customer_relink_preview_uses_channel_brand_and_conservative_signals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.git_check_ignored",
+        lambda _path: True,
+    )
+    tallanto_csv = tmp_path / "contacts.csv"
+    _write_tallanto_csv(
+        tallanto_csv,
+        [
+            {"ID": "T-EMAIL", "E-mail": "unique@example.com"},
+            {"ID": "T-PHONE", "Тел. (родителя)": "+7 999 111-22-33"},
+            {"ID": "T-BRAND", "E-mail": "brand-shared@example.com"},
+            {"ID": "T-DUP-1", "E-mail": "duplicate@example.com"},
+            {"ID": "T-DUP-2", "Другой E-mail": "duplicate@example.com"},
+        ],
+    )
+    identity_report = build_tallanto_identity_map(
+        TallantoIdentityMapConfig(
+            tallanto_csv_path=tallanto_csv,
+            out_dir=tmp_path / "identity_stage2",
+            encoding="utf-8",
+            delimiter="\t",
+        )
+    )
+    text_path = tmp_path / "_external_handoffs" / "stage2" / "extracted_text" / "m-phone.txt"
+    text_path.parent.mkdir(parents=True, exist_ok=True)
+    text_path.write_text("Телефон для связи +7 999 111-22-33.", encoding="utf-8")
+    events_path = _write_jsonl(
+        tmp_path / "_external_handoffs" / "stage2" / "events.jsonl",
+        [
+            {
+                "message_sha256": "m-old",
+                "customer_id": "OLD",
+                "match_method": "email",
+                "brand": "foton",
+                "from": {"email": "old@example.com"},
+            },
+            {
+                "message_sha256": "m-email",
+                "match_method": "none",
+                "brand": "foton",
+                "from": {"email": "unique@example.com"},
+            },
+            {
+                "message_sha256": "m-phone",
+                "match_method": "none",
+                "brand": "foton",
+                "from": {"email": "unknown@example.com"},
+                "extracted_text_path": str(text_path),
+            },
+            {
+                "message_sha256": "m-cross-foton",
+                "match_method": "none",
+                "brand": "foton",
+                "from": {"email": "brand-shared@example.com"},
+            },
+            {
+                "message_sha256": "m-cross-unpk",
+                "match_method": "none",
+                "brand": "unpk",
+                "from": {"email": "brand-shared@example.com"},
+            },
+            {
+                "message_sha256": "m-duplicate",
+                "match_method": "none",
+                "brand": "foton",
+                "from": {"email": "duplicate@example.com"},
+            },
+        ],
+    )
+
+    report = build_mail_stage2_customer_relink_preview(
+        MailStage2CustomerRelinkPreviewConfig(
+            event_jsonl_paths=[events_path],
+            identity_db_path=Path(identity_report["paths"]["identity_db"]),
+            out_dir=tmp_path / "_external_handoffs" / "stage2_relink",
+        )
+    )
+
+    assert report["baseline"]["linked"] == 1
+    assert report["after_preview"]["new_links"] == 2
+    assert report["after_preview"]["linked"] == 3
+    assert report["decision_counts"] == {"already_linked": 1, "linked": 2, "unmatched": 3}
+    assert report["unmatched_reasons"]["cross_brand_signal"] == 2
+    assert report["unmatched_reasons"]["duplicate_identity_value"] == 1
+    assert report["cross_brand_signal_values"]["email"] == 1
+    assert report["safety"]["raw_personal_values_in_public_report"] is False
+    decisions_csv = Path(report["paths"]["decisions_csv"]).read_text(encoding="utf-8")
+    assert "unique@example.com" not in decisions_csv
+    assert "+79991112233" not in decisions_csv
+
+
+def test_mail_customer_relink_preview_live_lookup_is_read_only_and_blocks_ambiguous_contacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "mango_mvp.productization.mail_archive.git_check_ignored",
+        lambda _path: True,
+    )
+    archive_db, identity_db = _build_phone_lift_archive(tmp_path)
+    handoff = build_mail_customer_history_handoff(
+        MailCustomerHistoryHandoffConfig(
+            archive_db_paths=[archive_db],
+            identity_db_path=identity_db,
+            out_dir=tmp_path / "live_handoff",
+            mailbox_email="school@kmipt.ru",
+            internal_domains=("kmipt.ru",),
+        )
+    )
+    calls: list[str] = []
+
+    def fake_live_lookup(phone: str) -> list[dict[str, str]]:
+        calls.append(phone)
+        if phone == "+79995556677":
+            return [{"id": "L-1"}, {"id": "L-2"}]
+        return []
+
+    report = build_mail_customer_relink_preview(
+        MailCustomerRelinkPreviewConfig(
+            mail_handoff_db_path=Path(handoff["paths"]["handoff_db"]),
+            identity_db_path=identity_db,
+            out_dir=tmp_path / "_external_handoffs" / "live_relink",
+            live_phone_lookup=fake_live_lookup,
+        )
+    )
+
+    assert "+79995556677" in calls
+    assert report["live_tallanto"]["enabled"] is True
+    assert report["live_tallanto"]["counts"]["ambiguous"] == 1
+    assert report["unmatched_reasons"]["live_multiple_contacts"] == 1
+    assert report["safety"]["write_tallanto"] is False
 
 
 def test_mail_attachment_parse_plan_classifies_without_raw_filenames(
@@ -4413,3 +4899,20 @@ def _write_tallanto_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_csv(path: Path, rows: list[dict[str, str]], *, delimiter: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = sorted({key for row in rows for key in row})
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, delimiter=delimiter)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return path

@@ -41,11 +41,15 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     MailAttachmentTextExtractConfig,
     MailAttachmentTextIndexConfig,
     MailCustomerHistoryHandoffConfig,
+    MailCustomerRelinkPreviewConfig,
+    MailStage2CustomerRelinkPreviewConfig,
     MailMangoBridgePreviewConfig,
     MailPhoneLiftPreviewConfig,
     MangoPhoneIndexPreviewConfig,
     MailMatchingReportConfig,
     TallantoIdentityMapConfig,
+    TallantoIdentityMapUnionConfig,
+    TallantoIdentityMapUnionSourceConfig,
     build_mail_archive_ingest,
     build_mail_archive_preflight,
     build_mail_attachment_image_ocr_plan,
@@ -57,11 +61,14 @@ from mango_mvp.productization.mail_archive import (  # noqa: E402
     build_mail_attachment_text_extract,
     build_mail_attachment_text_index,
     build_mail_customer_history_handoff,
+    build_mail_customer_relink_preview,
+    build_mail_stage2_customer_relink_preview,
     build_mail_mango_bridge_preview,
     build_mail_phone_lift_preview,
     build_mango_phone_index_preview,
     build_mail_matching_report,
     build_tallanto_identity_map,
+    build_tallanto_identity_map_union,
     valid_env_var_name,
     verify_mail_archive_pilot,
 )
@@ -86,6 +93,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     if args.command == "identity-map":
         return run_identity_map(args)
+    if args.command == "identity-map-union":
+        return run_identity_map_union(args)
     if args.command == "preflight":
         return run_preflight(args)
     if args.command == "ingest":
@@ -102,6 +111,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return run_mango_phone_index_preview(args)
     if args.command == "phone-lift-preview":
         return run_phone_lift_preview(args)
+    if args.command == "customer-relink-preview":
+        return run_customer_relink_preview(args)
+    if args.command == "stage2-customer-relink-preview":
+        return run_stage2_customer_relink_preview(args)
     if args.command == "attachment-parse-plan":
         return run_attachment_parse_plan(args)
     if args.command == "attachment-text-extract":
@@ -133,6 +146,35 @@ def run_identity_map(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # noqa: BLE001
         print(f"MAIL identity map failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_identity_map_union(args: argparse.Namespace) -> int:
+    try:
+        report = build_tallanto_identity_map_union(
+            TallantoIdentityMapUnionConfig(
+                sources=[
+                    TallantoIdentityMapUnionSourceConfig(
+                        label="old_students_20260512",
+                        tallanto_csv_path=Path(args.old_tallanto_csv),
+                        encoding=args.old_encoding,
+                        delimiter=args.old_delimiter,
+                    ),
+                    TallantoIdentityMapUnionSourceConfig(
+                        label="contacts_20260620",
+                        tallanto_csv_path=Path(args.fresh_tallanto_csv),
+                        encoding=args.fresh_encoding,
+                        delimiter=args.fresh_delimiter,
+                    ),
+                ],
+                out_dir=Path(args.out_dir),
+                db_filename=args.db_filename,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL identity map union failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     print_summary(report)
     return 0
@@ -333,6 +375,55 @@ def run_phone_lift_preview(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # noqa: BLE001
         print(f"MAIL phone lift preview failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_customer_relink_preview(args: argparse.Namespace) -> int:
+    live_lookup = None
+    if args.live_tallanto_lookup:
+        load_dotenv_file(Path(args.dotenv)) if args.dotenv else None
+        from mango_mvp.amocrm_runtime.tallanto_api import TallantoApiClient, build_tallanto_api_config
+
+        client = TallantoApiClient(build_tallanto_api_config())
+        live_lookup = lambda phone: client.search_contacts_by_phone(  # noqa: E731
+            phone,
+            max_records=args.live_max_records,
+        )
+    try:
+        report = build_mail_customer_relink_preview(
+            MailCustomerRelinkPreviewConfig(
+                mail_handoff_db_path=Path(args.mail_handoff_db),
+                identity_db_path=Path(args.identity_db),
+                out_dir=Path(args.out_dir),
+                classification_index_path=(
+                    Path(args.classification_index) if args.classification_index else None
+                ),
+                live_phone_lookup=live_lookup,
+                require_real_correspondence=not args.allow_non_real_correspondence,
+                max_text_chars_per_message=args.max_text_chars_per_message,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL customer relink preview failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print_summary(report)
+    return 0
+
+
+def run_stage2_customer_relink_preview(args: argparse.Namespace) -> int:
+    try:
+        report = build_mail_stage2_customer_relink_preview(
+            MailStage2CustomerRelinkPreviewConfig(
+                event_jsonl_paths=[Path(path) for path in args.event_jsonl],
+                identity_db_path=Path(args.identity_db),
+                out_dir=Path(args.out_dir),
+                max_text_chars_per_message=args.max_text_chars_per_message,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"MAIL stage2 customer relink preview failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     print_summary(report)
     return 0
@@ -702,6 +793,22 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     identity.add_argument("--delimiter", default="\t")
     identity.add_argument("--account-label", default=DEFAULT_ACCOUNT_LABEL)
 
+    identity_union = subparsers.add_parser(
+        "identity-map-union",
+        help="Build one Tallanto identity map from old students TSV and fresh contacts CSV.",
+    )
+    identity_union.add_argument("--old-tallanto-csv", required=True)
+    identity_union.add_argument("--fresh-tallanto-csv", required=True)
+    identity_union.add_argument("--out-dir", required=True)
+    identity_union.add_argument("--old-encoding", default="cp1251")
+    identity_union.add_argument("--old-delimiter", default="\t")
+    identity_union.add_argument("--fresh-encoding", default="utf-8-sig")
+    identity_union.add_argument("--fresh-delimiter", default=",")
+    identity_union.add_argument(
+        "--db-filename",
+        default="tallanto_identity_map_union_20260620.sqlite",
+    )
+
     preflight = subparsers.add_parser("preflight", help="Check a live IMAP pilot without network calls.")
     preflight.add_argument("--host", help=f"Defaults to MAIL_IMAP_HOST or {DEFAULT_HOST}.")
     preflight.add_argument("--port", type=int, help=f"Defaults to MAIL_IMAP_PORT or {DEFAULT_PORT}.")
@@ -802,6 +909,37 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     phone_lift.add_argument("--identity-db", required=True)
     phone_lift.add_argument("--out-dir", required=True)
     phone_lift.add_argument("--max-text-chars-per-message", type=int, default=250_000)
+
+    relink = subparsers.add_parser(
+        "customer-relink-preview",
+        help="Preview conservative mail relinking through tallanto_id address book.",
+    )
+    relink.add_argument("--mail-handoff-db", required=True)
+    relink.add_argument("--identity-db", required=True)
+    relink.add_argument("--out-dir", required=True)
+    relink.add_argument("--classification-index")
+    relink.add_argument("--max-text-chars-per-message", type=int, default=250_000)
+    relink.add_argument(
+        "--allow-non-real-correspondence",
+        action="store_true",
+        help="Do not block messages classified as newsletters/service. Use only for diagnostics.",
+    )
+    relink.add_argument(
+        "--live-tallanto-lookup",
+        action="store_true",
+        help="Use configured Tallanto API for read-only phone lookup when local identity map misses.",
+    )
+    relink.add_argument("--live-max-records", type=int, default=10)
+    relink.add_argument("--dotenv", default=".env", help="Optional dotenv file for live Tallanto lookup.")
+
+    stage2_relink = subparsers.add_parser(
+        "stage2-customer-relink-preview",
+        help="Preview Stage2 mail event relinking through a Tallanto address book.",
+    )
+    stage2_relink.add_argument("--event-jsonl", action="append", required=True)
+    stage2_relink.add_argument("--identity-db", required=True)
+    stage2_relink.add_argument("--out-dir", required=True)
+    stage2_relink.add_argument("--max-text-chars-per-message", type=int, default=250_000)
 
     attachment_plan = subparsers.add_parser(
         "attachment-parse-plan",

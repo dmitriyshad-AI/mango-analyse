@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import random
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict
 
@@ -13,7 +15,12 @@ from sqlalchemy import func, or_, select
 from mango_mvp.config import get_settings
 from mango_mvp.db import build_session_factory, init_db
 from mango_mvp.models import CallRecord
-from mango_mvp.services.analyze import AnalyzeService
+from mango_mvp.services.analyze import (
+    NON_CONVERSATION_ADVISORY_ENV,
+    AnalyzeService,
+    build_analysis_migration_call_snapshot,
+    migrate_analysis_payload,
+)
 from mango_mvp.services.export_excel import build_call_rows, build_contact_rows, write_workbook
 from mango_mvp.services.export_ai_office import push_call_insights
 from mango_mvp.services.ingest import ingest_from_directory
@@ -28,6 +35,30 @@ from mango_mvp.services.worker import run_worker
 
 def _json_print(payload):
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "y", "on", "да"}
+
+
+def _migrate_analysis_schema_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        migrated = migrate_analysis_payload(
+            task["call_snapshot"],
+            task["payload"],
+            non_conversation_advisory_enabled=bool(task.get("non_conversation_advisory_enabled")),
+        )
+    except Exception as exc:  # noqa: BLE001 - keep per-call migration failures isolated.
+        return {
+            "call_id": task.get("call_id"),
+            "migrated": None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "call_id": task.get("call_id"),
+        "migrated": migrated,
+        "error": None,
+    }
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -1081,6 +1112,8 @@ def cmd_migrate_analysis_schema(args) -> int:
 
     session_factory = build_session_factory(settings)
     service = AnalyzeService(settings)
+    workers = max(1, int(getattr(args, "workers", 1) or 1))
+    non_conversation_advisory_enabled = _env_truthy(NON_CONVERSATION_ADVISORY_ENV)
     with session_factory() as session:
         query = select(CallRecord).where(CallRecord.analysis_json.is_not(None))
         if args.only_done:
@@ -1092,6 +1125,8 @@ def cmd_migrate_analysis_schema(args) -> int:
         already_current = 0
         skipped_empty = 0
         errors = 0
+        migration_tasks: list[Dict[str, Any]] = []
+        calls_by_id: dict[int, CallRecord] = {}
 
         for call in calls:
             scanned += 1
@@ -1113,13 +1148,38 @@ def cmd_migrate_analysis_schema(args) -> int:
                 already_current += 1
                 continue
 
-            migrated = service.migrate_analysis_payload(call, payload)
+            migration_tasks.append(
+                {
+                    "call_id": call.id,
+                    "call_snapshot": build_analysis_migration_call_snapshot(call),
+                    "payload": payload,
+                    "non_conversation_advisory_enabled": non_conversation_advisory_enabled,
+                }
+            )
+            calls_by_id[int(call.id)] = call
+
+        if workers == 1:
+            migration_results = [_migrate_analysis_schema_task(task) for task in migration_tasks]
+        else:
+            chunksize = max(1, min(64, len(migration_tasks) // (workers * 4) or 1))
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                migration_results = list(executor.map(_migrate_analysis_schema_task, migration_tasks, chunksize=chunksize))
+
+        for result in migration_results:
+            if result.get("error"):
+                errors += 1
+                continue
+            migrated = result.get("migrated")
+            if not isinstance(migrated, dict):
+                errors += 1
+                continue
             migrated_version = service.analysis_schema_version(migrated)
             if migrated_version != target_version:
                 errors += 1
                 continue
 
             if not args.dry_run:
+                call = calls_by_id[int(result["call_id"])]
                 call.analysis_json = json.dumps(migrated, ensure_ascii=False)
                 service._export_analysis_files(call, migrated)
                 session.add(call)
@@ -1139,6 +1199,7 @@ def cmd_migrate_analysis_schema(args) -> int:
             "dry_run": bool(args.dry_run),
             "only_done": bool(args.only_done),
             "force": bool(args.force),
+            "workers": workers,
         }
     )
     return 0
@@ -1331,6 +1392,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_migrate.add_argument("--only-done", action="store_true")
     p_migrate.add_argument("--dry-run", action="store_true")
     p_migrate.add_argument("--force", action="store_true")
+    p_migrate.add_argument("--workers", type=int, default=1)
     p_migrate.set_defaults(func=cmd_migrate_analysis_schema)
 
     return parser

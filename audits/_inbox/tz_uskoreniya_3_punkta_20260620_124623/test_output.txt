@@ -1,0 +1,23 @@
+# Test Output Summary
+
+Baseline single-process before changes:
+`3365 passed, 5 skipped, 1 warning in 51.78s`
+
+xdist detection:
+`3365 passed, 5 skipped, 2 warnings in 29.66s`
+
+xdist auto after point 1:
+`3365 passed, 5 skipped, 16 warnings in 21.01s`
+
+bulk focused:
+`28 passed in 0.83s`
+
+full after bulk:
+`3366 passed, 5 skipped, 16 warnings in 20.58s`
+
+analysis focused:
+`27 passed, 1 warning in 1.61s`
+
+full after all code:
+`3368 passed, 5 skipped, 16 warnings in 20.44s`
+

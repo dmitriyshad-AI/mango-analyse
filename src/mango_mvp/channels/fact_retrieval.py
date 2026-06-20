@@ -9,8 +9,10 @@ blocking facts from explicitly forbidden neighbouring scopes.
 from typing import Mapping, Sequence
 
 from mango_mvp.knowledge_base.price_axes_catalog import (
+    price_axes_clean_defer_enabled,
     price_axes_selector_enabled,
     select_price_fact_for_query,
+    select_price_result_for_query,
 )
 
 
@@ -78,8 +80,10 @@ def select_confirmed_facts(
     brand = str(active_brand or "").strip()
 
     virtual_price_facts: list[Mapping[str, object]] = []
+    price_selector_result: Mapping[str, object] = {}
     if query and price_axes_selector_enabled() and any(str(key or "").split(".", 1)[0] == "prices" for key in required):
         raw_facts = [fact.get("__fact") if isinstance(fact.get("__fact"), Mapping) else fact for fact in candidates]
+        price_selector_result = select_price_result_for_query(raw_facts, active_brand=brand, query=query)
         selected_price_fact = select_price_fact_for_query(raw_facts, active_brand=brand, query=query)
         if selected_price_fact:
             virtual_price_facts.append(
@@ -92,6 +96,8 @@ def select_confirmed_facts(
                     "scopes": set(),
                 }
             )
+        elif price_axes_clean_defer_enabled() and price_selector_result.get("status") in {"needs_slot", "not_found"}:
+            return []
 
     answer_facts: list[tuple[int, int, Mapping[str, object]]] = []
     rest: list[tuple[int, Mapping[str, object]]] = []

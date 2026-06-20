@@ -1,8 +1,20 @@
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_kb_price_axes_catalog.py
-13 passed in 1.21s
+16 passed in 1.44s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py::test_pilot_gold_v1_enables_full_battle_profile_flags tests/test_subscription_llm_draft_provider.py::test_direct_path_pilot_gold_v1_enables_direct_and_gold_without_extra_flags
+2 passed in 1.68s
 
 PYTHONPYCACHEPREFIX=/private/tmp/mango_f8_clean_defer_pycache PYTHONPATH=src python3 -m py_compile src/mango_mvp/channels/fact_retrieval.py src/mango_mvp/knowledge_base/price_axes_catalog.py
 passed
 
+TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 - <<'PY'
+...
+subscription_module_import_ok True
+selector_enabled True
+clean_defer_enabled True
+first_fact_id fact:v3:price_axes_selector:regular_fact_v3_foton_prices_regular_2026_27_online_5_11_class_before_2026_08_01_year_c62eeaa47e_online_year_5_11
+first_text_has_price True
+PY
+
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
-3378 passed, 5 skipped, 1 warning in 52.96s
+3381 passed, 5 skipped, 1 warning in 53.10s

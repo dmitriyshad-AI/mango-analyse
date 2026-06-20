@@ -1,6 +1,9 @@
 src/mango_mvp/channels/fact_retrieval.py
+src/mango_mvp/channels/subscription_llm_parts/__init__.py
+src/mango_mvp/channels/subscription_llm_parts/support.py
 src/mango_mvp/knowledge_base/price_axes_catalog.py
 tests/test_kb_price_axes_catalog.py
+tests/test_subscription_llm_draft_provider.py
 tasks/_done/2026-06-21_TZ_F8_fix_scenarii_i_defer_D3_report.md
 audits/_inbox/f8_fix_scenarii_defer_20260620/implementation_notes.md
 audits/_inbox/f8_fix_scenarii_defer_20260620/changed_files.txt

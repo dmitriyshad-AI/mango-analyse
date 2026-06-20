@@ -180,6 +180,7 @@ def test_fact_retrieval_price_axis_selector_is_flagged_and_brand_safe(monkeypatc
     query = "Сколько стоит математика для 9 класса онлайн за год?"
 
     monkeypatch.delenv("TELEGRAM_PRICE_AXES_SELECTOR", raising=False)
+    monkeypatch.delenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", raising=False)
     off = select_confirmed_facts(facts, active_brand="foton", required_fact_keys=["prices.current"], query=query, k=3)
     assert not str((off[0].get("__fact") or off[0]).get("fact_id") or "").startswith("fact:v3:price_axes_selector")
 
@@ -193,6 +194,31 @@ def test_fact_retrieval_price_axis_selector_is_flagged_and_brand_safe(monkeypatc
     assert "УНПК" not in first["client_safe_text"]
 
 
+def test_fact_retrieval_price_axis_selector_is_enabled_by_pilot_profile(monkeypatch) -> None:
+    facts = _facts()
+    query = "Сколько стоит математика для 9 класса онлайн за год?"
+
+    monkeypatch.delenv("TELEGRAM_PRICE_AXES_SELECTOR", raising=False)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    on = select_confirmed_facts(facts, active_brand="foton", required_fact_keys=["prices.current"], query=query, k=3)
+    first = on[0].get("__fact")
+
+    assert isinstance(first, dict)
+    assert str(first.get("fact_id")).startswith("fact:v3:price_axes_selector")
+    assert "47 250" in first["client_safe_text"]
+
+
+def test_fact_retrieval_price_axis_selector_explicit_zero_overrides_pilot_profile(monkeypatch) -> None:
+    facts = _facts()
+    query = "Сколько стоит математика для 9 класса онлайн за год?"
+
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setenv("TELEGRAM_PRICE_AXES_SELECTOR", "0")
+    off = select_confirmed_facts(facts, active_brand="foton", required_fact_keys=["prices.current"], query=query, k=3)
+
+    assert not str((off[0].get("__fact") or off[0]).get("fact_id") or "").startswith("fact:v3:price_axes_selector")
+
+
 def test_fact_retrieval_clean_defer_drops_irrelevant_facts_on_dead_end(monkeypatch) -> None:
     facts = _facts()
     query = "10 класс онлайн по будням за семестр сколько стоит?"
@@ -204,6 +230,18 @@ def test_fact_retrieval_clean_defer_drops_irrelevant_facts_on_dead_end(monkeypat
 
     monkeypatch.setenv("TELEGRAM_PRICE_AXES_CLEAN_DEFER", "1")
     on = select_confirmed_facts(facts, active_brand="unpk", required_fact_keys=["prices.current"], query=query, k=5)
+    assert on == []
+
+
+def test_fact_retrieval_clean_defer_is_enabled_by_pilot_profile(monkeypatch) -> None:
+    facts = _facts()
+    query = "10 класс онлайн по будням за семестр сколько стоит?"
+
+    monkeypatch.delenv("TELEGRAM_PRICE_AXES_SELECTOR", raising=False)
+    monkeypatch.delenv("TELEGRAM_PRICE_AXES_CLEAN_DEFER", raising=False)
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    on = select_confirmed_facts(facts, active_brand="unpk", required_fact_keys=["prices.current"], query=query, k=5)
+
     assert on == []
 
 

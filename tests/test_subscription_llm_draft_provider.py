@@ -13470,6 +13470,8 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV,
         subscription_llm.PII_RELATION_STOPWORDS_ENV,
         subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV,
+        subscription_llm.PRICE_AXES_SELECTOR_ENV,
+        subscription_llm.PRICE_AXES_CLEAN_DEFER_ENV,
         ASSUMED_SCOPE_GUARD_ENV,
         RETRIEVER_MODEL_DRIVEN_ENV,
         RETRIEVER_NEED_SHADOW_ENV,
@@ -13505,6 +13507,8 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.MEMORY_PROVENANCE_COMPACT_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PII_RELATION_STOPWORDS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.PRICE_AXES_SELECTOR_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.PRICE_AXES_CLEAN_DEFER_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert ASSUMED_SCOPE_GUARD_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS

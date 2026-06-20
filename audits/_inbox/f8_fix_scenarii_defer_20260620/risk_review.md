@@ -8,10 +8,13 @@
 
 ## Remaining risks
 
-- The new clean defer flag is not yet live in `pilot_gold_v1`; M1 must confirm it before activation.
+- `pilot_gold_v1` now enables both F8 flags, so first draft review must focus on price answers and clean-defer wording.
 - Empty fact pack behavior depends on downstream route logic producing a useful clarification / manager draft.
 - Wider phrasings of weekday/weekend were not exhaustively tested; current tests cover direct Russian wording.
+- First live drafts with the F8 flags enabled must be reviewed from raw text before considering any auto-send.
 
 ## Safety boundary
 
 No live write paths were used. No KB, CRM, AMO, Tallanto, ASR, Resolve or Analyze data was changed.
+
+Live-bot deployment was not performed.

@@ -12,12 +12,13 @@ Branch: `codex/f8-clean-defer-scenarios`
 4. New default-off flag: `TELEGRAM_PRICE_AXES_CLEAN_DEFER`.
 5. When both `TELEGRAM_PRICE_AXES_SELECTOR=1` and `TELEGRAM_PRICE_AXES_CLEAN_DEFER=1` are enabled, a dead-end price query returns an empty fact pack instead of pulling unrelated facts.
 6. Valid price products are not suppressed: the УНПК 5th-grade weekend semester case still returns `37 000 ₽`.
+7. `pilot_gold_v1` now enables `TELEGRAM_PRICE_AXES_SELECTOR` and `TELEGRAM_PRICE_AXES_CLEAN_DEFER` by default.
+8. Explicit env value `0` still overrides the pilot profile and disables the selector, so rollback is a one-variable change.
 
 ## What was not changed
 
 - Knowledge-base facts were not changed.
-- `pilot_gold_v1` was not changed.
-- `TELEGRAM_PRICE_AXES_SELECTOR` was not added to the pilot profile yet.
+- No live bot deployment was performed.
 - No live systems, CRM, AMO, Tallanto, ASR, Resolve or Analyze were touched.
 
 ## Validation
@@ -26,14 +27,34 @@ Targeted tests:
 
 ```text
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_kb_price_axes_catalog.py
-13 passed in 1.21s
+16 passed in 1.44s
+```
+
+Pilot profile tests:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py::test_pilot_gold_v1_enables_full_battle_profile_flags tests/test_subscription_llm_draft_provider.py::test_direct_path_pilot_gold_v1_enables_direct_and_gold_without_extra_flags
+2 passed in 1.68s
+```
+
+Runtime self-check:
+
+```text
+TELEGRAM_DIRECT_PATH_PILOT_CONFIG=pilot_gold_v1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 - <<'PY'
+...
+subscription_module_import_ok True
+selector_enabled True
+clean_defer_enabled True
+first_fact_id fact:v3:price_axes_selector:regular_fact_v3_foton_prices_regular_2026_27_online_5_11_class_before_2026_08_01_year_c62eeaa47e_online_year_5_11
+first_text_has_price True
+PY
 ```
 
 Full tests:
 
 ```text
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
-3378 passed, 5 skipped, 1 warning in 52.96s
+3381 passed, 5 skipped, 1 warning in 53.10s
 ```
 
 Scenario validation:
@@ -65,12 +86,21 @@ Old superseded single-task file was parked, not deleted:
 /Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/tasks/_inbox_m1/_parked/superseded_by_f8_fix_20260621/
 ```
 
+## Current pilot-profile state
+
+`pilot_gold_v1` enables:
+
+- `TELEGRAM_PRICE_AXES_SELECTOR=1`
+- `TELEGRAM_PRICE_AXES_CLEAN_DEFER=1`
+
+Rollback:
+
+- set `TELEGRAM_PRICE_AXES_SELECTOR=0`;
+- and/or set `TELEGRAM_PRICE_AXES_CLEAN_DEFER=0`.
+
 ## Next step
 
-Build a fresh M1 bundle from this branch and enqueue OFF/ON tasks:
-
-- OFF: no F8 selector flags.
-- ON: `TELEGRAM_PRICE_AXES_SELECTOR=1`, `TELEGRAM_PRICE_AXES_CLEAN_DEFER=1`.
+Review the first live drafts with the profile enabled by raw transcript before allowing any auto-send behavior.
 
 Acceptance for M1:
 

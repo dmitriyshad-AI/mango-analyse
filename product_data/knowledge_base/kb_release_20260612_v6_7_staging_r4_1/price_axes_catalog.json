@@ -1,0 +1,1473 @@
+{
+  "entries": [
+    {
+      "amount": 28250,
+      "brand": "foton",
+      "classes": "3-4",
+      "client_safe_text": "Фотон: цены на 2026/27 учебный год, 3-4 класс, очно, семестр — 28 250 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_foton_prices_regular_2026_27_offline_3_4_class_before_2026_07_01_semester_f3a5b189a1_offline_semester_3_4",
+      "format": "offline",
+      "grade_max": 4,
+      "grade_min": 3,
+      "grade_values": [
+        3,
+        4
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_3_4_class_before_2026_07_01_semester:f3a5b189a1",
+      "source_fact_key": "prices_regular_2026_27.offline_3_4_class.before_2026_07_01.semester",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 28250,
+        "classes": "3-4",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 4,
+        "grade_min": 3,
+        "grade_values": [
+          3,
+          4
+        ],
+        "period": "semester",
+        "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_3_4_class_before_2026_07_01_semester:f3a5b189a1",
+        "source_fact_key": "prices_regular_2026_27.offline_3_4_class.before_2026_07_01.semester",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 47000,
+      "brand": "foton",
+      "classes": "3-4",
+      "client_safe_text": "Фотон: цены на 2026/27 учебный год, 3-4 класс, очно, год — 47 000 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_foton_prices_regular_2026_27_offline_3_4_class_before_2026_07_01_year_0224369794_offline_year_3_4",
+      "format": "offline",
+      "grade_max": 4,
+      "grade_min": 3,
+      "grade_values": [
+        3,
+        4
+      ],
+      "period": "year",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_3_4_class_before_2026_07_01_year:0224369794",
+      "source_fact_key": "prices_regular_2026_27.offline_3_4_class.before_2026_07_01.year",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 47000,
+        "classes": "3-4",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 4,
+        "grade_min": 3,
+        "grade_values": [
+          3,
+          4
+        ],
+        "period": "year",
+        "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_3_4_class_before_2026_07_01_year:0224369794",
+        "source_fact_key": "prices_regular_2026_27.offline_3_4_class.before_2026_07_01.year",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 44600,
+      "brand": "foton",
+      "classes": "5-11",
+      "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 44 600 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_foton_prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semester_36842d05b0_offline_semester_5_11",
+      "format": "offline",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semester:36842d05b0",
+      "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 44600,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "semester",
+        "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semester:36842d05b0",
+        "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 74500,
+      "brand": "foton",
+      "classes": "5-11",
+      "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, очно, год — 74 500 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_foton_prices_regular_2026_27_offline_5_11_class_before_2026_07_01_year_1ba4d315ac_offline_year_5_11",
+      "format": "offline",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "year",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_year:1ba4d315ac",
+      "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 74500,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "year",
+        "source_fact_id": "fact:v3:foton:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_year:1ba4d315ac",
+        "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 19000,
+      "brand": "foton",
+      "classes": "3-4",
+      "client_safe_text": "Фотон: цены на 2026/27 учебный год, 3-4 класс, онлайн, семестр — 19 000 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_foton_prices_regular_2026_27_online_3_4_class_before_2026_08_01_semester_2c6d2d418a_online_semester_3_4",
+      "format": "online",
+      "grade_max": 4,
+      "grade_min": 3,
+      "grade_values": [
+        3,
+        4
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:prices_regular_2026_27_online_3_4_class_before_2026_08_01_semester:2c6d2d418a",
+      "source_fact_key": "prices_regular_2026_27.online_3_4_class.before_2026_08_01.semester",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 19000,
+        "classes": "3-4",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 4,
+        "grade_min": 3,
+        "grade_values": [
+          3,
+          4
+        ],
+        "period": "semester",
+        "source_fact_id": "fact:v3:foton:prices_regular_2026_27_online_3_4_class_before_2026_08_01_semester:2c6d2d418a",
+        "source_fact_key": "prices_regular_2026_27.online_3_4_class.before_2026_08_01.semester",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 29750,
+      "brand": "foton",
+      "classes": "5-11",
+      "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, семестр — 29 750 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_foton_prices_regular_2026_27_online_5_11_class_before_2026_08_01_semester_3a603a0670_online_semester_5_11",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:prices_regular_2026_27_online_5_11_class_before_2026_08_01_semester:3a603a0670",
+      "source_fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 29750,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "semester",
+        "source_fact_id": "fact:v3:foton:prices_regular_2026_27_online_5_11_class_before_2026_08_01_semester:3a603a0670",
+        "source_fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.semester",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 47250,
+      "brand": "foton",
+      "classes": "5-11",
+      "client_safe_text": "Фотон: цены на 2026/27 учебный год, 5-11 класс, онлайн, год — 47 250 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_foton_prices_regular_2026_27_online_5_11_class_before_2026_08_01_year_c62eeaa47e_online_year_5_11",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "year",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:prices_regular_2026_27_online_5_11_class_before_2026_08_01_year:c62eeaa47e",
+      "source_fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 47250,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "year",
+        "source_fact_id": "fact:v3:foton:prices_regular_2026_27_online_5_11_class_before_2026_08_01_year:c62eeaa47e",
+        "source_fact_key": "prices_regular_2026_27.online_5_11_class.before_2026_08_01.year",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 31000,
+      "brand": "unpk",
+      "classes": "1-4",
+      "client_safe_text": "УНПК: цены на 2026/27 учебный год, 1-4 класс, очно, семестр — 31 000 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_unpk_prices_regular_2026_27_offline_1_4_class_before_2026_07_01_semester_822adda0a0_offline_semester_1_4",
+      "format": "offline",
+      "grade_max": 4,
+      "grade_min": 1,
+      "grade_values": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_1_4_class_before_2026_07_01_semester:822adda0a0",
+      "source_fact_key": "prices_regular_2026_27.offline_1_4_class.before_2026_07_01.semester",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 31000,
+        "classes": "1-4",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 4,
+        "grade_min": 1,
+        "grade_values": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "period": "semester",
+        "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_1_4_class_before_2026_07_01_semester:822adda0a0",
+        "source_fact_key": "prices_regular_2026_27.offline_1_4_class.before_2026_07_01.semester",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 51700,
+      "brand": "unpk",
+      "classes": "1-4",
+      "client_safe_text": "УНПК: цены на 2026/27 учебный год, 1-4 класс, очно, год — 51 700 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_unpk_prices_regular_2026_27_offline_1_4_class_before_2026_07_01_year_dde3131cf8_offline_year_1_4",
+      "format": "offline",
+      "grade_max": 4,
+      "grade_min": 1,
+      "grade_values": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "period": "year",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_1_4_class_before_2026_07_01_year:dde3131cf8",
+      "source_fact_key": "prices_regular_2026_27.offline_1_4_class.before_2026_07_01.year",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 51700,
+        "classes": "1-4",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 4,
+        "grade_min": 1,
+        "grade_values": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "period": "year",
+        "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_1_4_class_before_2026_07_01_year:dde3131cf8",
+        "source_fact_key": "prices_regular_2026_27.offline_1_4_class.before_2026_07_01.year",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 49000,
+      "brand": "unpk",
+      "classes": "5-11",
+      "client_safe_text": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, семестр — 49 000 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_unpk_prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semester_091cddc130_offline_semester_5_11",
+      "format": "offline",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semester:091cddc130",
+      "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 49000,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "semester",
+        "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_semester:091cddc130",
+        "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.semester",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 82000,
+      "brand": "unpk",
+      "classes": "5-11",
+      "client_safe_text": "УНПК: цены на 2026/27 учебный год, 5-11 класс, очно, год — 82 000 ₽.",
+      "currency": "RUB",
+      "entry_id": "regular_fact_v3_unpk_prices_regular_2026_27_offline_5_11_class_before_2026_07_01_year_c9c10537f7_offline_year_5_11",
+      "format": "offline",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "year",
+      "product_code": "regular_course",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_year:c9c10537f7",
+      "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+      "source_kind": "regular_structured_price",
+      "structured_value": {
+        "amount": 82000,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "offline",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "year",
+        "source_fact_id": "fact:v3:unpk:prices_regular_2026_27_offline_5_11_class_before_2026_07_01_year:c9c10537f7",
+        "source_fact_key": "prices_regular_2026_27.offline_5_11_class.before_2026_07_01.year",
+        "source_kind": "regular_structured_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics",
+          "russian",
+          "ai"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics",
+        "russian",
+        "ai"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 37000,
+      "brand": "unpk",
+      "classes": "5-11",
+      "client_safe_text": "УНПК МФТИ: онлайн-курсы по математике и физике для 5-11 классов по выходным, семестр — 37 000 ₽.",
+      "currency": "RUB",
+      "entry_id": "unpk_online_fact_v3_unpk_kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_5_11_weekend_2026_27_client_safe_text_ea0454f6a9_weekend_semester",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "weekend",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_5_11_weekend_2026_27_client_safe_text:ea0454f6a9",
+      "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+      "source_kind": "unpk_online_kc_source_price",
+      "structured_value": {
+        "amount": 37000,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "semester",
+        "schedule": "weekend",
+        "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_5_11_weekend_2026_27_client_safe_text:ea0454f6a9",
+        "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+        "source_kind": "unpk_online_kc_source_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 59000,
+      "brand": "unpk",
+      "classes": "5-11",
+      "client_safe_text": "УНПК МФТИ: онлайн-курсы по математике и физике для 5-11 классов по выходным, год — 59 000 ₽.",
+      "currency": "RUB",
+      "entry_id": "unpk_online_fact_v3_unpk_kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_5_11_weekend_2026_27_client_safe_text_ea0454f6a9_weekend_year",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 5,
+      "grade_values": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "period": "year",
+      "product_code": "regular_course",
+      "schedule": "weekend",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_5_11_weekend_2026_27_client_safe_text:ea0454f6a9",
+      "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+      "source_kind": "unpk_online_kc_source_price",
+      "structured_value": {
+        "amount": 59000,
+        "classes": "5-11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 5,
+        "grade_values": [
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "period": "year",
+        "schedule": "weekend",
+        "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_5_11_weekend_2026_27_client_safe_text:ea0454f6a9",
+        "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_5_11_weekend_2026_27.client_safe_text",
+        "source_kind": "unpk_online_kc_source_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 41800,
+      "brand": "unpk",
+      "classes": "9 и 11",
+      "client_safe_text": "УНПК МФТИ: онлайн-курсы для 9 и 11 классов по будням, семестр — 41 800 ₽.",
+      "currency": "RUB",
+      "entry_id": "unpk_online_fact_v3_unpk_kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_informatics_9_11_weekday_2026_27_client_safe_tex_8132a63b6f_weekday_semester",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 9,
+      "grade_values": [
+        9,
+        11
+      ],
+      "period": "semester",
+      "product_code": "regular_course",
+      "schedule": "weekday",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_informatics_9_11_weekday_2026_27_client_safe_tex:8132a63b6f",
+      "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+      "source_kind": "unpk_online_kc_source_price",
+      "structured_value": {
+        "amount": 41800,
+        "classes": "9 и 11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 9,
+        "grade_values": [
+          9,
+          11
+        ],
+        "period": "semester",
+        "schedule": "weekday",
+        "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_informatics_9_11_weekday_2026_27_client_safe_tex:8132a63b6f",
+        "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+        "source_kind": "unpk_online_kc_source_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 69900,
+      "brand": "unpk",
+      "classes": "9 и 11",
+      "client_safe_text": "УНПК МФТИ: онлайн-курсы для 9 и 11 классов по будням, год — 69 900 ₽.",
+      "currency": "RUB",
+      "entry_id": "unpk_online_fact_v3_unpk_kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_informatics_9_11_weekday_2026_27_client_safe_tex_8132a63b6f_weekday_year",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 9,
+      "grade_values": [
+        9,
+        11
+      ],
+      "period": "year",
+      "product_code": "regular_course",
+      "schedule": "weekday",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_informatics_9_11_weekday_2026_27_client_safe_tex:8132a63b6f",
+      "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+      "source_kind": "unpk_online_kc_source_price",
+      "structured_value": {
+        "amount": 69900,
+        "classes": "9 и 11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 9,
+        "grade_values": [
+          9,
+          11
+        ],
+        "period": "year",
+        "schedule": "weekday",
+        "source_fact_id": "fact:v3:unpk:kb_v6_6_client_safe_facts_2026_06_08_annual_online_courses_math_physics_informatics_9_11_weekday_2026_27_client_safe_tex:8132a63b6f",
+        "source_fact_key": "kb_v6_6_client_safe_facts_2026_06_08.annual_online_courses_math_physics_informatics_9_11_weekday_2026_27.client_safe_text",
+        "source_kind": "unpk_online_kc_source_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math",
+          "physics",
+          "informatics"
+        ]
+      },
+      "subjects": [
+        "math",
+        "physics",
+        "informatics"
+      ],
+      "tariff_id": "",
+      "tariff_includes": [],
+      "tariff_title": ""
+    },
+    {
+      "amount": 18900,
+      "brand": "foton",
+      "classes": "11",
+      "client_safe_text": "Фотон: M11 по математике (ЕГЭ), тариф «Основа» — 18 900 ₽. Входит: записи вебинаров; конспекты; банк задач; самостоятельная подготовка.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs_b0d1f6604e_base",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 11,
+      "grade_values": [
+        11
+      ],
+      "period": "year",
+      "product_code": "m11",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 18900,
+        "classes": "11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 11,
+        "grade_values": [
+          11
+        ],
+        "period": "year",
+        "product_code": "m11",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "base",
+        "tariff_includes": [
+          "записи вебинаров",
+          "конспекты",
+          "банк задач",
+          "самостоятельная подготовка"
+        ],
+        "tariff_title": "Основа"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "base",
+      "tariff_includes": [
+        "записи вебинаров",
+        "конспекты",
+        "банк задач",
+        "самостоятельная подготовка"
+      ],
+      "tariff_title": "Основа"
+    },
+    {
+      "amount": 47250,
+      "brand": "foton",
+      "classes": "11",
+      "client_safe_text": "Фотон: M11 по математике (ЕГЭ), тариф «Стандартный» — 47 250 ₽. Входит: 35 живых вебинаров; общение с преподавателем в чате; записи вебинаров.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs_b0d1f6604e_standard",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 11,
+      "grade_values": [
+        11
+      ],
+      "period": "year",
+      "product_code": "m11",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 47250,
+        "classes": "11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 11,
+        "grade_values": [
+          11
+        ],
+        "period": "year",
+        "product_code": "m11",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "standard",
+        "tariff_includes": [
+          "35 живых вебинаров",
+          "общение с преподавателем в чате",
+          "записи вебинаров"
+        ],
+        "tariff_title": "Стандартный"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "standard",
+      "tariff_includes": [
+        "35 живых вебинаров",
+        "общение с преподавателем в чате",
+        "записи вебинаров"
+      ],
+      "tariff_title": "Стандартный"
+    },
+    {
+      "amount": 59900,
+      "brand": "foton",
+      "classes": "11",
+      "client_safe_text": "Фотон: M11 по математике (ЕГЭ), тариф «Продвинутый» — 59 900 ₽. Входит: все из тарифа «Стандартный»; 35 практических вебинаров; группы до 20 человек.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs_b0d1f6604e_advanced",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 11,
+      "grade_values": [
+        11
+      ],
+      "period": "year",
+      "product_code": "m11",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 59900,
+        "classes": "11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 11,
+        "grade_values": [
+          11
+        ],
+        "period": "year",
+        "product_code": "m11",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "advanced",
+        "tariff_includes": [
+          "все из тарифа «Стандартный»",
+          "35 практических вебинаров",
+          "группы до 20 человек"
+        ],
+        "tariff_title": "Продвинутый"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "advanced",
+      "tariff_includes": [
+        "все из тарифа «Стандартный»",
+        "35 практических вебинаров",
+        "группы до 20 человек"
+      ],
+      "tariff_title": "Продвинутый"
+    },
+    {
+      "amount": 94500,
+      "brand": "foton",
+      "classes": "11",
+      "client_safe_text": "Фотон: M11 по математике (ЕГЭ), тариф «Полное погружение» — 94 500 ₽. Входит: все из тарифа «Продвинутый»; индивидуальные занятия раз в 2 недели.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs_b0d1f6604e_full_immersion",
+      "format": "online",
+      "grade_max": 11,
+      "grade_min": 11,
+      "grade_values": [
+        11
+      ],
+      "period": "year",
+      "product_code": "m11",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 94500,
+        "classes": "11",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 11,
+        "grade_min": 11,
+        "grade_values": [
+          11
+        ],
+        "period": "year",
+        "product_code": "m11",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m11_online_math_ege_tariffs:b0d1f6604e",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m11_online_math_ege_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "full_immersion",
+        "tariff_includes": [
+          "все из тарифа «Продвинутый»",
+          "индивидуальные занятия раз в 2 недели"
+        ],
+        "tariff_title": "Полное погружение"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "full_immersion",
+      "tariff_includes": [
+        "все из тарифа «Продвинутый»",
+        "индивидуальные занятия раз в 2 недели"
+      ],
+      "tariff_title": "Полное погружение"
+    },
+    {
+      "amount": 18900,
+      "brand": "foton",
+      "classes": "9",
+      "client_safe_text": "Фотон: M9 по математике (ОГЭ), тариф «Основа» — 18 900 ₽. Входит: записи вебинаров; конспекты; банк задач; самостоятельная подготовка.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs_32556490d1_base",
+      "format": "online",
+      "grade_max": 9,
+      "grade_min": 9,
+      "grade_values": [
+        9
+      ],
+      "period": "year",
+      "product_code": "m9",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 18900,
+        "classes": "9",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 9,
+        "grade_min": 9,
+        "grade_values": [
+          9
+        ],
+        "period": "year",
+        "product_code": "m9",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "base",
+        "tariff_includes": [
+          "записи вебинаров",
+          "конспекты",
+          "банк задач",
+          "самостоятельная подготовка"
+        ],
+        "tariff_title": "Основа"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "base",
+      "tariff_includes": [
+        "записи вебинаров",
+        "конспекты",
+        "банк задач",
+        "самостоятельная подготовка"
+      ],
+      "tariff_title": "Основа"
+    },
+    {
+      "amount": 47250,
+      "brand": "foton",
+      "classes": "9",
+      "client_safe_text": "Фотон: M9 по математике (ОГЭ), тариф «Стандартный» — 47 250 ₽. Входит: 35 живых вебинаров; общение с преподавателем в чате; записи вебинаров.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs_32556490d1_standard",
+      "format": "online",
+      "grade_max": 9,
+      "grade_min": 9,
+      "grade_values": [
+        9
+      ],
+      "period": "year",
+      "product_code": "m9",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 47250,
+        "classes": "9",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 9,
+        "grade_min": 9,
+        "grade_values": [
+          9
+        ],
+        "period": "year",
+        "product_code": "m9",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "standard",
+        "tariff_includes": [
+          "35 живых вебинаров",
+          "общение с преподавателем в чате",
+          "записи вебинаров"
+        ],
+        "tariff_title": "Стандартный"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "standard",
+      "tariff_includes": [
+        "35 живых вебинаров",
+        "общение с преподавателем в чате",
+        "записи вебинаров"
+      ],
+      "tariff_title": "Стандартный"
+    },
+    {
+      "amount": 59900,
+      "brand": "foton",
+      "classes": "9",
+      "client_safe_text": "Фотон: M9 по математике (ОГЭ), тариф «Продвинутый» — 59 900 ₽. Входит: все из тарифа «Стандартный»; 35 практических вебинаров; группы до 20 человек.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs_32556490d1_advanced",
+      "format": "online",
+      "grade_max": 9,
+      "grade_min": 9,
+      "grade_values": [
+        9
+      ],
+      "period": "year",
+      "product_code": "m9",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 59900,
+        "classes": "9",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 9,
+        "grade_min": 9,
+        "grade_values": [
+          9
+        ],
+        "period": "year",
+        "product_code": "m9",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "advanced",
+        "tariff_includes": [
+          "все из тарифа «Стандартный»",
+          "35 практических вебинаров",
+          "группы до 20 человек"
+        ],
+        "tariff_title": "Продвинутый"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "advanced",
+      "tariff_includes": [
+        "все из тарифа «Стандартный»",
+        "35 практических вебинаров",
+        "группы до 20 человек"
+      ],
+      "tariff_title": "Продвинутый"
+    },
+    {
+      "amount": 94500,
+      "brand": "foton",
+      "classes": "9",
+      "client_safe_text": "Фотон: M9 по математике (ОГЭ), тариф «Полное погружение» — 94 500 ₽. Входит: все из тарифа «Продвинутый»; индивидуальные занятия раз в 2 недели.",
+      "currency": "RUB",
+      "entry_id": "tariff_fact_v3_foton_r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs_32556490d1_full_immersion",
+      "format": "online",
+      "grade_max": 9,
+      "grade_min": 9,
+      "grade_values": [
+        9
+      ],
+      "period": "year",
+      "product_code": "m9",
+      "schedule": "",
+      "source_document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+      "source_document_title": "База знаний КЦ",
+      "source_document_updated_at": "2026-06-15T11:23:26.941Z",
+      "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+      "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+      "source_kind": "foton_m9_m11_tariff_price",
+      "structured_value": {
+        "amount": 94500,
+        "classes": "9",
+        "currency": "RUB",
+        "format": "online",
+        "grade_max": 9,
+        "grade_min": 9,
+        "grade_values": [
+          9
+        ],
+        "period": "year",
+        "product_code": "m9",
+        "source_fact_id": "fact:v3:foton:r4_1_owner_2026_06_12_foton_m9_online_math_oge_tariffs:32556490d1",
+        "source_fact_key": "r4_1_owner_2026_06_12.foton.m9_online_math_oge_tariffs",
+        "source_kind": "foton_m9_m11_tariff_price",
+        "source_truth": "База знаний КЦ",
+        "subjects": [
+          "math"
+        ],
+        "tariff_id": "full_immersion",
+        "tariff_includes": [
+          "все из тарифа «Продвинутый»",
+          "индивидуальные занятия раз в 2 недели"
+        ],
+        "tariff_title": "Полное погружение"
+      },
+      "subjects": [
+        "math"
+      ],
+      "tariff_id": "full_immersion",
+      "tariff_includes": [
+        "все из тарифа «Продвинутый»",
+        "индивидуальные занятия раз в 2 недели"
+      ],
+      "tariff_title": "Полное погружение"
+    }
+  ],
+  "issues": [
+    {
+      "fact_id": "fact:v3:foton:prices_regular_2026_27_early_booking_2026_27_online_5_11_semester:6a645a3305",
+      "fact_key": "prices_regular_2026_27.early_booking_2026_27.online_5_11_semester",
+      "issue": "empty_client_safe_text_not_final_price"
+    },
+    {
+      "fact_id": "fact:v3:foton:prices_regular_2026_27_early_booking_2026_27_online_5_11_year:b39698b01b",
+      "fact_key": "prices_regular_2026_27.early_booking_2026_27.online_5_11_year",
+      "issue": "empty_client_safe_text_not_final_price"
+    },
+    {
+      "amount_max": 33300,
+      "amount_min": 29900,
+      "fact_id": "fact:v3:foton:prices_regular_2026_27_online_3_4_class_before_2026_08_01_year_range:0731539301",
+      "fact_key": "prices_regular_2026_27.online_3_4_class.before_2026_08_01.year_range",
+      "issue": "range_not_final_price"
+    }
+  ],
+  "rules": {
+    "grade_axes_source": "structured_value.classes only",
+    "range_facts_are_not_final_price": true,
+    "regular_course_price_depends_on": [
+      "brand",
+      "grade",
+      "format",
+      "period"
+    ],
+    "regular_course_price_does_not_depend_on": [
+      "subject"
+    ],
+    "regular_subjects_fixed_list": [
+      "math",
+      "physics",
+      "informatics",
+      "russian",
+      "ai"
+    ]
+  },
+  "schema_version": "price_axes_catalog_v1_2026_06_21",
+  "source_snapshot": "kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json",
+  "source_truth": {
+    "document_id": "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo",
+    "note": "КЦ-база подтверждает УНПК-онлайн цены; исходные факты r4.1 содержат эти цены текстом.",
+    "title": "База знаний КЦ",
+    "updated_at": "2026-06-15T11:23:26.941Z"
+  }
+}

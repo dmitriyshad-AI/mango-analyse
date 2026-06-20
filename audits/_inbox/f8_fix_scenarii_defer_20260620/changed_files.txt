@@ -1,0 +1,10 @@
+src/mango_mvp/channels/fact_retrieval.py
+src/mango_mvp/knowledge_base/price_axes_catalog.py
+tests/test_kb_price_axes_catalog.py
+tasks/_done/2026-06-21_TZ_F8_fix_scenarii_i_defer_D3_report.md
+audits/_inbox/f8_fix_scenarii_defer_20260620/implementation_notes.md
+audits/_inbox/f8_fix_scenarii_defer_20260620/changed_files.txt
+audits/_inbox/f8_fix_scenarii_defer_20260620/test_output.txt
+audits/_inbox/f8_fix_scenarii_defer_20260620/semantic_review.md
+audits/_inbox/f8_fix_scenarii_defer_20260620/risk_review.md
+audits/_inbox/f8_fix_scenarii_defer_20260620/backward_compatibility.md

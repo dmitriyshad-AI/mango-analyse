@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 
 
 PRICE_AXES_SELECTOR_ENV = "TELEGRAM_PRICE_AXES_SELECTOR"
+PRICE_AXES_CLEAN_DEFER_ENV = "TELEGRAM_PRICE_AXES_CLEAN_DEFER"
 PRICE_AXES_SCHEMA_VERSION = "price_axes_catalog_v1_2026_06_21"
 KC_SOURCE_DOCUMENT_ID = "1bMhN0DtqNK8Z2XdwGMci2lAv0CtSYQ4QGb1Hr4dQ9Oo"
 KC_SOURCE_TITLE = "База знаний КЦ"
@@ -105,6 +106,10 @@ def price_axes_selector_enabled() -> bool:
     return _truthy(os.getenv(PRICE_AXES_SELECTOR_ENV))
 
 
+def price_axes_clean_defer_enabled() -> bool:
+    return _truthy(os.getenv(PRICE_AXES_CLEAN_DEFER_ENV))
+
+
 def build_price_axes_catalog(facts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     entries: list[PriceAxisEntry] = []
     issues: list[dict[str, Any]] = []
@@ -192,6 +197,7 @@ def select_price(
     subject: str = "",
     format: str,
     period: str,
+    schedule: str = "",
     product_code: str = "",
     tariff_id: str = "",
 ) -> dict[str, Any]:
@@ -199,6 +205,7 @@ def select_price(
     normalized_brand = normalize_brand(brand)
     normalized_format = normalize_format(format)
     normalized_period = normalize_period(period)
+    normalized_schedule = normalize_schedule(schedule)
     normalized_subject = normalize_subject(subject)
     normalized_product = normalize_product_code(product_code)
     normalized_tariff = normalize_tariff_id(tariff_id)
@@ -222,6 +229,7 @@ def select_price(
         and entry.get("format") == normalized_format
         and entry.get("period") == normalized_period
         and _entry_contains_grade(entry, grade)
+        and (not normalized_schedule or _text(entry.get("schedule")) == normalized_schedule)
         and _entry_matches_subject(entry, normalized_subject)
         and _entry_matches_product(entry, normalized_product)
         and _entry_matches_tariff(entry, normalized_tariff)
@@ -262,16 +270,27 @@ def select_price_fact_for_query(
     active_brand: str,
     query: str,
 ) -> Mapping[str, Any] | None:
-    if not _looks_like_price_query(query):
-        return None
-    axes = extract_price_query_axes(query, active_brand=active_brand)
-    result = select_price(build_price_axes_catalog(facts), **axes)
+    result = select_price_result_for_query(facts, active_brand=active_brand, query=query)
     if result.get("status") != "exact":
         return None
     entry = result.get("entry")
     if not isinstance(entry, Mapping):
         return None
     return virtual_fact_from_price_entry(entry)
+
+
+def select_price_result_for_query(
+    facts: Sequence[Mapping[str, Any]],
+    *,
+    active_brand: str,
+    query: str,
+) -> dict[str, Any]:
+    if not _looks_like_price_query(query):
+        return {"status": "not_price_query", "missing_slots": (), "reason": "query_not_about_price", "matches": []}
+    axes = extract_price_query_axes(query, active_brand=active_brand)
+    result = dict(select_price(build_price_axes_catalog(facts), **axes))
+    result["query_axes"] = axes
+    return result
 
 
 def extract_price_query_axes(query: str, *, active_brand: str = "") -> dict[str, Any]:
@@ -283,6 +302,7 @@ def extract_price_query_axes(query: str, *, active_brand: str = "") -> dict[str,
         "subject": normalize_subject(query),
         "format": normalize_format(query),
         "period": normalize_period(query),
+        "schedule": normalize_schedule(query),
         "product_code": product_code,
         "tariff_id": normalize_tariff_id(query),
     }
@@ -337,6 +357,15 @@ def normalize_period(value: str) -> str:
         return "semester"
     if any(marker in text for marker in ("year", "год", "годовой", "годовая", "учебный год")):
         return "year"
+    return ""
+
+
+def normalize_schedule(value: str) -> str:
+    text = _normalize_text(value)
+    if any(marker in text for marker in ("будн", "weekday", "по будням")):
+        return "weekday"
+    if any(marker in text for marker in ("выходн", "weekend", "суббот", "воскрес")):
+        return "weekend"
     return ""
 
 

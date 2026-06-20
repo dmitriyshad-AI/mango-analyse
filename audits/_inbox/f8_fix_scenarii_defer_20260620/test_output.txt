@@ -1,0 +1,8 @@
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_kb_price_axes_catalog.py
+13 passed in 1.21s
+
+PYTHONPYCACHEPREFIX=/private/tmp/mango_f8_clean_defer_pycache PYTHONPATH=src python3 -m py_compile src/mango_mvp/channels/fact_retrieval.py src/mango_mvp/knowledge_base/price_axes_catalog.py
+passed
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+3378 passed, 5 skipped, 1 warning in 52.96s

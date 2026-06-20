@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from mango_mvp.channels.fact_retrieval import select_confirmed_facts
-from mango_mvp.knowledge_base.price_axes_catalog import build_price_axes_catalog, select_price
+from mango_mvp.knowledge_base.price_axes_catalog import build_price_axes_catalog, select_price, select_price_fact_for_query
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +118,42 @@ def test_selector_can_pick_unpk_weekday_price_by_subject() -> None:
     assert result["entry"]["schedule"] == "weekday"
 
 
+def test_selector_respects_explicit_unpk_weekday_schedule() -> None:
+    result = select_price(
+        _catalog(),
+        brand="УНПК",
+        grade=9,
+        subject="математика",
+        format="онлайн",
+        period="год",
+        schedule="будни",
+    )
+
+    assert result["status"] == "exact"
+    assert result["entry"]["amount"] == 69900
+    assert result["entry"]["schedule"] == "weekday"
+
+
+def test_selector_does_not_reuse_weekend_price_for_missing_weekday_grade() -> None:
+    result = select_price(
+        _catalog(),
+        brand="УНПК",
+        grade=10,
+        subject="",
+        format="онлайн",
+        period="семестр",
+        schedule="будни",
+    )
+
+    assert result["status"] == "not_found"
+    assert result["reason"] == "no_exact_price_for_axes"
+    assert select_price_fact_for_query(
+        _facts(),
+        active_brand="unpk",
+        query="10 класс онлайн по будням за семестр сколько стоит?",
+    ) is None
+
+
 def test_selector_can_pick_m9_tariff_only_when_product_and_tariff_are_explicit() -> None:
     regular = select_price(_catalog(), brand="Фотон", grade=9, subject="математика", format="онлайн", period="год")
     tariff = select_price(
@@ -155,3 +191,32 @@ def test_fact_retrieval_price_axis_selector_is_flagged_and_brand_safe(monkeypatc
     assert first["brand"] == "foton"
     assert "47 250" in first["client_safe_text"]
     assert "УНПК" not in first["client_safe_text"]
+
+
+def test_fact_retrieval_clean_defer_drops_irrelevant_facts_on_dead_end(monkeypatch) -> None:
+    facts = _facts()
+    query = "10 класс онлайн по будням за семестр сколько стоит?"
+
+    monkeypatch.setenv("TELEGRAM_PRICE_AXES_SELECTOR", "1")
+    monkeypatch.delenv("TELEGRAM_PRICE_AXES_CLEAN_DEFER", raising=False)
+    off = select_confirmed_facts(facts, active_brand="unpk", required_fact_keys=["prices.current"], query=query, k=5)
+    assert off
+
+    monkeypatch.setenv("TELEGRAM_PRICE_AXES_CLEAN_DEFER", "1")
+    on = select_confirmed_facts(facts, active_brand="unpk", required_fact_keys=["prices.current"], query=query, k=5)
+    assert on == []
+
+
+def test_fact_retrieval_clean_defer_keeps_valid_price_facts(monkeypatch) -> None:
+    facts = _facts()
+    query = "УНПК онлайн, математика 5 класс по выходным, семестр сколько?"
+
+    monkeypatch.setenv("TELEGRAM_PRICE_AXES_SELECTOR", "1")
+    monkeypatch.setenv("TELEGRAM_PRICE_AXES_CLEAN_DEFER", "1")
+    on = select_confirmed_facts(facts, active_brand="unpk", required_fact_keys=["prices.current"], query=query, k=5)
+    first = on[0].get("__fact")
+
+    assert isinstance(first, dict)
+    assert str(first.get("fact_id")).startswith("fact:v3:price_axes_selector")
+    assert first["brand"] == "unpk"
+    assert "37 000" in first["client_safe_text"]

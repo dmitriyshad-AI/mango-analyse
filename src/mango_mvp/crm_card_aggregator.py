@@ -32,7 +32,7 @@ DEAL_CARD_REQUIRED_FIELDS = (
     "AI-основание рекомендации",
     "AI-качество привязки к сделке",
     "AI-предупреждение по сделке",
-    "AI-Tallanto статус по сделке",
+    "Статус оплат и занятий",
     "AI-дата обновления сделки",
 )
 
@@ -98,7 +98,7 @@ def manager_facts_from_row(row: Mapping[str, Any] | None) -> ManagerFacts:
         probability=first_text(row, ("Вероятность продажи, %", "sale_probability_pct", "sale_probability_percent")),
         recommended_product=first_text(row, ("Рекомендуемый продукт", "recommended_product")),
         products_interest=first_text(row, ("Продукты интереса", "interests_products", "products")),
-        tallanto_history=first_text(row, ("История общения Tallanto", "AI-Tallanto статус по сделке", "tallanto_history")),
+        tallanto_history=first_text(row, ("История общения Tallanto", "Статус оплат и занятий", "AI-Tallanto статус по сделке", "tallanto_history")),
         budget_range=first_text(row, ("AI-бюджет диапазон", "budget_range")),
         budget_comment=first_text(row, ("AI-бюджет комментарий", "budget", "budget_comment")),
         price_sensitivity=first_text(row, ("AI-чувствительность к цене", "price_sensitivity")),
@@ -200,7 +200,7 @@ def build_crm_card_projection(
         "AI-основание рекомендации": fit_text(_recommendation_reason(signals, history_items, facts), DEFAULT_TEXT_LIMIT),
         "AI-качество привязки к сделке": fit_text(_binding_quality(identity_status, identity_links, selected_opportunity, history_scope), DEFAULT_TEXT_LIMIT),
         "AI-предупреждение по сделке": fit_text(_warnings(deal_blockers, conflicts, signals), DEFAULT_TEXT_LIMIT),
-        "AI-Tallanto статус по сделке": fit_text(_tallanto_status(timeline_items, facts), 1600),
+        "Статус оплат и занятий": fit_text(_tallanto_status(timeline_items, facts), 1600),
         "AI-дата обновления сделки": generated_at,
         "AI-бюджет диапазон": facts.budget_range,
         "AI-бюджет комментарий": facts.budget_comment,
@@ -582,9 +582,6 @@ def _contact_auto_history(
     )
     if chronology:
         blocks.append("Хронология:\n" + chronology)
-    tallanto = _tallanto_status(timeline_items, facts)
-    if tallanto:
-        blocks.append("Tallanto:\n" + tallanto)
     return fit_history_text("\n\n".join(blocks), CONTACT_AUTO_HISTORY_LIMIT)
 
 

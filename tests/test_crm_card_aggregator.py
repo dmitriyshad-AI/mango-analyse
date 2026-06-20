@@ -187,7 +187,9 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
     assert "[сжато]" not in auto_history
     assert "Read-only AMO contact snapshot" not in preview
     assert "exact_phone_single" not in preview
-    assert card["deal_card"]["fields"]["AI-Tallanto статус по сделке"] == "Tallanto: найден один ученик по телефону."
+    assert "Tallanto: найден один ученик по телефону." not in auto_history
+    assert "Tallanto: найден один ученик по телефону." not in history
+    assert card["deal_card"]["fields"]["Статус оплат и занятий"] == "Tallanto: найден один ученик по телефону."
     assert card["workbook"]["ready"] == "да"
 
 

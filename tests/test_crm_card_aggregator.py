@@ -55,10 +55,11 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
     )
 
     assert card["snapshot_as_of"] == profile["snapshot_as_of"]
-    assert card["contact_card"]["fields"]["AI-рекомендованный следующий шаг"] == "Перезвонить"
-    assert "Вероятность продажи, %: 70" in card["contact_card"]["fields"]["Авто история общения"]
-    assert card["deal_card"]["fields"]["AI-бюджет диапазон"] == "50k_100k"
-    assert card["deal_card"]["fields"]["AI-дата обновления сделки"] == profile["snapshot_as_of"]
+    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить"
+    assert "AI-бюджет диапазон" not in card["deal_card"]["fields"]
+    assert "AI-дата обновления сделки" not in card["deal_card"]["fields"]
+    assert set(card["contact_card"]["fields"]).issubset({"Запрос", "Последняя сводка", "История общения"})
+    assert set(card["deal_card"]["fields"]).issubset({"Статус сделки", "Возражения", "Следующий шаг", "Tallanto", "Предупреждения"})
     assert card["bot_safety"]["money_fields_manager_only"] is True
 
 
@@ -157,39 +158,30 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
     }
 
     card = build_crm_card_projection(profile)
-    history = card["deal_card"]["fields"]["AI-история по сделке"]
-    auto_history = card["contact_card"]["fields"]["Авто история общения"]
+    history = card["contact_card"]["fields"]["История общения"]
     preview = card["workbook"]["what_goes_to_amo"]
 
-    assert card["contact_card"]["fields"]["Последняя AI-сводка"] == live_summary.strip()
+    assert card["contact_card"]["fields"]["Последняя сводка"] == live_summary.strip()
     assert "Полный разбор живого звонка" not in history
-    assert "Полный разбор живого звонка" not in auto_history
     assert preview.count("Полный разбор живого звонка") == 1
-    assert older_summary in auto_history
-    assert older_summary not in history
+    assert older_summary in history
     assert preview.count(older_summary) == 1
-    assert "полная сводка в поле «Последняя AI-сводка»" in history
-    assert "Последняя содержательная сводка: см. поле «Последняя AI-сводка»" in auto_history
     assert "Возражения: цена" in history
     assert "Следующий шаг: Перезвонить завтра" in history
     assert "Недозвон не должен попасть" not in history
     assert "Read-only AMO contact snapshot" not in history
-    assert "Read-only AMO contact snapshot" not in auto_history
     assert "exact_phone_single" not in history
-    assert "exact_phone_single" not in auto_history
     assert "Закрыто и не реализовано" not in history
-    assert "Закрыто и не реализовано" in card["deal_card"]["fields"]["AI-фактический статус сделки"]
-    assert card["contact_card"]["fields"]["AI-рекомендованный следующий шаг"] == "Перезвонить завтра"
-    assert card["deal_card"]["fields"]["AI-актуальные возражения"] == "цена"
-    assert "Интересы: математика" in auto_history
-    assert "Целевой продукт: годовой курс" in auto_history
+    assert "Закрыто и не реализовано" in card["deal_card"]["fields"]["Статус сделки"]
+    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить завтра"
+    assert card["deal_card"]["fields"]["Возражения"] == "цена"
+    assert "Интересы: математика" in history
+    assert "Целевой продукт: годовой курс" in history
     assert "[сжато]" not in history
-    assert "[сжато]" not in auto_history
     assert "Read-only AMO contact snapshot" not in preview
     assert "exact_phone_single" not in preview
-    assert "Tallanto: найден один ученик по телефону." not in auto_history
     assert "Tallanto: найден один ученик по телефону." not in history
-    assert card["deal_card"]["fields"]["Статус оплат и занятий"] == "Tallanto: найден один ученик по телефону."
+    assert card["deal_card"]["fields"]["Tallanto"] == "Tallanto: найден один ученик по телефону."
     assert card["workbook"]["ready"] == "да"
 
 
@@ -219,8 +211,8 @@ def test_crm_card_empty_timeline_falls_back_to_analyze_and_is_idempotent() -> No
     second = build_crm_card_projection(profile, manager_facts=facts)
 
     assert first == second
-    assert first["contact_card"]["fields"]["Последняя AI-сводка"] == "Клиент интересовался курсом."
-    assert first["contact_card"]["fields"]["AI-рекомендованный следующий шаг"] == "Перезвонить и уточнить предмет."
+    assert first["contact_card"]["fields"]["Последняя сводка"] == "Клиент интересовался курсом."
+    assert first["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить и уточнить предмет."
 
 
 def test_crm_card_ambiguous_identity_blocks_ready_and_keeps_family_summary() -> None:
@@ -241,21 +233,21 @@ def test_crm_card_ambiguous_identity_blocks_ready_and_keeps_family_summary() -> 
 
     card = build_crm_card_projection(profile, manager_facts={"AMO contact IDs": "123", "selected_deal_id": "456"})
 
-    assert card["contact_card"]["fields"]["Последняя AI-сводка"] == "Семейный контакт: несколько учеников."
+    assert card["contact_card"]["fields"]["Последняя сводка"] == "Семейный контакт: несколько учеников."
     assert card["workbook"]["ready"] == "нет"
     assert "p9_ambiguous_identity_manual_review" in card["workbook"]["blockers"]
     assert card["deal_card"]["ready_for_amo"] is False
 
 
 def test_deal_card_payload_is_replaced_only_when_flag_enabled(monkeypatch) -> None:
-    base = {"AI-сводка по сделке": "old", "AI-дата обновления сделки": "2026-06-01T00:00:00+00:00"}
-    card = {"AI-сводка по сделке": "new", "AI-дата обновления сделки": "2026-06-18T00:00:00+00:00"}
+    base = {"Статус сделки": "old"}
+    card = {"Статус сделки": "new"}
     monkeypatch.delenv("CRM_CARD_AGGREGATOR_ENABLED", raising=False)
 
-    assert apply_deal_card_payload(base, card)["AI-сводка по сделке"] == "old"
+    assert apply_deal_card_payload(base, card)["Статус сделки"] == "old"
 
     monkeypatch.setenv("CRM_CARD_AGGREGATOR_ENABLED", "1")
-    assert apply_deal_card_payload(base, card)["AI-сводка по сделке"] == "new"
+    assert apply_deal_card_payload(base, card)["Статус сделки"] == "new"
 
 
 def test_explicit_objection_compaction_marker_keeps_text_visible() -> None:
@@ -288,21 +280,27 @@ def test_crm_card_workbook_is_transient_read_only_xlsx(tmp_path: Path) -> None:
     assert out_xlsx.with_suffix(".csv").exists()
     wb = load_workbook(out_xlsx)
     assert wb.sheetnames == ["Сводка", "Клиенты"]
-    assert [cell.value for cell in wb["Клиенты"][1]][:13] == [
-        "customer_id",
-        "Телефон",
+    assert [cell.value for cell in wb["Клиенты"][1]][:17] == [
         "Имя",
+        "Телефон",
         "Бренд",
         "Открыть в AMO",
-        "ЧТО СОБРАЛИ",
-        "ЧТО ПОЙДЁТ В AMO",
-        "ЧТО УЖЕ В AMO",
-        "Дата",
+        "Запрос",
+        "Статус сделки",
+        "Возражения",
+        "Следующий шаг",
+        "Последняя сводка",
+        "Tallanto",
+        "Предупреждения",
+        "История общения",
         "Готово",
         "Блокеры",
         "Вердикт",
         "Комментарий",
+        "customer_id",
     ]
+    phone_cell = wb["Клиенты"]["B2"].value
+    assert phone_cell and "***" not in str(phone_cell)
     csv_rows = out_xlsx.with_suffix(".csv").read_text(encoding="utf-8-sig")
     assert "crm_card_contact_payload_json" in csv_rows
     saved_summary = json.loads(out_xlsx.with_suffix(".summary.json").read_text(encoding="utf-8"))

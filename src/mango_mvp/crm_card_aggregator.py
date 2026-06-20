@@ -14,34 +14,20 @@ CRM_CARD_AGGREGATOR_SCHEMA_VERSION = "crm_card_aggregator_v1"
 CRM_CARD_AGGREGATOR_FLAG = "CRM_CARD_AGGREGATOR_ENABLED"
 
 CONTACT_CARD_FIELDS = (
-    "Статус матчинга",
-    "AI-приоритет",
-    "AI-рекомендованный следующий шаг",
-    "Последняя AI-сводка",
-    "Авто история общения",
+    "Запрос",
+    "Последняя сводка",
+    "История общения",
 )
 
 DEAL_CARD_REQUIRED_FIELDS = (
-    "AI-сводка по сделке",
-    "AI-история по сделке",
-    "AI-рекомендованный следующий шаг",
-    "AI-дата следующего касания",
-    "AI-фактический статус сделки",
-    "AI-приоритет сделки",
-    "AI-актуальные возражения",
-    "AI-основание рекомендации",
-    "AI-качество привязки к сделке",
-    "AI-предупреждение по сделке",
-    "Статус оплат и занятий",
-    "AI-дата обновления сделки",
+    "Статус сделки",
+    "Возражения",
+    "Следующий шаг",
+    "Tallanto",
+    "Предупреждения",
 )
 
-DEAL_CARD_OPTIONAL_FIELDS = (
-    "AI-бюджет диапазон",
-    "AI-бюджет комментарий",
-    "AI-чувствительность к цене",
-    "AI-интерес к скидке",
-)
+DEAL_CARD_OPTIONAL_FIELDS: tuple[str, ...] = ()
 
 MANUAL_HISTORY_FIELD = "История общения"
 CONTACT_AMO_HISTORY_FIELD = "Авто история общения"
@@ -147,6 +133,7 @@ def build_crm_card_projection(
     objections = _objections(facts, latest_call)
     call_interests = _call_analysis_field(latest_call, "interests")
     call_target_product = _call_analysis_field(latest_call, "target_product")
+    request_summary = _request_summary(customer, facts, call_interests=call_interests, call_target_product=call_target_product)
     latest_call_key = _event_key(latest_call)
     auto_history = _contact_auto_history(
         latest_summary=latest_summary,
@@ -161,11 +148,9 @@ def build_crm_card_projection(
     priority = _priority(signals, facts, history_items or timeline_items)
     match_status = _match_status(identity_status, identity_links, conflicts)
     contact_payload = {
-        "Статус матчинга": match_status,
-        "AI-приоритет": priority,
-        "AI-рекомендованный следующий шаг": fit_text(next_step, 800),
-        "Последняя AI-сводка": fit_text(latest_summary, 1200),
-        "Авто история общения": fit_text(auto_history, CONTACT_AUTO_HISTORY_LIMIT),
+        "Запрос": fit_text(request_summary, 700),
+        "Последняя сводка": fit_text(latest_summary, 1200),
+        "История общения": fit_text(auto_history, CONTACT_AUTO_HISTORY_LIMIT),
     }
     contact_payload = _drop_empty(contact_payload)
 
@@ -181,31 +166,13 @@ def build_crm_card_projection(
         deal_blockers.append("amo_lead_id_not_available_in_profile")
     deal_events = _deal_events(history_items, selected_opportunity.get("opportunity_id"))
     history_scope = "история по сделке" if selected_opportunity.get("opportunity_id") else "история по клиенту, не по конкретной сделке"
+    warnings_text = _warnings(deal_blockers, conflicts, signals)
     deal_payload = {
-        "AI-сводка по сделке": fit_text(_deal_summary(selected_opportunity, history_items, latest_call, latest_summary, history_scope), 1600),
-        "AI-история по сделке": fit_history_text(
-            _deal_history(
-                deal_events or history_items,
-                history_scope=history_scope,
-                compact_event_keys={latest_call_key} if latest_call_key else set(),
-                compact_full_texts={_normalized_text(latest_summary)} if latest_summary else set(),
-            ),
-            DEAL_HISTORY_LIMIT,
-        ),
-        "AI-рекомендованный следующий шаг": fit_text(next_step, SHORT_FIELD_LIMIT),
-        "AI-дата следующего касания": fit_text(facts.follow_up_date or _followup_from_signal(signals), SHORT_FIELD_LIMIT),
-        "AI-фактический статус сделки": fit_text(_deal_status(selected_opportunity, facts, timeline_items), DEFAULT_TEXT_LIMIT),
-        "AI-приоритет сделки": fit_text(_deal_priority(priority, signals), SHORT_FIELD_LIMIT),
-        "AI-актуальные возражения": fit_text(objections or "Актуальные возражения в истории не выделены.", DEFAULT_TEXT_LIMIT),
-        "AI-основание рекомендации": fit_text(_recommendation_reason(signals, history_items, facts), DEFAULT_TEXT_LIMIT),
-        "AI-качество привязки к сделке": fit_text(_binding_quality(identity_status, identity_links, selected_opportunity, history_scope), DEFAULT_TEXT_LIMIT),
-        "AI-предупреждение по сделке": fit_text(_warnings(deal_blockers, conflicts, signals), DEFAULT_TEXT_LIMIT),
-        "Статус оплат и занятий": fit_text(_tallanto_status(timeline_items, facts), 1600),
-        "AI-дата обновления сделки": generated_at,
-        "AI-бюджет диапазон": facts.budget_range,
-        "AI-бюджет комментарий": facts.budget_comment,
-        "AI-чувствительность к цене": facts.price_sensitivity,
-        "AI-интерес к скидке": facts.discount_interest,
+        "Статус сделки": fit_text(_deal_status(selected_opportunity, facts, timeline_items), DEFAULT_TEXT_LIMIT),
+        "Возражения": fit_text(objections, DEFAULT_TEXT_LIMIT),
+        "Следующий шаг": fit_text(next_step, SHORT_FIELD_LIMIT),
+        "Tallanto": fit_text(_tallanto_status(timeline_items, facts), 1600),
+        "Предупреждения": fit_text(warnings_text, DEFAULT_TEXT_LIMIT),
     }
     deal_payload = _drop_empty(deal_payload)
 
@@ -243,6 +210,7 @@ def build_crm_card_projection(
         "workbook": {
             "ready": "да" if ready and deal_ready else "нет",
             "blockers": " | ".join(_dedupe(blockers + deal_blockers)),
+            "phone": _manager_phone(manager_projection),
             "what_goes_to_amo": render_payload_preview(contact_payload, deal_payload),
         },
         "bot_safety": _bot_safety_summary(timeline_items, signals, bot_items),
@@ -342,11 +310,9 @@ def _missing_profile_projection(
     fallback_summary = facts.summary or facts.history
     contact_payload = _drop_empty(
         {
-            "Статус матчинга": "unmatched",
-            "AI-приоритет": facts.priority or "review",
-            "AI-рекомендованный следующий шаг": facts.next_step or "Проверить клиента вручную: профиль в customer_timeline не найден.",
-            "Последняя AI-сводка": fallback_summary,
-            "Авто история общения": fit_text(
+            "Запрос": facts.products_interest or facts.recommended_product,
+            "Последняя сводка": fallback_summary,
+            "История общения": fit_text(
                 "\n\n".join(
                     part
                     for part in (
@@ -375,6 +341,7 @@ def _missing_profile_projection(
         "workbook": {
             "ready": "нет",
             "blockers": " | ".join(blockers),
+            "phone": "",
             "what_goes_to_amo": render_payload_preview(contact_payload, {}),
         },
         "bot_safety": {"bot_safe_fields": [], "manager_only_fields": list(CONTACT_CARD_FIELDS)},
@@ -503,7 +470,38 @@ def _next_step(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts, latest
         action = _safe_text(signal.get("recommended_action"))
         if _safe_text(signal.get("status") or "active") == "active" and action:
             return action
-    return facts.next_step or "Проверить историю клиента и поставить ручной следующий шаг в AMO."
+    return facts.next_step
+
+
+def _request_summary(
+    customer: Mapping[str, Any],
+    facts: ManagerFacts,
+    *,
+    call_interests: str,
+    call_target_product: str,
+) -> str:
+    parts: list[str] = []
+    display_name = _safe_text(customer.get("display_name"))
+    if display_name:
+        parts.append(display_name)
+    product = facts.recommended_product or call_target_product
+    if product:
+        parts.append(product)
+    interests = facts.products_interest or call_interests
+    if interests and interests != product:
+        parts.append(interests)
+    return "; ".join(_dedupe(parts))
+
+
+def _manager_phone(manager_projection: Mapping[str, Any]) -> str:
+    phone = _safe_text(manager_projection.get("primary_phone"))
+    if phone:
+        return phone
+    for item in _sequence(manager_projection.get("phone_numbers")):
+        text = _safe_text(item)
+        if text:
+            return text
+    return ""
 
 
 def _priority(signals: Sequence[Mapping[str, Any]], facts: ManagerFacts, events: Sequence[Mapping[str, Any]]) -> str:
@@ -868,7 +866,7 @@ def _warnings(
     for signal in signals[:3]:
         if _safe_text(signal.get("signal_type")) == "paid_no_access":
             warnings.append("Есть сигнал оплаты без подтвержденного доступа; перед действием сверить Tallanto.")
-    return " ".join(_dedupe(warnings)) or "Критичных предупреждений агрегатор не выявил."
+    return " ".join(_dedupe(warnings))
 
 
 def _tallanto_status(events: Sequence[Mapping[str, Any]], facts: ManagerFacts) -> str:

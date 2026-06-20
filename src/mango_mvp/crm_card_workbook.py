@@ -18,19 +18,23 @@ MAX_SAMPLE_SIZE = 300
 DEFAULT_AMO_BASE_URL = "https://educent.amocrm.ru"
 
 CLIENT_HEADERS = (
-    "customer_id",
-    "Телефон",
     "Имя",
+    "Телефон",
     "Бренд",
     "Открыть в AMO",
-    "ЧТО СОБРАЛИ",
-    "ЧТО ПОЙДЁТ В AMO",
-    "ЧТО УЖЕ В AMO",
-    "Дата",
+    "Запрос",
+    "Статус сделки",
+    "Возражения",
+    "Следующий шаг",
+    "Последняя сводка",
+    "Tallanto",
+    "Предупреждения",
+    "История общения",
     "Готово",
     "Блокеры",
     "Вердикт",
     "Комментарий",
+    "customer_id",
 )
 
 
@@ -66,7 +70,7 @@ def build_crm_card_workbook(config: CrmCardWorkbookConfig) -> Mapping[str, Any]:
         health = api.health()
         customer_ids = _sample_customer_ids(api, config.tenant_id, sample_size)
         for customer_id in customer_ids:
-            profile = api.customer_profile(config.tenant_id, customer_id, event_limit=50, bot_context_limit=50)
+            profile = api.customer_profile(config.tenant_id, customer_id, event_limit=50, bot_context_limit=1)
             profiles_seen += 1
             manager_facts = _facts_for_profile(profile, facts_by_customer_id)
             projection = build_crm_card_projection(profile, manager_facts=manager_facts)
@@ -220,21 +224,28 @@ def _workbook_row(profile: Mapping[str, Any], projection: Mapping[str, Any], *, 
     workbook = projection.get("workbook") if isinstance(projection.get("workbook"), Mapping) else {}
     contact_card = projection.get("contact_card") if isinstance(projection.get("contact_card"), Mapping) else {}
     deal_card = projection.get("deal_card") if isinstance(projection.get("deal_card"), Mapping) else {}
+    contact_fields = contact_card.get("fields") if isinstance(contact_card.get("fields"), Mapping) else {}
+    deal_fields = deal_card.get("fields") if isinstance(deal_card.get("fields"), Mapping) else {}
     lead_id = str(deal_card.get("selected_amo_lead_id") or "").strip()
     return {
-        "customer_id": str(projection.get("customer_id") or profile.get("customer_id") or ""),
-        "Телефон": str(customer.get("primary_phone") or ""),
         "Имя": str(customer.get("display_name") or ""),
+        "Телефон": str(workbook.get("phone") or customer.get("primary_phone") or ""),
         "Бренд": _brand(customer),
         "Открыть в AMO": _amo_url(lead_id, amo_base_url=amo_base_url),
-        "ЧТО СОБРАЛИ": str(projection.get("what_collected") or ""),
-        "ЧТО ПОЙДЁТ В AMO": str(workbook.get("what_goes_to_amo") or ""),
-        "ЧТО УЖЕ В AMO": str(projection.get("what_already_in_amo") or ""),
+        "Запрос": str(contact_fields.get("Запрос") or ""),
+        "Статус сделки": str(deal_fields.get("Статус сделки") or ""),
+        "Возражения": str(deal_fields.get("Возражения") or ""),
+        "Следующий шаг": str(deal_fields.get("Следующий шаг") or ""),
+        "Последняя сводка": str(contact_fields.get("Последняя сводка") or ""),
+        "Tallanto": str(deal_fields.get("Tallanto") or ""),
+        "Предупреждения": str(deal_fields.get("Предупреждения") or ""),
+        "История общения": str(contact_fields.get("История общения") or ""),
         "Дата": str(projection.get("snapshot_as_of") or ""),
         "Готово": str(workbook.get("ready") or "нет"),
         "Блокеры": str(workbook.get("blockers") or ""),
         "Вердикт": "",
         "Комментарий": "",
+        "customer_id": str(projection.get("customer_id") or profile.get("customer_id") or ""),
         "crm_card_contact_payload_json": json.dumps(contact_card.get("fields") or {}, ensure_ascii=False, sort_keys=True),
         "crm_card_deal_payload_json": json.dumps(deal_card.get("fields") or {}, ensure_ascii=False, sort_keys=True),
     }
@@ -324,10 +335,10 @@ def _write_workbook(path: Path, rows: Sequence[Mapping[str, Any]], summary_rows:
             letter = get_column_letter(column)
             header = str(ws.cell(row=1, column=column).value or "")
             ws.column_dimensions[letter].width = min(max(len(header) + 4, 14), 48)
-    ws_clients.column_dimensions["F"].width = 42
-    ws_clients.column_dimensions["G"].width = 70
-    ws_clients.column_dimensions["H"].width = 50
-    ws_clients.column_dimensions["K"].width = 42
+    for letter in ("E", "F", "G", "H", "I", "J", "K"):
+        ws_clients.column_dimensions[letter].width = 36
+    ws_clients.column_dimensions["L"].width = 70
+    ws_clients.column_dimensions["N"].width = 42
     wb.save(path)
 
 

@@ -719,6 +719,10 @@ PRESALE_SOURCE_ID_TOKEN_PATTERN = (
     r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*_facts_\d{4}_\d{2}_\d{2}(?:[._][a-z0-9]+)*"
     r"|source_coverage_audit_\d{4}_\d{2}_\d{2}(?:[._][a-z0-9]+)*"
     r"|prices_regular_\d{4}_\d{2}(?:[._][a-z0-9]+)*"
+    r"|customer:[a-f0-9]{16,}"
+    r"|timeline_event:[a-f0-9]{16,}"
+    r"|bot_context_chunk:[a-f0-9]{16,}"
+    r"|botsafe:[^\s,;]+"
 )
 
 

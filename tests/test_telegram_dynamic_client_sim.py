@@ -7,6 +7,7 @@ import pytest
 
 from mango_mvp.channels.subscription_llm import normalize_subscription_draft_payload
 from scripts import run_telegram_dynamic_client_sim as sim
+from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline
 
 
 class _FakePilotContext:
@@ -1224,6 +1225,31 @@ def test_dynamic_context_parity_includes_known_slots_funnel_and_few_shot(monkeyp
     assert "answer_quality_reference" in context
     assert "conversation_intent_plan" in context
     assert context["conversation_intent_plan"]["primary_intent"] == "pricing"
+
+
+def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch, tmp_path):
+    timeline_db, customer_id = _seed_bot_safe_timeline(tmp_path)
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB", str(timeline_db))
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    context = sim.build_bot_prompt_context(
+        "Что дальше?",
+        persona={
+            "dialog_id": "ctx",
+            "brand": "foton",
+            "persona": "родитель",
+            "bot_safe_customer_id": customer_id,
+        },
+        recent_messages=[],
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    raw = json.dumps(context.get("read_only_customer_context"), ensure_ascii=False)
+    assert "Фотон: клиент уже спрашивал про онлайн-курс" in raw
+    assert "УНПК: клиент интересовался выездной школой" not in raw
+    assert customer_id not in raw
+    assert "botsafe:" not in raw
 
 
 def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:

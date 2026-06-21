@@ -5043,6 +5043,29 @@ def test_presale_source_id_sanitizer_removes_bare_fact_identifier() -> None:
     assert "presale_source_id" in gated.metadata["output_sanitizer"]["reasons"]
 
 
+def test_presale_source_id_sanitizer_removes_bot_safe_runtime_identifiers() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "Продолжим по customer:63bf70693f8a921d013c1da6901d551d "
+            "и botsafe:customer:63bf70693f8a921d013c1da6901d551d:foton: "
+            "лучше уточнить удобный формат."
+        ),
+        topic_id="theme:016_program",
+    )
+
+    gated = apply_authoritative_output_gate(
+        result,
+        client_message="Что дальше?",
+        context={"active_brand": "foton", PRESALE_SOURCE_ID_ENV: "1"},
+    )
+
+    assert "customer:" not in gated.draft_text
+    assert "botsafe:" not in gated.draft_text
+    assert "лучше уточнить удобный формат" in gated.draft_text
+    assert "presale_source_id" in gated.metadata["output_sanitizer"]["reasons"]
+
+
 def test_presale_source_id_sanitizer_does_not_cut_normal_fact_or_format_words() -> None:
     result = SubscriptionDraftResult(
         route="bot_answer_self_for_pilot",

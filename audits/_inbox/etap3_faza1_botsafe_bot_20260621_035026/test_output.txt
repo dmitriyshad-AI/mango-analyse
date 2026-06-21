@@ -1,0 +1,16 @@
+Commands:
+
+1. git diff --check
+Result: passed.
+
+2. PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_bot_safe_runtime_context.py tests/test_bot_safe_direct_path_context.py tests/test_run_amo_wappi_draft_loop.py tests/test_telegram_dynamic_client_sim.py tests/test_subscription_llm_draft_provider.py::test_presale_source_id_sanitizer_removes_bot_safe_runtime_identifiers tests/test_subscription_llm_draft_provider.py::test_presale_source_id_sanitizer_removes_bare_fact_identifier tests/test_subscription_llm_draft_provider.py::test_presale_source_id_sanitizer_does_not_cut_normal_fact_or_format_words
+Result: 131 passed in 2.27s.
+
+3. PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+Result: 3493 passed, 5 skipped, 1 warning in 53.21s.
+
+4. Bundle fake smoke for M1 scenario set:
+BUNDLE="/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/<final_bundle>"
+cd "$BUNDLE"
+TELEGRAM_BOT_SAFE_CRM_CONTEXT=1 TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB="$BUNDLE/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite" PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_client_sim.py --scenarios "/Users/dmitrijfabarisov/Yandex.Disk.localized/OpenClaw/Actual Mango Tests/botsafe_crm_context_20260621/target_set.jsonl" --snapshot product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json --out-dir /tmp/mango_botsafe_context_bundle_fake_smoke_on_abs --client-mode fake --judge-mode fake --bot-mode fake --memory-mode fake --semantic-mode fake --parallel 1 --limit 1
+Result: completed, 1 dialog, 3 turns, PASS_WITH_NOTES fake-mode smoke.

@@ -71,7 +71,14 @@ RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
 
 ASSUMED_SCOPE_GUARD_ENV = "TELEGRAM_ASSUMED_SCOPE_GUARD"
 
+BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
+
+_BOT_SAFE_SERVICE_ID_RE = re.compile(
+    r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
+    re.I,
+)
 
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
     Path(__file__).resolve().parents[4]
@@ -189,6 +196,19 @@ def _direct_path_answerability_shadow_enabled(context: Optional[Mapping[str, Any
 def _retriever_need_declaration_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _retriever_need_shadow_enabled(context) or _retriever_model_driven_enabled(context)
 
+
+def _bot_safe_crm_context_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        BOT_SAFE_CRM_CONTEXT_ENV,
+        aliases=(
+            "bot_safe_crm_context",
+            "bot_safe_crm_context_enabled",
+            "bot_safe_summary_context",
+            "bot_safe_summary_context_enabled",
+        ),
+    )
+
 def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
 
@@ -301,6 +321,97 @@ def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]],
         for idx, value in enumerate(snippets, 1):
             _direct_path_add_legacy_fact(items, f"snippet:{idx}", value, active_brand=active_brand)
     return dict(list(items.items())[:limit])
+
+
+def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *, limit: int = 3) -> tuple[Mapping[str, Any], ...]:
+    if not _bot_safe_crm_context_enabled(context) or not isinstance(context, Mapping):
+        return ()
+    active_brand = _active_brand(context)
+    if active_brand not in {"foton", "unpk"}:
+        return ()
+    containers: list[Any] = []
+    timeline_context = context.get("timeline_context")
+    if isinstance(timeline_context, Mapping):
+        containers.append(timeline_context)
+    read_only_context = context.get("read_only_customer_context")
+    if isinstance(read_only_context, Mapping):
+        nested_timeline = read_only_context.get("timeline_context")
+        if isinstance(nested_timeline, Mapping):
+            containers.append(nested_timeline)
+        containers.append(read_only_context)
+    result: list[Mapping[str, Any]] = []
+    for container in containers:
+        bot_context = container.get("bot_context") if isinstance(container, Mapping) else None
+        if not isinstance(bot_context, Mapping):
+            continue
+        if bot_context.get("allowed_only") is not True:
+            continue
+        raw_items = bot_context.get("items")
+        if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes, bytearray)):
+            continue
+        for item in raw_items:
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
+                continue
+            if str(item.get("chunk_type") or "").strip().casefold() != "bot_safe_summary":
+                continue
+            tags = {str(tag or "").strip().casefold() for tag in item.get("relevance_tags") or ()}
+            if "bot_safe" not in tags or active_brand not in tags:
+                continue
+            text = str(item.get("summary") or item.get("text") or "").strip()
+            if not text or _direct_path_bot_safe_text_has_pii(text):
+                continue
+            result.append(
+                {
+                    "chunk_type": "bot_safe_summary",
+                    "text": _direct_path_trim_context_text(text, 700),
+                    "event_at": str(item.get("event_at") or "").strip(),
+                    "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand) if tag in tags],
+                }
+            )
+            if len(result) >= max(1, int(limit or 3)):
+                return tuple(result)
+    return tuple(result)
+
+
+def _direct_path_bot_safe_text_has_pii(text: str) -> bool:
+    return bool(_A2_PHONE_RE.search(text) or _CLIENT_EMAIL_RE.search(text) or _BOT_SAFE_SERVICE_ID_RE.search(text))
+
+
+def _direct_path_trim_context_text(text: str, limit: int) -> str:
+    value = " ".join(str(text or "").split()).strip()
+    return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
+    items = _direct_path_bot_safe_context_items(context)
+    if not items:
+        return ""
+    lines = [
+        "Безопасная выжимка клиента: это разрешённая выжимка истории по активному бренду. "
+        "Используй её только для продолжения диалога, понимания уже обсуждённого и следующего шага. "
+        "Цены, даты и условия называй только из блока «Факты по вашему вопросу». "
+        "Не раскрывай клиенту, что данные взяты из CRM/истории/базы.",
+    ]
+    for idx, item in enumerate(items, 1):
+        text = str(item.get("text") or "").strip()
+        event_at = str(item.get("event_at") or "").strip()
+        suffix = f" ({event_at[:10]})" if event_at else ""
+        lines.append(f"{idx}. {text}{suffix}")
+    return "\n".join(lines)
+
+
+def _direct_path_bot_safe_context_trace(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not _bot_safe_crm_context_enabled(context):
+        return {"enabled": False}
+    items = _direct_path_bot_safe_context_items(context)
+    return {
+        "enabled": True,
+        "visible_items": len(items),
+        "active_brand": _active_brand(context),
+        "source": "read_only_customer_context.timeline_context.bot_context",
+    }
 
 DIRECT_PATH_CATEGORY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "pricing": ("pricing", "price", "стоим", "цен", "дорог", "оплат", "рассроч", "долями", "скидк", "помесяч"),
@@ -1610,6 +1721,7 @@ def _build_direct_path_prompt(
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
     memory = _direct_path_prompt_memory_view(context)
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
+    bot_safe_context_block = _direct_path_bot_safe_context_prompt_block(context)
     action_proposal_instruction = ""
     action_proposal_field = ""
     p0_instruction = ""
@@ -1667,6 +1779,8 @@ def _build_direct_path_prompt(
         f"{adjacent_block}\n\n"
         "Память диалога:\n"
         f"{memory_block}\n\n"
+        + (f"{bot_safe_context_block}\n\n" if bot_safe_context_block else "")
+        +
         "Известные слоты:\n"
         f"{slots_block}\n\n"
         "Последние реплики:\n"
@@ -1730,6 +1844,7 @@ def _direct_path_metadata(
         "rubric_enabled": _route_rubric_enabled(context),
         "rubric_regenerated": False,
         "rubric_reason": "",
+        "bot_safe_crm_context": dict(_direct_path_bot_safe_context_trace(context)),
         "reason_class": str(reason_class or ""),
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),

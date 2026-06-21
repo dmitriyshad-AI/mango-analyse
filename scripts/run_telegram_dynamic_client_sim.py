@@ -38,12 +38,21 @@ from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dial
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
 from mango_mvp.channels.subscription_llm_parts.post_layers import _tone_close_detect_is_close_message
+from mango_mvp.customer_timeline.bot_safe_runtime_context import (
+    DEFAULT_BOT_SAFE_TENANT_ID,
+    BotSafeLookup,
+    bot_safe_crm_context_enabled,
+    bot_safe_tenant_from_env,
+    bot_safe_timeline_db_from_env,
+    build_bot_safe_crm_context,
+)
 from mango_mvp.insights.tone_score import summarize_tone_scores
 
 
 DEFAULT_V7_PATH = Path("/Users/dmitrijfabarisov/Claude Projects/Foton/mega_smoke_tests_v7_dynamic_sim_2026-05-21/v7_dynamic_client_sim_2026-05-21.jsonl")
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
 DEFAULT_OUT_DIR = Path("audits/_inbox/telegram_dynamic_client_sim_v7")
+DEFAULT_CUSTOMER_TIMELINE_DB = Path("product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite")
 SCHEMA_VERSION = "telegram_dynamic_client_sim_v1_2026_05_21"
 JUDGE_PROMPT_VERSION_V2 = "judge_v2_current"
 JUDGE_PROMPT_VERSION_V9 = "judge_v9_verifier_aware"
@@ -1899,6 +1908,10 @@ def build_bot_prompt_context(
     brand = str(persona.get("brand") or "unknown")
     recent_slice = tuple(recent_messages[-10:])
     known_dialog = known_dialog_fields_from_client_messages([*recent_slice, f"Клиент: {client_message}"], active_brand=brand)
+    crm_context = build_dynamic_bot_safe_crm_context(persona, active_brand=brand)
+    customer_summary = f"Динамический тестовый клиент: {persona.get('persona')}. Не раскрывать это клиенту."
+    if crm_context.get("summary"):
+        customer_summary = "\n".join((customer_summary, str(crm_context["summary"])))
     rop_policy = {
         "bot_permission": "bot_answer_self_for_pilot",
         "autonomy_policy": {
@@ -1916,7 +1929,8 @@ def build_bot_prompt_context(
         rop_policy=rop_policy,
         recent_messages=recent_slice,
         client_identity={"channel": "dynamic_sim", "channel_thread_id": str(persona.get("dialog_id") or ""), "channel_user_id": "dynamic_sim"},
-        customer_summary=f"Динамический тестовый клиент: {persona.get('persona')}. Не раскрывать это клиенту.",
+        customer_summary=customer_summary,
+        timeline_context=crm_context.get("timeline_context") if isinstance(crm_context.get("timeline_context"), Mapping) else None,
         known_slots=known_dialog,
         dialogue_memory=dialogue_memory,
         session_id=f"dynamic_sim:{brand}:{persona.get('dialog_id') or ''}",
@@ -1926,6 +1940,8 @@ def build_bot_prompt_context(
     payload["snapshot_path"] = str(snapshot_path)
     payload["knowledge_snapshot_path"] = str(snapshot_path)
     payload["known_dialog_fields"] = known_dialog
+    if crm_context:
+        payload["read_only_customer_context"] = crm_context
     if "dialogue_memory_view" not in payload:
         payload["dialogue_memory_view"] = build_dialogue_memory(
             current_message=client_message,
@@ -1966,6 +1982,47 @@ def build_bot_prompt_context(
         "context_parity_checked": True,
     }
     return payload
+
+
+def build_dynamic_bot_safe_crm_context(persona: Mapping[str, Any], *, active_brand: str) -> Mapping[str, Any]:
+    if not bot_safe_crm_context_enabled():
+        return {}
+    db_path = bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
+    if not db_path.exists():
+        return {}
+    customer_id = _first_present_text(
+        persona,
+        (
+            "bot_safe_customer_id",
+            "customer_id",
+            "timeline_customer_id",
+            "customer_timeline_id",
+        ),
+    )
+    amo_lead_id = _first_present_text(persona, ("amo_lead_id", "lead_id"))
+    amo_contact_id = _first_present_text(persona, ("amo_contact_id", "contact_id"))
+    if not any((customer_id, amo_lead_id, amo_contact_id)):
+        return {}
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=db_path.parent,
+        active_brand=active_brand,
+        lookup=BotSafeLookup(
+            tenant_id=bot_safe_tenant_from_env(DEFAULT_BOT_SAFE_TENANT_ID),
+            customer_id=customer_id,
+            amo_lead_id=amo_lead_id,
+            amo_contact_id=amo_contact_id,
+        ),
+    )
+    return context if context.get("found") else {}
+
+
+def _first_present_text(source: Mapping[str, Any], keys: Sequence[str]) -> str:
+    for key in keys:
+        value = str(source.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def build_client_prompt(

@@ -11,8 +11,14 @@ from typing import Any, Iterable, Mapping, Sequence
 from mango_mvp.customer_timeline.channel_preview_from_pack import redact_text
 from mango_mvp.customer_timeline.contracts import BotContextChunk, now_utc
 from mango_mvp.customer_timeline.ids import stable_chunk_id, stable_digest
-from mango_mvp.customer_timeline.next_step_resolver import NextStepResolution, resolve_customer_next_step
+from mango_mvp.customer_timeline.next_step_resolver import (
+    PERSON_NAME_RE as NEXT_STEP_PERSON_NAME_RE,
+    ROLE_PERSON_RE as NEXT_STEP_ROLE_PERSON_RE,
+    NextStepResolution,
+    resolve_customer_next_step,
+)
 from mango_mvp.customer_timeline.store import CustomerTimelineSQLiteStore, scrub_timeline_persisted_json
+from mango_mvp.insights.sanitizers import COMMON_SINGLE_NAME_RE as INSIGHTS_COMMON_SINGLE_NAME_RE
 
 
 BOT_SAFE_SUMMARY_SCHEMA_VERSION = "customer_timeline_bot_safe_summary_v1"
@@ -47,6 +53,27 @@ UNSAFE_INTEREST_MARKERS = (
     "счет",
     "счёт",
     "чек",
+)
+INTEREST_NAME_PLACEHOLDER = "<name_masked>"
+INTEREST_ROLE_WORD_RE = re.compile(
+    r"\b(?:менеджер|куратор|администратор|оператор|клиент(?:ка)?|родител[ьи]|мама|папа|"
+    r"ученик|ученица|реб[её]нок|студент(?:ка)?)\b",
+    re.IGNORECASE,
+)
+SAFE_INTEREST_PHRASE_PATTERNS = (
+    re.compile(r"\b(?:Летн|Зимн)[а-яё]+\s+(?:Выездн|Очн)[а-яё]+\s+школ[а-яё]*\b", re.IGNORECASE),
+    re.compile(r"\bЛВШ\b", re.IGNORECASE),
+    re.compile(r"\bЛШ\b", re.IGNORECASE),
+    re.compile(r"\bИнтенсив\s+(?:Мат|Физ|Инф|Рус)\b", re.IGNORECASE),
+    re.compile(r"\bАльфа[-\s]+Банк\b", re.IGNORECASE),
+    re.compile(r"\bФотон\b", re.IGNORECASE),
+    re.compile(r"\bУНПК\s+МФТИ\b", re.IGNORECASE),
+    re.compile(r"\bУНПК\b", re.IGNORECASE),
+    re.compile(r"\bМФТИ\b", re.IGNORECASE),
+    re.compile(r"\bЕГЭ\b", re.IGNORECASE),
+    re.compile(r"\bОГЭ\b", re.IGNORECASE),
+    re.compile(r"\bМ9\b", re.IGNORECASE),
+    re.compile(r"\bМ11\b", re.IGNORECASE),
 )
 
 
@@ -90,7 +117,9 @@ class BotSafeSummaryBuildReport:
     updated: int
     duplicate: int
     skipped: int
+    retired_stale: int
     brand_counts: Mapping[str, int]
+    brand_source_counts: Mapping[str, int]
     next_step_status_counts: Mapping[str, int]
     allowed_chunk_counts_before: Mapping[str, int]
     allowed_chunk_counts_after: Mapping[str, int]
@@ -109,6 +138,7 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     customers = _customers_with_history(db_path, config.tenant_id, limit=config.limit)
     opportunities = _opportunities_by_customer(db_path, config.tenant_id)
     events = _events_by_customer(db_path, config.tenant_id)
+    conflicts = _open_conflicts_by_customer(db_path, config.tenant_id)
     drafts = [
         draft
         for customer_id in customers
@@ -117,11 +147,19 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
             customer_id=customer_id,
             all_opportunities=opportunities.get(customer_id, ()),
             all_events=events.get(customer_id, ()),
+            conflicts=conflicts.get(customer_id, ()),
             existing_chunks=existing_chunks,
         )
     ]
+    expected_source_refs = {draft.chunk.source_ref or "" for draft in drafts}
+    stale_chunks = [
+        existing
+        for source_ref, existing in existing_chunks.items()
+        if source_ref not in expected_source_refs and _chunk_allowed_for_bot(existing.record)
+    ]
 
     created = updated = duplicate = skipped = 0
+    retired_stale = 0
     if config.apply:
         with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
             with store.bulk_write():
@@ -139,11 +177,20 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
                         duplicate += 1
                     else:
                         skipped += 1
+                for existing in stale_chunks:
+                    result = store.upsert_bot_context_chunk(
+                        _retired_bot_safe_chunk(existing.record),
+                        actor=BOT_SAFE_SUMMARY_ACTOR,
+                    )
+                    if result.status != "duplicate":
+                        retired_stale += 1
     else:
         created, updated, duplicate = _dry_run_status_counts(drafts, existing_chunks)
+        retired_stale = len(stale_chunks)
 
     after_counts = _allowed_chunk_counts(db_path)
     brand_counts = _count_values(draft.brand for draft in drafts)
+    brand_source_counts = _count_values(draft.brand_source for draft in drafts)
     next_step_counts = _count_values(draft.next_step_status for draft in drafts)
     history_count = len(customers)
     summary_count = len(drafts)
@@ -161,7 +208,9 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
         updated=updated,
         duplicate=duplicate,
         skipped=skipped,
+        retired_stale=retired_stale,
         brand_counts=brand_counts,
+        brand_source_counts=brand_source_counts,
         next_step_status_counts=next_step_counts,
         allowed_chunk_counts_before=before_counts,
         allowed_chunk_counts_after=after_counts,
@@ -176,12 +225,18 @@ def _build_customer_draft(
     brand: str,
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
+    conflicts: Sequence[Mapping[str, Any]],
     existing_chunk: Mapping[str, Any] | None,
 ) -> CustomerBotSafeSummaryDraft:
     brand_source = _brand_source(opportunities, events, brand=brand)
     status = _latest_status(opportunities)
     interest = _resolve_interest(opportunities, brand=brand)
-    next_step = resolve_customer_next_step(events, customer_id=customer_id)
+    next_step = resolve_customer_next_step(
+        events,
+        readiness={"open_conflicts": len(conflicts)},
+        conflicts=conflicts,
+        customer_id=customer_id,
+    )
     text = _render_safe_text(brand=brand, status=status, interest=interest, next_step=next_step)
     latest_at = _latest_event_at(opportunities, events)
     created_at = _existing_created_at(existing_chunk) or now_utc()
@@ -226,6 +281,7 @@ def _build_customer_brand_drafts(
     customer_id: str,
     all_opportunities: Sequence[Mapping[str, Any]],
     all_events: Sequence[Mapping[str, Any]],
+    conflicts: Sequence[Mapping[str, Any]],
     existing_chunks: Mapping[str, ExistingBotSafeChunk],
 ) -> tuple[CustomerBotSafeSummaryDraft, ...]:
     drafts: list[CustomerBotSafeSummaryDraft] = []
@@ -242,6 +298,7 @@ def _build_customer_brand_drafts(
                 brand=brand,
                 opportunities=opportunities,
                 events=events,
+                conflicts=conflicts,
                 existing_chunk=existing_chunks[source_ref].record if source_ref in existing_chunks else None,
             )
         )
@@ -322,7 +379,7 @@ def _resolve_interest(opportunities: Sequence[Mapping[str, Any]], *, brand: str)
         candidates.extend(_interest_values(product_context.get("products_of_interest")))
         candidates.extend(_interest_values(product_context.get("product_of_interest")))
         candidates.extend(_interest_values(product_context.get("title")))
-        title = _safe_fragment(opportunity.get("title"))
+        title = _safe_interest_fragment(opportunity.get("title"))
         if title and not _is_generic_title(title):
             candidates.append(title)
     return _join_unique((item for item in candidates if _interest_fragment_allowed(item, brand=brand)), max_items=3)
@@ -332,11 +389,11 @@ def _interest_values(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        return [_safe_fragment(value)] if _safe_fragment(value) else []
+        return [_safe_interest_fragment(value)] if _safe_interest_fragment(value) else []
     if isinstance(value, Mapping):
         result: list[str] = []
         for key in ("title", "name", "subject", "format", "class"):
-            text = _safe_fragment(value.get(key))
+            text = _safe_interest_fragment(value.get(key))
             if text:
                 result.append(text)
         return result
@@ -437,6 +494,42 @@ def _events_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mappin
     return {customer_id: tuple(items[-500:]) for customer_id, items in grouped.items()}
 
 
+def _open_conflicts_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT conflict_type, status, record_json
+            FROM timeline_conflicts
+            WHERE tenant_id = ? AND status = 'open'
+            ORDER BY created_at ASC, conflict_id ASC
+            """,
+            (tenant_id,),
+        )
+        for row in rows:
+            item = dict(_json_mapping(row["record_json"]))
+            item.setdefault("conflict_type", row["conflict_type"])
+            item.setdefault("status", row["status"])
+            for customer_id in _customer_ids_from_conflict(item):
+                grouped.setdefault(customer_id, []).append(item)
+    return {customer_id: tuple(items) for customer_id, items in grouped.items()}
+
+
+def _customer_ids_from_conflict(conflict: Mapping[str, Any]) -> tuple[str, ...]:
+    refs = conflict.get("entity_refs")
+    candidates: list[str] = []
+    if isinstance(refs, (list, tuple, set)):
+        for ref in refs:
+            text = str(ref or "")
+            if text.startswith("customer:"):
+                candidates.append(text)
+    customer_id = str(conflict.get("customer_id") or "")
+    if customer_id.startswith("customer:"):
+        candidates.append(customer_id)
+    return tuple(dict.fromkeys(candidates))
+
+
 def _existing_bot_safe_chunks(db_path: Path, tenant_id: str) -> dict[str, ExistingBotSafeChunk]:
     result: dict[str, ExistingBotSafeChunk] = {}
     with sqlite3.connect(db_path) as con:
@@ -513,6 +606,43 @@ def _raw_allowed_chunks(db_path: Path) -> int:
         )
 
 
+def _retired_bot_safe_chunk(record: Mapping[str, Any]) -> BotContextChunk:
+    metadata = dict(_mapping(record.get("metadata")))
+    metadata["retired_reason"] = "bot_safe_source_ref_not_rebuilt"
+    metadata["retired_by_schema_version"] = BOT_SAFE_SUMMARY_SCHEMA_VERSION
+    tags = tuple(dict.fromkeys((*_text_values(record.get("relevance_tags")), "retired")))
+    return BotContextChunk(
+        tenant_id=str(record.get("tenant_id") or ""),
+        customer_id=str(record.get("customer_id") or ""),
+        chunk_type=str(record.get("chunk_type") or BOT_SAFE_SUMMARY_CHUNK_TYPE),
+        text=_safe_fragment(record.get("text") or record.get("summary") or "Устаревшая выжимка отключена"),
+        chunk_id=str(record.get("chunk_id") or ""),
+        opportunity_id=str(record.get("opportunity_id") or "") or None,
+        event_id=str(record.get("event_id") or "") or None,
+        source_ref=str(record.get("source_ref") or ""),
+        ordinal=int(record.get("ordinal") or 0),
+        source_system=str(record.get("source_system") or BOT_SAFE_SUMMARY_SOURCE_SYSTEM),
+        summary=_safe_fragment(record.get("summary") or record.get("text") or "Устаревшая выжимка отключена"),
+        event_at=_parse_iso_datetime(record.get("event_at")),
+        freshness_score=0.0,
+        relevance_tags=tags,
+        allowed_for_bot=False,
+        requires_manager_review=True,
+        metadata=metadata,
+        created_at=_parse_iso_datetime(record.get("created_at")) or now_utc(),
+    )
+
+
+def _chunk_allowed_for_bot(record: Mapping[str, Any]) -> bool:
+    return record.get("allowed_for_bot") is True or str(record.get("allowed_for_bot") or "").strip() == "1"
+
+
+def _text_values(value: Any) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple, set)):
+        return tuple(str(item) for item in value if str(item or "").strip())
+    return ()
+
+
 def _safe_fragment(value: Any, *, max_len: int = 160) -> str:
     text = redact_text(str(value or ""))
     text = LONG_DIGIT_TOKEN_RE.sub("<number_masked>", text)
@@ -520,6 +650,43 @@ def _safe_fragment(value: Any, *, max_len: int = 160) -> str:
     text = MAIL_REPLY_PREFIX_RE.sub("", text).strip()
     if len(text) > max_len:
         return text[: max_len - 1].rstrip() + "…"
+    return text
+
+
+def _safe_interest_fragment(value: Any, *, max_len: int = 160) -> str:
+    text = _safe_fragment(value, max_len=max_len)
+    if not text:
+        return ""
+    return _scrub_interest_person_names(text)
+
+
+def _scrub_interest_person_names(value: str) -> str:
+    text, protected = _protect_safe_interest_phrases(value)
+    text = NEXT_STEP_ROLE_PERSON_RE.sub(lambda match: f"{match.group('role')} {INTEREST_NAME_PLACEHOLDER}", text)
+    text = NEXT_STEP_PERSON_NAME_RE.sub(INTEREST_NAME_PLACEHOLDER, text)
+    text = INSIGHTS_COMMON_SINGLE_NAME_RE.sub(INTEREST_NAME_PLACEHOLDER, text)
+    text = _restore_safe_interest_phrases(text, protected)
+    text = re.sub(rf"(?:{re.escape(INTEREST_NAME_PLACEHOLDER)}\s*){{2,}}", INTEREST_NAME_PLACEHOLDER, text)
+    return WHITESPACE_RE.sub(" ", text).strip(" ;,")
+
+
+def _protect_safe_interest_phrases(value: str) -> tuple[str, dict[str, str]]:
+    protected: dict[str, str] = {}
+    text = value
+    for pattern in SAFE_INTEREST_PHRASE_PATTERNS:
+        def replace(match: re.Match[str]) -> str:
+            token = f"__botsafe_interest_safe_{len(protected)}__"
+            protected[token] = match.group(0)
+            return token
+
+        text = pattern.sub(replace, text)
+    return text, protected
+
+
+def _restore_safe_interest_phrases(value: str, protected: Mapping[str, str]) -> str:
+    text = value
+    for token, phrase in protected.items():
+        text = text.replace(token, phrase)
     return text
 
 
@@ -549,11 +716,18 @@ def _interest_fragment_allowed(value: str, *, brand: str) -> bool:
     if not _brand_fragment_allowed(value, brand=brand):
         return False
     text = str(value or "").casefold().replace("ё", "е")
-    if not re.search(r"[a-zа-я]", text, flags=re.IGNORECASE):
+    semantic_text = _interest_semantic_text_without_person_markers(value).casefold().replace("ё", "е")
+    if not re.search(r"[a-zа-я]", semantic_text, flags=re.IGNORECASE):
         return False
     if FILE_NAME_FRAGMENT_RE.search(text):
         return False
     return not any(marker in text for marker in UNSAFE_INTEREST_MARKERS)
+
+
+def _interest_semantic_text_without_person_markers(value: str) -> str:
+    text = str(value or "").replace(INTEREST_NAME_PLACEHOLDER, " ")
+    text = INTEREST_ROLE_WORD_RE.sub(" ", text)
+    return WHITESPACE_RE.sub(" ", text).strip(" ;,.:-")
 
 
 def _brands_mentioned(value: str) -> set[str]:

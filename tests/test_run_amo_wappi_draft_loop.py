@@ -6,7 +6,8 @@ from pathlib import Path
 
 import scripts.run_amo_wappi_draft_loop as runner
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
-from mango_mvp.integrations.draft_loop import DraftLoopKey, DraftLoopProfile
+from mango_mvp.integrations.draft_loop import DraftLoopConfig, DraftLoopKey, DraftLoopPair, DraftLoopProfile
+from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline
 
 
 def test_build_config_loads_profiles_pairs_and_keeps_state_outside_repo(tmp_path: Path) -> None:
@@ -63,6 +64,63 @@ def test_context_builder_marks_draft_loop_as_not_sending_clients(tmp_path: Path)
 
     max_context = build_context(DraftLoopKey("profile-foton-max", "chat-1"), (), "Цена?", "foton", channel="max")
     assert max_context["client_identity"]["channel"] == "wappi_max"
+
+
+def test_context_builder_injects_only_bot_safe_crm_context_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")
+    timeline_db, customer_id = _seed_bot_safe_timeline(tmp_path)
+    key = DraftLoopKey("profile-foton", "chat-1")
+    config = DraftLoopConfig(
+        profiles={"profile-foton": DraftLoopProfile("profile-foton", "foton")},
+        pairs={
+            key: DraftLoopPair(
+                key=key,
+                lead_id="5001",
+                contact_id="7001",
+                expected_brand="foton",
+            )
+        },
+    )
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
+    build_context = runner.build_context_builder(
+        snapshot,
+        draft_config=config,
+        customer_timeline_db=timeline_db,
+        customer_timeline_allowed_root=tmp_path,
+    )
+
+    context = build_context(key, ("Клиент: что по расписанию?",), "Что дальше?", "foton")
+
+    raw = json.dumps(context.get("read_only_customer_context"), ensure_ascii=False)
+    assert "Фотон: клиент уже спрашивал про онлайн-курс" in raw
+    assert "УНПК: клиент интересовался выездной школой" not in raw
+    assert "next_step_status" in raw
+    assert customer_id not in raw
+    assert "botsafe:" not in raw
+    assert context["read_only_customer_context"]["timeline_context"]["safety"]["customer_profile_included"] is False
+
+
+def test_context_builder_keeps_bot_safe_crm_context_off_by_default(tmp_path: Path, monkeypatch) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")
+    timeline_db, _customer_id = _seed_bot_safe_timeline(tmp_path)
+    key = DraftLoopKey("profile-foton", "chat-1")
+    config = DraftLoopConfig(
+        profiles={"profile-foton": DraftLoopProfile("profile-foton", "foton")},
+        pairs={key: DraftLoopPair(key=key, lead_id="5001", expected_brand="foton")},
+    )
+    monkeypatch.delenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", raising=False)
+    build_context = runner.build_context_builder(
+        snapshot,
+        draft_config=config,
+        customer_timeline_db=timeline_db,
+        customer_timeline_allowed_root=tmp_path,
+    )
+
+    context = build_context(key, (), "Что дальше?", "foton")
+
+    assert "read_only_customer_context" not in context
 
 
 def test_safe_transport_blocks_unlisted_wappi_get() -> None:

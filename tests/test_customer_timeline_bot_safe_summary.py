@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -79,7 +80,10 @@ def _opportunity(
     )
 
 
-def _event(customer: CustomerIdentity, *, source_id: str = "call-1") -> TimelineEvent:
+def _event(customer: CustomerIdentity, *, source_id: str = "call-1", brand: str = "") -> TimelineEvent:
+    record = {"next_step": "Позвонить клиенту по оплате"}
+    if brand:
+        record["brand"] = brand
     return TimelineEvent(
         tenant_id=customer.tenant_id,
         customer_id=customer.customer_id,
@@ -94,7 +98,7 @@ def _event(customer: CustomerIdentity, *, source_id: str = "call-1") -> Timeline
         subject="Вопрос",
         text_preview="Сырой текст не должен быть использован",
         summary="RAW_SECRET_SUMMARY parent@example.com +7 916 123-45-67 менеджер Петров сообщил личные детали",
-        record={"next_step": "Позвонить клиенту по оплате"},
+        record=record,
         created_at=NOW,
     )
 
@@ -124,6 +128,10 @@ def _load_bot_safe_text(db_path: Path) -> str:
         ).fetchone()
     assert row is not None
     return row[0]
+
+
+def _load_bot_safe_payload(db_path: Path) -> dict:
+    return json.loads(_load_bot_safe_text(db_path))
 
 
 def _load_bot_safe_records(db_path: Path) -> list[tuple[str, str]]:
@@ -169,6 +177,110 @@ def test_bot_safe_summary_uses_structural_fields_redacts_title_and_keeps_raw_blo
             "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type != ? AND allowed_for_bot = 1",
             (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
         ).fetchone()[0] == 0
+
+
+def test_bot_safe_summary_extracts_call_summary_next_step_and_scrubs_pii(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer)
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="call-summary-pii",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary=(
+            "Менеджер Клычева Дарья обсудила условия. "
+            "Согласован следующий шаг: менеджер Клычева Дарья отправит договор ученику Смирнову Арсению "
+            "по брони 64-64-58 на parent@example.com."
+        ),
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(event)
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    next_step = payload["metadata"]["next_step"]
+
+    assert report.next_step_status_counts["active"] == 1
+    assert next_step["status"] == "active"
+    assert next_step["source_event_id"] == event.event_id
+    assert "Следующий шаг:" in dumped
+    assert "договор" in dumped.casefold()
+    assert "Клычева" not in dumped
+    assert "Дарья" not in dumped
+    assert "Смирнов" not in dumped
+    assert "Арсени" not in dumped
+    assert "64-64-58" not in dumped
+    assert "parent@example.com" not in dumped
+    assert "<number_masked>" in dumped
+    assert "<email_masked>" in dumped
+
+
+def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer)
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="call-summary-conflict",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Согласован следующий шаг: отправить договор и документы на почту.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(event)
+    store.record_conflict(
+        customer.tenant_id,
+        conflict_type="ambiguous_identity",
+        entity_refs=("phone:+79161234567", customer.customer_id, "customer:other"),
+        actor="test",
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    next_step = payload["metadata"]["next_step"]
+
+    assert report.next_step_status_counts["needs_manager_review"] == 1
+    assert next_step["status"] == "needs_manager_review"
+    assert next_step["reason_code"] == "ambiguous_identity_open"
+    assert "Уточнить у менеджера: открыт конфликт идентичности" in dumped
+    assert "отправить договор" not in dumped.casefold()
 
 
 def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) -> None:
@@ -265,6 +377,83 @@ def test_bot_safe_summary_drops_other_brand_title_for_known_customer_brand(tmp_p
     assert "МФТИ" not in dumped
 
 
+def test_bot_safe_summary_uses_event_brand_when_deal_brand_unknown(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(_opportunity(customer, brand="unknown", source_id="lead-unknown", title="Заявка"))
+    store.upsert_event(_event(customer, source_id="event-unpk", brand="unpk"))
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    rows = _load_bot_safe_records(tmp_path / "customer_timeline.sqlite")
+
+    assert report.brand_counts["unpk"] == 1
+    assert report.brand_source_counts["timeline_events.metadata_or_record.brand"] == 1
+    assert rows[0][0] == f"botsafe:{customer.customer_id}:unpk"
+    assert "Бренд: УНПК" in rows[0][1]
+
+
+def test_bot_safe_summary_retires_stale_unknown_chunk_after_brand_resolution(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    old_unknown = BotContextChunk(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
+        text="Стадия: old. Интерес: old. Следующий шаг: Активный следующий шаг не найден.",
+        summary="Стадия: old. Интерес: old. Следующий шаг: Активный следующий шаг не найден.",
+        source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+        source_ref=f"botsafe:{customer.customer_id}:unknown",
+        event_at=NOW,
+        freshness_score=1.0,
+        relevance_tags=("bot_safe", "structured", "unknown"),
+        allowed_for_bot=True,
+        requires_manager_review=False,
+        created_at=NOW,
+    )
+    store.upsert_bot_context_chunk(old_unknown)
+    store.upsert_event(_event(customer, source_id="event-unpk", brand="unpk"))
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        rows = con.execute(
+            """
+            SELECT source_ref, allowed_for_bot, requires_manager_review, record_json
+            FROM bot_context_chunks
+            WHERE source_system = ?
+            ORDER BY source_ref
+            """,
+            (BOT_SAFE_SUMMARY_SOURCE_SYSTEM,),
+        ).fetchall()
+
+    assert report.retired_stale == 1
+    assert [row[0] for row in rows] == [
+        f"botsafe:{customer.customer_id}:unknown",
+        f"botsafe:{customer.customer_id}:unpk",
+    ]
+    assert rows[0][1:3] == (0, 1)
+    assert rows[1][1:3] == (1, 0)
+    retired = json.loads(rows[0][3])
+    assert retired["metadata"]["retired_reason"] == "bot_safe_source_ref_not_rebuilt"
+
+
 def test_bot_safe_summary_drops_finance_and_discount_titles_from_interest(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()
@@ -330,3 +519,185 @@ def test_bot_safe_summary_drops_attachment_file_names_from_interest(tmp_path: Pa
     assert "image-" not in dumped
     assert ".jpeg" not in dumped
     assert ".pdf" not in dumped
+
+
+def test_bot_safe_summary_scrubs_names_from_interest_title_and_keeps_program(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-person-program",
+            title="Летняя Выездная Школа для ученика Смирнова Арсения",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Летняя Выездная Школа" in dumped
+    assert "<name_masked>" in dumped
+    assert "Смирнов" not in dumped
+    assert "Арсени" not in dumped
+
+
+def test_bot_safe_summary_scrubs_role_name_from_interest_title(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-manager-name",
+            title="менеджер Клычева Дарья подобрала Фотон физика 9 класс",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Фотон физика 9 класс" in dumped
+    assert "<name_masked>" in dumped
+    assert "Клычева" not in dumped
+    assert "Дарья" not in dumped
+
+
+def test_bot_safe_summary_keeps_known_programs_and_organizations_in_interest(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-safe-names",
+            title="ЛВШ Летняя Выездная Школа Альфа Банк Фотон ЕГЭ М9",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "ЛВШ" in dumped
+    assert "Летняя Выездная Школа" in dumped
+    assert "Альфа Банк" in dumped
+    assert "Фотон" in dumped
+    assert "ЕГЭ" in dumped
+    assert "М9" in dumped
+    assert "<name_masked>" not in dumped
+
+
+def test_bot_safe_summary_keeps_winter_school_and_intensive_titles(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="unpk",
+            source_id="lead-winter-school",
+            title="Зимняя Выездная школа; Интенсив Мат 11 кл УНПК",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Зимняя Выездная школа" in dumped
+    assert "Интенсив Мат 11 кл УНПК" in dumped
+    assert "<name_masked>" not in dumped
+
+
+def test_bot_safe_summary_drops_interest_that_is_only_person_name(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-only-person",
+            title="Иванова Мария Петровна",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Интерес: не определён" in dumped
+    assert "Иванова" not in dumped
+    assert "Мария" not in dumped
+    assert "Петровна" not in dumped
+    assert "<name_masked>" not in dumped
+
+
+def test_bot_safe_summary_scrubs_single_person_name_from_interest_title(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-single-person",
+            title="Дарья подобрала Фотон информатика 10 класс",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Фотон информатика 10 класс" in dumped
+    assert "<name_masked>" in dumped
+    assert "Дарья" not in dumped

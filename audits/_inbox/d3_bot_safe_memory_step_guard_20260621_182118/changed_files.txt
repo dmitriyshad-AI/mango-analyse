@@ -1,0 +1,5 @@
+src/mango_mvp/channels/subscription_llm_parts/post_layers.py
+src/mango_mvp/channels/subscription_llm_parts/provider.py
+tests/test_bot_safe_memory_step_guard.py
+tests/test_subscription_llm_draft_provider.py
+tasks/_done/2026-06-21_D3_bot_safe_memory_step_guard_report.md

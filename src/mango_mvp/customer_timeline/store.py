@@ -1700,7 +1700,7 @@ class CustomerTimelineSQLiteStore:
 
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
-            uri = f"file:{self.db_path}?mode=ro"
+            uri = f"{self.db_path.as_uri()}?mode=ro&immutable=1"
             con = sqlite3.connect(uri, uri=True, timeout=15)
             con.execute("PRAGMA query_only = ON")
         else:

@@ -45,6 +45,16 @@ from mango_mvp.integrations.draft_loop import (
     load_profiles_file,
 )
 from mango_mvp.pilot_context_assembly import build_pilot_context_payload
+from mango_mvp.customer_timeline.bot_safe_runtime_context import (
+    BOT_SAFE_CRM_CONTEXT_DB_ENV,
+    BOT_SAFE_CRM_CONTEXT_ENV,
+    DEFAULT_BOT_SAFE_TENANT_ID,
+    BotSafeLookup,
+    bot_safe_crm_context_enabled,
+    bot_safe_tenant_from_env,
+    bot_safe_timeline_db_from_env,
+    build_bot_safe_crm_context,
+)
 from mango_mvp.existing_clients.amo_step1_snapshot import AmoMcpClient, AmoMcpConfig, read_mcp_env
 from mango_mvp.utils.phone import normalize_phone
 
@@ -56,6 +66,9 @@ DEFAULT_RETRO_DIR = Path.home() / ".mango_local" / "draft_loop_inventory"
 DEFAULT_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phones_stoplist.json"
 LEGACY_STOPLIST_PATH = Path.home() / ".mango_secrets" / "shared_phone_stoplist.json"
 DEFAULT_SNAPSHOT = Path("product_data/knowledge_base/kb_release_20260612_v6_7_staging_r4_1/kb_release_v3_snapshot.json")
+DEFAULT_CUSTOMER_TIMELINE_DB = Path(
+    "product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
+)
 DRAFT_LOOP_AUTO_RESOLVER_ENV = "DRAFT_LOOP_AUTO_RESOLVER"
 CLOSED_STATUS_IDS = {"142", "143"}
 ORG_BRAND_KEYWORDS = {
@@ -79,6 +92,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auto-pairs-file", type=Path, default=DEFAULT_AUTO_PAIRS_PATH)
     parser.add_argument("--phase1-config", type=Path, default=DEFAULT_AMO_WAPPI_CONFIG_PATH)
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
+    parser.add_argument(
+        "--customer-timeline-db",
+        type=Path,
+        default=None,
+        help=f"Read-only customer timeline DB for {BOT_SAFE_CRM_CONTEXT_ENV}=1. Defaults to {BOT_SAFE_CRM_CONTEXT_DB_ENV} or product_data path.",
+    )
+    parser.add_argument("--customer-timeline-allowed-root", type=Path, default=None)
+    parser.add_argument("--customer-timeline-tenant", default=bot_safe_tenant_from_env())
     parser.add_argument("--local-dir", type=Path, default=DEFAULT_DRAFT_LOOP_DIR)
     parser.add_argument("--stop-file", type=Path, default=DEFAULT_STOP_PATH)
     parser.add_argument("--chat-limit", type=int, default=50)
@@ -134,7 +155,14 @@ def build_config(args: argparse.Namespace) -> DraftLoopConfig:
     )
 
 
-def build_context_builder(snapshot_path: Path):
+def build_context_builder(
+    snapshot_path: Path,
+    *,
+    draft_config: DraftLoopConfig | None = None,
+    customer_timeline_db: Path | None = None,
+    customer_timeline_allowed_root: Path | None = None,
+    customer_timeline_tenant: str = DEFAULT_BOT_SAFE_TENANT_ID,
+):
     def _build(
         key: DraftLoopKey,
         history: list[str] | tuple[str, ...],
@@ -145,6 +173,14 @@ def build_context_builder(snapshot_path: Path):
         dialogue_memory: Mapping[str, Any] | None = None,
         current_message_id: str = "",
     ) -> Mapping[str, Any]:
+        crm_context = _build_bot_safe_crm_context_for_draft(
+            key=key,
+            brand=brand,
+            draft_config=draft_config,
+            customer_timeline_db=customer_timeline_db,
+            customer_timeline_allowed_root=customer_timeline_allowed_root,
+            customer_timeline_tenant=customer_timeline_tenant,
+        )
         return build_pilot_context_payload(
             current_text=client_message,
             snapshot_path=snapshot_path,
@@ -159,10 +195,39 @@ def build_context_builder(snapshot_path: Path):
             dialogue_contract_pipeline_enabled=True,
             sends_client_replies=False,
             debug_impersonation_enabled=False,
-            crm_context={},
+            crm_context=crm_context,
         )
 
     return _build
+
+
+def _build_bot_safe_crm_context_for_draft(
+    *,
+    key: DraftLoopKey,
+    brand: str,
+    draft_config: DraftLoopConfig | None,
+    customer_timeline_db: Path | None,
+    customer_timeline_allowed_root: Path | None,
+    customer_timeline_tenant: str,
+) -> Mapping[str, Any]:
+    if not bot_safe_crm_context_enabled():
+        return {}
+    pair = draft_config.pair_for(key) if draft_config is not None else None
+    if pair is None:
+        return {}
+    db_path = customer_timeline_db or bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
+    allowed_root = customer_timeline_allowed_root or db_path.parent
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=allowed_root,
+        active_brand=brand,
+        lookup=BotSafeLookup(
+            tenant_id=customer_timeline_tenant or DEFAULT_BOT_SAFE_TENANT_ID,
+            amo_lead_id=pair.lead_id,
+            amo_contact_id=pair.contact_id,
+        ),
+    )
+    return context if context.get("found") else {}
 
 
 def build_safe_transport(ai_office_config: AiOfficeClientConfig, wappi_config: WappiClientConfig) -> DefaultDenyTransport:
@@ -449,7 +514,13 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
         wappi_client=WappiPhase1Client(wappi_config, transport=transport),
         amo_client=AiOfficeAmoNoteClient(ai_office_config, transport=transport),
         bot_provider=bot_provider,
-        context_builder=build_context_builder(args.snapshot),
+        context_builder=build_context_builder(
+            args.snapshot,
+            draft_config=config,
+            customer_timeline_db=args.customer_timeline_db,
+            customer_timeline_allowed_root=args.customer_timeline_allowed_root,
+            customer_timeline_tenant=args.customer_timeline_tenant,
+        ),
         state=DraftLoopState(config.state_path),
         auto_resolver=build_auto_resolver(args),
     )

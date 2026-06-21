@@ -1,0 +1,11 @@
+{
+  "checked_at_utc": "2026-06-21T10:33:05.804930+00:00",
+  "source_db": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite",
+  "source_mtime_after": 1782033029.3798256,
+  "source_mtime_before": 1782033029.3798256,
+  "source_sha256_after": "3cdd2b8e10c5488768baa4c5cec8af29c8397ad24f0f21c04e7353538771921c",
+  "source_sha256_before": "3cdd2b8e10c5488768baa4c5cec8af29c8397ad24f0f21c04e7353538771921c",
+  "source_size_after": 2596515840,
+  "source_size_before": 2596515840,
+  "unchanged": true
+}

@@ -930,7 +930,7 @@ def project_signal(item: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def project_bot_context(item: Mapping[str, Any], *, audience: str) -> Mapping[str, Any]:
-    return {
+    payload = {
         "chunk_id": item.get("chunk_id"),
         "customer_id": item.get("customer_id") if audience != "bot" else None,
         "opportunity_id": item.get("opportunity_id") if audience != "bot" else None,
@@ -945,6 +945,21 @@ def project_bot_context(item: Mapping[str, Any], *, audience: str) -> Mapping[st
         "allowed_for_bot": bool(item.get("allowed_for_bot")),
         "requires_manager_review": bool(item.get("requires_manager_review")),
     }
+    next_step_status = _project_next_step_status(item)
+    if next_step_status:
+        payload["next_step_status"] = next_step_status
+    return payload
+
+
+def _project_next_step_status(item: Mapping[str, Any]) -> str:
+    metadata = item.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return ""
+    next_step = metadata.get("next_step")
+    if not isinstance(next_step, Mapping):
+        return ""
+    status = str(next_step.get("status") or "").strip().casefold()
+    return status if status in {"active", "needs_manager_review", "empty"} else ""
 
 
 def project_conflict(item: Mapping[str, Any]) -> Mapping[str, Any]:

@@ -1,0 +1,108 @@
+{
+  "checks": [
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0263d0f42…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Шаг закрыт: контакт состоялся (от 28.12.2025, звонок)."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0263d0f42…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: open. Интерес: Telegram dialog. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0322e116c…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0322e116c…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: open. Интерес: Telegram dialog. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:035d07895…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: Закрыто и не реализовано. Интерес: Предложение ЛВШ 26 от Фотон. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:035d07895…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: open. Интерес: Telegram dialog. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0d736692f…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: Оплата получена. Интерес: ЛВШ август it; Предложение ЛВШ 26 от Фотон. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0d736692f…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: не определена. Интерес: не определён. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:1a5715ca7…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Шаг закрыт: документы/материалы отправлены (от 16.03.2026, AMO)."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:1a5715ca7…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: не определена. Интерес: не определён. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "unknown_visible_to_active_brand",
+      "customer_id_masked": "customer:00013524f…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Стадия: не определена. Интерес: не определён. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+    },
+    {
+      "active_brand": "foton",
+      "case": "unknown_visible_to_active_brand",
+      "customer_id_masked": "customer:0006dde15…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Стадия: не определена. Интерес: не определён. Следующий шаг: Отправить всю информацию, расписание и стоимость в Ватсап (от 09.09.2025, звонок)."
+    },
+    {
+      "active_brand": "foton",
+      "case": "unknown_visible_to_active_brand",
+      "customer_id_masked": "customer:000916740…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Стадия: не определена. Интерес: не определён. Следующий шаг: Активный следующий шаг не найден."
+    }
+  ]
+}

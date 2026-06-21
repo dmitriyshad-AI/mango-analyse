@@ -1,0 +1,39 @@
+{
+  "allowed_chunk_counts_after": {
+    "bot_safe_summary": 17901
+  },
+  "allowed_chunk_counts_before": {
+    "bot_safe_summary": 17901
+  },
+  "applied": true,
+  "brand_counts": {
+    "foton": 1290,
+    "unknown": 12449,
+    "unpk": 4162
+  },
+  "brand_source_counts": {
+    "customer_opportunities.product_context.brand": 1348,
+    "timeline_events.metadata_or_record.brand": 4104,
+    "unknown": 12449
+  },
+  "considered_customers": 17851,
+  "created": 0,
+  "customers_with_history": 17851,
+  "customers_with_summary": 17901,
+  "duplicate": 17901,
+  "examples": [],
+  "history_coverage_percent": 100.28,
+  "next_step_status_counts": {
+    "active": 2582,
+    "closed": 2011,
+    "empty": 10502,
+    "needs_manager_review": 2806
+  },
+  "raw_allowed_chunks_after": 0,
+  "retired_stale": 0,
+  "schema_version": "customer_timeline_bot_safe_summary_v1",
+  "skipped": 0,
+  "tenant_id": "foton",
+  "timeline_db": "/tmp/mango_phase01_integration_final_20260621_102959/customer_timeline.sqlite",
+  "updated": 0
+}

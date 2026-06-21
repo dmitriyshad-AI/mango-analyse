@@ -1,0 +1,20 @@
+Targeted:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_bot_safe_runtime_context.py tests/test_bot_safe_direct_path_context.py tests/test_customer_timeline_read_api.py tests/test_telegram_dynamic_client_sim.py::test_dynamic_context_can_inject_bot_safe_summary_by_customer_id tests/test_run_amo_wappi_draft_loop.py::test_context_builder_injects_only_bot_safe_crm_context_when_enabled
+
+Result:
+
+...................                                                      [100%]
+19 passed in 1.07s
+
+Full:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+Result:
+
+3515 passed, 5 skipped, 1 warning in 58.34s
+
+Warning:
+
+urllib3 NotOpenSSLWarning from local Python/LibreSSL, unrelated to this change.

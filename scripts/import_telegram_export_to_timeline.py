@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import re
 import sqlite3
 import sys
 from collections import Counter
@@ -15,7 +17,6 @@ from mango_mvp.customer_timeline.contracts import (
     CustomerIdentity,
     IdentityLink,
     IdentityMatchClass,
-    IdentityStatus,
     CustomerOpportunity,
     OpportunityType,
     TimelineDirection,
@@ -49,6 +50,7 @@ SOURCE_SYSTEM = "telegram_history"
 SOURCE_KIND = "channel_snapshot"
 CHANNEL = "telegram"
 BRANDS = {"foton", "unpk", "unknown"}
+PHONE_TEXT_RE = re.compile(r"(?<!\d)(?:\+?7|8)?(?:[\s().-]*\d){10,14}(?!\d)")
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,17 @@ class TelegramExportImportConfig:
         return self.identity_export_dir / "dialogs.jsonl"
 
     @property
+    def crm_contacts_path(self) -> Optional[Path]:
+        direct = self.export_dir / "crm_contacts.csv"
+        if direct.exists() and direct.is_file():
+            return direct
+        if self.identity_export_dir is not None:
+            sidecar = self.identity_export_dir / "crm_contacts.csv"
+            if sidecar.exists() and sidecar.is_file():
+                return sidecar
+        return None
+
+    @property
     def source_ref(self) -> str:
         return f"telegram_export:{self.export_dir.name}:{self.brand}"
 
@@ -119,13 +132,20 @@ class TelegramBuildCounters:
     skipped: int = 0
     groups: int = 0
     linked_by_phone: int = 0
+    linked_by_dialog_phone: int = 0
+    linked_by_crm_contacts_phone: int = 0
+    linked_by_text_phone: int = 0
     linked_by_username: int = 0
     ambiguous_dialogs: int = 0
     unmatched_dialogs: int = 0
+    pending_attribution: int = 0
     dialog_events: int = 0
     session_only: int = 0
     duplicates: int = 0
     bad_jsonl_rows: int = 0
+    crm_contacts_rows: int = 0
+    crm_contacts_with_phone: int = 0
+    text_phone_ambiguous_messages: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -135,13 +155,20 @@ class TelegramBuildCounters:
             "skipped": self.skipped,
             "groups": self.groups,
             "linked_by_phone": self.linked_by_phone,
+            "linked_by_dialog_phone": self.linked_by_dialog_phone,
+            "linked_by_crm_contacts_phone": self.linked_by_crm_contacts_phone,
+            "linked_by_text_phone": self.linked_by_text_phone,
             "linked_by_username": self.linked_by_username,
             "ambiguous_dialogs": self.ambiguous_dialogs,
             "unmatched_dialogs": self.unmatched_dialogs,
+            "pending_attribution": self.pending_attribution,
             "dialog_events": self.dialog_events,
             "session_only": self.session_only,
             "duplicates": self.duplicates,
             "bad_jsonl_rows": self.bad_jsonl_rows,
+            "crm_contacts_rows": self.crm_contacts_rows,
+            "crm_contacts_with_phone": self.crm_contacts_with_phone,
+            "text_phone_ambiguous_messages": self.text_phone_ambiguous_messages,
         }
 
 
@@ -230,40 +257,18 @@ class TelegramExportTimelineNormalizer:
         if not batch.customers or not batch.events:
             return batch
 
-        base_customer = batch.customers[0]
-        if resolution.customer_id:
-            customer_id = resolution.customer_id
-            customers: tuple[CustomerIdentity, ...] = ()
-        else:
-            customer = replace(
-                base_customer,
-                customer_id=None,
-                source_ref=f"{SOURCE_SYSTEM}:dialog:{dialog_id}",
-                identity_status=identity_status_for_resolution(resolution),
-                primary_phone=phone,
-                summary={
-                    **base_customer.summary,
-                    "source_system": SOURCE_SYSTEM,
-                    "channel": CHANNEL,
-                    "brand": brand,
-                    "identity_resolution": resolution.match_class.value,
-                    "evidence_keys": list(resolution.evidence_keys),
-                },
-                metadata={
-                    **base_customer.metadata,
-                    "source_system": SOURCE_SYSTEM,
-                    "channel": CHANNEL,
-                    "thread_id": dialog_id,
-                    "user_id": dialog_id,
-                    "brand": brand,
-                    "identity_resolution": resolution.match_class.value,
-                    "conflict_flags": list(resolution.conflict_flags),
-                    "has_phone": bool(phone),
-                    "has_username": bool(username),
-                },
+        if not resolution.customer_id:
+            return TimelineNormalizedBatch(
+                source_record=batch.source_record,
+                conflicts=telegram_identity_conflicts(
+                    tenant_id=self.tenant_id,
+                    payload=payload,
+                    resolution=resolution,
+                    source_ref=f"{SOURCE_SYSTEM}:dialog:{dialog_id}",
+                ),
             )
-            customer_id = customer.customer_id
-            customers = (customer,)
+        customer_id = resolution.customer_id
+        customers: tuple[CustomerIdentity, ...] = ()
 
         base_event = batch.events[0]
         match_class = resolution.match_class
@@ -530,7 +535,17 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
     identity_dialog_read: Optional[JsonlReadResult] = None
     if config.identity_dialogs_path is not None and config.identity_dialogs_path != config.dialogs_path:
         identity_dialog_read = read_jsonl_lenient(config.identity_dialogs_path)
-    dialog_rows = merge_dialog_identity_rows(dialog_read.rows, identity_dialog_read.rows if identity_dialog_read else ())
+    crm_contact_rows = read_crm_contacts_csv(config.crm_contacts_path) if config.crm_contacts_path else ()
+    if config.crm_contacts_path is not None:
+        inventory_paths.append(config.crm_contacts_path)
+        source_inventory_before = source_file_inventory(*inventory_paths)
+    dialog_rows = merge_dialog_identity_rows(
+        dialog_read.rows,
+        (
+            *(identity_dialog_read.rows if identity_dialog_read else ()),
+            *crm_contact_rows,
+        ),
+    )
     dialogs = dialogs_by_id(dialog_rows)
     message_read = read_jsonl_lenient(config.messages_path)
     messages = message_read.rows
@@ -542,6 +557,8 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
         brand=config.brand,
         source_path=config.messages_path,
     )
+    counters.crm_contacts_rows = len(crm_contact_rows)
+    counters.crm_contacts_with_phone = sum(1 for row in crm_contact_rows if row.get("phone"))
     counters.bad_jsonl_rows = dialog_read.bad_rows + message_read.bad_rows + (identity_dialog_read.bad_rows if identity_dialog_read else 0)
     counters.skipped += message_read.bad_rows
     source_ids = tuple(str(record.payload["timeline_source_id"]) for record in records)
@@ -550,21 +567,26 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
         tenant_id=config.tenant_id,
         source_ids=source_ids,
     )
-    existing_duplicate_count = sum(1 for source_id in source_ids if source_id in existing_source_ids)
+    existing_conflict_message_ids = load_existing_telegram_conflict_message_ids(
+        config.timeline_db,
+        tenant_id=config.tenant_id,
+        message_ids={str(record.payload["telegram_message_id"]) for record in records},
+    )
+    existing_duplicate_count = sum(
+        1
+        for record in records
+        if str(record.payload["timeline_source_id"]) in existing_source_ids
+        or str(record.payload["telegram_message_id"]) in existing_conflict_message_ids
+    )
     counters.duplicates += existing_duplicate_count
 
     phones = {str(record.payload.get("dialog_phone_normalized") or "") for record in records if record.payload.get("dialog_phone_normalized")}
-    usernames = {str(record.payload.get("dialog_username") or "") for record in records if record.payload.get("dialog_username")}
     phone_lookup = load_phone_customer_lookup(
         config.timeline_db,
         tenant_id=config.tenant_id,
         phones=phones,
     )
-    username_lookup = load_username_customer_lookup(
-        config.timeline_db,
-        tenant_id=config.tenant_id,
-        usernames=usernames,
-    )
+    username_lookup = UsernameCustomerLookup(unique_customer_ids={})
     normalizer = TelegramExportTimelineNormalizer(
         tenant_id=config.tenant_id,
         phone_lookup=phone_lookup,
@@ -613,6 +635,7 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
     match_counts = normalized_match_counts(records, phone_lookup=phone_lookup, username_lookup=username_lookup)
     counter_payload["ambiguous_dialogs"] = int(match_counts.get("ambiguous_dialogs", 0))
     counter_payload["unmatched_dialogs"] = int(match_counts.get("unmatched_dialogs", 0))
+    counter_payload["pending_attribution"] = counter_payload["ambiguous_dialogs"] + counter_payload["unmatched_dialogs"]
     history_inventory = safe_telegram_history_inventory(config.export_dir)
     safety = timeline_import_cli_safety_contract(write_product_timeline_db=config.apply)
     validation_ok = bool(report_payload["validation_ok"]) and source_unchanged
@@ -644,6 +667,7 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
             "dialogs_path": str(config.dialogs_path),
             "messages_path": str(config.messages_path),
             "identity_dialogs_path": str(config.identity_dialogs_path) if config.identity_dialogs_path else None,
+            "crm_contacts_path": str(config.crm_contacts_path) if config.crm_contacts_path else None,
             "telegram_history_inventory": history_inventory,
             "inventory": {
                 "unchanged": source_unchanged,
@@ -657,6 +681,8 @@ def run_telegram_export_import(config: TelegramExportImportConfig) -> Mapping[st
             "unique_existing_username_matches": len(username_lookup.unique_customer_ids),
             "ambiguous_username_matches": len(username_lookup.ambiguous_usernames),
             "existing_duplicate_source_ids": existing_duplicate_count,
+            "existing_duplicate_message_events": len(existing_source_ids),
+            "existing_duplicate_pending_conflicts": len(existing_conflict_message_ids),
             "message_match_counts": dict(match_counts),
         },
         "normalization": {
@@ -756,6 +782,15 @@ def build_timeline_records(
             dialog_resolution_hints[dialog_id] = dialog_key
         if payload.get("dialog_phone_normalized"):
             counters.linked_by_phone += 1
+            phone_source = str(payload.get("dialog_phone_source") or "")
+            if phone_source == "crm_contacts":
+                counters.linked_by_crm_contacts_phone += 1
+            elif phone_source == "message_text":
+                counters.linked_by_text_phone += 1
+            else:
+                counters.linked_by_dialog_phone += 1
+        if int(payload.get("text_phone_candidates_count") or 0) > 1:
+            counters.text_phone_ambiguous_messages += 1
         if payload.get("dialog_username"):
             counters.linked_by_username += 1
         if not payload.get("dialog_phone_normalized") and not payload.get("dialog_username"):
@@ -775,7 +810,14 @@ def build_timeline_records(
 def tg_message_to_payload(msg: Mapping[str, Any], dialog: Mapping[str, Any], brand: str) -> dict[str, Any]:
     dialog_id = text_id(msg.get("dialog_id") or dialog.get("dialog_id"))
     message_id = text_id(msg.get("message_id"))
-    phone = normalize_phone(str(dialog.get("phone") or ""))
+    text = str(msg.get("text") or "").strip()
+    dialog_phone = normalize_phone(str(dialog.get("phone") or ""))
+    text_phone_candidates: tuple[str, ...] = ()
+    if not dialog_phone:
+        text_phone_candidates = extract_phones_from_text(text)
+    text_phone = text_phone_candidates[0] if len(text_phone_candidates) == 1 else None
+    phone = dialog_phone or text_phone
+    phone_source = str(dialog.get("_phone_source") or "dialogs") if dialog_phone else "message_text" if text_phone else "none"
     display_name = (
         optional_str(msg.get("dialog_name"))
         or optional_str(dialog.get("title"))
@@ -791,7 +833,7 @@ def tg_message_to_payload(msg: Mapping[str, Any], dialog: Mapping[str, Any], bra
         "received_at": require_text(msg.get("date"), "date"),
         "direction": "outbound" if msg.get("out") else "inbound",
         "display_name": display_name,
-        "text": str(msg.get("text") or "").strip(),
+        "text": text,
         "brand_hint": normalize_brand(brand),
         "timeline_source_id": telegram_source_id(dialog_id, message_id),
         "telegram_dialog_id": dialog_id,
@@ -801,6 +843,8 @@ def tg_message_to_payload(msg: Mapping[str, Any], dialog: Mapping[str, Any], bra
         "dialog_username": username,
         "dialog_phone": optional_str(dialog.get("phone")),
         "dialog_phone_normalized": phone,
+        "dialog_phone_source": phone_source,
+        "text_phone_candidates_count": len(text_phone_candidates),
     }
 
 
@@ -833,10 +877,46 @@ def merge_dialog_identity_rows(
         payload = dict(row)
         for key in ("username", "phone", "first_name", "last_name", "is_contact", "is_mutual_contact", "is_bot"):
             value = rich.get(key)
-            if value not in (None, ""):
+            if value not in (None, "") and payload.get(key) in (None, ""):
                 payload[key] = value
+                if key == "phone":
+                    payload["_phone_source"] = rich.get("_phone_source") or "identity_dialogs"
         merged.append(payload)
     return tuple(merged)
+
+
+def read_crm_contacts_csv(path: Optional[Path]) -> tuple[Mapping[str, Any], ...]:
+    if path is None:
+        return ()
+    rows: list[Mapping[str, Any]] = []
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for raw in reader:
+            row = {normalize_csv_key(key): value for key, value in raw.items() if key is not None}
+            dialog_id = optional_str(row.get("dialog_id"))
+            if not dialog_id:
+                continue
+            rows.append(
+                {
+                    "dialog_id": dialog_id,
+                    "name": optional_str(row.get("name")),
+                    "peer_kind": optional_str(row.get("peer_kind")),
+                    "username": optional_str(row.get("telegram_username") or row.get("username")),
+                    "phone": optional_str(row.get("phone")),
+                    "first_name": optional_str(row.get("first_name")),
+                    "last_name": optional_str(row.get("last_name")),
+                    "is_contact": row.get("is_contact"),
+                    "is_mutual_contact": row.get("is_mutual_contact"),
+                    "is_bot": row.get("is_bot"),
+                    "_phone_source": "crm_contacts",
+                    "_username_source": "crm_contacts",
+                }
+            )
+    return tuple(rows)
+
+
+def normalize_csv_key(key: str) -> str:
+    return key.strip().lstrip("\ufeff")
 
 
 def read_jsonl(path: Path) -> tuple[Mapping[str, Any], ...]:
@@ -1040,6 +1120,35 @@ def load_existing_message_source_ids(
     return found
 
 
+def load_existing_telegram_conflict_message_ids(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    message_ids: set[str],
+) -> set[str]:
+    if not message_ids or not db_path.exists():
+        return set()
+    tenant = normalize_key(tenant_id, "tenant_id")
+    found: set[str] = set()
+    with open_readonly_sqlite(db_path) as con:
+        if not sqlite_table_exists(con, "timeline_conflicts"):
+            return set()
+        rows = con.execute(
+            """
+            SELECT json_extract(record_json, '$.metadata.message_id') AS message_id
+            FROM timeline_conflicts
+            WHERE tenant_id = ?
+              AND json_extract(record_json, '$.metadata.source_system') = ?
+            """,
+            (tenant, SOURCE_SYSTEM),
+        )
+        for row in rows:
+            message_id = optional_str(row["message_id"])
+            if message_id and message_id in message_ids:
+                found.add(message_id)
+    return found
+
+
 def open_readonly_sqlite(db_path: Path) -> sqlite3.Connection:
     uri = f"file:{quote(str(db_path.resolve(strict=False)), safe='/:')}?mode=ro&immutable=1"
     con = sqlite3.connect(uri, uri=True, timeout=15)
@@ -1104,12 +1213,53 @@ def normalize_brand(value: Any) -> str:
     return brand
 
 
-def identity_status_for_resolution(resolution: TelegramIdentityResolution) -> IdentityStatus:
+def telegram_identity_conflicts(
+    *,
+    tenant_id: str,
+    payload: Mapping[str, Any],
+    resolution: TelegramIdentityResolution,
+    source_ref: str,
+) -> tuple[Mapping[str, Any], ...]:
+    dialog_id = require_text(payload.get("telegram_dialog_id"), "telegram_dialog_id")
+    message_id = require_text(payload.get("telegram_message_id"), "telegram_message_id")
+    metadata = {
+        "source_system": SOURCE_SYSTEM,
+        "channel": CHANNEL,
+        "thread_id": dialog_id,
+        "message_id": message_id,
+        "brand": normalize_brand(payload.get("brand_hint")),
+        "identity_resolution": resolution.match_class.value,
+        "evidence_keys": list(resolution.evidence_keys),
+        "conflict_flags": list(resolution.conflict_flags),
+        "dialog_phone_present": bool(payload.get("dialog_phone_normalized")),
+        "dialog_phone_source": optional_str(payload.get("dialog_phone_source")),
+        "dialog_username_present": bool(payload.get("dialog_username")),
+    }
     if resolution.match_class == IdentityMatchClass.AMBIGUOUS:
-        return IdentityStatus.AMBIGUOUS
-    if resolution.match_class == IdentityMatchClass.UNMATCHED:
-        return IdentityStatus.UNMATCHED
-    return IdentityStatus.PARTIAL
+        refs = [source_ref, f"{SOURCE_SYSTEM}:message:{message_id}"]
+        refs.extend(f"customer:{item}" for item in resolution.candidate_customer_ids)
+        return (
+            {
+                "tenant_id": tenant_id,
+                "conflict_type": "telegram_identity_ambiguous",
+                "entity_refs": tuple(refs),
+                "severity": "medium",
+                "status": "open",
+                "summary": "Telegram dialog has ambiguous identity evidence and was not attached to a customer.",
+                "metadata": {**metadata, "candidate_customer_count": len(resolution.candidate_customer_ids)},
+            },
+        )
+    return (
+        {
+            "tenant_id": tenant_id,
+            "conflict_type": "pending_attribution",
+            "entity_refs": (source_ref, f"{SOURCE_SYSTEM}:message:{message_id}"),
+            "severity": "low",
+            "status": "open",
+            "summary": "Telegram message has no authoritative customer attribution.",
+            "metadata": {**metadata, "identity_authority": "unique_phone_or_username_required"},
+        },
+    )
 
 
 def resolve_telegram_identity(
@@ -1175,6 +1325,8 @@ def safe_telegram_message_record(payload: Mapping[str, Any]) -> Mapping[str, Any
         "sender_id_present": bool(optional_str(payload.get("sender_id"))),
         "sender_username_present": bool(optional_str(payload.get("sender_username"))),
         "dialog_phone_present": bool(payload.get("dialog_phone_normalized")),
+        "dialog_phone_source": optional_str(payload.get("dialog_phone_source")),
+        "text_phone_candidates_count": int(payload.get("text_phone_candidates_count") or 0),
         "dialog_username_present": bool(payload.get("dialog_username")),
         "brand": normalize_brand(payload.get("brand_hint")),
         "direction": optional_str(payload.get("direction")),
@@ -1182,6 +1334,21 @@ def safe_telegram_message_record(payload: Mapping[str, Any]) -> Mapping[str, Any
         "text_length": len(text),
         "has_text": bool(text.strip()),
     }
+
+
+def extract_phones_from_text(text: Any) -> tuple[str, ...]:
+    raw_text = str(text or "")
+    if not raw_text:
+        return ()
+    phones: list[str] = []
+    seen: set[str] = set()
+    for match in PHONE_TEXT_RE.finditer(raw_text):
+        normalized = normalize_phone(match.group(0))
+        if not normalized or not normalized.startswith("+7") or normalized in seen:
+            continue
+        seen.add(normalized)
+        phones.append(normalized)
+    return tuple(phones)
 
 
 def autodetect_identity_export_dir(export_dir: Path) -> Optional[Path]:
@@ -1210,19 +1377,27 @@ def normalized_match_counts(
     username_lookup: UsernameCustomerLookup,
 ) -> Mapping[str, int]:
     by_dialog: dict[str, TelegramIdentityResolution] = {}
+    resolution_rank = {
+        IdentityMatchClass.UNMATCHED: 0,
+        IdentityMatchClass.AMBIGUOUS: 1,
+        IdentityMatchClass.STRONG_UNIQUE: 2,
+    }
     for record in records:
         payload = record.payload
         dialog_id = optional_str(payload.get("telegram_dialog_id"))
-        if not dialog_id or dialog_id in by_dialog:
+        if not dialog_id:
             continue
         phone = normalize_phone(str(payload.get("dialog_phone_normalized") or payload.get("dialog_phone") or ""))
         username = normalize_username(payload.get("dialog_username") or payload.get("sender_username"))
-        by_dialog[dialog_id] = resolve_telegram_identity(
+        resolution = resolve_telegram_identity(
             phone=phone,
             username=username,
             phone_lookup=phone_lookup,
             username_lookup=username_lookup,
         )
+        existing = by_dialog.get(dialog_id)
+        if existing is None or resolution_rank[resolution.match_class] > resolution_rank[existing.match_class]:
+            by_dialog[dialog_id] = resolution
     counts = Counter(resolution.match_class.value for resolution in by_dialog.values())
     return {
         "dialogs_total": len(by_dialog),

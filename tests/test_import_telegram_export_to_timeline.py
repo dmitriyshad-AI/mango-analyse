@@ -154,10 +154,12 @@ def test_invalid_jsonl_line_is_skipped_with_counter(tmp_path: Path) -> None:
 
 
 def test_out_message_imports_as_outbound_and_keeps_brand_tag(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "timeline.sqlite"
+    seed_customer(timeline_db, tmp_path, phone="+79991112233")
     export_dir = write_export(
         tmp_path,
         dialogs=[
-            {"dialog_id": 100, "name": "Мария", "peer_kind": "user", "phone": None},
+            {"dialog_id": 100, "name": "Мария", "peer_kind": "user", "phone": "9991112233"},
         ],
         messages=[
             {
@@ -172,7 +174,6 @@ def test_out_message_imports_as_outbound_and_keeps_brand_tag(tmp_path: Path) -> 
             }
         ],
     )
-    timeline_db = tmp_path / "timeline.sqlite"
 
     report = run_telegram_export_import(
         TelegramExportImportConfig(
@@ -188,7 +189,8 @@ def test_out_message_imports_as_outbound_and_keeps_brand_tag(tmp_path: Path) -> 
     dialog_event = fetch_event(timeline_db, "telegram_dialog")
     chunk = fetch_one_json(timeline_db, "bot_context_chunks")
     assert report["counters"]["imported"] == 1
-    assert report["counters"]["session_only"] == 1
+    assert report["counters"]["session_only"] == 0
+    assert report["counters"]["linked_by_phone"] == 1
     assert event["direction"] == "outbound"
     assert event["source_id"] == "telegram:100:200"
     assert dialog_event["source_id"] == "telegram_dialog:100"
@@ -226,21 +228,18 @@ def test_phone_null_does_not_crash_and_stays_session_only(tmp_path: Path) -> Non
         )
     )
 
-    event = fetch_event(timeline_db, "telegram_message")
-    chunk = fetch_one_json(timeline_db, "bot_context_chunks")
-    customer = fetch_one_json(timeline_db, "customer_identities")
-    links = fetch_all_json(timeline_db, "identity_links")
     assert report["counters"]["imported"] == 1
     assert report["summary"]["brand"] == "unpk"
     assert report["counters"]["linked_by_phone"] == 0
     assert report["counters"]["session_only"] == 1
-    assert event["metadata"]["brand"] == "unpk"
-    assert event["match_status"] == "unmatched"
-    assert customer["identity_status"] == "unmatched"
-    assert "brand:unpk" in chunk["relevance_tags"]
-    assert chunk["allowed_for_bot"] is False
-    assert chunk["requires_manager_review"] is True
-    assert {item["link_type"] for item in links} == {"telegram_user_id", "channel_session_id"}
+    assert report["counters"]["pending_attribution"] == 1
+    assert count_rows(timeline_db, "customer_identities") == 0
+    assert count_rows(timeline_db, "timeline_events") == 0
+    assert count_rows(timeline_db, "identity_links") == 0
+    assert count_rows(timeline_db, "bot_context_chunks") == 0
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    assert conflict["conflict_type"] == "pending_attribution"
+    assert conflict["metadata"]["brand"] == "unpk"
 
 
 def test_phone_links_existing_customer_and_repeat_import_does_not_duplicate(tmp_path: Path) -> None:
@@ -317,19 +316,16 @@ def test_ambiguous_phone_match_is_counted_without_first_match_merge(tmp_path: Pa
         )
     )
 
-    event = fetch_event(timeline_db, "telegram_message")
-    phone_link = next(
-        item
-        for item in fetch_all_json(timeline_db, "identity_links")
-        if item["link_type"] == "phone" and item["source_system"] == "telegram_history"
-    )
     assert report["links"]["unique_existing_phone_matches"] == 0
     assert report["links"]["ambiguous_phone_matches"] == 1
     assert report["links"]["message_match_counts"]["ambiguous_dialogs"] == 1
-    assert event["match_status"] == "ambiguous"
-    assert event["customer_id"] not in existing_ids
-    assert phone_link["match_class"] == "ambiguous"
-    assert count_rows(timeline_db, "timeline_events") == 2
+    assert report["counters"]["pending_attribution"] == 1
+    assert count_rows(timeline_db, "customer_identities") == len(existing_ids)
+    assert count_rows(timeline_db, "timeline_events") == 0
+    assert count_rows(timeline_db, "identity_links") == 0
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    assert conflict["conflict_type"] == "telegram_identity_ambiguous"
+    assert conflict["metadata"]["candidate_customer_count"] == 2
 
 
 def test_readonly_lookup_handles_timeline_db_path_with_spaces(tmp_path: Path) -> None:
@@ -373,7 +369,7 @@ def test_readonly_lookup_handles_timeline_db_path_with_spaces(tmp_path: Path) ->
     assert event["customer_id"] == existing_customer_id
 
 
-def test_username_links_existing_customer_without_phone(tmp_path: Path) -> None:
+def test_username_without_phone_does_not_attach_to_existing_customer(tmp_path: Path) -> None:
     timeline_db = tmp_path / "timeline.sqlite"
     existing_customer_id = seed_customer(timeline_db, tmp_path, phone="+79991112233")
     seed_identity_link(
@@ -413,11 +409,13 @@ def test_username_links_existing_customer_without_phone(tmp_path: Path) -> None:
         )
     )
 
-    event = fetch_event(timeline_db, "telegram_message")
-    assert report["links"]["unique_existing_username_matches"] == 1
-    assert report["links"]["message_match_counts"]["strong_unique_dialogs"] == 1
-    assert event["customer_id"] == existing_customer_id
-    assert event["match_status"] == "strong_unique"
+    assert existing_customer_id
+    assert report["links"]["unique_existing_username_matches"] == 0
+    assert report["links"]["message_match_counts"]["unmatched_dialogs"] == 1
+    assert report["counters"]["pending_attribution"] == 1
+    assert count_rows(timeline_db, "timeline_events") == 0
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    assert conflict["conflict_type"] == "pending_attribution"
 
 
 def test_sidecar_identity_dialogs_are_used_without_changing_message_count(tmp_path: Path) -> None:
@@ -460,6 +458,141 @@ def test_sidecar_identity_dialogs_are_used_without_changing_message_count(tmp_pa
     assert report["counters"]["linked_by_username"] == 1
 
 
+def test_crm_contacts_csv_phone_is_used_as_primary_identity(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "timeline.sqlite"
+    existing_customer_id = seed_customer(timeline_db, tmp_path, phone="+79991112233")
+    export_dir = write_export(
+        tmp_path,
+        dialogs=[
+            {"dialog_id": 181, "name": "TG User", "peer_kind": "user", "phone": None},
+        ],
+        messages=[
+            {
+                "dialog_id": 181,
+                "dialog_name": "TG User",
+                "peer_kind": "user",
+                "message_id": 281,
+                "date": "2026-03-28T09:38:18+00:00",
+                "sender_id": 181,
+                "text": "Здравствуйте",
+                "out": False,
+            }
+        ],
+    )
+    write_crm_contacts_csv(
+        export_dir / "crm_contacts.csv",
+        [
+            {
+                "dialog_id": "181",
+                "name": "TG User",
+                "peer_kind": "user",
+                "telegram_username": "",
+                "phone": "9991112233",
+            }
+        ],
+    )
+
+    report = run_telegram_export_import(
+        TelegramExportImportConfig(
+            export_dir=export_dir,
+            allowed_root=tmp_path,
+            timeline_db=timeline_db,
+            brand="unpk",
+            apply=True,
+        )
+    )
+
+    event = fetch_event(timeline_db, "telegram_message")
+    assert report["counters"]["crm_contacts_rows"] == 1
+    assert report["counters"]["crm_contacts_with_phone"] == 1
+    assert report["counters"]["linked_by_crm_contacts_phone"] == 1
+    assert report["links"]["message_match_counts"]["strong_unique_dialogs"] == 1
+    assert event["customer_id"] == existing_customer_id
+    assert event["metadata"]["brand"] == "unpk"
+
+
+def test_text_phone_fallback_links_existing_customer_when_single_phone(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "timeline.sqlite"
+    existing_customer_id = seed_customer(timeline_db, tmp_path, phone="+79991112233")
+    export_dir = write_export(
+        tmp_path,
+        dialogs=[
+            {"dialog_id": 182, "name": "TG User", "peer_kind": "user", "phone": None},
+        ],
+        messages=[
+            {
+                "dialog_id": 182,
+                "dialog_name": "TG User",
+                "peer_kind": "user",
+                "message_id": 282,
+                "date": "2026-03-28T09:38:18+00:00",
+                "sender_id": 182,
+                "text": "Телефон для связи: +7 999 111-22-33",
+                "out": False,
+            }
+        ],
+    )
+
+    report = run_telegram_export_import(
+        TelegramExportImportConfig(
+            export_dir=export_dir,
+            allowed_root=tmp_path,
+            timeline_db=timeline_db,
+            brand="unpk",
+            apply=True,
+        )
+    )
+
+    event = fetch_event(timeline_db, "telegram_message")
+    chunk = fetch_one_json(timeline_db, "bot_context_chunks")
+    assert report["counters"]["linked_by_text_phone"] == 1
+    assert report["links"]["message_match_counts"]["strong_unique_dialogs"] == 1
+    assert event["customer_id"] == existing_customer_id
+    assert event["record"]["message"]["dialog_phone_source"] == "message_text"
+    assert chunk["allowed_for_bot"] is False
+
+
+def test_multiple_text_phones_stay_pending_without_synthetic_customer(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "timeline.sqlite"
+    seed_customer(timeline_db, tmp_path, phone="+79991112233")
+    seed_customer(timeline_db, tmp_path, phone="+79994445566")
+    export_dir = write_export(
+        tmp_path,
+        dialogs=[
+            {"dialog_id": 183, "name": "TG User", "peer_kind": "user", "phone": None},
+        ],
+        messages=[
+            {
+                "dialog_id": 183,
+                "dialog_name": "TG User",
+                "peer_kind": "user",
+                "message_id": 283,
+                "date": "2026-03-28T09:38:18+00:00",
+                "sender_id": 183,
+                "text": "Можно писать на +7 999 111-22-33 или +7 999 444-55-66",
+                "out": False,
+            }
+        ],
+    )
+
+    report = run_telegram_export_import(
+        TelegramExportImportConfig(
+            export_dir=export_dir,
+            allowed_root=tmp_path,
+            timeline_db=timeline_db,
+            brand="unpk",
+            apply=True,
+        )
+    )
+
+    assert report["counters"]["linked_by_text_phone"] == 0
+    assert report["counters"]["text_phone_ambiguous_messages"] == 1
+    assert report["counters"]["pending_attribution"] == 1
+    assert count_rows(timeline_db, "timeline_events") == 0
+    conflict = fetch_one_json(timeline_db, "timeline_conflicts")
+    assert conflict["conflict_type"] == "pending_attribution"
+
+
 def write_export(
     root: Path,
     *,
@@ -477,6 +610,16 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     path.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",
+    )
+
+
+def write_crm_contacts_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    headers = ["dialog_id", "name", "peer_kind", "telegram_username", "phone"]
+    path.write_text(
+        ",".join(headers)
+        + "\n"
+        + "".join(",".join(str(row.get(header, "")) for header in headers) + "\n" for row in rows),
+        encoding="utf-8-sig",
     )
 
 

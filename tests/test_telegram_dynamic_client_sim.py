@@ -1231,7 +1231,13 @@ def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch,
     timeline_db, customer_id = _seed_bot_safe_timeline(tmp_path)
     monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
     monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB", str(timeline_db))
-    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+    captured = {}
+
+    def fake_context(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakePilotContext()
+
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", fake_context)
 
     context = sim.build_bot_prompt_context(
         "Что дальше?",
@@ -1250,6 +1256,77 @@ def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch,
     assert "УНПК: клиент интересовался выездной школой" not in raw
     assert customer_id not in raw
     assert "botsafe:" not in raw
+    assert captured["client_identity"]["channel_user_id"] == customer_id
+    assert context["dynamic_client_sim"]["memory_lookup"]["resolved"] is True
+    assert context["dynamic_client_sim"]["memory_lookup"]["source"] == "customer_id"
+
+
+def test_dynamic_context_keeps_legacy_identity_when_memory_off(monkeypatch, tmp_path):
+    monkeypatch.delenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", raising=False)
+    captured = {}
+
+    def fake_context(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakePilotContext()
+
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", fake_context)
+
+    context = sim.build_bot_prompt_context(
+        "Что дальше?",
+        persona={
+            "dialog_id": "ctx",
+            "brand": "foton",
+            "persona": "родитель",
+            "bot_safe_customer_id": "customer:test-foton",
+        },
+        recent_messages=[],
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert captured["client_identity"]["channel_user_id"] == "dynamic_sim"
+    assert context["dynamic_client_sim"]["memory_lookup"]["enabled"] is False
+    assert context["dynamic_client_sim"]["memory_lookup"]["resolved"] is False
+
+
+def test_dynamic_memory_identity_never_uses_raw_phone(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
+
+    identity, lookup = sim.build_dynamic_client_identity_for_scenario(
+        {
+            "dialog_id": "ctx",
+            "phone": "+79991234567",
+            "amo_lead_id": "5001",
+        },
+        brand="foton",
+        crm_context={},
+    )
+
+    assert identity["channel_user_id"] == "amo_lead:5001"
+    assert "+79991234567" not in json.dumps(identity, ensure_ascii=False)
+    assert lookup["source"] == "amo_lead_id"
+
+
+def test_client_prompt_redacts_memory_resolver_fields() -> None:
+    prompt = sim.build_client_prompt(
+        {"rules": ["не раскрывай тест"]},
+        {
+            "dialog_id": "ctx",
+            "brand": "foton",
+            "persona": "родитель",
+            "bot_safe_customer_id": "customer:test-foton",
+            "amo_lead_id": "5001",
+            "phone_ref": "sha256:abc",
+            "memory_measure": {"source_db": "prod"},
+        },
+        [],
+        turn_index=1,
+    )
+
+    assert "customer:test-foton" not in prompt
+    assert "5001" not in prompt
+    assert "sha256:abc" not in prompt
+    assert "memory_measure" not in prompt
+    assert "родитель" in prompt
 
 
 def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:

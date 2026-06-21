@@ -914,6 +914,119 @@ def test_judge_fact_audit_generic_claims_are_v9_only(tmp_path):
     assert v9_audit["has_unverified_claim"] is False
 
 
+def test_judge_fact_audit_allows_memory_grounded_context_only(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_fact_claims_for_judge(
+        "Мы уже обсуждали подходящую группу и следующий шаг по записи.",
+        client_message="Что мы обсуждали?",
+        active_brand="foton",
+        retrieved_facts={},
+        memory_context_items=[
+            {
+                "text": "Ранее обсуждали подходящую группу; следующий шаг по записи.",
+                "relevance_tags": ["bot_safe", "foton"],
+            }
+        ],
+        snapshot_path=snapshot_path,
+        include_judge_generic_claims=True,
+    )
+
+    levels = {item["claim_type"]: item["level"] for item in audit["items"]}
+    assert levels["generic_judge_fact_claim"] == "memory_grounded"
+    assert audit["has_unverified_claim"] is False
+
+
+def test_judge_fact_audit_does_not_ground_numeric_claims_from_memory(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_fact_claims_for_judge(
+        "Группа занимается 2 раза в неделю.",
+        client_message="Что мы обсуждали?",
+        active_brand="foton",
+        retrieved_facts={},
+        memory_context_items=[
+            {
+                "text": "Ранее обсуждали, что группа занимается 2 раза в неделю.",
+                "relevance_tags": ["bot_safe", "foton"],
+            }
+        ],
+        snapshot_path=snapshot_path,
+        include_judge_generic_claims=True,
+    )
+
+    levels = {item["claim_type"]: item["level"] for item in audit["items"]}
+    assert levels["generic_judge_fact_claim"] == "no_match"
+    assert audit["has_unverified_claim"] is True
+
+
+def test_judge_fact_audit_brand_beats_memory_grounding(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_fact_claims_for_judge(
+        "Мы уже обсуждали подходящую группу и следующий шаг по записи.",
+        client_message="Что мы обсуждали?",
+        active_brand="foton",
+        retrieved_facts={},
+        memory_context_items=[
+            {
+                "text": "УНПК: ранее обсуждали подходящую группу; следующий шаг по записи.",
+                "relevance_tags": ["bot_safe", "unpk"],
+            }
+        ],
+        snapshot_path=snapshot_path,
+        include_judge_generic_claims=True,
+    )
+
+    levels = {item["claim_type"]: item["level"] for item in audit["items"]}
+    assert levels["generic_judge_fact_claim"] == "other_brand_match"
+    assert audit["has_unverified_claim"] is True
+
+
+def test_bot_safe_context_items_for_judge_extracts_prompt_memory():
+    context = {
+        "read_only_customer_context": {
+            "timeline_context": {
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Ранее обсуждали подходящую группу.",
+                            "event_at": "2026-06-20T12:00:00",
+                            "relevance_tags": ["bot_safe", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        },
+                        {
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Менеджерский сырой фрагмент.",
+                            "relevance_tags": ["bot_safe", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": True,
+                        },
+                    ],
+                }
+            }
+        }
+    }
+
+    items = sim.bot_safe_context_items_for_judge(context)
+
+    assert items == [
+        {
+            "key": "bot_safe_context:1",
+            "chunk_type": "bot_safe_summary",
+            "text": "Ранее обсуждали подходящую группу.",
+            "event_at": "2026-06-20T12:00:00",
+            "relevance_tags": ["bot_safe", "foton"],
+        }
+    ]
+
+
 def test_judge_v9_hard_price_fabrication_stays_hard():
     result = sim.normalize_judge_result(
         {
@@ -1231,7 +1344,13 @@ def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch,
     timeline_db, customer_id = _seed_bot_safe_timeline(tmp_path)
     monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
     monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT_DB", str(timeline_db))
-    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+    captured = {}
+
+    def fake_context(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakePilotContext()
+
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", fake_context)
 
     context = sim.build_bot_prompt_context(
         "Что дальше?",
@@ -1251,6 +1370,77 @@ def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch,
     assert "next_step_status" in raw
     assert customer_id not in raw
     assert "botsafe:" not in raw
+    assert captured["client_identity"]["channel_user_id"] == customer_id
+    assert context["dynamic_client_sim"]["memory_lookup"]["resolved"] is True
+    assert context["dynamic_client_sim"]["memory_lookup"]["source"] == "customer_id"
+
+
+def test_dynamic_context_keeps_legacy_identity_when_memory_off(monkeypatch, tmp_path):
+    monkeypatch.delenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", raising=False)
+    captured = {}
+
+    def fake_context(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakePilotContext()
+
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", fake_context)
+
+    context = sim.build_bot_prompt_context(
+        "Что дальше?",
+        persona={
+            "dialog_id": "ctx",
+            "brand": "foton",
+            "persona": "родитель",
+            "bot_safe_customer_id": "customer:test-foton",
+        },
+        recent_messages=[],
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert captured["client_identity"]["channel_user_id"] == "dynamic_sim"
+    assert context["dynamic_client_sim"]["memory_lookup"]["enabled"] is False
+    assert context["dynamic_client_sim"]["memory_lookup"]["resolved"] is False
+
+
+def test_dynamic_memory_identity_never_uses_raw_phone(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_SAFE_CRM_CONTEXT", "1")
+
+    identity, lookup = sim.build_dynamic_client_identity_for_scenario(
+        {
+            "dialog_id": "ctx",
+            "phone": "+79991234567",
+            "amo_lead_id": "5001",
+        },
+        brand="foton",
+        crm_context={},
+    )
+
+    assert identity["channel_user_id"] == "amo_lead:5001"
+    assert "+79991234567" not in json.dumps(identity, ensure_ascii=False)
+    assert lookup["source"] == "amo_lead_id"
+
+
+def test_client_prompt_redacts_memory_resolver_fields() -> None:
+    prompt = sim.build_client_prompt(
+        {"rules": ["не раскрывай тест"]},
+        {
+            "dialog_id": "ctx",
+            "brand": "foton",
+            "persona": "родитель",
+            "bot_safe_customer_id": "customer:test-foton",
+            "amo_lead_id": "5001",
+            "phone_ref": "sha256:abc",
+            "memory_measure": {"source_db": "prod"},
+        },
+        [],
+        turn_index=1,
+    )
+
+    assert "customer:test-foton" not in prompt
+    assert "5001" not in prompt
+    assert "sha256:abc" not in prompt
+    assert "memory_measure" not in prompt
+    assert "родитель" in prompt
 
 
 def test_price_close_unpk_offline_grade9_retrieves_confirmed_prices() -> None:

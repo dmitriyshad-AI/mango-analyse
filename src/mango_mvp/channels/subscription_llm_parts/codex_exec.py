@@ -16,6 +16,10 @@ DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 
 
+CODEX_SERVICE_TIER_ENV = "MANGO_CODEX_SERVICE_TIER"
+DEFAULT_CODEX_SERVICE_TIER = "fast"
+
+
 _RETRYABLE_MARKERS = (
     "no last agent message",
     "temporarily unavailable",
@@ -53,6 +57,9 @@ def build_codex_exec_command(
     if cwd is not None:
         cmd.extend(["-C", str(cwd)])
     cmd.extend(["--model", str(model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL])
+    service_tier = str(os.getenv(CODEX_SERVICE_TIER_ENV) or DEFAULT_CODEX_SERVICE_TIER).strip()
+    if service_tier:
+        cmd.extend(["-c", f'service_tier="{service_tier}"'])
     reasoning = str(reasoning_effort or "").strip()
     if reasoning:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])

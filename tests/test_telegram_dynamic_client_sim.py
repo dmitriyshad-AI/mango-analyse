@@ -914,6 +914,119 @@ def test_judge_fact_audit_generic_claims_are_v9_only(tmp_path):
     assert v9_audit["has_unverified_claim"] is False
 
 
+def test_judge_fact_audit_allows_memory_grounded_context_only(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_fact_claims_for_judge(
+        "Мы уже обсуждали подходящую группу и следующий шаг по записи.",
+        client_message="Что мы обсуждали?",
+        active_brand="foton",
+        retrieved_facts={},
+        memory_context_items=[
+            {
+                "text": "Ранее обсуждали подходящую группу; следующий шаг по записи.",
+                "relevance_tags": ["bot_safe", "foton"],
+            }
+        ],
+        snapshot_path=snapshot_path,
+        include_judge_generic_claims=True,
+    )
+
+    levels = {item["claim_type"]: item["level"] for item in audit["items"]}
+    assert levels["generic_judge_fact_claim"] == "memory_grounded"
+    assert audit["has_unverified_claim"] is False
+
+
+def test_judge_fact_audit_does_not_ground_numeric_claims_from_memory(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_fact_claims_for_judge(
+        "Группа занимается 2 раза в неделю.",
+        client_message="Что мы обсуждали?",
+        active_brand="foton",
+        retrieved_facts={},
+        memory_context_items=[
+            {
+                "text": "Ранее обсуждали, что группа занимается 2 раза в неделю.",
+                "relevance_tags": ["bot_safe", "foton"],
+            }
+        ],
+        snapshot_path=snapshot_path,
+        include_judge_generic_claims=True,
+    )
+
+    levels = {item["claim_type"]: item["level"] for item in audit["items"]}
+    assert levels["generic_judge_fact_claim"] == "no_match"
+    assert audit["has_unverified_claim"] is True
+
+
+def test_judge_fact_audit_brand_beats_memory_grounding(tmp_path):
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(json.dumps({"facts": []}, ensure_ascii=False), encoding="utf-8")
+
+    audit = sim.audit_fact_claims_for_judge(
+        "Мы уже обсуждали подходящую группу и следующий шаг по записи.",
+        client_message="Что мы обсуждали?",
+        active_brand="foton",
+        retrieved_facts={},
+        memory_context_items=[
+            {
+                "text": "УНПК: ранее обсуждали подходящую группу; следующий шаг по записи.",
+                "relevance_tags": ["bot_safe", "unpk"],
+            }
+        ],
+        snapshot_path=snapshot_path,
+        include_judge_generic_claims=True,
+    )
+
+    levels = {item["claim_type"]: item["level"] for item in audit["items"]}
+    assert levels["generic_judge_fact_claim"] == "other_brand_match"
+    assert audit["has_unverified_claim"] is True
+
+
+def test_bot_safe_context_items_for_judge_extracts_prompt_memory():
+    context = {
+        "read_only_customer_context": {
+            "timeline_context": {
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Ранее обсуждали подходящую группу.",
+                            "event_at": "2026-06-20T12:00:00",
+                            "relevance_tags": ["bot_safe", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        },
+                        {
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Менеджерский сырой фрагмент.",
+                            "relevance_tags": ["bot_safe", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": True,
+                        },
+                    ],
+                }
+            }
+        }
+    }
+
+    items = sim.bot_safe_context_items_for_judge(context)
+
+    assert items == [
+        {
+            "key": "bot_safe_context:1",
+            "chunk_type": "bot_safe_summary",
+            "text": "Ранее обсуждали подходящую группу.",
+            "event_at": "2026-06-20T12:00:00",
+            "relevance_tags": ["bot_safe", "foton"],
+        }
+    ]
+
+
 def test_judge_v9_hard_price_fabrication_stays_hard():
     result = sim.normalize_judge_result(
         {

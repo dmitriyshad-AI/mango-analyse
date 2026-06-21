@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-FACT_AUDIT_VERSION = "judge_v2_j1_fact_scope"
+FACT_AUDIT_VERSION = "judge_v2_j3_memory_grounded"
 
 
 def audit_fact_claims(
@@ -17,6 +17,7 @@ def audit_fact_claims(
     client_message: str,
     active_brand: str,
     retrieved_facts: Mapping[str, Any] | None,
+    memory_context_items: Sequence[Mapping[str, Any]] | None = None,
     snapshot_path: Path,
     include_judge_generic_claims: bool = False,
 ) -> Mapping[str, Any]:
@@ -30,6 +31,7 @@ def audit_fact_claims(
         for key, value in (retrieved_facts or {}).items()
         if str(key).strip() and str(value).strip()
     }
+    memory_items = _normalized_memory_context_items(memory_context_items or ())
     registry = snapshot_fact_registry(snapshot_path)
     brand = str(active_brand or "").casefold()
     items: list[dict[str, Any]] = []
@@ -65,6 +67,16 @@ def audit_fact_claims(
             for fact in facts
             if fact_text_supports_terms(str(fact.get("text") or ""), claim.get("terms") or ())
         ]
+        memory_matches = [
+            item
+            for item in memory_items
+            if _memory_text_supports_claim(str(item.get("text") or ""), claim)
+        ]
+        memory_other_brand_matches = [
+            str(item.get("key") or "")
+            for item in memory_matches
+            if _memory_item_points_to_other_brand(item, active_brand=brand)
+        ]
         if retrieved_matches:
             level = "retrieved_match"
             matched_brand = brand
@@ -73,10 +85,14 @@ def audit_fact_claims(
             level = "same_brand_global_match"
             matched_brand = brand
             matched_keys = same_brand_matches[:8]
-        elif other_brand_matches:
+        elif other_brand_matches or memory_other_brand_matches:
             level = "other_brand_match"
             matched_brand = "other"
-            matched_keys = other_brand_matches[:8]
+            matched_keys = [*other_brand_matches, *memory_other_brand_matches][:8]
+        elif memory_matches and _claim_allows_memory_grounding(claim):
+            level = "memory_grounded"
+            matched_brand = brand
+            matched_keys = [str(item.get("key") or "") for item in memory_matches[:8]]
         else:
             level = "no_match"
             matched_brand = ""
@@ -285,6 +301,165 @@ def _discount_term_near_number(text: str, *, percent: str, term: str) -> bool:
 def fact_text_supports_terms(text: str, terms: Sequence[Any]) -> bool:
     normalized = normalize_fact_text(text)
     return bool(normalized) and all(str(term).casefold() in normalized for term in terms if str(term).strip())
+
+
+def _normalized_memory_context_items(items: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    result: list[Mapping[str, Any]] = []
+    for idx, item in enumerate(items, 1):
+        if not isinstance(item, Mapping):
+            continue
+        text = str(item.get("summary") or item.get("text") or "").strip()
+        if not text:
+            continue
+        tags = tuple(
+            str(tag or "").strip().casefold()
+            for tag in (item.get("relevance_tags") or ())
+            if str(tag or "").strip()
+        )
+        key = str(item.get("key") or item.get("id") or f"memory:{idx}").strip()
+        result.append(
+            {
+                "key": key,
+                "text": text,
+                "relevance_tags": tags,
+            }
+        )
+    return tuple(result)
+
+
+def _claim_allows_memory_grounding(claim: Mapping[str, Any]) -> bool:
+    if str(claim.get("claim_type") or "") != "generic_judge_fact_claim":
+        return False
+    claim_text = str(claim.get("claim_text") or "")
+    if _claim_text_requires_snapshot_fact_support(claim_text):
+        return False
+    terms = " ".join(str(term or "") for term in (claim.get("terms") or ()))
+    return not _claim_text_requires_snapshot_fact_support(terms)
+
+
+def _memory_text_supports_claim(text: str, claim: Mapping[str, Any]) -> bool:
+    terms = claim.get("terms") or ()
+    if fact_text_supports_terms(text, terms):
+        return True
+    if not _claim_allows_memory_grounding(claim):
+        return False
+    term_groups = _memory_context_term_groups(claim)
+    if not term_groups:
+        return False
+    return all(any(fact_text_supports_terms(text, (variant,)) for variant in group) for group in term_groups)
+
+
+_MEMORY_CONTEXT_STOP_TERMS = frozenset(
+    {
+        "уже",
+        "ранее",
+        "обсуждали",
+        "обсуждал",
+        "обсуждала",
+        "обсуждение",
+        "обучение",
+        "фотон",
+        "фотоне",
+        "унпк",
+        "контекст",
+        "ориентир",
+        "сейчас",
+        "следующий",
+        "шаг",
+        "детали",
+        "уточнить",
+        "сверить",
+        "менеджер",
+        "история",
+        "отметка",
+        "нужно",
+        "лучше",
+    }
+)
+
+
+def _memory_context_term_groups(claim: Mapping[str, Any]) -> tuple[tuple[str, ...], ...]:
+    groups: list[tuple[str, ...]] = []
+    raw_terms: list[Any] = list(claim.get("terms") or ())
+    raw_terms.extend(re.findall(r"[a-zа-яё0-9%]{2,}", normalize_fact_text(claim.get("claim_text") or "")))
+    for raw in raw_terms:
+        term = normalize_fact_text(raw)
+        if not term or term in _MEMORY_CONTEXT_STOP_TERMS or len(term) < 3:
+            continue
+        if _claim_text_requires_snapshot_fact_support(term):
+            return ()
+        if term.startswith("очн"):
+            groups.append(("очн", "очно", "очная", "очный", "очное"))
+        elif term.startswith("предмет"):
+            groups.append(("предмет",))
+        elif term.startswith("семестр") or term == "сем":
+            groups.append(("семестр", "сем"))
+        elif term.startswith("лвш"):
+            groups.append(("лвш",))
+        elif term.startswith("налог"):
+            groups.append(("налог",))
+        elif term.startswith("вычет"):
+            groups.append(("вычет",))
+        elif term.startswith("перспектив"):
+            groups.append(("перспектив",))
+        elif term.startswith("решени"):
+            groups.append(("решени",))
+        elif term.startswith("email"):
+            groups.append(("email",))
+        elif term.startswith("перезвон"):
+            groups.append(("перезвон",))
+        elif term.startswith("формат"):
+            groups.append(("формат",))
+        elif term.startswith("групп"):
+            groups.append(("групп",))
+        elif term.startswith("запис"):
+            groups.append(("запис",))
+        elif term.startswith("подходящ") or term.startswith("вариант"):
+            continue
+        elif term.startswith("контекст") or term.startswith("ориентир") or term.startswith("вопрос"):
+            continue
+        elif len(term) >= 7:
+            groups.append((term,))
+    return tuple(dict.fromkeys(groups))
+
+
+_MEMORY_SNAPSHOT_ONLY_RE = re.compile(
+    r"(\d|%|₽|руб|стоим|цен|скид|рассроч|долями|т\s*банк|"
+    r"адрес|сретенк|лялин|менделеев|распис|график|"
+    r"пн|вс|понедель|вторник|сред|четверг|пятниц|суббот|воскрес|"
+    r"раз(?:а)?\s+в\s+недел|минут|дата|срок|дедлайн|старт|начал|"
+    r"январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр|"
+    r"один|одна|одно|два|две|три|четыр|пять|шесть|семь|восем|девять|десять)",
+    re.I,
+)
+
+
+def _claim_text_requires_snapshot_fact_support(text: str) -> bool:
+    return bool(_MEMORY_SNAPSHOT_ONLY_RE.search(str(text or "").casefold().replace("ё", "е")))
+
+
+_BRAND_TEXT_MARKERS: Mapping[str, tuple[str, ...]] = {
+    "foton": ("фотон", "foton"),
+    "unpk": ("унпк", "unpk"),
+}
+
+
+def _memory_item_points_to_other_brand(item: Mapping[str, Any], *, active_brand: str) -> bool:
+    brand = str(active_brand or "").casefold()
+    tags = {
+        str(tag or "").strip().casefold()
+        for tag in (item.get("relevance_tags") or ())
+        if str(tag or "").strip()
+    }
+    if (tags & set(_BRAND_TEXT_MARKERS)) - {brand}:
+        return True
+    normalized_text = normalize_fact_text(item.get("text") or "")
+    for item_brand, markers in _BRAND_TEXT_MARKERS.items():
+        if item_brand == brand:
+            continue
+        if any(marker in normalized_text for marker in markers):
+            return True
+    return False
 
 
 def normalize_fact_text(value: object) -> str:

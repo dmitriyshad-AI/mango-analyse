@@ -1639,8 +1639,10 @@ def attach_context_facts_to_dialog(
             snapshot_path=snapshot_path,
             dialogue_memory=dialogue_memory,
         )
+        bot_safe_context_items = bot_safe_context_items_for_judge(context)
         turn["bot_confirmed_facts"] = compact_confirmed_facts(context)
         turn["bot_knowledge_snippets"] = compact_knowledge_snippets(context)
+        turn["bot_safe_context_items"] = bot_safe_context_items
         turn["bot_conversation_intent_plan"] = dict(context.get("conversation_intent_plan") or {}) if isinstance(
             context.get("conversation_intent_plan"), Mapping
         ) else {}
@@ -1661,6 +1663,7 @@ def attach_context_facts_to_dialog(
             client_message=client_message,
             active_brand=str(persona.get("brand") or ""),
             retrieved_facts=retrieved_facts,
+            memory_context_items=bot_safe_context_items,
             snapshot_path=snapshot_path,
             include_judge_generic_claims=_is_judge_prompt_v9(judge_prompt_version),
         )
@@ -1770,6 +1773,7 @@ def run_one_dialog(
             if isinstance(direct_path_metadata.get("retrieved_facts"), Mapping)
             else {}
         )
+        bot_safe_context_items = bot_safe_context_items_for_judge(context)
         number_audit = audit_number_claims(
             bot_text,
             client_message=client_message,
@@ -1782,6 +1786,7 @@ def run_one_dialog(
             client_message=client_message,
             active_brand=brand,
             retrieved_facts=retrieved_facts_for_audit,
+            memory_context_items=bot_safe_context_items,
             snapshot_path=snapshot_path,
             include_judge_generic_claims=_is_judge_prompt_v9(judge_prompt_version),
         )
@@ -1865,6 +1870,7 @@ def run_one_dialog(
             "context_parity_checked": bool(context.get("context_parity_checked")),
             "bot_confirmed_facts": confirmed_facts_for_judge,
             "bot_knowledge_snippets": compact_knowledge_snippets(context),
+            "bot_safe_context_items": bot_safe_context_items,
             "number_audit": number_audit,
             "judge_fact_audit": judge_fact_audit,
         }
@@ -2053,6 +2059,52 @@ def _bot_safe_timeline_item_count(crm_context: Mapping[str, Any] | None) -> int:
     return 0
 
 
+def bot_safe_context_items_for_judge(context: Mapping[str, Any] | None, *, limit: int = 8) -> list[Mapping[str, Any]]:
+    """Persist only the bot-safe CRM snippets that were available to the draft prompt."""
+
+    if not isinstance(context, Mapping):
+        return []
+    containers: list[Mapping[str, Any]] = []
+    timeline_context = context.get("timeline_context")
+    if isinstance(timeline_context, Mapping):
+        containers.append(timeline_context)
+    read_only_context = context.get("read_only_customer_context")
+    if isinstance(read_only_context, Mapping):
+        nested_timeline = read_only_context.get("timeline_context")
+        if isinstance(nested_timeline, Mapping):
+            containers.append(nested_timeline)
+    result: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for container in containers:
+        bot_context = container.get("bot_context")
+        if not isinstance(bot_context, Mapping) or bot_context.get("allowed_only") is not True:
+            continue
+        items = bot_context.get("items")
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
+            continue
+        for idx, item in enumerate(items, 1):
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
+                continue
+            text = str(item.get("summary") or item.get("text") or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(
+                {
+                    "key": str(item.get("key") or item.get("id") or f"bot_safe_context:{len(result) + 1}"),
+                    "chunk_type": str(item.get("chunk_type") or ""),
+                    "text": text,
+                    "event_at": str(item.get("event_at") or ""),
+                    "relevance_tags": [str(tag) for tag in (item.get("relevance_tags") or ())],
+                }
+            )
+            if len(result) >= max(1, int(limit or 8)):
+                return result
+    return result
+
+
 def build_dynamic_bot_safe_crm_context(persona: Mapping[str, Any], *, active_brand: str) -> Mapping[str, Any]:
     if not bot_safe_crm_context_enabled():
         return {}
@@ -2181,7 +2233,9 @@ def build_judge_prompt(
         "Подтверждённые факты, доступные боту на этом ходу, клиент их НЕ видел как служебный блок: "
         f"{_filter_judge_confirmed_facts(turn.get('bot_confirmed_facts') or [])}\n"
         "Фрагменты базы знаний, доступные боту на этом ходу, клиент их НЕ видел как служебный блок: "
-        f"{turn.get('bot_knowledge_snippets') or []}"
+        f"{turn.get('bot_knowledge_snippets') or []}\n"
+        "Bot-safe выжимка клиента, выданная боту на этом ходу, клиент её НЕ видел как служебный блок: "
+        f"{turn.get('bot_safe_context_items') or []}"
         for turn in turns
     )
     v9_rules = _judge_v9_rules() if _is_judge_prompt_v9(version) else ""
@@ -2202,6 +2256,8 @@ def build_judge_prompt(
         "Если класс вне диапазона или нет ни диапазона, ни факта продукта для активного бренда, риск fabrication сохраняется; "
         "если отдельно не подтверждён конкретный предмет внутри подтверждённого курса, это максимум soft/scope-флаг, а не hard gate fabrication. "
         f"Используй сверку фактов {JUDGE_FACT_AUDIT_VERSION}: retrieved_match и same_brand_global_match означают, что сам факт подтверждён для активного бренда; "
+        "memory_grounded означает, что НЕчисловой контекстный клейм про ранее обсуждённое/стадию/следующий шаг поддержан выданной bot-safe выжимкой клиента, это не fabrication; "
+        "memory_grounded НЕ подтверждает цены, проценты, даты, адреса, расписание, числовые условия или факты чужого бренда — для них нужны факты базы; "
         "wrong_scope означает, что факт существует, но отвечает не на текущий вопрос — это оценивай как wrong_scope/ignored_question/over_handoff, а не как fabrication; "
         "no_match или other_brand_match оставляют риск fabrication и требуют строгой проверки. "
         "Сам текст ответа бота, safe-template и элементы с префиксом verified_safe_template не являются подтверждёнными фактами; если они попали в факты, игнорируй их. "
@@ -2716,7 +2772,7 @@ def hard_gate_cause(dialog: Mapping[str, Any], judge: Mapping[str, Any]) -> str:
         return "bot_issue"
     if any(level in {"other_brand_match", "no_match"} for level in levels):
         return "bot_issue"
-    if any(level in {"same_brand_global_match", "retrieved_match"} for level in fact_levels):
+    if any(level in {"same_brand_global_match", "retrieved_match", "memory_grounded"} for level in fact_levels):
         return "measurement_suspect"
     if any(level in {"same_brand_global_match", "retrieved_match"} for level in levels):
         return "measurement_suspect"
@@ -3785,7 +3841,7 @@ def _classify_handoff_bucket(turn: Mapping[str, Any]) -> str:
         return "legitimate"
     if _turn_is_manager_only_legitimate(turn, fact_level=fact_level):
         return "legitimate"
-    if fact_level in {"retrieved_match", "same_brand_global_match", "wrong_scope"}:
+    if fact_level in {"retrieved_match", "same_brand_global_match", "memory_grounded", "wrong_scope"}:
         return "upsell_miss"
     return "unclassified"
 
@@ -4112,6 +4168,18 @@ def _handoff_fact_level(turn: Mapping[str, Any]) -> str:
     audit_levels = set(str(item.get("level") or "") for item in (audit.get("items") or []) if isinstance(item, Mapping))
     if "same_brand_global_match" in audit_levels:
         return "same_brand_global_match"
+    fact_audit = turn.get("judge_fact_audit") if isinstance(turn.get("judge_fact_audit"), Mapping) else {}
+    fact_audit_levels = {
+        str(item.get("level") or "")
+        for item in (fact_audit.get("items") or [])
+        if isinstance(item, Mapping)
+    }
+    if "memory_grounded" in fact_audit_levels:
+        return "memory_grounded"
+    if "same_brand_global_match" in fact_audit_levels:
+        return "same_brand_global_match"
+    if "retrieved_match" in fact_audit_levels:
+        return "retrieved_match"
     if retrieved:
         return "wrong_scope"
     return "no_match"

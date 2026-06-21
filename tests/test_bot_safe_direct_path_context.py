@@ -23,6 +23,7 @@ def test_bot_safe_context_prompt_filters_by_active_brand_and_strips_ids() -> Non
 
     assert "Безопасная выжимка клиента" in prompt
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in prompt
+    assert "Без бренда: клиент ранее уточнял удобный формат" in prompt
     assert "УНПК: клиент интересовался выездной школой" not in prompt
     assert "customer:test-foton" not in prompt
     assert "botsafe:" not in prompt
@@ -82,6 +83,15 @@ def _context(*, flag: bool, extra_items=None):
             "text": "УНПК: клиент интересовался выездной школой.",
             "event_at": "2026-06-21T12:00:00+00:00",
             "relevance_tags": ["bot_safe", "structured", "unpk"],
+            "allowed_for_bot": True,
+            "requires_manager_review": False,
+        },
+        {
+            "chunk_id": "chunk-unknown",
+            "chunk_type": "bot_safe_summary",
+            "text": "Без бренда: клиент ранее уточнял удобный формат.",
+            "event_at": "2026-06-21T12:00:00+00:00",
+            "relevance_tags": ["bot_safe", "structured", "unknown"],
             "allowed_for_bot": True,
             "requires_manager_review": False,
         },

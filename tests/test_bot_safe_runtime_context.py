@@ -41,6 +41,7 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in raw
+    assert "Без бренда: клиент ранее уточнял удобный формат" in raw
     assert "УНПК: клиент интересовался выездной школой" not in raw
     assert customer_id not in raw
     assert "botsafe:" not in raw
@@ -61,6 +62,7 @@ def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
     assert "УНПК: клиент интересовался выездной школой" in raw
+    assert "Без бренда: клиент ранее уточнял удобный формат" in raw
     assert "Фотон: клиент уже спрашивал про онлайн-курс" not in raw
 
 
@@ -191,6 +193,20 @@ def _seed_bot_safe_timeline(
             event_at=NOW,
             freshness_score=1.0,
             relevance_tags=("bot_safe", "structured", "unpk"),
+            allowed_for_bot=True,
+            requires_manager_review=False,
+        ),
+        BotContextChunk(
+            tenant_id="foton",
+            customer_id=customer.customer_id,
+            chunk_id="chunk-unknown",
+            chunk_type="bot_safe_summary",
+            text="Без бренда: клиент ранее уточнял удобный формат.",
+            source_system="customer_timeline_bot_safe_summary",
+            source_ref=f"botsafe:{customer.customer_id}:unknown",
+            event_at=NOW,
+            freshness_score=1.0,
+            relevance_tags=("bot_safe", "structured", "unknown"),
             allowed_for_bot=True,
             requires_manager_review=False,
         ),

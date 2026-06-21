@@ -91,6 +91,7 @@ class BotSafeSummaryBuildReport:
     duplicate: int
     skipped: int
     brand_counts: Mapping[str, int]
+    brand_source_counts: Mapping[str, int]
     next_step_status_counts: Mapping[str, int]
     allowed_chunk_counts_before: Mapping[str, int]
     allowed_chunk_counts_after: Mapping[str, int]
@@ -144,6 +145,7 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
 
     after_counts = _allowed_chunk_counts(db_path)
     brand_counts = _count_values(draft.brand for draft in drafts)
+    brand_source_counts = _count_values(draft.brand_source for draft in drafts)
     next_step_counts = _count_values(draft.next_step_status for draft in drafts)
     history_count = len(customers)
     summary_count = len(drafts)
@@ -162,6 +164,7 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
         duplicate=duplicate,
         skipped=skipped,
         brand_counts=brand_counts,
+        brand_source_counts=brand_source_counts,
         next_step_status_counts=next_step_counts,
         allowed_chunk_counts_before=before_counts,
         allowed_chunk_counts_after=after_counts,

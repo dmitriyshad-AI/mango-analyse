@@ -357,7 +357,7 @@ def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *,
             if str(item.get("chunk_type") or "").strip().casefold() != "bot_safe_summary":
                 continue
             tags = {str(tag or "").strip().casefold() for tag in item.get("relevance_tags") or ()}
-            if "bot_safe" not in tags or active_brand not in tags:
+            if not _direct_path_bot_safe_item_visible(tags, active_brand=active_brand):
                 continue
             text = str(item.get("summary") or item.get("text") or "").strip()
             if not text or _direct_path_bot_safe_text_has_pii(text):
@@ -367,12 +367,21 @@ def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *,
                     "chunk_type": "bot_safe_summary",
                     "text": _direct_path_trim_context_text(text, 700),
                     "event_at": str(item.get("event_at") or "").strip(),
-                    "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand) if tag in tags],
+                    "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand, "unknown") if tag in tags],
                 }
             )
             if len(result) >= max(1, int(limit or 3)):
                 return tuple(result)
     return tuple(result)
+
+
+def _direct_path_bot_safe_item_visible(tags: set[str], *, active_brand: str) -> bool:
+    if "bot_safe" not in tags:
+        return False
+    known_brand_tags = tags & {"foton", "unpk"}
+    if known_brand_tags - {active_brand}:
+        return False
+    return active_brand in tags or "unknown" in tags
 
 
 def _direct_path_bot_safe_text_has_pii(text: str) -> bool:

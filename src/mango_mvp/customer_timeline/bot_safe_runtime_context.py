@@ -170,7 +170,7 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
         if not isinstance(item, Mapping):
             continue
         tags = tuple(_normalize_tag(tag) for tag in item.get("relevance_tags") or ())
-        if "bot_safe" not in tags or active_brand not in tags:
+        if not _item_visible_for_active_brand(tags, active_brand=active_brand):
             continue
         if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
             continue
@@ -185,7 +185,7 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
                 "text": _truncate(text, 700),
                 "event_at": _clean_text(item.get("event_at")),
                 "freshness_score": item.get("freshness_score"),
-                "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand}],
+                "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand, "unknown"}],
                 "allowed_for_bot": True,
                 "requires_manager_review": False,
             }
@@ -193,6 +193,16 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
         if len(result) >= max(1, int(limit or 3)):
             break
     return tuple(result)
+
+
+def _item_visible_for_active_brand(tags: Sequence[str], *, active_brand: str) -> bool:
+    tag_set = set(tags)
+    if "bot_safe" not in tag_set:
+        return False
+    known_brand_tags = tag_set & _KNOWN_BRANDS
+    if known_brand_tags - {active_brand}:
+        return False
+    return active_brand in tag_set or "unknown" in tag_set
 
 
 def _render_summary(items: Sequence[Mapping[str, Any]]) -> str:

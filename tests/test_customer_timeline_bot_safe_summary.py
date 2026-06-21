@@ -79,7 +79,10 @@ def _opportunity(
     )
 
 
-def _event(customer: CustomerIdentity, *, source_id: str = "call-1") -> TimelineEvent:
+def _event(customer: CustomerIdentity, *, source_id: str = "call-1", brand: str = "") -> TimelineEvent:
+    record = {"next_step": "Позвонить клиенту по оплате"}
+    if brand:
+        record["brand"] = brand
     return TimelineEvent(
         tenant_id=customer.tenant_id,
         customer_id=customer.customer_id,
@@ -94,7 +97,7 @@ def _event(customer: CustomerIdentity, *, source_id: str = "call-1") -> Timeline
         subject="Вопрос",
         text_preview="Сырой текст не должен быть использован",
         summary="RAW_SECRET_SUMMARY parent@example.com +7 916 123-45-67 менеджер Петров сообщил личные детали",
-        record={"next_step": "Позвонить клиенту по оплате"},
+        record=record,
         created_at=NOW,
     )
 
@@ -263,6 +266,30 @@ def test_bot_safe_summary_drops_other_brand_title_for_known_customer_brand(tmp_p
     assert "Фотон математика онлайн" in dumped
     assert "УНПК" not in dumped
     assert "МФТИ" not in dumped
+
+
+def test_bot_safe_summary_uses_event_brand_when_deal_brand_unknown(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(_opportunity(customer, brand="unknown", source_id="lead-unknown", title="Заявка"))
+    store.upsert_event(_event(customer, source_id="event-unpk", brand="unpk"))
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    rows = _load_bot_safe_records(tmp_path / "customer_timeline.sqlite")
+
+    assert report.brand_counts["unpk"] == 1
+    assert report.brand_source_counts["timeline_events.metadata_or_record.brand"] == 1
+    assert rows[0][0] == f"botsafe:{customer.customer_id}:unpk"
+    assert "Бренд: УНПК" in rows[0][1]
 
 
 def test_bot_safe_summary_drops_finance_and_discount_titles_from_interest(tmp_path: Path) -> None:

@@ -79,6 +79,17 @@ _BOT_SAFE_SERVICE_ID_RE = re.compile(
     r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
     re.I,
 )
+_BOT_SAFE_MEMORY_EXACT_DETAIL_RE = re.compile(
+    r"(?:"
+    r"\b20\d{2}\s*/\s*\d{2}\b"
+    r"|\b\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}\b"
+    r"|\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"
+    r"|\b\d{1,3}(?:[\s\u00a0]\d{3})+(?:\s*(?:₽|руб\.?|рублей|рубля))?"
+    r"|\b\d+(?:[,.]\d+)?\s*%"
+    r"|\b\d+\s*(?:₽|руб\.?|рублей|рубля)\b"
+    r")",
+    re.I,
+)
 
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
     Path(__file__).resolve().parents[4]
@@ -405,6 +416,11 @@ def _direct_path_trim_context_text(text: str, limit: int) -> str:
     return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _direct_path_bot_safe_memory_prompt_text(text: str) -> str:
+    value = _direct_path_trim_context_text(text, 700)
+    return _BOT_SAFE_MEMORY_EXACT_DETAIL_RE.sub("<точная деталь из памяти скрыта>", value)
+
+
 def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
     items = _direct_path_bot_safe_context_items(context)
     if not items:
@@ -415,6 +431,9 @@ def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, An
         "Безопасная выжимка клиента: это разрешённая выжимка истории по активному бренду. "
         "Используй её только для продолжения диалога, понимания уже обсуждённого и следующего шага. "
         "Цены, даты и условия называй только из блока «Факты по вашему вопросу». "
+        "Числа, даты, проценты, цены, расписание и адреса из этой выжимки НЕ называй клиенту как факт: "
+        "если такая деталь нужна, бери её только из блока «Факты по вашему вопросу», а если её там нет — предложи уточнить. "
+        "Память используй как нить разговора: «обсуждали расписание», без точных чисел из памяти. "
         "Не раскрывай клиенту, что данные взяты из CRM/истории/базы.",
     ]
     if "active" in statuses:
@@ -426,7 +445,7 @@ def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, An
             "Датированную историю с таким статусом подавай как прежние заметки: «по прежним заметкам, актуальность уточню»."
         )
     for idx, item in enumerate(items, 1):
-        text = str(item.get("text") or "").strip()
+        text = _direct_path_bot_safe_memory_prompt_text(str(item.get("text") or "").strip())
         event_at = str(item.get("event_at") or "").strip()
         suffix = f" ({event_at[:10]})" if event_at else ""
         status = str(item.get("next_step_status") or "").strip().casefold()

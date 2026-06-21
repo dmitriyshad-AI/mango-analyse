@@ -3,6 +3,7 @@ from __future__ import annotations
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     BOT_SAFE_CRM_CONTEXT_ENV,
     _build_direct_path_prompt,
+    _direct_path_bot_safe_memory_prompt_text,
     _direct_path_bot_safe_context_prompt_block,
     _direct_path_bot_safe_context_items,
 )
@@ -84,6 +85,51 @@ def test_bot_safe_context_prompt_does_not_overhedge_active_memory() -> None:
     assert "статус следующего шага: active" in block
     assert "следующий шаг НЕ подтверждён" not in block
     assert "по прежним заметкам, актуальность уточню" not in block
+
+
+def test_bot_safe_context_prompt_hides_exact_numbers_from_memory_but_keeps_fact_numbers() -> None:
+    context = _context(
+        flag=True,
+        include_unknown=False,
+        extra_items=[
+            {
+                "chunk_id": "chunk-schedule-memory",
+                "chunk_type": "bot_safe_summary",
+                "text": "Фотон: обсуждали расписание 2025/26, занятия 12:15-14:15, бюджет 94 500 ₽.",
+                "event_at": "2026-06-19T12:00:00+00:00",
+                "next_step_status": "active",
+                "relevance_tags": ["bot_safe", "structured", "foton"],
+                "allowed_for_bot": True,
+                "requires_manager_review": False,
+            }
+        ],
+    )
+
+    prompt = _build_direct_path_prompt(
+        "Напомните расписание и цену?",
+        context=context,
+        facts={"fact:price": "Факт из базы: цена 47 250 ₽."},
+    )
+
+    assert "обсуждали расписание" in prompt
+    assert "<точная деталь из памяти скрыта>" in prompt
+    assert "2025/26" not in prompt
+    assert "12:15-14:15" not in prompt
+    assert "94 500" not in prompt
+    assert "Факт из базы: цена 47 250 ₽." in prompt
+    assert "Числа, даты, проценты, цены, расписание и адреса из этой выжимки НЕ называй клиенту как факт" in prompt
+
+
+def test_bot_safe_memory_prompt_text_preserves_thread_without_exact_schedule() -> None:
+    text = _direct_path_bot_safe_memory_prompt_text(
+        "Обсуждали учебный год 2025/26, расписание 12:15-14:15 и цену 94 500 ₽."
+    )
+
+    assert "Обсуждали учебный год" in text
+    assert "расписание" in text
+    assert "2025/26" not in text
+    assert "12:15-14:15" not in text
+    assert "94 500" not in text
 
 
 def _context(*, flag: bool, extra_items=None, include_unknown: bool = True):

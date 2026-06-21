@@ -1,0 +1,13 @@
+{
+  "copy_sha256": "b3e78c99b344780d688f5e9f9c11d7b4a876247cd9d9a50c453ee629aec06559",
+  "copy_size": 2596515840,
+  "created_at_utc": "2026-06-21T10:30:22.528091+00:00",
+  "elapsed_sec": 25.19,
+  "quick_check": "ok",
+  "run_dir": "/tmp/mango_phase01_integration_final_20260621_102959",
+  "source_db": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite",
+  "source_mtime_before": 1782033029.3798256,
+  "source_sha256_before": "3cdd2b8e10c5488768baa4c5cec8af29c8397ad24f0f21c04e7353538771921c",
+  "source_size_before": 2596515840,
+  "test_db": "/tmp/mango_phase01_integration_final_20260621_102959/customer_timeline.sqlite"
+}

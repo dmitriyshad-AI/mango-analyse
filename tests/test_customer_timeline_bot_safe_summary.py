@@ -401,6 +401,59 @@ def test_bot_safe_summary_uses_event_brand_when_deal_brand_unknown(tmp_path: Pat
     assert "Бренд: УНПК" in rows[0][1]
 
 
+def test_bot_safe_summary_retires_stale_unknown_chunk_after_brand_resolution(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    old_unknown = BotContextChunk(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
+        text="Стадия: old. Интерес: old. Следующий шаг: Активный следующий шаг не найден.",
+        summary="Стадия: old. Интерес: old. Следующий шаг: Активный следующий шаг не найден.",
+        source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
+        source_ref=f"botsafe:{customer.customer_id}:unknown",
+        event_at=NOW,
+        freshness_score=1.0,
+        relevance_tags=("bot_safe", "structured", "unknown"),
+        allowed_for_bot=True,
+        requires_manager_review=False,
+        created_at=NOW,
+    )
+    store.upsert_bot_context_chunk(old_unknown)
+    store.upsert_event(_event(customer, source_id="event-unpk", brand="unpk"))
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        rows = con.execute(
+            """
+            SELECT source_ref, allowed_for_bot, requires_manager_review, record_json
+            FROM bot_context_chunks
+            WHERE source_system = ?
+            ORDER BY source_ref
+            """,
+            (BOT_SAFE_SUMMARY_SOURCE_SYSTEM,),
+        ).fetchall()
+
+    assert report.retired_stale == 1
+    assert [row[0] for row in rows] == [
+        f"botsafe:{customer.customer_id}:unknown",
+        f"botsafe:{customer.customer_id}:unpk",
+    ]
+    assert rows[0][1:3] == (0, 1)
+    assert rows[1][1:3] == (1, 0)
+    retired = json.loads(rows[0][3])
+    assert retired["metadata"]["retired_reason"] == "bot_safe_source_ref_not_rebuilt"
+
+
 def test_bot_safe_summary_drops_finance_and_discount_titles_from_interest(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()
@@ -466,3 +519,185 @@ def test_bot_safe_summary_drops_attachment_file_names_from_interest(tmp_path: Pa
     assert "image-" not in dumped
     assert ".jpeg" not in dumped
     assert ".pdf" not in dumped
+
+
+def test_bot_safe_summary_scrubs_names_from_interest_title_and_keeps_program(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-person-program",
+            title="Летняя Выездная Школа для ученика Смирнова Арсения",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Летняя Выездная Школа" in dumped
+    assert "<name_masked>" in dumped
+    assert "Смирнов" not in dumped
+    assert "Арсени" not in dumped
+
+
+def test_bot_safe_summary_scrubs_role_name_from_interest_title(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-manager-name",
+            title="менеджер Клычева Дарья подобрала Фотон физика 9 класс",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Фотон физика 9 класс" in dumped
+    assert "<name_masked>" in dumped
+    assert "Клычева" not in dumped
+    assert "Дарья" not in dumped
+
+
+def test_bot_safe_summary_keeps_known_programs_and_organizations_in_interest(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-safe-names",
+            title="ЛВШ Летняя Выездная Школа Альфа Банк Фотон ЕГЭ М9",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "ЛВШ" in dumped
+    assert "Летняя Выездная Школа" in dumped
+    assert "Альфа Банк" in dumped
+    assert "Фотон" in dumped
+    assert "ЕГЭ" in dumped
+    assert "М9" in dumped
+    assert "<name_masked>" not in dumped
+
+
+def test_bot_safe_summary_keeps_winter_school_and_intensive_titles(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="unpk",
+            source_id="lead-winter-school",
+            title="Зимняя Выездная школа; Интенсив Мат 11 кл УНПК",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Зимняя Выездная школа" in dumped
+    assert "Интенсив Мат 11 кл УНПК" in dumped
+    assert "<name_masked>" not in dumped
+
+
+def test_bot_safe_summary_drops_interest_that_is_only_person_name(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-only-person",
+            title="Иванова Мария Петровна",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Интерес: не определён" in dumped
+    assert "Иванова" not in dumped
+    assert "Мария" not in dumped
+    assert "Петровна" not in dumped
+    assert "<name_masked>" not in dumped
+
+
+def test_bot_safe_summary_scrubs_single_person_name_from_interest_title(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    store.upsert_customer(customer)
+    store.upsert_opportunity(
+        _opportunity(
+            customer,
+            brand="foton",
+            source_id="lead-single-person",
+            title="Дарья подобрала Фотон информатика 10 класс",
+        )
+    )
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Фотон информатика 10 класс" in dumped
+    assert "<name_masked>" in dumped
+    assert "Дарья" not in dumped

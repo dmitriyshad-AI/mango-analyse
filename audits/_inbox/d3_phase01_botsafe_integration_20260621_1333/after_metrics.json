@@ -1,0 +1,289 @@
+{
+  "bot_safe_total_rows": 18001,
+  "bot_safe_visible_rows": 17901,
+  "brand_counts_visible": {
+    "foton": 1290,
+    "unknown": 12449,
+    "unpk": 4162
+  },
+  "brand_source_counts_visible": {
+    "customer_opportunities.product_context.brand": 1348,
+    "timeline_events.metadata_or_record.brand": 4104,
+    "unknown": 12449
+  },
+  "db": "/tmp/mango_phase01_integration_final_20260621_102959/customer_timeline.sqlite",
+  "examples": {
+    "active": [
+      {
+        "brand": "unpk",
+        "reason": "latest_relevant_event_has_active_next_step",
+        "text": "Бренд: УНПК. Стадия: не определена. Интерес: не определён. Следующий шаг: Связаться повторно после появления точных дат (от 01.02.2025, звонок)."
+      },
+      {
+        "brand": "unknown",
+        "reason": "latest_relevant_event_has_active_next_step",
+        "text": "Стадия: не определена. Интерес: не определён. Следующий шаг: Отправить всю информацию, расписание и стоимость в Ватсап (от 09.09.2025, звонок)."
+      },
+      {
+        "brand": "unknown",
+        "reason": "latest_relevant_event_has_active_next_step",
+        "text": "Стадия: не определена. Интерес: не определён. Следующий шаг: Отправить материалы и пример интерфейса личного кабинета (от 31.10.2025, звонок)."
+      },
+      {
+        "brand": "unknown",
+        "reason": "latest_relevant_event_has_active_next_step",
+        "text": "Стадия: не определена. Интерес: не определён. Следующий шаг: Отправить информацию в Вотсап (от 02.10.2025, звонок)."
+      },
+      {
+        "brand": "unknown",
+        "reason": "latest_relevant_event_has_active_next_step",
+        "text": "Стадия: observed. Интерес: Летние школы 2025. Следующий шаг: Отправить материалы (от 02.09.2025, звонок)."
+      }
+    ],
+    "closed": [
+      {
+        "brand": "unknown",
+        "reason": "callback_closed_by_later_event",
+        "text": "Стадия: не определена. Интерес: не определён. Следующий шаг: Шаг закрыт: контакт состоялся (от 10.10.2025, звонок)."
+      },
+      {
+        "brand": "foton",
+        "reason": "documents_closed_by_later_event",
+        "text": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Шаг закрыт: документы/материалы отправлены (от 19.05.2026, AMO)."
+      },
+      {
+        "brand": "unknown",
+        "reason": "documents_closed_by_later_event",
+        "text": "Стадия: Оплата получена. Интерес: Рус 11 кл онл. Следующий шаг: Шаг закрыт: документы/материалы отправлены (от 02.04.2026, AMO)."
+      },
+      {
+        "brand": "foton",
+        "reason": "callback_closed_by_later_event",
+        "text": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Шаг закрыт: контакт состоялся (от 30.09.2025, звонок)."
+      },
+      {
+        "brand": "unknown",
+        "reason": "callback_closed_by_later_event",
+        "text": "Стадия: Закрыто и не реализовано. Интерес: не определён. Следующий шаг: Шаг закрыт: контакт состоялся (от 27.02.2026, звонок)."
+      }
+    ],
+    "masked_interest": [
+      {
+        "brand": "unknown",
+        "interest": "<name_masked>, \"РОДИТЕЛЬ\", \"ОНЛАЙН\", 7 класс, Математика, 17.02 после 17.00."
+      },
+      {
+        "brand": "unknown",
+        "interest": "Тестирование. Математика, физика 9 класс_Ясинский <name_masked>."
+      },
+      {
+        "brand": "unknown",
+        "interest": "<name_masked>, \"РОДИТЕЛЬ\", \"ОФФЛАЙН\", 6 класс, с направлением не определилась."
+      },
+      {
+        "brand": "unknown",
+        "interest": "мат. физ. очно учебный год + долг; Обучение на очных курсах в 2025-26 уч.г.; Справка о болезни (<name_masked>)."
+      },
+      {
+        "brand": "unknown",
+        "interest": "Сотрудничество с ВЭБ.РФ; <name_masked> А.А.; КП Merchclub."
+      }
+    ],
+    "needs_manager_review": [
+      {
+        "brand": "unknown",
+        "reason": "contradictory_later_event",
+        "text": "Стадия: не определена. Интерес: не определён. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+      },
+      {
+        "brand": "foton",
+        "reason": "contradictory_later_event",
+        "text": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+      },
+      {
+        "brand": "unknown",
+        "reason": "contradictory_later_event",
+        "text": "Стадия: observed. Интерес: Обучение на очных курсах в 2025-26 уч.г. м. Сухаревская. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+      },
+      {
+        "brand": "unpk",
+        "reason": "contradictory_later_event",
+        "text": "Бренд: УНПК. Стадия: Закрыто и не реализовано. Интерес: не определён. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+      },
+      {
+        "brand": "unknown",
+        "reason": "contradictory_later_event",
+        "text": "Стадия: observed. Интерес: Обучение на очных курсах в 2026-27 уч.г.; Обучение на очных курсах в 2025-26 уч.г. 7 класс; 26-27 мат и физ. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+      }
+    ],
+    "program_preserved": [
+      {
+        "brand": "unknown",
+        "interest": "Летняя Выездная школа с 20 июня по 28 июня; Поступила новая заявка от vlagere.ru."
+      },
+      {
+        "brand": "unknown",
+        "interest": "Email message; Заявление на возврат денежных средств АНО (СБП / Альфа Банк)."
+      },
+      {
+        "brand": "unknown",
+        "interest": "Зимняя Выездная школа."
+      },
+      {
+        "brand": "unknown",
+        "interest": "ЛВШ-26; Ваше расписание занятий в 25-26 учебном году (онлайн обучение) 7 класс; Летняя выездная школа с 16 августа по 24 августа."
+      },
+      {
+        "brand": "unknown",
+        "interest": "Зимняя Выездная школа; Обучение на онлайн-курсах в 2025-26 учебном году."
+      }
+    ]
+  },
+  "foreign_brand_text_counts_visible": {},
+  "interest_name_counts_after_safe_phrase_exclusion_visible": {},
+  "interest_name_placeholder_chunks_visible": 104,
+  "next_step_reason_counts_top_visible": {
+    "active:latest_relevant_event_has_active_next_step": 2582,
+    "closed:callback_closed_by_later_event": 787,
+    "closed:documents_closed_by_later_event": 1223,
+    "closed:payment_closed_by_later_event": 1,
+    "empty:no_explicit_next_step": 10502,
+    "needs_manager_review:contradictory_later_event": 2806
+  },
+  "next_step_schema_gaps": {},
+  "next_step_status_counts_visible": {
+    "active": 2582,
+    "closed": 2011,
+    "empty": 10502,
+    "needs_manager_review": 2806
+  },
+  "retired_stale_rows": 100,
+  "runtime_pii_findings_visible": {},
+  "safe_phrase_counts_visible": {
+    "alfa_bank_interest_chunks": 17,
+    "lvsh_chunks": 512,
+    "summer_school_phrase_chunks": 212,
+    "winter_school_phrase_chunks": 89
+  },
+  "table_counts": {
+    "bot_context_chunks": 126817,
+    "customer_identities": 17851,
+    "customer_opportunities": 21797,
+    "timeline_conflicts": 6456,
+    "timeline_events": 157679
+  },
+  "telegram_any_customers_with_visible_bot_safe_summary": 202,
+  "telegram_brand_customers": {
+    "unpk": 202
+  },
+  "telegram_brand_events": {
+    "unpk": 1377
+  },
+  "telegram_unpk_customers_with_visible_bot_safe_summary": 202,
+  "visibility_checks": [
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0263d0f42…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Шаг закрыт: контакт состоялся (от 28.12.2025, звонок)."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0263d0f42…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: open. Интерес: Telegram dialog. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0322e116c…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0322e116c…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: open. Интерес: Telegram dialog. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:035d07895…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: Закрыто и не реализовано. Интерес: Предложение ЛВШ 26 от Фотон. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:035d07895…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: open. Интерес: Telegram dialog. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0d736692f…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: Оплата получена. Интерес: ЛВШ август it; Предложение ЛВШ 26 от Фотон. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:0d736692f…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: не определена. Интерес: не определён. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:1a5715ca7…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: Фотон. Стадия: не определена. Интерес: не определён. Следующий шаг: Шаг закрыт: документы/материалы отправлены (от 16.03.2026, AMO)."
+    },
+    {
+      "active_brand": "unpk",
+      "case": "dual_brand_foreign_excluded",
+      "customer_id_masked": "customer:1a5715ca7…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Бренд: УНПК. Стадия: не определена. Интерес: не определён. Следующий шаг: Активный следующий шаг не найден."
+    },
+    {
+      "active_brand": "foton",
+      "case": "unknown_visible_to_active_brand",
+      "customer_id_masked": "customer:00013524f…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Стадия: не определена. Интерес: не определён. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага."
+    },
+    {
+      "active_brand": "foton",
+      "case": "unknown_visible_to_active_brand",
+      "customer_id_masked": "customer:0006dde15…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Стадия: не определена. Интерес: не определён. Следующий шаг: Отправить всю информацию, расписание и стоимость в Ватсап (от 09.09.2025, звонок)."
+    },
+    {
+      "active_brand": "foton",
+      "case": "unknown_visible_to_active_brand",
+      "customer_id_masked": "customer:000916740…",
+      "foreign_brand_marker_found": false,
+      "found": true,
+      "summary_preview": "Стадия: не определена. Интерес: не определён. Следующий шаг: Активный следующий шаг не найден."
+    }
+  ]
+}

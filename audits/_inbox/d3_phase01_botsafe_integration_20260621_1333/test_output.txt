@@ -1,0 +1,16 @@
+Targeted tests:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_customer_timeline_bot_safe_summary.py tests/test_customer_timeline_next_step_resolver.py tests/test_bot_safe_runtime_context.py tests/test_bot_safe_direct_path_context.py
+
+Result:
+43 passed in 1.07s
+
+Full tests:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+
+Result:
+3513 passed, 5 skipped, 1 warning in 56.98s
+
+Warning:
+urllib3 NotOpenSSLWarning from local Python LibreSSL. Not related to this change.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -129,6 +130,10 @@ def _load_bot_safe_text(db_path: Path) -> str:
     return row[0]
 
 
+def _load_bot_safe_payload(db_path: Path) -> dict:
+    return json.loads(_load_bot_safe_text(db_path))
+
+
 def _load_bot_safe_records(db_path: Path) -> list[tuple[str, str]]:
     with sqlite3.connect(db_path) as con:
         return con.execute(
@@ -172,6 +177,110 @@ def test_bot_safe_summary_uses_structural_fields_redacts_title_and_keeps_raw_blo
             "SELECT COUNT(*) FROM bot_context_chunks WHERE chunk_type != ? AND allowed_for_bot = 1",
             (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
         ).fetchone()[0] == 0
+
+
+def test_bot_safe_summary_extracts_call_summary_next_step_and_scrubs_pii(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer)
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="call-summary-pii",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary=(
+            "Менеджер Клычева Дарья обсудила условия. "
+            "Согласован следующий шаг: менеджер Клычева Дарья отправит договор ученику Смирнову Арсению "
+            "по брони 64-64-58 на parent@example.com."
+        ),
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(event)
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    next_step = payload["metadata"]["next_step"]
+
+    assert report.next_step_status_counts["active"] == 1
+    assert next_step["status"] == "active"
+    assert next_step["source_event_id"] == event.event_id
+    assert "Следующий шаг:" in dumped
+    assert "договор" in dumped.casefold()
+    assert "Клычева" not in dumped
+    assert "Дарья" not in dumped
+    assert "Смирнов" not in dumped
+    assert "Арсени" not in dumped
+    assert "64-64-58" not in dumped
+    assert "parent@example.com" not in dumped
+    assert "<number_masked>" in dumped
+    assert "<email_masked>" in dumped
+
+
+def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer)
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="call-summary-conflict",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Согласован следующий шаг: отправить договор и документы на почту.",
+        record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(event)
+    store.record_conflict(
+        customer.tenant_id,
+        conflict_type="ambiguous_identity",
+        entity_refs=("phone:+79161234567", customer.customer_id, "customer:other"),
+        actor="test",
+    )
+    store.close()
+
+    report = build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+    payload = _load_bot_safe_payload(tmp_path / "customer_timeline.sqlite")
+    next_step = payload["metadata"]["next_step"]
+
+    assert report.next_step_status_counts["needs_manager_review"] == 1
+    assert next_step["status"] == "needs_manager_review"
+    assert next_step["reason_code"] == "ambiguous_identity_open"
+    assert "Уточнить у менеджера: открыт конфликт идентичности" in dumped
+    assert "отправить договор" not in dumped.casefold()
 
 
 def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) -> None:

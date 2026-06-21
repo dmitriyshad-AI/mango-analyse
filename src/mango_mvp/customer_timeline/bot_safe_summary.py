@@ -110,6 +110,7 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     customers = _customers_with_history(db_path, config.tenant_id, limit=config.limit)
     opportunities = _opportunities_by_customer(db_path, config.tenant_id)
     events = _events_by_customer(db_path, config.tenant_id)
+    conflicts = _open_conflicts_by_customer(db_path, config.tenant_id)
     drafts = [
         draft
         for customer_id in customers
@@ -118,6 +119,7 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
             customer_id=customer_id,
             all_opportunities=opportunities.get(customer_id, ()),
             all_events=events.get(customer_id, ()),
+            conflicts=conflicts.get(customer_id, ()),
             existing_chunks=existing_chunks,
         )
     ]
@@ -179,12 +181,18 @@ def _build_customer_draft(
     brand: str,
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
+    conflicts: Sequence[Mapping[str, Any]],
     existing_chunk: Mapping[str, Any] | None,
 ) -> CustomerBotSafeSummaryDraft:
     brand_source = _brand_source(opportunities, events, brand=brand)
     status = _latest_status(opportunities)
     interest = _resolve_interest(opportunities, brand=brand)
-    next_step = resolve_customer_next_step(events, customer_id=customer_id)
+    next_step = resolve_customer_next_step(
+        events,
+        readiness={"open_conflicts": len(conflicts)},
+        conflicts=conflicts,
+        customer_id=customer_id,
+    )
     text = _render_safe_text(brand=brand, status=status, interest=interest, next_step=next_step)
     latest_at = _latest_event_at(opportunities, events)
     created_at = _existing_created_at(existing_chunk) or now_utc()
@@ -229,6 +237,7 @@ def _build_customer_brand_drafts(
     customer_id: str,
     all_opportunities: Sequence[Mapping[str, Any]],
     all_events: Sequence[Mapping[str, Any]],
+    conflicts: Sequence[Mapping[str, Any]],
     existing_chunks: Mapping[str, ExistingBotSafeChunk],
 ) -> tuple[CustomerBotSafeSummaryDraft, ...]:
     drafts: list[CustomerBotSafeSummaryDraft] = []
@@ -245,6 +254,7 @@ def _build_customer_brand_drafts(
                 brand=brand,
                 opportunities=opportunities,
                 events=events,
+                conflicts=conflicts,
                 existing_chunk=existing_chunks[source_ref].record if source_ref in existing_chunks else None,
             )
         )
@@ -438,6 +448,42 @@ def _events_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mappin
         for row in rows:
             grouped.setdefault(str(row["customer_id"]), []).append(_json_mapping(row["record_json"]))
     return {customer_id: tuple(items[-500:]) for customer_id, items in grouped.items()}
+
+
+def _open_conflicts_by_customer(db_path: Path, tenant_id: str) -> dict[str, tuple[Mapping[str, Any], ...]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT conflict_type, status, record_json
+            FROM timeline_conflicts
+            WHERE tenant_id = ? AND status = 'open'
+            ORDER BY created_at ASC, conflict_id ASC
+            """,
+            (tenant_id,),
+        )
+        for row in rows:
+            item = dict(_json_mapping(row["record_json"]))
+            item.setdefault("conflict_type", row["conflict_type"])
+            item.setdefault("status", row["status"])
+            for customer_id in _customer_ids_from_conflict(item):
+                grouped.setdefault(customer_id, []).append(item)
+    return {customer_id: tuple(items) for customer_id, items in grouped.items()}
+
+
+def _customer_ids_from_conflict(conflict: Mapping[str, Any]) -> tuple[str, ...]:
+    refs = conflict.get("entity_refs")
+    candidates: list[str] = []
+    if isinstance(refs, (list, tuple, set)):
+        for ref in refs:
+            text = str(ref or "")
+            if text.startswith("customer:"):
+                candidates.append(text)
+    customer_id = str(conflict.get("customer_id") or "")
+    if customer_id.startswith("customer:"):
+        candidates.append(customer_id)
+    return tuple(dict.fromkeys(candidates))
 
 
 def _existing_bot_safe_chunks(db_path: Path, tenant_id: str) -> dict[str, ExistingBotSafeChunk]:

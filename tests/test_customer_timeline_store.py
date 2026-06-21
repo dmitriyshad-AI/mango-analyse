@@ -418,6 +418,31 @@ def test_bulk_write_rebuilds_fts_after_commit(tmp_path: Path) -> None:
     store.close()
 
 
+def test_ingestion_cursor_persists_and_is_reported_in_summary(tmp_path: Path) -> None:
+    store = open_store(tmp_path)
+    cursor = store.upsert_ingestion_cursor(
+        "foton",
+        "amocrm_snapshot",
+        last_cursor_ts=NOW - timedelta(minutes=5),
+        metadata={"max_source_ts": NOW.isoformat(), "last_status": "ok"},
+    )
+    store.close()
+
+    reopened = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=StepClock())
+    try:
+        loaded = reopened.get_ingestion_cursor("foton", "amocrm_snapshot")
+        cursors = reopened.list_ingestion_cursors("foton")
+        summary = reopened.summary()
+    finally:
+        reopened.close()
+
+    assert loaded is not None
+    assert loaded.last_cursor_ts == cursor.last_cursor_ts
+    assert loaded.metadata["last_status"] == "ok"
+    assert cursors[0]["source_system"] == "amocrm_snapshot"
+    assert summary["counts"]["ingestion_cursors"] == 1
+
+
 def test_path_guard_rejects_runtime_outside_and_stable_runtime_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="stable_runtime"):
         CustomerTimelineSQLiteStore(tmp_path / "stable_runtime" / "customer_timeline.sqlite", allowed_root=tmp_path)

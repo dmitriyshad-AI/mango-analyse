@@ -1,0 +1,35 @@
+{
+  "database": "/tmp/mango_phase01_integration_final_20260621_102959/customer_timeline.sqlite",
+  "all_bot_safe_summary_chunks": 18001,
+  "visible_bot_safe_summary_chunks": 17901,
+  "stored_non_visible_chunks": 100,
+  "fields_scanned": {
+    "visible:text": 17901,
+    "visible:summary": 17901,
+    "visible:extracted_interest": 17901,
+    "stored_non_visible:text": 100,
+    "stored_non_visible:summary": 100,
+    "stored_non_visible:extracted_interest": 100
+  },
+  "residual_phone_email_matches": {},
+  "runtime_scan_findings_on_visible_text_summary": {},
+  "masked_marker_counts": {
+    "visible:<phone_masked>": 122,
+    "visible:<email_masked>": 0,
+    "visible:<number_masked>": 6,
+    "visible:<person_masked>": 0,
+    "stored_non_visible:<phone_masked>": 0,
+    "stored_non_visible:<email_masked>": 0,
+    "stored_non_visible:<number_masked>": 0,
+    "stored_non_visible:<person_masked>": 0
+  },
+  "safe_term_hits_in_stored_text": {
+    "Альфа Банк": 51
+  },
+  "control_samples": {
+    "products_and_prices": "М9 база 18 900, стандарт 47 250, продвинутый 59 900, погружение 94 500",
+    "program_names": "М11 ЕГЭ 2026 Летняя Выездная Школа Альфа-Банк Альфа Банк",
+    "pii_masks": "Контакт <phone_masked>, почта <email_masked>, код <number_masked>"
+  },
+  "verdict": "no_residual_phone_or_email_found; no_code_change_needed"
+}

@@ -10877,6 +10877,51 @@ def test_direct_path_bot_safe_memory_step_guard_runs_without_semantic_verifier(t
     assert result.metadata["authoritative_output_gate"]["checked"] is True
 
 
+def test_direct_path_bot_safe_memory_step_guard_is_noop_when_memory_off(tmp_path: Path) -> None:
+    snapshot_path = _write_wave6_snapshot(tmp_path)
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Да, место уже забронировано, заявка подтверждена.",
+            metadata={"direct_path": {"model_response": "raw"}},
+            safety_flags=(),
+        )
+    )
+
+    result = provider.build_draft(
+        "Что дальше с записью?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            "snapshot_path": str(snapshot_path),
+            "TELEGRAM_BOT_SAFE_CRM_CONTEXT": "0",
+            "timeline_context": {
+                "source": "customer_timeline_bot_context",
+                "found": True,
+                "bot_context": {
+                    "allowed_only": True,
+                    "items": [
+                        {
+                            "chunk_id": "chunk-foton",
+                            "chunk_type": "bot_safe_summary",
+                            "text": "Фотон: клиент обсуждал запись.",
+                            "next_step_status": "needs_manager_review",
+                            "relevance_tags": ["bot_safe", "structured", "foton"],
+                            "allowed_for_bot": True,
+                            "requires_manager_review": False,
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.draft_text == "Да, место уже забронировано, заявка подтверждена."
+    assert "bot_safe_memory_unconfirmed_step_detected" not in result.safety_flags
+    assert "bot_safe_memory_step_guard" not in result.metadata
+
+
 def test_direct_path_deal_action_off_keeps_service_topic_parity() -> None:
     provider = _DirectPathProvider(
         SubscriptionDraftResult(

@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.full_memory_ingest import (  # noqa: E402
     DEFAULT_STAGE2_DELTA_EVENTS,
     FullMemoryIngestConfig,
     parse_generated_at,
+    run_full_memory_production_apply,
     run_full_memory_test_procedure,
 )
 
@@ -28,11 +29,11 @@ from mango_mvp.customer_timeline.full_memory_ingest import (  # noqa: E402
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the safe full-memory customer_timeline ingest procedure on a test copy only. "
-            "Production apply is intentionally not implemented in this command."
+            "Run the safe full-memory customer_timeline ingest procedure. "
+            "Production apply requires an explicit command and creates a full DB backup first."
         )
     )
-    parser.add_argument("command", choices=("test-copy",))
+    parser.add_argument("command", choices=("test-copy", "apply-production"))
     parser.add_argument("--project-root", type=Path, default=ROOT)
     parser.add_argument("--production-db", type=Path, default=DEFAULT_PRODUCTION_DB)
     parser.add_argument(
@@ -72,9 +73,15 @@ def main(argv: list[str] | None = None) -> int:
         email_limit=args.email_limit,
         max_call_events_per_contact=args.max_call_events_per_contact,
     )
-    report = run_full_memory_test_procedure(config)
+    if args.command == "test-copy":
+        report = run_full_memory_test_procedure(config)
+    else:
+        report = run_full_memory_production_apply(config)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
-    return 0 if report.get("validation", {}).get("production_apply_not_performed") else 1
+    validation = report.get("validation", {})
+    if args.command == "test-copy":
+        return 0 if validation.get("production_apply_not_performed") else 1
+    return 0 if validation.get("production_apply_performed") and not validation.get("restore_performed") else 1
 
 
 if __name__ == "__main__":

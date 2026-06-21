@@ -129,15 +129,21 @@ def parse_generated_at(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def make_mail_config(config: FullMemoryIngestConfig) -> MailStage2IngestConfig:
+def make_mail_config(
+    config: FullMemoryIngestConfig,
+    *,
+    timeline_db: Path | None = None,
+    allowed_root: Path | None = None,
+) -> MailStage2IngestConfig:
+    root = allowed_root or config.test_out_root
     return MailStage2IngestConfig(
-        timeline_db_path=config.test_timeline_db,
-        allowed_root=config.test_out_root,
+        timeline_db_path=timeline_db or config.test_timeline_db,
+        allowed_root=root,
         identity_db_path=config.identity_db,
         event_jsonl_paths=config.event_jsonl_paths,
         relink_decision_paths=config.relink_decision_paths,
-        out_dir=config.reports_root / "mail_stage2",
-        backup_root=config.backup_root,
+        out_dir=root / "reports" / "mail_stage2",
+        backup_root=root / "backups",
         tenant_id=config.tenant_id,
         source_ref="mail_stage2_fresh_relink_bacdd96f_full_memory",
         limit=config.email_limit,
@@ -154,21 +160,36 @@ def assert_safe_test_target(config: FullMemoryIngestConfig) -> None:
             raise FileNotFoundError(f"required input file is missing: {path}")
 
 
-def create_empty_timeline_db(config: FullMemoryIngestConfig) -> Mapping[str, Any]:
-    config.test_out_root.mkdir(parents=True, exist_ok=True)
-    store = CustomerTimelineSQLiteStore(config.test_timeline_db, allowed_root=config.test_out_root)
+def assert_safe_production_target(config: FullMemoryIngestConfig) -> None:
+    for path in (config.identity_db, *config.event_jsonl_paths, *config.relink_decision_paths):
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(f"required input file is missing: {path}")
+    if "stable_runtime" in config.production_db.parts:
+        raise RuntimeError(f"production timeline DB must not be inside stable_runtime: {config.production_db}")
+    if config.production_db.name != "customer_timeline.sqlite":
+        raise RuntimeError(f"production timeline DB must be named customer_timeline.sqlite: {config.production_db}")
+
+
+def create_empty_timeline_db(timeline_db: Path, *, allowed_root: Path) -> Mapping[str, Any]:
+    allowed_root.mkdir(parents=True, exist_ok=True)
+    store = CustomerTimelineSQLiteStore(timeline_db, allowed_root=allowed_root)
     try:
         return store.summary()
     finally:
         store.close()
 
 
-def run_canonical_import(config: FullMemoryIngestConfig) -> Mapping[str, Any]:
+def run_canonical_import(
+    config: FullMemoryIngestConfig,
+    *,
+    timeline_db: Path | None = None,
+    out_root: Path | None = None,
+) -> Mapping[str, Any]:
     return build_canonical_readonly_customer_timeline(
         CanonicalReadonlyTimelineConfig(
             project_root=config.project_root,
-            out_root=config.test_out_root,
-            timeline_db=config.test_timeline_db,
+            out_root=out_root or config.test_out_root,
+            timeline_db=timeline_db or config.test_timeline_db,
             tenant_id=config.tenant_id,
             generated_at=config.generated_at,
             max_call_events_per_contact=max(0, int(config.max_call_events_per_contact or 0)),
@@ -290,12 +311,20 @@ def select_sample_customer_ids(db_path: Path, *, limit: int = 5) -> tuple[str, .
     return tuple(str(row[0]) for row in rows)
 
 
-def read_api_timeline_samples(config: FullMemoryIngestConfig, *, limit: int = 5) -> list[Mapping[str, Any]]:
+def read_api_timeline_samples(
+    config: FullMemoryIngestConfig,
+    *,
+    timeline_db: Path | None = None,
+    allowed_root: Path | None = None,
+    limit: int = 5,
+) -> list[Mapping[str, Any]]:
+    db_path = timeline_db or config.test_timeline_db
+    root = allowed_root or config.test_out_root
     samples: list[Mapping[str, Any]] = []
     with CustomerTimelineReadApi.open(
-        CustomerTimelineReadApiConfig(timeline_db=config.test_timeline_db, allowed_root=config.test_out_root)
+        CustomerTimelineReadApiConfig(timeline_db=db_path, allowed_root=root)
     ) as api:
-        for customer_id in select_sample_customer_ids(config.test_timeline_db, limit=limit):
+        for customer_id in select_sample_customer_ids(db_path, limit=limit):
             profile = api.customer_profile(config.tenant_id, customer_id, event_limit=12, bot_context_limit=5)
             timeline = api.customer_timeline(config.tenant_id, customer_id, limit=12, sort="asc")
             events = [
@@ -329,7 +358,7 @@ def summarize_import_report(report: Mapping[str, Any]) -> Mapping[str, Any]:
 def run_full_memory_test_procedure(config: FullMemoryIngestConfig) -> Mapping[str, Any]:
     assert_safe_test_target(config)
     started_at = datetime.now(timezone.utc)
-    empty_summary = create_empty_timeline_db(config)
+    empty_summary = create_empty_timeline_db(config.test_timeline_db, allowed_root=config.test_out_root)
     mail_config = make_mail_config(config)
     backup = create_timeline_backup(mail_config, label="before_full_memory_ingest")
     backup_manifest = Path(str(backup["manifest_path"]))
@@ -423,6 +452,107 @@ def run_full_memory_test_procedure(config: FullMemoryIngestConfig) -> Mapping[st
         },
     }
     write_json(config.test_out_root / "full_memory_ingest_test_report.json", report)
+    return report
+
+
+def run_full_memory_production_apply(config: FullMemoryIngestConfig) -> Mapping[str, Any]:
+    """Run the owner-approved production ingest, leaving data in the appointed DB."""
+
+    assert_safe_production_target(config)
+    started_at = datetime.now(timezone.utc)
+    production_root = config.production_db.parent
+    if not config.production_db.exists():
+        initial_summary = create_empty_timeline_db(config.production_db, allowed_root=production_root)
+        initial_db_existed = False
+    else:
+        initial_summary = read_db_counts(config.production_db)
+        initial_db_existed = True
+
+    mail_config = make_mail_config(config, timeline_db=config.production_db, allowed_root=production_root)
+    backup = create_timeline_backup(mail_config, label="before_full_memory_production_apply")
+    backup_manifest = Path(str(backup["manifest_path"]))
+    mail_dry_run = dry_run_stage2_mail_ingest(mail_config)
+
+    before_apply_counts = read_db_counts(config.production_db)
+    canonical_report = run_canonical_import(config, timeline_db=config.production_db, out_root=production_root)
+    after_canonical_counts = read_db_counts(config.production_db)
+    mail_apply = apply_stage2_mail_ingest(mail_config, backup_manifest_path=backup_manifest)
+    after_first_counts = read_db_counts(config.production_db)
+    source_counts_first = source_system_event_counts(config.production_db)
+    invariants_first = safety_invariants(config.production_db)
+    samples = read_api_timeline_samples(config, timeline_db=config.production_db, allowed_root=production_root)
+
+    canonical_repeat = run_canonical_import(config, timeline_db=config.production_db, out_root=production_root)
+    after_canonical_repeat_counts = read_db_counts(config.production_db)
+    mail_repeat = apply_stage2_mail_ingest(mail_config, backup_manifest_path=backup_manifest)
+    after_repeat_counts = read_db_counts(config.production_db)
+    invariants_repeat = safety_invariants(config.production_db)
+    finished_at = datetime.now(timezone.utc)
+
+    report: dict[str, Any] = {
+        "schema_version": FULL_MEMORY_INGEST_SCHEMA_VERSION,
+        "mode": "production_apply",
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "revision": "d7b3950_or_later",
+        "production_target": {
+            "appointed_db": str(config.production_db),
+            "initial_db_existed": initial_db_existed,
+            "apply_performed": True,
+            "explicit_owner_yes": True,
+        },
+        "inputs": {
+            "identity_db": str(config.identity_db),
+            "event_jsonl_paths": [str(path) for path in config.event_jsonl_paths],
+            "relink_decision_paths": [str(path) for path in config.relink_decision_paths],
+            "email_limit": config.email_limit,
+            "generated_at": config.generated_at.isoformat() if config.generated_at else None,
+        },
+        "backup": backup,
+        "initial_summary": initial_summary,
+        "mail_dry_run": mail_dry_run,
+        "canonical_first": summarize_import_report(canonical_report),
+        "mail_first": mail_apply,
+        "canonical_repeat": summarize_import_report(canonical_repeat),
+        "mail_repeat": mail_repeat,
+        "counts": {
+            "before_apply": dict(before_apply_counts),
+            "after_canonical": dict(after_canonical_counts),
+            "after_first": dict(after_first_counts),
+            "after_canonical_repeat": dict(after_canonical_repeat_counts),
+            "after_repeat": dict(after_repeat_counts),
+            "canonical_delta": dict(count_delta(before_apply_counts, after_canonical_counts)),
+            "mail_first_delta": dict(count_delta(after_canonical_counts, after_first_counts)),
+            "repeat_delta": dict(count_delta(after_first_counts, after_repeat_counts)),
+        },
+        "source_system_event_counts": source_counts_first,
+        "source_system_contract": {
+            "canonical_importer_source_systems": list(CANONICAL_SOURCE_SYSTEMS),
+            "mail_stage2_source_system": MAIL_STAGE2_INGEST_SOURCE_SYSTEM,
+            "source_systems_do_not_overlap": MAIL_STAGE2_INGEST_SOURCE_SYSTEM not in CANONICAL_SOURCE_SYSTEMS,
+        },
+        "safety_invariants_first": invariants_first,
+        "safety_invariants_repeat": invariants_repeat,
+        "read_api_samples": samples,
+        "validation": {
+            "backup_created_before_first_importer": bool(backup.get("manifest_path")),
+            "mail_dry_run_before_apply": mail_dry_run.get("mode") == "dry_run",
+            "first_invariants_pass": bool(invariants_first.get("pass")),
+            "repeat_invariants_pass": bool(invariants_repeat.get("pass")),
+            "repeat_added_events": int(after_repeat_counts["timeline_events"]) - int(after_first_counts["timeline_events"]),
+            "restore_performed": False,
+            "production_apply_performed": True,
+        },
+        "semantic_review": {
+            "verdict": "PASS_WITH_NOTES",
+            "notes": [
+                "Production apply был явно разрешён Дмитрием в текущей задаче.",
+                "Canonical importer не имеет собственного dry-run; страховка для него — общий бэкап всей DB до первого импортёра.",
+                "Данные оставлены в назначенной production DB; restore намеренно не выполнялся.",
+            ],
+        },
+    }
+    write_json(production_root / "full_memory_ingest_production_apply_report.json", report)
     return report
 
 

@@ -52,7 +52,7 @@ def test_full_memory_ingest_test_copy_runs_stages_in_order_and_never_production_
         calls.append("mail_dry_run")
         return {"mode": "dry_run", "counts": {"would_create_events": 0}}
 
-    def fake_canonical(_config: object) -> dict[str, object]:
+    def fake_canonical(_config: object, **_kwargs: object) -> dict[str, object]:
         calls.append("canonical")
         return {"summary": {"source_event_counts": {}}, "paths": {}, "safety": {}}
 
@@ -83,4 +83,59 @@ def test_full_memory_ingest_test_copy_runs_stages_in_order_and_never_production_
     assert report["production_target"]["apply_performed"] is False
     assert report["validation"]["backup_created_before_first_importer"] is True
     assert report["validation"]["production_apply_not_performed"] is True
+    assert Path(report["backup"]["manifest_path"]).exists()
+
+
+def test_full_memory_ingest_production_apply_backs_up_and_does_not_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity, events = _write_required_inputs(tmp_path)
+    prod_db = tmp_path / "product_data" / "customer_timeline" / "customer_timeline_prod_20260621" / "customer_timeline.sqlite"
+    config = fmi.FullMemoryIngestConfig(
+        project_root=tmp_path,
+        production_db=prod_db,
+        test_out_root=tmp_path / "unused_testcopy",
+        identity_db=identity,
+        event_jsonl_paths=events,
+        relink_decision_paths=(),
+    )
+    calls: list[str] = []
+
+    def fake_dry_run(_mail_config: object) -> dict[str, object]:
+        calls.append("mail_dry_run")
+        return {"mode": "dry_run", "counts": {"would_create_events": 0}}
+
+    def fake_canonical(_config: object, **_kwargs: object) -> dict[str, object]:
+        calls.append("canonical")
+        return {"summary": {"source_event_counts": {}}, "paths": {}, "safety": {}}
+
+    def fake_apply(_mail_config: object, *, backup_manifest_path: Path) -> dict[str, object]:
+        calls.append(f"mail_apply:{backup_manifest_path.name}")
+        assert backup_manifest_path.exists()
+        return {"mode": "apply", "counts": {"created_events": 0, "selected_new_events": 0}}
+
+    def fail_restore(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("production apply must not restore")
+
+    monkeypatch.setattr(fmi, "dry_run_stage2_mail_ingest", fake_dry_run)
+    monkeypatch.setattr(fmi, "run_canonical_import", fake_canonical)
+    monkeypatch.setattr(fmi, "apply_stage2_mail_ingest", fake_apply)
+    monkeypatch.setattr(fmi, "restore_timeline_backup", fail_restore)
+
+    report = fmi.run_full_memory_production_apply(config)
+
+    assert calls == [
+        "mail_dry_run",
+        "canonical",
+        "mail_apply:backup_manifest.json",
+        "canonical",
+        "mail_apply:backup_manifest.json",
+    ]
+    assert prod_db.exists()
+    assert report["production_target"]["appointed_db"].endswith("customer_timeline_prod_20260621/customer_timeline.sqlite")
+    assert report["production_target"]["apply_performed"] is True
+    assert report["validation"]["backup_created_before_first_importer"] is True
+    assert report["validation"]["production_apply_performed"] is True
+    assert report["validation"]["restore_performed"] is False
     assert Path(report["backup"]["manifest_path"]).exists()

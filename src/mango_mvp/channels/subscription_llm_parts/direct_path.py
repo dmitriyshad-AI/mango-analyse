@@ -21,6 +21,7 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
 from mango_mvp.channels.subscription_llm_parts.support import (
     BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
+    DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     LLM_RETRIEVE_ENV,
     MEMORY_PROVENANCE_ENV,
@@ -47,6 +48,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _direct_path_valid_until_ok,
     _normalize_fact_match_text,
     _pilot_gold_profile_enabled,
+    _pilot_profile_default_on_flag_enabled,
     _pilot_profile_flag_enabled,
     _pilot_profile_overrides,
     _presale_prompt_child_name_value,
@@ -71,7 +73,31 @@ RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
 
 ASSUMED_SCOPE_GUARD_ENV = "TELEGRAM_ASSUMED_SCOPE_GUARD"
 
+BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
+
+_BOT_SAFE_SERVICE_ID_RE = re.compile(
+    r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
+    re.I,
+)
+_BOT_SAFE_MEMORY_EXACT_DETAIL_RE = re.compile(
+    r"(?:"
+    r"\b20\d{2}\s*/\s*\d{2}\b"
+    r"|\b\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}\b"
+    r"|\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"
+    r"|\b\d{1,3}(?:[\s\u00a0]\d{3})+(?:\s*(?:₽|руб\.?|рублей|рубля))?"
+    r"|\b\d+(?:[,.]\d+)?\s*%"
+    r"|\b\d+\s*(?:₽|руб\.?|рублей|рубля)\b"
+    r")",
+    re.I,
+)
+_BOT_SAFE_PERSON_CONTEXT_RE = re.compile(
+    r"\b(?:менеджер|куратор|преподаватель|реб[её]н(?:ок|ка|ку)?|сын(?:а)?|доч(?:ь|ка|ку|ери)?|"
+    r"ученик(?:а)?|ученица|фио|зовут|имя)\s*[:—-]?\s*"
+    r"[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,}){0,2}",
+    re.I,
+)
 
 DIRECT_PATH_REAL_MANAGER_GOLD_PACK_PATH = (
     Path(__file__).resolve().parents[4]
@@ -182,12 +208,39 @@ def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None)
         aliases=("retriever_model_driven", "retriever_model_driven_enabled"),
     )
 
+def _direct_path_known_slots_next_step_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _pilot_profile_default_on_flag_enabled(
+        context,
+        DIRECT_PATH_KNOWN_SLOTS_NEXT_STEP_PROMPT_ENV,
+        aliases=(
+            "direct_path_known_slots_next_step_prompt",
+            "known_slots_next_step_prompt",
+            "known_slots_no_reask_prompt",
+        ),
+    )
+
 def _direct_path_answerability_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _answerability_shadow_enabled(context)
 
 
 def _retriever_need_declaration_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _retriever_need_shadow_enabled(context) or _retriever_model_driven_enabled(context)
+
+
+def _bot_safe_crm_context_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    aliases = (
+        "bot_safe_crm_context",
+        "bot_safe_crm_context_enabled",
+        "bot_safe_summary_context",
+        "bot_safe_summary_context_enabled",
+    )
+    if isinstance(context, Mapping):
+        for key in (BOT_SAFE_CRM_CONTEXT_ENV, *aliases):
+            if key in context:
+                return _truthy_value(context.get(key))
+    if BOT_SAFE_CRM_CONTEXT_ENV in os.environ:
+        return _truthy_value(os.getenv(BOT_SAFE_CRM_CONTEXT_ENV))
+    return _direct_path_known_slots_next_step_prompt_enabled(context)
 
 def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
@@ -301,6 +354,148 @@ def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]],
         for idx, value in enumerate(snippets, 1):
             _direct_path_add_legacy_fact(items, f"snippet:{idx}", value, active_brand=active_brand)
     return dict(list(items.items())[:limit])
+
+
+def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *, limit: int = 3) -> tuple[Mapping[str, Any], ...]:
+    if not _bot_safe_crm_context_enabled(context) or not isinstance(context, Mapping):
+        return ()
+    active_brand = _active_brand(context)
+    if active_brand not in {"foton", "unpk"}:
+        return ()
+    containers: list[Any] = []
+    timeline_context = context.get("timeline_context")
+    if isinstance(timeline_context, Mapping):
+        containers.append(timeline_context)
+    read_only_context = context.get("read_only_customer_context")
+    if isinstance(read_only_context, Mapping):
+        nested_timeline = read_only_context.get("timeline_context")
+        if isinstance(nested_timeline, Mapping):
+            containers.append(nested_timeline)
+        containers.append(read_only_context)
+    result: list[Mapping[str, Any]] = []
+    for container in containers:
+        bot_context = container.get("bot_context") if isinstance(container, Mapping) else None
+        if not isinstance(bot_context, Mapping):
+            continue
+        if bot_context.get("allowed_only") is not True:
+            continue
+        raw_items = bot_context.get("items")
+        if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes, bytearray)):
+            continue
+        for item in raw_items:
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("allowed_for_bot") is not True or item.get("requires_manager_review") is True:
+                continue
+            if str(item.get("chunk_type") or "").strip().casefold() != "bot_safe_summary":
+                continue
+            tags = {str(tag or "").strip().casefold() for tag in item.get("relevance_tags") or ()}
+            if not _direct_path_bot_safe_item_visible(tags, active_brand=active_brand):
+                continue
+            text = str(item.get("summary") or item.get("text") or "").strip()
+            if not text or _direct_path_bot_safe_text_has_pii(text):
+                continue
+            result.append(
+                {
+                    "chunk_type": "bot_safe_summary",
+                    "text": _direct_path_trim_context_text(text, 700),
+                    "event_at": str(item.get("event_at") or "").strip(),
+                    "next_step_status": _direct_path_bot_safe_next_step_status(item),
+                    "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand, "unknown") if tag in tags],
+                }
+            )
+            if len(result) >= max(1, int(limit or 3)):
+                return tuple(result)
+    return tuple(result)
+
+
+def _direct_path_bot_safe_next_step_status(item: Mapping[str, Any]) -> str:
+    status = str(item.get("next_step_status") or "").strip().casefold()
+    if not status:
+        metadata = item.get("metadata")
+        if isinstance(metadata, Mapping):
+            next_step = metadata.get("next_step")
+            if isinstance(next_step, Mapping):
+                status = str(next_step.get("status") or "").strip().casefold()
+    return status if status in {"active", "needs_manager_review", "empty"} else ""
+
+
+def _direct_path_bot_safe_item_visible(tags: set[str], *, active_brand: str) -> bool:
+    if "bot_safe" not in tags:
+        return False
+    known_brand_tags = tags & {"foton", "unpk"}
+    if known_brand_tags - {active_brand}:
+        return False
+    return active_brand in tags or "unknown" in tags
+
+
+def _direct_path_bot_safe_text_has_pii(text: str) -> bool:
+    return bool(
+        _A2_PHONE_RE.search(text)
+        or _CLIENT_EMAIL_RE.search(text)
+        or _BOT_SAFE_SERVICE_ID_RE.search(text)
+        or _BOT_SAFE_PERSON_CONTEXT_RE.search(text)
+    )
+
+
+def _direct_path_trim_context_text(text: str, limit: int) -> str:
+    value = " ".join(str(text or "").split()).strip()
+    return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _direct_path_bot_safe_memory_prompt_text(text: str) -> str:
+    value = _direct_path_trim_context_text(text, 700)
+    return _BOT_SAFE_MEMORY_EXACT_DETAIL_RE.sub("<точная деталь из памяти скрыта>", value)
+
+
+def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
+    if not _direct_path_known_slots_next_step_prompt_enabled(context):
+        return ""
+    items = _direct_path_bot_safe_context_items(context)
+    if not items:
+        return ""
+    statuses = {str(item.get("next_step_status") or "").strip().casefold() for item in items}
+    has_unconfirmed_step = bool(statuses & {"needs_manager_review", "empty"})
+    lines = [
+        "Безопасная выжимка клиента: это разрешённая выжимка истории по активному бренду. "
+        "Используй её только для продолжения диалога, понимания уже обсуждённого и следующего шага. "
+        "Цены, даты и условия называй только из блока «Факты по вашему вопросу». "
+        "Числа, даты, проценты, цены, расписание и адреса из этой выжимки НЕ называй клиенту как факт: "
+        "если такая деталь нужна, бери её только из блока «Факты по вашему вопросу», а если её там нет — предложи уточнить. "
+        "Память используй как нить разговора: «обсуждали расписание», без точных чисел из памяти. "
+        "Не раскрывай клиенту, что данные взяты из CRM/истории/базы.",
+    ]
+    if "active" in statuses:
+        lines.append("Если статус следующего шага «active», продолжай эту нить и называй шаг без лишних оговорок.")
+    if has_unconfirmed_step:
+        lines.append(
+            "Если статус следующего шага «needs_manager_review» или «empty», следующий шаг НЕ подтверждён: "
+            "не утверждай его клиенту, предложи уточнить с менеджером. "
+            "Датированную историю с таким статусом подавай как прежние заметки: «по прежним заметкам, актуальность уточню»."
+        )
+    for idx, item in enumerate(items, 1):
+        text = _direct_path_bot_safe_memory_prompt_text(str(item.get("text") or "").strip())
+        event_at = str(item.get("event_at") or "").strip()
+        suffix = f" ({event_at[:10]})" if event_at else ""
+        status = str(item.get("next_step_status") or "").strip().casefold()
+        status_suffix = f" [статус следующего шага: {status}]" if status else ""
+        lines.append(f"{idx}. {text}{suffix}{status_suffix}")
+    return "\n".join(lines)
+
+
+def _direct_path_bot_safe_context_trace(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not _direct_path_known_slots_next_step_prompt_enabled(context):
+        return {"enabled": False, "reason": "known_slots_next_step_prompt_flag_off"}
+    if not _bot_safe_crm_context_enabled(context):
+        return {"enabled": False, "reason": "bot_safe_crm_context_flag_off"}
+    items = _direct_path_bot_safe_context_items(context)
+    return {
+        "enabled": True,
+        "visible_items": len(items),
+        "active_brand": _active_brand(context),
+        "source": "read_only_customer_context.timeline_context.bot_context",
+        "next_step_statuses": [str(item.get("next_step_status") or "") for item in items if str(item.get("next_step_status") or "")],
+    }
 
 DIRECT_PATH_CATEGORY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "pricing": ("pricing", "price", "стоим", "цен", "дорог", "оплат", "рассроч", "долями", "скидк", "помесяч"),
@@ -1413,7 +1608,10 @@ def _direct_path_prompt_known_slots(context: Optional[Mapping[str, Any]]) -> dic
             }
         return result
     slots = _direct_path_known_slots(context)
-    if not _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV):
+    if not (
+        _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV)
+        or _direct_path_known_slots_next_step_prompt_enabled(context)
+    ):
         return slots
     return _presale_prompt_safe_mapping(slots)
 
@@ -1449,6 +1647,199 @@ def _presale_prompt_safe_dialogue_text(text: str) -> str:
     )
     value = _CLIENT_PARENT_IDENTITY_PROMPT_RE.sub(lambda m: f"{m.group('prefix')}[данные у менеджера]", value)
     return _normalize_output_sanitizer_text(value)
+
+_DIRECT_PATH_QUALIFICATION_SLOT_LABELS: Mapping[str, str] = {
+    "class": "класс",
+    "course_subject": "предмет",
+    "format": "формат",
+    "grade": "класс",
+    "learning_goal": "цель",
+    "level": "уровень",
+    "modality": "формат",
+    "product": "продукт",
+    "product_family": "продукт",
+    "subject": "предмет",
+    "training_format": "формат",
+}
+
+_DIRECT_PATH_QUALIFICATION_SLOT_CANONICAL: Mapping[str, str] = {
+    "class": "grade",
+    "course_subject": "subject",
+    "modality": "format",
+    "training_format": "format",
+}
+
+_DIRECT_PATH_QUALIFICATION_SLOTS = frozenset({"grade", "subject", "format"})
+_DIRECT_PATH_QUESTIONNAIRE_GOLD_TOPICS = frozenset({"course_pick"})
+
+def _direct_path_canonical_slot_key(key: object) -> str:
+    normalized = str(key or "").strip().casefold()
+    return _DIRECT_PATH_QUALIFICATION_SLOT_CANONICAL.get(normalized, normalized)
+
+
+def _direct_path_slot_label(key: str) -> str:
+    return _DIRECT_PATH_QUALIFICATION_SLOT_LABELS.get(key, key)
+
+
+def _direct_path_safe_slot_value_for_instruction(key: object, value: Any) -> str:
+    if isinstance(value, Mapping) and "value" in value:
+        value = value.get("value")
+    safe_value = _presale_prompt_safe_slot_value(key, value)
+    if isinstance(safe_value, (Mapping, list, tuple, set)):
+        return ""
+    return " ".join(str(safe_value or "").split()).strip()
+
+
+def _direct_path_merge_instruction_slots(target: dict[str, tuple[str, str]], source: Any) -> None:
+    if not isinstance(source, Mapping):
+        return
+    for raw_key, raw_value in source.items():
+        key = _direct_path_canonical_slot_key(raw_key)
+        if not key or not _presale_prompt_safe_key(key):
+            continue
+        value = _direct_path_safe_slot_value_for_instruction(key, raw_value)
+        if not value:
+            continue
+        target[key] = (_direct_path_slot_label(key), value)
+
+
+def _direct_path_prompt_instruction_slot_map(context: Optional[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    result: dict[str, tuple[str, str]] = {}
+    _direct_path_merge_instruction_slots(result, _direct_path_prompt_known_slots(context))
+    if not isinstance(context, Mapping):
+        return result
+    containers: list[Any] = [
+        context.get("conversation_intent_plan"),
+        context.get("planner_intent"),
+        context.get("answer_contract"),
+        context.get("dialogue_memory_view"),
+    ]
+    for container in containers:
+        if not isinstance(container, Mapping):
+            continue
+        _direct_path_merge_instruction_slots(result, container.get("known_slots"))
+        _direct_path_merge_instruction_slots(result, container.get("slots"))
+    return result
+
+
+def _direct_path_prompt_do_not_reask_keys(context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
+    if not isinstance(context, Mapping):
+        return ()
+    keys: list[str] = []
+    for container in (
+        context,
+        context.get("conversation_intent_plan"),
+        context.get("planner_intent"),
+        context.get("answer_contract"),
+        context.get("dialogue_memory_view"),
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        raw = container.get("do_not_reask_slots") or container.get("do_not_ask_again")
+        if isinstance(raw, str):
+            keys.append(raw)
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            keys.extend(str(item or "") for item in raw)
+    result: list[str] = []
+    for key in keys:
+        canonical = _direct_path_canonical_slot_key(key)
+        if canonical and _presale_prompt_safe_key(canonical) and canonical not in result:
+            result.append(canonical)
+    return tuple(result)
+
+
+def _direct_path_known_slots_instruction_line(context: Optional[Mapping[str, Any]]) -> str:
+    slots = _direct_path_prompt_instruction_slot_map(context)
+    do_not_reask = _direct_path_prompt_do_not_reask_keys(context)
+    for key in do_not_reask:
+        slots.setdefault(key, (_direct_path_slot_label(key), ""))
+    if not slots:
+        return ""
+    ordered_keys = [key for key in ("grade", "subject", "format", "learning_goal", "level", "product", "product_family") if key in slots]
+    ordered_keys.extend(key for key in sorted(slots) if key not in ordered_keys)
+    parts = []
+    for key in ordered_keys:
+        label, value = slots[key]
+        parts.append(f"{label}: {value}" if value else label)
+    return "эти параметры клиент уже назвал — НЕ переспрашивай: " + "; ".join(parts) + "."
+
+
+def _direct_path_has_known_qualification_slot(context: Optional[Mapping[str, Any]]) -> bool:
+    slot_keys = set(_direct_path_prompt_instruction_slot_map(context))
+    slot_keys.update(_direct_path_prompt_do_not_reask_keys(context))
+    return bool(slot_keys & _DIRECT_PATH_QUALIFICATION_SLOTS)
+
+
+def _direct_path_context_next_step_statuses(context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
+    statuses: list[str] = []
+
+    def add(value: Any) -> None:
+        status = str(value or "").strip().casefold()
+        if status in {"active", "needs_manager_review", "empty", "closed"} and status not in statuses:
+            statuses.append(status)
+
+    for item in _direct_path_bot_safe_context_items(context):
+        add(item.get("next_step_status"))
+    if isinstance(context, Mapping):
+        for container in (
+            context,
+            context.get("timeline_context"),
+            context.get("read_only_customer_context"),
+        ):
+            if not isinstance(container, Mapping):
+                continue
+            add(container.get("next_step_status"))
+            raw_next_step = container.get("next_step_resolution") or container.get("next_step")
+            if isinstance(raw_next_step, Mapping):
+                add(raw_next_step.get("status"))
+    return tuple(statuses)
+
+
+def _direct_path_has_active_next_step(context: Optional[Mapping[str, Any]]) -> bool:
+    return "active" in _direct_path_context_next_step_statuses(context)
+
+
+def _direct_path_suppress_questionnaire_gold(context: Optional[Mapping[str, Any]]) -> bool:
+    return _direct_path_known_slots_next_step_prompt_enabled(context) and (
+        _direct_path_has_active_next_step(context) or _direct_path_has_known_qualification_slot(context)
+    )
+
+
+def _direct_path_known_slots_next_step_prompt_block(context: Optional[Mapping[str, Any]]) -> str:
+    if not _direct_path_known_slots_next_step_prompt_enabled(context):
+        return ""
+    lines = ["Приоритет уже известного контекста:"]
+    known_line = _direct_path_known_slots_instruction_line(context)
+    if known_line:
+        lines.append(f"- {known_line}")
+    lines.append(
+        "- Вопрос про класс/предмет/формат задавай ТОЛЬКО если он реально неизвестен И нет активного следующего шага. "
+        "Если параметр уже известен, анкета — ошибка: продвигай разговор по сути."
+    )
+    if _direct_path_has_active_next_step(context):
+        lines.append(
+            "- Если статус next_step active — ответ ДОЛЖЕН продвигать шаг ИЛИ прямо отвечать на вопрос клиента; "
+            "НЕ задавай квалифицирующих вопросов, если шаг известен."
+        )
+    else:
+        lines.append(
+            "- Если класс/предмет/формат действительно неизвестны и без них нельзя помочь, допустим один короткий уточняющий вопрос."
+        )
+    return "\n".join(lines)
+
+
+def _direct_path_known_slots_next_step_prompt_trace(context: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    if not _direct_path_known_slots_next_step_prompt_enabled(context):
+        return {"enabled": False}
+    slots = _direct_path_prompt_instruction_slot_map(context)
+    return {
+        "enabled": True,
+        "known_slot_keys": sorted(slots),
+        "do_not_reask_slots": list(_direct_path_prompt_do_not_reask_keys(context)),
+        "active_next_step": _direct_path_has_active_next_step(context),
+        "next_step_statuses": list(_direct_path_context_next_step_statuses(context)),
+        "questionnaire_gold_suppressed": _direct_path_suppress_questionnaire_gold(context),
+    }
 
 DIRECT_PATH_GOLD_TOPIC_KEYWORDS: Mapping[str, tuple[str, ...]] = {
     "camp": ("лагер", "лш", "лвш", "смен", "летн"),
@@ -1534,6 +1925,14 @@ def _direct_path_select_gold_real_examples(
     examples = [item for item in _load_direct_path_gold_real_examples() if str(item.get("brand") or "").casefold() == brand]
     if not examples:
         return ()
+    if _direct_path_suppress_questionnaire_gold(context):
+        examples = [
+            item
+            for item in examples
+            if str(item.get("topic") or "").strip().casefold() not in _DIRECT_PATH_QUESTIONNAIRE_GOLD_TOPICS
+        ]
+        if not examples:
+            return ()
     hints = _direct_path_topic_hints(client_message, context)
     scored: list[tuple[int, str, Mapping[str, Any]]] = []
     for item in examples:
@@ -1610,6 +2009,8 @@ def _build_direct_path_prompt(
     slots_block = json.dumps(slots, ensure_ascii=False, indent=2) if slots else "{}"
     memory = _direct_path_prompt_memory_view(context)
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
+    known_slots_next_step_block = _direct_path_known_slots_next_step_prompt_block(context)
+    bot_safe_context_block = _direct_path_bot_safe_context_prompt_block(context)
     action_proposal_instruction = ""
     action_proposal_field = ""
     p0_instruction = ""
@@ -1659,6 +2060,7 @@ def _build_direct_path_prompt(
         f"{assumed_scope_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
+        + (f"{known_slots_next_step_block}\n\n" if known_slots_next_step_block else "")
         + (f"{gold_block}\n\n" if gold_block else "")
         +
         "Факты по вашему вопросу:\n"
@@ -1667,6 +2069,8 @@ def _build_direct_path_prompt(
         f"{adjacent_block}\n\n"
         "Память диалога:\n"
         f"{memory_block}\n\n"
+        + (f"{bot_safe_context_block}\n\n" if bot_safe_context_block else "")
+        +
         "Известные слоты:\n"
         f"{slots_block}\n\n"
         "Последние реплики:\n"
@@ -1730,6 +2134,8 @@ def _direct_path_metadata(
         "rubric_enabled": _route_rubric_enabled(context),
         "rubric_regenerated": False,
         "rubric_reason": "",
+        "known_slots_next_step_prompt": dict(_direct_path_known_slots_next_step_prompt_trace(context)),
+        "bot_safe_crm_context": dict(_direct_path_bot_safe_context_trace(context)),
         "reason_class": str(reason_class or ""),
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),

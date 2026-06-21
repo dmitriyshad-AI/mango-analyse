@@ -253,6 +253,34 @@ class CustomerTimelineIngestionRun:
 
 
 @dataclass(frozen=True)
+class CustomerTimelineIngestionCursor:
+    tenant_id: str
+    source_system: str
+    last_cursor_ts: datetime
+    updated_at: datetime = field(default_factory=now_utc)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        tenant_id = normalize_key(self.tenant_id, "tenant_id")
+        source_system = normalize_key(self.source_system, "source_system")
+        require_timezone(self.last_cursor_ts, "last_cursor_ts")
+        require_timezone(self.updated_at, "updated_at")
+        object.__setattr__(self, "tenant_id", tenant_id)
+        object.__setattr__(self, "source_system", source_system)
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    def to_json_dict(self) -> Mapping[str, Any]:
+        return {
+            "schema_version": CUSTOMER_TIMELINE_SQLITE_SCHEMA_VERSION,
+            "tenant_id": self.tenant_id,
+            "source_system": self.source_system,
+            "last_cursor_ts": self.last_cursor_ts.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
 class CustomerTimelineAuditEntry:
     audit_id: str
     tenant_id: str
@@ -550,6 +578,15 @@ class CustomerTimelineSQLiteStore:
               UNIQUE(tenant_id, source_system, run_kind, idempotency_key)
             );
 
+            CREATE TABLE IF NOT EXISTS ingestion_cursors (
+              tenant_id TEXT NOT NULL,
+              source_system TEXT NOT NULL,
+              last_cursor_ts TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              metadata_json TEXT NOT NULL,
+              PRIMARY KEY (tenant_id, source_system)
+            );
+
             CREATE TABLE IF NOT EXISTS timeline_conflicts (
               conflict_id TEXT PRIMARY KEY,
               tenant_id TEXT NOT NULL,
@@ -626,6 +663,8 @@ class CustomerTimelineSQLiteStore:
               ON bot_context_chunks(tenant_id, allowed_for_bot, requires_manager_review);
             CREATE INDEX IF NOT EXISTS ix_ingestion_runs_source
               ON ingestion_runs(tenant_id, source_system, status, started_at);
+            CREATE INDEX IF NOT EXISTS ix_ingestion_cursors_updated
+              ON ingestion_cursors(tenant_id, updated_at);
             CREATE INDEX IF NOT EXISTS ix_timeline_conflicts_status
               ON timeline_conflicts(tenant_id, status, severity, created_at);
             CREATE INDEX IF NOT EXISTS ix_customer_id_mappings_old
@@ -1030,6 +1069,80 @@ class CustomerTimelineSQLiteStore:
         )
         self._upsert_ingestion_run(run, actor=actor)
         return run
+
+    def get_ingestion_cursor(self, tenant_id: str, source_system: str) -> Optional[CustomerTimelineIngestionCursor]:
+        tenant = normalize_key(tenant_id, "tenant_id")
+        source = normalize_key(source_system, "source_system")
+        row = self._fetch_one(
+            """
+            SELECT tenant_id, source_system, last_cursor_ts, updated_at, metadata_json
+            FROM ingestion_cursors
+            WHERE tenant_id = ? AND source_system = ?
+            """,
+            (tenant, source),
+        )
+        if row is None:
+            return None
+        return ingestion_cursor_from_row(row)
+
+    def upsert_ingestion_cursor(
+        self,
+        tenant_id: str,
+        source_system: str,
+        *,
+        last_cursor_ts: datetime,
+        metadata: Optional[Mapping[str, Any]] = None,
+        actor: str = "system",
+        ingestion_run_id: Optional[str] = None,
+    ) -> CustomerTimelineIngestionCursor:
+        self._ensure_writable()
+        tenant = normalize_key(tenant_id, "tenant_id")
+        source = normalize_key(source_system, "source_system")
+        require_timezone(last_cursor_ts, "last_cursor_ts")
+        updated_at = self._now()
+        cursor = CustomerTimelineIngestionCursor(
+            tenant_id=tenant,
+            source_system=source,
+            last_cursor_ts=last_cursor_ts,
+            updated_at=updated_at,
+            metadata=metadata or {},
+        )
+        existing = self.get_ingestion_cursor(tenant, source)
+        before_hash = stable_digest(existing.to_json_dict()) if existing else None
+        after_hash = stable_digest(cursor.to_json_dict())
+        self._con.execute(
+            """
+            INSERT INTO ingestion_cursors (
+              tenant_id, source_system, last_cursor_ts, updated_at, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(tenant_id, source_system) DO UPDATE SET
+              last_cursor_ts = excluded.last_cursor_ts,
+              updated_at = excluded.updated_at,
+              metadata_json = excluded.metadata_json
+            """,
+            (
+                tenant,
+                source,
+                last_cursor_ts.isoformat(),
+                updated_at.isoformat(),
+                json_dumps(cursor.to_json_dict()),
+            ),
+        )
+        self._append_audit_log(
+            tenant_id=tenant,
+            action="ingestion_cursor_updated" if existing else "ingestion_cursor_created",
+            entity_type="ingestion_cursor",
+            entity_id=f"{tenant}:{source}",
+            actor=actor,
+            ingestion_run_id=ingestion_run_id,
+            before_hash=before_hash,
+            after_hash=after_hash,
+            metadata={"source_system": source},
+            now=updated_at,
+        )
+        self._commit()
+        return cursor
 
     def record_conflict(
         self,
@@ -1518,6 +1631,24 @@ class CustomerTimelineSQLiteStore:
             (*params, page_limit + 1, offset),
         ).fetchall()
         return page_result(rows, limit=page_limit, offset=offset)
+
+    def list_ingestion_cursors(self, tenant_id: Optional[str] = None) -> tuple[Mapping[str, Any], ...]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id is not None:
+            clauses.append("tenant_id = ?")
+            params.append(normalize_key(tenant_id, "tenant_id"))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._con.execute(
+            f"""
+            SELECT tenant_id, source_system, last_cursor_ts, updated_at, metadata_json
+            FROM ingestion_cursors
+            {where}
+            ORDER BY tenant_id, source_system
+            """,
+            tuple(params),
+        ).fetchall()
+        return tuple(cursor.to_json_dict() for cursor in (ingestion_cursor_from_row(row) for row in rows))
 
     def list_audit_log(
         self,
@@ -2403,6 +2534,8 @@ class CustomerTimelineSQLiteStore:
             params.append(int(bool(allowed_for_bot)))
 
     def _table_count(self, table_name: str) -> int:
+        if self._fetch_one("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)) is None:
+            return 0
         return self._scalar_int(f"SELECT COUNT(*) FROM {table_name}")
 
     def _scalar_int(self, query: str, params: Sequence[Any] = ()) -> int:
@@ -2426,6 +2559,7 @@ REQUIRED_TABLES = (
     "derived_signals",
     "bot_context_chunks",
     "ingestion_runs",
+    "ingestion_cursors",
     "timeline_conflicts",
     "customer_id_mappings",
     "audit_log",
@@ -2537,6 +2671,18 @@ def ingestion_run_from_json(payload: Mapping[str, Any]) -> CustomerTimelineInges
         output_ref=payload.get("output_ref"),
         error=payload.get("error"),
         metadata=payload.get("metadata") or {},
+    )
+
+
+def ingestion_cursor_from_row(row: sqlite3.Row) -> CustomerTimelineIngestionCursor:
+    payload = json_loads(str(row["metadata_json"] or "{}"))
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+    return CustomerTimelineIngestionCursor(
+        tenant_id=str(row["tenant_id"]),
+        source_system=str(row["source_system"]),
+        last_cursor_ts=parse_datetime(str(row["last_cursor_ts"]), "last_cursor_ts"),
+        updated_at=parse_datetime(str(row["updated_at"]), "updated_at"),
+        metadata=metadata,
     )
 
 

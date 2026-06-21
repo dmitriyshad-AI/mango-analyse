@@ -84,6 +84,7 @@ class BotSafeSummaryBuildConfig:
     tenant_id: str = "foton"
     apply: bool = False
     limit: int | None = None
+    customer_ids: Sequence[str] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -135,7 +136,12 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     allowed_root = Path(config.allowed_root).expanduser()
     before_counts = _allowed_chunk_counts(db_path)
     existing_chunks = _existing_bot_safe_chunks(db_path, config.tenant_id)
-    customers = _customers_with_history(db_path, config.tenant_id, limit=config.limit)
+    customers = _customers_with_history(
+        db_path,
+        config.tenant_id,
+        limit=config.limit,
+        customer_ids=config.customer_ids,
+    )
     opportunities = _opportunities_by_customer(db_path, config.tenant_id)
     events = _events_by_customer(db_path, config.tenant_id)
     conflicts = _open_conflicts_by_customer(db_path, config.tenant_id)
@@ -433,10 +439,24 @@ def _existing_created_at(existing_chunk: Mapping[str, Any] | None) -> datetime |
     return _parse_iso_datetime(existing_chunk.get("created_at"))
 
 
-def _customers_with_history(db_path: Path, tenant_id: str, *, limit: int | None) -> tuple[str, ...]:
+def _customers_with_history(
+    db_path: Path,
+    tenant_id: str,
+    *,
+    limit: int | None,
+    customer_ids: Sequence[str] = (),
+) -> tuple[str, ...]:
     sql = """
         SELECT customer_id FROM customer_identities
         WHERE tenant_id = ?
+    """
+    params: list[Any] = [tenant_id]
+    selected_ids = tuple(dict.fromkeys(str(item).strip() for item in customer_ids if str(item).strip()))
+    if selected_ids:
+        placeholders = ",".join("?" for _ in selected_ids)
+        sql += f" AND customer_id IN ({placeholders})"
+        params.extend(selected_ids)
+    sql += """
           AND (
             EXISTS (SELECT 1 FROM customer_opportunities o WHERE o.tenant_id = customer_identities.tenant_id AND o.customer_id = customer_identities.customer_id)
             OR EXISTS (SELECT 1 FROM timeline_events e WHERE e.tenant_id = customer_identities.tenant_id AND e.customer_id = customer_identities.customer_id)
@@ -449,7 +469,7 @@ def _customers_with_history(db_path: Path, tenant_id: str, *, limit: int | None)
           )
         ORDER BY customer_id
     """
-    params: list[Any] = [tenant_id, BOT_SAFE_SUMMARY_CHUNK_TYPE]
+    params.append(BOT_SAFE_SUMMARY_CHUNK_TYPE)
     if limit is not None:
         sql += " LIMIT ?"
         params.append(int(limit))

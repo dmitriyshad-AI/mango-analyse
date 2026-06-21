@@ -117,6 +117,11 @@ def _select_probe_personas(
             if str(persona.get("brand") or "").casefold() == brand and persona.get("category") == "memory_rich":
                 selected.append(persona)
                 break
+    for persona in personas:
+        memory_measure = persona.get("memory_measure") if isinstance(persona.get("memory_measure"), Mapping) else {}
+        if memory_measure.get("source_brand") == "unknown" and persona.get("category") == "memory_unknown_source":
+            selected.append(persona)
+            break
     if include_dual:
         for persona in personas:
             if persona.get("category") == "memory_dual_brand_neg" and str(persona.get("brand") or "").casefold() in {"foton", "unpk"}:

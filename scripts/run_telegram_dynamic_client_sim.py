@@ -1909,6 +1909,11 @@ def build_bot_prompt_context(
     recent_slice = tuple(recent_messages[-10:])
     known_dialog = known_dialog_fields_from_client_messages([*recent_slice, f"Клиент: {client_message}"], active_brand=brand)
     crm_context = build_dynamic_bot_safe_crm_context(persona, active_brand=brand)
+    client_identity, memory_lookup = build_dynamic_client_identity_for_scenario(
+        persona,
+        brand=brand,
+        crm_context=crm_context,
+    )
     customer_summary = f"Динамический тестовый клиент: {persona.get('persona')}. Не раскрывать это клиенту."
     if crm_context.get("summary"):
         customer_summary = "\n".join((customer_summary, str(crm_context["summary"])))
@@ -1928,7 +1933,7 @@ def build_bot_prompt_context(
         active_brand=brand,
         rop_policy=rop_policy,
         recent_messages=recent_slice,
-        client_identity={"channel": "dynamic_sim", "channel_thread_id": str(persona.get("dialog_id") or ""), "channel_user_id": "dynamic_sim"},
+        client_identity=client_identity,
         customer_summary=customer_summary,
         timeline_context=crm_context.get("timeline_context") if isinstance(crm_context.get("timeline_context"), Mapping) else None,
         known_slots=known_dialog,
@@ -1980,8 +1985,72 @@ def build_bot_prompt_context(
         "dialog_id": persona.get("dialog_id"),
         "do_not_disclose_simulation": True,
         "context_parity_checked": True,
+        "memory_lookup": memory_lookup,
     }
     return payload
+
+
+def build_dynamic_client_identity_for_scenario(
+    persona: Mapping[str, Any],
+    *,
+    brand: str,
+    crm_context: Mapping[str, Any] | None = None,
+) -> tuple[Mapping[str, str], Mapping[str, Any]]:
+    """Use service ids from memory scenarios without exposing phone/email as a channel id."""
+    dialog_id = str(persona.get("dialog_id") or "").strip()
+    memory_enabled = bot_safe_crm_context_enabled()
+    source = "dynamic_sim"
+    channel_user_id = "dynamic_sim"
+    if memory_enabled:
+        customer_id = _first_present_text(
+            persona,
+            (
+                "bot_safe_customer_id",
+                "customer_id",
+                "timeline_customer_id",
+                "customer_timeline_id",
+            ),
+        )
+        amo_lead_id = _first_present_text(persona, ("amo_lead_id", "lead_id"))
+        amo_contact_id = _first_present_text(persona, ("amo_contact_id", "contact_id"))
+        if customer_id:
+            channel_user_id = customer_id
+            source = "customer_id"
+        elif amo_lead_id:
+            channel_user_id = f"amo_lead:{amo_lead_id}"
+            source = "amo_lead_id"
+        elif amo_contact_id:
+            channel_user_id = f"amo_contact:{amo_contact_id}"
+            source = "amo_contact_id"
+    client_identity = {
+        "channel": "dynamic_sim",
+        "channel_thread_id": dialog_id,
+        "channel_user_id": channel_user_id,
+    }
+    lookup = {
+        "enabled": bool(memory_enabled),
+        "source": source,
+        "active_brand": str(brand or "unknown"),
+        "resolved": bool(crm_context and crm_context.get("found")),
+        "summary_chars": len(str((crm_context or {}).get("summary") or "")),
+        "timeline_items": _bot_safe_timeline_item_count(crm_context),
+    }
+    return client_identity, lookup
+
+
+def _bot_safe_timeline_item_count(crm_context: Mapping[str, Any] | None) -> int:
+    if not isinstance(crm_context, Mapping):
+        return 0
+    timeline_context = crm_context.get("timeline_context")
+    if not isinstance(timeline_context, Mapping):
+        return 0
+    bot_context = timeline_context.get("bot_context")
+    if not isinstance(bot_context, Mapping):
+        return 0
+    items = bot_context.get("items")
+    if isinstance(items, Sequence) and not isinstance(items, (str, bytes, bytearray)):
+        return len(items)
+    return 0
 
 
 def build_dynamic_bot_safe_crm_context(persona: Mapping[str, Any], *, active_brand: str) -> Mapping[str, Any]:
@@ -2042,11 +2111,37 @@ def build_client_prompt(
         "Правила симулятора:\n"
         f"{json.dumps(simulator_spec, ensure_ascii=False, indent=2)}\n\n"
         "Персона:\n"
-        f"{json.dumps(persona, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(_persona_for_client_prompt(persona), ensure_ascii=False, indent=2)}\n\n"
         "Текущий транскрипт:\n"
         f"{transcript or '(диалог ещё не начался)'}\n\n"
         "Сгенерируй следующую короткую реплику клиента. Если цель достигнута или бот явно не помогает, stop=true."
     )
+
+
+_DYNAMIC_SIM_RESOLVER_PERSONA_KEYS = frozenset(
+    {
+        "bot_safe_customer_id",
+        "customer_id",
+        "timeline_customer_id",
+        "customer_timeline_id",
+        "amo_lead_id",
+        "lead_id",
+        "amo_contact_id",
+        "contact_id",
+        "phone",
+        "phone_ref",
+        "phone_sha256",
+        "memory_measure",
+    }
+)
+
+
+def _persona_for_client_prompt(persona: Mapping[str, Any]) -> Mapping[str, Any]:
+    return {
+        str(key): value
+        for key, value in persona.items()
+        if str(key) not in _DYNAMIC_SIM_RESOLVER_PERSONA_KEYS
+    }
 
 
 def normalize_judge_prompt_version(value: object) -> str:

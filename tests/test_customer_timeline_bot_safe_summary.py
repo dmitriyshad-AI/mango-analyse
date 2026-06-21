@@ -126,6 +126,14 @@ def _load_bot_safe_text(db_path: Path) -> str:
     return row[0]
 
 
+def _load_bot_safe_records(db_path: Path) -> list[tuple[str, str]]:
+    with sqlite3.connect(db_path) as con:
+        return con.execute(
+            "SELECT source_ref, record_json FROM bot_context_chunks WHERE chunk_type = ? ORDER BY source_ref",
+            (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
+        ).fetchall()
+
+
 def test_bot_safe_summary_uses_structural_fields_redacts_title_and_keeps_raw_blocked(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()
@@ -179,7 +187,7 @@ def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) ->
     )
     first = build_bot_safe_summaries(config)
     second = build_bot_safe_summaries(config)
-    expected_id = expected_bot_safe_chunk_id(tenant_id="foton", customer_id=customer.customer_id)
+    expected_id = expected_bot_safe_chunk_id(tenant_id="foton", customer_id=customer.customer_id, brand="foton")
 
     assert first.created == 1
     assert second.created == 0
@@ -190,10 +198,10 @@ def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) ->
             "SELECT chunk_id, source_ref, source_system, allowed_for_bot, requires_manager_review FROM bot_context_chunks WHERE chunk_type = ?",
             (BOT_SAFE_SUMMARY_CHUNK_TYPE,),
         ).fetchall()
-    assert rows == [(expected_id, f"botsafe:{customer.customer_id}", BOT_SAFE_SUMMARY_SOURCE_SYSTEM, 1, 0)]
+    assert rows == [(expected_id, f"botsafe:{customer.customer_id}:foton", BOT_SAFE_SUMMARY_SOURCE_SYSTEM, 1, 0)]
 
 
-def test_bot_safe_summary_cross_brand_fails_closed_without_brand_wording(tmp_path: Path) -> None:
+def test_bot_safe_summary_cross_brand_customer_gets_separate_brand_scoped_chunks(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()
     store.upsert_customer(customer)
@@ -209,11 +217,20 @@ def test_bot_safe_summary_cross_brand_fails_closed_without_brand_wording(tmp_pat
             apply=True,
         )
     )
-    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+    rows = _load_bot_safe_records(tmp_path / "customer_timeline.sqlite")
 
-    assert report.brand_counts["unknown"] == 1
-    assert "Бренд: Фотон" not in dumped
-    assert "Бренд: УНПК" not in dumped
+    assert report.brand_counts["foton"] == 1
+    assert report.brand_counts["unpk"] == 1
+    assert [row[0] for row in rows] == [
+        f"botsafe:{customer.customer_id}:foton",
+        f"botsafe:{customer.customer_id}:unpk",
+    ]
+    foton_record = rows[0][1]
+    unpk_record = rows[1][1]
+    assert "Бренд: Фотон" in foton_record
+    assert "Бренд: УНПК" not in foton_record
+    assert "Бренд: УНПК" in unpk_record
+    assert "Бренд: Фотон" not in unpk_record
 
 
 def test_bot_safe_summary_drops_other_brand_title_for_known_customer_brand(tmp_path: Path) -> None:

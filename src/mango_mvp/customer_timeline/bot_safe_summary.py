@@ -110,14 +110,15 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
     opportunities = _opportunities_by_customer(db_path, config.tenant_id)
     events = _events_by_customer(db_path, config.tenant_id)
     drafts = [
-        _build_customer_draft(
+        draft
+        for customer_id in customers
+        for draft in _build_customer_brand_drafts(
             tenant_id=config.tenant_id,
             customer_id=customer_id,
-            opportunities=opportunities.get(customer_id, ()),
-            events=events.get(customer_id, ()),
-            existing_chunk=existing_chunks[customer_id].record if customer_id in existing_chunks else None,
+            all_opportunities=opportunities.get(customer_id, ()),
+            all_events=events.get(customer_id, ()),
+            existing_chunks=existing_chunks,
         )
-        for customer_id in customers
     ]
 
     created = updated = duplicate = skipped = 0
@@ -125,7 +126,7 @@ def build_bot_safe_summaries(config: BotSafeSummaryBuildConfig) -> BotSafeSummar
         with CustomerTimelineSQLiteStore(db_path, allowed_root=allowed_root) as store:
             with store.bulk_write():
                 for draft in drafts:
-                    existing = existing_chunks.get(draft.customer_id)
+                    existing = existing_chunks.get(draft.chunk.source_ref or "")
                     if existing is not None and existing.record_hash == _chunk_record_hash(draft.chunk):
                         duplicate += 1
                         continue
@@ -172,17 +173,19 @@ def _build_customer_draft(
     *,
     tenant_id: str,
     customer_id: str,
+    brand: str,
     opportunities: Sequence[Mapping[str, Any]],
     events: Sequence[Mapping[str, Any]],
     existing_chunk: Mapping[str, Any] | None,
 ) -> CustomerBotSafeSummaryDraft:
-    brand, brand_source = _resolve_customer_brand(opportunities)
+    brand_source = _brand_source(opportunities, events, brand=brand)
     status = _latest_status(opportunities)
     interest = _resolve_interest(opportunities, brand=brand)
     next_step = resolve_customer_next_step(events, customer_id=customer_id)
     text = _render_safe_text(brand=brand, status=status, interest=interest, next_step=next_step)
     latest_at = _latest_event_at(opportunities, events)
     created_at = _existing_created_at(existing_chunk) or now_utc()
+    source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
     chunk = BotContextChunk(
         tenant_id=tenant_id,
         customer_id=customer_id,
@@ -190,7 +193,7 @@ def _build_customer_draft(
         text=text,
         summary=text,
         source_system=BOT_SAFE_SUMMARY_SOURCE_SYSTEM,
-        source_ref=f"botsafe:{customer_id}",
+        source_ref=source_ref,
         event_at=latest_at,
         freshness_score=1.0,
         relevance_tags=("bot_safe", "structured", brand),
@@ -217,6 +220,34 @@ def _build_customer_draft(
     )
 
 
+def _build_customer_brand_drafts(
+    *,
+    tenant_id: str,
+    customer_id: str,
+    all_opportunities: Sequence[Mapping[str, Any]],
+    all_events: Sequence[Mapping[str, Any]],
+    existing_chunks: Mapping[str, ExistingBotSafeChunk],
+) -> tuple[CustomerBotSafeSummaryDraft, ...]:
+    drafts: list[CustomerBotSafeSummaryDraft] = []
+    brands = _customer_summary_brands(all_opportunities, all_events)
+    include_unbranded_events = len([brand for brand in brands if brand in KNOWN_BRANDS]) == 1
+    for brand in brands:
+        opportunities = _opportunities_for_brand(all_opportunities, brand=brand)
+        events = _events_for_brand(all_events, brand=brand, include_unbranded=include_unbranded_events)
+        source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
+        drafts.append(
+            _build_customer_draft(
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                brand=brand,
+                opportunities=opportunities,
+                events=events,
+                existing_chunk=existing_chunks[source_ref].record if source_ref in existing_chunks else None,
+            )
+        )
+    return tuple(drafts)
+
+
 def _render_safe_text(*, brand: str, status: str, interest: str, next_step: NextStepResolution) -> str:
     parts: list[str] = []
     if brand in KNOWN_BRANDS:
@@ -227,18 +258,61 @@ def _render_safe_text(*, brand: str, status: str, interest: str, next_step: Next
     return " ".join(parts)
 
 
-def _resolve_customer_brand(opportunities: Sequence[Mapping[str, Any]]) -> tuple[str, str]:
-    brands: set[str] = set()
-    for opportunity in opportunities:
-        product_context = _mapping(opportunity.get("product_context"))
-        brand = _normalize_brand(product_context.get("brand"))
-        if brand in KNOWN_BRANDS:
-            brands.add(brand)
-    if len(brands) == 1:
-        return next(iter(brands)), "customer_opportunities.product_context.brand"
-    if len(brands) > 1:
-        return "unknown", "customer_opportunities.product_context.brand.cross_brand_fail_closed"
-    return "unknown", "customer_opportunities.product_context.brand.missing"
+def _customer_summary_brands(
+    opportunities: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    brands = {
+        brand
+        for brand in (
+            *(_opportunity_brand(opportunity) for opportunity in opportunities),
+            *(_event_brand(event) for event in events),
+        )
+        if brand in KNOWN_BRANDS
+    }
+    if brands:
+        return tuple(sorted(brands))
+    return ("unknown",)
+
+
+def _opportunities_for_brand(opportunities: Sequence[Mapping[str, Any]], *, brand: str) -> tuple[Mapping[str, Any], ...]:
+    if brand not in KNOWN_BRANDS:
+        return tuple(opportunities)
+    return tuple(opportunity for opportunity in opportunities if _opportunity_brand(opportunity) == brand)
+
+
+def _events_for_brand(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    brand: str,
+    include_unbranded: bool = False,
+) -> tuple[Mapping[str, Any], ...]:
+    if brand not in KNOWN_BRANDS:
+        return tuple(event for event in events if _event_brand(event) not in KNOWN_BRANDS)
+    return tuple(
+        event
+        for event in events
+        if _event_brand(event) == brand or (include_unbranded and _event_brand(event) not in KNOWN_BRANDS)
+    )
+
+
+def _brand_source(opportunities: Sequence[Mapping[str, Any]], events: Sequence[Mapping[str, Any]], *, brand: str) -> str:
+    if brand in KNOWN_BRANDS and any(_opportunity_brand(opportunity) == brand for opportunity in opportunities):
+        return "customer_opportunities.product_context.brand"
+    if brand in KNOWN_BRANDS and any(_event_brand(event) == brand for event in events):
+        return "timeline_events.metadata_or_record.brand"
+    return "unknown"
+
+
+def _opportunity_brand(opportunity: Mapping[str, Any]) -> str:
+    product_context = _mapping(opportunity.get("product_context"))
+    return _normalize_brand(product_context.get("brand"))
+
+
+def _event_brand(event: Mapping[str, Any]) -> str:
+    metadata = _mapping(event.get("metadata"))
+    record = _mapping(event.get("record"))
+    return _normalize_brand(metadata.get("brand") or record.get("brand"))
 
 
 def _resolve_interest(opportunities: Sequence[Mapping[str, Any]], *, brand: str) -> str:
@@ -369,14 +443,17 @@ def _existing_bot_safe_chunks(db_path: Path, tenant_id: str) -> dict[str, Existi
         con.row_factory = sqlite3.Row
         rows = con.execute(
             """
-            SELECT customer_id, record_hash, record_json
+            SELECT source_ref, record_hash, record_json
             FROM bot_context_chunks
             WHERE tenant_id = ? AND chunk_type = ? AND source_system = ?
             """,
             (tenant_id, BOT_SAFE_SUMMARY_CHUNK_TYPE, BOT_SAFE_SUMMARY_SOURCE_SYSTEM),
         )
         for row in rows:
-            result[str(row["customer_id"])] = ExistingBotSafeChunk(
+            source_ref = str(row["source_ref"] or "")
+            if not source_ref:
+                continue
+            result[source_ref] = ExistingBotSafeChunk(
                 record=_json_mapping(row["record_json"]),
                 record_hash=str(row["record_hash"] or ""),
             )
@@ -389,7 +466,7 @@ def _dry_run_status_counts(
 ) -> tuple[int, int, int]:
     created = updated = duplicate = 0
     for draft in drafts:
-        existing = existing_chunks.get(draft.customer_id)
+        existing = existing_chunks.get(draft.chunk.source_ref or "")
         if not existing:
             created += 1
         elif existing.record_hash == _chunk_record_hash(draft.chunk):
@@ -540,11 +617,15 @@ def _count_values(values: Iterable[str]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def expected_bot_safe_chunk_id(*, tenant_id: str, customer_id: str) -> str:
+def _bot_safe_source_ref(*, customer_id: str, brand: str) -> str:
+    return f"botsafe:{customer_id}:{brand}"
+
+
+def expected_bot_safe_chunk_id(*, tenant_id: str, customer_id: str, brand: str = "unknown") -> str:
     return stable_chunk_id(
         tenant_id=tenant_id,
         customer_id=customer_id,
         chunk_type=BOT_SAFE_SUMMARY_CHUNK_TYPE,
-        source_ref=f"botsafe:{customer_id}",
+        source_ref=_bot_safe_source_ref(customer_id=customer_id, brand=brand),
         ordinal=0,
     )

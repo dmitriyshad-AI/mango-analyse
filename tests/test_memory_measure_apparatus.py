@@ -15,6 +15,7 @@ def test_memory_measure_scenario_payload_has_no_raw_pii_and_keeps_resolver_id(tm
         opportunities=1,
         statuses={"В работе"},
         brand_summaries={"foton": "Бренд: Фотон. Стадия: В работе. Интерес: онлайн. Следующий шаг: уточнить расписание."},
+        brand_next_steps={"foton": {"status": "active", "reason_code": "call_next_step", "source_channel": "Mango"}},
         amo_lead_id="5001",
         amo_contact_id="7001",
         phone_ref="sha256:abcdef1234567890",

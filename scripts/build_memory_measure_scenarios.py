@@ -34,14 +34,17 @@ class Candidate:
     opportunities: int = 0
     statuses: set[str] = field(default_factory=set)
     brand_summaries: dict[str, str] = field(default_factory=dict)
+    brand_next_steps: dict[str, Mapping[str, Any]] = field(default_factory=dict)
     amo_lead_id: str = ""
     amo_contact_id: str = ""
     phone_ref: str = ""
 
     def score(self, brand: str) -> tuple[int, int, int, str]:
         summary = self.brand_summaries.get(brand, "")
+        step_status = str((self.brand_next_steps.get(brand) or {}).get("status") or "")
         useful = 1 if _is_useful_summary(summary) else 0
-        return (useful, self.calls + self.emails + self.opportunities, len(summary), self.customer_id)
+        active_step = 1 if _is_measure_step_status(step_status) else 0
+        return (active_step, useful, self.calls + self.emails + self.opportunities, len(summary), self.customer_id)
 
     def rich_for_brand(self, brand: str) -> bool:
         return (
@@ -50,6 +53,18 @@ class Candidate:
             and self.opportunities > 0
             and brand in self.brand_summaries
             and _is_useful_summary(self.brand_summaries[brand])
+            and _is_measure_step_status(str((self.brand_next_steps.get(brand) or {}).get("status") or ""))
+        )
+
+    def dual_brand_neg_candidate(self) -> bool:
+        return (
+            self.calls > 0
+            and self.emails > 0
+            and self.opportunities > 0
+            and "foton" in self.brand_summaries
+            and "unpk" in self.brand_summaries
+            and _is_useful_summary(self.brand_summaries["foton"])
+            and _is_useful_summary(self.brand_summaries["unpk"])
         )
 
 
@@ -137,9 +152,13 @@ def load_candidates(timeline_db: Path) -> dict[str, Candidate]:
             text = " ".join(str(data.get("summary") or data.get("text") or "").split()).strip()
             if not text or find_raw_pii(text):
                 continue
+            next_step = data.get("metadata", {}).get("next_step") if isinstance(data.get("metadata"), Mapping) else {}
+            if not isinstance(next_step, Mapping):
+                next_step = {}
             for brand in KNOWN_BRANDS:
                 if brand in tags and brand not in item.brand_summaries:
                     item.brand_summaries[brand] = text
+                    item.brand_next_steps[brand] = dict(next_step)
         for row in conn.execute(
             """
             SELECT customer_id, link_type, link_value
@@ -173,33 +192,43 @@ def build_scenario_rows(
     rows: list[Mapping[str, Any]] = [simulator_spec_row(), judge_spec_row()]
     selected: set[tuple[str, str, str]] = set()
     brand_counts: dict[str, int] = {}
-    for brand in KNOWN_BRANDS:
-        pool = [item for item in candidates.values() if item.rich_for_brand(brand)]
-        pool.sort(key=lambda item: item.score(brand), reverse=True)
+    for source_brand in KNOWN_BRANDS:
+        pool = [item for item in candidates.values() if item.rich_for_brand(source_brand)]
+        pool.sort(key=lambda item: item.score(source_brand), reverse=True)
         picked = 0
         for item in pool:
             if any(item.customer_id == customer_id for customer_id, _brand, _kind in selected):
                 continue
-            rows.append(persona_row(item, brand=brand, index=len(rows) - 1, category="memory_rich"))
-            selected.add((item.customer_id, brand, "memory_rich"))
+            active_brand = _active_brand_for_source_brand(source_brand, picked)
+            category = "memory_unknown_source" if source_brand == "unknown" else "memory_rich"
+            rows.append(
+                persona_row(
+                    item,
+                    brand=active_brand,
+                    source_brand=source_brand,
+                    index=len(rows) - 1,
+                    category=category,
+                )
+            )
+            selected.add((item.customer_id, source_brand, category))
             picked += 1
             if picked >= per_brand:
                 break
-        brand_counts[brand] = picked
+        brand_counts[source_brand] = picked
 
     dual_rows: list[Mapping[str, Any]] = []
     if include_dual_neg:
         dual_pool = [
             item
             for item in candidates.values()
-            if item.rich_for_brand("foton") and item.rich_for_brand("unpk")
+            if item.dual_brand_neg_candidate()
         ]
         dual_pool.sort(key=lambda item: item.score("foton"), reverse=True)
         if dual_pool:
             item = dual_pool[0]
             dual_rows = [
-                persona_row(item, brand="foton", index=len(rows), category="memory_dual_brand_neg"),
-                persona_row(item, brand="unpk", index=len(rows) + 1, category="memory_dual_brand_neg"),
+                persona_row(item, brand="foton", source_brand="foton", index=len(rows), category="memory_dual_brand_neg"),
+                persona_row(item, brand="unpk", source_brand="unpk", index=len(rows) + 1, category="memory_dual_brand_neg"),
             ]
             rows.extend(dual_rows)
             selected.add((item.customer_id, "foton", "memory_dual_brand_neg"))
@@ -233,6 +262,8 @@ def build_scenario_rows(
                 "emails": row["memory_measure"]["counts"]["email_events"],
                 "opportunities": row["memory_measure"]["counts"]["opportunities"],
                 "bot_safe_brand_tags": row["memory_measure"]["bot_safe_brand_tags"],
+                "source_brand": row["memory_measure"]["source_brand"],
+                "next_step_status": row["memory_measure"]["next_step"]["status"],
             }
             for row in personas
         ],
@@ -277,12 +308,12 @@ def judge_spec_row() -> Mapping[str, Any]:
     }
 
 
-def persona_row(item: Candidate, *, brand: str, index: int, category: str) -> Mapping[str, Any]:
-    suffix = hashlib.sha256(f"{item.customer_id}:{brand}:{category}".encode("utf-8")).hexdigest()[:8]
+def persona_row(item: Candidate, *, brand: str, source_brand: str, index: int, category: str) -> Mapping[str, Any]:
+    suffix = hashlib.sha256(f"{item.customer_id}:{brand}:{source_brand}:{category}".encode("utf-8")).hexdigest()[:8]
     forbidden = ["Фотон"] if brand == "unpk" else ["УНПК", "МФТИ"] if brand == "foton" else []
     return {
         "type": "persona",
-        "dialog_id": f"memory_rich_{index:02d}_{brand}_{suffix}",
+        "dialog_id": f"memory_rich_{index:02d}_{brand}_{source_brand}_{suffix}",
         "brand": brand,
         "category": category,
         "persona": "родитель с уже существующей историей обращений",
@@ -319,8 +350,15 @@ def persona_row(item: Candidate, *, brand: str, index: int, category: str) -> Ma
                 "opportunities": item.opportunities,
             },
             "opportunity_statuses": sorted(item.statuses),
+            "source_brand": source_brand,
             "bot_safe_brand_tags": sorted(item.brand_summaries),
-            "active_brand_summary_chars": len(item.brand_summaries.get(brand, "")),
+            "active_brand_summary_chars": len(item.brand_summaries.get(source_brand, "")),
+            "next_step": {
+                "status": str((item.brand_next_steps.get(source_brand) or {}).get("status") or ""),
+                "reason_code": str((item.brand_next_steps.get(source_brand) or {}).get("reason_code") or ""),
+                "source_channel": str((item.brand_next_steps.get(source_brand) or {}).get("source_channel") or ""),
+                "source_event_at": str((item.brand_next_steps.get(source_brand) or {}).get("source_event_at") or ""),
+            },
             "raw_pii_in_scenario_text": False,
         },
     }
@@ -332,6 +370,17 @@ def _is_useful_summary(text: str) -> bool:
     empty_interest = "интерес: не определ" in normalized
     empty_step = "активный следующий шаг не найден" in normalized
     return bool(normalized.strip()) and not (empty_stage and empty_interest and empty_step)
+
+
+def _is_measure_step_status(status: str) -> bool:
+    return str(status or "").strip().casefold() in {"active", "needs_manager_review"}
+
+
+def _active_brand_for_source_brand(source_brand: str, picked_index: int) -> str:
+    source = str(source_brand or "").strip().casefold()
+    if source in {"foton", "unpk"}:
+        return source
+    return "foton" if picked_index % 2 == 0 else "unpk"
 
 
 def find_raw_pii(text: str) -> list[str]:

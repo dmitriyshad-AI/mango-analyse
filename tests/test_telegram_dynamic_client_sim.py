@@ -1248,6 +1248,7 @@ def test_dynamic_context_can_inject_bot_safe_summary_by_customer_id(monkeypatch,
     raw = json.dumps(context.get("read_only_customer_context"), ensure_ascii=False)
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in raw
     assert "УНПК: клиент интересовался выездной школой" not in raw
+    assert "next_step_status" in raw
     assert customer_id not in raw
     assert "botsafe:" not in raw
 

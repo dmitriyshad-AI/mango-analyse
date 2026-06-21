@@ -95,6 +95,7 @@ def test_context_builder_injects_only_bot_safe_crm_context_when_enabled(tmp_path
     raw = json.dumps(context.get("read_only_customer_context"), ensure_ascii=False)
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in raw
     assert "УНПК: клиент интересовался выездной школой" not in raw
+    assert "next_step_status" in raw
     assert customer_id not in raw
     assert "botsafe:" not in raw
     assert context["read_only_customer_context"]["timeline_context"]["safety"]["customer_profile_included"] is False

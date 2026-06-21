@@ -46,7 +46,14 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     assert customer_id not in raw
     assert "botsafe:" not in raw
     assert "chunk-foton" not in raw
+    assert "Отправить телефон менеджера" not in raw
+    assert "Спорный шаг не выводить" not in raw
     assert context["timeline_context"]["safety"]["customer_profile_included"] is False
+    items = context["timeline_context"]["bot_context"]["items"]
+    assert {item["text"]: item["next_step_status"] for item in items} == {
+        "Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание.": "active",
+        "Без бренда: клиент ранее уточнял удобный формат.": "needs_manager_review",
+    }
 
 
 def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(tmp_path: Path) -> None:
@@ -181,6 +188,7 @@ def _seed_bot_safe_timeline(
             relevance_tags=("bot_safe", "structured", "foton"),
             allowed_for_bot=True,
             requires_manager_review=False,
+            metadata={"next_step": {"status": "active", "display_text": "Отправить телефон менеджера +79991234567"}},
         ),
         BotContextChunk(
             tenant_id="foton",
@@ -195,6 +203,7 @@ def _seed_bot_safe_timeline(
             relevance_tags=("bot_safe", "structured", "unpk"),
             allowed_for_bot=True,
             requires_manager_review=False,
+            metadata={"next_step": {"status": "active"}},
         ),
         BotContextChunk(
             tenant_id="foton",
@@ -209,6 +218,7 @@ def _seed_bot_safe_timeline(
             relevance_tags=("bot_safe", "structured", "unknown"),
             allowed_for_bot=True,
             requires_manager_review=False,
+            metadata={"next_step": {"status": "needs_manager_review", "display_text": "Спорный шаг не выводить"}},
         ),
     ):
         store.upsert_bot_context_chunk(chunk)

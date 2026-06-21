@@ -184,6 +184,7 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
                 "chunk_type": BOT_SAFE_CHUNK_TYPE,
                 "text": _truncate(text, 700),
                 "event_at": _clean_text(item.get("event_at")),
+                "next_step_status": _next_step_status(item),
                 "freshness_score": item.get("freshness_score"),
                 "relevance_tags": [tag for tag in tags if tag in {"bot_safe", "structured", active_brand, "unknown"}],
                 "allowed_for_bot": True,
@@ -193,6 +194,17 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
         if len(result) >= max(1, int(limit or 3)):
             break
     return tuple(result)
+
+
+def _next_step_status(item: Mapping[str, Any]) -> str:
+    status = _clean_text(item.get("next_step_status")).casefold()
+    if not status:
+        metadata = item.get("metadata")
+        if isinstance(metadata, Mapping):
+            next_step = metadata.get("next_step")
+            if isinstance(next_step, Mapping):
+                status = _clean_text(next_step.get("status")).casefold()
+    return status if status in {"active", "needs_manager_review", "empty"} else ""
 
 
 def _item_visible_for_active_brand(tags: Sequence[str], *, active_brand: str) -> bool:

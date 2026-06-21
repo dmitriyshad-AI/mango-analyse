@@ -367,12 +367,24 @@ def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *,
                     "chunk_type": "bot_safe_summary",
                     "text": _direct_path_trim_context_text(text, 700),
                     "event_at": str(item.get("event_at") or "").strip(),
+                    "next_step_status": _direct_path_bot_safe_next_step_status(item),
                     "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand, "unknown") if tag in tags],
                 }
             )
             if len(result) >= max(1, int(limit or 3)):
                 return tuple(result)
     return tuple(result)
+
+
+def _direct_path_bot_safe_next_step_status(item: Mapping[str, Any]) -> str:
+    status = str(item.get("next_step_status") or "").strip().casefold()
+    if not status:
+        metadata = item.get("metadata")
+        if isinstance(metadata, Mapping):
+            next_step = metadata.get("next_step")
+            if isinstance(next_step, Mapping):
+                status = str(next_step.get("status") or "").strip().casefold()
+    return status if status in {"active", "needs_manager_review", "empty"} else ""
 
 
 def _direct_path_bot_safe_item_visible(tags: set[str], *, active_brand: str) -> bool:
@@ -397,17 +409,29 @@ def _direct_path_bot_safe_context_prompt_block(context: Optional[Mapping[str, An
     items = _direct_path_bot_safe_context_items(context)
     if not items:
         return ""
+    statuses = {str(item.get("next_step_status") or "").strip().casefold() for item in items}
+    has_unconfirmed_step = bool(statuses & {"needs_manager_review", "empty"})
     lines = [
         "Безопасная выжимка клиента: это разрешённая выжимка истории по активному бренду. "
         "Используй её только для продолжения диалога, понимания уже обсуждённого и следующего шага. "
         "Цены, даты и условия называй только из блока «Факты по вашему вопросу». "
         "Не раскрывай клиенту, что данные взяты из CRM/истории/базы.",
     ]
+    if "active" in statuses:
+        lines.append("Если статус следующего шага «active», продолжай эту нить и называй шаг без лишних оговорок.")
+    if has_unconfirmed_step:
+        lines.append(
+            "Если статус следующего шага «needs_manager_review» или «empty», следующий шаг НЕ подтверждён: "
+            "не утверждай его клиенту, предложи уточнить с менеджером. "
+            "Датированную историю с таким статусом подавай как прежние заметки: «по прежним заметкам, актуальность уточню»."
+        )
     for idx, item in enumerate(items, 1):
         text = str(item.get("text") or "").strip()
         event_at = str(item.get("event_at") or "").strip()
         suffix = f" ({event_at[:10]})" if event_at else ""
-        lines.append(f"{idx}. {text}{suffix}")
+        status = str(item.get("next_step_status") or "").strip().casefold()
+        status_suffix = f" [статус следующего шага: {status}]" if status else ""
+        lines.append(f"{idx}. {text}{suffix}{status_suffix}")
     return "\n".join(lines)
 
 
@@ -420,6 +444,7 @@ def _direct_path_bot_safe_context_trace(context: Optional[Mapping[str, Any]]) ->
         "visible_items": len(items),
         "active_brand": _active_brand(context),
         "source": "read_only_customer_context.timeline_context.bot_context",
+        "next_step_statuses": [str(item.get("next_step_status") or "") for item in items if str(item.get("next_step_status") or "")],
     }
 
 DIRECT_PATH_CATEGORY_ALIASES: Mapping[str, tuple[str, ...]] = {

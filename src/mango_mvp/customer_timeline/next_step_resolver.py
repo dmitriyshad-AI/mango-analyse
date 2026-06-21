@@ -4,6 +4,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
+from mango_mvp.insights.sanitizers import has_personal_data_risk
+
 
 CUSTOMER_TIMELINE_NEXT_STEP_SCHEMA_VERSION = "customer_timeline_next_step_resolution_v1"
 
@@ -30,6 +32,71 @@ DOCUMENT_STEP_MARKERS = (
 PAYMENT_STEP_MARKERS = ("оплат", "счет", "счёт", "чек", "квитанц", "платеж", "платёж")
 CALLBACK_STEP_MARKERS = ("перезвон", "созвон", "связ", "набрать", "позвон")
 
+SUMMARY_ACTION_MARKERS = (
+    *DOCUMENT_STEP_MARKERS,
+    *PAYMENT_STEP_MARKERS,
+    *CALLBACK_STEP_MARKERS,
+    "whatsapp",
+    "ватсап",
+    "мессендж",
+    "сообщени",
+    "письм",
+    "email",
+    "уточн",
+    "провер",
+    "исправ",
+    "обнов",
+    "подготов",
+    "переда",
+    "продублир",
+    "заполн",
+    "оформ",
+)
+SUMMARY_ACTION_VERBS = (
+    "отправ",
+    "высл",
+    "направ",
+    "перезвон",
+    "позвон",
+    "связ",
+    "уточн",
+    "провер",
+    "подготов",
+    "продублир",
+    "переда",
+    "оформ",
+    "пообещ",
+)
+SUMMARY_NO_STEP_MARKERS = (
+    "следующий шаг не",
+    "шаг не соглас",
+    "шаг не определ",
+    "дальнейшие действия не",
+    "договоренностей нет",
+    "договорённостей нет",
+    "без договорен",
+    "без договорён",
+    "ничего не согласовали",
+    "не договорились",
+)
+SUMMARY_NON_CONVERSATION_MARKERS = (
+    "значимого диалога",
+    "живого разговора",
+    "содержательного обсуждения",
+    "не содержит запроса",
+    "запрос носит сервисный характер",
+    "ошибочн",
+    "техническ",
+    "автоинформ",
+    "номер не используется",
+    "контакт с потенциальным клиентом не состоялся",
+    "неактуален",
+    "не подтвердил релевантный контакт",
+    "не связано с учебным центром",
+    "не выразил интерес",
+    "продолжение диалога невозможно",
+)
+
 SENT_MARKERS = ("отправлен", "отправили", "отправил", "выслан", "выслали", "направлен", "направили", "прикреп", "во влож", "приклады")
 DONE_MARKERS = ("сделан", "закрыт", "выполн", "прош", "поступ", "оплачен", "получил", "получили")
 NEGATION_MARKERS = ("не приш", "не получил", "не получили", "не дош", "ошиб", "отказ")
@@ -49,6 +116,58 @@ NON_CLOSING_MARKERS = (
     "delivery status",
     "undeliver",
     "недостав",
+)
+
+SUMMARY_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+SUMMARY_TAIL_RE = re.compile(
+    r"\s+(?:итог|обсудили|обсуждали|возражения|ограничения|контекст|важно|примечание)\s*[:—-].*$",
+    re.IGNORECASE,
+)
+INCOMPLETE_ACTION_END_RE = re.compile(r"(?:\b(?:и|в|во|на|по|с|со|для|к|ко|о|об|от|до|или|а|но|чтобы)|[,—-])$", re.IGNORECASE)
+NEW_YEAR_PHRASE_RE = re.compile(r"\bпосле\s+нового\s+года\b", re.IGNORECASE)
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-zА-Яа-я]{2,}")
+PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{8,}\d)")
+BOOKING_CODE_RE = re.compile(r"\b\d{2,}(?:[-\s]\d{2,})+\b|\b\d{6,}\b")
+ROLE_PERSON_RE = re.compile(
+    r"\b(?P<role>менеджер|куратор|администратор|оператор|клиент(?:ка)?|родител[ьи]|мама|папа|"
+    r"ученик|ученица|реб[её]нок|студент(?:ка)?)\s+"
+    r"[А-ЯЁ][а-яё]+(?:[-\s]+[А-ЯЁ][а-яё]+){0,2}\b"
+)
+SINGLE_PERSON_TARGET_RE = re.compile(
+    r"\b(?P<verb>передать|перезвонить|позвонить|отправить|направить|выслать)\s+"
+    r"[А-ЯЁ][а-яё]{2,}\b"
+)
+PERSON_NAME_RE = re.compile(r"\b[А-ЯЁ][а-яё]{2,}(?:[-\s]+[А-ЯЁ][а-яё]{2,}){1,2}\b")
+SUMMARY_CUE_PATTERNS = (
+    re.compile(
+        r"(?:следующ(?:ий|его)\s+шаг|дальнейш(?:ий|ие)\s+(?:шаг|действия)|"
+        r"договор[её]нност[ьи]|итог(?:овый)?\s+шаг)\s*(?:[:—-]|\s+это\s+)\s*(?P<action>.+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:договорились|согласовали|согласовано|решили)[,\s]*(?:о\s+том,?\s*)?(?:что\s+)?(?P<action>.+)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^(?:нужно|надо|требуется|необходимо)\b\s+(?P<action>.+)", re.IGNORECASE),
+    re.compile(
+        r"(?:менеджер|куратор|администратор|оператор)"
+        r"(?:\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})?\s+"
+        r"(?P<action>(?:отправит|пришл[её]т|вышлет|направит|перезвонит|свяжется|пообещал[аи]?\s+"
+        r"уточнит|проверит|подготовит|продублирует|передаст|оформит|согласует).+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:менеджер|куратор|администратор|оператор)[^.?!;]{0,160}\b"
+        r"(?P<action>пообещал[аи]?\s+(?:отправить|выслать|направить|перезвонить|связаться|"
+        r"уточнить|проверить|подготовить|продублировать|передать|оформить|согласовать).+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:клиент(?:ка)?|родител[ьи]|мама|папа)"
+        r"(?:\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})?\s+"
+        r"(?:жд[её]т|попросил[аи]?|просил[аи]?|запросил[аи]?|ожидает)\s+(?P<action>.+)",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -251,6 +370,142 @@ def _extract_next_step(event: Mapping[str, Any]) -> str:
         text = _compact(value)
         if text:
             return text
+    return _extract_next_step_from_summary(event)
+
+
+def extract_next_step_action(event: Mapping[str, Any]) -> str:
+    return _extract_next_step(event)
+
+
+def _extract_next_step_from_summary(event: Mapping[str, Any]) -> str:
+    if str(event.get("event_type") or "").casefold() != "mango_call":
+        return ""
+    if _call_record_is_not_contentful(event):
+        return ""
+    summary = _call_summary_text(event)
+    if not summary or _summary_has_no_next_step(summary) or _summary_is_non_conversation(summary):
+        return ""
+
+    candidates: list[str] = []
+    for sentence in _summary_sentences(summary):
+        if _summary_has_no_next_step(sentence):
+            continue
+        if not (_has_any(sentence.casefold(), SUMMARY_ACTION_MARKERS) and _has_any(sentence.casefold(), SUMMARY_ACTION_VERBS)):
+            continue
+        action = _candidate_action_from_sentence(sentence)
+        if not action:
+            continue
+        action = _sanitize_extracted_next_step(action, event)
+        if action and _candidate_has_step_marker(action):
+            candidates.append(action)
+    return candidates[-1] if candidates else ""
+
+
+def _call_record_is_not_contentful(event: Mapping[str, Any]) -> bool:
+    record = _mapping(event.get("record"))
+    value = str(record.get("contentful") or "").strip().casefold()
+    return value in {"0", "false", "нет", "no", "non_conversation"}
+
+
+def _call_summary_text(event: Mapping[str, Any]) -> str:
+    record = _mapping(event.get("record"))
+    call_analysis = _mapping(record.get("call_analysis") or event.get("call_analysis"))
+    for value in (
+        event.get("summary"),
+        record.get("summary"),
+        call_analysis.get("summary"),
+        call_analysis.get("history_summary"),
+        event.get("text_preview"),
+    ):
+        text = _compact(value)
+        if text:
+            return text
+    return ""
+
+
+def _summary_sentences(summary: str) -> tuple[str, ...]:
+    parts = SUMMARY_SENTENCE_RE.split(summary)
+    result: list[str] = []
+    for part in parts:
+        for item in part.split(";"):
+            text = _compact(item).strip(" .;")
+            if text:
+                result.append(text)
+    return tuple(result)
+
+
+def _summary_has_no_next_step(value: str) -> bool:
+    text = value.casefold().replace("ё", "е")
+    return any(marker.replace("ё", "е") in text for marker in SUMMARY_NO_STEP_MARKERS)
+
+
+def _summary_is_non_conversation(value: str) -> bool:
+    text = value.casefold().replace("ё", "е")
+    return any(marker.replace("ё", "е") in text for marker in SUMMARY_NON_CONVERSATION_MARKERS)
+
+
+def _candidate_action_from_sentence(sentence: str) -> str:
+    for pattern in SUMMARY_CUE_PATTERNS:
+        match = pattern.search(sentence)
+        if match:
+            return _compact(match.group("action"))
+    return ""
+
+
+def _sanitize_extracted_next_step(action: str, event: Mapping[str, Any]) -> str:
+    text = SUMMARY_TAIL_RE.sub("", _compact(action)).strip(" .;:—-")
+    for name in _actor_names(event):
+        text = re.sub(rf"\b{re.escape(name)}\b", "менеджер", text, flags=re.IGNORECASE)
+    text = EMAIL_RE.sub("<email_masked>", text)
+    text = PHONE_RE.sub("<phone_masked>", text)
+    text = BOOKING_CODE_RE.sub("<number_masked>", text)
+    text = NEW_YEAR_PHRASE_RE.sub("после праздников", text)
+    text = ROLE_PERSON_RE.sub(lambda match: match.group("role"), text)
+    text = SINGLE_PERSON_TARGET_RE.sub(lambda match: f"{match.group('verb')} клиенту", text)
+    text = PERSON_NAME_RE.sub("<name_masked>", text)
+    text = _compact(text).strip(" .;:—-")
+    if not text:
+        return ""
+    if _looks_incomplete_action(text):
+        return ""
+    if has_personal_data_risk(text):
+        text = _pii_safe_fallback_step(text)
+    if not text or has_personal_data_risk(text):
+        return ""
+    return text[:1].upper() + text[1:]
+
+
+def _looks_incomplete_action(action: str) -> bool:
+    return bool(INCOMPLETE_ACTION_END_RE.search(action.strip()))
+
+
+def _actor_names(event: Mapping[str, Any]) -> tuple[str, ...]:
+    record = _mapping(event.get("record"))
+    metadata = _mapping(event.get("metadata"))
+    values = (
+        record.get("actor_name"),
+        record.get("manager_name"),
+        record.get("operator_name"),
+        metadata.get("actor_name"),
+        metadata.get("manager_name"),
+        metadata.get("operator_name"),
+    )
+    return tuple(text for value in values if (text := _compact(value)))
+
+
+def _candidate_has_step_marker(action: str) -> bool:
+    text = action.casefold()
+    return _has_any(text, SUMMARY_ACTION_MARKERS)
+
+
+def _pii_safe_fallback_step(action: str) -> str:
+    text = action.casefold()
+    if _has_any(text, DOCUMENT_STEP_MARKERS):
+        return "Отправить документы/материалы"
+    if _has_any(text, PAYMENT_STEP_MARKERS):
+        return "Уточнить оплату/чек"
+    if _has_any(text, CALLBACK_STEP_MARKERS):
+        return "Перезвонить клиенту"
     return ""
 
 
@@ -438,5 +693,6 @@ __all__ = [
     "NEXT_STEP_STATUS_EMPTY",
     "NEXT_STEP_STATUS_NEEDS_MANAGER_REVIEW",
     "NextStepResolution",
+    "extract_next_step_action",
     "resolve_customer_next_step",
 ]

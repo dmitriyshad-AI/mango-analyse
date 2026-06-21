@@ -12,6 +12,7 @@ from mango_mvp.customer_timeline import (
     TimelineEvent,
     resolve_customer_next_step,
 )
+from mango_mvp.insights.sanitizers import has_personal_data_risk
 
 
 NOW = datetime(2026, 6, 21, 9, 0, tzinfo=timezone.utc)
@@ -120,6 +121,220 @@ def test_campaign_service_and_bounce_do_not_close_step() -> None:
     assert result.status == "active"
     assert result.action == "Отправить договор и документы"
     assert set(result.ignored_event_ids) == {"campaign-1", "service-1", "bounce-1"}
+
+
+def test_summary_next_step_extractor_uses_explicit_agreed_step_without_structured_field() -> None:
+    events = [
+        event(
+            "call-summary-1",
+            "mango_call",
+            NOW,
+            summary=(
+                "Обсудили формат курса и оплату. "
+                "Согласован следующий шаг: отправить клиентке подробные условия оплаты и список документов в WhatsApp."
+            ),
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 360, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "active"
+    assert result.reason_code == "latest_relevant_event_has_active_next_step"
+    assert result.source_event_id == "call-summary-1"
+    assert result.source_channel == "звонок"
+    assert result.action == "Отправить клиентке подробные условия оплаты и список документов в WhatsApp"
+
+
+def test_summary_without_explicit_next_step_does_not_invent_step() -> None:
+    events = [
+        event(
+            "call-summary-2",
+            "mango_call",
+            NOW,
+            summary="Обсудили оплату и договор, но следующий шаг не согласован.",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 280, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "empty"
+    assert result.action == ""
+    assert result.reason_code == "no_explicit_next_step"
+
+
+def test_summary_non_conversation_template_callback_does_not_create_step() -> None:
+    events = [
+        event(
+            "call-summary-technical",
+            "mango_call",
+            NOW,
+            summary=(
+                "Номер оказался техническим номером для опросов населения и не используется для обратной связи. "
+                "Контакт с потенциальным клиентом не состоялся. Договорились: Перезвонить клиенту."
+            ),
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 90, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "empty"
+    assert result.action == ""
+    assert result.reason_code == "no_explicit_next_step"
+
+
+def test_summary_extractor_does_not_treat_required_payment_condition_as_step() -> None:
+    events = [
+        event(
+            "call-summary-condition",
+            "mango_call",
+            NOW,
+            summary=(
+                "Менеджер объяснил условия продления. "
+                "Для продолжения затем потребуется оплата за следующий период, решение клиент пока не принял."
+            ),
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 280, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "empty"
+    assert result.action == ""
+    assert result.reason_code == "no_explicit_next_step"
+
+
+def test_summary_extractor_does_not_treat_customer_payment_question_as_step() -> None:
+    events = [
+        event(
+            "call-summary-question",
+            "mango_call",
+            NOW,
+            summary=(
+                "Клиент уточнял, сколько еще нужно доплатить и до какого срока будут продолжаться занятия. "
+                "Итоговое действие не согласовано."
+            ),
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 280, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "empty"
+    assert result.action == ""
+    assert result.reason_code == "no_explicit_next_step"
+
+
+def test_summary_extractor_drops_truncated_action_tail() -> None:
+    events = [
+        event(
+            "call-summary-truncated",
+            "mango_call",
+            NOW,
+            summary="Стороны договорились отправить на почту подробную и",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 280, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "empty"
+    assert result.action == ""
+    assert result.reason_code == "no_explicit_next_step"
+
+
+def test_summary_extracted_next_step_scrubs_manager_child_booking_and_email() -> None:
+    events = [
+        event(
+            "call-summary-3",
+            "mango_call",
+            NOW,
+            summary=(
+                "Менеджер Клычева Дарья обсудила условия. "
+                "Согласован следующий шаг: менеджер Клычева Дарья отправит договор ученику Смирнову Арсению "
+                "по брони 64-64-58 на parent@example.com."
+            ),
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 420, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "active"
+    assert "Клычева" not in result.action
+    assert "Дарья" not in result.action
+    assert "Смирнов" not in result.action
+    assert "Арсени" not in result.action
+    assert "64-64-58" not in result.action
+    assert "parent@example.com" not in result.action
+    assert "<number_masked>" in result.action
+    assert "<email_masked>" in result.action
+    assert not has_personal_data_risk(result.action)
+
+
+def test_summary_extracted_next_step_scrubs_single_named_target() -> None:
+    events = [
+        event(
+            "call-summary-single-name",
+            "mango_call",
+            NOW,
+            summary="Договорились передать Еве согласованный план для записи.",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 300, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "active"
+    assert result.action == "Передать клиенту согласованный план для записи"
+    assert "Еве" not in result.action
+    assert not has_personal_data_risk(result.action)
+
+
+def test_summary_extracted_callback_with_new_year_phrase_falls_back_to_safe_action() -> None:
+    events = [
+        event(
+            "call-summary-new-year",
+            "mango_call",
+            NOW,
+            summary="Договорились после Нового года снова связаться и повторно обсудить обучение.",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 300, "manual_review_required": "Нет"},
+        )
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "active"
+    assert result.action == "После праздников снова связаться и повторно обсудить обучение"
+    assert not has_personal_data_risk(result.action)
+
+
+def test_summary_extracted_documents_step_closed_by_later_email() -> None:
+    events = [
+        event(
+            "call-summary-4",
+            "mango_call",
+            NOW,
+            summary="Договорились, что менеджер отправит договор и документы на почту.",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 300, "manual_review_required": "Нет"},
+        ),
+        event(
+            "email-summary-4",
+            "email_message",
+            NOW + timedelta(hours=1),
+            source_system="mail_archive",
+            summary="Договор и документы отправлены клиенту на почту.",
+        ),
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "closed"
+    assert result.reason_code == "documents_closed_by_later_event"
+    assert result.previous_step == "Менеджер отправит договор и документы на почту"
+    assert result.closing_event_id == "email-summary-4"
 
 
 def test_contradictory_later_event_requires_manager_review() -> None:

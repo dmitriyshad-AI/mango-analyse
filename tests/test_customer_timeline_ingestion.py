@@ -458,6 +458,22 @@ def test_mail_and_channel_sources_reject_allowed_for_bot_true() -> None:
             )
         )
 
+    with pytest.raises(ValueError, match="allowed_for_bot=False"):
+        ChannelMessageNormalizer(tenant_id="foton").normalize(
+            TimelineSourceRecord(
+                source_system="telegram_history",
+                source_ref="telegram_history#unsafe",
+                payload={
+                    "channel": "telegram",
+                    "channel_thread_id": "thread-2",
+                    "channel_message_id": "msg-2",
+                    "channel_user_id": "tg-200",
+                    "text": "Здравствуйте",
+                    "allowed_for_bot": True,
+                },
+            )
+        )
+
 
 def test_channel_mango_and_amo_normalizers_create_expected_timeline_contracts() -> None:
     channel_batch = ChannelMessageNormalizer(tenant_id="foton").normalize(

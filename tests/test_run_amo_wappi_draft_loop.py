@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import scripts.run_amo_wappi_draft_loop as runner
+from mango_mvp.integrations import amo_wappi_auto_resolver as auto_resolver
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
 from mango_mvp.integrations.draft_loop import DraftLoopKey, DraftLoopProfile
 
@@ -138,7 +139,7 @@ def _lead(lead_id="49762441", *, status_id=123, closed_at=None, deleted=False, o
 
 
 def _resolver(*, contacts=None, leads=None, stoplist=None, stoplist_error=""):
-    return runner.AmoAutoResolver(
+    return auto_resolver.AmoAutoResolver(
         client=FakeMcp(contacts=contacts, leads=leads),
         shared_phone_stoplist=set(stoplist or ()),
         stoplist_error=stoplist_error,
@@ -235,15 +236,15 @@ def test_load_phone_stoplist_uses_plural_default_and_legacy_fallback(tmp_path: P
     fake_home = tmp_path / "home"
     secrets = fake_home / ".mango_secrets"
     secrets.mkdir(parents=True)
-    monkeypatch.setattr(runner, "DEFAULT_STOPLIST_PATH", secrets / "shared_phones_stoplist.json")
-    monkeypatch.setattr(runner, "LEGACY_STOPLIST_PATH", secrets / "shared_phone_stoplist.json")
+    monkeypatch.setattr(auto_resolver, "DEFAULT_STOPLIST_PATH", secrets / "shared_phones_stoplist.json")
+    monkeypatch.setattr(auto_resolver, "LEGACY_STOPLIST_PATH", secrets / "shared_phone_stoplist.json")
 
     (secrets / "shared_phone_stoplist.json").write_text(json.dumps({"phones": ["+7 999 000-00-00"]}), encoding="utf-8")
-    phones, error = runner._load_phone_stoplist(runner.DEFAULT_STOPLIST_PATH)
+    phones, error = auto_resolver.load_phone_stoplist(auto_resolver.DEFAULT_STOPLIST_PATH)
     assert phones == {"+79990000000"}
     assert error == ""
 
     (secrets / "shared_phones_stoplist.json").write_text(json.dumps({"phones": ["+7 999 000-00-01"]}), encoding="utf-8")
-    phones, error = runner._load_phone_stoplist(runner.DEFAULT_STOPLIST_PATH)
+    phones, error = auto_resolver.load_phone_stoplist(auto_resolver.DEFAULT_STOPLIST_PATH)
     assert phones == {"+79990000001"}
     assert error == ""

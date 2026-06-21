@@ -45,6 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phase1-config", type=Path, default=DEFAULT_AMO_WAPPI_CONFIG_PATH)
     parser.add_argument("--pairs-file", type=Path, default=Path.home() / ".mango_secrets" / "draft_loop_pairs.json")
     parser.add_argument("--auto-pairs-file", type=Path, default=Path.home() / ".mango_secrets" / "draft_loop_auto_pairs.json")
+    parser.add_argument("--amo-auto-resolver", action="store_true", help="Resolve chats without static pairs through read-only AMO MCP.")
+    parser.add_argument("--amo-mcp-env-file", type=Path, default=Path.home() / ".mango_secrets" / "foton_crm_readonly_mcp_connector.env")
+    parser.add_argument("--shared-phone-stoplist", type=Path, default=Path.home() / ".mango_secrets" / "shared_phones_stoplist.json")
     parser.add_argument("--chat-limit-per-profile", type=int, default=50)
     parser.add_argument("--messages-per-chat", type=int, default=100)
     parser.add_argument("--message-limit-total", type=int, default=2000)
@@ -68,6 +71,9 @@ def config_from_args(args: argparse.Namespace) -> WappiHistoryImportConfig:
         phase1_config=args.phase1_config,
         pairs_file=args.pairs_file,
         auto_pairs_file=args.auto_pairs_file,
+        amo_auto_resolver_enabled=bool(args.amo_auto_resolver),
+        amo_mcp_env_file=args.amo_mcp_env_file,
+        shared_phone_stoplist=args.shared_phone_stoplist,
         apply=bool(args.apply),
         actor=args.actor,
         idempotency_key=args.idempotency_key,

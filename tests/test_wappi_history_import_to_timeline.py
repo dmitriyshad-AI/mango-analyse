@@ -24,6 +24,7 @@ from mango_mvp.customer_timeline.wappi_history_import import (
     assert_readonly_wappi_client,
     run_wappi_history_import,
 )
+from mango_mvp.integrations.amo_wappi_auto_resolver import AmoAutoResolver
 from mango_mvp.integrations.amo_wappi_phase1 import WappiClientConfig, WappiPhase1Client
 from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport
 from mango_mvp.integrations.draft_loop import DraftLoopKey
@@ -113,6 +114,145 @@ def test_wappi_history_import_pending_does_not_create_customer_or_event(tmp_path
         assert con.execute("SELECT COUNT(*) FROM customer_identities").fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM timeline_conflicts WHERE conflict_type='pending_attribution'").fetchone()[0] == 1
+
+
+def test_wappi_history_import_resolves_missing_pair_through_amo_auto_tg(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    customer_id = seed_customer_with_amo(db_path, tmp_path, lead_id="1001", contact_id="2002")
+    phase1 = write_phase1_config(tmp_path)
+    client = FakeWappiClient(
+        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {
+            ("telegram", "p-tg", "123456"): [
+                {"id": "m-1", "chat_id": "123456", "type": "text", "body": "Здравствуйте", "time": 1_753_000_000},
+            ]
+        },
+    )
+    auto = AmoAutoResolver(
+        client=FakeMcp(contacts=[amo_contact("2002", telegram_id="123456", leads=("1001",))], leads=[amo_lead("1001", org="Фотон")]),
+        shared_phone_stoplist={"+79990000000"},
+        require_known_brand=True,
+    )
+
+    report = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=phase1,
+            pairs_file=None,
+            auto_pairs_file=None,
+            amo_auto_resolver_enabled=True,
+            apply=True,
+            limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
+        ),
+        client=client,
+        amo_auto_resolver=auto,
+    )
+
+    assert report["validation_ok"] is True
+    assert report["summary"]["linked_by_amo_auto"] == 1
+    assert report["summary"]["pending_attribution"] == 0
+    assert report["profiles"]["p-tg"]["coverage_counts"]["tg_chat_id_digit"] == 1
+    event = fetch_one_json(db_path, "timeline_events")
+    assert event["customer_id"] == customer_id
+    assert event["metadata"]["identity_authority"] == "amo_auto_resolver"
+    assert event["record"]["message"]["allowed_for_bot"] is False
+
+
+def test_wappi_history_import_fails_closed_for_max_without_stoplist(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path).close()
+    phase1 = write_phase1_config(tmp_path)
+    client = FakeWappiClient(
+        {"p-tg": [], "p-max": [{"id": "max-chat-1", "phone": "+7 999 000-00-01"}]},
+        {
+            ("max", "p-max", "max-chat-1"): [
+                {"id": "m-1", "chat_id": "max-chat-1", "type": "text", "body": "Добрый день", "time": 1_753_000_000},
+            ]
+        },
+    )
+    auto = AmoAutoResolver(
+        client=FakeMcp(contacts=[amo_contact("2002", phone="+79990000001", leads=("1001",))], leads=[amo_lead("1001", org="УНПК")]),
+        shared_phone_stoplist=set(),
+        stoplist_error="shared_phone_stoplist_unavailable",
+        require_known_brand=True,
+    )
+
+    report = run_wappi_history_import(
+        WappiHistoryImportConfig(
+            timeline_db=db_path,
+            allowed_root=tmp_path,
+            phase1_config=phase1,
+            pairs_file=None,
+            auto_pairs_file=None,
+            amo_auto_resolver_enabled=True,
+            apply=True,
+            limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
+        ),
+        client=client,
+        amo_auto_resolver=auto,
+    )
+
+    assert report["validation_ok"] is True
+    assert report["summary"]["linked_by_amo_auto"] == 0
+    assert report["summary"]["pending_attribution"] == 1
+    assert report["profiles"]["p-max"]["coverage_counts"]["shared_phone_stoplist_unavailable"] == 1
+    assert report["records"]["by_resolution_reason"]["shared_phone_stoplist_unavailable"] == 1
+    with sqlite3.connect(db_path) as con:
+        assert con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM timeline_conflicts WHERE conflict_type='pending_attribution'").fetchone()[0] == 1
+
+
+def test_wappi_history_import_blocks_relinking_existing_source_to_other_customer(tmp_path: Path) -> None:
+    db_path = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_amo(db_path, tmp_path, customer_id="customer:first", lead_id="1001", contact_id="2002")
+    seed_customer_with_amo(db_path, tmp_path, customer_id="customer:second", lead_id="9001", contact_id="9002")
+    phase1 = write_phase1_config(tmp_path)
+    client = FakeWappiClient(
+        {"p-tg": [{"id": "123456", "type": "user"}], "p-max": []},
+        {
+            ("telegram", "p-tg", "123456"): [
+                {"id": "m-1", "chat_id": "123456", "type": "text", "body": "Здравствуйте", "time": 1_753_000_000},
+            ]
+        },
+    )
+
+    base_config = WappiHistoryImportConfig(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        phase1_config=phase1,
+        pairs_file=None,
+        auto_pairs_file=None,
+        amo_auto_resolver_enabled=True,
+        apply=True,
+        limits=WappiFetchLimits(chat_limit_per_profile=5, messages_per_chat=5, message_limit_total=20, sleep_seconds=0),
+    )
+    first = run_wappi_history_import(
+        base_config,
+        client=client,
+        amo_auto_resolver=AmoAutoResolver(
+            client=FakeMcp(contacts=[amo_contact("2002", telegram_id="123456", leads=("1001",))], leads=[amo_lead("1001", org="Фотон")]),
+            shared_phone_stoplist={"+79990000000"},
+            require_known_brand=True,
+        ),
+    )
+    second = run_wappi_history_import(
+        base_config,
+        client=client,
+        amo_auto_resolver=AmoAutoResolver(
+            client=FakeMcp(contacts=[amo_contact("9002", telegram_id="123456", leads=("9001",))], leads=[amo_lead("9001", org="Фотон")]),
+            shared_phone_stoplist={"+79990000000"},
+            require_known_brand=True,
+        ),
+    )
+
+    assert first["summary"]["linked_by_amo_auto"] == 1
+    assert second["summary"]["blocked_customer_relink_conflicts"] == 1
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT record_json FROM timeline_events WHERE source_system='wappi_telegram'").fetchall()
+        assert len(rows) == 1
+        assert json.loads(rows[0]["record_json"])["customer_id"] == "customer:first"
 
 
 def test_wappi_resolver_fails_closed_on_lead_contact_mismatch(tmp_path: Path) -> None:
@@ -223,6 +363,58 @@ class FakeWappiClient:
         self.calls.append({"kind": "messages", "method": "GET", "channel": channel, "profile_id": profile_id, "chat_id": chat_id, "limit": limit, "offset": offset, "mark_all": mark_all})
         items = self.messages.get((channel, profile_id, chat_id), [])
         return {"messages": items[offset : offset + limit]}
+
+
+class FakeMcp:
+    def __init__(self, contacts=None, leads=None) -> None:
+        self.contacts = contacts or []
+        self.leads = {str(item["id"]): item for item in (leads or [])}
+        self.calls: list[dict[str, Any]] = []
+
+    def amo_api_get(self, *, path, params=None, limit=50):
+        self.calls.append({"path": path, "params": params or {}, "limit": limit})
+        if path == "contacts":
+            query = str((params or {}).get("query") or "")
+            contacts = []
+            for contact in self.contacts:
+                haystack = json.dumps(contact, ensure_ascii=False)
+                if query in haystack:
+                    contacts.append(contact)
+            return {"_embedded": {"contacts": contacts}}
+        if path.startswith("contacts/"):
+            contact_id = path.split("/", 1)[1]
+            return next((item for item in self.contacts if str(item.get("id")) == contact_id), {})
+        if path.startswith("leads/"):
+            lead_id = path.split("/", 1)[1]
+            return self.leads.get(lead_id, {})
+        raise AssertionError(path)
+
+
+def amo_contact(contact_id="111", *, telegram_id="", phone="", leads=("49762441",)):
+    fields = []
+    if telegram_id:
+        fields.append({"field_name": "Telegram ID", "values": [{"value": telegram_id}]})
+    if phone:
+        fields.append({"field_code": "PHONE", "field_name": "Телефон", "values": [{"value": phone}]})
+    return {
+        "id": contact_id,
+        "custom_fields_values": fields,
+        "_embedded": {"leads": [{"id": int(item)} for item in leads]},
+    }
+
+
+def amo_lead(lead_id="49762441", *, status_id=123, closed_at=None, deleted=False, org=""):
+    fields = []
+    if org:
+        fields.append({"field_name": "Организация", "values": [{"value": org}]})
+    return {
+        "id": int(lead_id),
+        "status_id": status_id,
+        "closed_at": closed_at,
+        "is_deleted": deleted,
+        "pipeline_id": 999,
+        "custom_fields_values": fields,
+    }
 
 
 def write_phase1_config(tmp_path: Path) -> Path:

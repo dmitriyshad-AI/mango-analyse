@@ -50,7 +50,15 @@ from mango_mvp.integrations.amo_wappi_phase1 import (
     load_env_file,
 )
 from mango_mvp.integrations.amo_wappi_transport import DefaultDenyTransport, SafeTransportPolicy
+from mango_mvp.integrations.amo_wappi_auto_resolver import (
+    DEFAULT_AMO_MCP_ENV_PATH,
+    DEFAULT_STOPLIST_PATH,
+    AmoAutoResolver,
+    build_amo_auto_resolver,
+    max_dialog_phone,
+)
 from mango_mvp.integrations.draft_loop import (
+    DraftLoopProfile,
     DraftLoopKey,
     DraftLoopPair,
     WappiHistoryMessage,
@@ -147,6 +155,9 @@ class WappiHistoryImportConfig:
     phase1_config: Path = DEFAULT_AMO_WAPPI_CONFIG_PATH
     pairs_file: Optional[Path] = Path.home() / ".mango_secrets" / "draft_loop_pairs.json"
     auto_pairs_file: Optional[Path] = Path.home() / ".mango_secrets" / "draft_loop_auto_pairs.json"
+    amo_auto_resolver_enabled: bool = False
+    amo_mcp_env_file: Optional[Path] = DEFAULT_AMO_MCP_ENV_PATH
+    shared_phone_stoplist: Optional[Path] = DEFAULT_STOPLIST_PATH
     apply: bool = False
     actor: str = "wappi_history_timeline_import"
     idempotency_key: Optional[str] = None
@@ -163,6 +174,8 @@ class WappiHistoryImportConfig:
         object.__setattr__(self, "phase1_config", Path(self.phase1_config).expanduser())
         object.__setattr__(self, "pairs_file", Path(self.pairs_file).expanduser() if self.pairs_file else None)
         object.__setattr__(self, "auto_pairs_file", Path(self.auto_pairs_file).expanduser() if self.auto_pairs_file else None)
+        object.__setattr__(self, "amo_mcp_env_file", Path(self.amo_mcp_env_file).expanduser() if self.amo_mcp_env_file else None)
+        object.__setattr__(self, "shared_phone_stoplist", Path(self.shared_phone_stoplist).expanduser() if self.shared_phone_stoplist else None)
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
         object.__setattr__(self, "actor", require_text(self.actor, "actor"))
         object.__setattr__(self, "out_path", out_path)
@@ -179,6 +192,8 @@ class WappiChatResolution:
     reason: str = ""
     candidate_customer_ids: Sequence[str] = field(default_factory=tuple)
     pair_source: str = ""
+    resolution_source: str = "draft_loop_pair"
+    match_key: str = ""
 
     @property
     def resolved(self) -> bool:
@@ -192,6 +207,7 @@ class WappiFetchStats:
     messages_seen: int = 0
     records_built: int = 0
     linked_by_pair: int = 0
+    linked_by_amo_auto: int = 0
     pending_attribution: int = 0
     skipped_empty: int = 0
     skipped_bad_message: int = 0
@@ -201,6 +217,9 @@ class WappiFetchStats:
     message_limit_hit: bool = False
     chat_limit_hit: bool = False
     resolution_status_counts: Counter[str] = field(default_factory=Counter)
+    coverage_counts: Counter[str] = field(default_factory=Counter)
+    amo_auto_status_counts: Counter[str] = field(default_factory=Counter)
+    amo_auto_calls: int = 0
 
     def to_json_dict(self) -> Mapping[str, Any]:
         return {
@@ -209,6 +228,7 @@ class WappiFetchStats:
             "messages_seen": self.messages_seen,
             "records_built": self.records_built,
             "linked_by_pair": self.linked_by_pair,
+            "linked_by_amo_auto": self.linked_by_amo_auto,
             "pending_attribution": self.pending_attribution,
             "skipped_empty": self.skipped_empty,
             "skipped_bad_message": self.skipped_bad_message,
@@ -218,6 +238,9 @@ class WappiFetchStats:
             "message_limit_hit": self.message_limit_hit,
             "chat_limit_hit": self.chat_limit_hit,
             "resolution_status_counts": dict(self.resolution_status_counts),
+            "coverage_counts": dict(self.coverage_counts),
+            "amo_auto_status_counts": dict(self.amo_auto_status_counts),
+            "amo_auto_calls": self.amo_auto_calls,
         }
 
 
@@ -243,6 +266,7 @@ class WappiHistoryTimelineNormalizer:
         event_at = parse_source_datetime(payload.get("event_at") or payload.get("timestamp_iso"), record.observed_at)
         resolution_status = str(payload.get("resolution_status") or "pending_attribution")
         resolved_customer_id = optional_text(payload.get("resolved_customer_id"))
+        identity_authority = str(payload.get("identity_authority") or "draft_loop_pair")
         if not resolved_customer_id:
             return TimelineNormalizedBatch(
                 source_record=record,
@@ -298,7 +322,10 @@ class WappiHistoryTimelineNormalizer:
                 "profile_id": payload.get("profile_id"),
                 "chat_id": chat_id,
                 "message_id": message_id,
-                "identity_authority": "draft_loop_pair",
+                "identity_authority": identity_authority,
+                "lead_id": str(payload.get("lead_id") or ""),
+                "contact_id": str(payload.get("contact_id") or ""),
+                "match_key": str(payload.get("match_key") or ""),
                 "allowed_for_bot_reason": "wappi_history_manager_only",
             },
             created_at=event_at,
@@ -313,7 +340,12 @@ class WappiHistoryTimelineNormalizer:
             source_ref=f"{self.source_system}:chat:{payload.get('profile_id')}:{chat_id}",
             match_class=IdentityMatchClass.MANUAL,
             confidence=0.9,
-            evidence={"identity_authority": "draft_loop_pair", "lead_id": str(payload.get("lead_id") or "")},
+            evidence={
+                "identity_authority": identity_authority,
+                "lead_id": str(payload.get("lead_id") or ""),
+                "contact_id": str(payload.get("contact_id") or ""),
+                "match_key": str(payload.get("match_key") or ""),
+            },
             first_seen_at=event_at,
             last_seen_at=event_at,
         )
@@ -351,6 +383,7 @@ def run_wappi_history_import(
     config: WappiHistoryImportConfig,
     *,
     client: WappiHistoryClient | None = None,
+    amo_auto_resolver: AmoAutoResolver | None = None,
 ) -> Mapping[str, Any]:
     phase1 = AmoWappiPhase1Config.from_file(config.phase1_config)
     profiles = profiles_from_phase1_config(phase1)
@@ -358,7 +391,21 @@ def run_wappi_history_import(
         client = build_readonly_wappi_client(config.env_file)
     assert_readonly_wappi_client(client)
     pairs = load_wappi_pairs(config.pairs_file, config.auto_pairs_file)
-    resolver = WappiPairCustomerResolver.from_store(config.timeline_db, tenant_id=config.tenant_id, pairs=pairs)
+    if amo_auto_resolver is None and config.amo_auto_resolver_enabled:
+        if config.amo_mcp_env_file is None or config.shared_phone_stoplist is None:
+            raise ValueError("AMO auto resolver requires amo_mcp_env_file and shared_phone_stoplist.")
+        amo_auto_resolver = build_amo_auto_resolver(
+            amo_mcp_env_file=config.amo_mcp_env_file,
+            shared_phone_stoplist=config.shared_phone_stoplist,
+            user_agent="mango-wappi-history-auto-resolver/1.0",
+            require_known_brand=True,
+        )
+    resolver = WappiPairCustomerResolver.from_store(
+        config.timeline_db,
+        tenant_id=config.tenant_id,
+        pairs=pairs,
+        amo_auto_resolver=amo_auto_resolver,
+    )
     records, fetch_stats_by_profile = fetch_wappi_history_records(
         client=client,
         profiles=profiles,
@@ -372,7 +419,15 @@ def run_wappi_history_import(
         source_systems=set(SOURCE_SYSTEM_BY_CHANNEL.values()),
         source_ids=[str(record.payload.get("timeline_source_id") or "") for record in records],
     )
+    existing_event_customers = load_existing_wappi_event_customers(
+        config.timeline_db,
+        tenant_id=config.tenant_id,
+        source_systems=set(SOURCE_SYSTEM_BY_CHANNEL.values()),
+        source_ids=[str(record.payload.get("timeline_source_id") or "") for record in records],
+    )
     duplicate_count = 0
+    blocked_customer_relink_conflicts = 0
+    guarded_records: list[TimelineSourceRecord] = []
     for record in records:
         source_id = str(record.payload.get("timeline_source_id") or "")
         if source_id in existing_source_ids:
@@ -380,6 +435,28 @@ def run_wappi_history_import(
             profile_id = str(record.payload.get("profile_id") or "")
             if profile_id in fetch_stats_by_profile:
                 fetch_stats_by_profile[profile_id].duplicate_source_ids += 1
+        existing_customer = existing_event_customers.get((record.source_system, source_id))
+        proposed_customer = str(record.payload.get("resolved_customer_id") or "").strip()
+        if existing_customer and proposed_customer and existing_customer != proposed_customer:
+            blocked_customer_relink_conflicts += 1
+            guarded_records.append(
+                replace_wappi_record_resolution(
+                    record,
+                    reason="existing_wappi_source_customer_conflict",
+                    status="pending_attribution",
+                )
+            )
+            profile_id = str(record.payload.get("profile_id") or "")
+            if profile_id in fetch_stats_by_profile:
+                fetch_stats_by_profile[profile_id].pending_attribution += 1
+                if fetch_stats_by_profile[profile_id].linked_by_amo_auto > 0 and record.payload.get("identity_authority") == "amo_auto_resolver":
+                    fetch_stats_by_profile[profile_id].linked_by_amo_auto -= 1
+                elif fetch_stats_by_profile[profile_id].linked_by_pair > 0:
+                    fetch_stats_by_profile[profile_id].linked_by_pair -= 1
+                fetch_stats_by_profile[profile_id].resolution_status_counts["existing_wappi_source_customer_conflict"] += 1
+            continue
+        guarded_records.append(record)
+    records = tuple(guarded_records)
 
     import_reports: dict[str, Mapping[str, Any]] = {}
     write_status_counts: Counter[str] = Counter()
@@ -388,6 +465,8 @@ def run_wappi_history_import(
     store_summary_before: Optional[Mapping[str, Any]] = None
     store_summary_after: Optional[Mapping[str, Any]] = None
     grouped = group_records_by_source_system(records)
+    records_by_resolution_reason = Counter(str(record.payload.get("resolution_reason") or record.payload.get("resolution_status") or "unknown") for record in records)
+    records_by_identity_authority = Counter(str(record.payload.get("identity_authority") or "unknown") for record in records)
     if config.apply:
         store = CustomerTimelineSQLiteStore(config.timeline_db, allowed_root=config.allowed_root)
         try:
@@ -431,6 +510,9 @@ def run_wappi_history_import(
         "wappi_transport": "DefaultDenyTransport",
         "wappi_read_only_methods": ["GET"],
         "wappi_mark_all": False,
+        "amo_auto_resolver_enabled": amo_auto_resolver is not None,
+        "amo_transport": "AmoMcpClient" if amo_auto_resolver is not None else "disabled",
+        "amo_read_only_methods": ["GET"] if amo_auto_resolver is not None else [],
         "send_messenger": False,
         "write_crm": False,
         "write_tallanto": False,
@@ -457,16 +539,29 @@ def run_wappi_history_import(
             "profiles": len(profiles),
             "records_built": len(records),
             "linked_by_pair": sum(stats.linked_by_pair for stats in fetch_stats_by_profile.values()),
+            "linked_by_amo_auto": sum(stats.linked_by_amo_auto for stats in fetch_stats_by_profile.values()),
             "pending_attribution": sum(stats.pending_attribution for stats in fetch_stats_by_profile.values()),
             "requests": sum(stats.requests for stats in fetch_stats_by_profile.values()),
+            "amo_auto_enabled": amo_auto_resolver is not None,
+            "amo_auto_calls": sum(stats.amo_auto_calls for stats in fetch_stats_by_profile.values()),
             "write_applied": config.apply,
             "writes_applied": sum(write_status_counts.values()) if config.apply else 0,
             "duplicate_source_ids_before_import": duplicate_count,
+            "blocked_customer_relink_conflicts": blocked_customer_relink_conflicts,
+            "pending_reason_counts": {
+                key: value
+                for key, value in sorted(records_by_resolution_reason.items())
+                if key not in {"resolved", "pending_attribution"}
+            },
             "transport": "DefaultDenyTransport",
             "send_messenger": False,
         },
         "profiles": profile_reports,
-        "records": {"by_source_system": {key: len(value) for key, value in grouped.items()}},
+        "records": {
+            "by_source_system": {key: len(value) for key, value in grouped.items()},
+            "by_resolution_reason": dict(records_by_resolution_reason),
+            "by_identity_authority": dict(records_by_identity_authority),
+        },
         "normalization": {"counts": dict(normalized_counts)},
         "writes": {
             "target": {"db_path": str(config.timeline_db), "allowed_root": str(config.allowed_root)},
@@ -487,8 +582,50 @@ class _DryRunStore:
 
 
 class WappiPairCustomerResolver:
-    def __init__(self, resolutions: Mapping[DraftLoopKey, WappiChatResolution]) -> None:
+    def __init__(
+        self,
+        resolutions: Mapping[DraftLoopKey, WappiChatResolution],
+        *,
+        db_path: Path,
+        tenant_id: str,
+        amo_auto_resolver: AmoAutoResolver | None = None,
+    ) -> None:
         self._resolutions = dict(resolutions)
+        self._db_path = Path(db_path)
+        self._tenant_id = normalize_key(tenant_id, "tenant_id")
+        self._amo_auto_resolver = amo_auto_resolver
+
+    @property
+    def amo_auto_calls(self) -> int:
+        return int(getattr(self._amo_auto_resolver, "calls", 0)) if self._amo_auto_resolver is not None else 0
+
+    def record_coverage(self, *, profile: WappiProfileSpec, dialog: Mapping[str, Any], stats: WappiFetchStats) -> None:
+        chat_id = extract_chat_id(dialog)
+        if profile.channel == "telegram":
+            stats.coverage_counts["tg_chats"] += 1
+            if chat_id.isdigit():
+                stats.coverage_counts["tg_chat_id_digit"] += 1
+            else:
+                stats.coverage_counts["tg_username_only"] += 1
+            return
+        if profile.channel == "max":
+            stats.coverage_counts["max_chats"] += 1
+            phone, source = max_dialog_phone(dialog)
+            if not phone:
+                stats.coverage_counts[source] += 1
+                return
+            stats.coverage_counts["max_phone_present"] += 1
+            if self._amo_auto_resolver is None:
+                stats.coverage_counts["max_phone_auto_resolver_disabled"] += 1
+                return
+            if self._amo_auto_resolver.stoplist_error:
+                stats.coverage_counts[self._amo_auto_resolver.stoplist_error] += 1
+            elif phone in self._amo_auto_resolver.shared_phone_stoplist:
+                stats.coverage_counts["max_phone_in_stoplist"] += 1
+            else:
+                stats.coverage_counts["max_phone_outside_stoplist"] += 1
+            return
+        stats.coverage_counts["unsupported_channel"] += 1
 
     @classmethod
     def from_store(
@@ -497,10 +634,11 @@ class WappiPairCustomerResolver:
         *,
         tenant_id: str,
         pairs: Mapping[DraftLoopKey, DraftLoopPair],
+        amo_auto_resolver: AmoAutoResolver | None = None,
     ) -> "WappiPairCustomerResolver":
-        if not db_path.exists():
-            return cls({})
         tenant = normalize_key(tenant_id, "tenant_id")
+        if not db_path.exists():
+            return cls({}, db_path=db_path, tenant_id=tenant, amo_auto_resolver=amo_auto_resolver)
         resolutions: dict[DraftLoopKey, WappiChatResolution] = {}
         with open_readonly_sqlite(db_path) as con:
             for key, pair in pairs.items():
@@ -532,6 +670,7 @@ class WappiPairCustomerResolver:
                         contact_id=str(pair.contact_id or ""),
                         expected_brand=pair.expected_brand,
                         pair_source=pair.source,
+                        resolution_source="draft_loop_pair",
                     )
                 elif len(candidate_union) > 1:
                     resolutions[key] = WappiChatResolution(
@@ -542,6 +681,7 @@ class WappiPairCustomerResolver:
                         reason="pair_matches_multiple_or_conflicting_customers",
                         candidate_customer_ids=tuple(sorted(candidate_union)),
                         pair_source=pair.source,
+                        resolution_source="draft_loop_pair",
                     )
                 else:
                     resolutions[key] = WappiChatResolution(
@@ -551,8 +691,9 @@ class WappiPairCustomerResolver:
                         expected_brand=pair.expected_brand,
                         reason="pair_has_no_customer_in_timeline",
                         pair_source=pair.source,
+                        resolution_source="draft_loop_pair",
                     )
-        return cls(resolutions)
+        return cls(resolutions, db_path=db_path, tenant_id=tenant, amo_auto_resolver=amo_auto_resolver)
 
     def resolve(self, *, profile: WappiProfileSpec, chat_id: str) -> WappiChatResolution:
         key = DraftLoopKey(profile.profile_id, chat_id)
@@ -567,8 +708,147 @@ class WappiPairCustomerResolver:
                 expected_brand=resolution.expected_brand,
                 reason="draft_loop_pair_brand_mismatch",
                 pair_source=resolution.pair_source,
+                resolution_source="draft_loop_pair",
             )
         return resolution
+
+    def resolve_chat(
+        self,
+        *,
+        profile: WappiProfileSpec,
+        dialog: Mapping[str, Any],
+        messages: Sequence[WappiHistoryMessage],
+    ) -> WappiChatResolution:
+        chat_id = extract_chat_id(dialog) or (messages[0].chat_id if messages else "")
+        pair_resolution = self.resolve(profile=profile, chat_id=chat_id)
+        if pair_resolution.reason != "draft_loop_pair_missing":
+            return pair_resolution
+        if self._amo_auto_resolver is None:
+            return pair_resolution
+        return self._resolve_with_amo_auto(profile=profile, chat_id=chat_id, dialog=dialog, messages=messages)
+
+    def _resolve_with_amo_auto(
+        self,
+        *,
+        profile: WappiProfileSpec,
+        chat_id: str,
+        dialog: Mapping[str, Any],
+        messages: Sequence[WappiHistoryMessage],
+    ) -> WappiChatResolution:
+        if not messages:
+            return WappiChatResolution(
+                status="pending_attribution",
+                expected_brand=profile.brand,
+                reason="chat_has_no_importable_messages",
+                resolution_source="amo_auto_resolver",
+            )
+        if not chat_id:
+            return WappiChatResolution(status="pending_attribution", expected_brand=profile.brand, reason="chat_id_missing", resolution_source="amo_auto_resolver")
+        key = DraftLoopKey(profile.profile_id, chat_id)
+        draft_profile = DraftLoopProfile(profile_id=profile.profile_id, brand=profile.brand, channel=profile.channel)
+        auto_result = self._amo_auto_resolver(
+            key=key,
+            profile=draft_profile,
+            dialog=dialog,
+            messages=messages,
+            message=messages[-1],
+        )
+        status = str(auto_result.get("status") or "").strip()
+        reason = str(auto_result.get("reason") or status or "amo_auto_unresolved").strip()
+        lead_id = str(auto_result.get("lead_id") or "").strip()
+        contact_id = str(auto_result.get("contact_id") or "").strip()
+        match_key = str(auto_result.get("match_key") or "").strip()
+        if status != "matched":
+            return WappiChatResolution(
+                status="pending_attribution",
+                lead_id=lead_id,
+                contact_id=contact_id,
+                expected_brand=profile.brand,
+                reason=reason,
+                resolution_source="amo_auto_resolver",
+                match_key=match_key,
+            )
+        return self._resolve_amo_candidate_to_customer(
+            profile=profile,
+            lead_id=lead_id,
+            contact_id=contact_id,
+            match_key=match_key,
+            auto_result=auto_result,
+        )
+
+    def _resolve_amo_candidate_to_customer(
+        self,
+        *,
+        profile: WappiProfileSpec,
+        lead_id: str,
+        contact_id: str,
+        match_key: str,
+        auto_result: Mapping[str, Any],
+    ) -> WappiChatResolution:
+        if not self._db_path.exists():
+            return WappiChatResolution(
+                status="pending_attribution",
+                lead_id=lead_id,
+                contact_id=contact_id,
+                expected_brand=profile.brand,
+                reason="amo_auto_no_timeline_db",
+                resolution_source="amo_auto_resolver",
+                match_key=match_key,
+            )
+        with open_readonly_sqlite(self._db_path) as con:
+            lead_ids = lookup_amo_link_customers(
+                con,
+                tenant_id=self._tenant_id,
+                link_type="amo_lead_id",
+                link_value=lead_id,
+            )
+            contact_ids = lookup_amo_link_customers(
+                con,
+                tenant_id=self._tenant_id,
+                link_type="amo_contact_id",
+                link_value=contact_id,
+            )
+            opportunity_ids, opportunity_id = lookup_amo_opportunity_customers(
+                con,
+                tenant_id=self._tenant_id,
+                lead_id=lead_id,
+            )
+        candidate_sets = [items for items in (lead_ids, contact_ids, opportunity_ids) if items]
+        candidate_union = set().union(*candidate_sets) if candidate_sets else set()
+        if candidate_sets and all(items == candidate_sets[0] for items in candidate_sets) and len(candidate_union) == 1:
+            return WappiChatResolution(
+                status="resolved",
+                customer_id=next(iter(candidate_union)),
+                opportunity_id=opportunity_id or None,
+                lead_id=lead_id,
+                contact_id=contact_id,
+                expected_brand=profile.brand,
+                pair_source="amo_auto_resolver",
+                resolution_source="amo_auto_resolver",
+                match_key=match_key,
+            )
+        if len(candidate_union) > 1:
+            return WappiChatResolution(
+                status="pending_attribution",
+                lead_id=lead_id,
+                contact_id=contact_id,
+                expected_brand=profile.brand,
+                reason="amo_auto_matches_multiple_or_conflicting_customers",
+                candidate_customer_ids=tuple(sorted(candidate_union)),
+                pair_source="amo_auto_resolver",
+                resolution_source="amo_auto_resolver",
+                match_key=match_key,
+            )
+        return WappiChatResolution(
+            status="pending_attribution",
+            lead_id=lead_id,
+            contact_id=contact_id,
+            expected_brand=profile.brand,
+            reason="amo_auto_has_no_customer_in_timeline",
+            pair_source="amo_auto_resolver",
+            resolution_source="amo_auto_resolver",
+            match_key=match_key,
+        )
 
 
 def fetch_wappi_history_records(
@@ -588,6 +868,7 @@ def fetch_wappi_history_records(
     per_profile_message_limit = max(1, limits.message_limit_total // max(1, len(profiles))) if limits.message_limit_total else 0
     for profile in profiles:
         stats = stats_by_profile[profile.profile_id]
+        profile_amo_calls_start = resolver.amo_auto_calls
         offset = 0
         chats_loaded = 0
         profile_messages = 0
@@ -627,8 +908,12 @@ def fetch_wappi_history_records(
                     continue
                 chats_loaded += 1
                 stats.chats_loaded += 1
+                resolver.record_coverage(profile=profile, dialog=dialog, stats=stats)
                 messages = fetch_chat_messages(client, profile=profile, chat_id=chat_id, limits=limits, request_counter=stats)
                 total_requests += int(getattr(fetch_chat_messages, "last_request_count", 0))
+                resolution = resolver.resolve_chat(profile=profile, dialog=dialog, messages=messages)
+                stats.amo_auto_calls = resolver.amo_auto_calls - profile_amo_calls_start
+                stats.amo_auto_status_counts[f"{resolution.resolution_source}:{resolution.reason or resolution.status}"] += 1
                 for message in messages:
                     if total_messages >= limits.message_limit_total or profile_messages >= per_profile_message_limit:
                         stats.message_limit_hit = True
@@ -637,7 +922,6 @@ def fetch_wappi_history_records(
                     if not message.text.strip():
                         stats.skipped_empty += 1
                         continue
-                    resolution = resolver.resolve(profile=profile, chat_id=message.chat_id)
                     source_id = wappi_source_id(profile, message)
                     if source_id in seen_source_ids:
                         stats.duplicate_source_ids += 1
@@ -650,7 +934,10 @@ def fetch_wappi_history_records(
                     stats.records_built += 1
                     stats.resolution_status_counts[resolution.reason or resolution.status] += 1
                     if resolution.resolved:
-                        stats.linked_by_pair += 1
+                        if resolution.resolution_source == "amo_auto_resolver":
+                            stats.linked_by_amo_auto += 1
+                        else:
+                            stats.linked_by_pair += 1
                     else:
                         stats.pending_attribution += 1
                 if total_messages >= limits.message_limit_total or profile_messages >= per_profile_message_limit:
@@ -757,6 +1044,9 @@ def wappi_message_to_record(
         "lead_id": resolution.lead_id,
         "contact_id": resolution.contact_id,
         "pair_source": resolution.pair_source,
+        "identity_authority": resolution.resolution_source,
+        "match_key": resolution.match_key,
+        "candidate_customer_ids": tuple(resolution.candidate_customer_ids),
     }
     return TimelineSourceRecord(
         source_system=source_system,
@@ -856,6 +1146,66 @@ def load_existing_wappi_source_ids(
     return found
 
 
+def load_existing_wappi_event_customers(
+    db_path: Path,
+    *,
+    tenant_id: str,
+    source_systems: set[str],
+    source_ids: Sequence[str],
+) -> dict[tuple[str, str], str]:
+    if not source_ids or not db_path.exists():
+        return {}
+    tenant = normalize_key(tenant_id, "tenant_id")
+    found: dict[tuple[str, str], str] = {}
+    with open_readonly_sqlite(db_path) as con:
+        if not sqlite_table_exists(con, "timeline_events"):
+            return {}
+        ids = tuple(dict.fromkeys(item for item in source_ids if item))
+        for source_system in sorted(source_systems):
+            for chunk in chunks(ids, 800):
+                placeholders = ",".join("?" for _ in chunk)
+                for row in con.execute(
+                    f"""
+                    SELECT source_system, source_id, customer_id
+                    FROM timeline_events
+                    WHERE tenant_id = ?
+                      AND source_system = ?
+                      AND source_id IN ({placeholders})
+                    """,
+                    (tenant, source_system, *chunk),
+                ):
+                    source_id = str(row["source_id"] or "").strip()
+                    customer_id = str(row["customer_id"] or "").strip()
+                    if source_id and customer_id:
+                        found[(str(row["source_system"]), source_id)] = customer_id
+    return found
+
+
+def replace_wappi_record_resolution(
+    record: TimelineSourceRecord,
+    *,
+    reason: str,
+    status: str = "pending_attribution",
+) -> TimelineSourceRecord:
+    payload = dict(record.payload)
+    payload.update(
+        {
+            "resolution_status": status,
+            "resolution_reason": reason,
+            "resolved_customer_id": None,
+            "resolved_opportunity_id": None,
+            "identity_authority": str(payload.get("identity_authority") or "wappi_relink_guard"),
+        }
+    )
+    return TimelineSourceRecord(
+        source_system=record.source_system,
+        source_ref=record.source_ref,
+        payload=payload,
+        source_path=record.source_path,
+        observed_at=record.observed_at,
+    )
+
+
 def lookup_amo_link_customers(
     con: sqlite3.Connection,
     *,
@@ -938,7 +1288,9 @@ def pending_wappi_attribution_conflict(
             "resolution_status": resolution_status,
             "resolution_reason": payload.get("resolution_reason"),
             "lead_id": payload.get("lead_id"),
-            "identity_authority": "draft_loop_pair_required",
+            "contact_id": payload.get("contact_id"),
+            "identity_authority": payload.get("identity_authority") or "draft_loop_pair_required",
+            "match_key": payload.get("match_key"),
         },
     }
 
@@ -987,6 +1339,11 @@ def anonymized_examples(records: Sequence[TimelineSourceRecord], *, limit: int =
                 "brand": payload.get("brand"),
                 "direction": payload.get("direction"),
                 "resolution_status": payload.get("resolution_status"),
+                "resolution_reason": payload.get("resolution_reason"),
+                "identity_authority": payload.get("identity_authority"),
+                "match_key": payload.get("match_key"),
+                "chat_key_hash": stable_digest({"profile_id": payload.get("profile_id"), "chat_id": payload.get("chat_id")})[:12],
+                "chat_id_kind": "numeric" if str(payload.get("chat_id") or "").isdigit() else "non_numeric",
                 "text_preview_masked": mask_text(text),
                 "source_ref_masked": mask_ref(record.source_ref),
             }

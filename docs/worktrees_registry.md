@@ -40,6 +40,7 @@
 | `codex/d3-phase01-botsafe-integration` | `/Users/dmitrijfabarisov/Projects/Mango_etap3_faza1_botsafe_bot` | Этап 3 Фаза 1 bot-safe интеграция | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
 | `codex/memory-measure-apparatus` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure` | Memory measure apparatus | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
 | `codex/memory-measure-apparatus-faza1` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure_faza1` | Memory measure apparatus фаза 1 | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
+| `codex/memory-measure-run-d3` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure_run_d3` | D3 memory measure run worktree | н/д | 2026-06-28 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/tz-c-nightly-cursors` | `/Users/dmitrijfabarisov/Projects/Mango_tzC_nightly_cursors` | TZ-C nightly cursors | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
 | `codex/tz-uskoreniya-3-punkta` | `/Users/dmitrijfabarisov/Projects/Mango_uskoreniya_3_punkta` | ТЗ ускорения 3 пункта | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/measure-flags-honest` | `/Users/dmitrijfabarisov/Projects/Mango_measure_flags_honest` | Флаговый бандл/замер TZ122+TZ123+TZ124 с честной метрикой | 12 | 2026-06-23 | Жива до флагового регрейда; потом влить/бросить |

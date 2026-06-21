@@ -144,7 +144,15 @@ def _now_stamp() -> str:
 
 
 def _parse_event_at(event: Mapping[str, Any]) -> datetime:
-    raw = clean_text(event.get("date_iso") or event.get("date_first") or event.get("date") or event.get("message_date_iso"))
+    raw = clean_text(
+        event.get("date_iso")
+        or event.get("date_first")
+        or event.get("date_last")
+        or event.get("date")
+        or event.get("message_date_iso")
+        or event.get("first_ingested_at")
+        or event.get("updated_at")
+    )
     if raw:
         text = raw.replace("Z", "+00:00")
         try:

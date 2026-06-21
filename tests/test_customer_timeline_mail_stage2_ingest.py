@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mango_mvp.customer_timeline.mail_stage2_ingest import (
     MailStage2IngestConfig,
+    _parse_event_at,
     apply_stage2_mail_ingest,
     create_timeline_backup,
     dry_run_stage2_mail_ingest,
@@ -280,6 +281,12 @@ def test_mail_stage2_plan_uses_existing_tallanto_customer_id_when_available(tmp_
             ("a" * 64,),
         ).fetchall()
     assert linked_rows == [("customer:canonical",)]
+
+
+def test_mail_stage2_event_date_falls_back_to_date_last() -> None:
+    parsed = _parse_event_at({"date_first": "", "date_last": "2026-03-17T06:04:45+00:00"})
+
+    assert parsed.isoformat() == "2026-03-17T06:04:45+00:00"
 
 
 def test_mail_stage2_procedure_requires_backup_and_is_idempotent_then_restores(tmp_path: Path) -> None:

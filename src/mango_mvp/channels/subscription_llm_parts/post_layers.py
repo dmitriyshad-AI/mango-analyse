@@ -1012,6 +1012,36 @@ CONTENT_DELIVERY_ACTION_RE = re.compile(
 )
 
 
+BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
+BOT_SAFE_MEMORY_STEP_GUARD_FLAG = "bot_safe_memory_unconfirmed_step_detected"
+BOT_SAFE_MEMORY_UNCONFIRMED_STEP_TEXT = "Уточню актуальный шаг с менеджером и вернусь с ответом."
+BOT_SAFE_MEMORY_VALID_NEXT_STEP_STATUSES = frozenset({"active", "needs_manager_review", "empty"})
+BOT_SAFE_MEMORY_REVIEW_NEXT_STEP_STATUSES = frozenset({"needs_manager_review", "empty"})
+BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
+    r"(?:"
+    r"\b(?:место|бронь|запис[ьи]\w*|заявк\w*|групп\w*)\b"
+    r"[^.!?\n]{0,90}?"
+    r"\b(?:заброниров\w*|закреп\w*|сохран\w*|подтвержд\w*|оформ\w*|зачисл\w*)\b"
+    r"|"
+    r"\b(?:заброниров\w*|закреп\w*|сохран\w*|подтвержд\w*|оформ\w*|зачисл\w*)\b"
+    r"[^.!?\n]{0,90}?"
+    r"\b(?:место|бронь|запис[ьи]\w*|заявк\w*|групп\w*)\b"
+    r"|"
+    r"\b(?:зачислен\w*|зачислил[аи]?|зачислим|зачислить)\b"
+    r"[^.!?\n]{0,90}?"
+    r"\b(?:курс|групп\w*|поток|программ\w*)\b"
+    r"|"
+    r"\b(?:гарантир\w*|точно\s+(?:будет|получится)|место\s+(?:будет|оста[её]тся)\s+за\s+вами)\b"
+    r"[^.!?\n]{0,90}?"
+    r"|"
+    r"\b(?:перевед\w*|продвин\w*|постав\w*)\b"
+    r"[^.!?\n]{0,90}?"
+    r"\b(?:этап|статус|воронк\w*|сделк\w*)\b"
+    r")",
+    re.I,
+)
+
+
 def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
     rules = metadata.get("rules_engine") if isinstance(metadata.get("rules_engine"), Mapping) else {}
     applied = str(rules.get("applied") or "").strip()
@@ -4111,6 +4141,145 @@ def _operational_specificity_guarded_result(
         manager_checklist=tuple(dict.fromkeys([*result.manager_checklist, checklist_item])),
         metadata={**dict(result.metadata), flag: True, "unsupported_operational_claims": list(claims)},
     )
+
+
+def apply_bot_safe_memory_step_guard(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _bot_safe_memory_step_guard_enabled(context):
+        return result
+    statuses = _bot_safe_memory_next_step_statuses(result, context)
+    review_statuses = tuple(status for status in statuses if status in BOT_SAFE_MEMORY_REVIEW_NEXT_STEP_STATUSES)
+    if not review_statuses:
+        return result
+    guard_context = _context_with_dialogue_contract_retrieved_facts(context, result)
+    claims = find_bot_safe_memory_disputed_step_claims(result.draft_text, context=guard_context)
+    if not claims:
+        return result
+    metadata = dict(result.metadata)
+    metadata["bot_safe_memory_step_guard"] = {
+        "applied": True,
+        "next_step_statuses": list(statuses),
+        "review_statuses": list(review_statuses),
+        "claims": list(claims),
+        "source": "deterministic_output_guard",
+    }
+    route = "draft_for_manager" if result.route in AUTONOMOUS_ROUTES else result.route
+    return replace(
+        result,
+        route=route,
+        draft_text=BOT_SAFE_MEMORY_UNCONFIRMED_STEP_TEXT,
+        forbidden_promises_detected=tuple(dict.fromkeys([*result.forbidden_promises_detected, *claims])),
+        safety_flags=tuple(
+            dict.fromkeys([*result.safety_flags, BOT_SAFE_MEMORY_STEP_GUARD_FLAG, "manager_approval_required", "no_auto_send"])
+        ),
+        manager_checklist=tuple(
+            dict.fromkeys(
+                [
+                    *result.manager_checklist,
+                    "Не утверждать конкретный шаг из памяти: статус next_step требует проверки менеджером.",
+                ]
+            )
+        ),
+        metadata=metadata,
+    )
+
+
+def find_bot_safe_memory_disputed_step_claims(
+    draft_text: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> tuple[str, ...]:
+    return _unsupported_claims_by_pattern(draft_text, pattern=BOT_SAFE_MEMORY_CONCRETE_STEP_RE, context=context)
+
+
+def _bot_safe_memory_step_guard_enabled(context: Optional[Mapping[str, Any]]) -> bool:
+    return (
+        _explicit_truthy_setting(
+            context,
+            BOT_SAFE_CRM_CONTEXT_ENV,
+            aliases=(
+                "bot_safe_crm_context",
+                "bot_safe_crm_context_enabled",
+                "bot_safe_summary_context",
+                "bot_safe_summary_context_enabled",
+            ),
+        )
+        is True
+    )
+
+
+def _bot_safe_memory_next_step_statuses(
+    result: SubscriptionDraftResult,
+    context: Optional[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    statuses: list[str] = []
+
+    def add(value: Any) -> None:
+        status = str(value or "").strip().casefold()
+        if status in BOT_SAFE_MEMORY_VALID_NEXT_STEP_STATUSES and status not in statuses:
+            statuses.append(status)
+
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    _bot_safe_memory_add_statuses_from_metadata(metadata, add)
+    if isinstance(context, Mapping):
+        _bot_safe_memory_add_statuses_from_context(context, add)
+    return tuple(statuses)
+
+
+def _bot_safe_memory_add_statuses_from_metadata(metadata: Mapping[str, Any], add: Callable[[Any], None]) -> None:
+    direct_path = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    for container in (
+        metadata.get("bot_safe_crm_context"),
+        direct_path.get("bot_safe_crm_context"),
+        metadata.get("bot_safe_context"),
+        direct_path.get("bot_safe_context"),
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        raw_statuses = container.get("next_step_statuses")
+        if isinstance(raw_statuses, Sequence) and not isinstance(raw_statuses, (str, bytes, bytearray)):
+            for status in raw_statuses:
+                add(status)
+        add(container.get("next_step_status"))
+
+
+def _bot_safe_memory_add_statuses_from_context(context: Mapping[str, Any], add: Callable[[Any], None]) -> None:
+    _bot_safe_memory_add_statuses_from_bot_context(context.get("bot_context"), add)
+    timeline = context.get("timeline_context") if isinstance(context.get("timeline_context"), Mapping) else {}
+    _bot_safe_memory_add_statuses_from_bot_context(timeline.get("bot_context"), add)
+    customer_context = (
+        context.get("read_only_customer_context")
+        if isinstance(context.get("read_only_customer_context"), Mapping)
+        else {}
+    )
+    _bot_safe_memory_add_statuses_from_bot_context(customer_context.get("bot_context"), add)
+    nested_timeline = (
+        customer_context.get("timeline_context")
+        if isinstance(customer_context.get("timeline_context"), Mapping)
+        else {}
+    )
+    _bot_safe_memory_add_statuses_from_bot_context(nested_timeline.get("bot_context"), add)
+
+
+def _bot_safe_memory_add_statuses_from_bot_context(bot_context: Any, add: Callable[[Any], None]) -> None:
+    if not isinstance(bot_context, Mapping):
+        return
+    raw_items = bot_context.get("items")
+    if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes, bytearray)):
+        return
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("chunk_type") or "").strip() != "bot_safe_summary":
+            continue
+        if item.get("allowed_for_bot") is not True:
+            continue
+        if item.get("requires_manager_review") is True:
+            continue
+        add(item.get("next_step_status"))
 
 
 def apply_humanity_guards(

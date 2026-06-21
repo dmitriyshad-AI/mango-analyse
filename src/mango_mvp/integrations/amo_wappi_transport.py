@@ -46,16 +46,32 @@ class SafeTransportPolicy:
         if path in {
             "/tapi/profile/all/get",
             "/maxapi/profile/all/get",
+        }:
+            return
+        if path in {
             "/tapi/sync/chats/get",
             "/maxapi/sync/chats/get",
         }:
+            self._assert_wappi_limit(query)
             return
         if path in {"/tapi/sync/messages/get", "/maxapi/sync/messages/get"}:
+            self._assert_wappi_limit(query)
             mark_values = [str(item).casefold() for item in query.get("mark_all", []) if str(item).strip()]
-            if any(value not in {"0", "false", "no", "off"} for value in mark_values):
-                raise TransportDenied("Wappi HTTP denied: mark_all must be false or omitted.")
+            if len(mark_values) != 1 or any(value not in {"0", "false", "no", "off"} for value in mark_values):
+                raise TransportDenied("Wappi HTTP denied: mark_all must be explicitly false.")
             return
         raise TransportDenied(f"Wappi HTTP denied: path is not allowlisted: {path}")
+
+    def _assert_wappi_limit(self, query: Mapping[str, list[str]]) -> None:
+        values = [str(item).strip() for item in query.get("limit", []) if str(item).strip()]
+        if not values:
+            return
+        try:
+            limits = [int(value) for value in values]
+        except ValueError as exc:
+            raise TransportDenied("Wappi HTTP denied: limit must be an integer.") from exc
+        if any(value < 1 or value > 100 for value in limits):
+            raise TransportDenied("Wappi HTTP denied: limit must be between 1 and 100.")
 
     def _assert_amo_read_allowed(self, *, method: str, path: str) -> None:
         if method == "GET" and (

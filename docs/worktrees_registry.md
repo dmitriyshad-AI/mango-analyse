@@ -19,6 +19,7 @@
 | `codex/tz-uskoreniya-3-punkta` | `/Users/dmitrijfabarisov/Projects/Mango_uskoreniya_3_punkta` | Ускорения 3 пункта | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/etap3-botsafe-layer` | `/Users/dmitrijfabarisov/Projects/Mango_etap3_botsafe` | Этап 3 Фаза 0 bot-safe слой customer_timeline | 0 | 2026-06-28 | Жива до регрейда bot-safe слоя |
 | `codex/tz1-telegram-aprel` | `/Users/dmitrijfabarisov/Projects/Mango_tz1_telegram_aprel` | ТЗ-1 ingest апрельского Telegram-экспорта в тестовую customer_timeline | 0 | 2026-06-28 | Зарегистрировано для preflight D4; не трогать другие worktree |
+| `codex/wappi-history` | `/Users/dmitrijfabarisov/Projects/Mango_wappi_history` | Wappi TG/Max history ingest в тестовую customer_timeline | 0 | 2026-06-28 | Зарегистрировано для preflight D4; не вливать без регрейда |
 | `codex/tz139-customer-timeline` | `/Users/dmitrijfabarisov/Projects/Mango_tz139_customer_timeline` | TZ139 customer_timeline Step 0 + Work A | 0 | 2026-06-25 | Жива до ревью Work A; потом решать Work B |
 | `codex/tz135-direct-wow-tone` | `/Users/dmitrijfabarisov/Projects/Mango analyse` | TZ135 direct wow tone, основная папка сейчас не main | 4 | 2026-06-25 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/tz133-handoff-closing-metric` | `/Users/dmitrijfabarisov/Projects/Mango_tz133_handoff_closing` | TZ133 handoff closing metric | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
@@ -35,6 +36,11 @@
 | `codex/tz148-env-isolation` | `/Users/dmitrijfabarisov/Projects/Mango_tz148_env_isolation` | TZ148 env isolation | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/tz-email-timeline-bridge` | `/Users/dmitrijfabarisov/Projects/Mango_tz_email_timeline_bridge` | Email timeline bridge | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/tzA-amo-card-dry-run` | `/Users/dmitrijfabarisov/Projects/Mango_tzA_amo_card_writeback` | AMO card dry-run worktree | н/д | 2026-06-27 | Зарегистрировано для preflight; не трогать в этом ТЗ |
+| `codex/d8-next-step-summary-extractor` | `/Users/dmitrijfabarisov/Projects/Mango_d8_next_step_summary` | D8 next-step summary extractor | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
+| `codex/d3-phase01-botsafe-integration` | `/Users/dmitrijfabarisov/Projects/Mango_etap3_faza1_botsafe_bot` | Этап 3 Фаза 1 bot-safe интеграция | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
+| `codex/memory-measure-apparatus` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure` | Memory measure apparatus | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
+| `codex/memory-measure-apparatus-faza1` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure_faza1` | Memory measure apparatus фаза 1 | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
+| `codex/tz-c-nightly-cursors` | `/Users/dmitrijfabarisov/Projects/Mango_tzC_nightly_cursors` | TZ-C nightly cursors | н/д | 2026-06-28 | Зарегистрировано для preflight; не трогать в этом ТЗ |
 | `codex/tz-uskoreniya-3-punkta` | `/Users/dmitrijfabarisov/Projects/Mango_uskoreniya_3_punkta` | ТЗ ускорения 3 пункта | н/д | 2026-06-27 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
 | `codex/measure-flags-honest` | `/Users/dmitrijfabarisov/Projects/Mango_measure_flags_honest` | Флаговый бандл/замер TZ122+TZ123+TZ124 с честной метрикой | 12 | 2026-06-23 | Жива до флагового регрейда; потом влить/бросить |
 | `codex/measure-tz122-tz123-tz124` | `/Users/dmitrijfabarisov/Projects/Mango_measure_tz122_tz123_tz124` | Предыдущая замерная ветка TZ122+TZ123+TZ124 | 11 | 2026-06-23 | Сравнить с `measure-flags-honest`, затем бросить/архивировать |

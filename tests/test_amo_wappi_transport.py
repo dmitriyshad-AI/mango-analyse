@@ -36,6 +36,14 @@ def test_transport_denies_unknown_get_and_side_effect_wappi_params() -> None:
     with pytest.raises(TransportDenied):
         transport(method="GET", url="https://wappi.pro/maxapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=true")
     with pytest.raises(TransportDenied):
+        transport(method="GET", url="https://wappi.pro/tapi/sync/messages/get?profile_id=p&chat_id=c")
+    with pytest.raises(TransportDenied):
+        transport(method="GET", url="https://wappi.pro/tapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=&limit=100")
+    with pytest.raises(TransportDenied):
+        transport(method="GET", url="https://wappi.pro/tapi/sync/chats/get?profile_id=p&limit=101")
+    with pytest.raises(TransportDenied):
+        transport(method="GET", url="https://wappi.pro/maxapi/sync/messages/get?profile_id=p&chat_id=c&mark_all=false&limit=101")
+    with pytest.raises(TransportDenied):
         transport(method="POST", url="https://wappi.pro/maxapi/sync/chats/get?profile_id=p")
     with pytest.raises(TransportDenied):
         transport(method="DELETE", url="https://educent.amocrm.ru/api/v4/leads/49832125")

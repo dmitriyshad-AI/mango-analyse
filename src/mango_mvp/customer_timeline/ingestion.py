@@ -65,7 +65,7 @@ FORBIDDEN_IMPORT_HINTS = (
     "mango_mvp.amocrm_runtime.tallanto_api",
 )
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
-BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset({"mail_archive", "channel_snapshot", "telegram_history"})
+BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset({"mail_archive", "channel_snapshot", "telegram_history", "wappi_telegram", "wappi_max"})
 
 
 @dataclass(frozen=True)

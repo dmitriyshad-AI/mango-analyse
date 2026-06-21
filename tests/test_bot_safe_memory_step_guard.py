@@ -73,7 +73,24 @@ def test_bot_safe_memory_step_guard_is_default_off() -> None:
 
     guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=False))
 
+    assert guarded is result
     assert guarded == result
+
+
+def test_bot_safe_memory_step_guard_off_is_noop_with_memory_context() -> None:
+    result = _result(
+        "Да, место уже забронировано, заявка подтверждена.",
+        route="bot_answer_self_for_pilot",
+        statuses=["needs_manager_review"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=False, statuses=["needs_manager_review"]))
+
+    assert guarded is result
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert guarded.draft_text == "Да, место уже забронировано, заявка подтверждена."
+    assert guarded.safety_flags == result.safety_flags
+    assert guarded.manager_checklist == result.manager_checklist
 
 
 def test_bot_safe_memory_step_guard_does_not_double_fire_followup_deadline() -> None:

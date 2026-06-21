@@ -145,6 +145,7 @@ stable_runtime/amocrm_runtime/.env.private
 product_data/customer_timeline/deal_aware_sample_*/
 product_data/customer_timeline/contact_control_sample_*/
 product_data/customer_timeline/canonical_readonly_*/
+product_data/customer_timeline/customer_timeline_prod_*/
 product_data/customer_profiles/
 
 # Local Mango/API/audio working artifacts

@@ -157,7 +157,7 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
     monkeypatch.setattr(runner, "SubscriptionLlmDraftProvider", lambda **_kwargs: object())
     monkeypatch.setattr(runner, "WappiPhase1Client", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(runner, "AiOfficeAmoNoteClient", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(runner, "build_context_builder", lambda _snapshot: object())
+    monkeypatch.setattr(runner, "build_context_builder", lambda _snapshot, **_kwargs: object())
     monkeypatch.setattr(runner, "DraftLoopState", lambda _path: object())
     monkeypatch.setattr(runner, "build_auto_resolver", lambda _args: None)
     monkeypatch.setattr(runner, "AmoWappiDraftLoop", lambda **kwargs: kwargs)
@@ -168,6 +168,9 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
         reasoning="xhigh",
         timeout_sec=240,
         snapshot=tmp_path / "snapshot.json",
+        customer_timeline_db=None,
+        customer_timeline_allowed_root=None,
+        customer_timeline_tenant="mango",
     )
 
     runner.build_runner(args)

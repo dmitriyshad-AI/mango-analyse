@@ -9,6 +9,8 @@ import json
 import os
 import re
 import signal
+import sys
+import time
 from contextlib import suppress
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -322,6 +324,13 @@ def write_public_bot_heartbeat(
 def public_bot_profile_selfcheck(configs: Sequence[BrandBotConfig]) -> Any:
     pipeline_enabled = any(config.dialogue_contract_pipeline_enabled for config in configs) if configs else True
     return pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=pipeline_enabled)
+
+
+def heartbeat_active_guards(selfcheck: Any) -> dict[str, bool]:
+    return {
+        **dict(getattr(selfcheck, "active_guards", {}) or {}),
+        **dict(getattr(selfcheck, "quality_guards", {}) or {}),
+    }
 
 
 def draft_path_for_result(result: SubscriptionDraftResult, *, context: Mapping[str, Any]) -> str:
@@ -1727,7 +1736,7 @@ async def public_bot_heartbeat_loop(
             event="heartbeat",
             effective_profile=selfcheck.effective_profile,
             draft_path=selfcheck.draft_path,
-            active_guards=selfcheck.active_guards,
+            active_guards=heartbeat_active_guards(selfcheck),
             summary={
                 "counter": counter,
                 "snapshot": str(configs[0].snapshot_path),
@@ -1812,9 +1821,41 @@ async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mappi
                 event="polling_stopped",
                 effective_profile=selfcheck.effective_profile,
                 draft_path=selfcheck.draft_path,
-                active_guards=selfcheck.active_guards,
+                active_guards=heartbeat_active_guards(selfcheck),
                 summary={"profile_selfcheck": selfcheck.to_json_dict()},
             )
+
+
+def run_startup_dry_run(configs: Sequence[BrandBotConfig], *, duration_sec: int | None) -> Mapping[str, Any]:
+    selfcheck = public_bot_profile_selfcheck(configs)
+    payload = {
+        "ok": True,
+        "mode": "dry-run-startup",
+        "profile_selfcheck": selfcheck.to_json_dict(),
+        "heartbeat_path": str(configs[0].heartbeat_path) if configs else "",
+        "brands": [config.brand for config in configs],
+        "telegram_connected": False,
+    }
+    if configs:
+        write_public_bot_heartbeat(
+            configs[0].heartbeat_path,
+            status="polling",
+            brands=[config.brand for config in configs],
+            event="dry_run_startup",
+            effective_profile=selfcheck.effective_profile,
+            draft_path=selfcheck.draft_path,
+            active_guards=heartbeat_active_guards(selfcheck),
+            summary={
+                "offline": True,
+                "profile_selfcheck": selfcheck.to_json_dict(),
+                "snapshot": str(configs[0].snapshot_path),
+                "model": configs[0].model,
+                "reasoning_effort": configs[0].reasoning_effort,
+            },
+        )
+    if duration_sec is not None and int(duration_sec) > 0:
+        time.sleep(int(duration_sec))
+    return payload
 
 
 def write_local_env_file(path: Path, *, foton_token: str, unpk_token: str) -> None:
@@ -1858,7 +1899,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run public Telegram pilot bots for Foton and UNPK.")
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
     parser.add_argument("--brand", choices=("all", "foton", "unpk"), default="all")
-    parser.add_argument("--mode", choices=("getme", "poll", "write-local-env"), default="getme")
+    parser.add_argument("--mode", choices=("getme", "poll", "write-local-env", "dry-run-startup"), default="getme")
     parser.add_argument("--duration-sec", type=int, default=None, help="Bounded polling smoke duration; omit for continuous run.")
     parser.add_argument("--allow-groups", action="store_true")
     parser.add_argument("--foton-token", default="")
@@ -1879,6 +1920,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if activation.warnings:
         print(json.dumps({"profile_activation": activation.to_json_dict()}, ensure_ascii=False, sort_keys=True), file=sys.stderr)
     raise_for_failed_selfcheck(selfcheck)
+    if args.mode == "dry-run-startup":
+        result = run_startup_dry_run(configs, duration_sec=args.duration_sec)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
     debug_clients = load_debug_clients(env)
     if args.mode == "getme":
         results = asyncio.run(get_me(configs))

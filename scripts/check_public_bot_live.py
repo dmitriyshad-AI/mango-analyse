@@ -47,6 +47,12 @@ from scripts.run_telegram_public_pilot_bots import (
     write_json_atomic,
 )
 
+HEARTBEAT_REQUIRED_GUARD_KEYS = (
+    *REQUIRED_GUARD_KEYS,
+    "semantic_output_verifier",
+    "output_sanitizer",
+)
+
 
 DEFAULT_CHECK_HEARTBEAT_PATH = DEFAULT_RUNTIME_DIR / "public_bot_live_check_heartbeat.json"
 DEFAULT_BOT_CODEX_HOME = Path.home() / ".mango_local" / "codex_bot_home"
@@ -385,7 +391,7 @@ def public_bot_heartbeat_status(
     if effective_profile != DIRECT_PATH_PILOT_CONFIG_VERSION:
         failures.append({"reason": "public_bot_profile_off", "effective_profile": effective_profile})
     active_guards = payload.get("active_guards") if isinstance(payload.get("active_guards"), Mapping) else {}
-    for key in REQUIRED_GUARD_KEYS:
+    for key in HEARTBEAT_REQUIRED_GUARD_KEYS:
         if active_guards.get(key) is not True:
             failures.append({"reason": "public_bot_guard_off", "guard": key})
 
@@ -520,6 +526,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--heartbeat-path", type=Path, default=DEFAULT_CHECK_HEARTBEAT_PATH)
     parser.add_argument("--bot-heartbeat-path", type=Path, default=None)
     parser.add_argument("--heartbeat-stale-after-sec", type=int, default=180)
+    parser.add_argument("--heartbeat-only", action="store_true")
     parser.add_argument("--smoke-force-profile", action="store_true")
     parser.add_argument("--fail-on-zero-drafts", action="store_true")
     args = parser.parse_args(argv)
@@ -541,14 +548,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     profile_selfcheck = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=config.dialogue_contract_pipeline_enabled)
     expected_online_prices = expected_online_prices_from_snapshot(config.snapshot_path, config.brand)
-    turns = asyncio.run(
-        run_checks(
-            config,
-            debug_clients=load_debug_clients(env),
-            smoke_force_profile=args.smoke_force_profile,
+    turns = ()
+    failures = ()
+    if not args.heartbeat_only:
+        turns = asyncio.run(
+            run_checks(
+                config,
+                debug_clients=load_debug_clients(env),
+                smoke_force_profile=args.smoke_force_profile,
+            )
         )
-    )
-    failures = validate_turns(turns, expected_online_prices=expected_online_prices)
+        failures = validate_turns(turns, expected_online_prices=expected_online_prices)
     zero_alert = zero_drafts_alert(Path(os.environ.get(PILOT_STORE_PATH_ENV) or config.store_path), now=datetime.now(timezone.utc))
     ok = bool(bot_heartbeat["ok"]) and not failures and not (args.fail_on_zero_drafts and zero_alert["alert"])
     payload = {
@@ -564,6 +574,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "profile_activation": activation.to_json_dict(),
         "profile_selfcheck": profile_selfcheck.to_json_dict(),
         "bot_heartbeat": dict(bot_heartbeat),
+        "heartbeat_only": bool(args.heartbeat_only),
         "smoke_force_profile": bool(args.smoke_force_profile),
         "turns": [turn.to_json_dict() for turn in turns],
         "failures": [*list(bot_heartbeat.get("failures") or ()), *list(failures)],

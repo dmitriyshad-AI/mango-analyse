@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -19,13 +20,22 @@ from scripts.run_telegram_public_pilot_bots import (
     known_client_fields_for_session,
     known_dialog_fields_from_messages,
     load_debug_clients,
+    merged_env,
     knowledge_base_version_for_store,
     normalize_phone,
     parse_debug_phone_command,
     public_telegram_reply_payload,
     public_reply_text,
     PublicPilotBotRuntime,
+    sync_env_to_process,
     write_public_bot_heartbeat,
+)
+from mango_mvp.channels.pilot_profile_runtime import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    ENFORCE_CANONICAL_PROFILE_ENV,
+    ensure_canonical_pilot_profile,
+    pilot_profile_selfcheck,
 )
 from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
@@ -248,14 +258,83 @@ def test_write_public_bot_heartbeat_has_no_client_text(tmp_path: Path) -> None:
         status="polling",
         brands=("foton",),
         event="heartbeat",
+        effective_profile="pilot_gold_v1",
+        draft_path="direct_path",
+        active_guards={"presale_safety": True},
         summary={"counter": 1},
     )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "public_pilot_bot_heartbeat_v2_2026_06_21"
     assert payload["status"] == "polling"
     assert payload["brands"] == ["foton"]
+    assert payload["effective_profile"] == "pilot_gold_v1"
+    assert payload["draft_path"] == "direct_path"
+    assert payload["active_guards"]["presale_safety"] is True
     assert payload["summary"]["counter"] == 1
     assert "client_text" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_public_bot_selfcheck_requires_exact_pilot_profile(monkeypatch) -> None:
+    monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+
+    check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+
+    assert check.ok is False
+    assert "pilot_gold_profile_disabled" in check.failures
+
+
+def test_public_bot_selfcheck_rejects_disabled_and_boolean_profile_aliases(monkeypatch) -> None:
+    for raw in ("0", "on", "да"):
+        monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
+        monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, raw)
+
+        activation = ensure_canonical_pilot_profile()
+        check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+
+        assert activation.action == "operator_override_kept"
+        assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == raw
+        assert check.ok is False
+        assert "pilot_gold_profile_disabled" in check.failures
+
+
+def test_public_bot_env_file_sync_precedes_ensure_and_selfcheck(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(f'{ENFORCE_CANONICAL_PROFILE_ENV}="1"\n', encoding="utf-8")
+    monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+
+    env = {key: value for key, value in merged_env(env_file).items() if key == ENFORCE_CANONICAL_PROFILE_ENV}
+    sync_env_to_process(env)
+    activation = ensure_canonical_pilot_profile()
+    check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+
+    assert activation.action == "set_default"
+    assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert check.ok is True
+    assert check.effective_profile == DIRECT_PATH_PILOT_CONFIG_VERSION
+    os.environ.pop(DIRECT_PATH_PILOT_CONFIG_ENV, None)
+    os.environ.pop(ENFORCE_CANONICAL_PROFILE_ENV, None)
+
+
+def test_runtime_context_overrides_force_profile_without_process_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=_night_snapshot(tmp_path),
+        store_enabled=False,
+        context_overrides={DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION},
+    )
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+
+    context = runtime.build_context(chat_id=123, session=ChatSession(), current_text="цена?")
+    runtime.close()
+
+    assert context[DIRECT_PATH_PILOT_CONFIG_ENV] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
 
 
 def test_configs_from_env_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:

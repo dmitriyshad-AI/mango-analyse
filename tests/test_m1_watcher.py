@@ -228,6 +228,14 @@ def test_task_env_delta_overrides_default_production_stack(tmp_path):
     assert '"TELEGRAM_STEP4_KEEP_ANSWER": "1"' in report
 
 
+def test_effective_task_env_adds_canonical_profile_only_when_enforced() -> None:
+    plain = watcher.effective_task_env({})
+    enforced = watcher.effective_task_env({"ENFORCE_CANONICAL_PROFILE": "1"})
+
+    assert "TELEGRAM_DIRECT_PATH_PILOT_CONFIG" not in plain
+    assert enforced["TELEGRAM_DIRECT_PATH_PILOT_CONFIG"] == "pilot_gold_v1"
+
+
 def test_status_writes_date_rotated_log_tail(tmp_path):
     w = _new_watcher(tmp_path)
     assert w.process_once() == "idle"

@@ -13,10 +13,14 @@ from typing import Any, Mapping, Sequence
 from urllib import parse as url_parse
 
 from mango_mvp.channels.subscription_llm import (
-    DIRECT_PATH_PILOT_CONFIG_ENV,
-    DIRECT_PATH_PILOT_CONFIG_VERSION,
     DIRECT_PATH_REAL_MANAGER_GOLD_PACK_VERSION,
     SubscriptionLlmDraftProvider,
+)
+from mango_mvp.channels.pilot_profile_runtime import (
+    ensure_canonical_pilot_profile,
+    pilot_profile_selfcheck,
+    raise_for_failed_selfcheck,
+    stderr_warning,
 )
 from mango_mvp.integrations.amo_wappi_phase1 import (
     AI_OFFICE_ENV_FILE,
@@ -432,7 +436,8 @@ def build_runner(args: argparse.Namespace) -> AmoWappiDraftLoop:
     load_env_file(args.env_file)
     if args.ai_office_env_file.expanduser().exists():
         load_env_file(args.ai_office_env_file)
-    os.environ.setdefault(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+    ensure_canonical_pilot_profile(warn=stderr_warning)
+    raise_for_failed_selfcheck(pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True))
     config = build_config(args)
     ai_office_config = AiOfficeClientConfig.from_env()
     wappi_config = WappiClientConfig.from_env()

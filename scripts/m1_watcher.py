@@ -24,6 +24,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from mango_mvp.channels.pilot_profile_runtime import ensure_canonical_pilot_profile
+
 
 WATCHER_VERSION = "m1_watcher_v1_2_2026_06_07"
 
@@ -265,6 +272,7 @@ def effective_task_env(delta: Mapping[str, str] | None = None) -> dict[str, str]
     env = dict(PRODUCTION_ENV_STACK)
     if delta:
         env.update(delta)
+    ensure_canonical_pilot_profile(environ=env)
     return env
 
 

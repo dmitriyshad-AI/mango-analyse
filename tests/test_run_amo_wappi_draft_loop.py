@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from types import SimpleNamespace
 from pathlib import Path
 
 import scripts.run_amo_wappi_draft_loop as runner
+from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, ENFORCE_CANONICAL_PROFILE_ENV
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
 from mango_mvp.integrations.draft_loop import DraftLoopKey, DraftLoopProfile
 
@@ -83,6 +86,39 @@ def test_safe_transport_blocks_unlisted_wappi_get() -> None:
         pass
     else:  # pragma: no cover
         raise AssertionError("direct amoCRM note writes must be denied")
+
+
+def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
+    monkeypatch.setattr(runner, "load_env_file", lambda _path: {})
+    monkeypatch.setattr(runner, "build_config", lambda _args: SimpleNamespace(state_path=tmp_path / "state.json"))
+    monkeypatch.setattr(runner.AiOfficeClientConfig, "from_env", staticmethod(lambda: SimpleNamespace(base_url="https://api.fotonai.online")))
+    monkeypatch.setattr(runner.WappiClientConfig, "from_env", staticmethod(lambda: SimpleNamespace(base_url="https://wappi.pro")))
+    monkeypatch.setattr(runner, "build_safe_transport", lambda _ai, _wappi: object())
+    monkeypatch.setattr(runner, "SubscriptionLlmDraftProvider", lambda **_kwargs: object())
+    monkeypatch.setattr(runner, "WappiPhase1Client", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "AiOfficeAmoNoteClient", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "build_context_builder", lambda _snapshot: object())
+    monkeypatch.setattr(runner, "DraftLoopState", lambda _path: object())
+    monkeypatch.setattr(runner, "build_auto_resolver", lambda _args: None)
+    monkeypatch.setattr(runner, "AmoWappiDraftLoop", lambda **kwargs: kwargs)
+    args = argparse.Namespace(
+        env_file=tmp_path / ".env",
+        ai_office_env_file=tmp_path / ".env.ai",
+        model="gpt-5.5",
+        reasoning="xhigh",
+        timeout_sec=240,
+        snapshot=tmp_path / "snapshot.json",
+    )
+
+    runner.build_runner(args)
+    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
+
+    monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
+    runner.build_runner(args)
+    assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == "pilot_gold_v1"
+    os.environ.pop(DIRECT_PATH_PILOT_CONFIG_ENV, None)
 
 
 class FakeMcp:

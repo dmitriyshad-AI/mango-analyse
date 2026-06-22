@@ -1,17 +1,25 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from scripts.run_telegram_public_pilot_bots import BrandBotConfig
 from scripts.check_public_bot_live import (
     ExpectedOnlinePrices,
     LiveCheckTurn,
+    apply_runtime_env,
     expected_online_prices_from_snapshot,
     llm_fallback_detected,
+    public_bot_heartbeat_status,
     retrieved_fact_keys,
+    smoke_context_overrides,
     validate_turns,
     zero_drafts_alert,
 )
+from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION
 
 
 def test_retrieved_fact_keys_collects_nested_direct_path_metadata() -> None:
@@ -183,3 +191,96 @@ def test_zero_drafts_alert_missing_store_is_non_fatal(tmp_path) -> None:
 
     assert result["drafts_since"] is None
     assert result["alert"] is False
+
+
+def test_apply_runtime_env_does_not_force_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+
+    apply_runtime_env({}, snapshot_path=tmp_path / "snapshot.json")
+
+    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
+
+
+def _write_bot_heartbeat(path: Path, *, last_cycle_at: datetime, profile: str = DIRECT_PATH_PILOT_CONFIG_VERSION, guards=None) -> None:
+    payload = {
+        "schema_version": "public_pilot_bot_heartbeat_v2_2026_06_21",
+        "status": "polling",
+        "last_cycle_at": last_cycle_at.isoformat(timespec="seconds"),
+        "pid": os.getpid(),
+        "brands": ["foton"],
+        "event": "heartbeat",
+        "effective_profile": profile,
+        "draft_path": "direct_path" if profile else "dialogue_contract_pipeline",
+        "active_guards": guards
+        if guards is not None
+        else {
+            "presale_safety": True,
+            "presale_pii_memory": True,
+            "pii_relation_stopwords": True,
+            "verifier_handoff_claims": True,
+        },
+        "summary": {},
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_public_bot_heartbeat_status_accepts_fresh_polling_heartbeat(tmp_path) -> None:
+    now = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "heartbeat.json"
+    _write_bot_heartbeat(path, last_cycle_at=now - timedelta(seconds=20))
+
+    status = public_bot_heartbeat_status(path, brand="foton", now=now, process_alive_fn=lambda _pid: True)
+
+    assert status["ok"] is True
+    assert status["effective_profile"] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert status["active_guards"]["presale_safety"] is True
+
+
+def test_public_bot_heartbeat_status_rejects_stale_heartbeat(tmp_path) -> None:
+    now = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "heartbeat.json"
+    _write_bot_heartbeat(path, last_cycle_at=now - timedelta(seconds=181))
+
+    status = public_bot_heartbeat_status(path, brand="foton", now=now, stale_after_seconds=180, process_alive_fn=lambda _pid: True)
+
+    assert status["ok"] is False
+    assert any(item["reason"] == "public_bot_heartbeat_stale" for item in status["failures"])
+
+
+def test_public_bot_heartbeat_status_rejects_profile_and_guard_off(tmp_path) -> None:
+    now = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "heartbeat.json"
+    _write_bot_heartbeat(
+        path,
+        last_cycle_at=now,
+        profile="",
+        guards={
+            "presale_safety": True,
+            "presale_pii_memory": False,
+            "pii_relation_stopwords": True,
+            "verifier_handoff_claims": True,
+        },
+    )
+
+    status = public_bot_heartbeat_status(path, brand="foton", now=now, process_alive_fn=lambda _pid: True)
+
+    assert status["ok"] is False
+    reasons = {(item["reason"], item.get("guard")) for item in status["failures"]}
+    assert ("public_bot_profile_off", None) in reasons
+    assert ("public_bot_guard_off", "presale_pii_memory") in reasons
+
+
+def test_smoke_force_profile_uses_local_context_without_process_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=tmp_path / "snapshot.json",
+        store_enabled=False,
+    )
+
+    overrides = smoke_context_overrides(config, smoke_force_profile=True)
+
+    assert overrides == {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ

@@ -10,6 +10,12 @@ from typing import Any, Callable, Mapping, Sequence
 from mango_mvp.channels.pilot_context import build_pilot_context
 from mango_mvp.channels.preview_service import LlmChannelPreviewService
 from mango_mvp.channels.subscription_llm import SubscriptionLlmDraftProvider
+from mango_mvp.channels.pilot_profile_runtime import (
+    ensure_canonical_pilot_profile,
+    pilot_profile_selfcheck,
+    raise_for_failed_selfcheck,
+    stderr_warning,
+)
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context
 from mango_mvp.channels.telegram_bot_polling import (
     TelegramBotDraftResult,
@@ -102,6 +108,8 @@ def run_long_polling(confirmation: str) -> int:
         raise SystemExit("Long polling не запущен: TELEGRAM_PILOT_ENABLED должен быть включен.")
     config = TelegramBotPollingConfig.from_env()
     manager_config = TelegramManagerInboxConfig.from_env()
+    ensure_canonical_pilot_profile(warn=stderr_warning)
+    raise_for_failed_selfcheck(pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True))
     if not manager_config.default_manager_chat_id:
         raise SystemExit(f"Long polling не запущен: нужно задать {TELEGRAM_MANAGER_CHAT_IDS_ENV}.")
 

@@ -84,6 +84,9 @@ DIRECT_PATH_MODEL_P0_ENV = "TELEGRAM_DIRECT_PATH_MODEL_P0"
 P0_MODEL_LED_ENV = "TELEGRAM_P0_MODEL_LED"
 
 
+PROSE_MODEL_LED_ENV = "TELEGRAM_PROSE_MODEL_LED"
+
+
 DIRECT_DEFAULT_MANAGER_ENV = "TELEGRAM_DIRECT_DEFAULT_MANAGER"
 
 
@@ -460,6 +463,15 @@ def _p0_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
         context,
         P0_MODEL_LED_ENV,
         aliases=("p0_model_led", "p0_model_led_enabled"),
+    )
+    return bool(explicit) if explicit is not None else False
+
+
+def _prose_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        PROSE_MODEL_LED_ENV,
+        aliases=("prose_model_led", "prose_model_led_enabled"),
     )
     return bool(explicit) if explicit is not None else False
 

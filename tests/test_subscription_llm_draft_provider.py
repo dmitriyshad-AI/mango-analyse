@@ -57,6 +57,7 @@ from mango_mvp.channels.subscription_llm import (
     PRESALE_PII_MEMORY_ENV,
     PRESALE_SOURCE_ID_ENV,
     PRESALE_VERIFIER_FAILSOFT_ENV,
+    PROSE_MODEL_LED_ENV,
     ASSUMED_SCOPE_GUARD_ENV,
     RETRIEVER_MODEL_DRIVEN_ENV,
     RETRIEVER_NEED_SHADOW_ENV,
@@ -89,6 +90,7 @@ from mango_mvp.channels.subscription_llm import (
     apply_tone_sell_prompt_observer,
     apply_warm_frame,
     apply_semantic_output_verifier,
+    apply_prose_model_led_quality_guard,
     apply_semantic_diagnosis_guard,
     _direct_path_context_fact_pack,
     _direct_path_render_fact_block,
@@ -122,6 +124,7 @@ from mango_mvp.channels.subscription_llm import (
     find_redundant_questions_for_known_context,
     build_codex_exec_env,
     _normalize_direct_path_payload,
+    _build_direct_path_prompt,
     parse_llm_json,
     strip_internal_service_markers,
     known_context_fields,
@@ -14014,3 +14017,137 @@ def test_direct_path_real_manager_gold_p0_preblock_still_skips_model() -> None:
     assert result.route == "manager_only"
     assert result.metadata["direct_path"]["preblocked"] is True
     assert result.metadata["direct_path"]["gold_real_enabled"] is False
+
+
+def test_prose_model_led_default_off_and_not_in_pilot_profile() -> None:
+    assert PROSE_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._prose_model_led_enabled({}) is False
+    assert subscription_llm._prose_model_led_enabled({PROSE_MODEL_LED_ENV: "1"}) is True
+    assert subscription_llm._prose_model_led_enabled({PROSE_MODEL_LED_ENV: "0"}) is False
+
+
+def test_prose_model_led_prompt_block_is_flagged_only() -> None:
+    base_context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
+
+    off_prompt = _build_direct_path_prompt("Есть места на 8 класс?", context=base_context, facts={})
+    on_prompt = _build_direct_path_prompt(
+        "Есть места на 8 класс?",
+        context={**base_context, PROSE_MODEL_LED_ENV: "1"},
+        facts={},
+    )
+
+    assert "Качество текста:" not in off_prompt
+    assert "Качество текста:" in on_prompt
+    assert "Не начинай с казённых фраз" in on_prompt
+    assert "не обещай место" in on_prompt
+
+
+def test_prose_model_led_verified_fact_fallback_removes_robotic_opening() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        topic_id="theme:001_pricing",
+        draft_text="Передам менеджеру.",
+    )
+    context = {
+        "confirmed_facts": {
+            "price": "Фотон: очный курс для 8 класса стоит 44 600 ₽ за семестр.",
+        }
+    }
+
+    off = subscription_llm._promoted_verified_fact_text(result, context=context, client_message="Сколько стоит?")
+    on = subscription_llm._promoted_verified_fact_text(
+        result,
+        context={**context, PROSE_MODEL_LED_ENV: "1"},
+        client_message="Сколько стоит?",
+    )
+
+    assert "Да, сориентирую по проверенным условиям" in off
+    assert "сориентирую по проверенной" not in on.casefold()
+    assert "44 600 ₽" in on
+
+
+def test_prose_model_led_off_is_noop_for_placeholder_and_repeat() -> None:
+    text = "По местам не буду обещать без проверки. Передам менеджеру, чтобы он проверил наличие. [данные у менеджера]"
+    result = SubscriptionDraftResult(route="draft_for_manager", draft_text=text)
+    context = {
+        "recent_messages": [f"bot: {text}"],
+        "known_slots": {"grade": "8", "subject": "математика"},
+    }
+
+    guarded = apply_prose_model_led_quality_guard(result, client_message="Есть места?", context=context)
+
+    assert guarded is result
+    assert guarded.draft_text == text
+
+
+def test_prose_model_led_removes_internal_placeholders_from_client_text() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Записала [данные у менеджера]. Передам менеджеру. [...]",
+    )
+
+    guarded = apply_prose_model_led_quality_guard(result, context={PROSE_MODEL_LED_ENV: "1"})
+
+    assert "[данные у менеджера]" not in guarded.draft_text
+    assert "[...]" not in guarded.draft_text
+    assert "prose_model_led:internal_client_placeholder" in guarded.safety_flags
+    assert guarded.metadata["prose_model_led"]["placeholder_removed"] is True
+
+
+def test_prose_model_led_removes_meta_fact_phrase_before_client_output() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Точной ссылки на тест у меня сейчас в фактах нет, поэтому её нужно проверить. Менеджер подскажет форму.",
+    )
+
+    guarded = apply_prose_model_led_quality_guard(result, context={PROSE_MODEL_LED_ENV: "1"})
+
+    assert "в фактах нет" not in guarded.draft_text.casefold()
+    assert "Эту деталь нужно проверить у менеджера" in guarded.draft_text
+    assert "prose_model_led:meta_fact_phrase" in guarded.safety_flags
+
+
+def test_prose_model_led_rewrites_unsupported_send_action() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="По онлайн-формату можно посмотреть фрагмент занятия. Прикрепляю фрагмент и инструкцию по записи.",
+    )
+
+    guarded = apply_prose_model_led_quality_guard(result, context={PROSE_MODEL_LED_ENV: "1"})
+
+    assert "Прикрепляю" not in guarded.draft_text
+    assert "должен отправить менеджер" in guarded.draft_text
+    assert "prose_model_led:unsupported_send_action" in guarded.safety_flags
+
+
+def test_prose_model_led_rephrases_repeated_availability_handoff() -> None:
+    previous = "По местам не буду обещать без проверки по вашему запросу (8 класс, математика). Передам менеджеру, чтобы он проверил наличие по конкретной группе."
+    result = SubscriptionDraftResult(route="draft_for_manager", draft_text=previous)
+    context = {
+        PROSE_MODEL_LED_ENV: "1",
+        "known_slots": {"grade": "8", "subject": "математика"},
+        "recent_messages": [f"bot: {previous}"],
+    }
+
+    guarded = apply_prose_model_led_quality_guard(result, client_message="А места есть?", context=context)
+
+    assert guarded.draft_text != previous
+    assert "По местам не буду обещать без проверки" not in guarded.draft_text
+    assert "Заранее место не подтверждаю" in guarded.draft_text
+    assert "prose_model_led:near_repeat_rephrased" in guarded.safety_flags
+
+
+def test_prose_model_led_does_not_rewrite_p0_safe_templates() -> None:
+    previous = COMPLAINT_SAFE_TEXT
+    result = SubscriptionDraftResult(
+        route="manager_only",
+        topic_id="theme:009_refund",
+        draft_text=COMPLAINT_SAFE_TEXT,
+        safety_flags=("complaint_apology_guarded", "manager_approval_required", "no_auto_send"),
+    )
+    context = {PROSE_MODEL_LED_ENV: "1", "recent_messages": [f"bot: {previous}"]}
+
+    guarded = apply_prose_model_led_quality_guard(result, client_message="Жалоба", context=context)
+
+    assert guarded.draft_text == COMPLAINT_SAFE_TEXT
+    assert not any(str(flag).startswith("prose_model_led:near_repeat") for flag in guarded.safety_flags)

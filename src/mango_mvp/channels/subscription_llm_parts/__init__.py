@@ -18,6 +18,7 @@ __all__.extend(
         "ANSWERABILITY_SHADOW_ENV",
         "DIRECT_PATH_MODEL_P0_ENV",
         "P0_MODEL_LED_ENV",
+        "PROSE_MODEL_LED_ENV",
         "PRICE_AXES_CLEAN_DEFER_ENV",
         "PRICE_AXES_SELECTOR_ENV",
         "RETRIEVER_MODEL_DRIVEN_ENV",
@@ -27,6 +28,7 @@ __all__.extend(
         "DEAL_ACTION_UNKNOWN",
         "DEAL_ACTIONS",
         "apply_deal_action_decision_layer",
+        "apply_prose_model_led_quality_guard",
         "apply_assumed_scope_guard",
         "_answerability_shadow_enabled",
         "_assumed_scope_guard_enabled",
@@ -35,6 +37,7 @@ __all__.extend(
         "_direct_path_model_p0_enabled",
         "_direct_path_slot_provenance",
         "_direct_path_soft_slot_scope",
+        "_prose_model_led_enabled",
         "_retriever_model_driven_enabled",
         "_retriever_need_shadow_enabled",
     ]

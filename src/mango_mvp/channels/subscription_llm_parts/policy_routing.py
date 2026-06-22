@@ -62,6 +62,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _p0_model_led_complaint_backstop,
     _p0_model_led_enabled,
     _p0_model_led_filter_high_risk_codes,
+    _prose_model_led_enabled,
     _presale_prompt_child_name_value,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
@@ -4513,6 +4514,7 @@ def _promoted_verified_fact_text(
     if not facts:
         return ""
     fact_sentence = " ".join(_ensure_sentence(fact) for fact in facts)
+    prose_model_led = _prose_model_led_enabled(context)
     if result.topic_id == "theme:001_pricing":
         asks_validity = any(
             marker in str(client_message or "").casefold().replace("ё", "е")
@@ -4526,10 +4528,16 @@ def _promoted_verified_fact_text(
             else "Если напишете класс ребёнка и удобный формат, подберём самый подходящий вариант оплаты."
         )
         return _soften_current_price_deadline_text(
-            f"Да, сориентирую по проверенным условиям. {fact_sentence}{suffix} {next_step}",
+            (
+                f"{fact_sentence}{suffix} {next_step}"
+                if prose_model_led
+                else f"Да, сориентирую по проверенным условиям. {fact_sentence}{suffix} {next_step}"
+            ),
             client_message=client_message,
         )
     if result.topic_id == "theme:013_schedule":
+        if prose_model_led:
+            return f"{fact_sentence} Если напишете класс, предмет и удобный день, подберём ближайший подходящий вариант."
         return (
             f"По расписанию есть проверенная информация. {fact_sentence} "
             "Если напишете класс, предмет и удобный день, подберём ближайший подходящий вариант."
@@ -4537,25 +4545,35 @@ def _promoted_verified_fact_text(
     if result.topic_id == "theme:014_format":
         facts = _prefer_format_facts(facts, query=client_message) or facts
         fact_sentence = " ".join(_ensure_sentence(fact) for fact in facts[:3])
+        if prose_model_led:
+            return f"{fact_sentence} Если напишете класс и цель обучения, поможем подобрать подходящую группу."
         return (
             f"Да, по формату есть проверенная информация. {fact_sentence} "
             "Если напишете класс и цель обучения, поможем подобрать подходящую группу."
         )
     if result.topic_id in {"theme:016_program", "theme:020_enrollment", "theme:021_continuation", "theme:022_age_level_testing", "theme:023_trial_class"}:
+        if prose_model_led:
+            return f"{fact_sentence} Напишите класс, предмет и цель обучения — подберём подходящий следующий шаг."
         return (
             f"По программе можно сориентироваться так. {fact_sentence} "
             "Напишите класс, предмет и цель обучения — подберём подходящий следующий шаг."
         )
     if result.topic_id in {"theme:005_discounts", "theme:006_installment"}:
+        if prose_model_led:
+            return f"{fact_sentence} Если напишете курс и формат, подскажем, какой вариант удобнее под вашу ситуацию."
         return (
             f"По условиям оплаты есть проверенная информация. {fact_sentence} "
             "Если напишете курс и формат, подскажем, какой вариант удобнее под вашу ситуацию."
         )
     if result.topic_id in {"theme:007_matkap_payment", "theme:008_tax_deduction", "theme:011_contract", "theme:012_certificates"}:
+        if prose_model_led:
+            return f"{fact_sentence} Если напишете, какой именно документ нужен, подскажем следующий шаг."
         return (
             f"По документам есть проверенная информация. {fact_sentence} "
             "Если напишете, какой именно документ нужен, подскажем следующий шаг."
         )
+    if prose_model_led:
+        return f"{fact_sentence} Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."
     return (
         f"Да, сориентирую по проверенной информации. {fact_sentence} "
         "Если напишете класс ребёнка и задачу, поможем подобрать подходящий вариант."

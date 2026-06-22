@@ -36,6 +36,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
     _p0_model_led_enabled,
+    _prose_model_led_enabled,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_fact_by_brand_key,
     _direct_path_fact_value,
@@ -135,6 +136,27 @@ def _direct_path_mission_text(*, brand_label: str, context: Optional[Mapping[str
 
 def _direct_path_route_rubric_block(context: Optional[Mapping[str, Any]]) -> str:
     return f"{DIRECT_PATH_ROUTE_RUBRIC_BLOCK}\n\n" if _route_rubric_enabled(context) else ""
+
+
+DIRECT_PATH_PROSE_MODEL_LED_BLOCK = (
+    "Качество текста:\n"
+    "- Пиши клиентский текст сам, естественно и по-разному на повторах; не копируй служебные шаблоны.\n"
+    "- Не начинай с казённых фраз вроде «Да, сориентирую по проверенной информации/условиям».\n"
+    "- Если вопрос про наличие мест, бронь, запись на группу или смену: ответь по известным фактам, но не обещай место. "
+    "Сформулируй живо: что уже понятно и что менеджер должен проверить по конкретной группе/смене.\n"
+    "- Если приходится передать менеджеру, не повторяй дословно предыдущий ответ и не делай весь текст одной фразой «передам менеджеру».\n"
+    "- Не пиши «в фактах нет», «по фактам не вижу», «у меня нет данных» клиенту. Скажи по-человечески: эту деталь нужно проверить у менеджера.\n"
+    "- Не пиши «прикрепляю», «присылаю», «отправляю», «скину», «дам ссылку/фрагмент/инструкцию», если ты реально не отправляешь файл или ссылку. "
+    "Можно написать, что менеджер проверит и пришлёт материал/ссылку.\n"
+    "- По адресам: общий действующий адрес можно назвать. Но если клиент спрашивает, куда ехать на конкретное занятие/группу, "
+    "не привязывай группу к адресу без точного факта расписания; скажи, что площадку конкретной группы подтвердит менеджер.\n"
+    "- Не выводи клиенту внутренние плейсхолдеры в квадратных скобках, включая «[данные у менеджера]»."
+)
+
+
+def _direct_path_prose_model_led_block(context: Optional[Mapping[str, Any]]) -> str:
+    return f"{DIRECT_PATH_PROSE_MODEL_LED_BLOCK}\n\n" if _prose_model_led_enabled(context) else ""
+
 
 def _direct_path_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     if isinstance(context, Mapping):
@@ -1662,6 +1684,7 @@ def _build_direct_path_prompt(
         )
     return (
         f"{_direct_path_mission_text(brand_label=brand_label, context=context)}\n\n"
+        f"{_direct_path_prose_model_led_block(context)}"
         f"{_direct_path_route_rubric_block(context)}"
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"

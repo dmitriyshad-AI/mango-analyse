@@ -162,6 +162,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _p0_model_led_complaint_backstop,
     _p0_model_led_enabled,
     _p0_model_led_filter_high_risk_codes,
+    _prose_model_led_enabled,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
 )
@@ -1837,6 +1838,154 @@ def _direct_path_finalize_metadata(
     return replace(result, metadata=metadata)
 
 
+_INTERNAL_CLIENT_PLACEHOLDER_RE = re.compile(r"\s*\[(?:\s*данные\s+у\s+менеджера\s*|\.{3}|…)\]\s*", re.I)
+_PROSE_MODEL_LED_META_FACT_RE = re.compile(
+    r"(?:^|(?<=[.!?])\s*)"
+    r"[^.!?\n]{0,120}?\b(?:у\s+меня|я|мы)?\s*(?:сейчас\s+)?(?:в\s+)?(?:фактах|данных|по\s+фактам|по\s+данным)"
+    r"[^.!?\n]{0,80}?\b(?:нет|не\s+вижу|не\s+наш[её]л|отсутств)"
+    r"[^.!?\n]*(?:[.!?]|$)",
+    re.I,
+)
+_PROSE_MODEL_LED_SEND_ACTION_RE = re.compile(
+    r"(?:^|(?<=[.!?])\s*)"
+    r"[^.!?\n]{0,80}?\b(?:прикрепляю|присылаю|пришлю|отправляю|отправлю|скину|дам)\b"
+    r"[^.!?\n]{0,120}?\b(?:фрагмент|ссылк\w*|инструкц\w*|материал\w*|форм[ауеы]?)\b"
+    r"[^.!?\n]*(?:[.!?]|$)",
+    re.I,
+)
+
+
+def _sanitize_internal_client_placeholders(text: str) -> tuple[str, bool]:
+    raw = str(text or "")
+    if not raw:
+        return "", False
+    value, removed = _INTERNAL_CLIENT_PLACEHOLDER_RE.subn(" ", raw)
+    if not removed:
+        return raw, False
+    return _normalize_output_sanitizer_text(value), True
+
+
+def _sanitize_prose_model_led_unsafe_phrases(text: str) -> tuple[str, tuple[str, ...]]:
+    value = str(text or "")
+    reasons: list[str] = []
+    value, meta_removed = _PROSE_MODEL_LED_META_FACT_RE.subn(
+        " Эту деталь нужно проверить у менеджера.",
+        value,
+    )
+    if meta_removed:
+        reasons.append("meta_fact_phrase")
+    value, send_rewritten = _PROSE_MODEL_LED_SEND_ACTION_RE.subn(
+        " Материал или ссылку должен отправить менеджер после проверки подходящего варианта.",
+        value,
+    )
+    if send_rewritten:
+        reasons.append("unsupported_send_action")
+    return _normalize_output_sanitizer_text(value), tuple(reasons)
+
+
+def _prose_model_led_protected_result(result: SubscriptionDraftResult) -> bool:
+    flags = {str(flag) for flag in result.safety_flags}
+    if result.route == "manager_only" or result.topic_id in HIGH_RISK_THEME_IDS:
+        return True
+    protected_flags = {
+        "complaint_apology_guarded",
+        "payment_dispute_manager_only",
+        "zero_collect_refund_guarded",
+        "zero_collect_legal_guarded",
+        "direct_path_preblocked_p0",
+        "high_risk_manager_only",
+    }
+    if flags & protected_flags:
+        return True
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    return bool(metadata.get("final_p0_text_override") or metadata.get("forced_route_high_risk"))
+
+
+def _prose_live_status_rephrase(context: Optional[Mapping[str, Any]], *, client_message: str = "") -> str:
+    known = known_context_fields(context)
+    details: list[str] = []
+    if known.get("grade"):
+        details.append(f"{known['grade']} класс")
+    if known.get("subject"):
+        details.append(str(known["subject"]))
+    suffix = f" по вашему запросу ({', '.join(details)})" if details else ""
+    text = str(client_message or "").casefold().replace("ё", "е")
+    target = "смене или группе" if has_any_marker(text, ("лагер", "лвш", "смен", "менделеево")) else "группе"
+    return (
+        f"Заранее место не подтверждаю{suffix}: его нужно сверить по конкретной {target}. "
+        "Отмечу это менеджеру, чтобы он проверил наличие перед оформлением."
+    )
+
+
+def _prose_model_led_repeat_fallback(
+    text: str,
+    *,
+    result: SubscriptionDraftResult,
+    client_message: str,
+    context: Optional[Mapping[str, Any]],
+) -> str:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    if has_any_marker(normalized, ("мест", "налич", "брон", "заброни", "оформить место", "проверить места")):
+        return _prose_live_status_rephrase(context, client_message=client_message)
+    return _strict_antirepeat_fallback_text(context, result=result, client_message=client_message)
+
+
+def apply_prose_model_led_quality_guard(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _prose_model_led_enabled(context):
+        return result
+    text = str(result.draft_text or "")
+    cleaned, placeholder_removed = _sanitize_internal_client_placeholders(text)
+    reasons: list[str] = []
+    if placeholder_removed:
+        reasons.append("internal_client_placeholder")
+    protected = _prose_model_led_protected_result(result)
+    repeated = False
+    if not protected:
+        cleaned, unsafe_reasons = _sanitize_prose_model_led_unsafe_phrases(cleaned)
+        reasons.extend(unsafe_reasons)
+        previous = _humanity_previous_bot_texts(context)
+        trimmed = _trim_repeated_cosmetic_opening(cleaned, previous)
+        if trimmed != cleaned:
+            cleaned = trimmed
+            reasons.append("repeated_cosmetic_opening")
+        repeated = bool(previous and is_near_repeat(cleaned, previous[-6:], threshold=0.88))
+        if repeated:
+            cleaned = _prose_model_led_repeat_fallback(
+                cleaned,
+                result=result,
+                client_message=client_message,
+                context=context,
+            )
+            reasons.append("near_repeat_rephrased")
+    if cleaned == text and not reasons:
+        return result
+    flags = [*result.safety_flags]
+    if reasons:
+        flags.extend("prose_model_led:" + reason for reason in reasons)
+    metadata = dict(result.metadata)
+    metadata["prose_model_led"] = {
+        "enabled": True,
+        "applied": bool(reasons),
+        "protected": protected,
+        "placeholder_removed": placeholder_removed,
+        "near_repeat": repeated,
+        "reasons": list(dict.fromkeys(reasons)),
+    }
+    if placeholder_removed or repeated:
+        metadata = _metadata_with_guarded_original_text(metadata, text, guard="prose_model_led")
+    return replace(
+        result,
+        draft_text=cleaned,
+        safety_flags=tuple(dict.fromkeys(flags)),
+        metadata=metadata,
+    )
+
+
 _A2_TIME_RE = re.compile(
     r"\b(?:сегодня|завтра|послезавтра|утром|дн[её]м|вечером|после\s+обеда|до\s+\d{1,2}|"
     r"после\s+\d{1,2}|в\s+\d{1,2}(?::\d{2})?|с\s+\d{1,2}\s+до\s+\d{1,2})\b",
@@ -2462,6 +2611,7 @@ def apply_authoritative_output_gate(
     """
 
     result = apply_output_sanitizer(result, context=context, client_message=client_message)
+    result = apply_prose_model_led_quality_guard(result, context=context, client_message=client_message)
     findings = _authoritative_gate_findings(result, client_message=client_message, context=context)
     actions = tuple(_authoritative_gate_action(finding["code"]) for finding in findings)
     direct_path_keep_text = _authoritative_gate_direct_path_keep_text(result, findings)

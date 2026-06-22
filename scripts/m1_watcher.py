@@ -29,7 +29,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from mango_mvp.channels.pilot_profile_runtime import ensure_canonical_pilot_profile
+from mango_mvp.channels.pilot_profile_runtime import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    ensure_canonical_pilot_profile,
+)
 
 
 WATCHER_VERSION = "m1_watcher_v1_2_2026_06_07"
@@ -52,8 +56,10 @@ ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/\-]{0,64}$")
 CONFLICT_COPY_RE = re.compile(r"\s\(\d+\)\.task\.yaml$")
 SET_SUFFIXES = (".jsonl", ".yaml")
 
-# Standard production-like measurement stack. Task files provide only a delta
-# over this mapping, so an empty env block still exercises the full bot path.
+# Deprecated since 2026-06-21: historical M1-only measurement stack.
+# Task files provide only a delta over this mapping, so an empty env block still
+# exercises the old full bot path unless the watcher is explicitly started with
+# the V2 stack.
 PRODUCTION_ENV_STACK: dict[str, str] = {
     "TELEGRAM_HANDOFF_TRACE": "1",
     "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD": "1",
@@ -78,6 +84,22 @@ PRODUCTION_ENV_STACK: dict[str, str] = {
     "TELEGRAM_TONE_RICH_FORMAT": "1",
     "TELEGRAM_COMPOSITE_CONTRACT_FIX": "1",
     "DIALOGUE_CONTRACT_DEBUG_TRACE": "1",
+}
+
+PRODUCTION_ENV_STACK_DEPRECATED_SINCE = "2026-06-21"
+PRODUCTION_ENV_STACK_VERSION_LEGACY = "legacy"
+PRODUCTION_ENV_STACK_VERSION_V2 = "v2"
+DEFAULT_PRODUCTION_ENV_STACK_VERSION = PRODUCTION_ENV_STACK_VERSION_LEGACY
+
+PRODUCTION_ENV_STACK_V2: dict[str, str] = {
+    DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+}
+
+_PRODUCTION_ENV_STACK_ALIASES = {
+    "old": PRODUCTION_ENV_STACK_VERSION_LEGACY,
+    "v1": PRODUCTION_ENV_STACK_VERSION_LEGACY,
+    "legacy": PRODUCTION_ENV_STACK_VERSION_LEGACY,
+    "v2": PRODUCTION_ENV_STACK_VERSION_V2,
 }
 
 
@@ -268,8 +290,23 @@ def validate_task_dict(data: Mapping[str, object]) -> TaskSpec:
     )
 
 
-def effective_task_env(delta: Mapping[str, str] | None = None) -> dict[str, str]:
-    env = dict(PRODUCTION_ENV_STACK)
+def normalize_production_env_stack_version(value: str | None) -> str:
+    key = str(value or DEFAULT_PRODUCTION_ENV_STACK_VERSION).strip().lower()
+    version = _PRODUCTION_ENV_STACK_ALIASES.get(key)
+    if not version:
+        raise WatcherError("bad_production_env_stack", f"unknown production env stack: {value}")
+    return version
+
+
+def production_env_stack(version: str | None = None) -> dict[str, str]:
+    normalized = normalize_production_env_stack_version(version)
+    if normalized == PRODUCTION_ENV_STACK_VERSION_V2:
+        return dict(PRODUCTION_ENV_STACK_V2)
+    return dict(PRODUCTION_ENV_STACK)
+
+
+def effective_task_env(delta: Mapping[str, str] | None = None, *, stack_version: str | None = None) -> dict[str, str]:
+    env = production_env_stack(stack_version)
     if delta:
         env.update(delta)
     ensure_canonical_pilot_profile(environ=env)
@@ -371,6 +408,7 @@ class M1Watcher:
         runner: Runner | None = None,
         command_probe: CommandProbe | None = None,
         process_alive: Callable[[int], bool] | None = None,
+        production_stack_version: str = DEFAULT_PRODUCTION_ENV_STACK_VERSION,
     ) -> None:
         self.tests_root = tests_root
         self.tasks_root = tests_root / "tasks"
@@ -385,6 +423,7 @@ class M1Watcher:
         self.runner = runner
         self.command_probe = command_probe or run_command_probe
         self.process_alive = process_alive or self._process_alive
+        self.production_stack_version = normalize_production_env_stack_version(production_stack_version)
 
     @property
     def inbox(self) -> Path:
@@ -518,7 +557,7 @@ class M1Watcher:
     def _base_run_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
         env.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": "src"})
-        env.update(effective_task_env(extra))
+        env.update(effective_task_env(extra, stack_version=self.production_stack_version))
         return env
 
     def _readiness_checks(self, spec: TaskSpec, deploy_dir: Path, env: Mapping[str, str]) -> dict[str, object]:
@@ -734,6 +773,7 @@ class M1Watcher:
         results_path: Path | None = None,
         task_env_delta: Mapping[str, str] | None = None,
         effective_env: Mapping[str, str] | None = None,
+        production_stack_version: str | None = None,
     ) -> None:
         lines = [
             f"# M1 watcher report: {task_id}",
@@ -763,6 +803,7 @@ class M1Watcher:
         if effective_env is not None:
             lines.append("env:")
             lines.append("  production_stack: true")
+            lines.append(f"  production_stack_version: {production_stack_version or DEFAULT_PRODUCTION_ENV_STACK_VERSION}")
             lines.append(f"  task_delta: {json.dumps(dict(task_env_delta or {}), ensure_ascii=False, sort_keys=True)}")
             lines.append(f"  effective_task_env: {json.dumps(dict(effective_env), ensure_ascii=False, sort_keys=True)}")
         if results_path:
@@ -914,7 +955,7 @@ class M1Watcher:
         set_path = (self.tests_root / spec.set).resolve()
         work_out_dir = deploy_dir / "runs" / spec.id
         command = self._build_command(spec, deploy_dir, set_path, work_out_dir, bundle_info["kb_snapshot"])
-        task_env = effective_task_env(spec.env)
+        task_env = effective_task_env(spec.env, stack_version=self.production_stack_version)
         env = self._base_run_env(spec.env)
 
         try:
@@ -935,6 +976,7 @@ class M1Watcher:
                 readiness=readiness,
                 task_env_delta=spec.env,
                 effective_env=task_env,
+                production_stack_version=self.production_stack_version,
             )
             for path in self.running.glob(f"{spec.id}*"):
                 path.replace(self.failed / path.name)
@@ -972,6 +1014,7 @@ class M1Watcher:
             results_path=yandex_results,
             task_env_delta=spec.env,
             effective_env=task_env,
+            production_stack_version=self.production_stack_version,
         )
         self._write_heartbeat(spec.id, status, work_out_dir)
         for path in self.running.glob(f"{spec.id}*"):
@@ -1011,9 +1054,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-root", type=Path, default=DEFAULT_WORK_ROOT)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--poll-seconds", type=int, default=DEFAULT_POLL_SECONDS)
+    parser.add_argument(
+        "--production-env-stack",
+        default=DEFAULT_PRODUCTION_ENV_STACK_VERSION,
+        choices=sorted(_PRODUCTION_ENV_STACK_ALIASES),
+        help="Measurement stack version. Default keeps the historical legacy stack; use v2 explicitly for clean direct-path profile.",
+    )
     parser.add_argument("--once", action="store_true", help="Process one polling cycle and exit.")
     args = parser.parse_args(argv)
-    watcher = M1Watcher(args.tests_root, args.work_root, args.state_dir)
+    watcher = M1Watcher(
+        args.tests_root,
+        args.work_root,
+        args.state_dir,
+        production_stack_version=args.production_env_stack,
+    )
     if args.once:
         print(watcher.process_once())
         return 0

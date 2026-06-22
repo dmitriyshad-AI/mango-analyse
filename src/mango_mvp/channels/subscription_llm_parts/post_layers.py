@@ -159,6 +159,9 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _pilot_profile_flag_enabled,
     _pilot_profile_default_on_flag_enabled,
     _pilot_profile_overrides,
+    _p0_model_led_complaint_backstop,
+    _p0_model_led_enabled,
+    _p0_model_led_filter_high_risk_codes,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
 )
@@ -1074,36 +1077,66 @@ def _direct_path_preblocked_result(
     p0_reason = dialogue_contract_p0_pre_gate(client_message, context=context)
     if p0_reason:
         text, kind = _direct_path_p0_text(p0_reason, context)
-        p0_guard_key = {
-            "payment_dispute": "payment_dispute_manager_only",
-            "refund": "zero_collect_refund_guarded",
-            "complaint": "complaint_apology_guarded",
-            "legal": "zero_collect_legal_guarded",
-        }.get(kind, "zero_collect_legal_guarded")
-        meta = _direct_path_metadata(
-            attempted=True,
-            model_called=False,
-            facts=facts,
-            fact_pack=fact_pack,
-            preblocked=True,
-            pilot_config=pilot_config,
-            context=context,
-            preblock_reason="p0_pre_gate",
-            reason_class="p0_deferral",
-            reason_evidence={"p0_reason": p0_reason, "p0_kind": kind},
-        )
-        return SubscriptionDraftResult(
-            message_type="manager_only",
-            broad_group="direct_path",
-            route="manager_only",
-            draft_text=text,
-            risk_level="high",
-            safety_flags=(*BASE_SAFETY_FLAGS, "direct_path_preblocked_p0", p0_guard_key, "manager_approval_required", "no_auto_send"),
-            manager_checklist=("P0/high-risk: прямой путь не вызывался, отвечает менеджер.",),
-            metadata={"direct_path": meta, "reason_class": "p0_deferral", "is_manager_deferral": True, p0_guard_key: True},
-        )
+        if _p0_model_led_enabled(context) and kind == "complaint" and not _p0_model_led_complaint_backstop(client_message):
+            p0_reason = ""
+        else:
+            p0_guard_key = {
+                "payment_dispute": "payment_dispute_manager_only",
+                "refund": "zero_collect_refund_guarded",
+                "complaint": "complaint_apology_guarded",
+                "legal": "zero_collect_legal_guarded",
+            }.get(kind, "zero_collect_legal_guarded")
+            meta = _direct_path_metadata(
+                attempted=True,
+                model_called=False,
+                facts=facts,
+                fact_pack=fact_pack,
+                preblocked=True,
+                pilot_config=pilot_config,
+                context=context,
+                preblock_reason="p0_pre_gate",
+                reason_class="p0_deferral",
+                reason_evidence={"p0_reason": p0_reason, "p0_kind": kind},
+            )
+            return SubscriptionDraftResult(
+                message_type="manager_only",
+                broad_group="direct_path",
+                route="manager_only",
+                draft_text=text,
+                risk_level="high",
+                safety_flags=(*BASE_SAFETY_FLAGS, "direct_path_preblocked_p0", p0_guard_key, "manager_approval_required", "no_auto_send"),
+                manager_checklist=("P0/high-risk: прямой путь не вызывался, отвечает менеджер.",),
+                metadata={"direct_path": meta, "reason_class": "p0_deferral", "is_manager_deferral": True, p0_guard_key: True},
+            )
     high_risk = detect_high_risk_input_markers(client_message, context=context)
     if high_risk:
+        if (
+            _p0_model_led_enabled(context)
+            and tuple(high_risk) == ("complaint",)
+            and _p0_model_led_complaint_backstop(client_message)
+        ):
+            meta = _direct_path_metadata(
+                attempted=True,
+                model_called=False,
+                facts=facts,
+                fact_pack=fact_pack,
+                preblocked=True,
+                pilot_config=pilot_config,
+                context=context,
+                preblock_reason="p0_model_led_complaint_backstop",
+                reason_class="p0_deferral",
+                reason_evidence={"risk_codes": list(high_risk), "p0_kind": "complaint"},
+            )
+            return SubscriptionDraftResult(
+                message_type="manager_only",
+                broad_group="direct_path",
+                route="manager_only",
+                draft_text=_p0_text_with_antirepeat("complaint", COMPLAINT_SAFE_TEXT, context),
+                risk_level="high",
+                safety_flags=(*BASE_SAFETY_FLAGS, "direct_path_preblocked_p0", "complaint_apology_guarded", "manager_approval_required", "no_auto_send"),
+                manager_checklist=("P0/high-risk: прямой путь не вызывался, отвечает менеджер.",),
+                metadata={"direct_path": meta, "reason_class": "p0_deferral", "is_manager_deferral": True, "complaint_apology_guarded": True},
+            )
         meta = _direct_path_metadata(
             attempted=True,
             model_called=False,
@@ -1345,6 +1378,7 @@ def _deal_action_final_p0(
         kind = str(model_p0.get("p0_kind") or "model_p0")
         return True, f"direct_path_model_p0:{kind}"
     raw_hard_codes = tuple(code for code in codes_from_text(client_message) if code in HARD_P0_CODES)
+    raw_hard_codes = _p0_model_led_filter_high_risk_codes(raw_hard_codes, client_message=client_message, context=context)
     safety = classify_answer_safety(
         client_message=client_message,
         context=context,
@@ -1354,7 +1388,10 @@ def _deal_action_final_p0(
     )
     if raw_hard_codes:
         return True, "p0_recall_spec:" + ",".join(dict.fromkeys(raw_hard_codes))
-    if safety.p0_required and not safety.semantic_non_p0:
+    suppressed_complaint = bool(
+        result.metadata.get("p0_model_led_complaint_suppressed") if isinstance(result.metadata, Mapping) else False
+    )
+    if safety.p0_required and not suppressed_complaint and not safety.semantic_non_p0:
         return True, f"answer_safety:{safety.primary_risk or 'p0_required'}"
     if result.route == "manager_only" and any(
         code in {"hard_p0", "zero_collect_required", "p0_promise", "p0_semantic_risk"} for code in gate_codes
@@ -3421,11 +3458,27 @@ def _authoritative_gate_findings(
         safety_flags=result.safety_flags,
     )
     raw_hard_codes = tuple(code for code in codes_from_text(client_message) if code in HARD_P0_CODES)
+    raw_hard_codes = _p0_model_led_filter_high_risk_codes(raw_hard_codes, client_message=client_message, context=gate_context)
     hard_codes = raw_hard_codes if safety.p0_required else tuple(code for code in safety.risk_codes if code in HARD_P0_CODES)
-    if not p0_already_guarded and (hard_codes or (safety.p0_required and not safety.semantic_non_p0)):
+    hard_codes = _p0_model_led_filter_high_risk_codes(hard_codes, client_message=client_message, context=gate_context)
+    model_p0_meta = result.metadata.get("direct_path_model_p0") if isinstance(result.metadata, Mapping) else {}
+    model_p0_complaint = bool(
+        isinstance(model_p0_meta, Mapping)
+        and model_p0_meta.get("is_p0")
+        and str(model_p0_meta.get("p0_kind") or "").strip() == "complaint"
+    )
+    suppressed_complaint = bool(result.metadata.get("p0_model_led_complaint_suppressed")) if isinstance(result.metadata, Mapping) else False
+    suppressed_complaint = suppressed_complaint or bool(
+        _p0_model_led_enabled(gate_context)
+        and safety.primary_risk in {"complaint", "reputation_threat"}
+        and not _p0_model_led_complaint_backstop(client_message)
+        and not model_p0_complaint
+    )
+    safety_p0_blocking = bool(safety.p0_required and not safety.semantic_non_p0 and not suppressed_complaint)
+    if not p0_already_guarded and (hard_codes or safety_p0_blocking):
         detail = ",".join(dict.fromkeys([*hard_codes, *[code for code in safety.risk_codes if code in HARD_P0_CODES]]))
         findings.append(_authoritative_gate_finding("hard_p0", detail=detail or safety.primary_risk, source="answer_safety"))
-    if safety.zero_collect_required and not p0_already_guarded and (safety.p0_required or hard_codes):
+    if safety.zero_collect_required and not suppressed_complaint and not p0_already_guarded and (safety.p0_required or hard_codes):
         findings.append(_authoritative_gate_finding("zero_collect_required", detail=safety.primary_risk, source="answer_safety"))
 
     findings.extend(
@@ -4302,6 +4355,8 @@ def apply_humanity_guards(
     has_answer_fact = (not block_generic_fact_answer) and _has_humanity_answer_fact(context)
     preserve_existing_answer = _humanity_preserve_existing_answer(result)
     metadata = dict(result.metadata)
+    if metadata.get("p0_model_led_complaint_suppressed"):
+        raw_p0_required = False
     benign_p0_context = (
         is_benign_hypothetical_refund(client_message)
         or _conversation_plan_semantic_non_p0(context, client_message=client_message)

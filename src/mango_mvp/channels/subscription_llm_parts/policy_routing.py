@@ -59,6 +59,9 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _keep_answer_hard_anchors,
     _keep_answer_supported,
     _normalize_fact_match_text,
+    _p0_model_led_complaint_backstop,
+    _p0_model_led_enabled,
+    _p0_model_led_filter_high_risk_codes,
     _presale_prompt_child_name_value,
     _template_from_kb_enabled,
     _template_from_kb_trace_event,
@@ -2210,11 +2213,26 @@ def apply_high_risk_content_guards(
         if safety_decision.p0_required
         else {code for code in safety_decision.risk_codes if code in HARD_P0_CODES}
     )
+    markers = set(_p0_model_led_filter_high_risk_codes(tuple(markers), client_message=client_message, context=context))
+    model_p0_meta = result.metadata.get("direct_path_model_p0") if isinstance(result.metadata, Mapping) else {}
+    model_p0_complaint = bool(
+        isinstance(model_p0_meta, Mapping)
+        and model_p0_meta.get("is_p0")
+        and str(model_p0_meta.get("p0_kind") or "").strip() == "complaint"
+    )
+    p0_model_led_suppressed_complaint = bool(
+        _p0_model_led_enabled(context)
+        and safety_decision.primary_risk in {"complaint", "reputation_threat"}
+        and not _p0_model_led_complaint_backstop(client_message)
+        and not model_p0_complaint
+    )
     topic = str(result.topic_id or "").strip()
     flags = list(result.safety_flags)
     checklist = list(result.manager_checklist)
     metadata = dict(result.metadata)
     metadata["answer_safety"] = safety_decision.to_json_dict()
+    if p0_model_led_suppressed_complaint:
+        metadata["p0_model_led_complaint_suppressed"] = True
     forbidden_promises = list(result.forbidden_promises_detected)
     route = result.route
     draft_text = result.draft_text
@@ -2462,6 +2480,7 @@ def apply_high_risk_content_guards(
 
     if (
         not metadata.get("zero_collect_legal_guarded")
+        and not p0_model_led_suppressed_complaint
         and not (semantic_non_p0 and "complaint" not in markers and "reputation_threat" not in markers)
         and _is_complaint_case(result, markers=markers)
     ):
@@ -2555,7 +2574,12 @@ def apply_high_risk_content_guards(
         ):
             route = "draft_for_manager"
 
-    if safety_decision.p0_required and not safety_decision.semantic_non_p0 and not metadata.get("presale_refund_policy_manager_check"):
+    if (
+        safety_decision.p0_required
+        and not p0_model_led_suppressed_complaint
+        and not safety_decision.semantic_non_p0
+        and not metadata.get("presale_refund_policy_manager_check")
+    ):
         primary_risk = safety_decision.primary_risk
         route = "manager_only"
         if primary_risk == "legal":
@@ -2632,7 +2656,8 @@ def apply_autonomy_matrix_guard(
             metadata=metadata,
         )
 
-    if str(funnel.get("lead_stage") or "") == "p0_manager_only" or str(funnel.get("next_step_type") or "") == "manager_only_p0":
+    funnel_blocks_p0 = str(funnel.get("lead_stage") or "") == "p0_manager_only" or str(funnel.get("next_step_type") or "") == "manager_only_p0"
+    if funnel_blocks_p0 and not (_p0_model_led_enabled(context) and not markers):
         flags.extend(("autonomy_blocked_funnel_p0", "high_risk_manager_only"))
         checklist.append("Автономный ответ запрещен: детерминированная воронка распознала P0/high-risk часть.")
         metadata["autonomy_blocked_funnel_p0"] = True
@@ -2644,7 +2669,23 @@ def apply_autonomy_matrix_guard(
             metadata=metadata,
         )
 
-    if (markers or is_high_risk_result(result)) and not metadata.get("presale_refund_policy_manager_check"):
+    direct_path = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    complaint_topic_only = bool(
+        result.topic_id == "theme:019b_negative_feedback"
+        or str(direct_path.get("autonomy_topic") or "") == "theme:019b_negative_feedback"
+        or str(direct_path.get("autonomy_topic_from") or "") == "theme:019b_negative_feedback"
+    )
+    high_risk_blocks_autonomy = bool(markers or is_high_risk_result(result))
+    if (
+        high_risk_blocks_autonomy
+        and _p0_model_led_enabled(context)
+        and not markers
+        and complaint_topic_only
+        and not _p0_model_led_complaint_backstop(client_message)
+    ):
+        high_risk_blocks_autonomy = False
+
+    if high_risk_blocks_autonomy and not metadata.get("presale_refund_policy_manager_check"):
         flags.extend(("autonomy_blocked_high_risk", "high_risk_manager_only"))
         if _is_combined_high_risk_case(result, markers=markers, client_message=client_message, context=context):
             flags.append("combined_high_risk_manager_only")
@@ -3630,7 +3671,8 @@ def detect_high_risk_input_markers(client_message: str, *, context: Optional[Map
         route="",
         safety_flags=(),
     )
-    return tuple(code for code in decision.risk_codes if code in HARD_P0_CODES)
+    codes = tuple(code for code in decision.risk_codes if code in HARD_P0_CODES)
+    return _p0_model_led_filter_high_risk_codes(codes, client_message=client_message, context=context)
 
 def _conversation_plan_semantic_non_p0(
     context: Optional[Mapping[str, Any]],

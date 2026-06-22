@@ -12228,6 +12228,124 @@ def test_direct_path_model_p0_prompt_is_flagged_off_by_default() -> None:
     assert "дорого/подумаю" in on_prompt
 
 
+def test_p0_model_led_filters_confusion_complaint_without_touching_off() -> None:
+    message = "А тестирование нужно? Ребёнок в 6 классе, я просто не понимаю, нас уже в группу или сначала тест?"
+
+    assert detect_high_risk_input_markers(message) == ("complaint",)
+    assert detect_high_risk_input_markers(message, context={subscription_llm.P0_MODEL_LED_ENV: "1"}) == ()
+
+
+def test_p0_model_led_prompt_calibrates_complaint_vs_confusion() -> None:
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.P0_MODEL_LED_ENV: "1",
+    }
+
+    prompt = subscription_llm._build_direct_path_prompt(
+        "А тестирование нужно? Ребёнок в 6 классе, я просто не понимаю, нас уже в группу или сначала тест?",
+        context=context,
+    )
+
+    assert '"is_p0": false' in prompt
+    assert '"p0_kind": "none|payment_dispute|refund|complaint|legal_threat"' in prompt
+    assert "Растерянность, уточнение порядка или тревога без претензии" in prompt
+    assert "is_p0=false и отвечай полезно по фактам" in prompt
+
+
+def test_p0_model_led_confusion_is_not_direct_preblock() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Да, сначала подскажем порядок тестирования и записи.",
+            risk_level="low",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": False,
+                    "risk_level": "low",
+                    "p0_kind": "none",
+                    "model_reason": "уточнение порядка без жалобы",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "А тестирование нужно? Ребёнок в 6 классе, я просто не понимаю, нас уже в группу или сначала тест?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.P0_MODEL_LED_ENV: "1",
+            "confirmed_facts": {"testing.foton": "Фотон: тестирование помогает подобрать группу."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "complaint_apology_guarded" not in result.safety_flags
+    assert result.metadata["direct_path"]["preblocked"] is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "Жалоба: преподаватель оскорбил ребенка на занятии.",
+        "Это безобразие, как накричали на ребёнка.",
+        "Ребёнок один остался, никто не подошёл.",
+        "Напишу везде какие вы, если не решите ситуацию.",
+    ),
+)
+def test_p0_model_led_literal_complaints_stay_direct_preblock(message: str) -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+
+    result = provider.build_draft(
+        message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.P0_MODEL_LED_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert result.metadata["direct_path"]["reason_evidence"]["p0_kind"] == "complaint"
+    assert "complaint_apology_guarded" in result.safety_flags
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    (
+        ("С карты списали дважды, верните деньги.", "payment_dispute"),
+        ("Верните деньги обратно.", "refund"),
+        ("Если не решите, пойду в суд.", "legal"),
+    ),
+)
+def test_p0_model_led_keeps_refund_legal_payment_preblock(message: str, expected_code: str) -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Этого текста быть не должно.")
+    )
+
+    result = provider.build_draft(
+        message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.P0_MODEL_LED_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 0
+    assert result.route == "manager_only"
+    assert result.metadata["direct_path"]["preblocked"] is True
+    assert expected_code in result.metadata["direct_path"]["reason_evidence"]["p0_kind"]
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+
+
 def test_answerability_shadow_prompt_is_flagged_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(subscription_llm.ANSWERABILITY_SHADOW_ENV, raising=False)
     context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
@@ -12435,6 +12553,47 @@ def test_direct_path_model_p0_payment_dispute_routes_before_gate_and_replaces_sa
     assert gate["route_before"] == "manager_only"
     assert gate["action"] == "block"
     assert "hard_p0" in {item["code"] for item in gate["findings"]}
+
+
+def test_p0_model_led_model_complaint_routes_manager_before_gate() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Давайте посмотрим, какие есть группы и скидки.",
+            risk_level="low",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "risk_level": "high",
+                    "p0_kind": "complaint",
+                    "model_reason": "клиент описывает реальную претензию к занятию",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Преподаватель грубо разговаривал с ребёнком, я недовольна занятием.",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.P0_MODEL_LED_ENV: "1",
+            subscription_llm.SEMANTIC_OUTPUT_VERIFIER_ENV: "1",
+            "confirmed_facts": {"schedule.foton": "Фотон: расписание подбирает менеджер."},
+        },
+    )
+
+    direct_p0 = result.metadata["direct_path_model_p0"]
+    assert provider.calls == 1
+    assert result.route == "manager_only"
+    assert "скидк" not in result.draft_text.casefold()
+    assert "direct_path_model_p0_complaint" in result.safety_flags
+    assert "complaint" in result.safety_flags
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+    assert direct_p0["p0_kind"] == "complaint"
+    assert direct_p0["source"] == "model_p0"
+    assert direct_p0["model_reason"] == "клиент описывает реальную претензию к занятию"
 
 
 def test_direct_path_model_p0_latches_next_neutral_turn() -> None:
@@ -13631,6 +13790,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.ANSWERABILITY_SHADOW_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.P0_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._assumed_scope_guard_enabled(context) is False
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False

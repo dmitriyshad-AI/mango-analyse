@@ -142,6 +142,8 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
     _direct_default_manager_enabled,
+    _p0_model_led_complaint_backstop,
+    _p0_model_led_enabled,
     _presale_prompt_child_name_value,
     _looks_like_russian_surname,
     _fresh_fact_texts,
@@ -2118,6 +2120,10 @@ def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_mess
     risk_level = str(meta.get("risk_level") or result.risk_level or "").strip().casefold()
     model_is_p0 = bool(meta.get("is_p0")) or (risk_level in {"high", "p0", "critical", "high_risk"} and bool(kind))
     floor_reason = str(dialogue_contract_p0_pre_gate(client_message, context=context) or "")
+    if floor_reason and _p0_model_led_enabled(context):
+        _, floor_kind = _direct_path_p0_text(floor_reason, context)
+        if floor_kind == "complaint" and not _p0_model_led_complaint_backstop(client_message):
+            floor_reason = ""
     if not model_is_p0 and not floor_reason:
         return {}
     if not kind:

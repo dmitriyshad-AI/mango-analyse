@@ -35,6 +35,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _client_clean_fact_text,
     _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
+    _p0_model_led_enabled,
     _direct_path_client_safe_snapshot_fact,
     _direct_path_fact_by_brand_key,
     _direct_path_fact_value,
@@ -1625,6 +1626,16 @@ def _build_direct_path_prompt(
             "Модель может только добавить срочность; если это обычное возражение «дорого/подумаю» или "
             "гипотетический вопрос про правила возврата без претензии, is_p0=false.\n\n"
         )
+        if _p0_model_led_enabled(context):
+            p0_instruction += (
+                "Для p0_kind=complaint отличай реальную жалобу от растерянности. Реальная жалоба/претензия: "
+                "клиент недоволен действиями школы или сотрудника, пишет «жалоба», «безобразие», "
+                "«накричали/унизили/оскорбили ребёнка», «ребёнок один остался», «напишу везде какие вы» — "
+                "тогда is_p0=true, p0_kind=\"complaint\", route=\"manager_only\". "
+                "Растерянность, уточнение порядка или тревога без претензии — «не понимаю», «как дальше», "
+                "«ребёнок в 6 классе», «сначала тест или группа», «вдруг не потянет» — это НЕ complaint: "
+                "ставь is_p0=false и отвечай полезно по фактам.\n\n"
+            )
         p0_fields = (
             '  "is_p0": false,\n'
             '  "risk_level": "low|high",\n'

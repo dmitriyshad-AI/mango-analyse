@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
+
+import pytest
 
 from scripts.run_telegram_public_pilot_bots import (
     apply_public_autonomy_kill_switch,
@@ -19,13 +22,23 @@ from scripts.run_telegram_public_pilot_bots import (
     known_client_fields_for_session,
     known_dialog_fields_from_messages,
     load_debug_clients,
+    main as public_bot_main,
+    merged_env,
     knowledge_base_version_for_store,
     normalize_phone,
     parse_debug_phone_command,
     public_telegram_reply_payload,
     public_reply_text,
     PublicPilotBotRuntime,
+    sync_env_to_process,
     write_public_bot_heartbeat,
+)
+from mango_mvp.channels.pilot_profile_runtime import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    ENFORCE_CANONICAL_PROFILE_ENV,
+    ensure_canonical_pilot_profile,
+    pilot_profile_selfcheck,
 )
 from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
@@ -52,6 +65,19 @@ from mango_mvp.channels.night_funnel_shadow import (
     save_replay_cursor,
 )
 from scripts.run_telegram_night_shadow_replay import replay_tee_records
+
+
+OFFLINE_STARTUP_ENV_KEYS = (
+    "MANGO_TELEGRAM_FOTON_BOT_TOKEN",
+    "MANGO_TELEGRAM_KB_SNAPSHOT",
+    "MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH",
+    "MANGO_TELEGRAM_PILOT_STORE_PATH",
+    "MANGO_TELEGRAM_PILOT_STORE_ENABLED",
+    "MANGO_TELEGRAM_CRM_READ_MODE",
+    "ENFORCE_CANONICAL_PROFILE",
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    "TELEGRAM_PRESALE_SAFETY",
+)
 
 
 def test_parse_debug_phone_command_without_payload() -> None:
@@ -248,14 +274,205 @@ def test_write_public_bot_heartbeat_has_no_client_text(tmp_path: Path) -> None:
         status="polling",
         brands=("foton",),
         event="heartbeat",
+        effective_profile="pilot_gold_v1",
+        draft_path="direct_path",
+        active_guards={"presale_safety": True},
         summary={"counter": 1},
     )
 
     payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "public_pilot_bot_heartbeat_v2_2026_06_21"
     assert payload["status"] == "polling"
     assert payload["brands"] == ["foton"]
+    assert payload["effective_profile"] == "pilot_gold_v1"
+    assert payload["draft_path"] == "direct_path"
+    assert payload["active_guards"]["presale_safety"] is True
     assert payload["summary"]["counter"] == 1
     assert "client_text" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_dry_run_startup_writes_profile_heartbeat_without_telegram(tmp_path: Path, monkeypatch, capsys) -> None:
+    env_file = tmp_path / "offline.env"
+    heartbeat = tmp_path / "runtime" / "heartbeat.json"
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text('{"facts":[]}\n', encoding="utf-8")
+    env_file.write_text(
+        "\n".join(
+            [
+                'MANGO_TELEGRAM_FOTON_BOT_TOKEN="offline-token"',
+                f'MANGO_TELEGRAM_KB_SNAPSHOT="{snapshot}"',
+                f'MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH="{heartbeat}"',
+                f'MANGO_TELEGRAM_PILOT_STORE_PATH="{tmp_path / "pilot.sqlite"}"',
+                'MANGO_TELEGRAM_PILOT_STORE_ENABLED="0"',
+                'MANGO_TELEGRAM_CRM_READ_MODE="off"',
+                'ENFORCE_CANONICAL_PROFILE="1"',
+                f'{DIRECT_PATH_PILOT_CONFIG_ENV}="{DIRECT_PATH_PILOT_CONFIG_VERSION}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for key in (
+        "MANGO_TELEGRAM_FOTON_BOT_TOKEN",
+        "MANGO_TELEGRAM_KB_SNAPSHOT",
+        "MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH",
+        "MANGO_TELEGRAM_PILOT_STORE_PATH",
+        "MANGO_TELEGRAM_PILOT_STORE_ENABLED",
+        "MANGO_TELEGRAM_CRM_READ_MODE",
+        "ENFORCE_CANONICAL_PROFILE",
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    try:
+        rc = public_bot_main(["--env-file", str(env_file), "--brand", "foton", "--mode", "dry-run-startup"])
+    finally:
+        for key in OFFLINE_STARTUP_ENV_KEYS:
+            os.environ.pop(key, None)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["mode"] == "dry-run-startup"
+    assert output["telegram_connected"] is False
+    payload = json.loads(heartbeat.read_text(encoding="utf-8"))
+    assert payload["event"] == "dry_run_startup"
+    assert payload["status"] == "polling"
+    assert payload["effective_profile"] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert payload["draft_path"] == "direct_path"
+    assert payload["active_guards"]["presale_safety"] is True
+    assert payload["active_guards"]["presale_pii_memory"] is True
+    assert payload["active_guards"]["verifier_handoff_claims"] is True
+    assert payload["active_guards"]["semantic_output_verifier"] is True
+    assert payload["active_guards"]["output_sanitizer"] is True
+    assert payload["summary"]["offline"] is True
+
+
+def test_dry_run_startup_rejects_noncanonical_profile_aliases(tmp_path: Path, monkeypatch) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text('{"facts":[]}\n', encoding="utf-8")
+    for raw in ("on", "да"):
+        env_file = tmp_path / f"{raw}.env"
+        env_file.write_text(
+            "\n".join(
+                [
+                    'MANGO_TELEGRAM_FOTON_BOT_TOKEN="offline-token"',
+                    f'MANGO_TELEGRAM_KB_SNAPSHOT="{snapshot}"',
+                    'MANGO_TELEGRAM_CRM_READ_MODE="off"',
+                    'ENFORCE_CANONICAL_PROFILE="1"',
+                    f'{DIRECT_PATH_PILOT_CONFIG_ENV}="{raw}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        for key in ("MANGO_TELEGRAM_FOTON_BOT_TOKEN", "MANGO_TELEGRAM_KB_SNAPSHOT", "MANGO_TELEGRAM_CRM_READ_MODE", "ENFORCE_CANONICAL_PROFILE", DIRECT_PATH_PILOT_CONFIG_ENV):
+            monkeypatch.delenv(key, raising=False)
+
+        try:
+            with pytest.raises(SystemExit):
+                public_bot_main(["--env-file", str(env_file), "--brand", "foton", "--mode", "dry-run-startup"])
+        finally:
+            for key in OFFLINE_STARTUP_ENV_KEYS:
+                os.environ.pop(key, None)
+
+
+def test_dry_run_startup_rejects_required_guard_off(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / "guard_off.env"
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text('{"facts":[]}\n', encoding="utf-8")
+    env_file.write_text(
+        "\n".join(
+            [
+                'MANGO_TELEGRAM_FOTON_BOT_TOKEN="offline-token"',
+                f'MANGO_TELEGRAM_KB_SNAPSHOT="{snapshot}"',
+                'MANGO_TELEGRAM_CRM_READ_MODE="off"',
+                'ENFORCE_CANONICAL_PROFILE="1"',
+                f'{DIRECT_PATH_PILOT_CONFIG_ENV}="{DIRECT_PATH_PILOT_CONFIG_VERSION}"',
+                'TELEGRAM_PRESALE_SAFETY="0"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for key in (
+        "MANGO_TELEGRAM_FOTON_BOT_TOKEN",
+        "MANGO_TELEGRAM_KB_SNAPSHOT",
+        "MANGO_TELEGRAM_CRM_READ_MODE",
+        "ENFORCE_CANONICAL_PROFILE",
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+        "TELEGRAM_PRESALE_SAFETY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    try:
+        with pytest.raises(SystemExit):
+            public_bot_main(["--env-file", str(env_file), "--brand", "foton", "--mode", "dry-run-startup"])
+    finally:
+        for key in OFFLINE_STARTUP_ENV_KEYS:
+            os.environ.pop(key, None)
+
+
+def test_public_bot_selfcheck_requires_exact_pilot_profile(monkeypatch) -> None:
+    monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+
+    check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+
+    assert check.ok is False
+    assert "pilot_gold_profile_disabled" in check.failures
+
+
+def test_public_bot_selfcheck_rejects_disabled_and_boolean_profile_aliases(monkeypatch) -> None:
+    for raw in ("0", "on", "да"):
+        monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
+        monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, raw)
+
+        activation = ensure_canonical_pilot_profile()
+        check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+
+        assert activation.action == "operator_override_kept"
+        assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == raw
+        assert check.ok is False
+        assert "pilot_gold_profile_disabled" in check.failures
+
+
+def test_public_bot_env_file_sync_precedes_ensure_and_selfcheck(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(f'{ENFORCE_CANONICAL_PROFILE_ENV}="1"\n', encoding="utf-8")
+    monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+
+    env = {key: value for key, value in merged_env(env_file).items() if key == ENFORCE_CANONICAL_PROFILE_ENV}
+    sync_env_to_process(env)
+    activation = ensure_canonical_pilot_profile()
+    check = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+
+    assert activation.action == "set_default"
+    assert os.environ[DIRECT_PATH_PILOT_CONFIG_ENV] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert check.ok is True
+    assert check.effective_profile == DIRECT_PATH_PILOT_CONFIG_VERSION
+    os.environ.pop(DIRECT_PATH_PILOT_CONFIG_ENV, None)
+    os.environ.pop(ENFORCE_CANONICAL_PROFILE_ENV, None)
+
+
+def test_runtime_context_overrides_force_profile_without_process_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=_night_snapshot(tmp_path),
+        store_enabled=False,
+        context_overrides={DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION},
+    )
+    runtime = PublicPilotBotRuntime(config, debug_clients={})
+
+    context = runtime.build_context(chat_id=123, session=ChatSession(), current_text="цена?")
+    runtime.close()
+
+    assert context[DIRECT_PATH_PILOT_CONFIG_ENV] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
 
 
 def test_configs_from_env_can_disable_dialogue_contract_pipeline_for_rollback(tmp_path: Path) -> None:

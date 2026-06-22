@@ -9,6 +9,8 @@ import json
 import os
 import re
 import signal
+import sys
+import time
 from contextlib import suppress
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -29,6 +31,15 @@ from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answ
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV
 from mango_mvp.channels.manager_handoff_summary import build_manager_handoff_summary
 from mango_mvp.channels.new_lead_funnel import LeadFunnelState
+from mango_mvp.channels.pilot_profile_runtime import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    ensure_canonical_pilot_profile,
+    pilot_profile_selfcheck,
+    raise_for_failed_selfcheck,
+    stderr_warning,
+    sync_env_to_process,
+)
 from mango_mvp.channels.telegram_pilot_store import (
     PILOT_DRAFT_STATUS_MANAGER_ONLY,
     PILOT_DRAFT_STATUS_NEEDS_REVIEW,
@@ -153,6 +164,7 @@ class BrandBotConfig:
     night_funnel_tee_path: Path = NIGHT_FUNNEL_DEFAULT_TEE_PATH
     night_funnel_tee_source: str = "telegram_public_pilot"
     night_funnel_tee_retention_days: int = NIGHT_FUNNEL_DEFAULT_TEE_RETENTION_DAYS
+    context_overrides: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         brand = self.brand.casefold().strip()
@@ -181,6 +193,7 @@ class BrandBotConfig:
         object.__setattr__(self, "night_funnel_shadow_log_path", Path(self.night_funnel_shadow_log_path))
         object.__setattr__(self, "night_funnel_lead_store_path", Path(self.night_funnel_lead_store_path))
         object.__setattr__(self, "night_funnel_tee_path", Path(self.night_funnel_tee_path))
+        object.__setattr__(self, "context_overrides", dict(self.context_overrides or {}))
 
 
 @dataclass
@@ -287,19 +300,72 @@ def write_public_bot_heartbeat(
     brands: Sequence[str],
     event: str = "",
     summary: Optional[Mapping[str, Any]] = None,
+    effective_profile: str = "",
+    draft_path: str = "",
+    active_guards: Optional[Mapping[str, bool]] = None,
 ) -> None:
     write_json_atomic(
         path,
         {
-            "schema_version": "public_pilot_bot_heartbeat_v1_2026_06_12",
+            "schema_version": "public_pilot_bot_heartbeat_v2_2026_06_21",
             "status": str(status or "unknown"),
             "last_cycle_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "pid": os.getpid(),
             "brands": [str(item) for item in brands],
             "event": str(event or ""),
+            "effective_profile": str(effective_profile or ""),
+            "draft_path": str(draft_path or ""),
+            "active_guards": dict(active_guards or {}),
             "summary": dict(summary or {}),
         },
     )
+
+
+def public_bot_profile_selfcheck(configs: Sequence[BrandBotConfig]) -> Any:
+    pipeline_enabled = any(config.dialogue_contract_pipeline_enabled for config in configs) if configs else True
+    return pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=pipeline_enabled)
+
+
+def heartbeat_active_guards(selfcheck: Any) -> dict[str, bool]:
+    return {
+        **dict(getattr(selfcheck, "active_guards", {}) or {}),
+        **dict(getattr(selfcheck, "quality_guards", {}) or {}),
+    }
+
+
+def draft_path_for_result(result: SubscriptionDraftResult, *, context: Mapping[str, Any]) -> str:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    if isinstance(metadata.get("direct_path"), Mapping):
+        return "direct_path"
+    if isinstance(metadata.get("dialogue_contract_pipeline"), Mapping):
+        return "dialogue_contract_pipeline"
+    return "direct_path" if str(context.get(DIRECT_PATH_PILOT_CONFIG_ENV) or os.getenv(DIRECT_PATH_PILOT_CONFIG_ENV) or "").strip() == DIRECT_PATH_PILOT_CONFIG_VERSION else "legacy"
+
+
+def applied_guard_names(result: SubscriptionDraftResult) -> tuple[str, ...]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    names: list[str] = []
+    for key in (
+        "authoritative_output_gate",
+        "semantic_output_verifier",
+        "output_sanitizer",
+        "assumed_scope_guard",
+        "direct_path_model_p0",
+        "autonomy_matrix_guard",
+        "action_decision",
+    ):
+        if isinstance(metadata.get(key), Mapping):
+            names.append(key)
+    for flag in result.safety_flags:
+        text = str(flag or "").strip()
+        if text and (
+            text.endswith("_guard")
+            or "guard" in text
+            or "p0" in text.casefold()
+            or text in {"manager_approval_required", "no_auto_send"}
+        ):
+            names.append(text)
+    return tuple(dict.fromkeys(names))
 
 
 def configs_from_env(env: Mapping[str, str], *, brand: str, allow_groups: bool = False) -> list[BrandBotConfig]:
@@ -575,6 +641,8 @@ class PublicPilotBotRuntime:
                 with suppress(asyncio.CancelledError):
                     await typing_task
             result = apply_public_autonomy_kill_switch(result, autonomy_enabled=self.config.autonomy_enabled)
+            draft_path = draft_path_for_result(result, context=context)
+            applied_guards = applied_guard_names(result)
             funnel_state = self.build_funnel_state(
                 chat_id=chat_id,
                 session=session,
@@ -638,6 +706,8 @@ class PublicPilotBotRuntime:
                     "message_type": result.message_type,
                     "risk_level": result.risk_level,
                     "safety_flags": list(result.safety_flags),
+                    "draft_path": draft_path,
+                    "applied_guards": list(applied_guards),
                     "debug_impersonation": bool(session.debug_phone),
                     "known_client_fields": context.get("known_client_fields") or {},
                     "known_dialog_fields": context.get("known_dialog_fields") or {},
@@ -734,7 +804,7 @@ class PublicPilotBotRuntime:
                 )
         else:
             crm_context = {}
-        return build_pilot_context_payload(
+        payload = dict(build_pilot_context_payload(
             current_text=current_text,
             snapshot_path=self.config.snapshot_path,
             active_brand=self.config.brand,
@@ -750,7 +820,9 @@ class PublicPilotBotRuntime:
             debug_phone=session.debug_phone,
             debug_client=session.debug_client,
             crm_context=crm_context,
-        )
+        ))
+        payload.update(dict(self.config.context_overrides or {}))
+        return payload
 
     def build_funnel_state(
         self,
@@ -977,6 +1049,8 @@ class PublicPilotBotRuntime:
                 "facts_used": list(result.context_used),
                 "facts_missing": list(result.missing_facts),
                 "post_filter_flags": list(result.metadata.get("post_filter_flags") or ()),
+                "draft_path": draft_path_for_result(result, context=context),
+                "applied_guards": list(applied_guard_names(result)),
                 "route_reason": "; ".join(result.manager_checklist[:3]) if result.manager_checklist else "",
                 "llm_result": result.to_json_dict(),
             }
@@ -1654,16 +1728,21 @@ async def public_bot_heartbeat_loop(
     counter = 0
     while not stop_event.is_set():
         counter += 1
+        selfcheck = public_bot_profile_selfcheck(configs)
         write_public_bot_heartbeat(
             heartbeat_path,
             status="polling",
             brands=brands,
             event="heartbeat",
+            effective_profile=selfcheck.effective_profile,
+            draft_path=selfcheck.draft_path,
+            active_guards=heartbeat_active_guards(selfcheck),
             summary={
                 "counter": counter,
                 "snapshot": str(configs[0].snapshot_path),
                 "model": configs[0].model,
                 "reasoning_effort": configs[0].reasoning_effort,
+                "profile_selfcheck": selfcheck.to_json_dict(),
             },
         )
         try:
@@ -1734,12 +1813,49 @@ async def run_polling(configs: Sequence[BrandBotConfig], *, debug_clients: Mappi
         for runtime in runtimes:
             runtime.close()
         if configs:
+            selfcheck = public_bot_profile_selfcheck(configs)
             write_public_bot_heartbeat(
                 configs[0].heartbeat_path,
                 status="stopped",
                 brands=[config.brand for config in configs],
                 event="polling_stopped",
+                effective_profile=selfcheck.effective_profile,
+                draft_path=selfcheck.draft_path,
+                active_guards=heartbeat_active_guards(selfcheck),
+                summary={"profile_selfcheck": selfcheck.to_json_dict()},
             )
+
+
+def run_startup_dry_run(configs: Sequence[BrandBotConfig], *, duration_sec: int | None) -> Mapping[str, Any]:
+    selfcheck = public_bot_profile_selfcheck(configs)
+    payload = {
+        "ok": True,
+        "mode": "dry-run-startup",
+        "profile_selfcheck": selfcheck.to_json_dict(),
+        "heartbeat_path": str(configs[0].heartbeat_path) if configs else "",
+        "brands": [config.brand for config in configs],
+        "telegram_connected": False,
+    }
+    if configs:
+        write_public_bot_heartbeat(
+            configs[0].heartbeat_path,
+            status="polling",
+            brands=[config.brand for config in configs],
+            event="dry_run_startup",
+            effective_profile=selfcheck.effective_profile,
+            draft_path=selfcheck.draft_path,
+            active_guards=heartbeat_active_guards(selfcheck),
+            summary={
+                "offline": True,
+                "profile_selfcheck": selfcheck.to_json_dict(),
+                "snapshot": str(configs[0].snapshot_path),
+                "model": configs[0].model,
+                "reasoning_effort": configs[0].reasoning_effort,
+            },
+        )
+    if duration_sec is not None and int(duration_sec) > 0:
+        time.sleep(int(duration_sec))
+    return payload
 
 
 def write_local_env_file(path: Path, *, foton_token: str, unpk_token: str) -> None:
@@ -1756,6 +1872,7 @@ def write_local_env_file(path: Path, *, foton_token: str, unpk_token: str) -> No
         PILOT_STORE_ENABLED_ENV: "1",
         PILOT_P0_REGISTER_PATH_ENV: str(DEFAULT_P0_REGISTER_PATH),
         PILOT_AUTONOMY_ENABLED_ENV: "1",
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
         CRM_READ_MODE_ENV: "server",
         CRM_ENV_FILE_ENV: str(DEFAULT_CRM_ENV_FILE),
         CRM_SERVER_URL_ENV: "https://api.fotonai.online",
@@ -1782,7 +1899,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run public Telegram pilot bots for Foton and UNPK.")
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
     parser.add_argument("--brand", choices=("all", "foton", "unpk"), default="all")
-    parser.add_argument("--mode", choices=("getme", "poll", "write-local-env"), default="getme")
+    parser.add_argument("--mode", choices=("getme", "poll", "write-local-env", "dry-run-startup"), default="getme")
     parser.add_argument("--duration-sec", type=int, default=None, help="Bounded polling smoke duration; omit for continuous run.")
     parser.add_argument("--allow-groups", action="store_true")
     parser.add_argument("--foton-token", default="")
@@ -1795,11 +1912,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     env = merged_env(args.env_file)
+    sync_env_to_process(env)
+    activation = ensure_canonical_pilot_profile(warn=stderr_warning)
+    env = dict(os.environ)
     configs = configs_from_env(env, brand=args.brand, allow_groups=args.allow_groups)
+    selfcheck = public_bot_profile_selfcheck(configs)
+    if activation.warnings:
+        print(json.dumps({"profile_activation": activation.to_json_dict()}, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+    raise_for_failed_selfcheck(selfcheck)
+    if args.mode == "dry-run-startup":
+        result = run_startup_dry_run(configs, duration_sec=args.duration_sec)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
     debug_clients = load_debug_clients(env)
     if args.mode == "getme":
         results = asyncio.run(get_me(configs))
-        print(json.dumps({"ok": True, "bots": results}, ensure_ascii=False, indent=2, sort_keys=True))
+        print(json.dumps({"ok": True, "bots": results, "profile_selfcheck": selfcheck.to_json_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     asyncio.run(run_polling(configs, debug_clients=debug_clients, duration_sec=args.duration_sec))
     print(json.dumps({"ok": True, "mode": "poll", "stopped": True}, ensure_ascii=False, sort_keys=True))

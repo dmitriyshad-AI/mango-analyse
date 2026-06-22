@@ -1,16 +1,36 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from scripts.run_telegram_public_pilot_bots import BrandBotConfig
 from scripts.check_public_bot_live import (
     ExpectedOnlinePrices,
     LiveCheckTurn,
+    apply_runtime_env,
     expected_online_prices_from_snapshot,
     llm_fallback_detected,
+    main as check_public_bot_live_main,
+    public_bot_heartbeat_status,
     retrieved_fact_keys,
+    smoke_context_overrides,
     validate_turns,
     zero_drafts_alert,
+)
+from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION
+
+OFFLINE_CHECK_ENV_KEYS = (
+    "MANGO_TELEGRAM_FOTON_BOT_TOKEN",
+    "MANGO_TELEGRAM_KB_SNAPSHOT",
+    "MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH",
+    "MANGO_TELEGRAM_PILOT_STORE_PATH",
+    "MANGO_TELEGRAM_PILOT_STORE_ENABLED",
+    "MANGO_TELEGRAM_CRM_READ_MODE",
+    "ENFORCE_CANONICAL_PROFILE",
+    DIRECT_PATH_PILOT_CONFIG_ENV,
 )
 
 
@@ -183,3 +203,220 @@ def test_zero_drafts_alert_missing_store_is_non_fatal(tmp_path) -> None:
 
     assert result["drafts_since"] is None
     assert result["alert"] is False
+
+
+def test_apply_runtime_env_does_not_force_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+
+    apply_runtime_env({}, snapshot_path=tmp_path / "snapshot.json")
+
+    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
+
+
+def _write_bot_heartbeat(path: Path, *, last_cycle_at: datetime, profile: str = DIRECT_PATH_PILOT_CONFIG_VERSION, guards=None) -> None:
+    payload = {
+        "schema_version": "public_pilot_bot_heartbeat_v2_2026_06_21",
+        "status": "polling",
+        "last_cycle_at": last_cycle_at.isoformat(timespec="seconds"),
+        "pid": os.getpid(),
+        "brands": ["foton"],
+        "event": "heartbeat",
+        "effective_profile": profile,
+        "draft_path": "direct_path" if profile else "dialogue_contract_pipeline",
+        "active_guards": guards
+        if guards is not None
+        else {
+            "presale_safety": True,
+            "presale_pii_memory": True,
+            "pii_relation_stopwords": True,
+            "verifier_handoff_claims": True,
+            "semantic_output_verifier": True,
+            "output_sanitizer": True,
+        },
+        "summary": {},
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_public_bot_heartbeat_status_accepts_fresh_polling_heartbeat(tmp_path) -> None:
+    now = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "heartbeat.json"
+    _write_bot_heartbeat(path, last_cycle_at=now - timedelta(seconds=20))
+
+    status = public_bot_heartbeat_status(path, brand="foton", now=now, process_alive_fn=lambda _pid: True)
+
+    assert status["ok"] is True
+    assert status["effective_profile"] == DIRECT_PATH_PILOT_CONFIG_VERSION
+    assert status["active_guards"]["presale_safety"] is True
+
+
+def test_public_bot_heartbeat_status_rejects_stale_heartbeat(tmp_path) -> None:
+    now = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "heartbeat.json"
+    _write_bot_heartbeat(path, last_cycle_at=now - timedelta(seconds=181))
+
+    status = public_bot_heartbeat_status(path, brand="foton", now=now, stale_after_seconds=180, process_alive_fn=lambda _pid: True)
+
+    assert status["ok"] is False
+    assert any(item["reason"] == "public_bot_heartbeat_stale" for item in status["failures"])
+
+
+def test_public_bot_heartbeat_status_rejects_profile_and_guard_off(tmp_path) -> None:
+    now = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+    path = tmp_path / "heartbeat.json"
+    _write_bot_heartbeat(
+        path,
+        last_cycle_at=now,
+        profile="",
+        guards={
+            "presale_safety": True,
+            "presale_pii_memory": False,
+            "pii_relation_stopwords": True,
+            "verifier_handoff_claims": True,
+            "semantic_output_verifier": True,
+            "output_sanitizer": True,
+        },
+    )
+
+    status = public_bot_heartbeat_status(path, brand="foton", now=now, process_alive_fn=lambda _pid: True)
+
+    assert status["ok"] is False
+    reasons = {(item["reason"], item.get("guard")) for item in status["failures"]}
+    assert ("public_bot_profile_off", None) in reasons
+    assert ("public_bot_guard_off", "presale_pii_memory") in reasons
+
+
+def test_smoke_force_profile_uses_local_context_without_process_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    config = BrandBotConfig(
+        brand="foton",
+        token="token",
+        display_name="Фотон",
+        snapshot_path=tmp_path / "snapshot.json",
+        store_enabled=False,
+    )
+
+    overrides = smoke_context_overrides(config, smoke_force_profile=True)
+
+    assert overrides == {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+    assert DIRECT_PATH_PILOT_CONFIG_ENV not in os.environ
+
+
+def test_check_public_bot_live_heartbeat_only_accepts_real_heartbeat(tmp_path, monkeypatch, capsys) -> None:
+    env_file = tmp_path / "offline.env"
+    snapshot = tmp_path / "snapshot.json"
+    bot_heartbeat = tmp_path / "public_heartbeat.json"
+    check_heartbeat = tmp_path / "check.json"
+    snapshot.write_text('{"facts":[]}\n', encoding="utf-8")
+    env_file.write_text(
+        "\n".join(
+            [
+                'MANGO_TELEGRAM_FOTON_BOT_TOKEN="offline-token"',
+                f'MANGO_TELEGRAM_KB_SNAPSHOT="{snapshot}"',
+                f'MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH="{bot_heartbeat}"',
+                f'MANGO_TELEGRAM_PILOT_STORE_PATH="{tmp_path / "pilot.sqlite"}"',
+                'MANGO_TELEGRAM_PILOT_STORE_ENABLED="0"',
+                'MANGO_TELEGRAM_CRM_READ_MODE="off"',
+                'ENFORCE_CANONICAL_PROFILE="1"',
+                f'{DIRECT_PATH_PILOT_CONFIG_ENV}="{DIRECT_PATH_PILOT_CONFIG_VERSION}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _write_bot_heartbeat(bot_heartbeat, last_cycle_at=datetime.now(timezone.utc))
+    for key in (
+        "MANGO_TELEGRAM_FOTON_BOT_TOKEN",
+        "MANGO_TELEGRAM_KB_SNAPSHOT",
+        "MANGO_TELEGRAM_PUBLIC_BOT_HEARTBEAT_PATH",
+        "MANGO_TELEGRAM_PILOT_STORE_PATH",
+        "MANGO_TELEGRAM_PILOT_STORE_ENABLED",
+        "MANGO_TELEGRAM_CRM_READ_MODE",
+        "ENFORCE_CANONICAL_PROFILE",
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    try:
+        rc = check_public_bot_live_main(
+            [
+                "--env-file",
+                str(env_file),
+                "--brand",
+                "foton",
+                "--snapshot-path",
+                str(snapshot),
+                "--bot-heartbeat-path",
+                str(bot_heartbeat),
+                "--heartbeat-path",
+                str(check_heartbeat),
+                "--heartbeat-only",
+            ]
+        )
+    finally:
+        for key in OFFLINE_CHECK_ENV_KEYS:
+            os.environ.pop(key, None)
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["heartbeat_only"] is True
+    assert payload["turns"] == []
+    assert payload["bot_heartbeat"]["path"] == str(bot_heartbeat)
+
+
+def test_check_public_bot_live_heartbeat_only_rejects_bad_profile_and_guard(tmp_path, monkeypatch) -> None:
+    env_file = tmp_path / "offline.env"
+    snapshot = tmp_path / "snapshot.json"
+    bot_heartbeat = tmp_path / "public_heartbeat.json"
+    snapshot.write_text('{"facts":[]}\n', encoding="utf-8")
+    env_file.write_text(
+        "\n".join(
+            [
+                'MANGO_TELEGRAM_FOTON_BOT_TOKEN="offline-token"',
+                f'MANGO_TELEGRAM_KB_SNAPSHOT="{snapshot}"',
+                'MANGO_TELEGRAM_CRM_READ_MODE="off"',
+                'ENFORCE_CANONICAL_PROFILE="1"',
+                f'{DIRECT_PATH_PILOT_CONFIG_ENV}="on"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _write_bot_heartbeat(
+        bot_heartbeat,
+        last_cycle_at=datetime.now(timezone.utc),
+        profile="on",
+        guards={
+            "presale_safety": True,
+            "presale_pii_memory": True,
+            "pii_relation_stopwords": True,
+            "verifier_handoff_claims": True,
+            "semantic_output_verifier": True,
+            "output_sanitizer": False,
+        },
+    )
+    for key in ("MANGO_TELEGRAM_FOTON_BOT_TOKEN", "MANGO_TELEGRAM_KB_SNAPSHOT", "ENFORCE_CANONICAL_PROFILE", DIRECT_PATH_PILOT_CONFIG_ENV):
+        monkeypatch.delenv(key, raising=False)
+
+    try:
+        rc = check_public_bot_live_main(
+            [
+                "--env-file",
+                str(env_file),
+                "--brand",
+                "foton",
+                "--snapshot-path",
+                str(snapshot),
+                "--bot-heartbeat-path",
+                str(bot_heartbeat),
+                "--heartbeat-path",
+                str(tmp_path / "check.json"),
+                "--heartbeat-only",
+            ]
+        )
+    finally:
+        for key in OFFLINE_CHECK_ENV_KEYS:
+            os.environ.pop(key, None)
+
+    assert rc == 2

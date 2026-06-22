@@ -228,6 +228,72 @@ def test_task_env_delta_overrides_default_production_stack(tmp_path):
     assert '"TELEGRAM_STEP4_KEEP_ANSWER": "1"' in report
 
 
+def test_effective_task_env_adds_canonical_profile_only_when_enforced() -> None:
+    plain = watcher.effective_task_env({})
+    enforced = watcher.effective_task_env({"ENFORCE_CANONICAL_PROFILE": "1"})
+    v2 = watcher.effective_task_env({}, stack_version="v2")
+
+    assert "TELEGRAM_DIRECT_PATH_PILOT_CONFIG" not in plain
+    assert enforced["TELEGRAM_DIRECT_PATH_PILOT_CONFIG"] == "pilot_gold_v1"
+    assert v2 == {"TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1"}
+
+
+def test_production_env_stack_v2_contains_only_direct_path_profile() -> None:
+    m1_only_flags = {
+        "TELEGRAM_STEP4_KEEP_ANSWER",
+        "TELEGRAM_A_FREE_NUMBER_GATE",
+        "TELEGRAM_STEP4_NUMBER_GROUNDING",
+        "TELEGRAM_PH2_TONE",
+        "TELEGRAM_PH2_OBJECTION",
+        "TELEGRAM_PH2_ANXIETY",
+        "TELEGRAM_TONE_WARM_FRAME",
+        "TELEGRAM_TONE_CLOSE_DETECT",
+        "TELEGRAM_TONE_SELL_PROMPT",
+        "TELEGRAM_TONE_RICH_FORMAT",
+        "TELEGRAM_Q_PARTIAL_YIELD",
+        "TELEGRAM_Q_CLARIFY_SCOPE",
+        "TELEGRAM_Q_USEFUL_HANDOFF",
+        "TELEGRAM_A_TRAVEL_COMPOSE",
+        "TELEGRAM_A_ESTIMATE_MODE",
+        "TELEGRAM_COMPOSITE_CONTRACT_FIX",
+        "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE",
+        "TELEGRAM_SEMANTIC_DIAGNOSIS_GUARD",
+        "TELEGRAM_HANDOFF_TRACE",
+        "TELEGRAM_OUTPUT_SANITIZER",
+        "TELEGRAM_RULES_ENGINE_PLANNER_INTENT",
+        "TELEGRAM_SEMANTIC_OUTPUT_VERIFIER",
+        "DIALOGUE_CONTRACT_DEBUG_TRACE",
+    }
+
+    assert watcher.PRODUCTION_ENV_STACK_DEPRECATED_SINCE == "2026-06-21"
+    assert watcher.PRODUCTION_ENV_STACK_V2 == {
+        watcher.DIRECT_PATH_PILOT_CONFIG_ENV: watcher.DIRECT_PATH_PILOT_CONFIG_VERSION
+    }
+    assert not (set(watcher.PRODUCTION_ENV_STACK_V2) & m1_only_flags)
+
+
+def test_watcher_uses_v2_stack_only_when_selected(tmp_path):
+    _make_bundle(tmp_path)
+    set_rel, set_sha = _make_set(tmp_path)
+    _write_task(tmp_path, "2026-06-07_v2_env.task.yaml", set_rel=set_rel, set_sha=set_sha, env="")
+    seen_env: dict[str, str] = {}
+
+    def runner(spec, deploy_dir, out_dir, command, env):
+        seen_env.update(dict(env))
+        assert env["TELEGRAM_DIRECT_PATH_PILOT_CONFIG"] == "pilot_gold_v1"
+        assert "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE" not in env
+        assert "TELEGRAM_A_FREE_NUMBER_GATE" not in env
+        return _fake_runner(spec, deploy_dir, out_dir, command, env)
+
+    assert _run_ready_cycle(_new_watcher(tmp_path, runner=runner, production_stack_version="v2")) == "success"
+
+    report = (tmp_path / "tasks" / "_done" / "task1.report.md").read_text(encoding="utf-8")
+    assert "production_stack_version: v2" in report
+    assert '"TELEGRAM_DIRECT_PATH_PILOT_CONFIG": "pilot_gold_v1"' in report
+    assert "TELEGRAM_DIALOGUE_CONTRACT_PIPELINE" not in report
+    assert seen_env["TELEGRAM_DIRECT_PATH_PILOT_CONFIG"] == "pilot_gold_v1"
+
+
 def test_status_writes_date_rotated_log_tail(tmp_path):
     w = _new_watcher(tmp_path)
     assert w.process_once() == "idle"

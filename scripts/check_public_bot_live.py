@@ -24,6 +24,14 @@ if str(SRC) not in sys.path:
 
 from mango_mvp.channels.dialogue_memory import update_dialogue_memory_after_answer
 from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from mango_mvp.channels.pilot_profile_runtime import (
+    DIRECT_PATH_PILOT_CONFIG_ENV,
+    DIRECT_PATH_PILOT_CONFIG_VERSION,
+    REQUIRED_GUARD_KEYS,
+    ensure_canonical_pilot_profile,
+    pilot_profile_selfcheck,
+    stderr_warning,
+)
 from scripts.run_telegram_public_pilot_bots import (
     BrandBotConfig,
     DEFAULT_ENV_FILE,
@@ -35,7 +43,14 @@ from scripts.run_telegram_public_pilot_bots import (
     load_debug_clients,
     merged_env,
     public_reply_text,
+    sync_env_to_process,
     write_json_atomic,
+)
+
+HEARTBEAT_REQUIRED_GUARD_KEYS = (
+    *REQUIRED_GUARD_KEYS,
+    "semantic_output_verifier",
+    "output_sanitizer",
 )
 
 
@@ -279,6 +294,130 @@ def zero_drafts_alert(store_path: Path, *, now: datetime, hours: int = 3) -> Map
     }
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def public_bot_heartbeat_status(
+    path: Path,
+    *,
+    brand: str,
+    now: datetime,
+    stale_after_seconds: int = 180,
+    process_alive_fn=process_alive,
+) -> Mapping[str, Any]:
+    failures: list[Mapping[str, Any]] = []
+    target = Path(path)
+    if not target.exists():
+        return {
+            "ok": False,
+            "path": str(target),
+            "failures": [{"reason": "public_bot_heartbeat_missing"}],
+        }
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "path": str(target),
+            "failures": [{"reason": "public_bot_heartbeat_unreadable", "error": str(exc)[:160]}],
+        }
+    if not isinstance(payload, Mapping):
+        return {
+            "ok": False,
+            "path": str(target),
+            "failures": [{"reason": "public_bot_heartbeat_invalid"}],
+        }
+
+    status = str(payload.get("status") or "")
+    if status != "polling":
+        failures.append({"reason": "public_bot_not_polling", "status": status})
+    brands = [str(item) for item in (payload.get("brands") or ()) if str(item).strip()]
+    if brand not in brands:
+        failures.append({"reason": "public_bot_brand_missing", "brand": brand, "brands": brands})
+
+    last_cycle_at = _parse_iso_datetime(payload.get("last_cycle_at"))
+    age_seconds = None
+    if last_cycle_at is None:
+        failures.append({"reason": "public_bot_heartbeat_time_missing"})
+    else:
+        age_seconds = max(0.0, (now.astimezone(timezone.utc) - last_cycle_at).total_seconds())
+        if age_seconds > max(1, int(stale_after_seconds)):
+            failures.append(
+                {
+                    "reason": "public_bot_heartbeat_stale",
+                    "age_seconds": round(age_seconds, 3),
+                    "stale_after_seconds": int(stale_after_seconds),
+                }
+            )
+
+    raw_pid = payload.get("pid")
+    try:
+        pid = int(raw_pid)
+    except (TypeError, ValueError):
+        pid = 0
+    pid_alive = False
+    if pid <= 0:
+        failures.append({"reason": "public_bot_pid_missing", "pid": raw_pid})
+    else:
+        pid_alive = bool(process_alive_fn(pid))
+        if not pid_alive:
+            failures.append({"reason": "public_bot_pid_dead", "pid": pid})
+
+    effective_profile = str(payload.get("effective_profile") or "")
+    if effective_profile != DIRECT_PATH_PILOT_CONFIG_VERSION:
+        failures.append({"reason": "public_bot_profile_off", "effective_profile": effective_profile})
+    active_guards = payload.get("active_guards") if isinstance(payload.get("active_guards"), Mapping) else {}
+    for key in HEARTBEAT_REQUIRED_GUARD_KEYS:
+        if active_guards.get(key) is not True:
+            failures.append({"reason": "public_bot_guard_off", "guard": key})
+
+    return {
+        "ok": not failures,
+        "path": str(target),
+        "schema_version": str(payload.get("schema_version") or ""),
+        "status": status,
+        "brands": brands,
+        "pid": pid,
+        "pid_alive": pid_alive,
+        "last_cycle_at": last_cycle_at.isoformat() if last_cycle_at else "",
+        "age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+        "effective_profile": effective_profile,
+        "draft_path": str(payload.get("draft_path") or ""),
+        "active_guards": dict(active_guards),
+        "failures": failures,
+    }
+
+
+def smoke_context_overrides(config: BrandBotConfig, *, smoke_force_profile: bool) -> Mapping[str, Any]:
+    if smoke_force_profile:
+        return {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+    return dict(config.context_overrides or {})
+
+
 async def run_turn(
     runtime: PublicPilotBotRuntime,
     *,
@@ -324,8 +463,14 @@ async def run_turn(
     )
 
 
-async def run_checks(config: BrandBotConfig, *, debug_clients: Mapping[str, Mapping[str, Any]]) -> tuple[LiveCheckTurn, ...]:
+async def run_checks(
+    config: BrandBotConfig,
+    *,
+    debug_clients: Mapping[str, Mapping[str, Any]],
+    smoke_force_profile: bool = False,
+) -> tuple[LiveCheckTurn, ...]:
     temp_dir = Path(tempfile.mkdtemp(prefix="mango_public_bot_live_check_"))
+    context_overrides = smoke_context_overrides(config, smoke_force_profile=smoke_force_profile)
     temp_config = BrandBotConfig(
         brand=config.brand,
         token=config.token,
@@ -345,6 +490,7 @@ async def run_checks(config: BrandBotConfig, *, debug_clients: Mapping[str, Mapp
         p0_register_path=temp_dir / "p0.csv",
         autonomy_enabled=config.autonomy_enabled,
         dialogue_contract_pipeline_enabled=config.dialogue_contract_pipeline_enabled,
+        context_overrides=context_overrides,
     )
     turns: list[LiveCheckTurn] = []
     runtime = PublicPilotBotRuntime(temp_config, debug_clients=debug_clients)
@@ -366,8 +512,7 @@ async def run_checks(config: BrandBotConfig, *, debug_clients: Mapping[str, Mapp
 
 
 def apply_runtime_env(env: Mapping[str, str], *, snapshot_path: Path) -> None:
-    os.environ.update({str(key): str(value) for key, value in env.items()})
-    os.environ.setdefault("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    sync_env_to_process({str(key): str(value) for key, value in env.items()})
     os.environ["MANGO_TELEGRAM_KB_SNAPSHOT"] = str(snapshot_path)
     if not os.environ.get("CODEX_HOME") and DEFAULT_BOT_CODEX_HOME.exists():
         os.environ["CODEX_HOME"] = str(DEFAULT_BOT_CODEX_HOME)
@@ -379,20 +524,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--brand", choices=("foton", "unpk"), default="foton")
     parser.add_argument("--snapshot-path", type=Path, default=DEFAULT_SNAPSHOT)
     parser.add_argument("--heartbeat-path", type=Path, default=DEFAULT_CHECK_HEARTBEAT_PATH)
+    parser.add_argument("--bot-heartbeat-path", type=Path, default=None)
+    parser.add_argument("--heartbeat-stale-after-sec", type=int, default=180)
+    parser.add_argument("--heartbeat-only", action="store_true")
+    parser.add_argument("--smoke-force-profile", action="store_true")
     parser.add_argument("--fail-on-zero-drafts", action="store_true")
     args = parser.parse_args(argv)
 
     env = merged_env(args.env_file)
     apply_runtime_env(env, snapshot_path=args.snapshot_path)
+    activation = ensure_canonical_pilot_profile(warn=stderr_warning)
+    env = dict(os.environ)
     configs = configs_from_env(dict(os.environ), brand=args.brand)
     if len(configs) != 1:
         raise RuntimeError(f"expected one config for {args.brand}, got {len(configs)}")
     config = configs[0]
+    bot_heartbeat_path = args.bot_heartbeat_path or config.heartbeat_path
+    bot_heartbeat = public_bot_heartbeat_status(
+        bot_heartbeat_path,
+        brand=config.brand,
+        now=datetime.now(timezone.utc),
+        stale_after_seconds=args.heartbeat_stale_after_sec,
+    )
+    profile_selfcheck = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=config.dialogue_contract_pipeline_enabled)
     expected_online_prices = expected_online_prices_from_snapshot(config.snapshot_path, config.brand)
-    turns = asyncio.run(run_checks(config, debug_clients=load_debug_clients(dict(os.environ))))
-    failures = validate_turns(turns, expected_online_prices=expected_online_prices)
+    turns = ()
+    failures = ()
+    if not args.heartbeat_only:
+        turns = asyncio.run(
+            run_checks(
+                config,
+                debug_clients=load_debug_clients(env),
+                smoke_force_profile=args.smoke_force_profile,
+            )
+        )
+        failures = validate_turns(turns, expected_online_prices=expected_online_prices)
     zero_alert = zero_drafts_alert(Path(os.environ.get(PILOT_STORE_PATH_ENV) or config.store_path), now=datetime.now(timezone.utc))
-    ok = not failures and not (args.fail_on_zero_drafts and zero_alert["alert"])
+    ok = bool(bot_heartbeat["ok"]) and not failures and not (args.fail_on_zero_drafts and zero_alert["alert"])
     payload = {
         "schema_version": "public_bot_live_check_v1_2026_06_12",
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -403,8 +571,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
         "code_home": os.environ.get("CODEX_HOME", ""),
+        "profile_activation": activation.to_json_dict(),
+        "profile_selfcheck": profile_selfcheck.to_json_dict(),
+        "bot_heartbeat": dict(bot_heartbeat),
+        "heartbeat_only": bool(args.heartbeat_only),
+        "smoke_force_profile": bool(args.smoke_force_profile),
         "turns": [turn.to_json_dict() for turn in turns],
-        "failures": list(failures),
+        "failures": [*list(bot_heartbeat.get("failures") or ()), *list(failures)],
         "zero_drafts": dict(zero_alert),
     }
     write_json_atomic(args.heartbeat_path, payload)

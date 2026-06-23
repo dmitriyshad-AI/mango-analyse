@@ -142,6 +142,7 @@ def test_contentful_draft_is_not_manager_handoff_even_when_route_is_draft() -> N
     assert row["dialog_verdict"] == "held_ok"
     assert row["business_errors"] == []
     assert row["turn_observations"][0]["handed_off_to_manager"] is False
+    assert row["turn_observations"][0]["named_concrete_option"] is True
 
 
 def test_route_target_with_content_answer_is_under_handoff() -> None:
@@ -206,16 +207,29 @@ def test_progression_prompt_does_not_show_service_route() -> None:
 
 def test_summary_counts_next_step_and_business_errors() -> None:
     rows = [
-        {"dialog_verdict": "advanced", "next_step_each_turn": [True, False], "business_errors": []},
-        {"dialog_verdict": "mis_routed", "next_step_each_turn": [False], "business_errors": ["over_handoff_service"]},
+        {
+            "dialog_verdict": "advanced",
+            "next_step_each_turn": [True, False],
+            "turn_move_quality": ["winning", "weak"],
+            "business_errors": [],
+        },
+        {
+            "dialog_verdict": "mis_routed",
+            "next_step_each_turn": [False],
+            "turn_move_quality": ["wrong"],
+            "business_errors": ["over_handoff_service"],
+        },
     ]
 
-    summary = rejudge_progression.summarize_results(rows)
+    summary = rejudge_progression.summarize_results(rows, llm_calls={"progression_judge_fake": 3})
 
     assert summary["advanced_or_held_ok_rate"] == 0.5
     assert summary["false_push_or_mis_routed_rate"] == 0.5
     assert summary["valid_next_step_turn_rate"] == 0.3333
+    assert summary["winning_move_rate"] == 0.3333
+    assert summary["advanced_or_held_with_winning_move_rate_lt_0_5"] == 0
     assert summary["business_errors"] == {"over_handoff_service": 1}
+    assert summary["llm_calls"]["progression_judge_fake"] == 3
 
 
 def test_dialog_business_errors_drops_stale_target_not_reached() -> None:
@@ -223,6 +237,8 @@ def test_dialog_business_errors_drops_stale_target_not_reached() -> None:
         observation={},
         stage_reached="S3",
         turn_verdict="stalled",
+        move_quality="weak",
+        move_criteria_hit=("substantive_but_incomplete",),
         next_step=False,
         business_errors=("target_not_reached", "no_valid_next_step"),
         note="",
@@ -293,3 +309,95 @@ def test_cli_fake_mode_writes_results(tmp_path: Path) -> None:
     assert row["dialog_id"] == "d1"
     assert "turn_observations" in row
     assert saved_summary["dialogs"] == 1
+
+
+def test_legacy_named_concrete_offer_aliases_to_option() -> None:
+    observation = rejudge_progression.normalize_observations({"named_concrete_offer": True}, bot_text="")
+
+    assert observation["named_concrete_option"] is True
+    assert "named_concrete_offer" not in observation
+
+
+def test_quality_only_observations_do_not_advance_stage() -> None:
+    persona = _persona(stage_start="S1", stage_target="S2")
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=_dialog(persona, bot_text="Вы уже писали класс выше, у нас есть разные курсы."),
+        persona_by_id={},
+        turn_observations=[{"gave_fit_reason": True, "reasked_known": True, "dumped_catalog": True}],
+    )
+
+    assert row["stage_reached"] == "S1"
+    assert row["dialog_verdict"] == "stalled"
+    assert row["turn_move_quality"] == ["weak"]
+    assert row["move_criteria_hit"] == [["reasked_known"]]
+
+
+def test_fact_audit_fabrication_overrides_winning_observation() -> None:
+    persona = _persona(stage_start="S2", stage_target="S3")
+    dialog = _dialog(persona, bot_text="Цена 57 000 ₽, можно оформить рассрочку.")
+    dialog["turns"][0]["number_audit"] = {
+        "items": [{"level": "no_match", "number": "57000"}],
+        "has_risky_number": True,
+    }
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=dialog,
+        persona_by_id={},
+        turn_observations=[{"gave_conditions": True, "named_concrete_option": True}],
+    )
+
+    assert row["dialog_verdict"] == "wrong_move"
+    assert row["turn_verdicts"] == ["wrong_move"]
+    assert row["turn_move_quality"] == ["wrong"]
+    assert row["business_errors"] == ["fabrication_in_move"]
+
+
+def test_wrong_scope_fact_audit_marks_wrong_venue_or_fact() -> None:
+    persona = _persona(stage_start="S2", stage_target="S3")
+    dialog = _dialog(persona, bot_text="Очные занятия проходят в Менделеево.")
+    dialog["turns"][0]["judge_fact_audit"] = {
+        "items": [{"level": "wrong_scope", "claim": "Менделеево"}],
+    }
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=dialog,
+        persona_by_id={},
+        turn_observations=[{"gave_conditions": True}],
+    )
+
+    assert row["dialog_verdict"] == "wrong_move"
+    assert row["business_errors"] == ["fabrication_in_move", "wrong_venue_or_fact"]
+
+
+def test_redrive_after_pay_triggers_even_with_service_answer() -> None:
+    persona = _persona(stage_start="S7", stage_target="S8", deal_state={"paid_claimed": True})
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=_dialog(persona, bot_text="Доступ придёт после оплаты, можем сразу оформить следующий курс."),
+        persona_by_id={},
+        turn_observations=[{"confirmed_access_or_docs": True, "pushed_sale": True}],
+    )
+
+    assert row["dialog_verdict"] == "false_push"
+    assert row["business_errors"] == ["redrive_after_pay"]
+    assert row["turn_move_quality"] == ["wrong"]
+
+
+def test_service_not_resell_is_computed_in_code_not_llm_observation() -> None:
+    persona = _persona(stage_start="S7", stage_target="S8", deal_state={"paid_claimed": True})
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=_dialog(persona, bot_text="После оплаты доступ и документы придут на почту."),
+        persona_by_id={},
+        turn_observations=[{"confirmed_access_or_docs": True, "service_not_resell": False}],
+    )
+
+    assert row["dialog_verdict"] == "advanced"
+    assert row["turn_move_quality"] == ["winning"]
+    assert row["move_criteria_hit"] == [["service_not_resell"]]

@@ -1,8 +1,8 @@
 # TELEGRAM_AUTONOMY_SCOPE_PRECISION — отчёт D1
 
-Дата: 2026-06-23 07:11 MSK  
-Ветка: `codex/autonomy-scope-precision`  
-База: `main` / `a9f80ba`  
+Дата: 2026-06-23 07:11 MSK
+Ветка: `codex/autonomy-scope-precision`
+База: `main` / `a9f80ba`
 ТЗ: `/Users/dmitrijfabarisov/Claude Projects/Foton/2026-06-23_TZ_autonomiya_za_flagom_DRAFT.md`, секция v2, только Кандидат 1.
 
 ## Read-only карта
@@ -118,3 +118,61 @@ ON FAIL:
 - В боевой профиль не добавлял.
 - Live bot, AMO, Tallanto, `stable_runtime`, M1, push/merge не трогал.
 - `TELEGRAM_STEP4_KEEP_ANSWER` на замере держал `0`.
+
+---
+
+# Узкий фикс после регрейда Claude #1: ЛВШ не в московский маршрут
+
+Дата: 2026-06-23 09:11 MSK
+Коммит первого этапа: `bc7cb84`
+Текущая правка: поверх `bc7cb84`, перед коммитом.
+
+## Корень регрессии
+
+В ON-прогоне `sm_u_address` модель/шаблон на адресный вопрос УНПК выдавали список всех площадок, включая ЛВШ Менделеево. `authoritative_gate:wrong_intent_fact` уже появлялся, но текст мог быть продвинут в `bot_answer_self_for_pilot` через autonomy matrix.
+
+## Что добавлено
+
+- В `policy_routing.py` за тем же флагом `TELEGRAM_AUTONOMY_SCOPE_PRECISION`:
+  - `как доехать/добраться/маршрут/проезд` + `адрес/площадка/занятия/Москва` для УНПК без camp-context ремонтируется в московский адресный шаблон.
+  - Если draft уже содержит `ЛВШ/Менделеево/Льяловское/Красный Воин` на такой regular-route вопрос, текст заменяется на `_unpk_moscow_address_template_from_kb`, до autonomy promote.
+- В `dialogue_contract_pipeline.py`: exact address fallback при включённом флаге фильтрует camp/LVSH facts, если контракт не про camp/LVSH.
+- В `post_layers.py`: `Сретенка` и `Красносельская` добавлены в стоп-слова PII-name sanitizer, чтобы адресные топонимы не превращались в `данные ребёнка`.
+
+## Новые регрессии
+
+- `test_autonomy_scope_precision_unpk_route_to_moscow_uses_regular_template`: маршрут до московской площадки УНПК не выдаёт ЛВШ/Менделеево/Долгопрудный.
+- `test_autonomy_scope_precision_off_keeps_unpk_all_addresses_template`: OFF оставляет старый all-addresses template.
+- `test_pii_sanitizer_keeps_address_toponyms`: `Сретенка` не маскируется как имя.
+
+## Тесты
+
+- Точечные: `8 passed, 505 deselected`.
+- Полный pytest: `3606 passed, 5 skipped, 1 warning in 95.40s`.
+- Warning тот же: `urllib3 NotOpenSSLWarning` из системного LibreSSL.
+
+## Перемер
+
+Набор тот же:
+
+- `product_data/telegram_dynamic_test_sets/autonomy_scope_precision_freq20_plus_micro_20260623.jsonl`
+- sha256: `5db121790b6dbee5431c1cbc0b7ab282eeefbc3d75c933514cc07400a9553d2c`
+
+OFF fix2:
+
+- Папка: `runs/20260623_autonomy_scope_precision_fix2_OFF`
+- Итог: `dialogs=23`, `turns=50`, `pass=5`, `pass_with_notes=9`, `fail=9`, `ok=true`
+- `config_validity.invalid=false`
+- Инфраструктурные FAIL: 5 (`sm_u_join_mid`, `sm_f_level_worry`, `asp_pos_foton_address_how_to_get`, `asp_neg_c1_price_question_address_only`, `asp_neg_c3_lvsh_out_of_context`), причина: Codex usage limit/timeout на хвосте.
+
+ON fix2:
+
+- Папка: `runs/20260623_autonomy_scope_precision_fix2_ON`
+- Итог: `dialogs=23`, `turns=0`, `fail=23`, `ok=true`, но поведенчески НЕВАЛИДЕН.
+- Причина: инфраструктура Codex, в каждом диалоге `violated_gates=['infra_error']`, текст ошибки: `You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:15 AM.`
+
+## Статус
+
+- `formal_pass`: код и pytest зелёные.
+- `semantic_pass`: не заявляю; нужен повтор ON после восстановления лимита Codex.
+- Live bot, AMO, Tallanto, `stable_runtime`, push/merge не трогал.

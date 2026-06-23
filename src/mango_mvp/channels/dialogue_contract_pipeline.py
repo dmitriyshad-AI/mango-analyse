@@ -7311,6 +7311,12 @@ def _direct_exact_fact_answer(contract: AnswerContract, retrieval: RetrievalResu
     if not facts:
         return ""
     if _asks_address(contract):
+        if autonomy_scope_precision_enabled() and not _contract_mentions_camp_or_lvsh(contract):
+            facts = {
+                key: value
+                for key, value in facts.items()
+                if not _is_camp_or_lvsh_fact(str(key), str(value or ""))
+            }
         address = _first_address_from_facts(facts)
         if not address:
             return ""

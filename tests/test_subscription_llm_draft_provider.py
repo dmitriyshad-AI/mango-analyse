@@ -6332,6 +6332,59 @@ def test_unpk_regular_moscow_address_uses_clean_regular_template() -> None:
     assert "Фотон" not in result.draft_text
 
 
+def test_autonomy_scope_precision_unpk_route_to_moscow_uses_regular_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTONOMY_SCOPE_PRECISION_ENV, "1")
+    provider = FakeDraftProvider(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "УНПК: Сретенка, 20; ЛВШ Менделеево; Долгопрудный.",
+            "message_type": "question",
+            "topic_id": "theme:015_address",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "По какому адресу вы находитесь? Как доехать до московской площадки?",
+        context={
+            "active_brand": "unpk",
+            "autonomy_policy": {"allow_autonomous": True},
+            "client_safe_fact_verified": True,
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_TEXT
+    assert "ЛВШ" not in result.draft_text
+    assert "Менделеево" not in result.draft_text
+    assert "Долгопруд" not in result.draft_text
+
+
+def test_autonomy_scope_precision_off_keeps_unpk_all_addresses_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(AUTONOMY_SCOPE_PRECISION_ENV, raising=False)
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "Уточню площадки.",
+            "message_type": "question",
+            "topic_id": "theme:015_location",
+            "confidence_theme": 0.91,
+        }
+    )
+
+    result = provider.build_draft(
+        "Какие у вас площадки и адреса?",
+        context={"active_brand": "unpk", "rop_policy": {"bot_permission": "draft_for_manager"}},
+    )
+
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == ADDRESS_UNPK_SAFE_TEXT
+
+
 def test_bot_answer_self_is_demoted_when_topic_not_in_autonomy_matrix() -> None:
     provider = FakeDraftProvider(
         {
@@ -13439,6 +13492,18 @@ def test_pii_relation_stopwords_flag_still_masks_unmentioned_name(monkeypatch) -
     assert "Ирины" not in sanitized
     assert "данные ребёнка" in sanitized
     assert "client_name_echo" in reasons
+
+
+def test_pii_sanitizer_keeps_address_toponyms(monkeypatch) -> None:
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+
+    sanitized, reasons = subscription_llm._sanitize_client_pii_echo(
+        "Для Сретенка, 20 ближайшее метро — Чистые Пруды.",
+        client_message="Как доехать до московской площадки УНПК?",
+    )
+
+    assert sanitized == "Для Сретенка, 20 ближайшее метро — Чистые Пруды."
+    assert reasons == ()
 
 
 def test_direct_path_p0_preblock_stays_manager_only_with_output_sanitizer() -> None:

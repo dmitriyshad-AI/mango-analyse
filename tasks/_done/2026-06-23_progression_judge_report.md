@@ -27,23 +27,26 @@
 
 ## Проверки
 
-- `tests/test_rejudge_progression.py`: 9 passed.
+- `tests/test_rejudge_progression.py`: 13 passed.
 - `py_compile`: passed.
 - Seed-прогон симулятора: 11 диалогов, 42 хода, completed=11.
 - Progression rejudge: 11 результатов.
 
 ## Сводка progression
 
-- `advanced`: 1
-- `held_ok`: 1
-- `mis_routed`: 8
+- `advanced`: 5
+- `held_ok`: 3
+- `mis_routed`: 2
 - `false_push`: 1
 
 Главные бизнес-сигналы:
 
-- `over_handoff_service`: 8
+- `over_handoff_service`: 3
 - `stage_carried_to_sibling`: 1
-- `under_handoff_service`: 1
+
+После калибровки `handed_off_to_manager` выводится из текста черновика, а не из `route=draft_for_manager`.
+Содержательный черновик с ценой/условиями больше не считается передачей менеджеру. Если сервисная передача уже
+состоялась, последующий нейтральный сбор реквизитов не считается `under_handoff`.
 
 ## Важно для регрейда Claude
 
@@ -51,4 +54,4 @@
 
 - правильно ли LLM-наблюдения соответствуют тексту каждого хода;
 - не слишком ли широкая карта `confirmed_access_or_docs -> S8`;
-- корректно ли `over_handoff_service` отделяет настоящий лишний уход от безопасного черновика.
+- корректно ли оставшиеся `over_handoff_service` являются настоящими уходами, а не безопасными упоминаниями менеджера.

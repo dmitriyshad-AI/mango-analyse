@@ -105,8 +105,42 @@ def _extract_current_bot_text_from_prompt(prompt: str) -> str:
     return prompt[start:end]
 
 
-def normalize_observations(payload: Mapping[str, Any]) -> dict[str, bool]:
-    return {field: bool(payload.get(field)) for field in OBSERVATION_FIELDS}
+_HANDOFF_TEXT_RE = re.compile(
+    r"("
+    r"\b(?:передам|передаю|передадим|направлю|направим)\b.{0,90}\b(?:менеджер\w*|куратор\w*|бухгалтер\w*|ответственн\w*)|"
+    r"\b(?:менеджер|куратор|бухгалтер|ответственн\w*)\b.{0,90}\b(?:уточн\w*|провер\w*|подготов\w*|свяж\w*|напиш\w*|ответ\w*|верн[её]т\w*|сообщ\w*)|"
+    r"\bне\s+могу\s+(?:подсказать|проверить|подтвердить|сориентировать)\b|"
+    r"\b(?:нужно|надо)\s+уточнить\s+у\s+(?:менеджер\w*|куратор\w*|бухгалтер\w*)|"
+    r"\bзапрос\b.{0,90}\bпередать\s+в\s+бухгалтер\w*"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_SUBSTANTIVE_ANSWER_RE = re.compile(
+    r"("
+    r"\b\d[\d\s]*(?:₽|руб\.?|р\b)|"
+    r"\b\d{1,2}[:.]\d{2}\b|"
+    r"\b(?:стоим\w*|цен[аы]|расписан\w*|адрес\w*|рассроч\w*|скидк\w*|стоить)\b|"
+    r"\b(?:после\s+подтверждени[яе]\s+оплат\w*|после\s+оплат\w*|на\s+почту\s+прид[её]т|приглашени[ея]\s+на\s+учебн\w+\s+платформ\w*)\b|"
+    r"\b(?:soholms|mts[-\s]?link|учебн\w+\s+платформ\w*|ссылк\w+\s+и\s+инструкци\w*)\b|"
+    r"\b(?:вступительн\w+\s+тест\w*|заполня\w+\s+анкет\w*|анкет\w+\s+и\s+вступительн\w+\s+тест\w*|распределени\w+\s+по\s+групп\w*)\b|"
+    r"\b(?:есть|доступн\w*)\s+(?:базов\w+|продвинут\w+|очная|очный|онлайн|групп\w+|курс\w+|программ\w+)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _text_hands_off_to_manager(bot_text: str) -> bool:
+    text = str(bot_text or "").strip()
+    if not text or not _HANDOFF_TEXT_RE.search(text):
+        return False
+    return not bool(_SUBSTANTIVE_ANSWER_RE.search(text))
+
+
+def normalize_observations(payload: Mapping[str, Any], *, bot_text: str = "") -> dict[str, bool]:
+    observations = {field: bool(payload.get(field)) for field in OBSERVATION_FIELDS}
+    observations["handed_off_to_manager"] = _text_hands_off_to_manager(bot_text)
+    return observations
 
 
 def build_progression_prompt(
@@ -121,8 +155,7 @@ def build_progression_prompt(
         transcript_lines.append(
             f"Ход {turn_no}\n"
             f"Клиент: {turn.get('client_message') or ''}\n"
-            f"Бот: {turn.get('bot_text') or ''}\n"
-            f"Финальный маршрут бота: {turn.get('bot_route') or ''}"
+            f"Бот: {turn.get('bot_text') or ''}"
         )
     current_turn = turns[current_turn_index]
     safe_persona = {
@@ -148,7 +181,8 @@ def build_progression_prompt(
         "- sent_payment_path: бот дал или предложил счёт, квитанцию, ссылку, QR, способ оплаты.\n"
         "- confirmed_access_or_docs: бот объяснил доступ после оплаты, документы, договор, лицензию или сервисный шаг.\n"
         "- pushed_sale: бот дожимал продажу, оформление, оплату или новый продукт.\n"
-        "- handed_off_to_manager: бот передал менеджеру, куратору, бухгалтерии или ответственному сотруднику.\n\n"
+        "- handed_off_to_manager: бот реально пасует задачу менеджеру, куратору, бухгалтерии или ответственному "
+        "сотруднику, а не просто упоминает сотрудника рядом с содержательным ответом.\n\n"
         "Оценивай текущий ход бота, а не всю историю. Синонимы засчитывай. Если признаки нет явно — false.\n\n"
         f"Персона без целевого якоря:\n{json.dumps(safe_persona, ensure_ascii=False, indent=2)}\n\n"
         f"Текущий ход для оценки: {current_turn.get('turn')}\n"
@@ -203,6 +237,7 @@ def assess_turn(
     turn: Mapping[str, Any],
     stage_start: str,
     stage_target: str,
+    route_handoff_already_done: bool = False,
 ) -> TurnAssessment:
     stage_reached = stage_from_observations(observation, start_stage=stage_start)
     p0_turn = _is_p0_turn(persona, turn, stage_start=stage_start, stage_target=stage_target)
@@ -221,6 +256,15 @@ def assess_turn(
     if stage_target == "route":
         if observation.get("handed_off_to_manager"):
             return TurnAssessment(observation, stage_reached, "held_ok", True, (), "Правомерно передал менеджеру/ответственному.")
+        if route_handoff_already_done and _route_followup_after_handoff(observation):
+            return TurnAssessment(
+                observation,
+                stage_reached,
+                "held_ok",
+                True,
+                (),
+                "После уже выполненной передачи удержал сервисную нить без самостоятельного решения.",
+            )
         errors.append("under_handoff_service")
         return TurnAssessment(observation, stage_reached, "mis_routed", next_step, tuple(errors), "Нужна передача менеджеру, но бот ответил сам.")
 
@@ -272,6 +316,7 @@ def assess_dialog(
     turns = [turn for turn in (dialog.get("turns") or []) if isinstance(turn, Mapping)]
 
     assessments: list[TurnAssessment] = []
+    route_handoff_seen = False
     for index, turn in enumerate(turns):
         if turn_observations is not None and index < len(turn_observations):
             raw = turn_observations[index]
@@ -280,7 +325,7 @@ def assess_dialog(
                 raise ValueError(f"Missing stored observation for dialog_id={dialog_id!r} turn_index={index}")
             prompt = build_progression_prompt(persona=persona, turns=turns, current_turn_index=index)
             raw = judge_model.generate(prompt)
-        observation = normalize_observations(raw)
+        observation = normalize_observations(raw, bot_text=str(turn.get("bot_text") or ""))
         assessments.append(
             assess_turn(
                 observation,
@@ -288,8 +333,11 @@ def assess_dialog(
                 turn=turn,
                 stage_start=stage_start,
                 stage_target=stage_target,
+                route_handoff_already_done=route_handoff_seen,
             )
         )
+        if stage_target == "route" and assessments[-1].observation.get("handed_off_to_manager"):
+            route_handoff_seen = True
 
     if assessments:
         stage_reached = max(
@@ -477,6 +525,20 @@ def _collects_p0_details(observation: Mapping[str, bool]) -> bool:
             "requested_enrollment_data",
             "confirmed_slot",
             "sent_payment_path",
+            "pushed_sale",
+        )
+    )
+
+
+def _route_followup_after_handoff(observation: Mapping[str, bool]) -> bool:
+    return not any(
+        bool(observation.get(field))
+        for field in (
+            "named_concrete_offer",
+            "gave_conditions",
+            "confirmed_slot",
+            "sent_payment_path",
+            "confirmed_access_or_docs",
             "pushed_sale",
         )
     )

@@ -96,7 +96,11 @@ def test_route_target_success_is_held_ok() -> None:
     persona = _persona(stage_start="S8", stage_target="route", deal_state={"existing_customer": True})
     model = StaticModel({"handed_off_to_manager": True})
 
-    row = rejudge_progression.assess_dialog(judge_model=model, dialog=_dialog(persona), persona_by_id={})
+    row = rejudge_progression.assess_dialog(
+        judge_model=model,
+        dialog=_dialog(persona, bot_text="Передам запрос бухгалтерии, менеджер вернётся с ответом."),
+        persona_by_id={},
+    )
 
     assert row["dialog_verdict"] == "held_ok"
     assert row["next_step_each_turn"] == [True]
@@ -107,10 +111,97 @@ def test_unneeded_manager_handoff_is_mis_routed() -> None:
     persona = _persona(stage_start="S1", stage_target="S2")
     model = StaticModel({"handed_off_to_manager": True})
 
-    row = rejudge_progression.assess_dialog(judge_model=model, dialog=_dialog(persona), persona_by_id={})
+    row = rejudge_progression.assess_dialog(
+        judge_model=model,
+        dialog=_dialog(persona, bot_text="Передам менеджеру, он подскажет по группе."),
+        persona_by_id={},
+    )
 
     assert row["dialog_verdict"] == "mis_routed"
     assert row["business_errors"] == ["over_handoff_service"]
+
+
+def test_contentful_draft_is_not_manager_handoff_even_when_route_is_draft() -> None:
+    persona = _persona(stage_start="S1", stage_target="hold")
+    dialog = _dialog(
+        persona,
+        bot_text=(
+            "Очно физика для 9 класса стоит 44 600 ₽ за семестр. "
+            "По физике 9 класс очно есть базовая и продвинутая группы; менеджер поможет подобрать расписание."
+        ),
+    )
+    dialog["turns"][0]["bot_route"] = "draft_for_manager"
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=dialog,
+        persona_by_id={},
+        turn_observations=[{"handed_off_to_manager": True, "gave_conditions": True, "named_concrete_offer": True}],
+    )
+
+    assert row["dialog_verdict"] == "held_ok"
+    assert row["business_errors"] == []
+    assert row["turn_observations"][0]["handed_off_to_manager"] is False
+
+
+def test_route_target_with_content_answer_is_under_handoff() -> None:
+    persona = _persona(stage_start="S8", stage_target="route", deal_state={"existing_customer": True})
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=_dialog(
+            persona,
+            bot_text=(
+                "Закрывающие документы можно запросить через менеджера, а доступ к документам появится "
+                "после подтверждения оплаты."
+            ),
+        ),
+        persona_by_id={},
+        turn_observations=[{"handed_off_to_manager": True, "confirmed_access_or_docs": True}],
+    )
+
+    assert row["dialog_verdict"] == "mis_routed"
+    assert row["business_errors"] == ["under_handoff_service"]
+    assert row["turn_observations"][0]["handed_off_to_manager"] is False
+
+
+def test_route_target_followup_after_completed_handoff_is_not_under_handoff() -> None:
+    persona = _persona(stage_start="S8", stage_target="route", deal_state={"existing_customer": True})
+    dialog = _dialog(persona)
+    dialog["turns"] = [
+        {
+            "turn": 1,
+            "client_message": "Передайте бухгалтерии запрос по закрывающим документам.",
+            "bot_text": "Передам запрос бухгалтерии, менеджер вернётся с ответом.",
+            "bot_route": "draft_for_manager",
+        },
+        {
+            "turn": 2,
+            "client_message": "Номер платежки найду и пришлю следом.",
+            "bot_text": "Хорошо, пришлите номер платёжного поручения сюда, когда найдёте.",
+            "bot_route": "bot_answer_self_for_pilot",
+        },
+    ]
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=dialog,
+        persona_by_id={},
+        turn_observations=[{"handed_off_to_manager": True}, {"left_dated_followup": True}],
+    )
+
+    assert row["dialog_verdict"] == "held_ok"
+    assert row["business_errors"] == []
+    assert row["turn_verdicts"] == ["held_ok", "held_ok"]
+
+
+def test_progression_prompt_does_not_show_service_route() -> None:
+    persona = _persona()
+    dialog = _dialog(persona)
+
+    prompt = rejudge_progression.build_progression_prompt(persona=persona, turns=dialog["turns"], current_turn_index=0)
+
+    assert "Финальный маршрут бота" not in prompt
 
 
 def test_summary_counts_next_step_and_business_errors() -> None:

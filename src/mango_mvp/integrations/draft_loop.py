@@ -910,6 +910,7 @@ class AmoWappiDraftLoop:
             "bot_draft_text": draft_text,
             "auto_note": pair.auto_note,
             "config_fingerprint": dict(self.config.config_fingerprint or {}),
+            "bot_safe_context": _bot_safe_context_metadata(context),
             "status": "note_pending",
         }
         self.journal.append({**pending_payload, "event": "draft_created", "status": "dry_run" if dry_run else "note_pending"})
@@ -1170,6 +1171,42 @@ def _history_lines(messages: Sequence[WappiHistoryMessage]) -> tuple[str, ...]:
         prefix = "Ответ" if item.from_me else "Клиент"
         lines.append(f"{prefix}: {item.text.strip()}")
     return tuple(lines[-DEFAULT_HISTORY_LIMIT:])
+
+
+def _bot_safe_context_metadata(context: Mapping[str, Any]) -> Mapping[str, Any]:
+    raw = context.get("read_only_customer_context")
+    if not isinstance(raw, Mapping):
+        return {
+            "found": False,
+            "allowed_only": True,
+            "source": "customer_timeline_bot_context",
+            "item_count": 0,
+        }
+    timeline_context = raw.get("timeline_context") if isinstance(raw.get("timeline_context"), Mapping) else raw
+    bot_context = timeline_context.get("bot_context") if isinstance(timeline_context, Mapping) else None
+    items = bot_context.get("items") if isinstance(bot_context, Mapping) else ()
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
+        items = ()
+    safety = timeline_context.get("safety") if isinstance(timeline_context, Mapping) else {}
+    if not isinstance(safety, Mapping):
+        safety = {}
+    warnings = timeline_context.get("warnings") if isinstance(timeline_context, Mapping) else raw.get("warnings")
+    if not isinstance(warnings, Sequence) or isinstance(warnings, (str, bytes, bytearray)):
+        warnings = ()
+    return {
+        "found": bool(timeline_context.get("found") if isinstance(timeline_context, Mapping) else raw.get("found")),
+        "allowed_only": bool(timeline_context.get("allowed_only") if isinstance(timeline_context, Mapping) else raw.get("allowed_only")),
+        "source": str(timeline_context.get("source") if isinstance(timeline_context, Mapping) else raw.get("source") or "customer_timeline_bot_context"),
+        "active_brand": str(timeline_context.get("active_brand") if isinstance(timeline_context, Mapping) else raw.get("active_brand") or ""),
+        "item_count": len(items),
+        "warnings": [str(item) for item in warnings if str(item)],
+        "safety": {
+            "customer_profile_included": bool(safety.get("customer_profile_included")),
+            "raw_timeline_events_included": bool(safety.get("raw_timeline_events_included")),
+            "raw_ids_included": bool(safety.get("raw_ids_included")),
+            "pii_scan_passed": bool(safety.get("pii_scan_passed")),
+        },
+    }
 
 
 _EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]", re.UNICODE)

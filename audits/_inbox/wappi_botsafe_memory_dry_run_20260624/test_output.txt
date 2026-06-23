@@ -1,0 +1,8 @@
+git diff --check
+Result: clean.
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_bot_safe_runtime_context.py tests/test_run_amo_wappi_draft_loop.py tests/test_amo_wappi_transport.py
+Result: 26 passed in 1.46s.
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest --collect-only -q
+Result: 3621 tests collected in 9.78s, 1 urllib3 LibreSSL warning.

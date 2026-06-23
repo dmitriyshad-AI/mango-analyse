@@ -1,0 +1,11 @@
+src/mango_mvp/customer_timeline/bot_safe_runtime_context.py
+src/mango_mvp/integrations/draft_loop.py
+tests/test_bot_safe_runtime_context.py
+tests/test_run_amo_wappi_draft_loop.py
+tasks/_done/2026-06-24_wappi_botsafe_memory_dry_run_report.md
+audits/_inbox/wappi_botsafe_memory_dry_run_20260624/implementation_notes.md
+audits/_inbox/wappi_botsafe_memory_dry_run_20260624/changed_files.txt
+audits/_inbox/wappi_botsafe_memory_dry_run_20260624/test_output.txt
+audits/_inbox/wappi_botsafe_memory_dry_run_20260624/semantic_review.md
+audits/_inbox/wappi_botsafe_memory_dry_run_20260624/risk_review.md
+audits/_inbox/wappi_botsafe_memory_dry_run_20260624/backward_compatibility.md

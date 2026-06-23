@@ -9,7 +9,13 @@ from pathlib import Path
 import scripts.run_amo_wappi_draft_loop as runner
 from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, ENFORCE_CANONICAL_PROFILE_ENV
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
-from mango_mvp.integrations.draft_loop import DraftLoopConfig, DraftLoopKey, DraftLoopPair, DraftLoopProfile
+from mango_mvp.integrations.draft_loop import (
+    DraftLoopConfig,
+    DraftLoopKey,
+    DraftLoopPair,
+    DraftLoopProfile,
+    _bot_safe_context_metadata,
+)
 from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline
 
 
@@ -124,6 +130,48 @@ def test_context_builder_keeps_bot_safe_crm_context_off_by_default(tmp_path: Pat
     context = build_context(key, (), "Что дальше?", "foton")
 
     assert "read_only_customer_context" not in context
+
+
+def test_bot_safe_context_metadata_exposes_only_safe_flags() -> None:
+    metadata = _bot_safe_context_metadata(
+        {
+            "read_only_customer_context": {
+                "summary": "не должно попасть в journal",
+                "timeline_context": {
+                    "found": True,
+                    "allowed_only": True,
+                    "source": "customer_timeline_bot_context",
+                    "active_brand": "foton",
+                    "bot_context": {"items": [{"text": "секретная выжимка"}]},
+                    "warnings": ["safe_warning"],
+                    "safety": {
+                        "customer_profile_included": False,
+                        "raw_timeline_events_included": False,
+                        "raw_ids_included": False,
+                        "pii_scan_passed": True,
+                    },
+                },
+            }
+        }
+    )
+
+    raw = json.dumps(metadata, ensure_ascii=False)
+    assert metadata == {
+        "found": True,
+        "allowed_only": True,
+        "source": "customer_timeline_bot_context",
+        "active_brand": "foton",
+        "item_count": 1,
+        "warnings": ["safe_warning"],
+        "safety": {
+            "customer_profile_included": False,
+            "raw_timeline_events_included": False,
+            "raw_ids_included": False,
+            "pii_scan_passed": True,
+        },
+    }
+    assert "не должно попасть" not in raw
+    assert "секретная выжимка" not in raw
 
 
 def test_safe_transport_blocks_unlisted_wappi_get() -> None:

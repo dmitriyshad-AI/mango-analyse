@@ -41,7 +41,7 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in raw
-    assert "Без бренда: клиент ранее уточнял удобный формат" in raw
+    assert "Без бренда: клиент ранее уточнял удобный формат" not in raw
     assert "УНПК: клиент интересовался выездной школой" not in raw
     assert customer_id not in raw
     assert "botsafe:" not in raw
@@ -52,7 +52,6 @@ def test_bot_safe_crm_context_reads_only_allowed_active_brand_chunks(tmp_path: P
     items = context["timeline_context"]["bot_context"]["items"]
     assert {item["text"]: item["next_step_status"] for item in items} == {
         "Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание.": "active",
-        "Без бренда: клиент ранее уточнял удобный формат.": "needs_manager_review",
     }
 
 
@@ -69,8 +68,73 @@ def test_bot_safe_crm_context_can_resolve_explicit_customer_id_for_measurements(
     raw = json.dumps(context, ensure_ascii=False)
     assert context["found"] is True
     assert "УНПК: клиент интересовался выездной школой" in raw
-    assert "Без бренда: клиент ранее уточнял удобный формат" in raw
+    assert "Без бренда: клиент ранее уточнял удобный формат" not in raw
     assert "Фотон: клиент уже спрашивал про онлайн-курс" not in raw
+
+
+def test_bot_safe_crm_context_blocks_unknown_only_chunks(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, unknown_only=True)
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is False
+    assert "no_brand_scoped_bot_safe_context" in context["warnings"]
+    assert "Без бренда: клиент ранее уточнял удобный формат" not in raw
+
+
+def test_bot_safe_crm_context_drops_placeholder_junk_chunks(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, junk_foton=True)
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is False
+    assert "no_brand_scoped_bot_safe_context" in context["warnings"]
+    assert "не определ" not in raw.casefold()
+
+
+def test_bot_safe_crm_context_blocks_foreign_brand_only_chunks(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, foreign_only=True)
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is False
+    assert "no_brand_scoped_bot_safe_context" in context["warnings"]
+    assert "УНПК: клиент интересовался выездной школой" not in raw
+
+
+def test_bot_safe_crm_context_blocks_pii_only_chunks(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path, pii_only=True)
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is False
+    assert "no_brand_scoped_bot_safe_context" in context["warnings"]
+    assert "edu@example.com" not in raw
+    assert "+79991234567" not in raw
 
 
 def test_bot_safe_crm_context_blocks_ambiguous_identity(tmp_path: Path) -> None:
@@ -123,6 +187,10 @@ def _seed_bot_safe_timeline(
     *,
     duplicate_lead: bool = False,
     pii_chunk: bool = False,
+    pii_only: bool = False,
+    unknown_only: bool = False,
+    foreign_only: bool = False,
+    junk_foton: bool = False,
 ) -> tuple[Path, str]:
     db_path = tmp_path / "customer_timeline.sqlite"
     store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
@@ -174,53 +242,83 @@ def _seed_bot_safe_timeline(
                 source_ref="lead:5001:duplicate",
             )
         )
-    for chunk in (
-        BotContextChunk(
-            tenant_id="foton",
-            customer_id=customer.customer_id,
-            chunk_id="chunk-foton",
-            chunk_type="bot_safe_summary",
-            text="Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание.",
-            source_system="customer_timeline_bot_safe_summary",
-            source_ref=f"botsafe:{customer.customer_id}:foton",
-            event_at=NOW,
-            freshness_score=1.0,
-            relevance_tags=("bot_safe", "structured", "foton"),
-            allowed_for_bot=True,
-            requires_manager_review=False,
-            metadata={"next_step": {"status": "active", "display_text": "Отправить телефон менеджера +79991234567"}},
-        ),
-        BotContextChunk(
-            tenant_id="foton",
-            customer_id=customer.customer_id,
-            chunk_id="chunk-unpk",
-            chunk_type="bot_safe_summary",
-            text="УНПК: клиент интересовался выездной школой.",
-            source_system="customer_timeline_bot_safe_summary",
-            source_ref=f"botsafe:{customer.customer_id}:unpk",
-            event_at=NOW,
-            freshness_score=1.0,
-            relevance_tags=("bot_safe", "structured", "unpk"),
-            allowed_for_bot=True,
-            requires_manager_review=False,
-            metadata={"next_step": {"status": "active"}},
-        ),
-        BotContextChunk(
-            tenant_id="foton",
-            customer_id=customer.customer_id,
-            chunk_id="chunk-unknown",
-            chunk_type="bot_safe_summary",
-            text="Без бренда: клиент ранее уточнял удобный формат.",
-            source_system="customer_timeline_bot_safe_summary",
-            source_ref=f"botsafe:{customer.customer_id}:unknown",
-            event_at=NOW,
-            freshness_score=1.0,
-            relevance_tags=("bot_safe", "structured", "unknown"),
-            allowed_for_bot=True,
-            requires_manager_review=False,
-            metadata={"next_step": {"status": "needs_manager_review", "display_text": "Спорный шаг не выводить"}},
-        ),
-    ):
+    chunks = []
+    if pii_only:
+        chunks.append(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                chunk_id="chunk-pii",
+                chunk_type="bot_safe_summary",
+                text="Фотон: телефон +79991234567, почта edu@example.com.",
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref=f"botsafe:{customer.customer_id}:foton:pii",
+                event_at=NOW,
+                relevance_tags=("bot_safe", "structured", "foton"),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+            )
+        )
+    elif not unknown_only:
+        if not foreign_only:
+            chunks.append(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id=customer.customer_id,
+                    chunk_id="chunk-foton",
+                    chunk_type="bot_safe_summary",
+                    text=(
+                        "Бренд: Фотон. Стадия: не определена. Интерес: не определён. "
+                        "Следующий шаг: Активный следующий шаг не найден."
+                        if junk_foton
+                        else "Фотон: клиент уже спрашивал про онлайн-курс. Следующий шаг: отправить расписание."
+                    ),
+                    source_system="customer_timeline_bot_safe_summary",
+                    source_ref=f"botsafe:{customer.customer_id}:foton",
+                    event_at=NOW,
+                    freshness_score=1.0,
+                    relevance_tags=("bot_safe", "structured", "foton"),
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                    metadata={"next_step": {"status": "active", "display_text": "Отправить телефон менеджера +79991234567"}},
+                )
+            )
+        chunks.append(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                chunk_id="chunk-unpk",
+                chunk_type="bot_safe_summary",
+                text="УНПК: клиент интересовался выездной школой.",
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref=f"botsafe:{customer.customer_id}:unpk",
+                event_at=NOW,
+                freshness_score=1.0,
+                relevance_tags=("bot_safe", "structured", "unpk"),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={"next_step": {"status": "active"}},
+            )
+        )
+    if not pii_only:
+        chunks.append(
+            BotContextChunk(
+                tenant_id="foton",
+                customer_id=customer.customer_id,
+                chunk_id="chunk-unknown",
+                chunk_type="bot_safe_summary",
+                text="Без бренда: клиент ранее уточнял удобный формат.",
+                source_system="customer_timeline_bot_safe_summary",
+                source_ref=f"botsafe:{customer.customer_id}:unknown",
+                event_at=NOW,
+                freshness_score=1.0,
+                relevance_tags=("bot_safe", "structured", "unknown"),
+                allowed_for_bot=True,
+                requires_manager_review=False,
+                metadata={"next_step": {"status": "needs_manager_review", "display_text": "Спорный шаг не выводить"}},
+            )
+        )
+    for chunk in chunks:
         store.upsert_bot_context_chunk(chunk)
     if pii_chunk:
         store.upsert_bot_context_chunk(

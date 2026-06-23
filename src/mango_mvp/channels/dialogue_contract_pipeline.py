@@ -50,6 +50,7 @@ QUALITY_COMPOSITE_ALIAS_ENV = "TELEGRAM_COMPOSITE_CONTRACT_FIX"
 QUALITY_NEXT_STEP_ENV = "TELEGRAM_Q_NEXT_STEP"
 QUALITY_CLARIFY_SCOPE_ENV = "TELEGRAM_Q_CLARIFY_SCOPE"
 QUALITY_USEFUL_HANDOFF_ENV = "TELEGRAM_Q_USEFUL_HANDOFF"
+AUTONOMY_SCOPE_PRECISION_ENV = "TELEGRAM_AUTONOMY_SCOPE_PRECISION"
 DIALOGUE_CONTRACT_SCHEMA_VERSION = "dialogue_contract_v2_2026_05_26"
 _FAITHFULNESS_SHADOW_CONTEXT_KEY = "_faithfulness_shadow"
 DEFAULT_KB_SNAPSHOT_PATH = Path(
@@ -711,6 +712,12 @@ def quality_useful_handoff_enabled(context: Mapping[str, Any] | None = None) -> 
     if isinstance(context, MappingABC) and context.get(QUALITY_USEFUL_HANDOFF_ENV) is not None:
         return _truthy(context.get(QUALITY_USEFUL_HANDOFF_ENV))
     return _truthy(os.getenv(QUALITY_USEFUL_HANDOFF_ENV))
+
+
+def autonomy_scope_precision_enabled(context: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(context, MappingABC) and context.get(AUTONOMY_SCOPE_PRECISION_ENV) is not None:
+        return _truthy(context.get(AUTONOMY_SCOPE_PRECISION_ENV))
+    return _truthy(os.getenv(AUTONOMY_SCOPE_PRECISION_ENV))
 
 
 def _normalize_warmth_mode(mode: object) -> str:
@@ -7463,7 +7470,14 @@ def _asks_address(contract: AnswerContract) -> bool:
             " ".join(item.text for item in contract.subquestions),
         ]
     ).casefold().replace("ё", "е")
-    return bool(re.search(r"адрес|площадк|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить", text, re.I))
+    pattern = r"адрес|площадк|где\s+вы|где\s+находит|куда\s+ехать|куда\s+ездить"
+    if autonomy_scope_precision_enabled():
+        pattern = (
+            pattern
+            + r"|как\s+(?:доехать|добраться|попасть|пройти|проехать)|"
+            r"доехать|добраться|проезд|маршрут"
+        )
+    return bool(re.search(pattern, text, re.I))
 
 
 def _asks_price(contract: AnswerContract) -> bool:

@@ -355,6 +355,31 @@ def test_fact_audit_fabrication_overrides_winning_observation() -> None:
     assert row["business_errors"] == ["fabrication_in_move"]
 
 
+def test_fact_audit_no_match_does_not_trigger_fabrication() -> None:
+    persona = _persona(stage_start="S2", stage_target="S3")
+    dialog = _dialog(persona, bot_text="Стоимость очной физики для 9 класса — 44 600 ₽ за семестр.")
+    dialog["turns"][0]["judge_fact_audit"] = {
+        "items": [{"level": "no_match", "claim": "44 600 ₽"}],
+        "has_unverified_claim": True,
+    }
+    dialog["turns"][0]["number_audit"] = {
+        "items": [{"level": "no_match", "number": "44600"}],
+        "has_risky_number": False,
+    }
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=dialog,
+        persona_by_id={},
+        turn_observations=[{"gave_conditions": True, "named_concrete_option": True}],
+    )
+
+    assert row["dialog_verdict"] == "advanced"
+    assert row["turn_verdicts"] == ["advanced"]
+    assert row["turn_move_quality"] == ["winning"]
+    assert row["business_errors"] == []
+
+
 def test_wrong_scope_fact_audit_marks_wrong_venue_or_fact() -> None:
     persona = _persona(stage_start="S2", stage_target="S3")
     dialog = _dialog(persona, bot_text="Очные занятия проходят в Менделеево.")
@@ -370,7 +395,7 @@ def test_wrong_scope_fact_audit_marks_wrong_venue_or_fact() -> None:
     )
 
     assert row["dialog_verdict"] == "wrong_move"
-    assert row["business_errors"] == ["fabrication_in_move", "wrong_venue_or_fact"]
+    assert row["business_errors"] == ["wrong_venue_or_fact"]
 
 
 def test_redrive_after_pay_triggers_even_with_service_answer() -> None:

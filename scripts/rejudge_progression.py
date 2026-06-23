@@ -48,8 +48,8 @@ _OBSERVATION_ALIASES: Mapping[str, str] = {
     "pulled_constraint": "asked_constraint_question",
     "objection_to_checkable_step": "acknowledged_objection",
 }
-_FACT_RISK_LEVELS = frozenset({"no_match", "other_brand_match", "wrong_scope"})
-_NUMBER_RISK_LEVELS = frozenset({"kb_integrity_issue", "no_match", "other_brand_match"})
+_FACT_RISK_LEVELS = frozenset({"kb_integrity_issue"})
+_NUMBER_RISK_LEVELS = frozenset({"kb_integrity_issue"})
 
 STAGE_ORDER: Mapping[str, int] = {
     "S0": 0,

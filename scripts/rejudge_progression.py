@@ -676,6 +676,7 @@ def assess_dialog(
     turn_verdicts = [item.turn_verdict for item in assessments]
     turn_move_quality = [item.move_quality for item in assessments]
     move_criteria_hit = [list(item.move_criteria_hit) for item in assessments]
+    winning_move_rate = _ratio(turn_move_quality.count("winning"), len(turn_move_quality))
     next_steps = [item.next_step for item in assessments]
     business_errors = _dialog_business_errors(
         stage_reached=stage_reached,
@@ -694,6 +695,7 @@ def assess_dialog(
         "turn_verdicts": turn_verdicts,
         "turn_move_quality": turn_move_quality,
         "move_criteria_hit": move_criteria_hit,
+        "winning_move_rate": winning_move_rate,
         "next_step_each_turn": next_steps,
         "dialog_verdict": dialog_verdict,
         "business_errors": business_errors,

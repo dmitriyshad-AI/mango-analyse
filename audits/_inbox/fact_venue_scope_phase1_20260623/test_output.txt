@@ -1,0 +1,8 @@
+validation: ok
+full_facts: 1075
+marked: 400
+venue: {'lvsh_mendeleevo': 119, 'moscow_regular': 97, 'any': 90, 'online': 78, 'dolgoprudny': 16}
+program_kind: {'regular': 171, 'camp_lvsh': 117, 'camp_city': 45, 'any': 37, 'olympiad': 30}
+any: 90
+
+git diff --check: ok

@@ -13,10 +13,12 @@ import yaml
 import mango_mvp.channels.subscription_llm as subscription_llm
 from mango_mvp.channels.dialogue_contract_pipeline import (
     AnswerContract,
+    AUTONOMY_SCOPE_PRECISION_ENV,
     FactStore,
     FAITHFULNESS_SHADOW_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     _safe_fallback_text,
+    autonomy_scope_precision_enabled,
     build_faithfulness_prompt,
     check_claim_faithfulness,
     number_gate_scope_aware_enabled,
@@ -8748,6 +8750,78 @@ def test_step2b1_address_fact_still_blocked_for_non_address_question() -> None:
 
     findings = verify_dialogue_contract_output(
         "Фотон: Москва, Верхняя Красносельская ул., 30.",
+        facts=facts,
+        active_brand="foton",
+        contract=AnswerContract(active_brand="foton", current_question=question, answerability="answer_self"),
+        client_message=question,
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in findings)
+
+
+def test_autonomy_scope_precision_default_off_and_not_in_pilot_profile() -> None:
+    assert autonomy_scope_precision_enabled({}) is False
+    assert autonomy_scope_precision_enabled({AUTONOMY_SCOPE_PRECISION_ENV: "1"}) is True
+    assert AUTONOMY_SCOPE_PRECISION_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+
+
+def test_autonomy_scope_precision_address_synonym_is_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    facts = {"rules_registry.contact_address.foton.address": "Фотон: адрес очных занятий — Москва, Верхняя Красносельская ул., 30."}
+    question = "Как доехать до Фотона на очные занятия?"
+    draft = "Фотон: Москва, Верхняя Красносельская ул., 30."
+    contract = AnswerContract(active_brand="foton", current_question=question, answerability="answer_self")
+
+    monkeypatch.delenv(AUTONOMY_SCOPE_PRECISION_ENV, raising=False)
+    off_findings = verify_dialogue_contract_output(
+        draft,
+        facts=facts,
+        active_brand="foton",
+        contract=contract,
+        client_message=question,
+    )
+
+    monkeypatch.setenv(AUTONOMY_SCOPE_PRECISION_ENV, "1")
+    on_findings = verify_dialogue_contract_output(
+        draft,
+        facts=facts,
+        active_brand="foton",
+        contract=contract,
+        client_message=question,
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in off_findings)
+    assert not any(finding.code == "wrong_intent_fact" for finding in on_findings)
+
+
+def test_autonomy_scope_precision_address_fact_still_blocked_for_price_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTONOMY_SCOPE_PRECISION_ENV, "1")
+    facts = {"rules_registry.contact_address.foton.address": "Фотон: адрес очных занятий — Москва, Верхняя Красносельская ул., 30."}
+    question = "Сколько стоит онлайн-курс по математике?"
+
+    findings = verify_dialogue_contract_output(
+        "Фотон: Москва, Верхняя Красносельская ул., 30.",
+        facts=facts,
+        active_brand="foton",
+        contract=AnswerContract(active_brand="foton", current_question=question, answerability="answer_self"),
+        client_message=question,
+    )
+
+    assert any(finding.code == "wrong_intent_fact" for finding in findings)
+
+
+def test_autonomy_scope_precision_lvsh_out_of_context_still_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(AUTONOMY_SCOPE_PRECISION_ENV, "1")
+    facts = {
+        "lvsh_mendeleevo_2026.address.client_safe_text": "Фотон: ЛВШ Менделеево проходит в кампусе МФТИ.",
+    }
+    question = "Как доехать до очных занятий в Москве?"
+
+    findings = verify_dialogue_contract_output(
+        "Фотон: ЛВШ Менделеево проходит в кампусе МФТИ.",
         facts=facts,
         active_brand="foton",
         contract=AnswerContract(active_brand="foton", current_question=question, answerability="answer_self"),

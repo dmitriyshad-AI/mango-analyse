@@ -1689,6 +1689,7 @@ def _context_with_dialogue_contract_retrieved_facts(
         retrieved_sources.append(pipeline.get("retrieved_facts"))
     if isinstance(direct.get("retrieved_facts"), Mapping):
         retrieved_sources.append(direct.get("retrieved_facts"))
+    direct_fact_metadata = direct.get("wide_fact_metadata") if isinstance(direct.get("wide_fact_metadata"), Mapping) else {}
     facts = {
         str(key): str(value)
         for retrieved in retrieved_sources
@@ -1733,6 +1734,10 @@ def _context_with_dialogue_contract_retrieved_facts(
             "confirmed_facts": facts_context_confirmed,
         }
     )
+    if isinstance(direct_fact_metadata, Mapping) and direct_fact_metadata:
+        fact_metadata = dict(facts_context.get("fact_metadata")) if isinstance(facts_context.get("fact_metadata"), Mapping) else {}
+        fact_metadata.update({str(key): dict(value) for key, value in direct_fact_metadata.items() if isinstance(value, Mapping)})
+        facts_context["fact_metadata"] = fact_metadata
 
     quality = dict(merged.get("context_quality")) if isinstance(merged.get("context_quality"), Mapping) else {}
     quality["facts_stale"] = False
@@ -1747,6 +1752,8 @@ def _context_with_dialogue_contract_retrieved_facts(
             "facts_stale": False,
         }
     )
+    if isinstance(direct_fact_metadata, Mapping) and direct_fact_metadata:
+        merged["direct_path_fact_metadata"] = {str(key): dict(value) for key, value in direct_fact_metadata.items() if isinstance(value, Mapping)}
     return merged
 
 _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS = {

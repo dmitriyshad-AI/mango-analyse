@@ -456,6 +456,28 @@ def test_public_bot_env_file_sync_precedes_ensure_and_selfcheck(tmp_path: Path, 
     os.environ.pop(ENFORCE_CANONICAL_PROFILE_ENV, None)
 
 
+def test_public_bot_selfcheck_reports_release_flag_guards(monkeypatch) -> None:
+    release_flags = {
+        "TELEGRAM_P0_MODEL_LED": "p0_model_led",
+        "TELEGRAM_PROSE_MODEL_LED": "prose_model_led",
+        "TELEGRAM_FACT_VENUE_SCOPE": "fact_venue_scope",
+        "TELEGRAM_AUTONOMY_SCOPE_PRECISION": "autonomy_scope_precision",
+    }
+    for env_name in release_flags:
+        monkeypatch.delenv(env_name, raising=False)
+
+    check_off = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    for guard_name in release_flags.values():
+        assert check_off.active_guards[guard_name] is False
+
+    for env_name in release_flags:
+        monkeypatch.setenv(env_name, "1")
+
+    check_on = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    for guard_name in release_flags.values():
+        assert check_on.active_guards[guard_name] is True
+
+
 def test_runtime_context_overrides_force_profile_without_process_env(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
     config = BrandBotConfig(

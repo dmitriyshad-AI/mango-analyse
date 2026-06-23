@@ -13,6 +13,17 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 import yaml
 
 from mango_mvp.channels.dialogue_debug_trace import trace_event
+from mango_mvp.channels.fact_venue_scope import (
+    FACT_VENUE_SCOPE_ENV,
+    VENUE_SCOPE_VALUES,
+    fact_foreign_to_requested,
+    fact_program_kind,
+    fact_venue,
+    has_requested_venue_fact,
+    normalize_requested_scope,
+    venue_scope_enabled,
+    venue_scope_label,
+)
 from mango_mvp.channels.subscription_llm_parts.codex_exec import extract_json_object
 from mango_mvp.channels.subscription_llm_parts.contracts import (
     SubscriptionDraftResult,
@@ -78,6 +89,8 @@ ASSUMED_SCOPE_GUARD_ENV = "TELEGRAM_ASSUMED_SCOPE_GUARD"
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
+
+FACT_VENUE_SCOPE_SCHEMA_VERSION = "fact_venue_scope_v1_2026_06_23"
 
 _BOT_SAFE_SERVICE_ID_RE = re.compile(
     r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
@@ -261,6 +274,10 @@ def _bot_safe_crm_context_enabled(context: Optional[Mapping[str, Any]] = None) -
             "bot_safe_summary_context_enabled",
         ),
     )
+
+
+def _fact_venue_scope_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return venue_scope_enabled(context)
 
 def _route_rubric_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     return _pilot_profile_flag_enabled(context, ROUTE_RUBRIC_ENV, aliases=("route_rubric_enabled",))
@@ -795,7 +812,12 @@ def _direct_path_grade_in_fact(grade: str, fact_text: str) -> bool:
         return value in singles
     return True
 
-def _direct_path_fact_conflicts_slots(fact: Mapping[str, Any], slots: Mapping[str, str]) -> bool:
+def _direct_path_fact_conflicts_slots(
+    fact: Mapping[str, Any],
+    slots: Mapping[str, str],
+    *,
+    use_structured_program_kind: bool = False,
+) -> bool:
     haystack = f"{_direct_path_snapshot_fact_key(fact)} {_direct_path_snapshot_fact_text(fact)} {fact.get('product') or ''}"
     slot_format = _direct_path_format_scope(slots.get("format") or slots.get("training_format") or "")
     fact_format = _direct_path_format_scope(haystack)
@@ -805,6 +827,16 @@ def _direct_path_fact_conflicts_slots(fact: Mapping[str, Any], slots: Mapping[st
     if grade and not _direct_path_grade_in_fact(grade, haystack):
         return True
     family = _normalize_fact_match_text(slots.get("product_family") or slots.get("product") or "")
+    if use_structured_program_kind and family:
+        program_kind = fact_program_kind(fact)
+        fact_is_structured_camp = program_kind in {"camp_city", "camp_lvsh"}
+        fact_is_structured_regular = program_kind in {"regular", "olympiad"}
+        if family in {"regular_course", "regular"} and fact_is_structured_camp:
+            return True
+        if family == "camp" and fact_is_structured_regular:
+            return True
+        if program_kind != "any":
+            return False
     fact_text = _normalize_fact_match_text(haystack)
     fact_is_camp = bool(re.search(r"лагер|летн|смен|лш|лвш|camp", fact_text))
     if family in {"regular_course", "regular"} and fact_is_camp:
@@ -893,7 +925,11 @@ def _direct_path_course_fact_supplements(
         haystack = f"{key} {fact.get('fact_type') or ''} {fact.get('product') or ''} {_direct_path_snapshot_fact_text(fact)}"
         if not _direct_path_grade_in_fact(grade, haystack):
             continue
-        if _direct_path_fact_conflicts_slots(fact, slots):
+        if _direct_path_fact_conflicts_slots(
+            fact,
+            slots,
+            use_structured_program_kind=_fact_venue_scope_enabled(context),
+        ):
             continue
         fact_type = str(fact.get("fact_type") or "").strip().casefold()
         if "schedule" in categories:
@@ -910,8 +946,22 @@ def _direct_path_course_fact_supplements(
 def _direct_path_render_fact_line(key: str, text: str, meta: Mapping[str, str]) -> str:
     fact_type = str(meta.get("fact_type") or "").strip()
     product = str(meta.get("product") or "").strip()
-    suffix = "; ".join(part for part in (f"fact_type={fact_type}" if fact_type else "", f"product={product}" if product else "") if part)
-    return f"- {key}" + (f" ({suffix})" if suffix else "") + f": {text}"
+    venue = str(meta.get("venue") or "").strip()
+    program_kind = str(meta.get("program_kind") or "").strip()
+    scope_label = str(meta.get("venue_label") or "").strip()
+    suffix = "; ".join(
+        part
+        for part in (
+            f"fact_type={fact_type}" if fact_type else "",
+            f"product={product}" if product else "",
+            f"venue={venue}" if venue else "",
+            f"program_kind={program_kind}" if program_kind else "",
+        )
+        if part
+    )
+    venue_relation = str(meta.get("venue_scope_relation") or "").strip()
+    scope_marker = f" [площадка: {scope_label}]" if scope_label and venue_relation.startswith("foreign") else ""
+    return f"- {key}" + (f" ({suffix})" if suffix else "") + f": {text}{scope_marker}"
 
 def _direct_path_render_fact_block(
     facts: Mapping[str, str],
@@ -960,6 +1010,7 @@ def _direct_path_records_to_fact_pack(
     max_facts: int,
     max_chars: int,
     extra_metadata: Optional[Mapping[str, Any]] = None,
+    include_scope_axes: bool = False,
 ) -> Mapping[str, Any]:
     facts: dict[str, str] = {}
     meta: dict[str, dict[str, str]] = {}
@@ -978,6 +1029,17 @@ def _direct_path_records_to_fact_pack(
                 "product": str(fact.get("product") or ""),
             },
         }
+        if include_scope_axes:
+            venue = fact_venue(fact)
+            program_kind = fact_program_kind(fact)
+            prospective_meta[key].update(
+                {
+                    "venue": venue,
+                    "program_kind": program_kind,
+                    "venue_label": venue_scope_label(venue),
+                    "venue_scope_relation": str(fact.get("_venue_scope_relation") or ""),
+                }
+            )
         if len(prospective) > fact_limit:
             return False
         if _direct_path_fact_pack_char_count(prospective, prospective_meta, list(prospective.keys())) > char_limit:
@@ -1085,14 +1147,28 @@ def _direct_path_keyword_fact_pack_from_records(
         extra_metadata=extra_metadata,
     )
 
-def _direct_path_retriever_candidate_summary(fact: Mapping[str, Any]) -> str:
+def _direct_path_retriever_candidate_summary(fact: Mapping[str, Any], *, include_scope_axes: bool = False) -> str:
     text = _direct_path_snapshot_fact_text(fact)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > 220:
         text = text[:217].rstrip() + "..."
     fact_type = str(fact.get("fact_type") or "").strip()
     product = str(fact.get("product") or "").strip()
-    prefix = "; ".join(item for item in (f"fact_type={fact_type}" if fact_type else "", f"product={product}" if product else "") if item)
+    scope_parts: tuple[str, ...] = ()
+    if include_scope_axes:
+        scope_parts = (
+            f"venue={fact_venue(fact)}",
+            f"program_kind={fact_program_kind(fact)}",
+        )
+    prefix = "; ".join(
+        item
+        for item in (
+            f"fact_type={fact_type}" if fact_type else "",
+            f"product={product}" if product else "",
+            *scope_parts,
+        )
+        if item
+    )
     return f"{prefix}: {text}" if prefix else text
 
 def _direct_path_required_fact_keys(context: Optional[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -1206,6 +1282,7 @@ def build_direct_path_llm_retriever_prompt(
     slots = json.dumps(_direct_path_prompt_known_slots(context), ensure_ascii=False, sort_keys=True)
     need_declaration = _retriever_need_declaration_enabled(context)
     model_driven = _retriever_model_driven_enabled(context)
+    venue_scope = _fact_venue_scope_enabled(context)
     plan = {}
     if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping):
         source_plan = context["conversation_intent_plan"]
@@ -1223,10 +1300,19 @@ def build_direct_path_llm_retriever_prompt(
         key = _direct_path_snapshot_fact_key(fact)
         if not key:
             continue
-        lines.append(f"- {key}: {_direct_path_retriever_candidate_summary(fact)}")
+        lines.append(f"- {key}: {_direct_path_retriever_candidate_summary(fact, include_scope_axes=venue_scope)}")
     candidate_block = "\n".join(lines) or "(нет кандидатов)"
     declaration_instruction = ""
     json_schema = '{"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+    requested_scope_instruction = ""
+    if venue_scope:
+        requested_scope_instruction = (
+            "\nДополнительно верни requested_scope — какую площадку/инстанс по смыслу спрашивает клиент в текущем подвопросе. "
+            "Допустимые значения: moscow_regular, dolgoprudny, lvsh_mendeleevo, online, unspecified. "
+            "Если клиент не уточнил площадку или вопрос общий, верни unspecified. Это понимание текущего вопроса; "
+            "не выводи requested_scope из списка фактов.\n"
+        )
+        json_schema = '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified","exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
     if need_declaration:
         driver_line = (
             "В этом режиме сам по смыслу определи, какие факты нужны для ответа; "
@@ -1241,12 +1327,21 @@ def build_direct_path_llm_retriever_prompt(
             "Каждый элемент needed_facts: theme, fact_type, brand, grade, subject, format, product, "
             "why_needed, importance. importance только required или helpful. Если нужных фактов нет, верни пустой список.\n"
         )
-        json_schema = (
-            '{"needed_facts":[{"theme":"pricing","fact_type":"price","brand":"foton",'
-            '"grade":"9","subject":"физика","format":"онлайн","product":"regular_course",'
-            '"why_needed":"клиент спрашивает стоимость","importance":"required"}],'
-            '"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
-        )
+        if venue_scope:
+            json_schema = (
+                '{"requested_scope":"moscow_regular|dolgoprudny|lvsh_mendeleevo|online|unspecified",'
+                '"needed_facts":[{"theme":"pricing","fact_type":"price","brand":"foton",'
+                '"grade":"9","subject":"физика","format":"онлайн","product":"regular_course",'
+                '"why_needed":"клиент спрашивает стоимость","importance":"required"}],'
+                '"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+            )
+        else:
+            json_schema = (
+                '{"needed_facts":[{"theme":"pricing","fact_type":"price","brand":"foton",'
+                '"grade":"9","subject":"физика","format":"онлайн","product":"regular_course",'
+                '"why_needed":"клиент спрашивает стоимость","importance":"required"}],'
+                '"exact_ids":["fact.id"],"adjacent_ids":["fact.id"]}'
+            )
     return (
         "Ты выбираешь факты для черновика ответа учебного центра.\n"
         "Твоя задача — выбрать id фактов из списка кандидатов. Не пиши клиентский текст.\n"
@@ -1261,6 +1356,7 @@ def build_direct_path_llm_retriever_prompt(
         f"Известные слоты: {slots}\n"
         f"План/интент: {plan_json}\n\n"
         f"Кандидаты:\n{candidate_block}\n\n"
+        f"{requested_scope_instruction}"
         f"{declaration_instruction}"
         f"Верни строго JSON: {json_schema}"
     )
@@ -1279,6 +1375,104 @@ def _direct_path_retriever_ids(value: Any) -> tuple[str, ...]:
             result.append(key)
     return tuple(result)
 
+
+def _direct_path_retriever_requested_scope(payload: Mapping[str, Any]) -> str:
+    return normalize_requested_scope(
+        payload.get("requested_scope")
+        or payload.get("requested_venue")
+        or payload.get("venue_scope")
+        or payload.get("fact_venue_scope")
+    )
+
+
+def _direct_path_mark_venue_relation(fact: Mapping[str, Any], relation: str) -> Mapping[str, Any]:
+    copy = dict(fact)
+    copy["_venue_scope_relation"] = str(relation or "")
+    return copy
+
+
+def _direct_path_apply_venue_scope_to_records(
+    *,
+    exact_records: Sequence[Mapping[str, Any]],
+    adjacent_records: Sequence[Mapping[str, Any]],
+    requested_scope: str,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], Mapping[str, Any]]:
+    requested = normalize_requested_scope(requested_scope)
+    metadata: dict[str, Any] = {
+        "requested_scope": requested,
+        "requested_scope_label": venue_scope_label(requested),
+        "target_venue_fact_present": False,
+        "venue_scope_demoted_ids": [],
+        "venue_scope_removed_ids": [],
+        "venue_scope_adjacent_ids": [],
+    }
+    if requested not in VENUE_SCOPE_VALUES:
+        return list(exact_records), list(adjacent_records), metadata
+
+    all_records = [*exact_records, *adjacent_records]
+    target_present = has_requested_venue_fact(all_records, requested)
+    metadata["target_venue_fact_present"] = target_present
+    final_exact: list[Mapping[str, Any]] = []
+    final_adjacent: list[Mapping[str, Any]] = []
+    seen_exact: set[str] = set()
+    seen_adjacent: set[str] = set()
+
+    def add_exact(fact: Mapping[str, Any], relation: str) -> None:
+        key = _direct_path_snapshot_fact_key(fact)
+        if not key or key in seen_exact:
+            return
+        seen_exact.add(key)
+        final_exact.append(_direct_path_mark_venue_relation(fact, relation))
+
+    def add_adjacent(fact: Mapping[str, Any], relation: str) -> None:
+        key = _direct_path_snapshot_fact_key(fact)
+        if not key or key in seen_exact or key in seen_adjacent:
+            return
+        seen_adjacent.add(key)
+        final_adjacent.append(_direct_path_mark_venue_relation(fact, relation))
+        metadata["venue_scope_adjacent_ids"].append(key)
+
+    def remove_or_demote(fact: Mapping[str, Any], *, from_exact: bool) -> None:
+        key = _direct_path_snapshot_fact_key(fact)
+        if target_present:
+            if key:
+                metadata["venue_scope_removed_ids"].append(key)
+            return
+        add_adjacent(fact, "foreign_adjacent")
+        if from_exact and key:
+            metadata["venue_scope_demoted_ids"].append(key)
+
+    for fact in exact_records:
+        if fact_foreign_to_requested(fact, requested):
+            remove_or_demote(fact, from_exact=True)
+        else:
+            relation = "target" if fact_venue(fact) == requested else "any"
+            add_exact(fact, relation)
+    for fact in adjacent_records:
+        if fact_foreign_to_requested(fact, requested):
+            remove_or_demote(fact, from_exact=False)
+        else:
+            relation = "target_adjacent" if fact_venue(fact) == requested else "any_adjacent"
+            add_adjacent(fact, relation)
+    if not final_exact:
+        for idx, fact in enumerate(tuple(final_adjacent)):
+            if fact_venue(fact) != requested:
+                continue
+            key = _direct_path_snapshot_fact_key(fact)
+            final_exact.append(_direct_path_mark_venue_relation(fact, "target_promoted"))
+            final_adjacent.pop(idx)
+            if key:
+                metadata["venue_scope_adjacent_ids"] = [
+                    item for item in metadata["venue_scope_adjacent_ids"] if item != key
+                ]
+                metadata["venue_scope_promoted_ids"] = [key]
+            break
+    metadata["venue_scope_demoted_ids"] = list(dict.fromkeys(metadata["venue_scope_demoted_ids"]))
+    metadata["venue_scope_removed_ids"] = list(dict.fromkeys(metadata["venue_scope_removed_ids"]))
+    metadata["venue_scope_adjacent_ids"] = list(dict.fromkeys(metadata["venue_scope_adjacent_ids"]))
+    metadata["venue_scope_promoted_ids"] = list(dict.fromkeys(metadata.get("venue_scope_promoted_ids") or []))
+    return final_exact, final_adjacent, metadata
+
 def _direct_path_llm_retrieve_fact_pack(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -1292,6 +1486,7 @@ def _direct_path_llm_retrieve_fact_pack(
 ) -> tuple[Optional[Mapping[str, Any]], Mapping[str, Any]]:
     need_declaration = _retriever_need_declaration_enabled(context)
     model_driven = _retriever_model_driven_enabled(context)
+    venue_scope_enabled_flag = _fact_venue_scope_enabled(context)
     keyword_required_fact_keys = _direct_path_required_fact_keys(context)
     candidate_by_key = {
         _direct_path_snapshot_fact_key(fact): fact
@@ -1323,6 +1518,17 @@ def _direct_path_llm_retrieve_fact_pack(
         "invalid_ids": [],
         "discarded_ids": [],
         "scope_demoted_ids": [],
+        "venue_scope": {
+            "schema_version": FACT_VENUE_SCOPE_SCHEMA_VERSION,
+            "enabled": venue_scope_enabled_flag,
+            "env": FACT_VENUE_SCOPE_ENV,
+            "requested_scope": "unspecified",
+            "requested_scope_raw": "",
+            "target_venue_fact_present": False,
+            "venue_scope_demoted_ids": [],
+            "venue_scope_removed_ids": [],
+            "venue_scope_adjacent_ids": [],
+        },
         "active_brand": str(active_brand or ""),
     }
     if not candidate_by_key:
@@ -1356,6 +1562,19 @@ def _direct_path_llm_retrieve_fact_pack(
         if model_driven and not needed_facts:
             metadata.update({"fallback": True, "fallback_reason": "missing_needed_facts"})
             return None, metadata
+    requested_scope = "unspecified"
+    if venue_scope_enabled_flag:
+        requested_scope_raw = payload.get("requested_scope") or payload.get("requested_venue") or payload.get("venue_scope")
+        requested_scope = _direct_path_retriever_requested_scope(payload)
+        venue_meta = dict(metadata["venue_scope"])
+        venue_meta.update(
+            {
+                "requested_scope": requested_scope,
+                "requested_scope_raw": str(requested_scope_raw or "")[:80],
+                "requested_scope_label": venue_scope_label(requested_scope),
+            }
+        )
+        metadata["venue_scope"] = venue_meta
     exact_raw = _direct_path_retriever_ids(payload.get("exact_ids") or payload.get("exact") or payload.get("exact_fact_ids"))
     adjacent_raw = _direct_path_retriever_ids(payload.get("adjacent_ids") or payload.get("adjacent") or payload.get("adjacent_fact_ids"))
     selected_exact: list[str] = []
@@ -1388,7 +1607,11 @@ def _direct_path_llm_retrieve_fact_pack(
     scope_demoted_ids: list[str] = []
     for key in selected_exact:
         fact = candidate_by_key[key]
-        if _direct_path_fact_conflicts_slots(fact, slots):
+        if _direct_path_fact_conflicts_slots(
+            fact,
+            slots,
+            use_structured_program_kind=venue_scope_enabled_flag,
+        ):
             adjacent_records.append(fact)
             scope_demoted_ids.append(key)
             if key not in final_adjacent_ids:
@@ -1417,6 +1640,20 @@ def _direct_path_llm_retrieve_fact_pack(
             final_exact_ids.append(key)
         exact_records.append(fact)
         supplemented_exact.append(key)
+    venue_scope_meta: Mapping[str, Any] = {}
+    if venue_scope_enabled_flag:
+        exact_records, adjacent_records, venue_scope_meta = _direct_path_apply_venue_scope_to_records(
+            exact_records=exact_records,
+            adjacent_records=adjacent_records,
+            requested_scope=requested_scope,
+        )
+        final_exact_ids = [_direct_path_snapshot_fact_key(fact) for fact in exact_records if _direct_path_snapshot_fact_key(fact)]
+        final_adjacent_ids = [_direct_path_snapshot_fact_key(fact) for fact in adjacent_records if _direct_path_snapshot_fact_key(fact)]
+        venue_demoted = tuple(str(item) for item in venue_scope_meta.get("venue_scope_demoted_ids") or ())
+        scope_demoted_ids = list(dict.fromkeys([*scope_demoted_ids, *venue_demoted]))
+        venue_meta = dict(metadata["venue_scope"])
+        venue_meta.update(dict(venue_scope_meta))
+        metadata["venue_scope"] = venue_meta
     metadata.update(
         {
             "used": True,
@@ -1435,6 +1672,7 @@ def _direct_path_llm_retrieve_fact_pack(
         max_facts=max_facts,
         max_chars=max_chars,
         extra_metadata={"llm_retrieve": metadata},
+        include_scope_axes=venue_scope_enabled_flag,
     )
     return pack, metadata
 

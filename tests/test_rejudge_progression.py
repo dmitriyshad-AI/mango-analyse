@@ -400,4 +400,19 @@ def test_service_not_resell_is_computed_in_code_not_llm_observation() -> None:
 
     assert row["dialog_verdict"] == "advanced"
     assert row["turn_move_quality"] == ["winning"]
+    assert row["winning_move_rate"] == 1.0
     assert row["move_criteria_hit"] == [["service_not_resell"]]
+
+
+def test_row_includes_winning_move_rate() -> None:
+    persona = _persona(stage_start="S1", stage_target="S2")
+
+    row = rejudge_progression.assess_dialog(
+        judge_model=None,
+        dialog=_dialog(persona, bot_text="Подойдёт онлайн-группа, потому что ребёнку удобнее заниматься из дома."),
+        persona_by_id={},
+        turn_observations=[{"named_concrete_option": True, "gave_fit_reason": True}],
+    )
+
+    assert row["turn_move_quality"] == ["winning"]
+    assert row["winning_move_rate"] == 1.0

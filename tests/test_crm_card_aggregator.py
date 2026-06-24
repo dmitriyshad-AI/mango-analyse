@@ -65,7 +65,7 @@ def test_crm_card_aggregator_builds_two_projections_from_one_profile(tmp_path: P
 
 
 def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None:
-    live_summary = "Полный разбор живого звонка. " + ("Клиент обсуждал курс и оплату. " * 20)
+    live_summary = "Полный разбор живого звонка. " + ("Клиент обсуждал курс и формат. " * 20)
     older_summary = "Полный разбор предыдущего звонка: семья выбирала формат и предмет."
     profile = {
         "found": True,
@@ -101,8 +101,8 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
                     "event_type": "amo_deal_stage",
                     "event_at": "2026-06-19T08:00:00+00:00",
                     "source_system": "amocrm_snapshot",
-                    "summary": "Закрыто и не реализовано",
-                    "stage_after": "Закрыто и не реализовано",
+                    "summary": "В работе",
+                    "stage_after": "В работе",
                 },
                 {
                     "event_type": "mango_call",
@@ -129,7 +129,7 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
                         "call_type": "sales_call",
                         "call_history_eligible": True,
                         "objections": ["цена"],
-                        "next_step": "Перезвонить завтра",
+                        "next_step": "Перезвонить 18.06.2026",
                         "pain_points": ["нет времени"],
                         "interests": ["математика", "математика"],
                         "target_product": "годовой курс",
@@ -154,7 +154,7 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
                         "history_summary": older_summary,
                         "call_type": "sales_call",
                         "call_history_eligible": True,
-                        "next_step": "Дождаться выбора формата",
+                        "next_step": "Уточнить выбор формата",
                         "interests": ["физика"],
                     },
                 },
@@ -179,19 +179,133 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
     assert preview.count(older_summary) == 1
     assert "Возражения: цена" not in history
     assert "Интересы: математика" not in history
-    assert "Шаг: Перезвонить завтра (от 17.06.2026)" in history
+    assert "Шаг: Перезвонить 18.06.2026 (от 17.06.2026)" in history
     assert "Недозвон не должен попасть" not in history
     assert "Read-only AMO contact snapshot" not in history
     assert "exact_phone_single" not in history
-    assert "Закрыто и не реализовано" not in history
-    assert "Закрыто и не реализовано" in card["deal_card"]["fields"]["Статус сделки"]
-    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить завтра (от 17.06.2026)"
+    assert "В работе" not in history
+    assert "В работе" in card["deal_card"]["fields"]["Статус сделки"]
+    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить 18.06.2026 (от 17.06.2026)"
     assert card["deal_card"]["fields"]["Возражения"] == "цена"
     assert "[сжато]" not in history
     assert "Read-only AMO contact snapshot" not in preview
     assert "exact_phone_single" not in preview
     assert "Tallanto: найден один ученик по телефону." not in history
     assert card["deal_card"]["fields"]["Tallanto"] == "Один ученик по телефону\nТип ученика: 7 класс\nФилиал: Фотон"
+    assert card["workbook"]["ready"] == "да", card["workbook"]["blockers"]
+
+
+def test_crm_card_readiness_blocks_text_quality_findings() -> None:
+    wrong_person_summary = (
+        "02.04.2026 15:27 менеджер общался с клиентом. Контакт не подтвердился: "
+        "собеседник сразу указал на путаницу с именем, обсуждение программы не состоялось."
+    )
+    profile = {
+        "found": True,
+        "customer_id": "customer:text-quality-block",
+        "snapshot_as_of": "2026-06-21T00:00:00+00:00",
+        "customer": {"customer_id": "customer:text-quality-block", "identity_status": "strong", "summary": {}},
+        "identity_links": [{"match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [
+                {
+                    "opportunity_id": "opp1",
+                    "opportunity_type": "amo_deal",
+                    "source_system": "amocrm_snapshot",
+                    "source_id": "456",
+                    "title": "Заявка",
+                    "status": "open",
+                }
+            ],
+        },
+        "timeline": {
+            "items": [
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-04-02T15:27:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "summary": wrong_person_summary,
+                    "call_history_eligible": True,
+                    "call_analysis": {
+                        "history_summary": wrong_person_summary,
+                        "call_type": "sales_call",
+                        "call_history_eligible": True,
+                    },
+                },
+            ]
+        },
+        "signals": [],
+        "bot_context": {"items": []},
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+    }
+
+    card = build_crm_card_projection(profile)
+
+    assert card["workbook"]["ready"] == "нет"
+    assert card["contact_card"]["ready_for_amo"] is False
+    assert card["deal_card"]["ready_for_amo"] is False
+    assert "Текст карточки требует проверки (P1): возможная путаница с клиентом" in card["workbook"]["blockers"]
+    assert "Контакт не подтвердился" in card["contact_card"]["fields"]["Последняя сводка"]
+
+
+def test_crm_card_uses_manager_only_call_summary_fallback_without_call_analysis() -> None:
+    useful_summary = (
+        "02.05.2026 14:48 менеджер общался с клиентом. Клиент сообщил, что ребенок заболел, "
+        "уточнил формат занятий и попросил прислать материалы по курсу. Менеджер объяснил "
+        "расписание и договорился вернуться к вопросу после выздоровления."
+    )
+    technical_summary = (
+        "03.05.2026 10:00 менеджер общался с клиентом. Нецелевой звонок: автоответчик/"
+        "короткий технический дозвон. Итог: Нет содержательного диалога менеджер-клиент."
+    )
+    profile = {
+        "found": True,
+        "customer_id": "customer:d4-fallback",
+        "snapshot_as_of": "2026-06-21T00:00:00+00:00",
+        "customer": {"customer_id": "customer:d4-fallback", "identity_status": "strong", "summary": {}},
+        "identity_links": [{"match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [{"opportunity_id": "opp1", "opportunity_type": "amo_deal", "source_system": "amocrm_snapshot", "source_id": "456"}],
+        },
+        "timeline": {
+            "items": [
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-05-03T10:00:00+00:00",
+                    "call_type": "non_conversation",
+                    "source_system": "mango_processed_summary",
+                    "summary": technical_summary,
+                },
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-05-02T14:48:28+00:00",
+                    "source_system": "mango_processed_summary",
+                    "summary": useful_summary,
+                },
+            ]
+        },
+        "signals": [],
+        "bot_context": {"items": []},
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+    }
+
+    card = build_crm_card_projection(profile)
+    contact_fields = card["contact_card"]["fields"]
+
+    assert contact_fields["Последняя сводка"] == "Сводка:\n" + useful_summary
+    assert contact_fields["История общения"].startswith("Сводка:\nСм. поле «Последняя сводка».")
+    assert "полная сводка в поле «Последняя сводка»" in contact_fields["История общения"]
+    assert useful_summary not in contact_fields["История общения"]
+    assert "Нецелевой звонок" not in json.dumps(contact_fields, ensure_ascii=False)
+    assert "Следующий шаг" not in card["deal_card"]["fields"]
+    assert card["bot_safety"]["bot_safe_fields"] == []
+    assert card["bot_safety"]["manager_only_fields"]
     assert card["workbook"]["ready"] == "да"
 
 

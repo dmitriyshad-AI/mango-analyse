@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.crm_card_history_summary import clean_history_source_text
+from mango_mvp.quality.crm_text_quality_detector import CrmTextQualityFinding, detect_crm_text_quality_risks
 from mango_mvp.quality.tenant_text_normalizer import normalize_manager_text
 
 
@@ -44,6 +45,14 @@ HOT_SIGNAL_TYPES = {"hot_lead_silent_7d", "price_interest", "paid_no_access"}
 IDENTITY_CONFLICT_MARKERS = ("ambiguous", "duplicate", "shared", "family")
 SERVICE_SNAPSHOT_EVENT_TYPES = {"amo_contact_snapshot", "tallanto_student_snapshot", "amo_deal_stage"}
 EMAIL_STUB_EVENT_TYPES = {"email_message"}
+MANGO_CALL_MANAGER_HISTORY_FALLBACK_NON_CONVERSATION_RE = re.compile(
+    r"\b(?:"
+    r"нецелев\w+\s+звон\w+|автоответчик|техническ\w+\s+дозвон|коротк\w+\s+техническ\w+|"
+    r"нет\s+содержательн\w+\s+диалог\w+|полноценн\w+\s+разговор\w+[^.]{0,80}не\s+состоя|"
+    r"разговор\s+не\s+состоя|не\s+удалось\s+дозвон|абонент\w*\s+недоступ|номер\s+набран\s+ошибочн"
+    r")\b",
+    re.I,
+)
 BLOCKER_MESSAGES = {
     "p9_ambiguous_identity_manual_review": "На телефоне несколько человек — проверьте, к кому относится",
     "open_conflicts_require_manager_review": "Есть открытые конфликты в истории — проверьте вручную",
@@ -189,6 +198,10 @@ def build_crm_card_projection(
         "Предупреждения": normalize_manager_text(warnings_text),
     }
     deal_payload = _drop_empty(deal_payload)
+    text_quality_blockers = _crm_text_quality_blockers(contact_payload, deal_payload)
+    if text_quality_blockers:
+        blockers.extend(text_quality_blockers)
+        deal_blockers.extend(text_quality_blockers)
 
     ready = not blockers and bool(contact_payload)
     if contact_id and not contact_id.isdigit():
@@ -275,6 +288,42 @@ def render_payload_preview(contact_payload: Mapping[str, Any], deal_payload: Map
     if deal_payload:
         parts.append("Сделка:\n" + "\n".join(f"- {key}: {_safe_text(value)}" for key, value in deal_payload.items()))
     return "\n\n".join(parts)
+
+
+def _crm_text_quality_blockers(contact_payload: Mapping[str, Any], deal_payload: Mapping[str, Any]) -> list[str]:
+    payload = {
+        "Авто история общения": _safe_text(contact_payload.get("История общения")),
+        "Последняя AI-сводка": _safe_text(contact_payload.get("Последняя сводка")),
+        "AI-фактический статус сделки": _safe_text(deal_payload.get("Статус сделки")),
+        "Возражения": _safe_text(deal_payload.get("Возражения")),
+        "AI-рекомендованный следующий шаг": _safe_text(deal_payload.get("Следующий шаг")),
+        "AI-Tallanto статус по сделке": _safe_text(deal_payload.get("Tallanto")),
+        "AI-предупреждение по сделке": _safe_text(deal_payload.get("Предупреждения")),
+    }
+    findings = detect_crm_text_quality_risks(payload, min_severity="P2")
+    return _dedupe([_crm_text_quality_blocker_message(finding) for finding in findings])
+
+
+def _crm_text_quality_blocker_message(finding: CrmTextQualityFinding) -> str:
+    labels = {
+        "completed_payment_next_step_conflict": "оплата/чек уже упомянуты, следующий шаг может противоречить",
+        "empty_auto_history": "история общения пустая",
+        "wrong_person_or_identity_mismatch": "возможная путаница с клиентом или неверный контакт",
+        "closure_next_step_requires_downgrade": "следующий шаг противоречит закрытию или пассивному отказу",
+        "passive_customer_next_step_conflict": "клиент просил не продолжать активно, но остался активный шаг",
+        "explicit_no_next_step_conflict": "в тексте нет согласованного шага, но активный шаг остался",
+        "stale_followup_date": "дата следующего касания устарела или относительная",
+        "relative_next_step_date_mismatch": "следующий шаг содержит относительную дату",
+        "stale_uniform_followup_date": "дата следующего касания выглядит шаблонной",
+        "generic_next_step_after_specific_latest_call": "следующий шаг потерял конкретику последнего звонка",
+        "lost_lead_next_step_conflict": "сигнал отказа/конкурента противоречит активному шагу",
+        "terminal_lost_without_loss_reason_requires_manual_review": "закрытая проигранная сделка без причины отказа",
+        "cross_field_duplicate_information": "поля карточки дублируют один и тот же текст",
+        "service_test_marker": "служебный или тестовый текст в поле карточки",
+    }
+    label = labels.get(finding.risk_type) or finding.risk_type
+    field = _safe_text(finding.field)
+    return f"Текст карточки требует проверки ({finding.severity}): {label}" + (f" — {field}" if field else "")
 
 
 def fit_text(value: Any, limit: int) -> str:
@@ -734,7 +783,7 @@ def _history_events(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, An
         if event_type in SERVICE_SNAPSHOT_EVENT_TYPES:
             continue
         if event_type == "mango_call":
-            if event.get("call_history_eligible") is True:
+            if _mango_call_manager_history_eligible(event):
                 result.append(event)
             continue
         result.append(event)
@@ -745,11 +794,31 @@ def _latest_history_call(events: Sequence[Mapping[str, Any]]) -> Mapping[str, An
     calls = [
         event
         for event in events
-        if _safe_text(event.get("event_type")) == "mango_call" and event.get("call_history_eligible") is True
+        if _safe_text(event.get("event_type")) == "mango_call" and _mango_call_manager_history_eligible(event)
     ]
     if not calls:
         return {}
     return sorted(calls, key=lambda item: _safe_text(item.get("event_at")), reverse=True)[0]
+
+
+def _mango_call_manager_history_eligible(event: Mapping[str, Any]) -> bool:
+    if event.get("call_history_eligible") is True:
+        return True
+    if "call_history_eligible" in event or "call_analysis" in event:
+        return False
+    if _safe_text(event.get("event_type")) != "mango_call":
+        return False
+    call_type = _safe_text(event.get("call_type")).casefold()
+    if call_type in {"non_conversation", "technical"} or "technical" in call_type:
+        return False
+    summary = _event_history_summary(event)
+    if len(summary) < 60:
+        return False
+    if MANGO_CALL_MANAGER_HISTORY_FALLBACK_NON_CONVERSATION_RE.search(summary):
+        return False
+    # Manager-card-only fallback for older D4 timeline copies that expose
+    # useful call summaries but not the structured call_analysis contract.
+    return True
 
 
 def _event_history_summary(event: Mapping[str, Any]) -> str:

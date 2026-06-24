@@ -11,6 +11,7 @@ Worktree: `/Users/dmitrijfabarisov/Projects/Mango_tzC_nightly_cursors`
 
 - не писать в боевую `customer_timeline`;
 - не запускать apply-команду на боевой папке;
+- не запускать apply, если боевую SQLite читает или пишет другой процесс;
 - не трогать AMO/Tallanto/CRM write;
 - не расширять notes whitelist;
 - не создавать `bot_safe_summary`.
@@ -79,16 +80,41 @@ amo_lead_id|5739
 - `amo_contacts_updated_at`
 - `amo_events_created_at`
 
+## Проверка отсутствия процессов перед apply/swap
+
+Перед созданием backup, перед apply и перед финальным swap убедиться, что боевую SQLite не читает и не пишет ни один процесс. Особенно важно проверить:
+
+- сборщик выжимок;
+- card-preview / preview service;
+- живой бот;
+- любые одноразовые скрипты, открывающие `customer_timeline.sqlite`;
+- WAL/shm файлы рядом с SQLite.
+
+Команды ниже не запускались:
+
+```bash
+SRC="/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
+
+lsof "$SRC" "$SRC-wal" "$SRC-shm"
+pgrep -af "customer_timeline|bot_safe_summary|card-preview|card_preview|run_telegram_public_pilot_bots|run_customer_timeline"
+```
+
+Acceptance:
+
+- `lsof` не показывает процессов по `customer_timeline.sqlite`, `customer_timeline.sqlite-wal`, `customer_timeline.sqlite-shm`;
+- `pgrep` не показывает активный сборщик выжимок, preview service, live-бота или импортный скрипт, который держит эту БД;
+- если что-то найдено — STOP, apply не начинать.
+
 ## Backup plan
 
-До apply сделать файловый backup и manifest. Команды ниже не запускались.
+До apply сделать SQLite `.backup` и manifest. Простое `cp` основной SQLite недостаточно безопасно при WAL, поэтому plan-of-record: `.backup -> apply на копию -> проверки -> atomic swap`. Команды ниже не запускались.
 
 ```bash
 SRC="/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
 BACKUP_DIR="/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/backups/amo_incremental_v1_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 
-cp -p "$SRC" "$BACKUP_DIR/customer_timeline.sqlite"
+sqlite3 "$SRC" ".backup '$BACKUP_DIR/customer_timeline.sqlite'"
 shasum -a 256 "$SRC" "$BACKUP_DIR/customer_timeline.sqlite" > "$BACKUP_DIR/SHA256SUMS.txt"
 sqlite3 "$BACKUP_DIR/customer_timeline.sqlite" "PRAGMA integrity_check;" > "$BACKUP_DIR/integrity_check.txt"
 ```
@@ -114,16 +140,27 @@ Apply не начинать, если:
 - `PRAGMA integrity_check` не вернул `ok`;
 - рабочее дерево не на `ccf4bea` или новее принятого коммита;
 - есть непонятная грязь в кодовой зоне;
+- `lsof`/`pgrep` показывает активных читателей или писателей боевой SQLite;
 - нет отдельного «да» от Дмитрия.
 
-## Apply command, только после отдельного «да»
+## Apply command на копию, только после отдельного «да»
 
-Боевая папка используется как `out-root`; `--use-existing-copy` означает, что runner будет писать в уже существующий `customer_timeline.sqlite` в этой папке.
+Apply нельзя делать in-place в боевой файл. Единственная защита runner'а — куда указывает `out-root`, поэтому `out-root` должен быть отдельной apply-копией, а не боевой папкой.
+
+Подготовить apply-копию из backup:
+
+```bash
+APPLY_DIR="$BACKUP_DIR/apply_copy"
+mkdir -p "$APPLY_DIR"
+cp -p "$BACKUP_DIR/customer_timeline.sqlite" "$APPLY_DIR/customer_timeline.sqlite"
+```
+
+Запустить incremental apply только на эту копию:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 python3 scripts/run_customer_timeline_amo_incremental.py \
-  --out-root "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621" \
+  --out-root "$APPLY_DIR" \
   --use-existing-copy \
   --since "2026-06-20T00:00:00+00:00" \
   --page-limit 50 \
@@ -134,11 +171,28 @@ python3 scripts/run_customer_timeline_amo_incremental.py \
 
 Параметры повторяют принятый тестовый прогон. Если нужен другой lower bound или больше страниц, это отдельное решение до запуска.
 
+После успешных проверок на apply-копии сделать финальную проверку отсутствия процессов и только потом атомарно заменить боевой файл:
+
+```bash
+# STOP, если lsof/pgrep что-то показывает
+lsof "$SRC" "$SRC-wal" "$SRC-shm"
+pgrep -af "customer_timeline|bot_safe_summary|card-preview|card_preview|run_telegram_public_pilot_bots|run_customer_timeline"
+
+STAGED="$SRC.apply_ready"
+cp -p "$APPLY_DIR/customer_timeline.sqlite" "$STAGED"
+shasum -a 256 "$STAGED" > "$BACKUP_DIR/SHA256_APPLY_READY.txt"
+sqlite3 "$STAGED" "PRAGMA integrity_check;" > "$BACKUP_DIR/integrity_check_apply_ready.txt"
+
+mv -f "$STAGED" "$SRC"
+```
+
+После swap сразу выполнить read-only sanity checks на новом боевом файле: sha, `PRAGMA integrity_check`, counts, raw chunk safety.
+
 ## Проверки после apply
 
 ### 1. Counts до/после по типам
 
-До apply counts уже зафиксированы выше. После apply выполнить:
+До apply counts уже зафиксированы выше. После apply на копию выполнить:
 
 ```sql
 SELECT source_system, event_type, count(*)
@@ -161,11 +215,11 @@ amocrm_snapshot|amo_contact_snapshot|11402
 amocrm_snapshot|amo_deal_stage|5449
 ```
 
-В боевом apply фактическое число может отличаться, потому что `/events` живой и окно страниц движется.
+В apply-копии фактическое число может отличаться, потому что `/events` живой и окно страниц движется. После atomic swap те же counts повторить на боевом файле.
 
 ### 2. Repeat = 0 дублей
 
-Сразу после apply повторить ту же команду второй раз с теми же параметрами.
+Сразу после apply на копию повторить ту же команду второй раз с теми же параметрами и тем же `$APPLY_DIR`.
 
 Acceptance:
 
@@ -248,31 +302,42 @@ Acceptance: `bad=0`.
 
 ## Rollback plan
 
-Если после apply не проходит repeat, readback или chunk-safety:
+Если после apply на копию не проходит repeat, readback или chunk-safety:
 
-1. Не запускать сборщик выжимок поверх новой timeline.
-2. Сохранить повреждённый файл для разбора:
+1. Не делать atomic swap.
+2. Сохранить failed apply-copy для разбора:
 
 ```bash
-mv "$SRC" "$BACKUP_DIR/customer_timeline.failed_after_amo_incremental.sqlite"
+mv "$APPLY_DIR/customer_timeline.sqlite" "$BACKUP_DIR/customer_timeline.failed_after_amo_incremental.sqlite"
 ```
 
-3. Вернуть backup:
+Если проблема обнаружена уже после swap:
+
+1. Остановить любые потребители timeline.
+2. Убедиться через `lsof`, что файл никто не держит.
+3. Вернуть backup атомарно:
 
 ```bash
-cp -p "$BACKUP_DIR/customer_timeline.sqlite" "$SRC"
+ROLLBACK_READY="$SRC.rollback_ready"
+cp -p "$BACKUP_DIR/customer_timeline.sqlite" "$ROLLBACK_READY"
+sqlite3 "$ROLLBACK_READY" "PRAGMA integrity_check;"
+mv -f "$ROLLBACK_READY" "$SRC"
 shasum -a 256 "$SRC"
 sqlite3 "$SRC" "PRAGMA integrity_check;"
 ```
 
-4. Sha после rollback должен совпасть с `sha256_before`.
-5. Source/report файлы `amo_incremental_sources/`, `amo_incremental_report.json`, `amo_incremental_journal.jsonl` оставить как артефакты разбора или переместить в backup-директорию; на runtime они не должны влиять после восстановления SQLite.
+Sha после rollback должен совпасть с `sha256_before`.
+
+Source/report файлы `amo_incremental_sources/`, `amo_incremental_report.json`, `amo_incremental_journal.jsonl` оставить как артефакты разбора или переместить в backup-директорию; на runtime они не должны влиять после восстановления SQLite.
 
 ## Итоговый критерий готовности после controlled apply
 
 Controlled apply можно считать формально успешным, если:
 
 - backup manifest создан и sha ДО зафиксирован;
+- перед apply и swap подтверждено, что никто не читает/пишет боевую SQLite;
+- apply выполнен на копии, не in-place;
+- atomic swap выполнен только после всех проверок на копии;
 - AMO/Tallanto/CRM write = 0;
 - `amocrm_event` добавился;
 - repeat run = 0 новых изменений;

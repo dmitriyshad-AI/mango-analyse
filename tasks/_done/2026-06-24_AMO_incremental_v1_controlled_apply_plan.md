@@ -114,6 +114,13 @@ SRC="/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeli
 BACKUP_DIR="/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/backups/amo_incremental_v1_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 
+KNOWN_SHA_BEFORE="3cdd2b8e10c5488768baa4c5cec8af29c8397ad24f0f21c04e7353538771921c"
+SHA_BEFORE_NOW="$(shasum -a 256 "$SRC" | awk '{print $1}')"
+if [ "$SHA_BEFORE_NOW" != "$KNOWN_SHA_BEFORE" ]; then
+  echo "STOP: source DB sha changed before apply: $SHA_BEFORE_NOW != $KNOWN_SHA_BEFORE"
+  exit 1
+fi
+
 sqlite3 "$SRC" ".backup '$BACKUP_DIR/customer_timeline.sqlite'"
 shasum -a 256 "$SRC" "$BACKUP_DIR/customer_timeline.sqlite" > "$BACKUP_DIR/SHA256SUMS.txt"
 sqlite3 "$BACKUP_DIR/customer_timeline.sqlite" "PRAGMA integrity_check;" > "$BACKUP_DIR/integrity_check.txt"
@@ -125,6 +132,8 @@ Manifest ДО должен содержать:
 {
   "source_path": "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite",
   "sha256_before": "3cdd2b8e10c5488768baa4c5cec8af29c8397ad24f0f21c04e7353538771921c",
+  "sha256_before_recomputed_immediately_before_apply": "$SHA_BEFORE_NOW",
+  "backup_sha256": "value from SHA256SUMS.txt",
   "size_before": "2.4G",
   "git_commit": "ccf4bea",
   "apply_allowed_by_dmitry": true,
@@ -136,8 +145,9 @@ Manifest ДО должен содержать:
 
 Apply не начинать, если:
 
-- backup sha не совпал с исходным sha;
+- `sha256_before`, пересчитанный непосредственно перед apply, отличается от зафиксированного sha выше;
 - `PRAGMA integrity_check` не вернул `ok`;
+- backup sha не записан в manifest;
 - рабочее дерево не на `ccf4bea` или новее принятого коммита;
 - есть непонятная грязь в кодовой зоне;
 - `lsof`/`pgrep` показывает активных читателей или писателей боевой SQLite;
@@ -146,6 +156,8 @@ Apply не начинать, если:
 ## Apply command на копию, только после отдельного «да»
 
 Apply нельзя делать in-place в боевой файл. Единственная защита runner'а — куда указывает `out-root`, поэтому `out-root` должен быть отдельной apply-копией, а не боевой папкой.
+
+Важно: `--summary-only` **не dry-run**. Этот флаг только сокращает stdout. При `--use-existing-copy` runner пишет в `customer_timeline.sqlite` внутри указанного `--out-root`. У скрипта сейчас нет dry-run режима вообще.
 
 Подготовить apply-копию из backup:
 
@@ -189,6 +201,14 @@ mv -f "$STAGED" "$SRC"
 После swap сразу выполнить read-only sanity checks на новом боевом файле: sha, `PRAGMA integrity_check`, counts, raw chunk safety.
 
 ## Проверки после apply
+
+Перед apply на копию сохранить baseline `event_id`, чтобы потом отдельно проверить только новые события этого apply:
+
+```bash
+sqlite3 "$APPLY_DIR/customer_timeline.sqlite" \
+  "SELECT event_id FROM timeline_events WHERE source_system='amocrm_event' ORDER BY event_id;" \
+  > "$BACKUP_DIR/amocrm_event_ids_before_apply.txt"
+```
 
 ### 1. Counts до/после по типам
 
@@ -247,18 +267,28 @@ amo_event_raw|0|1|N
 
 и `N == count(amocrm_event|amo_note)`.
 
-### 4. Event -> customer привязка по всему apply-набору
+### 4. Event -> customer привязка по новым event_id и по всему набору
 
-Проверять не 10 примеров, а все `amocrm_event`, созданные apply. Рекомендуемый readback-скрипт:
+Проверять два слоя:
+
+1. новые `amocrm_event`, созданные именно этим apply;
+2. общий набор всех `amocrm_event` после apply.
+
+Рекомендуемый readback-скрипт:
 
 ```python
 import json, sqlite3
+import os
+from pathlib import Path
 
-db = "/Users/dmitrijfabarisov/Projects/Mango analyse/product_data/customer_timeline/customer_timeline_prod_20260621/customer_timeline.sqlite"
+db = str(Path(os.environ["APPLY_DIR"]) / "customer_timeline.sqlite")
+baseline_path = Path(os.environ["BACKUP_DIR"]) / "amocrm_event_ids_before_apply.txt"
+baseline_event_ids = set(baseline_path.read_text(encoding="utf-8").splitlines())
 con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
 con.row_factory = sqlite3.Row
 
-bad = []
+bad_all = []
+bad_new = []
 rows = con.execute("""
 SELECT event_id, customer_id, record_json
 FROM timeline_events
@@ -271,20 +301,35 @@ for row in rows:
     entity_id = str(record.get("entity_id") or "")
     link_type = "amo_lead_id" if entity_type == "lead" else "amo_contact_id" if entity_type == "contact" else None
     if not link_type:
-        bad.append((row["event_id"], "missing_entity_type"))
+        bad_all.append((row["event_id"], "missing_entity_type"))
+        if row["event_id"] not in baseline_event_ids:
+            bad_new.append((row["event_id"], "missing_entity_type"))
         continue
     found = con.execute(
         "SELECT count(*) FROM identity_links WHERE customer_id=? AND link_type=? AND link_value=?",
         (row["customer_id"], link_type, entity_id),
     ).fetchone()[0]
     if not found:
-        bad.append((row["event_id"], entity_type))
+        bad_all.append((row["event_id"], entity_type))
+        if row["event_id"] not in baseline_event_ids:
+            bad_new.append((row["event_id"], entity_type))
 
-print({"checked": len(rows), "bad": len(bad)})
-assert not bad
+new_count = sum(1 for row in rows if row["event_id"] not in baseline_event_ids)
+print({
+    "checked_all": len(rows),
+    "checked_new": new_count,
+    "bad_all": len(bad_all),
+    "bad_new": len(bad_new),
+})
+assert not bad_new
+assert not bad_all
 ```
 
-Acceptance: `bad=0`.
+Acceptance:
+
+- `bad_new=0`;
+- `bad_all=0`;
+- `checked_new > 0`, если `/events` реально дал новые события.
 
 ### 5. Body status и common_note gap
 

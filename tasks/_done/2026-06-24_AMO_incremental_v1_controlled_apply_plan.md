@@ -191,11 +191,13 @@ lsof "$SRC" "$SRC-wal" "$SRC-shm"
 pgrep -af "customer_timeline|bot_safe_summary|card-preview|card_preview|run_telegram_public_pilot_bots|run_customer_timeline"
 
 STAGED="$SRC.apply_ready"
-cp -p "$APPLY_DIR/customer_timeline.sqlite" "$STAGED"
+sqlite3 "$APPLY_DIR/customer_timeline.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);"
+sqlite3 "$APPLY_DIR/customer_timeline.sqlite" ".backup '$STAGED'"
 shasum -a 256 "$STAGED" > "$BACKUP_DIR/SHA256_APPLY_READY.txt"
 sqlite3 "$STAGED" "PRAGMA integrity_check;" > "$BACKUP_DIR/integrity_check_apply_ready.txt"
 
 mv -f "$STAGED" "$SRC"
+rm -f "$SRC-wal" "$SRC-shm"
 ```
 
 После swap сразу выполнить read-only sanity checks на новом боевом файле: sha, `PRAGMA integrity_check`, counts, raw chunk safety.
@@ -364,9 +366,11 @@ mv "$APPLY_DIR/customer_timeline.sqlite" "$BACKUP_DIR/customer_timeline.failed_a
 
 ```bash
 ROLLBACK_READY="$SRC.rollback_ready"
-cp -p "$BACKUP_DIR/customer_timeline.sqlite" "$ROLLBACK_READY"
+sqlite3 "$BACKUP_DIR/customer_timeline.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);"
+sqlite3 "$BACKUP_DIR/customer_timeline.sqlite" ".backup '$ROLLBACK_READY'"
 sqlite3 "$ROLLBACK_READY" "PRAGMA integrity_check;"
 mv -f "$ROLLBACK_READY" "$SRC"
+rm -f "$SRC-wal" "$SRC-shm"
 shasum -a 256 "$SRC"
 sqlite3 "$SRC" "PRAGMA integrity_check;"
 ```

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from mango_mvp.customer_timeline.amo_incremental import (
     event_summary,
+    fetch_cards_source,
     fetch_events_source,
 )
 from mango_mvp.customer_timeline.ingestion import TimelineSourceRecord
@@ -18,12 +19,16 @@ NOW = datetime(2026, 6, 24, 8, 0, tzinfo=timezone.utc)
 
 
 class FakeAmoClient:
-    def __init__(self, payload):
+    def __init__(self, payload, *, expected_path="events"):
         self.payload = payload
+        self.expected_path = expected_path
 
     def amo_api_get(self, *, path, params=None, limit=50):
-        assert path == "events"
-        assert "filter[created_at][from]" in (params or {})
+        assert path == self.expected_path
+        if path == "events":
+            assert "filter[created_at][from]" in (params or {})
+        else:
+            assert "filter[updated_at][from]" in (params or {})
         return self.payload
 
 
@@ -130,3 +135,62 @@ def test_fetch_events_source_marks_unmatched_and_ambiguous() -> None:
     assert stats["skipped"]["unmatched"] == 1
     assert stats["skipped"]["unsupported_type"] == 1
     assert event_summary({"type": "common_note_added", "entity_type": "lead"}, body_status="note_body_missing").endswith("body missing")
+
+
+def test_fetch_cards_source_maps_lead_via_embedded_contact_identity() -> None:
+    payload = {
+        "_embedded": {
+            "leads": [
+                {
+                    "id": 42,
+                    "name": "Lead with known contact",
+                    "created_at": 1782250000,
+                    "updated_at": 1782250001,
+                    "_embedded": {"contacts": [{"id": 30}]},
+                }
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, stats = fetch_cards_source(
+        FakeAmoClient(payload, expected_path="leads"),
+        path="leads",
+        embedded_key="leads",
+        entity_type="lead",
+        cursor_name="amo_leads_updated_at",
+        from_ts=NOW,
+        link_index={("amo_contact_id", "30"): ("customer:known-contact",)},
+        config=config,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["customer_id"] == "customer:known-contact"
+    assert stats["resolution_counts"]["embedded_contact_identity_link"] == 1
+
+
+def test_fetch_events_source_marks_mapping_after_card_import() -> None:
+    payload = {
+        "_embedded": {
+            "events": [
+                {"id": 10, "type": "incoming_mail", "entity_type": "contact", "entity_id": 30, "created_at": 1782250000},
+                {"id": 11, "type": "common_note_added", "entity_type": "contact", "entity_id": 30, "created_at": 1782250001},
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, stats = fetch_events_source(
+        FakeAmoClient(payload),
+        from_ts=NOW,
+        link_index={("amo_contact_id", "30"): ("customer:after-card",)},
+        diagnostic_link_index_before={},
+        fetched_entity_ids={"contact": {"30"}},
+        config=config,
+    )
+
+    assert len(rows) == 2
+    assert {row["customer_id"] for row in rows} == {"customer:after-card"}
+    assert stats["mapping_diagnostics_counts"]["mapped_after_card_import"] == 2
+    assert stats["common_note_added_mapping_diagnostics"]["mapped_after_card_import"] == 1
+    assert stats["source_body_status_counts"]["note_body_missing"] == 1

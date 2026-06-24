@@ -409,6 +409,7 @@ class AmoSnapshotNormalizer:
         payload = record.payload
         entity_id = require_text(first_value(payload, ("entity_id", "id", "contact_id", "lead_id")), "entity_id")
         entity_type = normalize_key(first_value(payload, ("entity_type", "type")) or "contact", "entity_type")
+        source_id = require_text(first_value(payload, ("source_id",)) or entity_id, "source_id")
         source_ref = f"amocrm:{entity_type}:{entity_id}"
         phone = safe_phone(first_value(payload, ("phone", "primary_phone", "Телефон", "Телефон клиента")))
         email = safe_email(first_value(payload, ("email", "primary_email", "Email", "E-mail")))
@@ -417,6 +418,7 @@ class AmoSnapshotNormalizer:
         event_at = parse_source_datetime(first_value(payload, ("updated_at", "created_at", "event_at")), record.observed_at)
         customer = CustomerIdentity(
             tenant_id=self.tenant_id,
+            customer_id=optional_text(first_value(payload, ("customer_id",))),
             identity_status=identity_status_from_match(phone=phone, email=email, match_class=match_class),
             display_name=display_name,
             primary_phone=phone,
@@ -478,7 +480,7 @@ class AmoSnapshotNormalizer:
             event_type=TimelineEventType.AMO_DEAL_STAGE if opportunity_id else TimelineEventType.AMO_CONTACT_SNAPSHOT,
             event_at=event_at,
             source_system=self.source_system,
-            source_id=entity_id,
+            source_id=source_id,
             source_ref=source_ref,
             direction=TimelineDirection.SYSTEM,
             subject=display_name or f"amoCRM {entity_type}",
@@ -486,7 +488,7 @@ class AmoSnapshotNormalizer:
             summary=compact_text(first_value(payload, ("summary", "status", "stage"))),
             match_status=IdentityMatchClass.STRONG_UNIQUE if phone or email else IdentityMatchClass.INFERRED,
             confidence=0.9 if phone or email else 0.6,
-            record={"entity_type": entity_type, "payload": scrub_timeline_persisted_json(dict(payload))},
+            record={"entity_type": entity_type, "entity_id": entity_id, "payload": scrub_timeline_persisted_json(dict(payload))},
             created_at=event_at,
         )
         conflicts = conflict_from_payload(self.tenant_id, payload, source_ref)

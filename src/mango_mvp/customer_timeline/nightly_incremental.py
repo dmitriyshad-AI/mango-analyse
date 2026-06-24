@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.ids import normalize_key, require_text, stable_digest
 from mango_mvp.customer_timeline.ingestion import (
+    AmoSnapshotNormalizer,
     TimelineImportService,
     TimelineNormalizedBatch,
     TimelineNormalizer,
@@ -41,12 +42,14 @@ class IncrementalSourceConfig:
     path: Path
     tenant_id: str = "foton"
     source_ref: Optional[str] = None
+    normalizer: str = "jsonl"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", normalize_key(self.name, "source name"))
         object.__setattr__(self, "source_system", normalize_key(self.source_system, "source_system"))
         object.__setattr__(self, "tenant_id", normalize_key(self.tenant_id, "tenant_id"))
         object.__setattr__(self, "path", Path(self.path))
+        object.__setattr__(self, "normalizer", normalize_key(self.normalizer, "normalizer"))
         if self.source_ref is not None:
             object.__setattr__(self, "source_ref", require_text(self.source_ref, "source_ref"))
 
@@ -188,6 +191,101 @@ class JsonlTimelineNormalizer(TimelineNormalizer):
         return TimelineNormalizedBatch(source_record=record, events=(event,), bot_context_chunks=tuple(chunks))
 
 
+class AmoEventNormalizer(TimelineNormalizer):
+    source_system = "amocrm_event"
+
+    def __init__(self, *, tenant_id: str) -> None:
+        self.tenant_id = normalize_key(tenant_id, "tenant_id")
+
+    def normalize(self, record: TimelineSourceRecord) -> TimelineNormalizedBatch:
+        payload = dict(record.payload)
+        customer_id = optional_string(payload.get("customer_id"))
+        if not customer_id:
+            return TimelineNormalizedBatch(source_record=record)
+        event_at = parse_datetime(payload.get("event_at") or payload.get("created_at"), "event_at")
+        amo_event_type = optional_string(payload.get("amo_event_type") or payload.get("type")) or "amo_event"
+        entity_type = optional_string(payload.get("entity_type")) or "unknown"
+        entity_id = optional_string(payload.get("entity_id")) or "unknown"
+        event_id = require_text(payload.get("event_id") or payload.get("id") or record.source_ref, "event_id")
+        source_id = f"{event_id}:{stable_digest({'body': payload.get('text_preview') or payload.get('summary') or '', 'updated_at': payload.get('updated_at') or payload.get('created_at')})[:12]}"
+        direction = direction_for_amo_event_type(amo_event_type)
+        source_ref = f"amocrm:event:{event_id}"
+        subject = optional_string(payload.get("subject")) or amo_event_type
+        body_status = optional_string(payload.get("source_body_status")) or "event_only"
+        text = optional_string(payload.get("text_preview") or payload.get("summary")) or f"AMO event: {amo_event_type}"
+        event = TimelineEvent(
+            tenant_id=self.tenant_id,
+            customer_id=customer_id,
+            opportunity_id=optional_string(payload.get("opportunity_id")),
+            event_type=TimelineEventType.AMO_NOTE,
+            event_at=event_at,
+            source_system=self.source_system,
+            source_id=source_id,
+            source_ref=source_ref,
+            direction=direction,
+            actor_name=optional_string(payload.get("actor_name")),
+            actor_ref=optional_string(payload.get("actor_ref")),
+            subject=subject,
+            text_preview=text[:240],
+            summary=optional_string(payload.get("summary")) or text[:240],
+            match_status=IdentityMatchClass.STRONG_UNIQUE,
+            confidence=float(payload.get("confidence") or 0.75),
+            record={
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "amo_event_type": amo_event_type,
+                "source_body_status": body_status,
+                "payload": payload.get("record") if isinstance(payload.get("record"), Mapping) else payload,
+            },
+            metadata={
+                "source_body_status": body_status,
+                "source_updated_at": normalized_timestamp(payload),
+                "incremental_source": True,
+            },
+            created_at=event_at,
+        )
+        chunk = BotContextChunk(
+            tenant_id=self.tenant_id,
+            customer_id=customer_id,
+            opportunity_id=event.opportunity_id,
+            event_id=event.event_id,
+            source_ref=event.source_ref,
+            source_system=self.source_system,
+            chunk_type="amo_event_raw",
+            text=text,
+            summary=text[:160],
+            event_at=event.event_at,
+            freshness_score=0.5,
+            relevance_tags=("amocrm", "event", amo_event_type, body_status),
+            allowed_for_bot=False,
+            requires_manager_review=True,
+            metadata={"source_body_status": body_status},
+            created_at=event.created_at,
+        )
+        return TimelineNormalizedBatch(source_record=record, events=(event,), bot_context_chunks=(chunk,))
+
+
+def normalizer_for_source(source: IncrementalSourceConfig) -> TimelineNormalizer:
+    if source.normalizer == "amo_snapshot":
+        return AmoSnapshotNormalizer(tenant_id=source.tenant_id)
+    if source.normalizer == "amo_event":
+        return AmoEventNormalizer(tenant_id=source.tenant_id)
+    if source.normalizer == "jsonl":
+        return JsonlTimelineNormalizer(source.source_system)
+    raise ValueError(f"unsupported incremental normalizer: {source.normalizer}")
+
+
+def direction_for_amo_event_type(event_type: str) -> TimelineDirection:
+    value = event_type.casefold()
+    if value.startswith("incoming"):
+        return TimelineDirection.INBOUND
+    if value.startswith("outgoing"):
+        return TimelineDirection.OUTBOUND
+    if value in {"common_note_added", "common_note_deleted", "common_note_updated"}:
+        return TimelineDirection.INTERNAL
+    return TimelineDirection.SYSTEM
+
+
 def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     phase_started = time.monotonic()
@@ -228,7 +326,7 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                     continue
                 imported = TimelineImportService(store).import_records(
                     loaded.records,
-                    normalizer=JsonlTimelineNormalizer(source.source_system),
+                    normalizer=normalizer_for_source(source),
                     tenant_id=source.tenant_id,
                     source_ref=source.effective_source_ref,
                     idempotency_key=stable_digest(
@@ -303,7 +401,7 @@ def load_incremental_jsonl_source(
     affected: set[str] = set()
     would_change: set[str] = set()
     records: list[TimelineSourceRecord] = []
-    normalizer = JsonlTimelineNormalizer(source.source_system)
+    normalizer = normalizer_for_source(source)
     for row in rows:
         ts = parse_datetime(normalized_timestamp(row), "source_timestamp")
         max_ts = ts if max_ts is None else max(max_ts, ts)

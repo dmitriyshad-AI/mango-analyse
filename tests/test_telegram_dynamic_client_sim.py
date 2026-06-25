@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import subprocess
 from pathlib import Path
@@ -603,6 +604,7 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_LLM_RETRIEVE", raising=False)
     monkeypatch.delenv("TELEGRAM_RETRIEVER_NEED_SHADOW", raising=False)
     monkeypatch.delenv("TELEGRAM_RETRIEVER_MODEL_DRIVEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_INTENT_MODEL_LED", raising=False)
     snapshot_path = tmp_path / "snapshot.json"
 
     summary = sim.build_summary(
@@ -619,6 +621,7 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     assert flags["retriever"] == {"env": "", "effective": True}
     assert flags["retriever_need_shadow"] == {"env": "", "effective": False}
     assert flags["retriever_model_driven"] == {"env": "", "effective": False}
+    assert flags["intent_model_led"] == {"env": "", "effective": True}
     assert flags["memory_provenance"] == {"env": "", "effective": True}
     assert flags["snapshot"] == str(snapshot_path)
 
@@ -635,6 +638,20 @@ def test_summary_key_run_flags_allow_explicit_retriever_disable(monkeypatch, tmp
     )
 
     assert summary["run_config"]["key_flags"]["retriever"] == {"env": "0", "effective": False}
+
+
+def test_summary_key_run_flags_allow_explicit_intent_model_led_disable(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
+    monkeypatch.setenv("TELEGRAM_INTENT_MODEL_LED", "0")
+
+    summary = sim.build_summary(
+        [{"dialog_id": "flags", "brand": "foton", "run_status": "completed", "turns": []}],
+        [{"dialog_id": "flags", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    assert summary["run_config"]["key_flags"]["intent_model_led"] == {"env": "0", "effective": False}
 
 
 def test_summary_key_run_flags_allow_explicit_tz110_retriever_modes(monkeypatch, tmp_path):
@@ -1621,6 +1638,73 @@ def test_turn_record_includes_faithfulness_shadow_metadata(monkeypatch, tmp_path
     shadow = dialog["turns"][0]["bot_faithfulness_shadow"]
     assert shadow[0]["site"] == "main_draft"
     assert shadow[0]["available"] is False
+
+
+def test_turn_record_and_csv_include_model_intent_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(sim, "build_telegram_pilot_context_from_snapshot", lambda *args, **kwargs: _FakePilotContext())
+
+    class IntentBotProvider:
+        def build_draft(self, client_message, *, context=None):
+            return normalize_subscription_draft_payload(
+                {
+                    "message_type": "question",
+                    "topic_id": "theme:013_schedule",
+                    "route": "bot_answer_self_for_pilot",
+                    "draft_text": "Да, привозите ребёнка на площадку по адресу из расписания.",
+                    "metadata": {
+                        "direct_path_model_intent": {
+                            "primary_intent": "address",
+                            "scope": "venue",
+                            "sense": "venue",
+                            "confidence": 0.91,
+                            "reason": "место означает площадку",
+                        },
+                        "intent_model_led": {
+                            "enabled": True,
+                            "applied_primary_intent": "address",
+                        },
+                    },
+                }
+            )
+
+    dialog = sim.run_one_dialog(
+        {
+            "dialog_id": "model_intent_dynamic",
+            "brand": "foton",
+            "persona": "родитель",
+            "goal": "проверить intent visibility",
+            "max_turns": 1,
+        },
+        simulator_spec={"instructions": "test"},
+        judge_spec={"output_schema": {"verdict": "PASS|FAIL"}},
+        client_model=sim.FakeClientModel(),
+        judge_model=sim.FakeJudgeModel(),
+        bot_provider=IntentBotProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        max_turns_override=1,
+    )
+
+    turn = dialog["turns"][0]
+    assert turn["bot_model_intent"]["primary_intent"] == "address"
+    assert turn["bot_model_intent"]["scope"] == "venue"
+    assert turn["bot_model_intent"]["sense"] == "venue"
+    assert turn["bot_model_intent"]["confidence"] == 0.91
+    assert turn["bot_intent_model_led"]["applied_primary_intent"] == "address"
+
+    rows = sim.build_turn_rows([dialog])
+    assert rows[0]["bot_model_intent_primary_intent"] == "address"
+    assert rows[0]["bot_model_intent_scope"] == "venue"
+    assert rows[0]["bot_model_intent_sense"] == "venue"
+    assert rows[0]["bot_model_intent_confidence"] == 0.91
+
+    csv_path = tmp_path / "dynamic_turns.csv"
+    sim.write_csv(csv_path, rows)
+    with csv_path.open(encoding="utf-8", newline="") as file:
+        csv_row = next(csv.DictReader(file))
+    assert csv_row["bot_model_intent_primary_intent"] == "address"
+    assert csv_row["bot_model_intent_scope"] == "venue"
+    assert csv_row["bot_model_intent_sense"] == "venue"
+    assert csv_row["bot_model_intent_confidence"] == "0.91"
 
 
 def test_dynamic_summary_includes_close_detect_counters(tmp_path):

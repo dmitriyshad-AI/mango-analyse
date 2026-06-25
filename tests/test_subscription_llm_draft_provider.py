@@ -6431,6 +6431,36 @@ def test_safe_green_draft_is_promoted_to_autonomous_when_fact_verified() -> None
     assert "autonomy_matrix_passed" in result.safety_flags
 
 
+def test_live_availability_draft_is_not_promoted_by_autonomy_matrix() -> None:
+    provider = FakeDraftProvider(
+        {
+            "route": "draft_for_manager",
+            "draft_text": "По выездной ЛВШ УНПК места уже распроданы, можно записаться в лист ожидания.",
+            "message_type": "question",
+            "topic_id": "theme:026_camp_general",
+            "confidence_theme": 0.91,
+            "safety_flags": [
+                "conversation_intent_plan_live_check_handoff",
+                "conversation_intent_plan_live_availability",
+            ],
+        }
+    )
+
+    result = provider.build_draft(
+        "Здравствуйте! По летней школе есть ли места и где она будет проходить?",
+        context={
+            "active_brand": "unpk",
+            "autonomy_policy": {"allow_autonomous": True, "allowed_topic_ids": ["theme:026_camp_general"]},
+            "facts_context": {"client_safe": True, "fresh": True},
+            "confirmed_facts": {"fact:lvsh": "УНПК: по ЛВШ места распроданы, доступен лист ожидания."},
+        },
+    )
+
+    assert result.route == "draft_for_manager"
+    assert "autonomy_matrix_promoted_safe_draft" not in result.safety_flags
+    assert "autonomy_default_cautious_live_status_missing" in result.safety_flags
+
+
 def test_promoted_autonomous_answer_uses_confirmed_facts_when_original_draft_is_weak() -> None:
     provider = FakeDraftProvider(
         {
@@ -12231,11 +12261,26 @@ def test_direct_path_model_p0_prompt_is_flagged_off_by_default() -> None:
     assert "дорого/подумаю" in on_prompt
 
 
-def test_intent_model_led_default_off_and_not_in_pilot_profile() -> None:
+def test_intent_model_led_default_off_and_enabled_by_pilot_profile() -> None:
     assert subscription_llm._intent_model_led_enabled({}) is False
     assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "1"}) is True
     assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "0"}) is False
-    assert subscription_llm.INTENT_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.INTENT_MODEL_LED_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert (
+        subscription_llm._intent_model_led_enabled(
+            {subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV: subscription_llm.DIRECT_PATH_PILOT_CONFIG_VERSION}
+        )
+        is True
+    )
+    assert (
+        subscription_llm._intent_model_led_enabled(
+            {
+                subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV: subscription_llm.DIRECT_PATH_PILOT_CONFIG_VERSION,
+                subscription_llm.INTENT_MODEL_LED_ENV: "0",
+            }
+        )
+        is False
+    )
 
 
 def test_intent_model_led_prompt_block_is_flagged_only() -> None:
@@ -12365,6 +12410,90 @@ def test_intent_model_led_true_live_availability_still_hands_off() -> None:
     assert "conversation_intent_plan_live_availability" in guarded.safety_flags
     assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
     assert guarded.metadata["intent_model_led"]["applied_primary_intent"] == "live_availability"
+
+
+def test_intent_model_led_does_not_demote_explicit_availability_question() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, привозите ребёнка на площадку по адресу из расписания.",
+        topic_id="theme:013_schedule",
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "address",
+                "scope": "venue",
+                "sense": "venue",
+                "confidence": 0.99,
+                "reason": "ошибочный тестовый сигнал",
+            }
+        },
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.INTENT_MODEL_LED_ENV: "1",
+        "conversation_intent_plan": {
+            "schema_version": "test",
+            "primary_intent": "live_availability",
+            "topic_id": "theme:026_camp_general",
+            "direct_question": "Есть ли места в группе?",
+            "answer_policy": "answer_safe_parts_then_manager_live_check",
+            "route_bias": "draft_for_manager",
+            "keyword_signals": ["live_availability"],
+        },
+    }
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Есть ли места в группе?",
+        context=context,
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
+    assert guarded.metadata["intent_model_led"]["applied"] is False
+    assert guarded.metadata["intent_model_led"]["skip_reason"] == "explicit_live_availability_floor"
+
+
+def test_intent_model_led_low_confidence_does_not_demote_live_availability() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, привозите ребёнка на площадку по адресу из расписания.",
+        topic_id="theme:013_schedule",
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "address",
+                "scope": "venue",
+                "sense": "venue",
+                "confidence": 0.2,
+                "reason": "неуверенный тестовый сигнал",
+            }
+        },
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.INTENT_MODEL_LED_ENV: "1",
+        "conversation_intent_plan": {
+            "schema_version": "test",
+            "primary_intent": "live_availability",
+            "topic_id": "theme:026_camp_general",
+            "answer_policy": "answer_safe_parts_then_manager_live_check",
+            "route_bias": "draft_for_manager",
+            "keyword_signals": ["live_availability"],
+        },
+    }
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Я привезу ребёнка сразу на место, верно?",
+        context=context,
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert guarded.metadata["intent_model_led"]["applied"] is False
+    assert guarded.metadata["intent_model_led"]["skip_reason"] == "low_confidence"
 
 
 def test_intent_model_led_is_ignored_when_flag_off() -> None:

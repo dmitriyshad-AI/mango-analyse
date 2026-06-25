@@ -44,7 +44,7 @@ from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
 from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
 import mango_mvp.channels.dialogue_memory as dialogue_memory_module
 from mango_mvp.pilot_context_assembly import build_pilot_context_payload
-from mango_mvp.channels.subscription_llm import SubscriptionDraftResult
+from mango_mvp.channels.subscription_llm import INTENT_MODEL_LED_ENV, SubscriptionDraftResult
 from mango_mvp.channels.night_funnel_shadow import (
     AUTO_SEND,
     MANAGER_QUEUE,
@@ -454,6 +454,22 @@ def test_public_bot_env_file_sync_precedes_ensure_and_selfcheck(tmp_path: Path, 
     assert check.effective_profile == DIRECT_PATH_PILOT_CONFIG_VERSION
     os.environ.pop(DIRECT_PATH_PILOT_CONFIG_ENV, None)
     os.environ.pop(ENFORCE_CANONICAL_PROFILE_ENV, None)
+
+
+def test_public_bot_selfcheck_reports_intent_model_led_from_profile(monkeypatch) -> None:
+    monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
+    monkeypatch.delenv(INTENT_MODEL_LED_ENV, raising=False)
+
+    check_off = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    assert check_off.active_guards["intent_model_led"] is False
+
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+    check_on = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    assert check_on.active_guards["intent_model_led"] is True
+
+    monkeypatch.setenv(INTENT_MODEL_LED_ENV, "0")
+    check_explicit_off = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    assert check_explicit_off.active_guards["intent_model_led"] is False
 
 
 def test_runtime_context_overrides_force_profile_without_process_env(tmp_path: Path, monkeypatch) -> None:

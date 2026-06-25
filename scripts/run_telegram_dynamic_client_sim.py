@@ -31,6 +31,7 @@ from mango_mvp.channels.subscription_llm import (
     normalize_subscription_draft_payload,
     strip_internal_service_markers,
 )
+from mango_mvp.channels.subscription_llm_parts.support import INTENT_MODEL_LED_ENV, _intent_model_led_enabled
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS
 from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_funnel_context_payload
@@ -1369,6 +1370,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "TELEGRAM_TEMPLATE_FROM_KB",
         "TELEGRAM_ROUTE_RUBRIC",
         "TELEGRAM_LLM_RETRIEVE",
+        INTENT_MODEL_LED_ENV,
         MEMORY_PROVENANCE_ENV,
     }
 
@@ -1391,7 +1393,10 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
         "retriever_need_shadow": default_off_flag_state(RETRIEVER_NEED_SHADOW_ENV),
         "retriever_model_driven": default_off_flag_state(RETRIEVER_MODEL_DRIVEN_ENV),
-        "intent_model_led": default_off_flag_state("TELEGRAM_INTENT_MODEL_LED"),
+        "intent_model_led": {
+            "env": str(os.getenv(INTENT_MODEL_LED_ENV) or ""),
+            "effective": _intent_model_led_enabled(None),
+        },
         "memory_provenance": flag_state(MEMORY_PROVENANCE_ENV),
         "snapshot": str(snapshot_path),
     }
@@ -1546,6 +1551,7 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
     rows: list[Mapping[str, Any]] = []
     for dialog in transcripts:
         for turn in dialog.get("turns") or []:
+            model_intent = turn.get("bot_model_intent") if isinstance(turn.get("bot_model_intent"), Mapping) else {}
             rows.append(
                 {
                     "dialog_id": dialog.get("dialog_id") or "",
@@ -1569,6 +1575,12 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                     else "",
                     "bot_answer_contract_p0_required": (turn.get("bot_answer_contract") or {}).get("p0_required")
                     if isinstance(turn.get("bot_answer_contract"), Mapping)
+                    else "",
+                    "bot_model_intent_primary_intent": model_intent.get("primary_intent") or "",
+                    "bot_model_intent_scope": model_intent.get("scope") or "",
+                    "bot_model_intent_sense": model_intent.get("sense") or "",
+                    "bot_model_intent_confidence": model_intent.get("confidence")
+                    if model_intent.get("confidence") is not None
                     else "",
                     "bot_safety_flags": "|".join(str(flag) for flag in (turn.get("bot_safety_flags") or [])),
                     "bot_fallback_reason": turn.get("bot_fallback_reason") or "",
@@ -1743,6 +1755,8 @@ def run_one_dialog(
         bot_text = strip_internal_service_markers(str(result.draft_text or "")).strip()
         dialogue_contract_metadata = _dialogue_contract_metadata_from_result(result)
         direct_path_metadata = _direct_path_metadata_from_result(result)
+        model_intent_metadata = _direct_path_model_intent_from_result(result)
+        intent_model_led_metadata = _intent_model_led_metadata_from_result(result)
         authoritative_gate_metadata = _authoritative_output_gate_metadata_from_result(result)
         semantic_output_verifier_metadata = _semantic_output_verifier_metadata_from_result(result)
         bot_fallback_reason = str(dialogue_contract_metadata.get("fallback_reason") or "")
@@ -1827,6 +1841,8 @@ def run_one_dialog(
             "bot_missing_facts": list(result.missing_facts),
             "bot_dialogue_contract_pipeline": dialogue_contract_metadata,
             "bot_direct_path": direct_path_metadata,
+            "bot_model_intent": model_intent_metadata,
+            "bot_intent_model_led": intent_model_led_metadata,
             "bot_fact_retrieval_trace": _fact_retrieval_trace_for_turn(
                 context=context,
                 direct_path_metadata=direct_path_metadata,
@@ -4405,6 +4421,22 @@ def _direct_path_metadata_from_result(result: Any) -> Mapping[str, Any]:
     return dict(direct) if isinstance(direct, Mapping) else {}
 
 
+def _direct_path_model_intent_from_result(result: Any) -> Mapping[str, Any]:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    intent = metadata.get("direct_path_model_intent")
+    return dict(intent) if isinstance(intent, Mapping) else {}
+
+
+def _intent_model_led_metadata_from_result(result: Any) -> Mapping[str, Any]:
+    metadata = getattr(result, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    trace = metadata.get("intent_model_led")
+    return dict(trace) if isinstance(trace, Mapping) else {}
+
+
 _BOT_SELF_ROUTES = {"bot_answer_self", "bot_answer_self_for_pilot"}
 _VISIBLE_ADVICE_REASON_CODES = {"estimate_individual_child_advice", "estimate_general_advice_risk"}
 _OUTPUT_SAFETY_PROVIDER_ERRORS = {
@@ -5147,6 +5179,10 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "bot_topic_id",
         "bot_conversation_intent",
         "bot_conversation_topic_switch",
+        "bot_model_intent_primary_intent",
+        "bot_model_intent_scope",
+        "bot_model_intent_sense",
+        "bot_model_intent_confidence",
         "bot_safety_flags",
         "bot_answer_quality_findings",
         "bot_answer_quality_rewritten",

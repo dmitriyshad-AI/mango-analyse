@@ -85,6 +85,7 @@ PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
+INTENT_MODEL_LED_CONFIDENCE_THRESHOLD = 0.72
 
 INTENT_MODEL_LED_TARGETS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix"})
 INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"other"})
@@ -2769,6 +2770,12 @@ def apply_autonomy_matrix_guard(
             "autonomy_default_cautious_unverified_fact",
             "Автономный ответ запрещен: нет факта с флагами client-safe и актуальности.",
         )
+    if "conversation_intent_plan_live_availability" in flags:
+        return demote(
+            "draft_for_manager",
+            "autonomy_default_cautious_live_status_missing",
+            "Автономный ответ запрещен: наличие места/группы/смены требует live-проверки менеджером.",
+        )
 
     flags.append("autonomy_matrix_passed")
     metadata["autonomy_matrix_passed"] = True
@@ -2845,7 +2852,7 @@ def _result_has_live_status_missing_fact(
     if not _asks_live_status_or_booking_question(client_text):
         return False
     model_live = _intent_model_led_decision(result, context=context, target="live_availability")
-    if model_live is False:
+    if model_live is False and not _asks_explicit_live_availability_question(client_text):
         return False
     missing_text = " ".join(str(item or "") for item in result.missing_facts).casefold()
     return has_any_marker(
@@ -2878,6 +2885,23 @@ def _asks_live_status_or_booking_question(text: str) -> bool:
             "проверить места",
         )
     )
+
+
+def _asks_explicit_live_availability_question(text: str) -> bool:
+    normalized = str(text or "").casefold().replace("ё", "е")
+    if not normalized or has_any_marker(normalized, ("не про мест", "не о мест", "не места")):
+        return False
+    patterns = (
+        r"\bесть\s+ли\s+(?:свободн\w+\s+)?места?\b",
+        r"\b(?:свободн\w+\s+)?места?\s+(?:есть|остал[оаи]сь|остались|будут|имеются)\b",
+        r"\bостал[оаи]сь\s+(?:свободн\w+\s+)?места?\b",
+        r"\bналичи[ея]\s+(?:свободн\w+\s+)?мест\b",
+        r"\bсвободн\w+\s+места?\b",
+        r"\bпровер(?:ить|ка|ки)\s+(?:свободн\w+\s+)?мест\b",
+        r"\bзаброни(?:ровать|руем|ровать\s+)?\s+мест[оа]\b",
+        r"\bоформить\s+мест[оа]\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
 
 
 def _direct_path_model_intent_signal(result: SubscriptionDraftResult) -> Mapping[str, Any]:
@@ -2913,6 +2937,8 @@ def _intent_model_led_decision(
     if primary == target:
         return True
     if target in INTENT_MODEL_LED_TARGETS and primary in INTENT_MODEL_LED_ALLOWED:
+        if _float_value(_direct_path_model_intent_signal(result).get("confidence")) < INTENT_MODEL_LED_CONFIDENCE_THRESHOLD:
+            return None
         return False
     return None
 
@@ -2938,6 +2964,7 @@ def _conversation_intent_plan_with_model_led(
     result: SubscriptionDraftResult,
     *,
     context: Optional[Mapping[str, Any]],
+    client_message: str = "",
 ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     if not _intent_model_led_enabled(context):
         return plan, {}
@@ -2951,6 +2978,23 @@ def _conversation_intent_plan_with_model_led(
     original_intent = str(plan.get("primary_intent") or "").strip()
     if model_intent not in INTENT_MODEL_LED_TARGETS and original_intent not in INTENT_MODEL_LED_TARGETS:
         return plan, {}
+    confidence = _float_value(signal.get("confidence"))
+    trace_base = {
+        "enabled": True,
+        "original_primary_intent": original_intent,
+        "model_primary_intent": model_intent,
+        "keyword_prefilter": list(prefilter),
+        "scope": str(signal.get("scope") or ""),
+        "sense": str(signal.get("sense") or ""),
+        "confidence": confidence,
+        "reason": str(signal.get("reason") or ""),
+    }
+    if original_intent == "live_availability" and model_intent != "live_availability":
+        direct_question = str(plan.get("direct_question") or "")
+        if _asks_explicit_live_availability_question(" ".join((str(client_message or ""), direct_question))):
+            return plan, {**trace_base, "applied": False, "skip_reason": "explicit_live_availability_floor"}
+    if model_intent != original_intent and confidence < INTENT_MODEL_LED_CONFIDENCE_THRESHOLD:
+        return plan, {**trace_base, "applied": False, "skip_reason": "low_confidence"}
     applied_intent = model_intent if model_intent in INTENT_MODEL_LED_TARGETS else "general_consultation"
     updated = dict(plan)
     updated["model_led_enabled"] = True
@@ -2969,20 +3013,13 @@ def _conversation_intent_plan_with_model_led(
         "primary_intent": model_intent,
         "scope": str(signal.get("scope") or ""),
         "sense": str(signal.get("sense") or ""),
-        "confidence": signal.get("confidence", 0.0),
+        "confidence": confidence,
         "reason": str(signal.get("reason") or ""),
     }
     trace = {
-        "enabled": True,
+        **trace_base,
         "applied": True,
-        "original_primary_intent": original_intent,
         "applied_primary_intent": applied_intent,
-        "model_primary_intent": model_intent,
-        "keyword_prefilter": list(prefilter),
-        "scope": str(signal.get("scope") or ""),
-        "sense": str(signal.get("sense") or ""),
-        "confidence": signal.get("confidence", 0.0),
-        "reason": str(signal.get("reason") or ""),
     }
     return updated, trace
 
@@ -3085,7 +3122,12 @@ def apply_conversation_intent_plan_guard(
     plan = _conversation_intent_plan(context)
     if not plan:
         return result
-    plan, model_led_trace = _conversation_intent_plan_with_model_led(plan, result, context=context)
+    plan, model_led_trace = _conversation_intent_plan_with_model_led(
+        plan,
+        result,
+        context=context,
+        client_message=client_message,
+    )
 
     primary_intent = str(plan.get("primary_intent") or "").strip()
     plan_topic = str(plan.get("topic_id") or "").strip()

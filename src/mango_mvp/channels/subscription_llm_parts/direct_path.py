@@ -32,6 +32,7 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
 from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
     build_answer_coverage_plan,
     reliable_answerer_prompt_block,
+    reliable_answerer_step1_active_for_turn,
     reliable_answerer_step1_enabled,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
@@ -2248,7 +2249,11 @@ def _build_direct_path_prompt(
     brand_label = _direct_path_brand_label(active_brand)
     pack = fact_pack if isinstance(fact_pack, Mapping) else _direct_path_context_fact_pack(context, client_message=client_message)
     fact_items = dict(facts or pack.get("facts") or {})
-    answer_coverage_plan = build_answer_coverage_plan(client_message, fact_pack=pack, context=context)
+    answer_coverage_plan = (
+        build_answer_coverage_plan(client_message, fact_pack=pack, context=context)
+        if reliable_answerer_step1_active_for_turn(client_message, context=context)
+        else {}
+    )
     fact_metadata = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
     exact_keys = [str(key) for key in (pack.get("exact_keys") or fact_items.keys()) if str(key).strip()]
     adjacent_keys = [str(key) for key in (pack.get("adjacent_keys") or ()) if str(key).strip()]
@@ -2418,7 +2423,7 @@ def _direct_path_metadata(
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),
     }
-    if reliable_answerer_step1_enabled(context):
+    if reliable_answerer_step1_active_for_turn(client_message, context=context):
         metadata["answer_coverage_plan"] = dict(
             build_answer_coverage_plan(
                 client_message,

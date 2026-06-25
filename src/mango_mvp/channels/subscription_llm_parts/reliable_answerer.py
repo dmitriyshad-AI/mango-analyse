@@ -77,6 +77,20 @@ _MISSING_ACK_RE = re.compile(
     re.I,
 )
 
+_P0_REFUND_RE = re.compile(r"\b(?:верн(?:уть|ите|ули|ул[аи]?)|возврат\w*|деньги\s+назад|отказ\w*\s+от\s+обучени)\b", re.I)
+_P0_COMPLAINT_RE = re.compile(r"\b(?:жалоб\w*|претензи\w*|недовол\w*|безобрази\w*|обман\w*)\b", re.I)
+_P0_LEGAL_RE = re.compile(r"\b(?:юрист\w*|суд\w*|досудебн\w*|роспотреб|прокуратур\w*|иск\w*)\b", re.I)
+_P0_PAYMENT_RE = re.compile(r"\b(?:оплат\w*|плат[её]ж\w*|чек\w*|квитанц\w*|списан\w*|деньг\w*)\b", re.I)
+_P0_ACCESS_PROBLEM_RE = re.compile(
+    r"\b(?:доступ\w*|ссылк\w*|кабинет\w*|платформ\w*)\b.*\b(?:не\s+(?:работа\w*|приш[её]л\w*|выслал\w*|активир\w*)|"
+    r"заблокир\w*|закрыт\w*|нет\s+доступ\w*|не\s+могу\s+зайти)\b|"
+    r"\b(?:заблокир\w*|закрыт\w*|нет\s+доступ\w*|не\s+могу\s+зайти)\b.*\b(?:доступ\w*|ссылк\w*|кабинет\w*|платформ\w*)\b",
+    re.I,
+)
+_P0_FLAG_RE = re.compile(r"\b(?:p0|payment_dispute|refund|complaint|legal|high_risk|manager_only_p0|funnel_p0)\b", re.I)
+_FOTON_RE = re.compile(r"\b(?:foton|фотон\w*)\b", re.I)
+_UNPK_RE = re.compile(r"\b(?:unpk|унпк|мфти)\b", re.I)
+
 
 def reliable_answerer_step1_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
     explicit = _explicit_truthy_setting(
@@ -85,6 +99,37 @@ def reliable_answerer_step1_enabled(context: Optional[Mapping[str, Any]] = None)
         aliases=("reliable_answerer_step1", "reliable_answerer_step1_enabled"),
     )
     return bool(explicit) if explicit is not None else False
+
+
+def reliable_answerer_step1_bypass_reason(
+    client_message: str = "",
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    result: Optional[SubscriptionDraftResult] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> str:
+    """Return why Step1 must stay inert for this turn."""
+
+    if _has_p0_signal(client_message, context=context, result=result, metadata=metadata):
+        return "p0"
+    if _has_cross_brand_signal(client_message, context=context, result=result, metadata=metadata):
+        return "cross_brand"
+    return ""
+
+
+def reliable_answerer_step1_active_for_turn(
+    client_message: str = "",
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    result: Optional[SubscriptionDraftResult] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    return reliable_answerer_step1_enabled(context) and not reliable_answerer_step1_bypass_reason(
+        client_message,
+        context=context,
+        result=result,
+        metadata=metadata,
+    )
 
 
 def client_facets_from_text(text: Any) -> tuple[str, ...]:
@@ -103,7 +148,7 @@ def build_answer_coverage_plan(
     fact_pack: Optional[Mapping[str, Any]] = None,
     context: Optional[Mapping[str, Any]] = None,
 ) -> Mapping[str, Any]:
-    enabled = reliable_answerer_step1_enabled(context)
+    enabled = reliable_answerer_step1_active_for_turn(client_message, context=context)
     facts = fact_pack.get("facts") if isinstance(fact_pack, Mapping) and isinstance(fact_pack.get("facts"), Mapping) else {}
     fact_meta = (
         fact_pack.get("fact_metadata")
@@ -113,6 +158,19 @@ def build_answer_coverage_plan(
     exact_keys = tuple(str(key) for key in (fact_pack.get("exact_keys") or facts.keys()) if str(key).strip()) if isinstance(fact_pack, Mapping) else tuple(str(key) for key in facts)
     adjacent_keys = tuple(str(key) for key in (fact_pack.get("adjacent_keys") or ()) if str(key).strip()) if isinstance(fact_pack, Mapping) else ()
     client_facets = client_facets_from_text(client_message)
+    if not enabled:
+        return {
+            "schema_version": ANSWER_COVERAGE_PLAN_SCHEMA_VERSION,
+            "enabled": False,
+            "env": RELIABLE_ANSWERER_STEP1_ENV,
+            "bypass_reason": reliable_answerer_step1_bypass_reason(client_message, context=context),
+            "client_facets": list(client_facets),
+            "covered_facets": [],
+            "missing_facets": [],
+            "blocked_facets": [],
+            "requested_scope": _requested_scope_from_pack(fact_pack),
+            "must_not_handoff_whole_answer": False,
+        }
     requested_scope = _requested_scope_from_pack(fact_pack)
     covered: list[dict[str, Any]] = []
     missing: list[dict[str, str]] = []
@@ -157,6 +215,8 @@ def build_answer_coverage_plan(
 
 def reliable_answerer_prompt_block(context: Optional[Mapping[str, Any]], plan: Mapping[str, Any]) -> str:
     if not reliable_answerer_step1_enabled(context):
+        return ""
+    if not plan.get("enabled"):
         return ""
     covered = ", ".join(str(item.get("facet") or "") for item in plan.get("covered_facets") or [] if isinstance(item, Mapping))
     missing = ", ".join(str(item.get("facet") or "") for item in plan.get("missing_facets") or [] if isinstance(item, Mapping))
@@ -242,9 +302,16 @@ def apply_reliable_answerer_output_guard(
     client_message: str = "",
     context: Optional[Mapping[str, Any]] = None,
 ) -> SubscriptionDraftResult:
-    del client_message
     if not reliable_answerer_step1_enabled(context):
         return result
+    bypass_reason = reliable_answerer_step1_bypass_reason(
+        client_message,
+        context=context,
+        result=result,
+        metadata=result.metadata,
+    )
+    if bypass_reason:
+        return _strip_reliable_answerer_metadata(result, bypass_reason)
     plan = _coverage_plan_from_metadata(result.metadata)
     trace = reliable_answerer_trace(result.draft_text, plan)
     metadata = _metadata_with_reliable_trace(result.metadata, trace)
@@ -321,6 +388,20 @@ def _metadata_with_reliable_trace(metadata: Mapping[str, Any], trace: Mapping[st
     return result
 
 
+def _strip_reliable_answerer_metadata(result: SubscriptionDraftResult, reason: str) -> SubscriptionDraftResult:
+    metadata = dict(result.metadata)
+    metadata.pop("answer_coverage_plan", None)
+    metadata.pop("reliable_answerer", None)
+    metadata["reliable_answerer_bypassed_reason"] = reason
+    if isinstance(metadata.get("direct_path"), Mapping):
+        direct = dict(metadata["direct_path"])  # type: ignore[index]
+        direct.pop("answer_coverage_plan", None)
+        direct.pop("reliable_answerer", None)
+        direct["reliable_answerer_bypassed_reason"] = reason
+        metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
+
+
 def _requested_scope_from_pack(fact_pack: Optional[Mapping[str, Any]]) -> str:
     if not isinstance(fact_pack, Mapping):
         return "unspecified"
@@ -354,3 +435,76 @@ def _append_live_status_caveat(draft_text: str) -> str:
     if not base:
         return caveat
     return f"{base}\n\n{caveat}"
+
+
+def _has_p0_signal(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]],
+    result: Optional[SubscriptionDraftResult],
+    metadata: Optional[Mapping[str, Any]],
+) -> bool:
+    text = _normalize_fact_match_text(client_message)
+    if _P0_REFUND_RE.search(text) or _P0_COMPLAINT_RE.search(text) or _P0_LEGAL_RE.search(text):
+        return True
+    if _P0_PAYMENT_RE.search(text) and _P0_ACCESS_PROBLEM_RE.search(text):
+        return True
+    if result is not None:
+        if str(result.risk_level or "").strip().casefold() in {"high", "p0", "critical", "high_risk"}:
+            return True
+        if any(_P0_FLAG_RE.search(str(flag or "")) for flag in result.safety_flags):
+            return True
+    meta = metadata if isinstance(metadata, Mapping) else result.metadata if result is not None and isinstance(result.metadata, Mapping) else {}
+    if _metadata_has_model_p0(meta):
+        return True
+    if isinstance(context, Mapping):
+        for source in (context, context.get("dialogue_memory_view") if isinstance(context.get("dialogue_memory_view"), Mapping) else {}):
+            if not isinstance(source, Mapping):
+                continue
+            funnel = source.get("funnel_state") if isinstance(source.get("funnel_state"), Mapping) else {}
+            if any(_P0_FLAG_RE.search(str(funnel.get(key) or "")) for key in ("lead_stage", "next_step_type", "risk_level")):
+                return True
+            latch = source.get("p0_latch") if isinstance(source.get("p0_latch"), Mapping) else {}
+            if latch and (latch.get("active") or latch.get("had_hard_p0_claim")):
+                return True
+            risk_flags = source.get("risk_flags")
+            if isinstance(risk_flags, Sequence) and not isinstance(risk_flags, (str, bytes, bytearray)):
+                if any(_P0_FLAG_RE.search(str(flag or "")) for flag in risk_flags):
+                    return True
+    return False
+
+
+def _metadata_has_model_p0(metadata: Mapping[str, Any]) -> bool:
+    meta = metadata.get("direct_path_model_p0") if isinstance(metadata.get("direct_path_model_p0"), Mapping) else {}
+    if not meta and isinstance(metadata.get("direct_path"), Mapping):
+        direct = metadata["direct_path"]  # type: ignore[index]
+        meta = direct.get("model_p0") if isinstance(direct.get("model_p0"), Mapping) else {}
+    if not isinstance(meta, Mapping):
+        return False
+    risk_level = str(meta.get("risk_level") or "").strip().casefold()
+    return bool(meta.get("is_p0")) or risk_level in {"high", "p0", "critical", "high_risk"} or bool(meta.get("p0_kind"))
+
+
+def _has_cross_brand_signal(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]],
+    result: Optional[SubscriptionDraftResult],
+    metadata: Optional[Mapping[str, Any]],
+) -> bool:
+    text = _normalize_fact_match_text(client_message)
+    has_foton = bool(_FOTON_RE.search(text))
+    has_unpk = bool(_UNPK_RE.search(text))
+    if has_foton and has_unpk:
+        return True
+    active_brand = ""
+    if isinstance(context, Mapping):
+        active_brand = str(context.get("active_brand") or context.get("brand") or "").strip().casefold()
+    if active_brand == "foton" and has_unpk:
+        return True
+    if active_brand == "unpk" and has_foton:
+        return True
+    meta = metadata if isinstance(metadata, Mapping) else result.metadata if result is not None and isinstance(result.metadata, Mapping) else {}
+    gate = meta.get("authoritative_output_gate") if isinstance(meta.get("authoritative_output_gate"), Mapping) else {}
+    findings = gate.get("findings") if isinstance(gate.get("findings"), Sequence) and not isinstance(gate.get("findings"), (str, bytes, bytearray)) else ()
+    return any("brand" in str(item.get("code") if isinstance(item, Mapping) else item).casefold() for item in findings)

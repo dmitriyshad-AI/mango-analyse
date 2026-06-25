@@ -860,44 +860,67 @@ class MangoCallSummaryNormalizer:
         phone = safe_phone(first_value(payload, ("phone", "client_phone", "normalized_phone", "Телефон клиента")))
         event_at = parse_source_datetime(first_value(payload, ("call_at", "started_at", "event_at", "date")), record.observed_at)
         source_ref = f"mango:{call_id}"
-        customer = CustomerIdentity(
-            tenant_id=self.tenant_id,
-            identity_status=IdentityStatus.STRONG if phone else IdentityStatus.PARTIAL,
-            display_name=optional_text(first_value(payload, ("client_name", "name"))),
-            primary_phone=phone,
-            source_ref=source_ref,
-            first_seen_at=event_at,
-            last_seen_at=event_at,
-            touch_count=1,
-            summary={"source_system": self.source_system},
-            metadata={"call_id": call_id, "payload_hash": record.payload_hash},
-            created_at=event_at,
-            updated_at=event_at,
-        )
-        links = identity_links_for_customer(
-            customer,
-            source_system=self.source_system,
-            source_ref=source_ref,
-            phone=phone,
-        )
-        if phone:
-            links.append(
-                IdentityLink(
-                    tenant_id=self.tenant_id,
-                    customer_id=customer.customer_id,
-                    link_type="mango_client_phone",
-                    link_value=phone,
-                    source_system=self.source_system,
-                    source_ref=source_ref,
-                    match_class=IdentityMatchClass.STRONG_UNIQUE,
-                    confidence=0.95,
-                    first_seen_at=event_at,
-                    last_seen_at=event_at,
-                )
+        strict_existing_identity = truthy_flag(
+            first_value(payload, ("identity_resolved_by_increment", "existing_timeline_identity"))
+        ) or normalize_key(first_value(payload, ("identity_authority", "identity_resolution_authority")) or "legacy", "identity_authority") in {
+            "existing_timeline",
+            "existing_timeline_increment",
+        }
+        match_class = identity_match_class_from_payload(payload)
+        resolved_customer_id = optional_text(first_value(payload, ("customer_id", "resolved_customer_id")))
+        customer_id: Optional[str]
+        customers: tuple[CustomerIdentity, ...]
+        links: tuple[IdentityLink, ...]
+        if strict_existing_identity:
+            customer_id = resolved_customer_id if match_class == IdentityMatchClass.STRONG_UNIQUE else None
+            customers = ()
+            links = ()
+        else:
+            customer = CustomerIdentity(
+                tenant_id=self.tenant_id,
+                identity_status=IdentityStatus.STRONG if phone else IdentityStatus.PARTIAL,
+                display_name=optional_text(first_value(payload, ("client_name", "name"))),
+                primary_phone=phone,
+                source_ref=source_ref,
+                first_seen_at=event_at,
+                last_seen_at=event_at,
+                touch_count=1,
+                summary={"source_system": self.source_system},
+                metadata={"call_id": call_id, "payload_hash": record.payload_hash},
+                created_at=event_at,
+                updated_at=event_at,
             )
+            customer_id = customer.customer_id
+            legacy_links = identity_links_for_customer(
+                customer,
+                source_system=self.source_system,
+                source_ref=source_ref,
+                phone=phone,
+            )
+            if phone:
+                legacy_links.append(
+                    IdentityLink(
+                        tenant_id=self.tenant_id,
+                        customer_id=customer.customer_id,
+                        link_type="mango_client_phone",
+                        link_value=phone,
+                        source_system=self.source_system,
+                        source_ref=source_ref,
+                        match_class=IdentityMatchClass.STRONG_UNIQUE,
+                        confidence=0.95,
+                        first_seen_at=event_at,
+                        last_seen_at=event_at,
+                    )
+                )
+            customers = (customer,)
+            links = tuple(legacy_links)
+            match_class = IdentityMatchClass.STRONG_UNIQUE if phone else IdentityMatchClass.INFERRED
+        call_type = normalize_key(first_value(payload, ("call_type", "call_quality_type")) or "unknown", "call_type")
+        is_non_conversation = call_type == "non_conversation"
+        summary = None if is_non_conversation else compact_text(first_value(payload, ("summary", "insight_summary", "analysis_summary")), limit=500)
         event = TimelineEvent(
             tenant_id=self.tenant_id,
-            customer_id=customer.customer_id,
+            customer_id=customer_id,
             event_type=TimelineEventType.MANGO_CALL,
             event_at=event_at,
             source_system=self.source_system,
@@ -908,21 +931,25 @@ class MangoCallSummaryNormalizer:
             actor_ref=optional_text(first_value(payload, ("manager_id", "employee_id"))),
             subject=compact_text(first_value(payload, ("subject", "product", "topic")), limit=160),
             text_preview=compact_text(first_value(payload, ("text_preview", "transcript_excerpt")), limit=240),
-            summary=compact_text(first_value(payload, ("summary", "insight_summary", "analysis_summary")), limit=500),
+            summary=summary,
             importance=int_or_default(first_value(payload, ("importance", "priority_score")), 0),
-            match_status=IdentityMatchClass.STRONG_UNIQUE if phone else IdentityMatchClass.INFERRED,
-            confidence=float_or_default(first_value(payload, ("confidence",)), 0.75 if phone else 0.5),
+            match_status=match_class,
+            confidence=float_or_default(first_value(payload, ("confidence",)), 0.75 if customer_id else 0.55),
             record={"call": scrub_timeline_persisted_json(dict(payload))},
+            metadata={
+                "call_type": call_type,
+                "identity_authority": optional_text(first_value(payload, ("identity_authority", "identity_resolution_authority"))),
+            },
             created_at=event_at,
         )
         artifacts = mango_artifacts(self.tenant_id, event, payload, event_at)
-        signals = mango_signals(self.tenant_id, event, payload, event_at)
+        signals = () if strict_existing_identity and (not customer_id or is_non_conversation) else mango_signals(self.tenant_id, event, payload, event_at)
         chunks: tuple[BotContextChunk, ...] = ()
-        if event.summary:
+        if event.summary and event.customer_id and not is_non_conversation:
             chunks = (
                 BotContextChunk(
                     tenant_id=self.tenant_id,
-                    customer_id=customer.customer_id,
+                    customer_id=event.customer_id,
                     event_id=event.event_id,
                     source_ref=source_ref,
                     source_system=self.source_system,
@@ -939,13 +966,26 @@ class MangoCallSummaryNormalizer:
             )
         return TimelineNormalizedBatch(
             source_record=record,
-            customers=(customer,),
-            identity_links=tuple(links),
+            customers=customers,
+            identity_links=links,
             events=(event,),
             artifacts=artifacts,
             signals=signals,
             bot_context_chunks=chunks,
-            conflicts=conflict_from_payload(self.tenant_id, payload, source_ref),
+            conflicts=(
+                (
+                    mango_pending_attribution_conflict(
+                        self.tenant_id,
+                        payload,
+                        source_ref,
+                        phone=phone,
+                        match_class=match_class,
+                    ),
+                )
+                if strict_existing_identity and not customer_id
+                else ()
+            )
+            + conflict_from_payload(self.tenant_id, payload, source_ref),
         )
 
 
@@ -1724,6 +1764,35 @@ def identity_status_from_match(
     if match_class == IdentityMatchClass.UNMATCHED:
         return IdentityStatus.UNMATCHED
     return IdentityStatus.STRONG if phone or email else IdentityStatus.PARTIAL
+
+
+def mango_pending_attribution_conflict(
+    tenant_id: str,
+    payload: Mapping[str, Any],
+    source_ref: str,
+    *,
+    phone: Optional[str],
+    match_class: IdentityMatchClass,
+) -> Mapping[str, Any]:
+    reason = optional_text(first_value(payload, ("identity_resolution_reason", "relink_reason"))) or match_class.value
+    refs = [source_ref, f"match_class:{match_class.value}", f"reason:{reason}"]
+    if phone:
+        refs.append(f"phone_hash:{stable_digest({'phone': phone})[:16]}")
+    return {
+        "tenant_id": tenant_id,
+        "conflict_type": "pending_attribution",
+        "entity_refs": tuple(refs),
+        "severity": "medium" if match_class == IdentityMatchClass.AMBIGUOUS else "low",
+        "status": "open",
+        "summary": "Mango call has no single authoritative existing customer attribution.",
+        "metadata": {
+            "source_system": "mango_processed_summary",
+            "identity_authority": "existing_timeline_increment",
+            "match_class": match_class.value,
+            "reason": reason,
+            "phone_hash": stable_digest({"phone": phone})[:16] if phone else None,
+        },
+    }
 
 
 def mail_artifacts(

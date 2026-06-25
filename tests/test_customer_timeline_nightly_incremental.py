@@ -67,6 +67,23 @@ def event_count(tmp_path: Path) -> int:
         return int(con.execute("SELECT COUNT(*) FROM timeline_events").fetchone()[0])
 
 
+def event_counts_by_match_status(tmp_path: Path) -> dict[str, int]:
+    import sqlite3
+
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        return {
+            str(status): int(count)
+            for status, count in con.execute("SELECT match_status, COUNT(*) FROM timeline_events GROUP BY match_status")
+        }
+
+
+def conflict_count(tmp_path: Path) -> int:
+    import sqlite3
+
+    with sqlite3.connect(tmp_path / "customer_timeline.sqlite") as con:
+        return int(con.execute("SELECT COUNT(*) FROM timeline_conflicts WHERE conflict_type='pending_attribution'").fetchone()[0])
+
+
 def test_nightly_incremental_uses_overlap_and_repeat_adds_no_duplicates(tmp_path: Path) -> None:
     seed_customer(tmp_path)
     source_path = tmp_path / "amo_updates.jsonl"
@@ -133,6 +150,105 @@ def test_nightly_incremental_uses_updated_at_not_only_created_at(tmp_path: Path)
     assert event_count(tmp_path) == 1
 
 
+def test_nightly_incremental_uses_mango_normalizer_for_load_and_import(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mango_calls.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "call_id": "provider:call-1",
+                "customer_id": "customer:test-1",
+                "match_class": "strong_unique",
+                "identity_authority": "existing_timeline_increment",
+                "identity_resolved_by_increment": True,
+                "phone": "+79161234567",
+                "call_at": "2026-06-21T10:05:00+00:00",
+                "updated_at": "2026-06-21T10:05:00+00:00",
+                "summary": "Клиент уточнил расписание.",
+                "allowed_for_bot": False,
+                "requires_manager_review": True,
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mango_calls",
+                source_system="mango_processed_summary",
+                path=source_path,
+                source_ref="test:mango_calls",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=60,
+        lock_timeout_seconds=2,
+    )
+
+    first = run_nightly_incremental(config)
+    second = run_nightly_incremental(config)
+
+    with CustomerTimelineSQLiteStore.open_read_only(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path) as store:
+        events = store.list_events_by_customer("foton", "customer:test-1", limit=10)["items"]
+        chunks = store.search_timeline("foton", "расписание", scopes=("bot_context",), mode="fallback", limit=10)["items"]
+        summary = store.summary()
+    assert first["changed_customer_ids"] == ["customer:test-1"]
+    assert second["changed_customer_ids"] == []
+    assert summary["counts"]["customer_identities"] == 1
+    assert events[0]["event_type"] == "mango_call"
+    assert events[0]["source_system"] == "mango_processed_summary"
+    chunk_record = chunks[0]["record"]
+    assert chunk_record["allowed_for_bot"] is False
+    assert chunk_record["requires_manager_review"] is True
+
+
+def test_nightly_incremental_mango_ambiguous_imports_event_and_conflict_without_customer(tmp_path: Path) -> None:
+    seed_customer(tmp_path)
+    source_path = tmp_path / "mango_calls.jsonl"
+    write_jsonl(
+        source_path,
+        [
+            {
+                "call_id": "provider:call-ambiguous",
+                "match_class": "ambiguous",
+                "identity_authority": "existing_timeline_increment",
+                "identity_resolved_by_increment": True,
+                "identity_resolution_reason": "multiple_existing_customers",
+                "phone": "+79161234567",
+                "call_at": "2026-06-21T10:05:00+00:00",
+                "updated_at": "2026-06-21T10:05:00+00:00",
+                "summary": "Клиент уточнил расписание.",
+                "allowed_for_bot": False,
+                "requires_manager_review": True,
+            }
+        ],
+    )
+    config = NightlyIncrementalConfig(
+        timeline_db=tmp_path / "customer_timeline.sqlite",
+        allowed_root=tmp_path,
+        sources=(
+            IncrementalSourceConfig(
+                name="mango_calls",
+                source_system="mango_processed_summary",
+                path=source_path,
+                source_ref="test:mango_calls",
+            ),
+        ),
+        journal_path=tmp_path / "nightly" / "journal.jsonl",
+        safety_margin_seconds=60,
+        lock_timeout_seconds=2,
+    )
+
+    report = run_nightly_incremental(config)
+
+    assert report["source_errors"] == []
+    assert report["changed_customer_ids"] == []
+    assert event_counts_by_match_status(tmp_path) == {"ambiguous": 1}
+    assert conflict_count(tmp_path) == 1
+
+
 def test_nightly_incremental_unavailable_source_skips_and_alerts_after_two_failures(tmp_path: Path) -> None:
     seed_customer(tmp_path)
     missing = tmp_path / "missing.jsonl"
@@ -180,4 +296,3 @@ def test_single_run_lock_waits_for_existing_holder(tmp_path: Path) -> None:
 
     assert time.monotonic() - started >= 0.1
     assert result["waited"] > 0
-

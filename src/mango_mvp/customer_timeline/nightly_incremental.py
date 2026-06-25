@@ -21,6 +21,7 @@ from mango_mvp.customer_timeline.contracts import (
 )
 from mango_mvp.customer_timeline.ids import normalize_key, require_text, stable_digest
 from mango_mvp.customer_timeline.ingestion import (
+    MangoCallSummaryNormalizer,
     TimelineImportService,
     TimelineNormalizedBatch,
     TimelineNormalizer,
@@ -188,6 +189,13 @@ class JsonlTimelineNormalizer(TimelineNormalizer):
         return TimelineNormalizedBatch(source_record=record, events=(event,), bot_context_chunks=tuple(chunks))
 
 
+def normalizer_for_incremental_source(source_system: str, *, tenant_id: str) -> TimelineNormalizer:
+    normalized = normalize_key(source_system, "source_system")
+    if normalized == "mango_processed_summary":
+        return MangoCallSummaryNormalizer(tenant_id=tenant_id)
+    return JsonlTimelineNormalizer(normalized)
+
+
 def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, Any]:
     started = datetime.now(timezone.utc)
     phase_started = time.monotonic()
@@ -228,7 +236,7 @@ def run_nightly_incremental(config: NightlyIncrementalConfig) -> Mapping[str, An
                     continue
                 imported = TimelineImportService(store).import_records(
                     loaded.records,
-                    normalizer=JsonlTimelineNormalizer(source.source_system),
+                    normalizer=normalizer_for_incremental_source(source.source_system, tenant_id=source.tenant_id),
                     tenant_id=source.tenant_id,
                     source_ref=source.effective_source_ref,
                     idempotency_key=stable_digest(
@@ -303,7 +311,7 @@ def load_incremental_jsonl_source(
     affected: set[str] = set()
     would_change: set[str] = set()
     records: list[TimelineSourceRecord] = []
-    normalizer = JsonlTimelineNormalizer(source.source_system)
+    normalizer = normalizer_for_incremental_source(source.source_system, tenant_id=source.tenant_id)
     for row in rows:
         ts = parse_datetime(normalized_timestamp(row), "source_timestamp")
         max_ts = ts if max_ts is None else max(max_ts, ts)

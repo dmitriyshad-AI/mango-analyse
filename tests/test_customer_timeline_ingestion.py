@@ -195,6 +195,112 @@ def test_phone_identity_union_uses_existing_store_customer_across_import_runs(tm
     store.close()
 
 
+def test_mango_increment_strict_identity_uses_existing_customer_without_creating_new_one(tmp_path: Path) -> None:
+    existing = CustomerIdentity(
+        tenant_id="foton",
+        customer_id="customer:existing",
+        identity_status=IdentityStatus.STRONG,
+        primary_phone="+79163334455",
+        source_ref="seed",
+        first_seen_at=NOW,
+        last_seen_at=NOW,
+        touch_count=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    store = CustomerTimelineSQLiteStore(tmp_path / "customer_timeline.sqlite", allowed_root=tmp_path, clock=FixedClock())
+    store.upsert_customer(existing)
+    service = TimelineImportService(store)
+    record = TimelineSourceRecord(
+        source_system="mango_processed_summary",
+        source_ref="call#increment-1",
+        payload={
+            "call_id": "provider:increment-1",
+            "phone": "+79163334455",
+            "call_at": "2026-05-04T12:00:00+00:00",
+            "summary": "Клиент уточнил стоимость.",
+            "identity_authority": "existing_timeline_increment",
+            "identity_resolved_by_increment": True,
+            "match_class": "strong_unique",
+            "customer_id": "customer:existing",
+            "allowed_for_bot": False,
+            "requires_manager_review": True,
+        },
+    )
+
+    report = service.import_records(
+        (record,),
+        normalizer=MangoCallSummaryNormalizer(tenant_id="foton"),
+        tenant_id="foton",
+        source_ref="mango-increment",
+        idempotency_key="mango-increment-1",
+        actor="test",
+    )
+
+    events = store.list_events_by_customer("foton", "customer:existing", limit=10)["items"]
+    chunks = store.search_timeline("foton", "стоимость", scopes=("bot_context",), mode="fallback", limit=10)["items"]
+    assert report.normalized_counts["customers"] == 0
+    assert store.summary()["counts"]["customer_identities"] == 1
+    assert events[0]["source_system"] == "mango_processed_summary"
+    assert events[0]["match_status"] == "strong_unique"
+    chunk_record = chunks[0]["record"]
+    assert chunk_record["allowed_for_bot"] is False
+    assert chunk_record["requires_manager_review"] is True
+    store.close()
+
+
+def test_mango_increment_ambiguous_does_not_attach_or_create_customer() -> None:
+    batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mango_processed_summary",
+            source_ref="call#ambiguous",
+            payload={
+                "call_id": "provider:ambiguous",
+                "phone": "+79163334455",
+                "call_at": "2026-05-04T12:00:00+00:00",
+                "summary": "Клиент уточнил стоимость.",
+                "identity_authority": "existing_timeline_increment",
+                "identity_resolved_by_increment": True,
+                "match_class": "ambiguous",
+                "identity_resolution_reason": "multiple_existing_customers",
+                "allowed_for_bot": False,
+            },
+        )
+    )
+
+    assert batch.customers == ()
+    assert batch.identity_links == ()
+    assert batch.events[0].customer_id is None
+    assert batch.events[0].match_status.value == "ambiguous"
+    assert batch.bot_context_chunks == ()
+    assert batch.conflicts[0]["conflict_type"] == "pending_attribution"
+
+
+def test_mango_increment_non_conversation_has_no_summary_chunk_or_signal() -> None:
+    batch = MangoCallSummaryNormalizer(tenant_id="foton").normalize(
+        TimelineSourceRecord(
+            source_system="mango_processed_summary",
+            source_ref="call#non-conversation",
+            payload={
+                "call_id": "provider:non-conversation",
+                "phone": "+79163334455",
+                "call_at": "2026-05-04T12:00:00+00:00",
+                "summary": "Автоответчик.",
+                "call_type": "non_conversation",
+                "identity_authority": "existing_timeline_increment",
+                "identity_resolved_by_increment": True,
+                "match_class": "strong_unique",
+                "customer_id": "customer:existing",
+                "next_step": "Перезвонить",
+            },
+        )
+    )
+
+    assert batch.events[0].summary is None
+    assert batch.bot_context_chunks == ()
+    assert batch.signals == ()
+
+
 def test_dry_run_preview_is_deterministic_and_does_not_mutate_store(tmp_path: Path) -> None:
     source = tmp_path / "amocrm_entities.json"
     source.write_text(

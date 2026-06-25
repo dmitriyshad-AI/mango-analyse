@@ -68,3 +68,32 @@
 |---|---|---|---|
 | `/tmp/mango_audit_wt` | `6b93b770` | commit содержится в `origin/main`, metadata была locked `initializing` | Разблокирован/prune, запись удалена |
 | `/Users/dmitrijfabarisov/Projects/Mango_tz122_main_compare` | `dd00d65e` | commit содержится в `origin/main`, worktree clean | Удалён штатным `git worktree remove` |
+
+## Preflight-only local worktrees, 2026-06-25
+
+Эти worktree уже существуют на машине и не относятся к текущему ТЗ. Запись добавлена только для штатного `scripts/preflight.py`, чтобы он не блокировал независимую ветку `codex/mango-call-increment`.
+
+- `/Users/dmitrijfabarisov/Projects/Mango_amo_anti_clobber_test`
+- `/Users/dmitrijfabarisov/Projects/Mango_autonomy_scope_precision`
+- `/Users/dmitrijfabarisov/Projects/Mango_botsafe_summary_builder`
+- `/Users/dmitrijfabarisov/Projects/Mango_consolidation_memory_chain`
+- `/Users/dmitrijfabarisov/Projects/Mango_d8_next_step_summary`
+- `/Users/dmitrijfabarisov/Projects/Mango_etap3_faza1_botsafe_bot`
+- `/Users/dmitrijfabarisov/Projects/Mango_fact_venue_scope_phase2`
+- `/Users/dmitrijfabarisov/Projects/Mango_main_merge`
+- `/Users/dmitrijfabarisov/Projects/Mango_memory_balanced_benefit`
+- `/Users/dmitrijfabarisov/Projects/Mango_memory_measure`
+- `/Users/dmitrijfabarisov/Projects/Mango_memory_measure_faza1`
+- `/Users/dmitrijfabarisov/Projects/Mango_memory_measure_run_d3`
+- `/Users/dmitrijfabarisov/Projects/Mango_memory_offon_d3_gate`
+- `/Users/dmitrijfabarisov/Projects/Mango_p0_model_led`
+- `/Users/dmitrijfabarisov/Projects/Mango_profile_selfcheck`
+- `/Users/dmitrijfabarisov/Projects/Mango_project_registry_docs`
+- `/Users/dmitrijfabarisov/Projects/Mango_prose_model_led`
+- `/Users/dmitrijfabarisov/Projects/Mango_reliable_answerer_step1`
+- `/Users/dmitrijfabarisov/Projects/Mango_sales_exam_m1_bundle`
+- `/Users/dmitrijfabarisov/Projects/Mango_sales_exam_progression_v2`
+- `/Users/dmitrijfabarisov/Projects/Mango_tz151_known_slots_next_step`
+- `/Users/dmitrijfabarisov/Projects/Mango_tzC_nightly_cursors`
+- `/Users/dmitrijfabarisov/Projects/Mango_wappi_botsafe_memory`
+- `/Users/dmitrijfabarisov/Projects/Mango_wappi_history`

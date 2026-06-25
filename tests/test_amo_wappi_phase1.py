@@ -230,7 +230,11 @@ def test_ai_office_note_client_posts_only_server_endpoint() -> None:
     assert response == {"status": "ok", "note_id": 9001}
     assert calls[0]["method"] == "POST"
     assert calls[0]["url"] == "https://api.fotonai.online/api/integrations/amocrm/leads/49832125/notes"
+    assert "/tasks" not in calls[0]["url"]
+    assert "/custom_fields" not in calls[0]["url"]
+    assert "/messages" not in calls[0]["url"]
     assert calls[0]["headers"] == {"X-API-Key": "secret-key", "User-Agent": "mango-draft-loop/1.0"}
+    assert set(calls[0]["json_body"]) == {"text"}
     assert calls[0]["json_body"]["text"].startswith("Черновик")
     assert DRAFT_NOTE_MARKER in calls[0]["json_body"]["text"]
     assert "Черновик" in calls[0]["json_body"]["text"]

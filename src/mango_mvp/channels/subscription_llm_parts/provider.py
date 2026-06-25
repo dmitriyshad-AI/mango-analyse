@@ -142,6 +142,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
     _direct_default_manager_enabled,
+    _intent_model_led_enabled,
     _p0_model_led_complaint_backstop,
     _p0_model_led_enabled,
     _presale_prompt_child_name_value,
@@ -1159,6 +1160,12 @@ class SubscriptionLlmDraftProvider:
                 client_message=client_message,
                 context=context,
             )
+            if _intent_model_led_enabled(context) and _direct_path_model_intent_meta(result):
+                result = apply_conversation_intent_plan_guard(
+                    result,
+                    client_message=client_message,
+                    context=context,
+                )
             result = apply_assumed_scope_guard(result, context=context)
 
         semantic_checked = apply_semantic_output_verifier(
@@ -2066,6 +2073,48 @@ def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = 
 _DIRECT_PATH_MODEL_P0_KINDS = frozenset({"payment_dispute", "refund", "complaint", "legal_threat"})
 
 
+_DIRECT_PATH_MODEL_INTENTS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix", "other"})
+
+
+def _direct_path_model_intent_value(value: Any) -> str:
+    intent = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    if intent in {"availability", "live_status", "seats", "seat_availability", "booking"}:
+        intent = "live_availability"
+    if intent in {"location", "venue", "place"}:
+        intent = "address"
+    if intent in {"price_lock", "current_terms", "fix_price"}:
+        intent = "price_fix"
+    if intent in {"general", "none", "unknown", "not_target"}:
+        intent = "other"
+    return intent if intent in _DIRECT_PATH_MODEL_INTENTS else ""
+
+
+def _direct_path_model_intent_meta_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    raw = payload.get("model_intent")
+    if not isinstance(raw, Mapping):
+        raw = payload.get("intent_model")
+    if not isinstance(raw, Mapping):
+        raw = payload.get("direct_path_model_intent")
+    if not isinstance(raw, Mapping):
+        raw = {}
+    primary_intent = _direct_path_model_intent_value(
+        raw.get("primary_intent")
+        or raw.get("intent")
+        or payload.get("model_primary_intent")
+        or payload.get("primary_intent")
+    )
+    if not primary_intent:
+        return {}
+    return {
+        "schema_version": "direct_path_model_intent_v1_2026_06_25",
+        "primary_intent": primary_intent,
+        "scope": " ".join(str(raw.get("scope") or payload.get("model_intent_scope") or "").split())[:120],
+        "sense": " ".join(str(raw.get("sense") or payload.get("model_intent_sense") or "").split())[:120],
+        "confidence": _clamp_float(raw.get("confidence", payload.get("model_intent_confidence", 0.0))),
+        "reason": " ".join(str(raw.get("reason") or payload.get("model_intent_reason") or "").split())[:240],
+    }
+
+
 def _direct_path_payload_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -2111,6 +2160,12 @@ def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> 
 def _direct_path_model_p0_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     meta = metadata.get("direct_path_model_p0")
+    return meta if isinstance(meta, Mapping) else {}
+
+
+def _direct_path_model_intent_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    meta = metadata.get("direct_path_model_intent")
     return meta if isinstance(meta, Mapping) else {}
 
 
@@ -2216,6 +2271,9 @@ def _normalize_direct_path_payload(
             "p0_kind": _direct_path_model_p0_kind(payload.get("p0_kind") or payload.get("p0_code") or payload.get("risk_code")),
             "model_reason": " ".join(str(payload.get("model_reason") or payload.get("p0_reason") or "").split())[:240],
         }
+    model_intent_meta = _direct_path_model_intent_meta_from_payload(payload)
+    if model_intent_meta:
+        metadata["direct_path_model_intent"] = model_intent_meta
     proposal = payload.get("action_proposal")
     if isinstance(proposal, Mapping):
         metadata["action_proposal"] = dict(proposal)

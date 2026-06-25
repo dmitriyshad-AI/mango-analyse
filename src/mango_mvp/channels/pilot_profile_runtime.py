@@ -15,10 +15,12 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import (
 from mango_mvp.channels.subscription_llm_parts.support import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
+    INTENT_MODEL_LED_ENV,
     PII_RELATION_STOPWORDS_ENV,
     PRESALE_PII_MEMORY_ENV,
     PRESALE_SAFETY_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
+    _explicit_truthy_setting,
     _pilot_gold_profile_enabled,
     _pilot_profile_default_on_flag_enabled,
 )
@@ -150,6 +152,7 @@ def _guard_status() -> dict[str, bool]:
         "presale_pii_memory": _presale_safety_enabled(None, subflag=PRESALE_PII_MEMORY_ENV),
         "pii_relation_stopwords": _pilot_profile_default_on_flag_enabled(None, PII_RELATION_STOPWORDS_ENV),
         "verifier_handoff_claims": _verifier_handoff_claims_enabled(None),
+        "intent_model_led": _explicit_truthy_setting(None, INTENT_MODEL_LED_ENV) is True,
     }
 
 

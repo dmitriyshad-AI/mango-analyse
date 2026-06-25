@@ -1391,6 +1391,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
         "retriever_need_shadow": default_off_flag_state(RETRIEVER_NEED_SHADOW_ENV),
         "retriever_model_driven": default_off_flag_state(RETRIEVER_MODEL_DRIVEN_ENV),
+        "intent_model_led": default_off_flag_state("TELEGRAM_INTENT_MODEL_LED"),
         "memory_provenance": flag_state(MEMORY_PROVENANCE_ENV),
         "snapshot": str(snapshot_path),
     }

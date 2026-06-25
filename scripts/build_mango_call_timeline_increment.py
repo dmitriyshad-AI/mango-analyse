@@ -81,14 +81,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     rows: list[SourceRow] = []
     for db in args.canonical_db:
         rows.extend(read_ready_call_rows(Path(db), table="canonical_calls", source_kind="canonical_calls"))
+    duplicate_base_ids: set[str] = set()
     package_dbs = [Path(item) for item in args.package_db]
     for root in args.package_root:
         package_dbs.extend(discover_package_call_dbs(Path(root)))
     for db in package_dbs:
         rows.extend(read_ready_call_rows(db, table="call_records", source_kind="call_records"))
+        duplicate_base_ids.update(
+            read_duplicate_source_ids(db, table="call_records", source_kind="call_records", since=since, until=until)
+        )
 
     all_filtered = filter_rows(rows, since=since, until=until)
-    duplicate_base_ids = duplicate_source_ids(all_filtered)
+    duplicate_base_ids.update(duplicate_source_ids(all_filtered))
     filtered = list(all_filtered)
     filtered.sort(key=lambda item: parse_source_datetime(item.started_at) or datetime.min.replace(tzinfo=timezone.utc))
     if args.limit is not None:
@@ -232,6 +236,51 @@ def read_ready_call_rows(path: Path, *, table: str, source_kind: str) -> list[So
                 )
             )
         return result
+
+
+def read_duplicate_source_ids(
+    path: Path,
+    *,
+    table: str,
+    source_kind: str,
+    since: datetime | None,
+    until: datetime | None,
+) -> set[str]:
+    if source_kind == "canonical_calls" or not path.exists():
+        return set()
+    with sqlite3.connect(ro_uri(path), uri=True) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        if not table_exists(con, table):
+            return set()
+        rows: list[SourceRow] = []
+        for raw in con.execute(f"SELECT * FROM {table}"):
+            row = dict(raw)
+            started_at = first_text(row, "started_at", "call_at", "event_at")
+            if not started_at:
+                continue
+            row_id = first_text(row, "canonical_call_id", "id", "source_call_id", "source_filename")
+            if not row_id:
+                continue
+            rows.append(
+                SourceRow(
+                    source_kind=source_kind,
+                    source_db=str(path),
+                    row_id=row_id,
+                    source_call_id=first_text(row, "source_call_id"),
+                    source_filename=first_text(row, "source_filename"),
+                    source_file=first_text(row, "source_file"),
+                    started_at=started_at,
+                    phone=first_text(row, "phone", "client_phone", "normalized_phone", "Телефон клиента"),
+                    manager_name=first_text(row, "manager_name", "Менеджер"),
+                    direction=first_text(row, "direction", "Направление звонка"),
+                    duration_sec=float_or_none(row.get("duration_sec") or row.get("Длительность, сек")),
+                    analysis_json=str(row.get("analysis_json") or ""),
+                    amocrm_contact_id=first_text(row, "amocrm_contact_id"),
+                    amocrm_lead_id=first_text(row, "amocrm_lead_id"),
+                )
+            )
+    return duplicate_source_ids(filter_rows(rows, since=since, until=until))
 
 
 def build_event_payload(

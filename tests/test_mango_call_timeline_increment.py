@@ -375,3 +375,49 @@ def test_package_duplicate_source_call_id_is_stable_even_when_limit_selects_one_
 
     assert len(events) == 1
     assert events[0]["call_id"].startswith("provider:same-provider-id:")
+
+
+def test_package_duplicate_source_call_id_is_stable_when_sibling_is_not_done(tmp_path: Path) -> None:
+    timeline_db = tmp_path / "customer_timeline.sqlite"
+    seed_customer_with_phone(timeline_db, tmp_path, customer_id="customer:one", phone="+79161112233")
+    package_db = tmp_path / "calls.sqlite"
+    create_call_records_db(
+        package_db,
+        [
+            {
+                "id": 1,
+                "source_call_id": "same-provider-id",
+                "source_filename": "done.wav",
+                "source_file": "/ignored/done.wav",
+                "started_at": "2026-06-25T09:00:00+00:00",
+                "phone": "+7 916 111-22-33",
+                "manager_name": None,
+                "direction": None,
+                "duration_sec": None,
+                "analysis_status": "done",
+                "analysis_json": analysis(),
+                "amocrm_contact_id": None,
+                "amocrm_lead_id": None,
+            },
+            {
+                "id": 2,
+                "source_call_id": "same-provider-id",
+                "source_filename": "pending.wav",
+                "source_file": "/ignored/pending.wav",
+                "started_at": "2026-06-25T09:05:00+00:00",
+                "phone": "+7 916 111-22-33",
+                "manager_name": None,
+                "direction": None,
+                "duration_sec": None,
+                "analysis_status": "pending",
+                "analysis_json": "",
+                "amocrm_contact_id": None,
+                "amocrm_lead_id": None,
+            },
+        ],
+    )
+
+    events, report = run_producer(tmp_path, timeline_db=timeline_db, package_db=package_db)
+
+    assert report["events_written"] == 1
+    assert events[0]["call_id"].startswith("provider:same-provider-id:")

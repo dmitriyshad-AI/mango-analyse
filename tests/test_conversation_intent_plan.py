@@ -18,6 +18,21 @@ def test_intent_plan_treats_place_booking_as_live_availability_not_price_fix() -
     assert "seat_or_booking_words_do_not_mean_price_fix" in plan.decision_notes
 
 
+def test_intent_plan_does_not_treat_arrival_place_as_live_availability() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Я ее привезу сразу на место, мы живем неподалёку",
+        active_brand="foton",
+        dialogue_memory_view={
+            "open_question": {"kind": "camp", "text": "Ждём смену."},
+            "topic_focus": {"product_family": "camp", "product": "city_day_camp"},
+        },
+    )
+
+    assert plan.primary_intent != "live_availability"
+    assert "availability.current" not in plan.required_fact_keys
+    assert "availability" not in plan.requested_slots
+
+
 def test_intent_plan_continues_online_price_context_from_memory() -> None:
     plan = build_conversation_intent_plan(
         current_message="А это цена на сейчас?",

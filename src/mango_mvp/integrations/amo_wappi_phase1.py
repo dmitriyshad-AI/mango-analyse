@@ -557,25 +557,30 @@ def build_draft_note_text(
         route_line = f"Маршрут: {route_value}"
     else:
         route_line = ""
-    parts = [
+    meta_parts = [
         DRAFT_NOTE_MARKER,
         f"Бренд: {brand_value}",
         f"Время: {timestamp} (Europe/Moscow)",
     ]
     if str(profile_id or "").strip():
-        parts.append(f"Wappi profile_id: {str(profile_id).strip()}")
+        meta_parts.append(f"Wappi profile_id: {str(profile_id).strip()}")
     if route_line:
-        parts.append(route_line)
+        meta_parts.append(route_line)
     if flags:
-        parts.append("Флаги безопасности: " + ", ".join(flags))
+        meta_parts.append("Флаги безопасности: " + ", ".join(flags))
     if str(outgoing_visibility_note or "").strip():
-        parts.append(str(outgoing_visibility_note).strip())
-    parts.extend(["", str(draft_text or "").strip()])
-    text = "\n".join(parts).strip()
+        meta_parts.append(str(outgoing_visibility_note).strip())
+    draft_value = str(draft_text or "").strip()
+    meta_text = "\n".join(meta_parts).strip()
+    text = "\n\n".join(part for part in (draft_value, meta_text) if part).strip()
     if len(text) <= MAX_DRAFT_NOTE_TEXT_CHARS:
         return text
     marker = "\n\n[Черновик усечён до 6000 символов]"
-    return text[: MAX_DRAFT_NOTE_TEXT_CHARS - len(marker)].rstrip() + marker
+    suffix = f"\n\n{meta_text}" if meta_text else ""
+    draft_limit = MAX_DRAFT_NOTE_TEXT_CHARS - len(marker) - len(suffix)
+    if draft_limit <= 0:
+        return text[: MAX_DRAFT_NOTE_TEXT_CHARS - len(marker)].rstrip() + marker
+    return draft_value[:draft_limit].rstrip() + marker + suffix
 
 
 @dataclass(frozen=True)

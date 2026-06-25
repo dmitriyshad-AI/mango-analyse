@@ -8,6 +8,7 @@ from pathlib import Path
 
 import scripts.run_amo_wappi_draft_loop as runner
 from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, ENFORCE_CANONICAL_PROFILE_ENV
+from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_recent_messages
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
 from mango_mvp.integrations.draft_loop import DraftLoopConfig, DraftLoopKey, DraftLoopPair, DraftLoopProfile
 from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline
@@ -67,6 +68,36 @@ def test_context_builder_marks_draft_loop_as_not_sending_clients(tmp_path: Path)
 
     max_context = build_context(DraftLoopKey("profile-foton-max", "chat-1"), (), "Цена?", "foton", channel="max")
     assert max_context["client_identity"]["channel"] == "wappi_max"
+
+
+def test_context_builder_keeps_wappi_summary_and_15_raw_messages(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"schema_version": "kc_knowledge_snapshot_v1", "run_id": "test", "facts": [], "chunks": []}), encoding="utf-8")
+    build_context = runner.build_context_builder(snapshot)
+    older_summary = "Ранее в диалоге: Клиент: сын в 7 классе, интересует физика онлайн"
+    raw_messages = tuple(f"Клиент: последняя строка {idx}" for idx in range(20))
+
+    context = build_context(DraftLoopKey("profile-foton", "chat-1"), (older_summary, *raw_messages), "Продолжим?", "foton")
+
+    recent = tuple(context["recent_messages"])
+    assert recent[0] == older_summary
+    assert recent[1:] == raw_messages[-15:]
+    assert context["public_pilot_mode"]["sends_client_replies"] is False
+
+
+def test_direct_path_wappi_recent_messages_keeps_summary_and_15_raw_messages() -> None:
+    older_summary = "Ранее в диалоге: Клиент: сын в 7 классе, интересует физика онлайн"
+    raw_messages = tuple(f"Клиент: последняя строка {idx}" for idx in range(20))
+    context = {
+        "client_identity": {"channel": "wappi_telegram"},
+        "recent_messages": (older_summary, *raw_messages),
+    }
+
+    recent = _direct_path_recent_messages(context, limit=8)
+
+    assert recent[0] == older_summary
+    assert recent[1:] == raw_messages[-15:]
+    assert _direct_path_recent_messages({"client_identity": {"channel": "telegram"}, "recent_messages": raw_messages}, limit=8) == raw_messages[-8:]
 
 
 def test_context_builder_injects_only_bot_safe_crm_context_when_enabled(tmp_path: Path, monkeypatch) -> None:

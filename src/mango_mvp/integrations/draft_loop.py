@@ -27,10 +27,21 @@ from mango_mvp.integrations.amo_wappi_phase1 import (
 DEFAULT_DRAFT_LOOP_DIR = Path.home() / ".mango_local" / "draft_loop"
 DEFAULT_STOP_PATH = Path.home() / ".mango_secrets" / "STOP_DRAFT_LOOP"
 DEFAULT_DEBOUNCE_SECONDS = 60
-DEFAULT_HISTORY_LIMIT = 10
+DEFAULT_HISTORY_LIMIT = 15
+DEFAULT_WAPPI_MESSAGE_FETCH_LIMIT = 50
+MIN_RAW_HISTORY_LIMIT = 12
+OLDER_DIALOGUE_SUMMARY_PREFIX = "Ранее в диалоге:"
 CONFIG_FINGERPRINT_SCHEMA_VERSION = "draft_loop_config_fingerprint_v1_2026_06_10"
 DEFAULT_AUTH_ERROR_LIMIT = 3
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+_SERVICE_HISTORY_MARKER_RE = re.compile(
+    r"\b(?:message_id|chat_id|profile_id|lead_id|source_system|dedupe_key|event_id)\b|[{}\[\]]",
+    re.IGNORECASE,
+)
+_OTHER_BRAND_RE = {
+    "foton": re.compile(r"\b(?:унпк|унфт|мфти|unpk|mipt)\b", re.IGNORECASE),
+    "unpk": re.compile(r"\b(?:фотон|foton|cdpo|цдпо)\b", re.IGNORECASE),
+}
 
 
 class DraftLoopError(RuntimeError):
@@ -649,7 +660,7 @@ class AmoWappiDraftLoop:
             channel=profile.channel,
             profile_id=profile.profile_id,
             chat_id=chat_id,
-            limit=max(20, self.config.history_limit * 2),
+            limit=DEFAULT_WAPPI_MESSAGE_FETCH_LIMIT,
             order="desc",
             mark_all=False,
         )
@@ -659,7 +670,7 @@ class AmoWappiDraftLoop:
             if not isinstance(raw, Mapping):
                 continue
             item = wappi_message_from_raw(profile.profile_id, raw)
-            if item is not None:
+            if item is not None and item.message_type == "text" and item.text.strip():
                 messages.append(item)
         messages.sort(key=lambda item: (item.timestamp, item.message_id))
         return messages
@@ -867,7 +878,7 @@ class AmoWappiDraftLoop:
                 }
             )
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
-        history = _history_lines(messages[-self.config.history_limit :])
+        history = _prompt_history_lines(messages, recent_limit=self.config.history_limit, brand=brand)
         client_message = inbound_new[-1].text
         previous_memory = self.state.dialogue_memory_for(key)
         context = self._build_context(
@@ -1080,7 +1091,7 @@ class AmoWappiDraftLoop:
                 previous_memory = self.state.dialogue_memory_for(pair.key)
                 context = self._build_context(
                     pair.key,
-                    _history_lines(history_before[-self.config.history_limit :]),
+                    _prompt_history_lines(history_before, recent_limit=self.config.history_limit, brand=brand),
                     item.text,
                     brand,
                     channel=profile.channel,
@@ -1162,14 +1173,69 @@ def _auto_pair_note(*, profile: DraftLoopProfile, candidate: Mapping[str, Any]) 
     )
 
 
-def _history_lines(messages: Sequence[WappiHistoryMessage]) -> tuple[str, ...]:
-    lines: list[str] = []
+def _raw_history_limit(value: int | None = None) -> int:
+    try:
+        candidate = int(value or DEFAULT_HISTORY_LIMIT)
+    except (TypeError, ValueError):
+        candidate = DEFAULT_HISTORY_LIMIT
+    return max(MIN_RAW_HISTORY_LIMIT, min(DEFAULT_HISTORY_LIMIT, candidate))
+
+
+def _clean_prompt_history_text(text: str, *, max_chars: int = 240) -> str:
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value or _SERVICE_HISTORY_MARKER_RE.search(value):
+        return ""
+    if len(value) <= max_chars:
+        return value
+    return value[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _history_line(item: WappiHistoryMessage) -> str:
+    if item.message_type != "text" or not item.text.strip():
+        return ""
+    text = _clean_prompt_history_text(item.text)
+    if not text:
+        return ""
+    prefix = "Ответ" if item.from_me else "Клиент"
+    return f"{prefix}: {text}"
+
+
+def _mentions_other_brand(text: str, brand: str) -> bool:
+    matcher = _OTHER_BRAND_RE.get(str(brand or "").strip().casefold())
+    return bool(matcher and matcher.search(text))
+
+
+def _older_dialogue_summary(messages: Sequence[WappiHistoryMessage], *, brand: str = "") -> str:
+    parts: list[str] = []
     for item in messages:
-        if item.message_type != "text" or not item.text.strip():
+        line = _history_line(item)
+        if not line or _mentions_other_brand(line, brand):
             continue
-        prefix = "Ответ" if item.from_me else "Клиент"
-        lines.append(f"{prefix}: {item.text.strip()}")
-    return tuple(lines[-DEFAULT_HISTORY_LIMIT:])
+        parts.append(line)
+        if len(parts) >= 6:
+            break
+    if not parts:
+        return ""
+    summary = f"{OLDER_DIALOGUE_SUMMARY_PREFIX} " + "; ".join(parts)
+    return summary[:700].rstrip()
+
+
+def _history_lines(messages: Sequence[WappiHistoryMessage], *, limit: int | None = None) -> tuple[str, ...]:
+    lines = [line for item in messages if (line := _history_line(item))]
+    return tuple(lines[-_raw_history_limit(limit):])
+
+
+def _prompt_history_lines(messages: Sequence[WappiHistoryMessage], *, recent_limit: int | None = None, brand: str = "") -> tuple[str, ...]:
+    text_messages = [item for item in messages if item.message_type == "text" and item.text.strip()]
+    raw_limit = _raw_history_limit(recent_limit)
+    recent = text_messages[-raw_limit:]
+    older = text_messages[:-raw_limit]
+    lines: list[str] = []
+    summary = _older_dialogue_summary(older, brand=brand)
+    if summary:
+        lines.append(summary)
+    lines.extend(_history_lines(recent, limit=raw_limit))
+    return tuple(lines)
 
 
 _EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]", re.UNICODE)

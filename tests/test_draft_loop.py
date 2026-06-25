@@ -33,12 +33,14 @@ class FakeWappi:
         self.dialogs = dialogs
         self.messages_by_chat = messages_by_chat
         self.list_calls = 0
+        self.message_calls = []
 
     def list_telegram_chats(self, *, profile_id: str, limit: int = 50):
         self.list_calls += 1
         return {"dialogs": self.dialogs.get(profile_id, [])}
 
     def get_telegram_chat_messages(self, *, profile_id: str, chat_id: str, **kwargs):
+        self.message_calls.append({"channel": "telegram", "profile_id": profile_id, "chat_id": chat_id, **kwargs})
         return {"messages": self.messages_by_chat.get((profile_id, chat_id), [])}
 
     def list_chats(self, *, channel: str, profile_id: str, limit: int = 50, offset: int = 0):
@@ -46,6 +48,7 @@ class FakeWappi:
         return {"dialogs": self.dialogs.get(profile_id, [])[offset : offset + limit]}
 
     def get_chat_messages(self, *, channel: str, profile_id: str, chat_id: str, **kwargs):
+        self.message_calls.append({"channel": channel, "profile_id": profile_id, "chat_id": chat_id, **kwargs})
         return {"messages": self.messages_by_chat.get((profile_id, chat_id), [])}
 
 
@@ -141,6 +144,46 @@ def test_draft_loop_uses_composite_key_and_writes_single_note(tmp_path: Path) ->
     assert amo.notes[0]["route"] == "bot_answer_self"
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert {item["message_id"] for item in state["processed"]} == {"m1", "m2"}
+
+
+def test_draft_loop_wappi_prompt_summarizes_older_context_and_keeps_recent_order(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    older = [
+        _message("m00", text="Сын в 7 классе, интересует физика онлайн", ts=1000),
+        _message("m01", text="message_id=abc chat_id=chat-1 profile_id=p lead_id=1 source_system={wappi}", ts=1001),
+        _message("m02", text="УНПК МФТИ тоже спрашивали, но это другой бренд", ts=1002),
+    ]
+    middle = [_message(f"m{idx:02d}", text=f"старый уточняющий текст {idx}", ts=1000 + idx) for idx in range(3, 35)]
+    recent = [_message(f"m{idx:02d}", text=f"последний сырой текст {idx}", ts=1000 + idx) for idx in range(35, 50)]
+    wappi = FakeWappi({"profile-foton": [{"id": "chat-1", "type": "user"}]}, {("profile-foton", "chat-1"): [*older, *middle, *recent]})
+    bot = FakeBot()
+    cfg = _config(tmp_path, pairs={key: pair})
+    loop = AmoWappiDraftLoop(
+        config=cfg,
+        wappi_client=wappi,
+        amo_client=FakeAmo(),
+        bot_provider=bot,
+        context_builder=lambda key, history, client_message, brand: {
+            "history": list(history),
+            "client_message": client_message,
+            "brand": brand,
+        },
+        now_fn=lambda: datetime.fromtimestamp(1200, tz=timezone.utc),
+    )
+
+    summary = loop.run_once(dry_run=True)
+
+    assert summary["bot_calls"] == 1
+    assert wappi.message_calls[0]["limit"] == 50
+    history = bot.calls[0]["context"]["history"]
+    assert history[0].startswith("Ранее в диалоге:")
+    assert "7 классе" in history[0]
+    assert "физика онлайн" in history[0]
+    forbidden = ("message_id", "chat_id", "profile_id", "lead_id", "source_system", "{", "}", "УНПК", "МФТИ")
+    assert not any(marker in "\n".join(history) for marker in forbidden)
+    assert history[1:] == [f"Клиент: последний сырой текст {idx}" for idx in range(35, 50)]
+    assert bot.calls[0]["client_message"] == "последний сырой текст 49"
 
 
 def test_draft_loop_skips_messages_at_or_before_not_before_ts_and_zero_timestamp(tmp_path: Path) -> None:

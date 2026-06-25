@@ -6,12 +6,12 @@ def test_codex_exec_command_overrides_service_tier_default(monkeypatch, tmp_path
 
     cmd = build_codex_exec_command(output_path=tmp_path / "out.json")
 
-    assert 'service_tier="fast"' in cmd
+    assert 'service_tier="flex"' in cmd
 
 
 def test_codex_exec_command_allows_service_tier_env_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("MANGO_CODEX_SERVICE_TIER", "flex")
+    monkeypatch.setenv("MANGO_CODEX_SERVICE_TIER", "fast")
 
     cmd = build_codex_exec_command(output_path=tmp_path / "out.json")
 
-    assert 'service_tier="flex"' in cmd
+    assert 'service_tier="fast"' in cmd

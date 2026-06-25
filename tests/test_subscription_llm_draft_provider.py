@@ -12305,6 +12305,214 @@ def test_direct_path_model_p0_prompt_is_flagged_off_by_default() -> None:
     assert "дорого/подумаю" in on_prompt
 
 
+def test_intent_model_led_default_off_and_not_in_pilot_profile() -> None:
+    assert subscription_llm._intent_model_led_enabled({}) is False
+    assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "1"}) is True
+    assert subscription_llm._intent_model_led_enabled({subscription_llm.INTENT_MODEL_LED_ENV: "0"}) is False
+    assert subscription_llm.INTENT_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+
+
+def test_intent_model_led_prompt_block_is_flagged_only() -> None:
+    context = {"active_brand": "foton", DIRECT_PATH_ENV: "1"}
+
+    off_prompt = subscription_llm._build_direct_path_prompt("Привезу ребёнка сразу на место.", context=context)
+    explicit_off_prompt = subscription_llm._build_direct_path_prompt(
+        "Привезу ребёнка сразу на место.",
+        context={**context, subscription_llm.INTENT_MODEL_LED_ENV: "0"},
+    )
+    on_prompt = subscription_llm._build_direct_path_prompt(
+        "Привезу ребёнка сразу на место.",
+        context={**context, subscription_llm.INTENT_MODEL_LED_ENV: "1"},
+    )
+
+    assert "model_intent" not in off_prompt
+    assert "Смысловой intent_model_led" not in off_prompt
+    assert "model_intent" not in explicit_off_prompt
+    assert "Смысловой intent_model_led" in on_prompt
+    assert '"model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|other"' in on_prompt
+    assert "«место» как территория/площадка/место занятий" in on_prompt
+    assert "настоящего вопроса о наличии мест/броней/свободной группе" in on_prompt
+    assert "«когда привезу/подъеду» — other" in on_prompt
+    assert "«закрепить материал/навык» — other" in on_prompt
+
+
+def test_direct_path_payload_parses_model_intent_metadata() -> None:
+    result = _normalize_direct_path_payload(
+        {
+            "route": "bot_answer_self_for_pilot",
+            "draft_text": "Подскажу по адресу.",
+            "model_intent": {
+                "primary_intent": "venue",
+                "scope": "moscow_regular",
+                "sense": "venue",
+                "confidence": 0.82,
+                "reason": "клиент спрашивает про площадку",
+            },
+        }
+    )
+
+    signal = result.metadata["direct_path_model_intent"]
+    assert signal["primary_intent"] == "address"
+    assert signal["scope"] == "moscow_regular"
+    assert signal["sense"] == "venue"
+    assert signal["confidence"] == 0.82
+
+
+def test_intent_model_led_false_live_availability_keeps_direct_answer() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, привозите ребёнка на площадку по адресу из расписания.",
+        topic_id="theme:013_schedule",
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "address",
+                "scope": "venue",
+                "sense": "venue",
+                "confidence": 0.9,
+                "reason": "место означает площадку, не наличие мест",
+            }
+        },
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.INTENT_MODEL_LED_ENV: "1",
+        "conversation_intent_plan": {
+            "schema_version": "test",
+            "primary_intent": "live_availability",
+            "topic_id": "theme:026_camp_general",
+            "answer_policy": "answer_safe_parts_then_manager_live_check",
+            "route_bias": "draft_for_manager",
+            "keyword_signals": ["live_availability"],
+        },
+    }
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Я привезу ребёнка сразу на место, верно?",
+        context=context,
+    )
+
+    assert guarded.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in guarded.safety_flags
+    assert "conversation_intent_plan_live_check_handoff" not in guarded.safety_flags
+    assert guarded.metadata["intent_model_led"]["applied_primary_intent"] == "address"
+    assert guarded.metadata["conversation_intent_primary_intent"] == "address"
+
+
+def test_intent_model_led_true_live_availability_still_hands_off() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Я уточню по группе.",
+        topic_id="theme:026_camp_general",
+        metadata={
+            "direct_path_model_intent": {
+                "primary_intent": "live_availability",
+                "scope": "seats",
+                "sense": "seats",
+                "confidence": 0.93,
+                "reason": "клиент спрашивает о свободных местах",
+            }
+        },
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.INTENT_MODEL_LED_ENV: "1",
+        "conversation_intent_plan": {
+            "schema_version": "test",
+            "primary_intent": "live_availability",
+            "topic_id": "theme:026_camp_general",
+            "answer_policy": "answer_safe_parts_then_manager_live_check",
+            "route_bias": "draft_for_manager",
+            "keyword_signals": ["live_availability"],
+        },
+    }
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Есть ли места в группе?",
+        context=context,
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert "conversation_intent_plan_live_check_handoff" in guarded.safety_flags
+    assert guarded.metadata["intent_model_led"]["applied_primary_intent"] == "live_availability"
+
+
+def test_intent_model_led_is_ignored_when_flag_off() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, привозите ребёнка на площадку по адресу из расписания.",
+        topic_id="theme:013_schedule",
+        metadata={"direct_path_model_intent": {"primary_intent": "address", "confidence": 0.9}},
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        "conversation_intent_plan": {
+            "schema_version": "test",
+            "primary_intent": "live_availability",
+            "topic_id": "theme:026_camp_general",
+            "answer_policy": "answer_safe_parts_then_manager_live_check",
+            "route_bias": "draft_for_manager",
+            "keyword_signals": ["live_availability"],
+        },
+    }
+
+    guarded = apply_conversation_intent_plan_guard(
+        result,
+        client_message="Я привезу ребёнка сразу на место, верно?",
+        context=context,
+    )
+
+    assert guarded.route == "draft_for_manager"
+    assert "conversation_intent_plan_live_availability" in guarded.safety_flags
+    assert "intent_model_led" not in guarded.metadata
+
+
+def test_direct_path_provider_uses_single_model_intent_signal_for_plan_guard() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Да, привозите ребёнка на площадку по адресу из расписания.",
+            topic_id="theme:013_schedule",
+            metadata={
+                "direct_path_model_intent": {
+                    "primary_intent": "address",
+                    "sense": "venue",
+                    "confidence": 0.91,
+                    "reason": "место означает площадку",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Привезу ребёнка сразу на место?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.INTENT_MODEL_LED_ENV: "1",
+            "conversation_intent_plan": {
+                "schema_version": "test",
+                "primary_intent": "live_availability",
+                "topic_id": "theme:026_camp_general",
+                "answer_policy": "answer_safe_parts_then_manager_live_check",
+                "route_bias": "draft_for_manager",
+                "keyword_signals": ["live_availability"],
+            },
+            "confirmed_facts": {"address.foton": "Фотон: занятия проходят на площадке по адресу из расписания."},
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "conversation_intent_plan_live_availability" not in result.safety_flags
+    assert result.metadata["intent_model_led"]["applied_primary_intent"] == "address"
+
+
 def test_p0_model_led_filters_confusion_complaint_without_touching_off() -> None:
     message = "А тестирование нужно? Ребёнок в 6 классе, я просто не понимаю, нас уже в группу или сначала тест?"
 

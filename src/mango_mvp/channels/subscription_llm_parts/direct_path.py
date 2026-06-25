@@ -47,6 +47,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _client_clean_fact_text,
     _deal_action_decision_enabled,
     _direct_path_model_p0_enabled,
+    _intent_model_led_enabled,
     _p0_model_led_enabled,
     _prose_model_led_enabled,
     _direct_path_client_safe_snapshot_fact,
@@ -2271,6 +2272,8 @@ def _build_direct_path_prompt(
     action_proposal_field = ""
     p0_instruction = ""
     p0_fields = ""
+    intent_instruction = ""
+    intent_field = ""
     assumed_scope_instruction = ""
     route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager"'
     if _direct_path_model_p0_enabled(context):
@@ -2298,6 +2301,23 @@ def _build_direct_path_prompt(
             '  "p0_kind": "none|payment_dispute|refund|complaint|legal_threat",\n'
             '  "model_reason": "кратко, почему это P0 или почему нет",\n'
         )
+    if _intent_model_led_enabled(context):
+        intent_instruction = (
+            "Смысловой intent_model_led: отдельные слова клиента — только сигналы. "
+            "Классифицируй реальный смысл текущей реплики в поле model_intent. "
+            "primary_intent выбери из: live_availability, schedule, address, camp, price_fix, other. "
+            "live_availability ставь только для настоящего вопроса о наличии мест/броней/свободной группе; "
+            "«место» как территория/площадка/место занятий, «привезу на место», «в одном месте» — это НЕ live_availability. "
+            "schedule ставь только для вопроса о расписании/времени занятий; «когда привезу/подъеду» — other. "
+            "address ставь только для вопроса о локации/адресе/площадке; бытовое «где-то/негде/живём рядом» — other. "
+            "camp ставь только если вопрос реально про лагерь/ЛВШ/смену как продукт; бытовое «смена настроения/где живём» — other. "
+            "price_fix ставь только если клиент хочет зафиксировать цену/условия; «закрепить материал/навык» — other. "
+            "sense кратко укажи смысл: seats, venue, schedule, address, camp_product, price_terms, learning, logistics, other. "
+            "confidence — число 0..1.\n\n"
+        )
+        intent_field = (
+            '  "model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|other", "scope": "", "sense": "", "confidence": 0.0, "reason": "кратко"},\n'
+        )
     if _deal_action_decision_enabled(context):
         action_proposal_instruction = (
             "Предложи одно следующее действие для менеджера в поле action_proposal из закрытого списка: "
@@ -2323,6 +2343,7 @@ def _build_direct_path_prompt(
         "Дополнение к числам: каждую цену, дату, процент, длительность и количество называй вместе с форматом,\n"
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"{p0_instruction}"
+        f"{intent_instruction}"
         f"{action_proposal_instruction}"
         f"{assumed_scope_instruction}"
         f"Активный бренд: {brand_label} ({active_brand}).\n"
@@ -2347,6 +2368,7 @@ def _build_direct_path_prompt(
         f'  "route": {route_choices},\n'
         '  "draft_text": "текст для клиента",\n'
         f"{p0_fields}"
+        f"{intent_field}"
         f"{action_proposal_field}"
         '  "manager_checklist": [],\n'
         '  "missing_facts": [],\n'

@@ -56,6 +56,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _fact_match_anchors,
     _fresh_fact_texts,
     _has_dialogue_contract_retrieved_facts,
+    _intent_model_led_enabled,
     _keep_answer_hard_anchors,
     _keep_answer_supported,
     _normalize_fact_match_text,
@@ -84,6 +85,24 @@ PH2_ANXIETY_ENV = "TELEGRAM_PH2_ANXIETY"
 STEP4_KEEP_ANSWER_ENV = "TELEGRAM_STEP4_KEEP_ANSWER"
 
 PLANNER_INTENT_CONFIDENCE_THRESHOLD = 0.72
+
+INTENT_MODEL_LED_TARGETS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix"})
+INTENT_MODEL_LED_ALLOWED = INTENT_MODEL_LED_TARGETS | frozenset({"other"})
+INTENT_MODEL_LED_TOPIC_MAP = {
+    "live_availability": "theme:026_camp_general",
+    "schedule": "theme:013_schedule",
+    "address": "theme:015_address",
+    "camp": "theme:026_camp_general",
+    "price_fix": "theme:001_pricing",
+}
+INTENT_MODEL_LED_ANSWER_POLICY = {
+    "live_availability": ("answer_safe_parts_then_manager_live_check", "draft_for_manager"),
+    "schedule": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
+    "address": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
+    "camp": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
+    "price_fix": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
+    "other": ("answer_directly_if_fact_verified", "bot_answer_self_for_pilot"),
+}
 
 PRICE_AMOUNT_RE = re.compile(r"\b\d[\d\s\u00a0]{1,9}\s*(?:₽|руб(?:\.|лей|ля|ль)?)", re.I)
 
@@ -2738,7 +2757,7 @@ def apply_autonomy_matrix_guard(
             "autonomy_default_cautious_topic_not_allowed",
             "Автономный ответ запрещен: тема не входит в матрицу автономности.",
         )
-    if _result_has_live_status_missing_fact(result, client_message=client_message) and not _is_verified_client_safe_template(result.draft_text):
+    if _result_has_live_status_missing_fact(result, client_message=client_message, context=context) and not _is_verified_client_safe_template(result.draft_text):
         return demote(
             "draft_for_manager",
             "autonomy_default_cautious_live_status_missing",
@@ -2823,9 +2842,17 @@ def _is_verified_client_safe_template(draft_text: str) -> bool:
     }
     return normalized in {" ".join(template.split()) for template in verified_templates}
 
-def _result_has_live_status_missing_fact(result: SubscriptionDraftResult, *, client_message: str = "") -> bool:
+def _result_has_live_status_missing_fact(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> bool:
     client_text = str(client_message or "").casefold()
     if not _asks_live_status_or_booking_question(client_text):
+        return False
+    model_live = _intent_model_led_decision(result, context=context, target="live_availability")
+    if model_live is False:
         return False
     missing_text = " ".join(str(item or "") for item in result.missing_facts).casefold()
     return has_any_marker(
@@ -2858,6 +2885,113 @@ def _asks_live_status_or_booking_question(text: str) -> bool:
             "проверить места",
         )
     )
+
+
+def _direct_path_model_intent_signal(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    signal = metadata.get("direct_path_model_intent")
+    return signal if isinstance(signal, Mapping) else {}
+
+
+def _direct_path_model_intent_primary(signal: Mapping[str, Any]) -> str:
+    primary = str(signal.get("primary_intent") or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    if primary in {"availability", "live_status", "seats", "seat_availability", "booking"}:
+        primary = "live_availability"
+    if primary in {"location", "venue", "place"}:
+        primary = "address"
+    if primary in {"price_lock", "current_terms", "fix_price"}:
+        primary = "price_fix"
+    if primary in {"general", "none", "unknown", "not_target"}:
+        primary = "other"
+    return primary if primary in INTENT_MODEL_LED_ALLOWED else ""
+
+
+def _intent_model_led_decision(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+    target: str,
+) -> Optional[bool]:
+    if not _intent_model_led_enabled(context):
+        return None
+    primary = _direct_path_model_intent_primary(_direct_path_model_intent_signal(result))
+    if not primary:
+        return None
+    if primary == target:
+        return True
+    if target in INTENT_MODEL_LED_TARGETS and primary in INTENT_MODEL_LED_ALLOWED:
+        return False
+    return None
+
+
+def _intent_model_led_keyword_prefilter_intents(plan: Mapping[str, Any]) -> tuple[str, ...]:
+    result: list[str] = []
+    primary = str(plan.get("primary_intent") or "").strip()
+    if primary in INTENT_MODEL_LED_TARGETS:
+        result.append(primary)
+    for key in ("keyword_signals", "topic_roles", "answer_topics"):
+        value = plan.get(key)
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+            continue
+        for item in value:
+            text = str(item or "").strip()
+            if text in INTENT_MODEL_LED_TARGETS and text not in result:
+                result.append(text)
+    return tuple(result)
+
+
+def _conversation_intent_plan_with_model_led(
+    plan: Mapping[str, Any],
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    if not _intent_model_led_enabled(context):
+        return plan, {}
+    signal = _direct_path_model_intent_signal(result)
+    model_intent = _direct_path_model_intent_primary(signal)
+    if not model_intent:
+        return plan, {}
+    prefilter = _intent_model_led_keyword_prefilter_intents(plan)
+    if not prefilter:
+        return plan, {}
+    original_intent = str(plan.get("primary_intent") or "").strip()
+    if model_intent not in INTENT_MODEL_LED_TARGETS and original_intent not in INTENT_MODEL_LED_TARGETS:
+        return plan, {}
+    applied_intent = model_intent if model_intent in INTENT_MODEL_LED_TARGETS else "general_consultation"
+    updated = dict(plan)
+    updated["model_led_enabled"] = True
+    updated["model_led_applied"] = True
+    updated["model_led_original_primary_intent"] = original_intent
+    updated["model_led_keyword_prefilter"] = list(prefilter)
+    updated["model_led_primary_intent"] = model_intent
+    updated["primary_intent"] = applied_intent
+    if applied_intent in INTENT_MODEL_LED_TOPIC_MAP:
+        updated["topic_id"] = INTENT_MODEL_LED_TOPIC_MAP[applied_intent]
+    policy, route_bias = INTENT_MODEL_LED_ANSWER_POLICY.get(applied_intent, INTENT_MODEL_LED_ANSWER_POLICY["other"])
+    updated["answer_policy"] = policy
+    updated["route_bias"] = route_bias
+    updated["model_led_signal"] = {
+        "schema_version": str(signal.get("schema_version") or "direct_path_model_intent_v1_2026_06_25"),
+        "primary_intent": model_intent,
+        "scope": str(signal.get("scope") or ""),
+        "sense": str(signal.get("sense") or ""),
+        "confidence": signal.get("confidence", 0.0),
+        "reason": str(signal.get("reason") or ""),
+    }
+    trace = {
+        "enabled": True,
+        "applied": True,
+        "original_primary_intent": original_intent,
+        "applied_primary_intent": applied_intent,
+        "model_primary_intent": model_intent,
+        "keyword_prefilter": list(prefilter),
+        "scope": str(signal.get("scope") or ""),
+        "sense": str(signal.get("sense") or ""),
+        "confidence": signal.get("confidence", 0.0),
+        "reason": str(signal.get("reason") or ""),
+    }
+    return updated, trace
 
 def _live_status_manager_check_text(*, client_message: str = "", context: Optional[Mapping[str, Any]] = None) -> str:
     known = {}
@@ -2958,6 +3092,7 @@ def apply_conversation_intent_plan_guard(
     plan = _conversation_intent_plan(context)
     if not plan:
         return result
+    plan, model_led_trace = _conversation_intent_plan_with_model_led(plan, result, context=context)
 
     primary_intent = str(plan.get("primary_intent") or "").strip()
     plan_topic = str(plan.get("topic_id") or "").strip()
@@ -2977,6 +3112,8 @@ def apply_conversation_intent_plan_guard(
     ) and not semantic_non_p0
 
     metadata["conversation_intent_plan"] = _compact_conversation_intent_plan_for_metadata(plan)
+    if model_led_trace:
+        metadata["intent_model_led"] = dict(model_led_trace)
 
     if high_risk_plan:
         if topic_from_plan:
@@ -3221,6 +3358,12 @@ def _compact_conversation_intent_plan_for_metadata(plan: Mapping[str, Any]) -> M
         "forbidden_pairs",
         "template_allowed",
         "next_step_hint",
+        "model_led_enabled",
+        "model_led_applied",
+        "model_led_original_primary_intent",
+        "model_led_keyword_prefilter",
+        "model_led_primary_intent",
+        "model_led_signal",
     )
     return {key: plan[key] for key in keys if key in plan}
 

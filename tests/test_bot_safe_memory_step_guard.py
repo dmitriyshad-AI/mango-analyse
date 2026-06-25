@@ -39,6 +39,54 @@ def test_bot_safe_memory_step_guard_downgrades_empty_step_from_context_items() -
     assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
 
 
+def test_bot_safe_memory_step_guard_downgrades_unconfirmed_clarification_step() -> None:
+    result = _result(
+        "Следующий шаг — уточнить, в каком классе ребёнок, чтобы подобрать подходящую программу.",
+        route="draft_for_manager",
+        statuses=["empty"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert "Уточню актуальный шаг с менеджером" in guarded.draft_text
+    assert "каком классе" not in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
+def test_bot_safe_memory_step_guard_downgrades_start_from_class_step() -> None:
+    result = _result(
+        "Лучше всего сейчас начать с класса ребёнка: от этого зависит подходящая группа.",
+        route="draft_for_manager",
+        statuses=["needs_manager_review"],
+    )
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=_context(flag=True))
+
+    assert "Уточню актуальный шаг с менеджером" in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
+def test_bot_safe_memory_step_guard_reads_status_from_top_level_context_text() -> None:
+    result = _result(
+        "Сейчас следующий шаг — уточнить класс ребёнка, чтобы подобрать подходящий вариант.",
+        route="draft_for_manager",
+        statuses=[],
+    )
+    context = _context(flag=True)
+    context["bot_safe_context_items"] = [
+        {
+            "chunk_type": "bot_safe_summary",
+            "text": "Бренд: Фотон. Следующий шаг: Уточнить у менеджера: более позднее событие противоречит закрытию шага.",
+            "relevance_tags": ["bot_safe", "structured", "foton"],
+        }
+    ]
+
+    guarded = apply_bot_safe_memory_step_guard(result, context=context)
+
+    assert "Уточню актуальный шаг с менеджером" in guarded.draft_text
+    assert BOT_SAFE_MEMORY_STEP_GUARD_FLAG in guarded.safety_flags
+
+
 def test_bot_safe_memory_step_guard_keeps_active_confirmed_step() -> None:
     result = _result(
         "Да, место уже забронировано, заявка подтверждена.",

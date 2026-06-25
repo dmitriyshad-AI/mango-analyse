@@ -361,6 +361,69 @@ def test_contradictory_later_event_requires_manager_review() -> None:
     assert result.source_event_id == "email-1"
 
 
+def test_closed_stage_plus_later_followup_does_not_force_manager_review_for_generic_step() -> None:
+    events = [
+        event(
+            "call-1",
+            "mango_call",
+            NOW,
+            summary="Согласовали вернуться к подбору после семейного решения.",
+            record={"call_analysis": {"next_step": "Продолжить подбор программы обучения"}},
+        ),
+        event(
+            "stage-closed",
+            "amo_deal_stage",
+            NOW + timedelta(hours=1),
+            source_system="amocrm_snapshot",
+            summary="Закрыто и не реализовано",
+        ),
+        event(
+            "call-2",
+            "mango_call",
+            NOW + timedelta(days=2),
+            summary="Клиент снова уточняет, как продолжить подбор после паузы?",
+            record={"brand": "foton", "contentful": "Да", "duration_sec": 240},
+        ),
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "active"
+    assert result.reason_code == "latest_relevant_event_has_active_next_step"
+    assert result.action == "Продолжить подбор программы обучения"
+    assert result.source_event_id == "call-1"
+
+
+def test_real_structured_grade_conflict_keeps_manager_review() -> None:
+    events = [
+        event(
+            "call-1",
+            "mango_call",
+            NOW,
+            summary="Согласовали продолжить подбор обучения.",
+            record={
+                "brand": "foton",
+                "student_class": "7 класс",
+                "call_analysis": {"next_step": "Продолжить подбор программы обучения"},
+            },
+        ),
+        event(
+            "call-2",
+            "mango_call",
+            NOW + timedelta(hours=2),
+            summary="В карточке появилась другая структурная запись по классу.",
+            record={"brand": "foton", "student_class": "9 класс", "contentful": "Да"},
+        ),
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "needs_manager_review"
+    assert result.reason_code == "contradictory_later_event"
+    assert result.previous_step == "Продолжить подбор программы обучения"
+    assert result.source_event_id == "call-2"
+
+
 def test_later_imperative_request_does_not_close_documents_step() -> None:
     events = [
         event(
@@ -382,6 +445,33 @@ def test_later_imperative_request_does_not_close_documents_step() -> None:
     assert result.status == "active"
     assert result.action == "Отправить документы"
     assert result.closing_event_id == ""
+
+
+def test_later_learning_errors_with_email_context_do_not_contradict_documents_step() -> None:
+    events = [
+        event(
+            "call-1",
+            "mango_call",
+            NOW,
+            record={"call_analysis": {"next_step": "Отправить на email актуальные реквизиты"}},
+        ),
+        event(
+            "call-2",
+            "mango_call",
+            NOW + timedelta(days=2),
+            summary=(
+                "Обсудили результат среза по физике: есть ошибки в оформлении текстовой части. "
+                "Менеджер предложил отправить подробности на почту."
+            ),
+        ),
+    ]
+
+    result = resolve_customer_next_step(events, readiness={"open_conflicts": 0}, customer_id=CUSTOMER)
+
+    assert result.status == "active"
+    assert result.reason_code == "latest_relevant_event_has_active_next_step"
+    assert result.action == "Отправить подробности на почту"
+    assert result.source_event_id == "call-2"
 
 
 def test_read_api_profile_and_crm_card_use_resolved_cross_channel_step(tmp_path: Path) -> None:

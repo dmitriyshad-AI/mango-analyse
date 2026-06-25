@@ -1041,6 +1041,18 @@ BOT_SAFE_MEMORY_CONCRETE_STEP_RE = re.compile(
     r"\b(?:перевед\w*|продвин\w*|постав\w*)\b"
     r"[^.!?\n]{0,90}?"
     r"\b(?:этап|статус|воронк\w*|сделк\w*)\b"
+    r"|"
+    r"\bследующ\w*\s+шаг\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:уточн\w*|поня\w*|нача\w*|подобр\w*|выбр\w*|сообщ\w*|написа\w*)\b"
+    r"[^.!?\n]{0,120}?"
+    r"\b(?:класс\w*|предмет\w*|направлен\w*|формат\w*|цел[ьи]\w*|вариант\w*|групп\w*|программ\w*)\b"
+    r"|"
+    r"\b(?:лучше|стоит|нужно|надо|сейчас)\b"
+    r"[^.!?\n]{0,80}?"
+    r"\b(?:нача\w*|уточн\w*|поня\w*|подобр\w*|выбр\w*)\b"
+    r"[^.!?\n]{0,80}?"
+    r"\b(?:класс\w*|предмет\w*|направлен\w*|формат\w*|цел[ьи]\w*|вариант\w*|групп\w*|программ\w*)\b"
     r")",
     re.I,
 )
@@ -4450,8 +4462,12 @@ def _bot_safe_memory_add_statuses_from_metadata(metadata: Mapping[str, Any], add
 
 
 def _bot_safe_memory_add_statuses_from_context(context: Mapping[str, Any], add: Callable[[Any], None]) -> None:
+    _bot_safe_memory_add_statuses_from_items(context.get("bot_safe_context_items"), add)
     _bot_safe_memory_add_statuses_from_bot_context(context.get("bot_context"), add)
+    customer_summary = context.get("customer_summary") if isinstance(context.get("customer_summary"), Mapping) else {}
+    _bot_safe_memory_add_statuses_from_items(customer_summary.get("bot_safe_context_items"), add)
     timeline = context.get("timeline_context") if isinstance(context.get("timeline_context"), Mapping) else {}
+    _bot_safe_memory_add_statuses_from_items(timeline.get("bot_safe_context_items"), add)
     _bot_safe_memory_add_statuses_from_bot_context(timeline.get("bot_context"), add)
     customer_context = (
         context.get("read_only_customer_context")
@@ -4471,6 +4487,10 @@ def _bot_safe_memory_add_statuses_from_bot_context(bot_context: Any, add: Callab
     if not isinstance(bot_context, Mapping):
         return
     raw_items = bot_context.get("items")
+    _bot_safe_memory_add_statuses_from_items(raw_items, add)
+
+
+def _bot_safe_memory_add_statuses_from_items(raw_items: Any, add: Callable[[Any], None]) -> None:
     if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes, bytearray)):
         return
     for item in raw_items:
@@ -4478,11 +4498,23 @@ def _bot_safe_memory_add_statuses_from_bot_context(bot_context: Any, add: Callab
             continue
         if str(item.get("chunk_type") or "").strip() != "bot_safe_summary":
             continue
-        if item.get("allowed_for_bot") is not True:
+        if item.get("allowed_for_bot") is False:
             continue
         if item.get("requires_manager_review") is True:
             continue
         add(item.get("next_step_status"))
+        add(_bot_safe_memory_next_step_status_from_text(str(item.get("text") or item.get("summary") or "")))
+
+
+def _bot_safe_memory_next_step_status_from_text(text: str) -> str:
+    value = str(text or "").casefold().replace("ё", "е")
+    if "следующий шаг" not in value:
+        return ""
+    if "уточнить у менеджера" in value or "требует уточнения у менеджера" in value:
+        return "needs_manager_review"
+    if "активный шаг не найден" in value:
+        return "empty"
+    return ""
 
 
 def apply_humanity_guards(

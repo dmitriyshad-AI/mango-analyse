@@ -99,8 +99,37 @@ SUMMARY_NON_CONVERSATION_MARKERS = (
 
 SENT_MARKERS = ("отправлен", "отправили", "отправил", "выслан", "выслали", "направлен", "направили", "прикреп", "во влож", "приклады")
 DONE_MARKERS = ("сделан", "закрыт", "выполн", "прош", "поступ", "оплачен", "получил", "получили")
-NEGATION_MARKERS = ("не приш", "не получил", "не получили", "не дош", "ошиб", "отказ")
-QUESTION_MARKERS = ("?", "уточн", "непонят", "проверь", "проверить", "сомнен")
+NEGATION_MARKERS = (
+    "не приш",
+    "не получил",
+    "не получили",
+    "не дош",
+    "не прош",
+    "отказ",
+    "ошибка оплаты",
+    "ошибка платеж",
+    "ошибка платёж",
+    "ошибка в счете",
+    "ошибка в счёте",
+    "ошибочно спис",
+)
+EXPLICIT_DATA_CONFLICT_MARKERS = (
+    "конфликт",
+    "противореч",
+    "не совпада",
+    "расхожд",
+    "несовместим",
+    "разные данные",
+    "другой бренд",
+    "другая школа",
+    "другой класс",
+    "другой предмет",
+    "не тот клиент",
+    "не тот ребенок",
+    "не тот ребёнок",
+)
+GRADE_KEYS = ("grade", "class", "student_class", "child_class", "school_class", "klass")
+BRAND_KEYS = ("brand", "tenant", "school_brand")
 
 NON_CLOSING_EVENT_TYPES = {"system_note"}
 NON_CLOSING_MARKERS = (
@@ -257,7 +286,7 @@ def resolve_customer_next_step(
 
     step_index, step_event, action, kind = step_candidates[-1]
     later_events = relevant[step_index + 1 :]
-    contradiction = _first_contradiction(later_events, kind)
+    contradiction = _first_contradiction(relevant[: step_index + 1], later_events, kind)
     if contradiction is not None:
         return _manager_review(
             "contradictory_later_event",
@@ -537,27 +566,122 @@ def _event_closes_step(event: Mapping[str, Any], step_kind: str) -> bool:
     return False
 
 
-def _first_contradiction(events: Sequence[Mapping[str, Any]], step_kind: str) -> Mapping[str, Any] | None:
-    for event in events:
+def _first_contradiction(
+    previous_events: Sequence[Mapping[str, Any]],
+    later_events: Sequence[Mapping[str, Any]],
+    step_kind: str,
+) -> Mapping[str, Any] | None:
+    for event in later_events:
         text = _event_text(event)
+        if _has_explicit_data_conflict(event):
+            return event
         if step_kind in {"documents", "payment"} and _has_any(text, NEGATION_MARKERS):
             if step_kind == "documents" and _has_any(text, DOCUMENT_STEP_MARKERS):
                 return event
             if step_kind == "payment" and _has_any(text, PAYMENT_STEP_MARKERS):
                 return event
-        if _has_any(text, QUESTION_MARKERS) and (step_kind == "generic" or _has_step_context(text, step_kind)):
-            return event
+    return _first_structured_slot_conflict(previous_events, later_events)
+
+
+def _has_explicit_data_conflict(event: Mapping[str, Any]) -> bool:
+    text = " ".join(
+        item
+        for item in (
+            _event_text(event),
+            _nested_text(_mapping(event.get("record"))),
+            _nested_text(_mapping(event.get("metadata"))),
+        )
+        if item
+    ).casefold()
+    return _has_any(text, EXPLICIT_DATA_CONFLICT_MARKERS)
+
+
+def _first_structured_slot_conflict(
+    previous_events: Sequence[Mapping[str, Any]],
+    later_events: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    previous = _structured_slot_values(previous_events)
+    if not any(previous.values()):
+        return None
+    for event in later_events:
+        current = _structured_slot_values((event,))
+        for slot in ("brand", "grade"):
+            if _slot_values_conflict(previous.get(slot, set()), current.get(slot, set()), slot=slot):
+                return event
     return None
 
 
-def _has_step_context(text: str, step_kind: str) -> bool:
-    if step_kind == "documents":
-        return _has_any(text, DOCUMENT_STEP_MARKERS)
-    if step_kind == "payment":
-        return _has_any(text, PAYMENT_STEP_MARKERS)
-    if step_kind == "callback":
-        return _has_any(text, CALLBACK_STEP_MARKERS)
+def _structured_slot_values(events: Sequence[Mapping[str, Any]]) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = {"brand": set(), "grade": set()}
+    for event in events:
+        record = _mapping(event.get("record"))
+        metadata = _mapping(event.get("metadata"))
+        call_analysis = _mapping(record.get("call_analysis") or event.get("call_analysis"))
+        containers = (record, metadata, call_analysis)
+        values["brand"].update(_normalized_values_for_keys(containers, BRAND_KEYS, _normalize_brand))
+        values["grade"].update(_normalized_values_for_keys(containers, GRADE_KEYS, _normalize_grade))
+    return values
+
+
+def _normalized_values_for_keys(
+    containers: Sequence[Mapping[str, Any]],
+    keys: Sequence[str],
+    normalizer: Any,
+) -> set[str]:
+    result: set[str] = set()
+    for container in containers:
+        for key in keys:
+            for value in _iter_text_values(container.get(key)):
+                normalized = normalizer(value)
+                if normalized:
+                    result.add(normalized)
+    return result
+
+
+def _slot_values_conflict(previous: set[str], current: set[str], *, slot: str) -> bool:
+    if not previous or not current or previous & current:
+        return False
+    if slot == "subject" and (len(previous) > 1 or len(current) > 1):
+        return False
     return True
+
+
+def _normalize_brand(value: str) -> str:
+    text = value.casefold()
+    if "фотон" in text or "foton" in text:
+        return "foton"
+    if "унпк" in text or "unpk" in text or "мфти" in text:
+        return "unpk"
+    return ""
+
+
+def _normalize_grade(value: str) -> str:
+    match = re.search(r"\b([1-9]|1[0-1])\s*(?:класс|кл\.?|grade)?\b", value.casefold())
+    return match.group(1) if match else ""
+
+
+def _iter_text_values(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = _compact(value)
+        return (text,) if text else ()
+    if isinstance(value, Mapping):
+        result: list[str] = []
+        for item in value.values():
+            result.extend(_iter_text_values(item))
+        return tuple(result)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        result: list[str] = []
+        for item in value:
+            result.extend(_iter_text_values(item))
+        return tuple(result)
+    text = _compact(value)
+    return (text,) if text else ()
+
+
+def _nested_text(value: Mapping[str, Any]) -> str:
+    return " ".join(item.casefold() for item in _iter_text_values(value))
 
 
 def _is_non_closing_service_event(event: Mapping[str, Any]) -> bool:

@@ -370,7 +370,7 @@ def test_bot_safe_summary_scrubs_names_and_unsafe_call_details_across_dossier(tm
             "brand": "foton",
             "call_analysis": {
                 "history_short": "Менеджер Клычева Дарья обсудила онлайн-формат.",
-                "history_summary": "Встреча на улице Ленина, дом 4; старт группы 01.09.2026.",
+                "history_summary": "Встреча на улице Ленина, дом 4; старт группы 01.09.2026; занятия по субботам в 10:00.",
                 "interests": ["информатика онлайн"],
                 "next_step": "составим расписание, чтобы предметы не пересекались",
                 "follow_up_reason": "чек ускорит подтверждение оплаты",
@@ -400,6 +400,7 @@ def test_bot_safe_summary_scrubs_names_and_unsafe_call_details_across_dossier(tm
     assert "улице" not in dumped.casefold()
     assert "Ленина" not in dumped
     assert "01.09.2026" not in dumped
+    assert "10:00" not in dumped
     assert "составим" not in dumped.casefold()
     assert "ускорит" not in dumped.casefold()
 

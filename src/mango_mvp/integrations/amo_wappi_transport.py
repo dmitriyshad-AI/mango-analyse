@@ -60,6 +60,7 @@ class SafeTransportPolicy:
     def _assert_amo_read_allowed(self, *, method: str, path: str) -> None:
         if method == "GET" and (
             path == "/api/v4/leads/pipelines"
+            or path == "/api/v4/events"
             or path == "/api/v4/contacts"
             or _AMO_LEAD_RE.match(path)
             or _AMO_CONTACT_RE.match(path)

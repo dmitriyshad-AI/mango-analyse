@@ -6,7 +6,7 @@ import json
 import os
 import time
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -79,6 +79,17 @@ ORG_BRAND_KEYWORDS = {
     "foton": ("фотон", "cdpo", "цдпо"),
     "unpk": ("унпк", "мфти", "mipt"),
 }
+AMO_CHAT_ORIGIN_BY_CHANNEL = {
+    "telegram": "pro.wappi.tg",
+    "max": "pro.wappi.3",
+}
+AMO_CHAT_EVENT_LOOKBACK_SEC = 60
+AMO_CHAT_EVENT_MATCH_WINDOW_SEC = 15
+AMO_CHAT_EVENT_LOOKUP_LIMIT_PER_WINDOW = 30
+AMO_CHAT_EVENT_LOOKUP_WINDOW_SEC = 60
+AMO_CHAT_SEQUENCE_CONFIRMATION_MIN = 2
+AMO_CHAT_SEQUENCE_MAX_POINTS = 8
+AMO_CHAT_SEQUENCE_MAX_DISTANCE_SEC = 7 * 24 * 60 * 60
 
 
 def parse_args() -> argparse.Namespace:
@@ -307,6 +318,15 @@ def _lead_ids_from_contact(contact: Mapping[str, Any]) -> list[str]:
     return ids
 
 
+def _contact_ids_from_lead(lead: Mapping[str, Any]) -> list[str]:
+    ids: list[str] = []
+    for item in _embedded_items(lead, "contacts"):
+        contact_id = str(item.get("id") or "").strip()
+        if contact_id and contact_id not in ids:
+            ids.append(contact_id)
+    return ids
+
+
 def _is_active_lead(lead: Mapping[str, Any]) -> bool:
     if bool(lead.get("is_deleted") or lead.get("deleted")):
         return False
@@ -370,11 +390,141 @@ def _max_dialog_phone(dialog: Mapping[str, Any]) -> tuple[str, str]:
     return "", "max_phone_missing"
 
 
+def _amo_chat_event_candidate(
+    event: Mapping[str, Any],
+    *,
+    origin: str,
+    message_ts: int,
+) -> Mapping[str, Any] | None:
+    if str(event.get("type") or "") != "incoming_chat_message":
+        return None
+    if str(event.get("entity_type") or "") != "lead":
+        return None
+    value_after = event.get("value_after") or ()
+    message_payload: Mapping[str, Any] = {}
+    if isinstance(value_after, Sequence) and not isinstance(value_after, (str, bytes, bytearray)):
+        first = value_after[0] if value_after else {}
+        if isinstance(first, Mapping) and isinstance(first.get("message"), Mapping):
+            message_payload = first["message"]
+    if str(message_payload.get("origin") or "") != origin:
+        return None
+    try:
+        dt_sec = int(event.get("created_at") or 0) - int(message_ts)
+    except (TypeError, ValueError):
+        return None
+    if abs(dt_sec) > AMO_CHAT_EVENT_MATCH_WINDOW_SEC:
+        return None
+    embedded = event.get("_embedded")
+    entity = embedded.get("entity") if isinstance(embedded, Mapping) else {}
+    contact_id = str(entity.get("linked_talk_contact_id") or "").strip() if isinstance(entity, Mapping) else ""
+    lead_id = str(event.get("entity_id") or "").strip()
+    talk_id = str(message_payload.get("talk_id") or "").strip()
+    if not lead_id or not contact_id or not talk_id:
+        return None
+    return {
+        "event_id": str(event.get("id") or ""),
+        "lead_id": lead_id,
+        "contact_id": contact_id,
+        "talk_id": talk_id,
+        "origin": origin,
+        "dt_sec": dt_sec,
+    }
+
+
+def _amo_chat_message_event_signature(event: Mapping[str, Any], *, origin: str) -> Mapping[str, Any] | None:
+    event_type = str(event.get("type") or "")
+    if event_type not in {"incoming_chat_message", "outgoing_chat_message"}:
+        return None
+    value_after = event.get("value_after") or ()
+    message_payload: Mapping[str, Any] = {}
+    if isinstance(value_after, Sequence) and not isinstance(value_after, (str, bytes, bytearray)):
+        first = value_after[0] if value_after else {}
+        if isinstance(first, Mapping) and isinstance(first.get("message"), Mapping):
+            message_payload = first["message"]
+    if str(message_payload.get("origin") or "") != origin:
+        return None
+    talk_id = str(message_payload.get("talk_id") or "").strip()
+    if not talk_id:
+        return None
+    try:
+        created_at = int(event.get("created_at") or 0)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "type": event_type,
+        "talk_id": talk_id,
+        "created_at": created_at,
+    }
+
+
+def _wappi_chat_sequence_points(
+    messages: Sequence[WappiHistoryMessage],
+    current: WappiHistoryMessage,
+) -> list[Mapping[str, Any]]:
+    current_ts = int(current.timestamp or 0)
+    if current_ts <= 0:
+        return []
+    candidates = [
+        item
+        for item in messages
+        if isinstance(item, WappiHistoryMessage)
+        and item.message_type == "text"
+        and item.chat_id == current.chat_id
+        and int(item.timestamp or 0) > 0
+        and abs(int(item.timestamp or 0) - current_ts) <= AMO_CHAT_SEQUENCE_MAX_DISTANCE_SEC
+    ]
+    if current not in candidates:
+        candidates.append(current)
+    ordered = sorted(candidates, key=lambda item: (abs(int(item.timestamp or 0) - current_ts), int(item.timestamp or 0), item.message_id))
+    points: list[Mapping[str, Any]] = []
+    for item in ordered[:AMO_CHAT_SEQUENCE_MAX_POINTS]:
+        points.append(
+            {
+                "type": "outgoing_chat_message" if item.from_me else "incoming_chat_message",
+                "timestamp": int(item.timestamp or 0),
+                "message_id": item.message_id,
+            }
+        )
+    return points
+
+
+def _amo_chat_sequence_match_count(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    origin: str,
+    talk_id: str,
+    points: Sequence[Mapping[str, Any]],
+) -> int:
+    signatures = [
+        signature
+        for signature in (_amo_chat_message_event_signature(event, origin=origin) for event in events)
+        if signature is not None and str(signature.get("talk_id") or "") == str(talk_id)
+    ]
+    matched = 0
+    for point in points:
+        point_type = str(point.get("type") or "")
+        try:
+            point_ts = int(point.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            continue
+        if any(
+            str(signature.get("type") or "") == point_type
+            and abs(int(signature.get("created_at") or 0) - point_ts) <= AMO_CHAT_EVENT_MATCH_WINDOW_SEC
+            for signature in signatures
+        ):
+            matched += 1
+    return matched
+
+
 @dataclass
 class AmoAutoResolver:
     client: AmoMcpClient
     shared_phone_stoplist: set[str]
     stoplist_error: str = ""
+    event_lookup_limit: int = AMO_CHAT_EVENT_LOOKUP_LIMIT_PER_WINDOW
+    event_lookup_window_sec: int = AMO_CHAT_EVENT_LOOKUP_WINDOW_SEC
+    _event_lookup_window_started: float = field(default=0.0, init=False)
+    _event_lookup_count: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self.shared_phone_stoplist = {phone for phone in (normalize_phone(item) for item in self.shared_phone_stoplist) if phone}
@@ -388,12 +538,176 @@ class AmoAutoResolver:
         messages: Sequence[WappiHistoryMessage],
         message: WappiHistoryMessage,
     ) -> Mapping[str, Any]:
-        del messages, message
+        event_candidate = self._resolve_by_amo_chat_event(key=key, profile=profile, messages=messages, message=message)
+        if event_candidate is not None:
+            return event_candidate
         if profile.channel == "telegram":
             return self._resolve_telegram(key=key, profile=profile)
         if profile.channel == "max":
             return self._resolve_max(key=key, profile=profile, dialog=dialog)
         return {"status": "rejected", "reason": "unsupported_channel"}
+
+    def _resolve_by_amo_chat_event(
+        self,
+        *,
+        key: DraftLoopKey,
+        profile: DraftLoopProfile,
+        messages: Sequence[WappiHistoryMessage],
+        message: WappiHistoryMessage,
+    ) -> Mapping[str, Any] | None:
+        origin = AMO_CHAT_ORIGIN_BY_CHANNEL.get(str(profile.channel or "").casefold())
+        if not origin or not isinstance(message, WappiHistoryMessage) or not int(message.timestamp or 0):
+            return None
+        if not self._event_lookup_allowed():
+            return {"status": "rejected", "reason": "amo_chat_event_rate_limited", "match_key": "amo_chat_event"}
+        sequence_points = _wappi_chat_sequence_points(messages, message)
+        from_ts = min((int(point.get("timestamp") or 0) for point in sequence_points), default=int(message.timestamp))
+        try:
+            payload = self.client.amo_api_get(
+                path="events",
+                params={
+                    "filter[type][]": ["incoming_chat_message", "outgoing_chat_message"],
+                    "filter[created_at][from]": from_ts - AMO_CHAT_EVENT_LOOKBACK_SEC,
+                },
+                limit=50,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "rejected", "reason": "amo_chat_event_unavailable", "error": str(exc)[:300]}
+        events = _embedded_items(payload, "events")
+        candidates = [
+            candidate
+            for candidate in (
+                _amo_chat_event_candidate(event, origin=origin, message_ts=int(message.timestamp))
+                for event in events
+            )
+            if candidate is not None
+        ]
+        if not candidates:
+            return None
+        confirmed: list[Mapping[str, Any]] = []
+        for candidate in candidates:
+            match_count = _amo_chat_sequence_match_count(
+                events,
+                origin=origin,
+                talk_id=str(candidate.get("talk_id") or ""),
+                points=sequence_points,
+            )
+            enriched = {**dict(candidate), "sequence_match_count": match_count, "sequence_points_count": len(sequence_points)}
+            if match_count >= AMO_CHAT_SEQUENCE_CONFIRMATION_MIN:
+                confirmed.append(enriched)
+        if not confirmed:
+            return {
+                "status": "rejected",
+                "reason": "amo_chat_event_sequence_unconfirmed",
+                "channel": profile.channel,
+                "match_key": "amo_chat_event",
+                "candidate_count": len(candidates),
+                "sequence_points_count": len(sequence_points),
+            }
+        if len(confirmed) != 1:
+            return {
+                "status": "rejected",
+                "reason": "amo_chat_event_ambiguous",
+                "channel": profile.channel,
+                "match_key": "amo_chat_event",
+                "candidate_count": len(confirmed),
+            }
+        return self._resolve_chat_event_candidate(profile=profile, key=key, candidate=confirmed[0])
+
+    def _event_lookup_allowed(self) -> bool:
+        limit = max(0, int(self.event_lookup_limit or 0))
+        if limit <= 0:
+            return False
+        now = time.monotonic()
+        window = max(1, int(self.event_lookup_window_sec or AMO_CHAT_EVENT_LOOKUP_WINDOW_SEC))
+        if self._event_lookup_window_started <= 0 or now - self._event_lookup_window_started >= window:
+            self._event_lookup_window_started = now
+            self._event_lookup_count = 0
+        if self._event_lookup_count >= limit:
+            return False
+        self._event_lookup_count += 1
+        return True
+
+    def _resolve_chat_event_candidate(
+        self,
+        *,
+        profile: DraftLoopProfile,
+        key: DraftLoopKey,
+        candidate: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del key
+        lead_id = str(candidate.get("lead_id") or "").strip()
+        contact_id = str(candidate.get("contact_id") or "").strip()
+        talk_id = str(candidate.get("talk_id") or "").strip()
+        if not lead_id or not contact_id or not talk_id:
+            return {"status": "rejected", "reason": "amo_chat_event_incomplete", "match_key": "amo_chat_event"}
+        try:
+            lead = self.client.amo_api_get(path=f"leads/{int(lead_id)}", params={"with": "contacts"}, limit=1)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "rejected",
+                "reason": "amo_chat_event_validation_unavailable",
+                "lead_id": lead_id,
+                "contact_id": contact_id,
+                "match_key": "amo_chat_event",
+                "error": str(exc)[:300],
+            }
+        if not _is_active_lead(lead):
+            return {
+                "status": "rejected",
+                "reason": "closed_lead" if lead else "lead_not_found",
+                "lead_id": lead_id,
+                "contact_id": contact_id,
+                "match_key": "amo_chat_event",
+            }
+        linked_contacts = _contact_ids_from_lead(lead)
+        if not linked_contacts:
+            return {
+                "status": "rejected",
+                "reason": "event_lead_contacts_missing",
+                "lead_id": lead_id,
+                "contact_id": contact_id,
+                "match_key": "amo_chat_event",
+            }
+        if contact_id not in linked_contacts:
+            return {
+                "status": "rejected",
+                "reason": "event_contact_not_linked_to_lead",
+                "lead_id": lead_id,
+                "contact_id": contact_id,
+                "match_key": "amo_chat_event",
+            }
+        org_brand = _lead_org_brand(lead)
+        org_values = _lead_org_values(lead)
+        if org_brand and org_brand != profile.brand:
+            return {
+                "status": "rejected",
+                "reason": "brand_mismatch",
+                "contact_id": contact_id,
+                "lead_id": lead_id,
+                "organization_brand": org_brand,
+                "organization_values": org_values,
+                "match_key": "amo_chat_event",
+            }
+        return {
+            "status": "matched",
+            "lead_id": lead_id,
+            "contact_id": contact_id,
+            "match_key": "amo_chat_event",
+            "match_value": f"talk:{talk_id}",
+            "amo_talk_id": talk_id,
+            "amo_event_id": str(candidate.get("event_id") or ""),
+            "amo_event_dt_sec": int(candidate.get("dt_sec") or 0),
+            "amo_sequence_match_count": int(candidate.get("sequence_match_count") or 0),
+            "amo_sequence_points_count": int(candidate.get("sequence_points_count") or 0),
+            "lead_snapshot": {
+                "status_id": str(lead.get("status_id") or ""),
+                "closed_at": str(lead.get("closed_at") or ""),
+                "pipeline_id": str(lead.get("pipeline_id") or ""),
+                "organization_brand": org_brand,
+                "organization_values": org_values,
+            },
+        }
 
     def _resolve_telegram(self, *, key: DraftLoopKey, profile: DraftLoopProfile) -> Mapping[str, Any]:
         if not key.chat_id.isdigit():

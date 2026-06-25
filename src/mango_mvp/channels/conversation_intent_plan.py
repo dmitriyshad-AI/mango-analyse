@@ -384,10 +384,17 @@ def _asks_live_availability(text: str, *, previous_product_family: str, product_
         return False
     if _is_payment_terms_question(text) and _has_any_marker(text, ("про оплат", "условия оплат", "не про мест")):
         return False
-    asks_place = bool(re.search(r"\b(?:мест(?:о|а)?|налич\w*|брон\w*|заброни\w*)\b", text))
-    asks_fix_place = bool(re.search(r"\bзакреп\w*\b", text) and re.search(r"\bмест(?:о|а)?\b", text))
+    asks_availability = bool(re.search(r"\b(?:налич\w*|брон\w*|заброни\w*|свободн\w*|остал\w*)\b", text))
+    asks_place_state = bool(
+        re.search(r"\b(?:есть|будет|остал\w*|свободн\w*)\s+мест(?:о|а)?\b", text)
+        or re.search(r"\bмест(?:о|а)?\s+(?:есть|будет|остал\w*|свободн\w*)\b", text)
+    )
+    asks_fix_place = bool(
+        re.search(r"\b(?:закреп\w*|оформ\w*|запис\w*)\b", text)
+        and re.search(r"\bмест(?:о|а)?\b", text)
+    )
     camp_context = product_family == "camp" or previous_product_family == "camp"
-    return bool(camp_context and (asks_place or asks_fix_place))
+    return bool(camp_context and (asks_availability or asks_place_state or asks_fix_place))
 
 
 def _asks_price_fix(text: str) -> bool:

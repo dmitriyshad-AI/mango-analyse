@@ -24,6 +24,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     PROSE_MODEL_LED_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
     _explicit_truthy_setting,
+    _intent_model_led_enabled,
     _pilot_gold_profile_enabled,
     _pilot_profile_default_on_flag_enabled,
 )
@@ -156,7 +157,7 @@ def _guard_status() -> dict[str, bool]:
         "pii_relation_stopwords": _pilot_profile_default_on_flag_enabled(None, PII_RELATION_STOPWORDS_ENV),
         "verifier_handoff_claims": _verifier_handoff_claims_enabled(None),
         "p0_model_led": _explicit_truthy_setting(None, P0_MODEL_LED_ENV) is True,
-        "intent_model_led": _explicit_truthy_setting(None, INTENT_MODEL_LED_ENV) is True,
+        "intent_model_led": _intent_model_led_enabled(None),
         "prose_model_led": _explicit_truthy_setting(None, PROSE_MODEL_LED_ENV) is True,
         "fact_venue_scope": _explicit_truthy_setting(None, FACT_VENUE_SCOPE_ENV) is True,
         "autonomy_scope_precision": _explicit_truthy_setting(None, AUTONOMY_SCOPE_PRECISION_ENV) is True,

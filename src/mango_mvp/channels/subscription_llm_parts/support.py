@@ -114,6 +114,7 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     ANSWERABILITY_SHADOW_ENV,
     DEAL_ACTION_DECISION_ENV,
     DIRECT_PATH_MODEL_P0_ENV,
+    INTENT_MODEL_LED_ENV,
     SEMANTIC_OUTPUT_VERIFIER_ENV,
     OUTPUT_SANITIZER_ENV,
     ROUTE_RUBRIC_ENV,
@@ -476,7 +477,9 @@ def _intent_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bo
         INTENT_MODEL_LED_ENV,
         aliases=("intent_model_led", "intent_model_led_enabled", "model_intent_enabled"),
     )
-    return bool(explicit) if explicit is not None else False
+    if explicit is not None:
+        return bool(explicit)
+    return _pilot_profile_default_on_flag_enabled(context, INTENT_MODEL_LED_ENV)
 
 
 def _prose_model_led_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

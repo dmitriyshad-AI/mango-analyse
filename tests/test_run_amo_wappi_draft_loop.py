@@ -10,7 +10,7 @@ import scripts.run_amo_wappi_draft_loop as runner
 from mango_mvp.channels.pilot_profile_runtime import DIRECT_PATH_PILOT_CONFIG_ENV, ENFORCE_CANONICAL_PROFILE_ENV
 from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_path_recent_messages
 from mango_mvp.integrations.amo_wappi_transport import TransportDenied
-from mango_mvp.integrations.draft_loop import DraftLoopConfig, DraftLoopKey, DraftLoopPair, DraftLoopProfile
+from mango_mvp.integrations.draft_loop import DraftLoopConfig, DraftLoopKey, DraftLoopPair, DraftLoopProfile, WappiHistoryMessage
 from tests.test_bot_safe_runtime_context import _seed_bot_safe_timeline
 
 
@@ -177,6 +177,27 @@ def test_safe_transport_blocks_unlisted_wappi_get() -> None:
         raise AssertionError("direct amoCRM note writes must be denied")
 
 
+def test_safe_transport_allows_amo_events_get_only() -> None:
+    calls = []
+    transport = runner.DefaultDenyTransport(
+        lambda **kwargs: calls.append(kwargs) or {"ok": True},
+        policy=runner.SafeTransportPolicy(
+            wappi_hosts=frozenset({"wappi.pro"}),
+            amo_read_hosts=frozenset({"educent.amocrm.ru"}),
+            ai_office_hosts=frozenset({"api.fotonai.online"}),
+        ),
+    )
+
+    assert transport(method="GET", url="https://educent.amocrm.ru/api/v4/events?filter[type][]=incoming_chat_message") == {"ok": True}
+
+    try:
+        transport(method="POST", url="https://educent.amocrm.ru/api/v4/events")
+    except TransportDenied:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("AMO events POST must be denied")
+
+
 def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv(DIRECT_PATH_PILOT_CONFIG_ENV, raising=False)
     monkeypatch.delenv(ENFORCE_CANONICAL_PROFILE_ENV, raising=False)
@@ -214,13 +235,16 @@ def test_build_runner_uses_gated_canonical_profile_helper(monkeypatch, tmp_path:
 
 
 class FakeMcp:
-    def __init__(self, contacts=None, leads=None) -> None:
+    def __init__(self, contacts=None, leads=None, events=None) -> None:
         self.contacts = contacts or []
         self.leads = {str(item["id"]): item for item in (leads or [])}
+        self.events = events or []
         self.calls = []
 
     def amo_api_get(self, *, path, params=None, limit=50):
         self.calls.append({"path": path, "params": params or {}, "limit": limit})
+        if path == "events":
+            return {"_embedded": {"events": self.events}}
         if path == "contacts":
             query = str((params or {}).get("query") or "")
             contacts = []
@@ -238,6 +262,13 @@ class FakeMcp:
         raise AssertionError(path)
 
 
+class EventFailMcp(FakeMcp):
+    def amo_api_get(self, *, path, params=None, limit=50):
+        if path == "events":
+            raise RuntimeError("events unavailable")
+        return super().amo_api_get(path=path, params=params, limit=limit)
+
+
 def _contact(contact_id="111", *, telegram_id="", phone="", leads=("49762441",)):
     fields = []
     if telegram_id:
@@ -251,7 +282,7 @@ def _contact(contact_id="111", *, telegram_id="", phone="", leads=("49762441",))
     }
 
 
-def _lead(lead_id="49762441", *, status_id=123, closed_at=None, deleted=False, org=""):
+def _lead(lead_id="49762441", *, status_id=123, closed_at=None, deleted=False, org="", contacts=()):
     fields = []
     if org:
         fields.append({"field_name": "Организация", "values": [{"value": org}]})
@@ -262,15 +293,194 @@ def _lead(lead_id="49762441", *, status_id=123, closed_at=None, deleted=False, o
         "is_deleted": deleted,
         "pipeline_id": 999,
         "custom_fields_values": fields,
+        "_embedded": {"contacts": [{"id": int(item)} for item in contacts]},
     }
 
 
-def _resolver(*, contacts=None, leads=None, stoplist=None, stoplist_error=""):
+def _event(
+    *,
+    event_id="evt-1",
+    event_type="incoming_chat_message",
+    ts=1004,
+    lead_id="50101349",
+    contact_id="77345755",
+    talk_id="3040",
+    origin="pro.wappi.tg",
+):
+    return {
+        "id": event_id,
+        "type": event_type,
+        "entity_type": "lead",
+        "entity_id": int(lead_id),
+        "created_at": ts,
+        "value_after": [{"message": {"origin": origin, "talk_id": int(talk_id), "id": f"msg-{event_id}"}}],
+        "_embedded": {"entity": {"linked_talk_contact_id": int(contact_id)}},
+    }
+
+
+def _wappi_message(*, profile_id="profile-foton", chat_id="758394977", message_id="15623", ts=1000, from_me=False):
+    return WappiHistoryMessage(
+        profile_id=profile_id,
+        chat_id=chat_id,
+        message_id=message_id,
+        text="Есть ли места?",
+        message_type="text",
+        timestamp=ts,
+        from_me=from_me,
+    )
+
+
+def _resolver(*, contacts=None, leads=None, events=None, stoplist=None, stoplist_error=""):
     return runner.AmoAutoResolver(
-        client=FakeMcp(contacts=contacts, leads=leads),
+        client=FakeMcp(contacts=contacts, leads=leads, events=events),
         shared_phone_stoplist=set(stoplist or ()),
         stoplist_error=stoplist_error,
     )
+
+
+def test_auto_resolver_prefers_unique_amo_chat_event_over_contact_search() -> None:
+    profile = DraftLoopProfile("profile-unpk", "unpk", "telegram")
+    key = DraftLoopKey("profile-unpk", "758394977")
+    current = _wappi_message(profile_id=profile.profile_id)
+    previous_outgoing = _wappi_message(profile_id=profile.profile_id, message_id="15624", ts=1006, from_me=True)
+    resolver = _resolver(
+        contacts=[],
+        leads=[_lead("50101349", contacts=("77345755",), org="")],
+        events=[
+            _event(),
+            _event(event_id="evt-2", event_type="outgoing_chat_message", ts=1006),
+        ],
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[current, previous_outgoing], message=current)
+
+    assert result["status"] == "matched"
+    assert result["lead_id"] == "50101349"
+    assert result["contact_id"] == "77345755"
+    assert result["match_key"] == "amo_chat_event"
+    assert result["match_value"] == "talk:3040"
+    assert result["amo_talk_id"] == "3040"
+    assert result["amo_sequence_match_count"] == 2
+    assert resolver.client.calls[0]["path"] == "events"
+    assert not any(call["path"] == "contacts" for call in resolver.client.calls)
+
+
+def test_auto_resolver_rejects_ambiguous_amo_chat_event_without_fallback() -> None:
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+    key = DraftLoopKey("profile-foton", "123456")
+    current = _wappi_message(profile_id=profile.profile_id, chat_id="123456")
+    previous_outgoing = _wappi_message(profile_id=profile.profile_id, chat_id="123456", message_id="prev", ts=990, from_me=True)
+    resolver = _resolver(
+        contacts=[_contact(telegram_id="123456", leads=("1",))],
+        leads=[_lead("1", contacts=("111",))],
+        events=[
+            _event(event_id="evt-1", lead_id="1", contact_id="111", talk_id="10"),
+            _event(event_id="evt-1-out", event_type="outgoing_chat_message", ts=990, lead_id="1", contact_id="111", talk_id="10"),
+            _event(event_id="evt-2", lead_id="2", contact_id="222", talk_id="20", ts=1005),
+            _event(event_id="evt-2-out", event_type="outgoing_chat_message", ts=990, lead_id="2", contact_id="222", talk_id="20"),
+        ],
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[previous_outgoing, current], message=current)
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "amo_chat_event_ambiguous"
+    assert result["candidate_count"] == 2
+    assert not any(call["path"] == "contacts" for call in resolver.client.calls)
+
+
+def test_auto_resolver_rejects_single_unconfirmed_amo_chat_event_without_fallback() -> None:
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+    key = DraftLoopKey("profile-foton", "123456")
+    current = _wappi_message(profile_id=profile.profile_id, chat_id="123456")
+    resolver = _resolver(
+        contacts=[_contact(telegram_id="123456", leads=("1",))],
+        leads=[_lead("1", contacts=("111",))],
+        events=[_event(event_id="evt-1", lead_id="1", contact_id="111", talk_id="10")],
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[current], message=current)
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "amo_chat_event_sequence_unconfirmed"
+    assert result["sequence_points_count"] == 1
+    assert not any(call["path"] == "contacts" for call in resolver.client.calls)
+
+
+def test_auto_resolver_rejects_event_contact_not_linked_to_lead() -> None:
+    profile = DraftLoopProfile("profile-unpk", "unpk", "telegram")
+    key = DraftLoopKey("profile-unpk", "758394977")
+    current = _wappi_message(profile_id=profile.profile_id)
+    previous_outgoing = _wappi_message(profile_id=profile.profile_id, message_id="15624", ts=1006, from_me=True)
+    resolver = _resolver(
+        leads=[_lead("50101349", contacts=("111111",), org="")],
+        events=[
+            _event(),
+            _event(event_id="evt-2", event_type="outgoing_chat_message", ts=1006),
+        ],
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[current, previous_outgoing], message=current)
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "event_contact_not_linked_to_lead"
+
+
+def test_auto_resolver_rejects_event_lead_without_contact_readback() -> None:
+    profile = DraftLoopProfile("profile-unpk", "unpk", "telegram")
+    key = DraftLoopKey("profile-unpk", "758394977")
+    current = _wappi_message(profile_id=profile.profile_id)
+    previous_outgoing = _wappi_message(profile_id=profile.profile_id, message_id="15624", ts=1006, from_me=True)
+    resolver = _resolver(
+        leads=[_lead("50101349", contacts=(), org="")],
+        events=[
+            _event(),
+            _event(event_id="evt-2", event_type="outgoing_chat_message", ts=1006),
+        ],
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[current, previous_outgoing], message=current)
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "event_lead_contacts_missing"
+
+
+def test_auto_resolver_rejects_when_amo_events_unavailable_without_fallback() -> None:
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+    key = DraftLoopKey("profile-foton", "123456")
+    resolver = runner.AmoAutoResolver(
+        client=EventFailMcp(contacts=[_contact(telegram_id="123456", leads=("1",))], leads=[_lead("1", contacts=("111",))]),
+        shared_phone_stoplist=set(),
+    )
+
+    result = resolver(
+        key=key,
+        profile=profile,
+        dialog={},
+        messages=[_wappi_message(profile_id=profile.profile_id, chat_id="123456")],
+        message=_wappi_message(profile_id=profile.profile_id, chat_id="123456"),
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "amo_chat_event_unavailable"
+    assert not any(call["path"] == "contacts" for call in resolver.client.calls)
+
+
+def test_auto_resolver_falls_back_to_exact_telegram_when_event_is_absent() -> None:
+    profile = DraftLoopProfile("profile-foton", "foton", "telegram")
+    key = DraftLoopKey("profile-foton", "123456")
+    resolver = _resolver(
+        contacts=[_contact(telegram_id="123456", leads=("1",))],
+        leads=[_lead("1", contacts=("111",))],
+        events=[],
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[], message=_wappi_message(profile_id=profile.profile_id, chat_id="123456"))
+
+    assert result["status"] == "matched"
+    assert result["lead_id"] == "1"
+    assert result["match_key"] == "Telegram ID"
+    assert [call["path"] for call in resolver.client.calls[:2]] == ["events", "contacts"]
 
 
 def test_auto_resolver_rejects_closed_deleted_zero_and_multi_active_leads() -> None:

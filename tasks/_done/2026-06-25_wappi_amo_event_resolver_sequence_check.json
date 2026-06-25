@@ -1,0 +1,171 @@
+{
+  "amo_writes": 0,
+  "client_sends": 0,
+  "examples": [
+    {
+      "brand": "unpk",
+      "bucket": "matched",
+      "channel": "telegram",
+      "chat_suffix": "4977",
+      "contact_id": "77345755",
+      "lead_id": "50101349",
+      "message_id": "15623",
+      "profile_id": "18b255b8-7a67",
+      "sequence_match_count": 2,
+      "sequence_points_count": 2,
+      "talk_id": "3040"
+    },
+    {
+      "brand": "unpk",
+      "bucket": "matched",
+      "channel": "max",
+      "chat_suffix": "2587",
+      "contact_id": "77139247",
+      "lead_id": "49826111",
+      "message_id": "116811527994549239",
+      "profile_id": "152b441d-81a2",
+      "sequence_match_count": 5,
+      "sequence_points_count": 7,
+      "talk_id": "3014"
+    },
+    {
+      "brand": "unpk",
+      "bucket": "matched",
+      "channel": "telegram",
+      "chat_suffix": "2139",
+      "contact_id": "77345013",
+      "lead_id": "50100367",
+      "message_id": "15621",
+      "profile_id": "18b255b8-7a67",
+      "sequence_match_count": 2,
+      "sequence_points_count": 2,
+      "talk_id": "3039"
+    },
+    {
+      "brand": "foton",
+      "bucket": "brand_mismatch",
+      "channel": "max",
+      "chat_suffix": "8411",
+      "message_id": "116811400788453911",
+      "profile_id": "2952990f-9e4c",
+      "sequence_points_count": null
+    },
+    {
+      "brand": "unpk",
+      "bucket": "amo_chat_event_sequence_unconfirmed",
+      "channel": "telegram",
+      "chat_suffix": "3388",
+      "message_id": "15620",
+      "profile_id": "18b255b8-7a67",
+      "sequence_points_count": 7
+    },
+    {
+      "brand": "foton",
+      "bucket": "matched",
+      "channel": "max",
+      "chat_suffix": "4265",
+      "contact_id": "66348707",
+      "lead_id": "49880203",
+      "message_id": "116811207800021665",
+      "profile_id": "2952990f-9e4c",
+      "sequence_match_count": 2,
+      "sequence_points_count": 2,
+      "talk_id": "3029"
+    },
+    {
+      "brand": "unpk",
+      "bucket": "amo_chat_event_sequence_unconfirmed",
+      "channel": "telegram",
+      "chat_suffix": "5961",
+      "message_id": "15619",
+      "profile_id": "18b255b8-7a67",
+      "sequence_points_count": 1
+    },
+    {
+      "brand": "foton",
+      "bucket": "matched",
+      "channel": "max",
+      "chat_suffix": "9454",
+      "contact_id": "75592127",
+      "lead_id": "48155699",
+      "message_id": "116811184576136949",
+      "profile_id": "2952990f-9e4c",
+      "sequence_match_count": 2,
+      "sequence_points_count": 2,
+      "talk_id": "3025"
+    },
+    {
+      "brand": "foton",
+      "bucket": "closed_lead",
+      "channel": "max",
+      "chat_suffix": "7110",
+      "message_id": "116811181146987852",
+      "profile_id": "2952990f-9e4c",
+      "sequence_points_count": null
+    },
+    {
+      "brand": "foton",
+      "bucket": "brand_mismatch",
+      "channel": "max",
+      "chat_suffix": "4519",
+      "message_id": "116811172373293906",
+      "profile_id": "2952990f-9e4c",
+      "sequence_points_count": null
+    },
+    {
+      "brand": "unpk",
+      "bucket": "amo_chat_event_sequence_unconfirmed",
+      "channel": "telegram",
+      "chat_suffix": "8312",
+      "message_id": "15618",
+      "profile_id": "18b255b8-7a67",
+      "sequence_points_count": 7
+    },
+    {
+      "brand": "unpk",
+      "bucket": "max_phone_missing",
+      "channel": "max",
+      "chat_suffix": "7461",
+      "message_id": "116810872242857898",
+      "profile_id": "152b441d-81a2",
+      "sequence_points_count": null
+    },
+    {
+      "brand": "foton",
+      "bucket": "max_phone_missing",
+      "channel": "max",
+      "chat_suffix": "9556",
+      "message_id": "116810862284770436",
+      "profile_id": "2952990f-9e4c",
+      "sequence_points_count": null
+    },
+    {
+      "brand": "foton",
+      "bucket": "max_phone_missing",
+      "channel": "max",
+      "chat_suffix": "6849",
+      "message_id": "116810755745339477",
+      "profile_id": "2952990f-9e4c",
+      "sequence_points_count": null
+    },
+    {
+      "brand": "unpk",
+      "bucket": "max_phone_missing",
+      "channel": "max",
+      "chat_suffix": "2873",
+      "message_id": "116810689245964202",
+      "profile_id": "152b441d-81a2",
+      "sequence_points_count": null
+    }
+  ],
+  "processed": 25,
+  "sample_size": 25,
+  "summary": {
+    "amo_chat_event_rate_limited": 5,
+    "amo_chat_event_sequence_unconfirmed": 3,
+    "brand_mismatch": 2,
+    "closed_lead": 3,
+    "matched": 6,
+    "max_phone_missing": 6
+  }
+}

@@ -37,6 +37,7 @@ from mango_mvp.channels.new_lead_funnel import build_lead_funnel_state, lead_fun
 from mango_mvp.channels.dialogue_memory import MEMORY_PROVENANCE_ENV, build_dialogue_memory, update_dialogue_memory_after_answer
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.fact_claim_audit import FACT_AUDIT_VERSION as JUDGE_FACT_AUDIT_VERSION, audit_fact_claims as audit_fact_claims_for_judge
+from mango_mvp.channels.subscription_llm_parts.reliable_answerer import RELIABLE_ANSWERER_STEP1_ENV
 from mango_mvp.channels.subscription_llm_parts.post_layers import _tone_close_detect_is_close_message
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     DEFAULT_BOT_SAFE_TENANT_ID,
@@ -1391,6 +1392,7 @@ def _run_key_flags(snapshot_path: Path) -> Mapping[str, Any]:
         "retriever": flag_state("TELEGRAM_LLM_RETRIEVE"),
         "retriever_need_shadow": default_off_flag_state(RETRIEVER_NEED_SHADOW_ENV),
         "retriever_model_driven": default_off_flag_state(RETRIEVER_MODEL_DRIVEN_ENV),
+        "reliable_answerer_step1": default_off_flag_state(RELIABLE_ANSWERER_STEP1_ENV),
         "memory_provenance": flag_state(MEMORY_PROVENANCE_ENV),
         "snapshot": str(snapshot_path),
     }
@@ -1800,6 +1802,11 @@ def run_one_dialog(
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
             else {}
         )
+        reliable_answerer_metadata = (
+            dict(result.metadata.get("reliable_answerer") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("reliable_answerer"), Mapping)
+            else {}
+        )
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))
@@ -1876,6 +1883,8 @@ def run_one_dialog(
         }
         if answerability_trace_metadata:
             turn["bot_answerability_trace"] = answerability_trace_metadata
+        if reliable_answerer_metadata:
+            turn["bot_reliable_answerer"] = reliable_answerer_metadata
         if _handoff_trace_enabled():
             turn["handoff_trace"] = _handoff_trace_for_turn(turn)
         turns.append(turn)
@@ -3251,6 +3260,7 @@ def build_summary(
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     answerability_trace = _answerability_trace_summary(transcripts)
+    reliable_answerer = _reliable_answerer_summary(transcripts)
     config_validity = _direct_path_config_invalid(
         transcripts,
         persona_order={str(dialog.get("dialog_id") or ""): index for index, dialog in enumerate(transcripts)},
@@ -3376,6 +3386,7 @@ def build_summary(
         "llm_calls": llm_call_summary,
         "semantic_output_verifier": semantic_output_verifier,
         "fact_retrieval_trace": fact_retrieval_trace,
+        **({"reliable_answerer": reliable_answerer} if int(reliable_answerer.get("turn_count") or 0) else {}),
         **({"answerability_trace": answerability_trace} if int(answerability_trace.get("turn_count") or 0) else {}),
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
@@ -3581,6 +3592,91 @@ def _fact_retrieval_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> M
         "assumed_scope_guard_actions": dict(assumed_scope_guard_actions),
         "asserted_assumed_slot_count": asserted_assumed_slot_count,
         "turns": turns,
+    }
+
+
+def _reliable_answerer_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    denominator = 0
+    answerable_but_handoff = 0
+    partial_answer_success = 0
+    hard_safety_failures: list[Mapping[str, Any]] = []
+    evidence_cases: list[Mapping[str, Any]] = []
+    turn_count = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            trace = turn.get("bot_reliable_answerer")
+            if not isinstance(trace, Mapping) or not trace:
+                trace = (turn.get("bot_direct_path") or {}).get("reliable_answerer") if isinstance(turn.get("bot_direct_path"), Mapping) else {}
+            if not isinstance(trace, Mapping) or not trace:
+                continue
+            turn_count += 1
+            plan = trace.get("answer_coverage_plan") if isinstance(trace.get("answer_coverage_plan"), Mapping) else {}
+            covered_facets = _string_list(trace.get("covered_facets_in_text") or [])
+            client_facets = _string_list(plan.get("client_facets") or [])
+            whole_handoff = bool(trace.get("whole_handoff_detected"))
+            availability_promise = bool(trace.get("availability_promise_detected"))
+            gate_codes = _authoritative_gate_finding_codes(turn.get("bot_authoritative_output_gate") or {})
+            hard_codes = [
+                code
+                for code in gate_codes
+                if re.search(r"p0|brand|cross_brand|wrong_scope|fact_grounding|fabricat|unsupported|number|payment", code, re.I)
+            ]
+            fact_audit = turn.get("judge_fact_audit") if isinstance(turn.get("judge_fact_audit"), Mapping) else {}
+            number_audit = turn.get("number_audit") if isinstance(turn.get("number_audit"), Mapping) else {}
+            risky_number = bool(number_audit.get("has_risky_number"))
+            kb_integrity_issue = bool(fact_audit.get("kb_integrity_issue"))
+            hard_failure = availability_promise or bool(hard_codes) or risky_number or kb_integrity_issue
+            if hard_failure:
+                hard_safety_failures.append(
+                    {
+                        "dialog_id": str(dialog.get("dialog_id") or ""),
+                        "turn": turn.get("turn"),
+                        "route": str(turn.get("bot_route") or ""),
+                        "availability_promise_detected": availability_promise,
+                        "gate_codes": hard_codes,
+                        "risky_number": risky_number,
+                        "kb_integrity_issue": kb_integrity_issue,
+                    }
+                )
+            in_denominator = bool(plan.get("enabled")) and bool(plan.get("covered_facets")) and not (
+                len(client_facets) == 1 and client_facets[0] == "availability"
+            )
+            if not in_denominator:
+                continue
+            denominator += 1
+            if whole_handoff:
+                answerable_but_handoff += 1
+            if covered_facets and not whole_handoff and not hard_failure:
+                partial_answer_success += 1
+            if len(evidence_cases) < 50:
+                evidence_cases.append(
+                    {
+                        "dialog_id": str(dialog.get("dialog_id") or ""),
+                        "turn": turn.get("turn"),
+                        "brand": str(dialog.get("brand") or ""),
+                        "route": str(turn.get("bot_route") or ""),
+                        "client_message": str(turn.get("client_message") or "")[:260],
+                        "client_facets": client_facets,
+                        "covered_facets": [dict(item) for item in (plan.get("covered_facets") or []) if isinstance(item, Mapping)],
+                        "missing_facets": [dict(item) for item in (plan.get("missing_facets") or []) if isinstance(item, Mapping)],
+                        "blocked_facets": [dict(item) for item in (plan.get("blocked_facets") or []) if isinstance(item, Mapping)],
+                        "covered_facets_in_text": covered_facets,
+                        "missing_facets_acknowledged": _string_list(trace.get("missing_facets_acknowledged") or []),
+                        "whole_handoff_detected": whole_handoff,
+                        "availability_promise_detected": availability_promise,
+                    }
+                )
+    return {
+        "schema_version": "reliable_answerer_summary_v1_2026_06_25",
+        "turn_count": turn_count,
+        "denominator": denominator,
+        "answerable_but_handoff": answerable_but_handoff,
+        "partial_answer_success": partial_answer_success,
+        "hard_safety_failure_count": len(hard_safety_failures),
+        "hard_safety_failures": hard_safety_failures[:50],
+        "evidence_cases": evidence_cases,
     }
 
 

@@ -603,6 +603,7 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     monkeypatch.delenv("TELEGRAM_LLM_RETRIEVE", raising=False)
     monkeypatch.delenv("TELEGRAM_RETRIEVER_NEED_SHADOW", raising=False)
     monkeypatch.delenv("TELEGRAM_RETRIEVER_MODEL_DRIVEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_RELIABLE_ANSWERER_STEP1", raising=False)
     snapshot_path = tmp_path / "snapshot.json"
 
     summary = sim.build_summary(
@@ -619,6 +620,7 @@ def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     assert flags["retriever"] == {"env": "", "effective": True}
     assert flags["retriever_need_shadow"] == {"env": "", "effective": False}
     assert flags["retriever_model_driven"] == {"env": "", "effective": False}
+    assert flags["reliable_answerer_step1"] == {"env": "", "effective": False}
     assert flags["memory_provenance"] == {"env": "", "effective": True}
     assert flags["snapshot"] == str(snapshot_path)
 
@@ -775,6 +777,69 @@ def test_summary_includes_answerability_trace_only_when_present(tmp_path):
     assert answerability["semantic_actions"] == {"downgrade": 1}
     assert answerability["gate_findings"] == {"unbacked_fact": 1}
     assert answerability["self_can_answer"] == {"no": 1}
+
+
+def test_summary_includes_reliable_answerer_metrics(tmp_path):
+    plan = {
+        "schema_version": "answer_coverage_plan_v1_2026_06_25",
+        "enabled": True,
+        "client_facets": ["price", "availability"],
+        "covered_facets": [{"facet": "price", "fact_keys": ["price.fact"], "coverage": "covered", "source": "confirmed_kb"}],
+        "missing_facets": [{"facet": "availability", "reason": "no_confirmed_fact"}],
+        "blocked_facets": [],
+        "must_not_handoff_whole_answer": True,
+    }
+    trace = {
+        "schema_version": "reliable_answerer_trace_v1_2026_06_25",
+        "enabled": True,
+        "answer_coverage_plan": plan,
+        "covered_facets_in_text": ["price"],
+        "missing_facets_acknowledged": ["availability"],
+        "whole_handoff_detected": False,
+        "availability_promise_detected": False,
+    }
+
+    summary = sim.build_summary(
+        [
+            {
+                "dialog_id": "reliable_answerer",
+                "brand": "foton",
+                "run_status": "completed",
+                "turns": [
+                    {
+                        "turn": 1,
+                        "client_message": "Сколько стоит и есть ли места?",
+                        "bot_route": "draft_for_manager",
+                        "bot_reliable_answerer": trace,
+                        "bot_safety_flags": [],
+                        "bot_authoritative_output_gate": {"action": "pass", "findings": []},
+                        "judge_fact_audit": {},
+                        "number_audit": {},
+                    },
+                    {
+                        "turn": 2,
+                        "client_message": "Есть места?",
+                        "bot_route": "draft_for_manager",
+                        "bot_reliable_answerer": {**trace, "availability_promise_detected": True},
+                        "bot_safety_flags": [],
+                        "bot_authoritative_output_gate": {"action": "pass", "findings": []},
+                        "judge_fact_audit": {},
+                        "number_audit": {},
+                    },
+                ],
+            }
+        ],
+        [{"dialog_id": "reliable_answerer", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    reliable = summary["reliable_answerer"]
+    assert reliable["schema_version"] == "reliable_answerer_summary_v1_2026_06_25"
+    assert reliable["denominator"] == 2
+    assert reliable["partial_answer_success"] == 1
+    assert reliable["hard_safety_failure_count"] == 1
+    assert reliable["evidence_cases"][0]["covered_facets_in_text"] == ["price"]
 
 
 def test_direct_path_fail_fast_accepts_any_model_called_dialog(monkeypatch, tmp_path):

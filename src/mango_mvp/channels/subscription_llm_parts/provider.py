@@ -190,6 +190,7 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     _clean_crm_recommendations,
     _clamp_float,
 )
+from mango_mvp.channels.subscription_llm_parts.reliable_answerer import apply_reliable_answerer_output_guard
 
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     BOT_GOLD_REAL_PACK_ENV,
@@ -1105,6 +1106,7 @@ class SubscriptionLlmDraftProvider:
         direct_meta = _direct_path_metadata(
             attempted=True,
             model_called=True,
+            client_message=client_message,
             facts=facts,
             fact_pack=fact_pack,
             gold_examples=gold_examples,
@@ -1155,6 +1157,11 @@ class SubscriptionLlmDraftProvider:
                     direct_meta["rubric_reason"] = f"regen_failed:{str(exc)[:160]}"
             result = _direct_path_merge_metadata(result, direct_meta)
             result = _apply_direct_path_model_p0_route(
+                result,
+                client_message=client_message,
+                context=context,
+            )
+            result = apply_reliable_answerer_output_guard(
                 result,
                 client_message=client_message,
                 context=context,

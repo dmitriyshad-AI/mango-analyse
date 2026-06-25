@@ -42,6 +42,10 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     SAFE_FALLBACK_DRAFT_TEXT,
     SubscriptionDraftResult,
 )
+from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
+    preserve_partial_answer_for_live_status,
+    reliable_answerer_step1_enabled,
+)
 from mango_mvp.channels.subscription_llm_parts.support import (
     MEMORY_PROVENANCE_ENV,
     PRESALE_PII_MEMORY_ENV,
@@ -2739,6 +2743,14 @@ def apply_autonomy_matrix_guard(
             "Автономный ответ запрещен: тема не входит в матрицу автономности.",
         )
     if _result_has_live_status_missing_fact(result, client_message=client_message) and not _is_verified_client_safe_template(result.draft_text):
+        if reliable_answerer_step1_enabled(context):
+            preserved = preserve_partial_answer_for_live_status(
+                result,
+                reason="autonomy_default_cautious_live_status_missing",
+                checklist_item="Автономный ответ запрещен: наличие места/группы/смены требует live-проверки менеджером.",
+            )
+            if preserved is not None:
+                return preserved
         return demote(
             "draft_for_manager",
             "autonomy_default_cautious_live_status_missing",

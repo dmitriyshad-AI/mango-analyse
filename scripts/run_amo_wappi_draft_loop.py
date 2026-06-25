@@ -189,7 +189,7 @@ def build_context_builder(
             current_text=client_message,
             snapshot_path=snapshot_path,
             active_brand=brand,
-            recent_messages=tuple(history)[-10:],
+            recent_messages=tuple(history),
             dialogue_memory=dialogue_memory or {},
             session_id=f"amo_draft_loop:{brand}:{key.profile_id}:{key.chat_id}",
             channel=f"wappi_{str(channel or 'telegram').strip().casefold()}",

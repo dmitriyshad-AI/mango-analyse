@@ -10,6 +10,25 @@ from mango_mvp.channels.subscription_llm import AUTONOMY_MATRIX_SAFE_TOPIC_IDS, 
 from mango_mvp.channels.telegram_pilot_context_builder import build_telegram_pilot_context_from_snapshot
 
 
+WAPPI_PROMPT_RAW_HISTORY_LIMIT = 15
+WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX = "Ранее в диалоге:"
+
+
+def wappi_prompt_recent_messages(messages: Sequence[str]) -> tuple[str, ...]:
+    items = tuple(str(item or "").strip() for item in messages if str(item or "").strip())
+    older_summary = tuple(item for item in items if item.startswith(WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX))[:1]
+    raw_history = tuple(item for item in items if not item.startswith(WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX))[
+        -WAPPI_PROMPT_RAW_HISTORY_LIMIT:
+    ]
+    return (*older_summary, *raw_history)
+
+
+def prompt_recent_messages_for_channel(messages: Sequence[str], *, channel: str) -> tuple[str, ...]:
+    if str(channel or "").strip().casefold().startswith("wappi_"):
+        return wappi_prompt_recent_messages(messages)
+    return tuple(str(item or "").strip() for item in messages if str(item or "").strip())[-10:]
+
+
 def known_dialog_fields_from_messages(messages: Sequence[str], *, active_brand: str = "") -> dict[str, str]:
     client_parts: list[str] = []
     for item in messages:
@@ -169,13 +188,14 @@ def build_pilot_context_payload(
     customer_summary = debug_customer_summary(debug_phone, debug_client or {})
     if crm_payload.get("summary"):
         customer_summary = "\n".join(item for item in (customer_summary, str(crm_payload["summary"])) if item)
+    prompt_recent_messages = prompt_recent_messages_for_channel(recent_messages, channel=channel)
     known_client_fields = known_client_fields_from_sources(
         debug_phone=debug_phone,
         debug_client=debug_client or {},
         crm_context=crm_payload,
     )
     known_dialog_fields = known_dialog_fields_from_messages(
-        [*tuple(recent_messages)[-10:], current_text],
+        [*prompt_recent_messages, current_text],
         active_brand=active_brand,
     )
     known_context_summary_text = build_known_context_summary(known_client_fields, known_dialog_fields)
@@ -194,7 +214,7 @@ def build_pilot_context_payload(
         snapshot_path=Path(snapshot_path),
         active_brand=active_brand,
         rop_policy=rop_policy,
-        recent_messages=tuple(recent_messages)[-10:],
+        recent_messages=prompt_recent_messages,
         client_identity=client_identity,
         customer_summary=customer_summary,
         amo_context=crm_payload.get("amo_context") if isinstance(crm_payload.get("amo_context"), Mapping) else None,
@@ -243,10 +263,12 @@ def build_funnel_state(
     context: Mapping[str, Any],
     result: SubscriptionDraftResult | None = None,
 ) -> LeadFunnelState:
+    client_identity = context.get("client_identity") if isinstance(context.get("client_identity"), Mapping) else {}
+    channel = str(client_identity.get("channel") if isinstance(client_identity, Mapping) else "").strip()
     return build_lead_funnel_state(
         current_text,
         active_brand=active_brand,
-        recent_messages=tuple(recent_messages)[-10:],
+        recent_messages=prompt_recent_messages_for_channel(recent_messages, channel=channel),
         context=context,
         topic_id=str((result.topic_id if result else context.get("topic_id")) or ""),
         message_type=str((result.message_type if result else context.get("message_type")) or ""),

@@ -70,6 +70,9 @@ DIRECT_PATH_WIDE_FACT_LIMIT = 60
 
 DIRECT_PATH_WIDE_FACT_CHAR_LIMIT = 10_000
 
+WAPPI_DIRECT_PATH_RAW_HISTORY_LIMIT = 15
+WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX = "Ранее в диалоге:"
+
 RETRIEVER_NEED_SHADOW_ENV = "TELEGRAM_RETRIEVER_NEED_SHADOW"
 
 RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
@@ -1518,7 +1521,15 @@ def _direct_path_recent_messages(context: Optional[Mapping[str, Any]], *, limit:
     value = context.get("recent_messages")
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return ()
-    return tuple(str(item or "").strip() for item in value[-limit:] if str(item or "").strip())
+    items = tuple(str(item or "").strip() for item in value if str(item or "").strip())
+    client_identity = context.get("client_identity") if isinstance(context.get("client_identity"), Mapping) else {}
+    channel = str(client_identity.get("channel") if isinstance(client_identity, Mapping) else "").strip().casefold()
+    if not channel.startswith("wappi_"):
+        return items[-limit:]
+    raw_limit = max(WAPPI_DIRECT_PATH_RAW_HISTORY_LIMIT, int(limit or 0))
+    older_summary = tuple(item for item in items if item.startswith(WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX))[:1]
+    raw_history = tuple(item for item in items if not item.startswith(WAPPI_OLDER_DIALOGUE_SUMMARY_PREFIX))[-raw_limit:]
+    return (*older_summary, *raw_history)
 
 def _direct_path_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}

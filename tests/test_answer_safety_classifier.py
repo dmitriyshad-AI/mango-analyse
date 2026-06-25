@@ -12,7 +12,9 @@ from mango_mvp.channels.p0_recall_spec import (
     PAYMENT_DISPUTE_RE,
     P0_BENIGN_CASES,
     P0_TRUE_POSITIVE_CASES,
+    codes_from_text,
 )
+from mango_mvp.channels.subscription_llm_parts.support import _p0_model_led_filter_high_risk_codes
 
 
 @pytest.mark.parametrize(("message", "expected_code"), P0_TRUE_POSITIVE_CASES)
@@ -34,6 +36,22 @@ def test_answer_safety_benign_process_phrases_do_not_require_p0(message: str) ->
     assert decision.p0_required is False
     assert decision.manager_only is False
     assert decision.blocks_autonomy is False
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    (
+        ("Хочу снять ребёнка с кружка.", "refund"),
+        ("Можно отказаться и выписать ребёнка с занятий?", "refund"),
+        ("Нужно перенести оплаченную смену, или вернёте деньги за смену?", "refund"),
+        ("В договоре неверная дата и фамилия ребёнка, исправьте.", "legal"),
+    ),
+)
+def test_p0_model_led_preserves_three_class_codes(message: str, expected_code: str) -> None:
+    codes = codes_from_text(message)
+
+    assert expected_code in codes
+    assert _p0_model_led_filter_high_risk_codes(codes, client_message=message, context={}) == codes
 
 
 @pytest.mark.parametrize("message", PAYMENT_DISPUTE_POSITIVE_CASES)

@@ -118,6 +118,53 @@ def test_bot_safe_crm_context_opens_read_only_db_under_path_with_spaces(tmp_path
     assert "Фотон: клиент уже спрашивал про онлайн-курс" in context["summary"]
 
 
+def test_bot_safe_crm_context_keeps_multiline_dossier_up_to_new_runtime_limit(tmp_path: Path) -> None:
+    db_path, customer_id = _seed_bot_safe_timeline(tmp_path)
+    long_text = (
+        "Бренд: Фотон.\n"
+        "Обсуждали:\n"
+        "- " + "клиент уточнял онлайн-формат " * 30 + "\n"
+        "Интерес / возражения:\n"
+        "- интерес к физике ОГЭ.\n"
+        "Договорённость / следующий шаг:\n"
+        "- семья сравнит варианты."
+    )
+    store = CustomerTimelineSQLiteStore(db_path, allowed_root=tmp_path)
+    store.upsert_bot_context_chunk(
+        BotContextChunk(
+            tenant_id="foton",
+            customer_id=customer_id,
+            chunk_id="chunk-long-foton",
+            chunk_type="bot_safe_summary",
+            text=long_text,
+            source_system="customer_timeline_bot_safe_summary",
+            source_ref=f"botsafe:{customer_id}:foton:long",
+            event_at=NOW,
+            freshness_score=1.0,
+            relevance_tags=("bot_safe", "structured", "foton"),
+            allowed_for_bot=True,
+            requires_manager_review=False,
+            metadata={"next_step": {"status": "active"}},
+        )
+    )
+    store.close()
+
+    context = build_bot_safe_crm_context(
+        timeline_db=db_path,
+        allowed_root=tmp_path,
+        active_brand="foton",
+        lookup=BotSafeLookup(tenant_id="foton", customer_id=customer_id),
+        limit=5,
+    )
+
+    raw = json.dumps(context, ensure_ascii=False)
+    assert context["found"] is True
+    assert "Интерес / возражения:" in raw
+    assert "Договорённость / следующий шаг:" in raw
+    assert "семья сравнит варианты" in raw
+    assert len(context["summary"]) > 700
+
+
 def _seed_bot_safe_timeline(
     tmp_path: Path,
     *,

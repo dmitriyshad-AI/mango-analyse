@@ -132,6 +132,23 @@ def test_bot_safe_memory_prompt_text_preserves_thread_without_exact_schedule() -
     assert "94 500" not in text
 
 
+def test_bot_safe_memory_prompt_text_hides_addresses_requisites_deadlines_and_procedural_claims() -> None:
+    text = _direct_path_bot_safe_memory_prompt_text(
+        "Обсуждали расписание. Адрес: улица Ленина, дом 4. "
+        "Реквизиты: ИНН 1234567890, назначение платежа — обучение. "
+        "Документы нужно прислать до 15 июля. Составим расписание без пересечений."
+    )
+
+    assert "Обсуждали расписание" in text
+    assert "<точная деталь из памяти скрыта>" in text
+    assert "улица" not in text.casefold()
+    assert "Ленина" not in text
+    assert "ИНН" not in text
+    assert "назначение платежа" not in text.casefold()
+    assert "15 июля" not in text
+    assert "Составим" not in text
+
+
 def _context(*, flag: bool, extra_items=None, include_unknown: bool = True):
     items = [
         {

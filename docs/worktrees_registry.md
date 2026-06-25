@@ -9,6 +9,35 @@
 | Ветка | Worktree | Тема | Уникальных коммитов к `origin/main` | СТОП-дата | Решение |
 |---|---|---|---:|---|---|
 | `codex/tz-email-timeline-bridge` | `/Users/dmitrijfabarisov/Projects/Mango_tz_email_timeline_bridge` | D4 мост письма+звонки в тестовую customer_timeline | 0 | 2026-06-25 | Жива до регрейда D4 по ТЗ 2026-06-21 |
+| `codex/phase1-dossier-enrich` | `/Users/dmitrijfabarisov/Projects/Mango_phase1_dossier_enrich` | Фаза 1: обогащение bot-safe досье из звонков | н/д | 2026-06-28 | Отдельный worktree от `4caa5eb`; не трогать live-write и боевую timeline |
+| `codex/amo-anti-clobber-contact-test` | `/Users/dmitrijfabarisov/Projects/Mango_amo_anti_clobber_test` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/autonomy-scope-precision` | `/Users/dmitrijfabarisov/Projects/Mango_autonomy_scope_precision` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/botsafe-summary-builder` | `/Users/dmitrijfabarisov/Projects/Mango_botsafe_summary_builder` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/consolidation-memory-chain-20260621` | `/Users/dmitrijfabarisov/Projects/Mango_consolidation_memory_chain` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/d8-next-step-summary-extractor` | `/Users/dmitrijfabarisov/Projects/Mango_d8_next_step_summary` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `cc/email-body-summaries` | `/Users/dmitrijfabarisov/Projects/Mango_email_summaries` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/d3-phase01-botsafe-integration` | `/Users/dmitrijfabarisov/Projects/Mango_etap3_faza1_botsafe_bot` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/fact-venue-scope-phase2` | `/Users/dmitrijfabarisov/Projects/Mango_fact_venue_scope_phase2` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/progression-judge` | `/Users/dmitrijfabarisov/Projects/Mango_main_merge` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/memory-balanced-benefit-measure` | `/Users/dmitrijfabarisov/Projects/Mango_memory_balanced_benefit` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/memory-measure-apparatus` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/memory-measure-apparatus-faza1` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure_faza1` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/memory-judge-grounded` | `/Users/dmitrijfabarisov/Projects/Mango_memory_measure_run_d3` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/memory-offon-d3-gate` | `/Users/dmitrijfabarisov/Projects/Mango_memory_offon_d3_gate` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/p0-model-led-complaint` | `/Users/dmitrijfabarisov/Projects/Mango_p0_model_led` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/tz-profile-selfcheck` | `/Users/dmitrijfabarisov/Projects/Mango_profile_selfcheck` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/project-registry-docs-20260625` | `/Users/dmitrijfabarisov/Projects/Mango_project_registry_docs` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/prose-model-led` | `/Users/dmitrijfabarisov/Projects/Mango_prose_model_led` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/mango-call-increment` | `/Users/dmitrijfabarisov/Projects/Mango_release_venue_autonomy` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/reliable-answerer-step1-with-closing` | `/Users/dmitrijfabarisov/Projects/Mango_reliable_answerer_step1` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/sales-exam-m1-bundle` | `/Users/dmitrijfabarisov/Projects/Mango_sales_exam_m1_bundle` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/sales-exam-progression-v2` | `/Users/dmitrijfabarisov/Projects/Mango_sales_exam_progression_v2` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/tz151-known-slots-next-step` | `/Users/dmitrijfabarisov/Projects/Mango_tz151_known_slots_next_step` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/tz-c-nightly-cursors` | `/Users/dmitrijfabarisov/Projects/Mango_tzC_nightly_cursors` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/wappi-authoritative-auto-resolver` | `/Users/dmitrijfabarisov/Projects/Mango_wappi_authoritative_auto_resolver` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/wappi-botsafe-memory` | `/Users/dmitrijfabarisov/Projects/Mango_wappi_botsafe_memory` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/wappi-context-window` | `/Users/dmitrijfabarisov/Projects/Mango_wappi_context_window` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
+| `codex/wappi-history` | `/Users/dmitrijfabarisov/Projects/Mango_wappi_history` | Зарегистрировано preflight Phase1 | н/д | 2026-06-28 | Только реестр; не трогать в этом ТЗ |
 | `codex/etap2-step1-address-book` | `/Users/dmitrijfabarisov/Projects/mango-tz33-perf` | Etap2 address book / fresh relink артефакты | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/d7-amo-safety` | `/Users/dmitrijfabarisov/Projects/Mango_d7_amo_safety` | D7 AMO safety | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |
 | `codex/etap1-crm-card-assembler` | `/Users/dmitrijfabarisov/Projects/Mango_etap1_crm_cards` | Etap1 CRM card assembler | 0 | 2026-06-25 | Зарегистрировано для preflight D4; не трогать в этом ТЗ |

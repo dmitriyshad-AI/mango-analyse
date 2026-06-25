@@ -25,6 +25,8 @@ BOT_SAFE_SUMMARY_SCHEMA_VERSION = "customer_timeline_bot_safe_summary_v1"
 BOT_SAFE_SUMMARY_CHUNK_TYPE = "bot_safe_summary"
 BOT_SAFE_SUMMARY_SOURCE_SYSTEM = "customer_timeline_bot_safe_summary"
 BOT_SAFE_SUMMARY_ACTOR = "customer_timeline_bot_safe_summary_builder"
+MANGO_CALL_EVENT_TYPE = "mango_call"
+MANGO_CALL_SOURCE_SYSTEM = "mango_processed_summary"
 
 KNOWN_BRANDS = {"foton", "unpk"}
 GENERIC_TITLE_PATTERNS = (
@@ -34,6 +36,7 @@ GENERIC_TITLE_PATTERNS = (
 )
 WHITESPACE_RE = re.compile(r"\s+")
 LONG_DIGIT_TOKEN_RE = re.compile(r"\b\d{8,}\b")
+BOOKING_CODE_RE = re.compile(r"\b\d{2,}(?:[-\s]\d{2,})+\b|\b\d{6,}\b")
 MAIL_REPLY_PREFIX_RE = re.compile(r"^(?:(?:re|fw|fwd):\s*)+", re.IGNORECASE)
 FILE_NAME_FRAGMENT_RE = re.compile(r"(?:^image[-_ ]|\.(?:pdf|jpe?g|png|gif|docx?|xlsx?|zip)\b)", re.IGNORECASE)
 FOTON_MARKERS = ("фотон", "foton", "cdpofoton", "цдпфотон", "цдп фотон")
@@ -42,16 +45,30 @@ UNSAFE_INTEREST_MARKERS = (
     "акци",
     "договор",
     "документ",
+    "бик",
+    "внутрен",
     "задолж",
+    "закреп",
+    "заброниру",
+    "запиш",
+    "инн",
+    "кпп",
     "квитанц",
+    "назначени",
     "оплат",
     "платеж",
     "платёж",
+    "подбер",
     "пропуск",
+    "реквизит",
     "receipt",
+    "расчетн",
+    "расчётн",
     "скидк",
+    "составим",
     "счет",
     "счёт",
+    "ускор",
     "чек",
 )
 INTEREST_NAME_PLACEHOLDER = "<name_masked>"
@@ -74,6 +91,42 @@ SAFE_INTEREST_PHRASE_PATTERNS = (
     re.compile(r"\bОГЭ\b", re.IGNORECASE),
     re.compile(r"\bМ9\b", re.IGNORECASE),
     re.compile(r"\bМ11\b", re.IGNORECASE),
+)
+CALL_DOSSIER_SECTION_LIMIT = 3
+CALL_DOSSIER_FRAGMENT_LIMIT = 260
+CALL_DOSSIER_SUMMARY_KEYS = ("history_short", "history_summary", "summary")
+CALL_DOSSIER_INTEREST_KEYS = ("target_product", "interests", "objections", "pain_points")
+CALL_DOSSIER_NEXT_STEP_KEYS = ("next_step", "recommended_next_step", "follow_up_reason")
+CALL_DOSSIER_NON_CONVERSATION_MARKERS = (
+    "автоинформ",
+    "автоответ",
+    "живого разговора",
+    "значимого диалога",
+    "не было диалога",
+    "не состоялся",
+    "номер не используется",
+    "raw_secret",
+    "содержательного обсуждения",
+    "сырой текст",
+)
+CALL_DOSSIER_EXACT_DETAIL_RE = re.compile(
+    r"(?:"
+    r"\b20\d{2}\s*/\s*\d{2}\b"
+    r"|\b\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}\b"
+    r"|\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"
+    r"|\b\d{1,3}(?:[\s\u00a0]\d{3})+(?:\s*(?:₽|руб\.?|рублей|рубля))?"
+    r"|\b\d+(?:[,.]\d+)?\s*%"
+    r"|\b\d+\s*(?:₽|руб\.?|рублей|рубля)\b"
+    r"|\b(?:ул\.?|улиц[а-яё]*|проспект|пр-кт|пр-т|шоссе|переулок|пер\.|дом|корпус|строени[ея]|офис|кабинет)\b"
+    r"|\b(?:слот|групп[а-яё]*|старт|начал[оа]|дедлайн|срок)\b[^.!?\n]{0,80}"
+    r"|\b(?:реквизит[а-яё]*|расч[её]тн[а-яё]*\s+сч[её]т|р/с|инн|кпп|бик|назначени[а-яё]*\s+плат[её]ж[а-яё]*)\b"
+    r")",
+    re.IGNORECASE,
+)
+CALL_DOSSIER_PROCEDURAL_CLAIM_RE = re.compile(
+    r"\b(?:составим|ускорит|ускорим|подбер[её]м|подбер[её]т|забронируем|закрепим|запишем|"
+    r"оформим|пришл[её]м|вышлем|согласуем)\b",
+    re.IGNORECASE,
 )
 
 
@@ -243,7 +296,7 @@ def _build_customer_draft(
         conflicts=conflicts,
         customer_id=customer_id,
     )
-    text = _render_safe_text(brand=brand, status=status, interest=interest, next_step=next_step)
+    text = _render_safe_text(brand=brand, status=status, interest=interest, next_step=next_step, events=events)
     latest_at = _latest_event_at(opportunities, events)
     created_at = _existing_created_at(existing_chunk) or now_utc()
     source_ref = _bot_safe_source_ref(customer_id=customer_id, brand=brand)
@@ -266,7 +319,7 @@ def _build_customer_draft(
             "brand_source": brand_source,
             "opportunity_count": len(opportunities),
             "event_count": len(events),
-            "next_step": next_step.to_json_dict(),
+            "next_step": _safe_next_step_json(next_step, brand=brand),
         },
         created_at=created_at,
     )
@@ -311,14 +364,209 @@ def _build_customer_brand_drafts(
     return tuple(drafts)
 
 
-def _render_safe_text(*, brand: str, status: str, interest: str, next_step: NextStepResolution) -> str:
+def _render_safe_text(
+    *,
+    brand: str,
+    status: str,
+    interest: str,
+    next_step: NextStepResolution,
+    events: Sequence[Mapping[str, Any]] = (),
+) -> str:
     parts: list[str] = []
     if brand in KNOWN_BRANDS:
         parts.append(f"Бренд: {_brand_label(brand)}.")
     parts.append(f"Стадия: {status or 'не определена'}.")
     parts.append(f"Интерес: {interest or 'не определён'}.")
-    parts.append(f"Следующий шаг: {_safe_fragment(next_step.display_text) or 'активный шаг не найден'}.")
-    return " ".join(parts)
+    parts.append(f"Следующий шаг: {_safe_next_step_display_text(next_step, brand=brand)}.")
+    sections = _call_dossier_sections(events, next_step=next_step, brand=brand)
+    for title, values in sections:
+        if not values:
+            continue
+        parts.append(f"{title}:")
+        parts.extend(f"- {value}" for value in values)
+    return "\n".join(parts)
+
+
+def _call_dossier_sections(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    next_step: NextStepResolution,
+    brand: str,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    if next_step.reason_code == "ambiguous_identity_open":
+        return ()
+    call_events = tuple(event for event in events if _mango_call_event_allowed_for_dossier(event, brand=brand))
+    discussed: list[str] = []
+    interest_objections: list[str] = []
+    agreements: list[str] = []
+    for event in reversed(call_events):
+        analysis = _call_analysis(event)
+        discussed.extend(
+            _safe_call_values(
+                (analysis.get(key) for key in CALL_DOSSIER_SUMMARY_KEYS),
+                brand=brand,
+            )
+        )
+        interest_values: list[str] = []
+        agreement_values: list[str] = []
+        record = _mapping(event.get("record"))
+        for key in CALL_DOSSIER_INTEREST_KEYS:
+            prefix = "Интерес" if key in {"target_product", "interests"} else "Возражение"
+            for value in _iter_nested_text_values(analysis.get(key)):
+                interest_values.append(_prefixed_call_value(prefix, value))
+        for key in CALL_DOSSIER_NEXT_STEP_KEYS:
+            source_value = analysis.get(key) or record.get(key)
+            agreement_values.extend(_iter_nested_text_values(source_value))
+        interest_objections.extend(
+            _safe_call_values(
+                interest_values,
+                brand=brand,
+            )
+        )
+        agreements.extend(
+            _safe_call_values(
+                agreement_values,
+                brand=brand,
+            )
+        )
+        if (
+            len(discussed) >= CALL_DOSSIER_SECTION_LIMIT
+            and len(interest_objections) >= CALL_DOSSIER_SECTION_LIMIT
+            and len(agreements) >= CALL_DOSSIER_SECTION_LIMIT
+        ):
+            break
+
+    if next_step.status in {"active", "needs_manager_review", "empty"}:
+        step = _safe_next_step_display_text(next_step, brand=brand)
+        if step:
+            agreements.insert(0, f"[{next_step.status}] {step}")
+
+    return (
+        ("Обсуждали", _dedupe_limited(discussed, CALL_DOSSIER_SECTION_LIMIT)),
+        ("Интерес / возражения", _dedupe_limited(interest_objections, CALL_DOSSIER_SECTION_LIMIT)),
+        ("Договорённость / следующий шаг", _dedupe_limited(agreements, CALL_DOSSIER_SECTION_LIMIT)),
+    )
+
+
+def _mango_call_event_allowed_for_dossier(event: Mapping[str, Any], *, brand: str) -> bool:
+    if str(event.get("event_type") or "").strip().casefold() != MANGO_CALL_EVENT_TYPE:
+        return False
+    if str(event.get("source_system") or "").strip().casefold() != MANGO_CALL_SOURCE_SYSTEM:
+        return False
+    if not _brand_fragment_allowed(_event_brand(event), brand=brand):
+        return False
+    record = _mapping(event.get("record"))
+    if _normalize_brand(record.get("brand")) not in {"unknown", brand} and brand in KNOWN_BRANDS:
+        return False
+    text = " ".join(
+        str(value or "")
+        for value in (
+            event.get("summary"),
+            event.get("text_preview"),
+            _mapping(record.get("call_analysis")).get("history_summary"),
+            _mapping(record.get("call_analysis")).get("summary"),
+        )
+    ).casefold()
+    if len(text.strip()) < 20:
+        return False
+    return not any(marker in text for marker in CALL_DOSSIER_NON_CONVERSATION_MARKERS)
+
+
+def _call_analysis(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    record = _mapping(event.get("record"))
+    analysis = _mapping(record.get("call_analysis"))
+    if analysis:
+        return analysis
+    call = _mapping(record.get("call"))
+    nested = _mapping(call.get("call_analysis") or call.get("analysis") or call.get("analysis_json"))
+    if nested:
+        return nested
+    return {"summary": event.get("summary")}
+
+
+def _safe_call_values(values: Iterable[Any], *, brand: str) -> tuple[str, ...]:
+    return tuple(
+        value
+        for value in (_safe_call_fragment(item, brand=brand) for item in values)
+        if value
+    )
+
+
+def _safe_call_fragment(value: Any, *, brand: str) -> str:
+    text = _safe_person_free_fragment(value, max_len=CALL_DOSSIER_FRAGMENT_LIMIT)
+    if not text:
+        return ""
+    if not _brand_fragment_allowed(text, brand=brand):
+        return ""
+    lowered = text.casefold().replace("ё", "е")
+    if any(marker in lowered for marker in CALL_DOSSIER_NON_CONVERSATION_MARKERS):
+        return ""
+    if CALL_DOSSIER_EXACT_DETAIL_RE.search(text):
+        return ""
+    if CALL_DOSSIER_PROCEDURAL_CLAIM_RE.search(text):
+        return ""
+    if not re.search(r"[a-zа-я]", _interest_semantic_text_without_person_markers(text), flags=re.IGNORECASE):
+        return ""
+    return text
+
+
+def _safe_next_step_display_text(next_step: NextStepResolution, *, brand: str) -> str:
+    text = _safe_call_fragment(next_step.display_text, brand=brand)
+    if text:
+        return text
+    if next_step.status == "active":
+        return "активный шаг требует уточнения у менеджера"
+    if next_step.status == "needs_manager_review":
+        return "уточнить у менеджера"
+    return "активный шаг не найден"
+
+
+def _safe_next_step_json(next_step: NextStepResolution, *, brand: str) -> Mapping[str, Any]:
+    payload = dict(next_step.to_json_dict())
+    payload["display_text"] = _safe_next_step_display_text(next_step, brand=brand)
+    payload["action"] = _safe_call_fragment(next_step.action, brand=brand)
+    payload["previous_step"] = _safe_call_fragment(next_step.previous_step, brand=brand)
+    return payload
+
+
+def _prefixed_call_value(prefix: str, value: Any) -> str:
+    text = str(value or "").strip()
+    return f"{prefix}: {text}" if text else ""
+
+
+def _iter_nested_text_values(value: Any) -> Iterable[str]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        result: list[str] = []
+        for key in ("title", "name", "subject", "format", "class", "value", "text", "summary", "description"):
+            item = value.get(key)
+            if item is not None:
+                result.extend(_iter_nested_text_values(item))
+        return tuple(result)
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, bytearray)):
+        result: list[str] = []
+        for item in value:
+            result.extend(_iter_nested_text_values(item))
+        return tuple(result)
+    return (str(value),)
+
+
+def _dedupe_limited(values: Sequence[str], limit: int) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = WHITESPACE_RE.sub(" ", str(value or "")).strip(" ;,.:-")
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+        if len(result) >= max(1, int(limit or 1)):
+            break
+    return tuple(result)
 
 
 def _customer_summary_brands(
@@ -666,6 +914,7 @@ def _text_values(value: Any) -> tuple[str, ...]:
 def _safe_fragment(value: Any, *, max_len: int = 160) -> str:
     text = redact_text(str(value or ""))
     text = LONG_DIGIT_TOKEN_RE.sub("<number_masked>", text)
+    text = BOOKING_CODE_RE.sub("<number_masked>", text)
     text = WHITESPACE_RE.sub(" ", text).strip()
     text = MAIL_REPLY_PREFIX_RE.sub("", text).strip()
     if len(text) > max_len:
@@ -673,11 +922,16 @@ def _safe_fragment(value: Any, *, max_len: int = 160) -> str:
     return text
 
 
-def _safe_interest_fragment(value: Any, *, max_len: int = 160) -> str:
+def _safe_person_free_fragment(value: Any, *, max_len: int = 160) -> str:
     text = _safe_fragment(value, max_len=max_len)
     if not text:
         return ""
-    return _scrub_interest_person_names(text)
+    text = _scrub_interest_person_names(text)
+    return WHITESPACE_RE.sub(" ", text).strip(" ;,.:-")
+
+
+def _safe_interest_fragment(value: Any, *, max_len: int = 160) -> str:
+    return _safe_person_free_fragment(value, max_len=max_len)
 
 
 def _scrub_interest_person_names(value: str) -> str:

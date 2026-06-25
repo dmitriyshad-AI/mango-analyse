@@ -104,6 +104,13 @@ _BOT_SAFE_MEMORY_EXACT_DETAIL_RE = re.compile(
     r"|\b\d{1,3}(?:[\s\u00a0]\d{3})+(?:\s*(?:₽|руб\.?|рублей|рубля))?"
     r"|\b\d+(?:[,.]\d+)?\s*%"
     r"|\b\d+\s*(?:₽|руб\.?|рублей|рубля)\b"
+    r"|\b(?:до|к)\s+\d{1,2}\s+(?:январ[яеь]|феврал[яеь]|март[ае]?|апрел[яеь]|ма[йяе]|июн[яье]|июл[яье]|август[ае]?|"
+    r"сентябр[яеь]|октябр[яеь]|ноябр[яеь]|декабр[яеь])\b"
+    r"|\b(?:ул\.?|улиц[а-яё]*|проспект|пр-кт|пр-т|шоссе|переулок|пер\.|дом|д\.|корпус|к\.|строени[ея]|офис|кабинет|этаж)\b[^.!?\n]{0,80}"
+    r"|\b(?:слот|групп[а-яё]*|старт|начал[оа]|дедлайн|срок)\b[^.!?\n]{0,80}"
+    r"|\b(?:реквизит[а-яё]*|расч[её]тн[а-яё]*\s+сч[её]т|р/с|инн|кпп|бик|назначени[а-яё]*\s+плат[её]ж[а-яё]*)\b[^.!?\n]{0,80}"
+    r"|\b(?:составим|ускорит|ускорим|подбер[её]м|подбер[её]т|забронируем|закрепим|запишем|"
+    r"оформим|пришл[её]м|вышлем|согласуем)\b[^.!?\n]{0,80}"
     r")",
     re.I,
 )
@@ -393,7 +400,7 @@ def _direct_path_legacy_context_fact_items(context: Optional[Mapping[str, Any]],
     return dict(list(items.items())[:limit])
 
 
-def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *, limit: int = 3) -> tuple[Mapping[str, Any], ...]:
+def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *, limit: int = 5) -> tuple[Mapping[str, Any], ...]:
     if not _bot_safe_crm_context_enabled(context) or not isinstance(context, Mapping):
         return ()
     active_brand = _active_brand(context)
@@ -435,13 +442,13 @@ def _direct_path_bot_safe_context_items(context: Optional[Mapping[str, Any]], *,
             result.append(
                 {
                     "chunk_type": "bot_safe_summary",
-                    "text": _direct_path_trim_context_text(text, 700),
+                    "text": _direct_path_trim_context_text(text, 1200),
                     "event_at": str(item.get("event_at") or "").strip(),
                     "next_step_status": _direct_path_bot_safe_next_step_status(item),
                     "relevance_tags": [tag for tag in ("bot_safe", "structured", active_brand, "unknown") if tag in tags],
                 }
             )
-            if len(result) >= max(1, int(limit or 3)):
+            if len(result) >= max(1, int(limit or 5)):
                 return tuple(result)
     return tuple(result)
 
@@ -476,12 +483,13 @@ def _direct_path_bot_safe_text_has_pii(text: str) -> bool:
 
 
 def _direct_path_trim_context_text(text: str, limit: int) -> str:
-    value = " ".join(str(text or "").split()).strip()
+    value = re.sub(r"[ \t\r\f\v]+", " ", str(text or "")).strip()
+    value = re.sub(r"\n{3,}", "\n\n", value)
     return value if len(value) <= limit else value[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _direct_path_bot_safe_memory_prompt_text(text: str) -> str:
-    value = _direct_path_trim_context_text(text, 700)
+    value = _direct_path_trim_context_text(text, 1200)
     return _BOT_SAFE_MEMORY_EXACT_DETAIL_RE.sub("<точная деталь из памяти скрыта>", value)
 
 

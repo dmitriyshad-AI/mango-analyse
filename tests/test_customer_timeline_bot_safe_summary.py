@@ -283,6 +283,127 @@ def test_bot_safe_summary_open_ambiguous_identity_blocks_extracted_step(tmp_path
     assert "отправить договор" not in dumped.casefold()
 
 
+def test_bot_safe_summary_builds_multiline_call_dossier_from_processed_mango_calls_only(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer, title="Фотон ОГЭ физика онлайн")
+    safe_event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="processed-call",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Обсуждали подготовку к ОГЭ по физике и онлайн-формат.",
+        record={
+            "brand": "foton",
+            "call_analysis": {
+                "history_summary": "Обсуждали подготовку к ОГЭ по физике и онлайн-формат.",
+                "interests": ["ОГЭ физика", {"title": "онлайн-формат"}],
+                "objections": ["нужен мягкий темп"],
+                "next_step": "семья сравнит онлайн и очный формат",
+            },
+        },
+        created_at=NOW,
+    )
+    wrong_source_event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW + timedelta(minutes=1),
+        source_system="mango_call",
+        source_id="wrong-source-call",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Запрещённый source_system не должен попасть в bot-safe досье.",
+        record={"brand": "foton"},
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(safe_event)
+    store.upsert_event(wrong_source_event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "Обсуждали:" in dumped
+    assert "Интерес / возражения:" in dumped
+    assert "Договорённость / следующий шаг:" in dumped
+    assert "ОГЭ по физике" in dumped
+    assert "нужен мягкий темп" in dumped
+    assert "семья сравнит онлайн и очный формат" in dumped
+    assert "Запрещённый source_system" not in dumped
+
+
+def test_bot_safe_summary_scrubs_names_and_unsafe_call_details_across_dossier(tmp_path: Path) -> None:
+    store = _open_store(tmp_path)
+    customer = _customer()
+    opportunity = _opportunity(customer, title="Фотон информатика онлайн")
+    event = TimelineEvent(
+        tenant_id=customer.tenant_id,
+        customer_id=customer.customer_id,
+        event_type=TimelineEventType.MANGO_CALL,
+        event_at=NOW,
+        source_system="mango_processed_summary",
+        source_id="unsafe-call-details",
+        direction=TimelineDirection.INBOUND,
+        match_status="strong_unique",
+        confidence=0.9,
+        importance=3,
+        summary="Менеджер Клычева Дарья обсудила онлайн-формат.",
+        record={
+            "brand": "foton",
+            "call_analysis": {
+                "history_short": "Менеджер Клычева Дарья обсудила онлайн-формат.",
+                "history_summary": "Встреча на улице Ленина, дом 4; старт группы 01.09.2026.",
+                "interests": ["информатика онлайн"],
+                "next_step": "составим расписание, чтобы предметы не пересекались",
+                "follow_up_reason": "чек ускорит подтверждение оплаты",
+            },
+        },
+        created_at=NOW,
+    )
+    store.upsert_customer(customer)
+    store.upsert_opportunity(opportunity)
+    store.upsert_event(event)
+    store.close()
+
+    build_bot_safe_summaries(
+        BotSafeSummaryBuildConfig(
+            timeline_db=tmp_path / "customer_timeline.sqlite",
+            allowed_root=tmp_path,
+            tenant_id="foton",
+            apply=True,
+        )
+    )
+    dumped = _load_bot_safe_text(tmp_path / "customer_timeline.sqlite")
+
+    assert "онлайн-формат" in dumped
+    assert "информатика онлайн" in dumped
+    assert "Клычева" not in dumped
+    assert "Дарья" not in dumped
+    assert "улице" not in dumped.casefold()
+    assert "Ленина" not in dumped
+    assert "01.09.2026" not in dumped
+    assert "составим" not in dumped.casefold()
+    assert "ускорит" not in dumped.casefold()
+
+
 def test_bot_safe_summary_is_idempotent_by_botsafe_source_ref(tmp_path: Path) -> None:
     store = _open_store(tmp_path)
     customer = _customer()

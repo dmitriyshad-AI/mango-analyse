@@ -182,7 +182,7 @@ def _safe_items_for_brand(items: Sequence[Any], *, active_brand: str, limit: int
         result.append(
             {
                 "chunk_type": BOT_SAFE_CHUNK_TYPE,
-                "text": _truncate(text, 700),
+                "text": _truncate(text, 1200),
                 "event_at": _clean_text(item.get("event_at")),
                 "next_step_status": _next_step_status(item),
                 "freshness_score": item.get("freshness_score"),
@@ -223,7 +223,7 @@ def _render_summary(items: Sequence[Mapping[str, Any]]) -> str:
         text = _clean_text(item.get("text"))
         if text:
             lines.append(text)
-    return _truncate("\n".join(lines), 1800)
+    return _truncate("\n".join(lines), 3000)
 
 
 def _empty_context(

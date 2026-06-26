@@ -4,7 +4,7 @@ Last updated: 2026-06-26
 
 This file is the repository-local project map. It separates four different states that must not be mixed:
 
-- `main`: local repository branch, currently `e05d37e`.
+- `main`: local repository branch, currently `c4c8a60`.
 - `origin/main`: remote branch, currently older than local main.
 - `live`: currently deployed bot runtime. It is not the same thing as `main`.
 - `branch`: a candidate worktree/branch, source branch, or audit branch. After merge, keep branches until cleanup is explicitly approved.
@@ -15,9 +15,9 @@ Do not treat a branch result, a one-shot live smoke, or a green test run as prod
 
 | Area | Current State | Evidence |
 |---|---|---|
-| Local `main` | `e05d37e`; includes `TELEGRAM_INTENT_MODEL_LED`, P0 three-class detector, Wappi watch package, and this registry | `/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff`, `git log --oneline -8` |
+| Local `main` | `c4c8a60`; includes `TELEGRAM_INTENT_MODEL_LED`, P0 three-class detector, Wappi watch package, and this registry | `/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff`, `git log --oneline -8` |
 | Main worktree folder | `/Users/dmitrijfabarisov/Projects/Mango analyse` is not the clean main worktree; it is on `codex/tz135-direct-wow-tone` and dirty | `git status --short --branch` in main folder |
-| Origin | `origin/main=43134ae`; local `main` is ahead by 100 commits. Do not assume remote is current. | `git rev-parse --short origin/main`; `git rev-list --count origin/main..main` |
+| Origin | `origin/main=43134ae`; local `main` is ahead by 101 commits. Do not assume remote is current. | `git rev-parse --short origin/main`; `git rev-list --count origin/main..main` |
 | Live Telegram bot | Runs from the venue/autonomy live branch, not from local `main` | `Mango_live_4caa5eb_release_venue_autonomy` reports and runtime passport history |
 | Live writes | No AMO/Tallanto/CRM/customer write may be run from this registry alone | Project safety boundary |
 
@@ -25,9 +25,9 @@ Do not treat a branch result, a one-shot live smoke, or a green test run as prod
 
 | Feature | Status | What It Means | Next Gate |
 |---|---|---|---|
-| `TELEGRAM_INTENT_MODEL_LED` | In local `main` at `e05d37e` | Model-led intent is part of `pilot_gold_v1` in local main. It was merged cleanly without venue/autonomy/KB payload. | Needs deployment decision if live should move to this main line. |
-| P0 detector: three classes | In local `main` at `e05d37e` | Handles refund/legal classes and narrows false `refund` on benign “снять стресс/усталость”. Integration tests: targeted `254 passed`; full pytest `3651 passed, 5 skipped`. | Needs business regрейд before live rollout. |
-| Wappi watch package | In local `main` at `e05d37e` | Includes 50-message Wappi context, AMO-events resolver, note format fix, stabilization ops, and default `flex` service tier. Integration tests: targeted `254 passed`; full pytest `3651 passed, 5 skipped`. | Live watch requires a separate live-write gate. |
+| `TELEGRAM_INTENT_MODEL_LED` | In local `main` at `c4c8a60` | Model-led intent is part of `pilot_gold_v1` in local main. It was merged cleanly without venue/autonomy/KB payload. | Needs deployment decision if live should move to this main line. |
+| P0 detector: three classes | In local `main` at `c4c8a60` | Handles refund/legal classes and narrows false `refund` on benign “снять стресс/усталость”. Integration tests: targeted `254 passed`; full pytest `3651 passed, 5 skipped`. | Needs business regрейд before live rollout. |
+| Wappi watch package | In local `main` at `c4c8a60` | Includes 50-message Wappi context, AMO-events resolver, note format fix, stabilization ops, and default `flex` service tier. Integration tests: targeted `254 passed`; full pytest `3651 passed, 5 skipped`. | Live watch requires a separate live-write gate. |
 | Wappi current live process | Not currently alive as main loop | Read-only process check saw no active `run_amo_wappi_draft_loop.py`; only watchdog process was present. Last known context-watch heartbeat: `2026-06-25T17:46:09Z`, `bot_calls=0`, `processed=0`, `auto_resolver_counts.not_enabled=92`. | After merge/regрейд: controlled watch launch with passport, heartbeat, daily report, and quality table. |
 | AMO note write allow-all | Server-side setting, not repository code | `CRM_AMO_NOTE_ALLOW_ALL_LEADS=1` must be set in AI Office if broad note writes are intended. Repo code alone cannot remove server `403 lead is not allowlisted`. | Server deployment/config check before live-write expansion. |
 | Customer Timeline: Mango calls | Production append was executed by D4; source remains `mango_processed_summary` | Reports show no `source_system='mango_call'`, allowed_for_bot remains false for raw manager chunks. | Wait for remaining pending calls; decide on semantic duplicates; rebuild profiles/summaries if needed. |

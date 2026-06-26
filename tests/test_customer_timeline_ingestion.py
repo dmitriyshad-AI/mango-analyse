@@ -12,6 +12,7 @@ import pytest
 
 from mango_mvp.customer_timeline import (
     AmoSnapshotNormalizer,
+    BotContextChunk,
     ChannelMessageNormalizer,
     CustomerIdentity,
     IdentityLink,
@@ -472,6 +473,48 @@ def test_mail_and_channel_sources_reject_allowed_for_bot_true() -> None:
                     "allowed_for_bot": True,
                 },
             )
+        )
+
+
+def test_amo_incremental_sources_reject_allowed_for_bot_true_in_children() -> None:
+    source_record = TimelineSourceRecord(
+        source_system="amo_events_created_at",
+        source_ref="amocrm:event:unsafe",
+        payload={"event_id": "unsafe"},
+    )
+
+    with pytest.raises(ValueError, match="amocrm_event timeline events.*allowed_for_bot=False"):
+        TimelineNormalizedBatch(
+            source_record=source_record,
+            events=(
+                TimelineEvent(
+                    tenant_id="foton",
+                    customer_id="customer:amo-unsafe",
+                    event_type=TimelineEventType.AMO_NOTE,
+                    event_at=NOW,
+                    source_system="amocrm_event",
+                    source_id="evt-unsafe",
+                    direction=TimelineDirection.INBOUND,
+                    record={"allowed_for_bot": True},
+                ),
+            ),
+        )
+
+    with pytest.raises(ValueError, match="amocrm_event bot context chunks.*allowed_for_bot=False"):
+        TimelineNormalizedBatch(
+            source_record=source_record,
+            bot_context_chunks=(
+                BotContextChunk(
+                    tenant_id="foton",
+                    customer_id="customer:amo-unsafe",
+                    chunk_type="amo_event_raw",
+                    text="AMO raw event must stay manager-only.",
+                    source_ref="amocrm:event:unsafe",
+                    source_system="amocrm_event",
+                    allowed_for_bot=True,
+                    requires_manager_review=False,
+                ),
+            ),
         )
 
 

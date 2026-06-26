@@ -65,7 +65,17 @@ FORBIDDEN_IMPORT_HINTS = (
     "mango_mvp.amocrm_runtime.tallanto_api",
 )
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
-BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset({"mail_archive", "channel_snapshot", "telegram_history"})
+BOT_FORBIDDEN_SOURCE_SYSTEMS = frozenset(
+    {
+        "mail_archive",
+        "channel_snapshot",
+        "telegram_history",
+        "amo_events_created_at",
+        "amo_leads_updated_at",
+        "amo_contacts_updated_at",
+        "amocrm_event",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -1975,9 +1985,7 @@ def merge_counts(target: dict[str, int], source: Mapping[str, int]) -> None:
 
 def assert_bot_context_not_allowed_for_restricted_source(batch: TimelineNormalizedBatch) -> None:
     source_system = batch.source_record.source_system
-    if source_system not in BOT_FORBIDDEN_SOURCE_SYSTEMS:
-        return
-    if contains_allowed_for_bot_true(batch.source_record.payload):
+    if source_system in BOT_FORBIDDEN_SOURCE_SYSTEMS and contains_allowed_for_bot_true(batch.source_record.payload):
         raise ValueError(f"{source_system} source records must be loaded with allowed_for_bot=False")
     for event in batch.events:
         if event.source_system in BOT_FORBIDDEN_SOURCE_SYSTEMS and contains_allowed_for_bot_true(event.record):

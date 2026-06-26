@@ -4,10 +4,10 @@ Last updated: 2026-06-26
 
 This file is the repository-local project map. It separates four different states that must not be mixed:
 
-- `main`: local repository branch, currently `b543991`.
+- `main`: local repository branch, currently `e05d37e`.
 - `origin/main`: remote branch, currently older than local main.
 - `live`: currently deployed bot runtime. It is not the same thing as `main`.
-- `branch`: a candidate worktree/branch that is implemented but not yet merged into `main`.
+- `branch`: a candidate worktree/branch, source branch, or audit branch. After merge, keep branches until cleanup is explicitly approved.
 
 Do not treat a branch result, a one-shot live smoke, or a green test run as production readiness. For bot, CRM, AMO, Tallanto, and customer text, green tests mean `formal_pass`; business review is still required before live expansion.
 
@@ -15,9 +15,9 @@ Do not treat a branch result, a one-shot live smoke, or a green test run as prod
 
 | Area | Current State | Evidence |
 |---|---|---|
-| Local `main` | `b543991`; includes clean `TELEGRAM_INTENT_MODEL_LED` profile enablement | `/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff`, `git log --oneline -5` |
+| Local `main` | `e05d37e`; includes `TELEGRAM_INTENT_MODEL_LED`, P0 three-class detector, Wappi watch package, and this registry | `/Users/dmitrijfabarisov/Projects/Mango_main_intent_ff`, `git log --oneline -8` |
 | Main worktree folder | `/Users/dmitrijfabarisov/Projects/Mango analyse` is not the clean main worktree; it is on `codex/tz135-direct-wow-tone` and dirty | `git status --short --branch` in main folder |
-| Origin | `origin/main=43134ae`; local `main` is ahead by 89 commits. Do not assume remote is current. | `git rev-parse --short origin/main`; `git rev-list --count origin/main..main` |
+| Origin | `origin/main=43134ae`; local `main` is ahead by 100 commits. Do not assume remote is current. | `git rev-parse --short origin/main`; `git rev-list --count origin/main..main` |
 | Live Telegram bot | Runs from the venue/autonomy live branch, not from local `main` | `Mango_live_4caa5eb_release_venue_autonomy` reports and runtime passport history |
 | Live writes | No AMO/Tallanto/CRM/customer write may be run from this registry alone | Project safety boundary |
 
@@ -25,37 +25,35 @@ Do not treat a branch result, a one-shot live smoke, or a green test run as prod
 
 | Feature | Status | What It Means | Next Gate |
 |---|---|---|---|
-| `TELEGRAM_INTENT_MODEL_LED` | In local `main` at `b543991` | Model-led intent is now part of `pilot_gold_v1` in local main. It was merged cleanly without venue/autonomy/KB payload. | Needs deployment decision if live should move to this main line. |
-| P0 detector: three classes | Branch candidate: `codex/p0-three-classes-on-main` at `9558b1f` | Clean branch over `main@b543991`; handles refund/legal classes and narrows false `refund` on benign “снять стресс/усталость”. Tests: `135 passed`; full pytest: `3631 passed, 5 skipped`. | Claude/business regрейд, then merge decision. |
-| Wappi watch package | Branch candidate: `codex/wappi-watch-on-main` at `29c1dee` | Clean branch over `main@b543991`; includes 50-message Wappi context, AMO-events resolver, note format fix, stabilization ops, and default `flex` service tier. Tests: `119 passed`; full pytest: `3632 passed, 5 skipped`. | Regрейд, then merge decision. Live watch requires a separate live-write gate. |
+| `TELEGRAM_INTENT_MODEL_LED` | In local `main` at `e05d37e` | Model-led intent is part of `pilot_gold_v1` in local main. It was merged cleanly without venue/autonomy/KB payload. | Needs deployment decision if live should move to this main line. |
+| P0 detector: three classes | In local `main` at `e05d37e` | Handles refund/legal classes and narrows false `refund` on benign “снять стресс/усталость”. Integration tests: targeted `254 passed`; full pytest `3651 passed, 5 skipped`. | Needs business regрейд before live rollout. |
+| Wappi watch package | In local `main` at `e05d37e` | Includes 50-message Wappi context, AMO-events resolver, note format fix, stabilization ops, and default `flex` service tier. Integration tests: targeted `254 passed`; full pytest `3651 passed, 5 skipped`. | Live watch requires a separate live-write gate. |
 | Wappi current live process | Not currently alive as main loop | Read-only process check saw no active `run_amo_wappi_draft_loop.py`; only watchdog process was present. Last known context-watch heartbeat: `2026-06-25T17:46:09Z`, `bot_calls=0`, `processed=0`, `auto_resolver_counts.not_enabled=92`. | After merge/regрейд: controlled watch launch with passport, heartbeat, daily report, and quality table. |
 | AMO note write allow-all | Server-side setting, not repository code | `CRM_AMO_NOTE_ALLOW_ALL_LEADS=1` must be set in AI Office if broad note writes are intended. Repo code alone cannot remove server `403 lead is not allowlisted`. | Server deployment/config check before live-write expansion. |
 | Customer Timeline: Mango calls | Production append was executed by D4; source remains `mango_processed_summary` | Reports show no `source_system='mango_call'`, allowed_for_bot remains false for raw manager chunks. | Wait for remaining pending calls; decide on semantic duplicates; rebuild profiles/summaries if needed. |
 | AMO incremental | Branch/test-copy work exists, production apply not done in this plan | Current prod DB sha changed after call appends; old apply plan sha is stale. | Fresh apply plan, backup, process check, and separate “да” before any prod write. |
 | AMO cards | Source-label cleanup fixed manager-visible noise | Branch `codex/etap1-crm-card-assembler`; dry-run after cleanup: payload noise 0, 3/5 would write after approval, 2/5 blocked by anti-clobber. | Pick safe rows, fresh readback plan, explicit write permission. |
 | Bot-safe memory | Still off for Wappi/live by default | Earlier A/B showed no harm, but low benefit because Wappi-chat to customer coverage and dossier quality were weak. | Improve dossier usefulness and linkage before enabling broadly. |
-| Venue/autonomy layer | In live branch, not in local `main` | `FACT_VENUE_SCOPE` and `AUTONOMY_SCOPE_PRECISION` are not part of local `main@b543991`. | Separate merge plan; do not accidentally pull via unrelated branches. |
+| Venue/autonomy layer | In live branch, not in local `main` | `FACT_VENUE_SCOPE` and `AUTONOMY_SCOPE_PRECISION` are not part of local `main@e05d37e`. | Separate merge plan; do not accidentally pull via unrelated branches. |
 
 ## Active Branches Worth Tracking
 
 | Branch / Worktree | Purpose | Current Gate |
 |---|---|---|
-| `/Users/dmitrijfabarisov/Projects/Mango_wappi_watch_on_main` / `codex/wappi-watch-on-main` | Wappi controlled watch package on current main | Regрейд before main merge; no live-write yet. |
-| `/Users/dmitrijfabarisov/Projects/Mango_p0_three_classes_on_main` / `codex/p0-three-classes-on-main` | Clean P0 three-class detector on current main | Regрейд before main merge. |
+| `/Users/dmitrijfabarisov/Projects/Mango_wappi_watch_on_main` / `codex/wappi-watch-on-main` | Source branch for Wappi controlled watch package | Merged into local `main`; keep for audit until cleanup decision. |
+| `/Users/dmitrijfabarisov/Projects/Mango_p0_three_classes_on_main` / `codex/p0-three-classes-on-main` | Source branch for P0 three-class detector | Merged into local `main`; keep for audit until cleanup decision. |
 | `/Users/dmitrijfabarisov/Projects/Mango_etap1_crm_cards` / `codex/etap1-crm-card-assembler` | AMO card assembler and dry-run cleanup | Writeback still gated; no live-write. |
 | `/Users/dmitrijfabarisov/Projects/Mango_tzC_nightly_cursors` / `codex/tz-c-nightly-cursors` | AMO incremental / nightly cursor work | Fresh prod plan required; previous sha stale. |
-| `/Users/dmitrijfabarisov/Projects/Mango_project_registry_docs_current` / `codex/project-registry-docs-current` | This repo-local registry | Docs-only branch. |
+| `/Users/dmitrijfabarisov/Projects/Mango_project_registry_docs_current` / `codex/project-registry-docs-current` | Source branch for repo-local registry | Merged into local `main`; keep for audit until cleanup decision. |
 
 ## Merge Order
 
 Current safe order:
 
-1. `codex/p0-three-classes-on-main` after regрейд.
-2. `codex/wappi-watch-on-main` after regрейд.
-3. Controlled Wappi watch launch after separate live-write gate.
-4. AMO card writeback only for explicitly approved rows after fresh dry-run/readback.
-5. AMO incremental production apply only after fresh backup/apply plan and separate “да”.
-6. Venue/autonomy merge as a separate integration, not as a side effect of P0/Wappi.
+1. Controlled Wappi watch launch after separate live-write gate.
+2. AMO card writeback only for explicitly approved rows after fresh dry-run/readback.
+3. AMO incremental production apply only after fresh backup/apply plan and separate “да”.
+4. Venue/autonomy merge as a separate integration, not as a side effect of P0/Wappi.
 
 ## Wappi Launch Gate
 

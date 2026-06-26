@@ -269,6 +269,19 @@ class EventFailMcp(FakeMcp):
         return super().amo_api_get(path=path, params=params, limit=limit)
 
 
+class EventRetryOnceMcp(FakeMcp):
+    def __init__(self, contacts=None, leads=None, events=None) -> None:
+        super().__init__(contacts=contacts, leads=leads, events=events)
+        self.event_failures = 0
+
+    def amo_api_get(self, *, path, params=None, limit=50):
+        if path == "events" and self.event_failures == 0:
+            self.event_failures += 1
+            self.calls.append({"path": path, "params": params or {}, "limit": limit, "failed": True})
+            raise RuntimeError("HTTP 429: rate limit")
+        return super().amo_api_get(path=path, params=params, limit=limit)
+
+
 def _contact(contact_id="111", *, telegram_id="", phone="", leads=("49762441",)):
     fields = []
     if telegram_id:
@@ -330,11 +343,12 @@ def _wappi_message(*, profile_id="profile-foton", chat_id="758394977", message_i
     )
 
 
-def _resolver(*, contacts=None, leads=None, events=None, stoplist=None, stoplist_error=""):
+def _resolver(*, contacts=None, leads=None, events=None, stoplist=None, stoplist_error="", allowed_channels=frozenset({"telegram", "max"})):
     return runner.AmoAutoResolver(
         client=FakeMcp(contacts=contacts, leads=leads, events=events),
         shared_phone_stoplist=set(stoplist or ()),
         stoplist_error=stoplist_error,
+        allowed_channels=allowed_channels,
     )
 
 
@@ -464,6 +478,59 @@ def test_auto_resolver_rejects_when_amo_events_unavailable_without_fallback() ->
     assert result["status"] == "rejected"
     assert result["reason"] == "amo_chat_event_unavailable"
     assert not any(call["path"] == "contacts" for call in resolver.client.calls)
+
+
+def test_auto_resolver_channel_gate_rejects_disabled_channel_without_amo_calls() -> None:
+    profile = DraftLoopProfile("profile-max", "foton", "max")
+    resolver = _resolver(
+        contacts=[_contact("1", phone="+79990000000")],
+        leads=[_lead()],
+        allowed_channels=frozenset({"telegram"}),
+    )
+
+    result = resolver(
+        key=DraftLoopKey("profile-max", "max-chat-1"),
+        profile=profile,
+        dialog={"phone": "+7 999 000-00-00"},
+        messages=[],
+        message=None,
+    )
+
+    assert result["status"] == "rejected"
+    assert result["reason"] == "auto_resolver_channel_disabled"
+    assert resolver.client.calls == []
+
+
+def test_auto_resolver_retries_amo_429_once_and_throttles_followup_get() -> None:
+    profile = DraftLoopProfile("profile-unpk", "unpk", "telegram")
+    key = DraftLoopKey("profile-unpk", "758394977")
+    current = _wappi_message(profile_id=profile.profile_id)
+    previous_outgoing = _wappi_message(profile_id=profile.profile_id, message_id="15624", ts=1006, from_me=True)
+    sleeps: list[float] = []
+    mcp = EventRetryOnceMcp(
+        leads=[_lead("50101349", contacts=("77345755",), org="")],
+        events=[
+            _event(),
+            _event(event_id="evt-2", event_type="outgoing_chat_message", ts=1006),
+        ],
+    )
+    resolver = runner.AmoAutoResolver(
+        client=mcp,
+        shared_phone_stoplist=set(),
+        throttle_sec=0.2,
+        retry_after_sec=3.0,
+        time_fn=lambda: 100.0,
+        sleep_fn=sleeps.append,
+    )
+
+    result = resolver(key=key, profile=profile, dialog={}, messages=[current, previous_outgoing], message=current)
+
+    assert result["status"] == "matched"
+    assert result["match_key"] == "amo_chat_event"
+    assert mcp.event_failures == 1
+    assert [call["path"] for call in mcp.calls].count("events") == 2
+    assert any(abs(value - 3.0) < 0.001 for value in sleeps)
+    assert any(abs(value - 0.2) < 0.001 for value in sleeps)
 
 
 def test_auto_resolver_falls_back_to_exact_telegram_when_event_is_absent() -> None:

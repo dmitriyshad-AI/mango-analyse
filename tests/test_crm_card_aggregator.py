@@ -257,6 +257,10 @@ def test_crm_card_uses_manager_only_call_summary_fallback_without_call_analysis(
         "уточнил формат занятий и попросил прислать материалы по курсу. Менеджер объяснил "
         "расписание и договорился вернуться к вопросу после выздоровления."
     )
+    older_summary = (
+        "01.05.2026 11:15 менеджер общался с клиентом. Клиент выбирал между онлайн-форматом "
+        "и очными занятиями, попросил прислать программу и условия старта."
+    )
     technical_summary = (
         "03.05.2026 10:00 менеджер общался с клиентом. Нецелевой звонок: автоответчик/"
         "короткий технический дозвон. Итог: Нет содержательного диалога менеджер-клиент."
@@ -287,6 +291,12 @@ def test_crm_card_uses_manager_only_call_summary_fallback_without_call_analysis(
                     "source_system": "mango_processed_summary",
                     "summary": useful_summary,
                 },
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-05-01T11:15:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "summary": older_summary,
+                },
             ]
         },
         "signals": [],
@@ -302,7 +312,18 @@ def test_crm_card_uses_manager_only_call_summary_fallback_without_call_analysis(
     assert contact_fields["История общения"].startswith("Сводка:\nСм. поле «Последняя сводка».")
     assert "полная сводка в поле «Последняя сводка»" in contact_fields["История общения"]
     assert useful_summary not in contact_fields["История общения"]
+    assert "Звонок:" in contact_fields["История общения"]
+    assert older_summary in contact_fields["История общения"]
     assert "Нецелевой звонок" not in json.dumps(contact_fields, ensure_ascii=False)
+    manager_payload = json.dumps(
+        {
+            "contact": card["contact_card"]["fields"],
+            "deal": card["deal_card"]["fields"],
+            "preview": card["workbook"]["what_goes_to_amo"],
+        },
+        ensure_ascii=False,
+    )
+    assert "mango_processed_summary" not in manager_payload
     assert "Следующий шаг" not in card["deal_card"]["fields"]
     assert card["bot_safety"]["bot_safe_fields"] == []
     assert card["bot_safety"]["manager_only_fields"]

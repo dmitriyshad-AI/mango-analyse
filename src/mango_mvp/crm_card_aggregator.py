@@ -53,6 +53,26 @@ MANGO_CALL_MANAGER_HISTORY_FALLBACK_NON_CONVERSATION_RE = re.compile(
     r")\b",
     re.I,
 )
+MANAGER_EVENT_LABEL_BY_SOURCE = {
+    "mango_processed_summary": "Звонок",
+    "mango": "Звонок",
+    "mango_office": "Звонок",
+    "mail_archive": "Письмо",
+    "mail_archive_stage2": "Письмо",
+    "channel_snapshot": "Сообщение",
+    "telegram_history": "Сообщение",
+    "whatsapp_history": "Сообщение",
+    "amocrm_snapshot": "AMO",
+    "amo_incremental": "AMO",
+    "tallanto_snapshot": "Tallanto",
+}
+MANAGER_EVENT_LABEL_BY_TYPE = {
+    "mango_call": "Звонок",
+    "email_message": "Письмо",
+    "amo_deal_stage": "AMO",
+    "amo_contact_snapshot": "AMO",
+    "tallanto_student_snapshot": "Tallanto",
+}
 BLOCKER_MESSAGES = {
     "p9_ambiguous_identity_manual_review": "На телефоне несколько человек — проверьте, к кому относится",
     "open_conflicts_require_manager_review": "Есть открытые конфликты в истории — проверьте вручную",
@@ -728,7 +748,7 @@ def _history_summary_source(
         if event_key and event_key == _event_key(latest_call):
             continue
         event_at = _safe_text(event.get("event_at"))[:10] or "дата не указана"
-        event_type = _safe_text(event.get("event_type") or event.get("source_system") or "событие")
+        event_type = _manager_event_label(event)
         lines = [f"{event_at} {event_type}: {summary}"]
         lines.extend(_call_analysis_lines(event))
         blocks.append("\n".join(lines))
@@ -754,7 +774,7 @@ def _chronology_text(
     compact_full_texts = compact_full_texts or set()
     for event in sorted(events, key=lambda item: _safe_text(item.get("event_at")), reverse=True)[:limit]:
         event_at = _safe_text(event.get("event_at"))[:10] or "дата не указана"
-        source = _safe_text(event.get("source_system") or event.get("event_type"))
+        source = _manager_event_label(event)
         summary = _event_history_summary(event)
         if not summary:
             continue
@@ -824,6 +844,22 @@ def _mango_call_manager_history_eligible(event: Mapping[str, Any]) -> bool:
 def _event_history_summary(event: Mapping[str, Any]) -> str:
     call_analysis = _mapping(event.get("call_analysis"))
     return _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+
+
+def _manager_event_label(event: Mapping[str, Any]) -> str:
+    event_type = _safe_text(event.get("event_type")).casefold()
+    source = _safe_text(event.get("source_system")).casefold()
+    if event_type in MANAGER_EVENT_LABEL_BY_TYPE:
+        return MANAGER_EVENT_LABEL_BY_TYPE[event_type]
+    if source in MANAGER_EVENT_LABEL_BY_SOURCE:
+        return MANAGER_EVENT_LABEL_BY_SOURCE[source]
+    if event_type.startswith("amo_") or "amocrm" in source:
+        return "AMO"
+    if event_type.startswith("tallanto_") or source.startswith("tallanto"):
+        return "Tallanto"
+    if event_type.startswith("channel_") or source.endswith("_history"):
+        return "Сообщение"
+    return "Событие"
 
 
 def _is_email_stub_event(event: Mapping[str, Any]) -> bool:

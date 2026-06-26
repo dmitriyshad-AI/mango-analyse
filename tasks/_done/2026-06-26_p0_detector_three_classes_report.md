@@ -109,6 +109,50 @@ Formal pass: yes.
 
 Semantic pass: `PASS_WITH_NOTES` for the scoped detector and benign controls in this worktree.
 
+## Micro-Fix After Registry v3 Audit
+
+Claude #1 found a confirmed false-positive in commit `01d049d`:
+
+```text
+снять стресс ребёнку -> ('refund',)
+как снять усталость ребёнку -> ('refund',)
+```
+
+This was caused by an over-broad `снять ... ребёнк*` pattern.
+
+Fix applied:
+
+- narrowed service-exit patterns to explicit educational/service contexts:
+  - `снять ребёнка с кружка/курса/занятий/обучения/группы`;
+  - `снять с занятий`;
+  - `отписать ребёнка от занятий/обучения/курса`;
+  - cancellation/recording patterns remain separate;
+- added benign regression cases:
+  - `Как снять стресс ребёнку?`;
+  - `Как снять усталость ребёнку?`;
+  - `Можно снять напряжение после занятий?`.
+
+Spot-check after fix:
+
+```text
+снять стресс ребёнку -> ()
+как снять стресс ребёнку -> ()
+как снять усталость ребёнку -> ()
+снять усталость после занятий -> ()
+можно снять напряжение после занятий -> ()
+хочу снять ребёнка с кружка -> ('refund',)
+снять ребёнка с кружка -> ('refund',)
+снять с занятий -> ('refund',)
+хочу отписать ребёнка от занятий -> ('refund',)
+```
+
+Updated test result:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_p0_perifraz.py tests/test_answer_safety_classifier.py
+135 passed in 0.76s
+```
+
 Not claimed:
 
 - no 363-dialog regrade was run here;

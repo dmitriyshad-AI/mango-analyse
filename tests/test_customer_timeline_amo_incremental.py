@@ -194,3 +194,39 @@ def test_fetch_events_source_marks_mapping_after_card_import() -> None:
     assert stats["mapping_diagnostics_counts"]["mapped_after_card_import"] == 2
     assert stats["common_note_added_mapping_diagnostics"]["mapped_after_card_import"] == 1
     assert stats["source_body_status_counts"]["note_body_missing"] == 1
+
+
+def test_fetch_events_source_sets_opportunity_for_lead_events_only() -> None:
+    payload = {
+        "_embedded": {
+            "events": [
+                {"id": 21, "type": "incoming_chat_message", "entity_type": "lead", "entity_id": 501, "created_at": 1782250000},
+                {"id": 22, "type": "incoming_mail", "entity_type": "contact", "entity_id": 30, "created_at": 1782250001},
+            ]
+        }
+    }
+    config = type("Config", (), {"page_limit": 10, "max_pages": 1, "sleep_sec": 0.0})()
+
+    rows, _stats = fetch_events_source(
+        FakeAmoClient(payload),
+        from_ts=NOW,
+        link_index={
+            ("amo_lead_id", "501"): ("customer:lead",),
+            ("amo_contact_id", "30"): ("customer:contact",),
+        },
+        opportunity_index={
+            "501": (
+                {
+                    "customer_id": "customer:lead",
+                    "opportunity_id": "opportunity:lead-501",
+                },
+            )
+        },
+        diagnostic_link_index_before={},
+        fetched_entity_ids={"lead": {"501"}, "contact": {"30"}},
+        config=config,
+    )
+
+    by_id = {row["event_id"]: row for row in rows}
+    assert by_id["21"]["opportunity_id"] == "opportunity:lead-501"
+    assert by_id["22"]["opportunity_id"] is None

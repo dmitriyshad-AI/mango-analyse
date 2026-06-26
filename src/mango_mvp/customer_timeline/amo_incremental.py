@@ -111,11 +111,13 @@ def run_amo_incremental(config: AmoIncrementalConfig) -> Mapping[str, Any]:
     )
     cards_first = run_nightly_incremental(cards_config)
     link_index_after_cards = load_amo_link_index(timeline_db, tenant_id=config.tenant_id)
+    opportunity_index_after_cards = load_amo_opportunity_index(timeline_db, tenant_id=config.tenant_id)
 
     event_rows, event_stats = fetch_events_source(
         client,
         from_ts=lower_bound["amo_events_created_at"],
         link_index=link_index_after_cards,
+        opportunity_index=opportunity_index_after_cards,
         diagnostic_link_index_before=link_index_before,
         fetched_entity_ids={"lead": lead_fetched_ids, "contact": contact_fetched_ids},
         config=config,
@@ -269,6 +271,32 @@ def load_amo_link_index(db_path: Path, *, tenant_id: str) -> Mapping[tuple[str, 
     return {key: tuple(sorted(values)) for key, values in result.items()}
 
 
+def load_amo_opportunity_index(db_path: Path, *, tenant_id: str) -> Mapping[str, tuple[Mapping[str, str], ...]]:
+    result: dict[str, list[Mapping[str, str]]] = {}
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only = ON")
+        for row in con.execute(
+            """
+            SELECT source_id, opportunity_id, customer_id
+            FROM customer_opportunities
+            WHERE tenant_id = ?
+              AND source_system = 'amocrm_snapshot'
+              AND opportunity_type = 'amo_deal'
+              AND source_id IS NOT NULL
+              AND source_id != ''
+            """,
+            (tenant_id,),
+        ):
+            result.setdefault(str(row["source_id"]), []).append(
+                {
+                    "opportunity_id": str(row["opportunity_id"]),
+                    "customer_id": str(row["customer_id"]),
+                }
+            )
+    return {key: tuple(values) for key, values in result.items()}
+
+
 def load_cursor_snapshot(db_path: Path, tenant_id: str) -> Mapping[str, Optional[str]]:
     wanted = ("amo_leads_updated_at", "amo_contacts_updated_at", "amo_events_created_at")
     result: dict[str, Optional[str]] = {key: None for key in wanted}
@@ -412,6 +440,7 @@ def fetch_events_source(
     *,
     from_ts: datetime,
     link_index: Mapping[tuple[str, str], tuple[str, ...]],
+    opportunity_index: Optional[Mapping[str, tuple[Mapping[str, str], ...]]] = None,
     diagnostic_link_index_before: Optional[Mapping[tuple[str, str], tuple[str, ...]]] = None,
     fetched_entity_ids: Optional[Mapping[str, set[str]]] = None,
     config: AmoIncrementalConfig,
@@ -435,7 +464,9 @@ def fetch_events_source(
     mapping_common_note = Counter()
     diagnostic_samples: list[Mapping[str, Any]] = []
     before_index = diagnostic_link_index_before or {}
+    opportunities = opportunity_index or {}
     fetched_ids = fetched_entity_ids or {}
+    opportunity_counts = Counter()
     for item in items:
         amo_type = str(item.get("type") or "").strip()
         if amo_type not in AMO_EVENT_TYPES:
@@ -494,12 +525,20 @@ def fetch_events_source(
             )
             continue
         body_status = "note_body_missing" if amo_type.startswith("common_note") else "event_only"
+        opportunity_id = resolve_event_opportunity_id(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            customer_id=customers[0],
+            opportunity_index=opportunities,
+        )
+        opportunity_counts["mapped" if opportunity_id else "missing_or_not_applicable"] += 1
         rows.append(
             {
                 "event_id": event_id,
                 "customer_id": customers[0],
                 "entity_type": entity_type,
                 "entity_id": entity_id,
+                "opportunity_id": opportunity_id,
                 "amo_event_type": amo_type,
                 "created_at": epoch_to_iso(item.get("created_at")),
                 "event_at": epoch_to_iso(item.get("created_at")),
@@ -525,9 +564,29 @@ def fetch_events_source(
         "mapping_diagnostics_counts": dict(mapping_counts),
         "mapping_diagnostics_by_type": {key: dict(value) for key, value in mapping_by_type.items()},
         "common_note_added_mapping_diagnostics": dict(mapping_common_note),
+        "opportunity_mapping_counts": dict(opportunity_counts),
         "diagnostic_samples": diagnostic_samples[:20],
         "source_body_status_counts": body_status_counts(rows),
     }
+
+
+def resolve_event_opportunity_id(
+    *,
+    entity_type: str,
+    entity_id: str,
+    customer_id: str,
+    opportunity_index: Mapping[str, tuple[Mapping[str, str], ...]],
+) -> Optional[str]:
+    if entity_type != "lead":
+        return None
+    matches = [
+        item
+        for item in opportunity_index.get(entity_id, ())
+        if str(item.get("customer_id") or "") == customer_id and str(item.get("opportunity_id") or "")
+    ]
+    if len(matches) != 1:
+        return None
+    return str(matches[0]["opportunity_id"])
 
 
 def event_mapping_category(*, before_count: int, after_count: int, in_fetched_card: bool) -> str:

@@ -54,6 +54,45 @@ def test_intent_plan_continues_online_price_context_from_memory() -> None:
     assert plan.route_bias == "bot_answer_self_for_pilot"
 
 
+def test_intent_plan_serializes_known_slots_not_legacy_slots_key() -> None:
+    plan = build_conversation_intent_plan(
+        current_message="Сколько стоит онлайн физика для 8 класса?",
+        active_brand="foton",
+    )
+
+    view = plan.to_prompt_view()
+
+    assert "known_slots" in view
+    assert "slots" not in view
+
+
+def test_tz137_direct_plan_known_slots_do_not_reask_requires_confirmed_provenance(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_DIRECT_PLAN_KNOWN_SLOTS", "1")
+
+    unconfirmed = build_conversation_intent_plan(
+        current_message="Интересует физика для 8 класса онлайн",
+        active_brand="foton",
+        dialogue_memory_view={
+            "known_slots": {"grade": "8", "subject": "физика", "format": "онлайн"},
+            "crm_known_slots": {"grade": "8"},
+        },
+    )
+    confirmed = build_conversation_intent_plan(
+        current_message="А сколько стоит?",
+        active_brand="foton",
+        dialogue_memory_view={
+            "known_slots": {"grade": "8", "subject": "физика"},
+            "slot_provenance": {
+                "grade": {"value": "8", "source": "memory_provenance", "quote": "для 8 класса"},
+            },
+            "client_confirmed_slots": {"subject": "физика"},
+        },
+    )
+
+    assert unconfirmed.do_not_reask_slots == ()
+    assert set(confirmed.do_not_reask_slots) == {"grade", "subject"}
+
+
 def test_intent_plan_detects_real_topic_switch_only_with_context() -> None:
     plan = build_conversation_intent_plan(
         current_message="А вместо лагеря можно онлайн курс по физике?",

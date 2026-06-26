@@ -16,6 +16,7 @@ from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.subscription_llm_parts.codex_exec import extract_json_object
 from mango_mvp.channels.subscription_llm_parts.contracts import (
     SubscriptionDraftResult,
+    _clamp_float,
     _normalize_output_sanitizer_text,
 )
 from mango_mvp.channels.subscription_llm_parts.support import (
@@ -79,9 +80,17 @@ RETRIEVER_MODEL_DRIVEN_ENV = "TELEGRAM_RETRIEVER_MODEL_DRIVEN"
 
 ASSUMED_SCOPE_GUARD_ENV = "TELEGRAM_ASSUMED_SCOPE_GUARD"
 
+DIRECT_PLAN_KNOWN_SLOTS_ENV = "TELEGRAM_DIRECT_PLAN_KNOWN_SLOTS"
+
+DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV = "TELEGRAM_DIRECT_KEYWORD_FALLBACK_RELEVANCE"
+
+DIRECT_SLOT_TOPIC_SHADOW_ENV = "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"
+
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
+
+DIRECT_SLOT_TOPIC_SHADOW_SCHEMA_VERSION = "direct_slot_topic_shadow_v1_2026_06_17"
 
 _BOT_SAFE_SERVICE_ID_RE = re.compile(
     r"\b(?:customer:[a-f0-9]{16,}|timeline_event:[a-f0-9]{16,}|bot_context_chunk:[a-f0-9]{16,}|botsafe:[^\s,;]+)\b",
@@ -233,6 +242,27 @@ def _retriever_model_driven_enabled(context: Optional[Mapping[str, Any]] = None)
         context,
         RETRIEVER_MODEL_DRIVEN_ENV,
         aliases=("retriever_model_driven", "retriever_model_driven_enabled"),
+    )
+
+def _direct_plan_known_slots_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        DIRECT_PLAN_KNOWN_SLOTS_ENV,
+        aliases=("direct_plan_known_slots", "direct_plan_known_slots_enabled"),
+    )
+
+def _direct_keyword_fallback_relevance_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV,
+        aliases=("direct_keyword_fallback_relevance", "direct_keyword_fallback_relevance_enabled"),
+    )
+
+def _direct_slot_topic_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        DIRECT_SLOT_TOPIC_SHADOW_ENV,
+        aliases=("direct_slot_topic_shadow", "direct_slot_topic_shadow_enabled"),
     )
 
 def _direct_path_known_slots_next_step_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -845,6 +875,29 @@ def _direct_path_fact_relevance_score(
         score += 1
     return score
 
+def _direct_path_fact_has_positive_question_relevance(
+    fact: Mapping[str, Any],
+    *,
+    client_message: str,
+    categories: Sequence[str],
+    slots: Mapping[str, str],
+    soft_slots: Optional[Mapping[str, str]] = None,
+) -> bool:
+    if _direct_path_fact_categories(fact).intersection(categories):
+        return True
+    haystack = _normalize_fact_match_text(
+        f"{_direct_path_snapshot_fact_key(fact)} {fact.get('fact_type') or ''} {fact.get('product') or ''} {_direct_path_snapshot_fact_text(fact)}"
+    )
+    boost_slots = soft_slots if soft_slots is not None else slots
+    for value in boost_slots.values():
+        normalized = _normalize_fact_match_text(value)
+        if normalized and normalized in haystack:
+            return True
+    for token in re.findall(r"[a-zа-яё0-9]{4,}", _normalize_fact_match_text(client_message)):
+        if token in haystack:
+            return True
+    return str(fact.get("bot_template_required") or "").casefold() == "true"
+
 def _direct_path_known_grade_subject(context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
     known: Mapping[str, Any] = _direct_path_slot_scope(context) if _assumed_scope_guard_enabled(context) else _direct_path_known_slots(context)
     grade = re.sub(r"\D+", "", str(known.get("grade") or known.get("class") or ""))[:2]
@@ -1032,17 +1085,29 @@ def _direct_path_keyword_fact_pack_from_records(
 ) -> Mapping[str, Any]:
     categories = _direct_path_selected_categories(client_message, context)
     selected_category = "+".join(categories) if categories else "fallback_core"
-    candidates = [
-        fact
-        for fact in records
-        if (_direct_path_core_fact(fact) if not categories else bool(_direct_path_fact_categories(fact).intersection(categories)))
-    ]
+    if _direct_keyword_fallback_relevance_enabled(context) and not categories:
+        candidates = list(records)
+        selected_category = "fallback_relevance"
+    else:
+        candidates = [
+            fact
+            for fact in records
+            if (_direct_path_core_fact(fact) if not categories else bool(_direct_path_fact_categories(fact).intersection(categories)))
+        ]
     if not candidates:
-        candidates = [fact for fact in records if _direct_path_core_fact(fact)]
-        selected_category = "fallback_core"
+        if _direct_keyword_fallback_relevance_enabled(context):
+            candidates = []
+            selected_category = "fallback_relevance"
+        else:
+            candidates = [fact for fact in records if _direct_path_core_fact(fact)]
+            selected_category = "fallback_core"
     if not candidates:
-        candidates = list(records)[:max_facts]
-        selected_category = "fallback_core"
+        if _direct_keyword_fallback_relevance_enabled(context):
+            candidates = list(records)
+            selected_category = "fallback_relevance"
+        else:
+            candidates = list(records)[:max_facts]
+            selected_category = "fallback_core"
 
     slots = _direct_path_slot_scope(context)
     soft_slots = _direct_path_soft_slot_scope(context)
@@ -1061,6 +1126,18 @@ def _direct_path_keyword_fact_pack_from_records(
         for idx, fact in enumerate(candidates)
     ]
     scored.sort(key=lambda item: (-item[0], item[1]))
+    if _direct_keyword_fallback_relevance_enabled(context) and selected_category == "fallback_relevance":
+        scored = [
+            item
+            for item in scored
+            if _direct_path_fact_has_positive_question_relevance(
+                item[2],
+                client_message=client_message,
+                categories=categories or ("pricing", "format", "schedule", "address", "course"),
+                slots=slots,
+                soft_slots=soft_slots,
+            )
+        ]
     ordered = [fact for _, _, fact in scored]
 
     has_scope_slots = bool(slots)
@@ -1268,6 +1345,102 @@ def build_direct_path_llm_retriever_prompt(
         f"{declaration_instruction}"
         f"Верни строго JSON: {json_schema}"
     )
+
+_DIRECT_SLOT_TOPIC_SHADOW_SLOT_KEYS = frozenset(
+    {"grade", "class", "subject", "course_subject", "format", "training_format", "product", "product_family", "level"}
+)
+
+def build_direct_path_slot_topic_shadow_prompt(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    plan = context.get("conversation_intent_plan") if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping) else {}
+    recent = "\n".join(_direct_path_recent_messages(context, limit=6)) or "(диалог только начался)"
+    slots = json.dumps(_direct_path_prompt_known_slots(context), ensure_ascii=False, sort_keys=True)
+    return (
+        "Ты делаешь только теневой анализ для аудита. Не пиши ответ клиенту и не выбирай маршрут.\n"
+        "Извлеки из текущего сообщения и последних реплик возможные учебные слоты и тему вопроса. "
+        "Если не уверен — оставь поле пустым и снизь confidence. Не выдумывай данные.\n\n"
+        f"Текущее сообщение:\n{client_message}\n\n"
+        f"Последние реплики:\n{recent}\n\n"
+        f"Уже известные слоты:\n{slots}\n\n"
+        f"План/интент регулярного слоя: {json.dumps(plan, ensure_ascii=False, sort_keys=True)[:1800]}\n\n"
+        "Верни строго JSON без Markdown:\n"
+        "{\n"
+        '  "model_slots": {"grade": "", "subject": "", "format": "", "product": "", "product_family": ""},\n'
+        '  "model_topic": "",\n'
+        '  "evidence_quote": "",\n'
+        '  "confidence": 0.0\n'
+        "}\n"
+    )
+
+def _direct_path_shadow_safe_slots(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for key, raw in value.items():
+        normalized_key = str(key or "").strip()
+        if normalized_key not in _DIRECT_SLOT_TOPIC_SHADOW_SLOT_KEYS:
+            continue
+        safe_value = _presale_prompt_safe_slot_value(normalized_key, raw)
+        if safe_value not in ("", {}, []):
+            result[normalized_key] = str(safe_value)
+    return result
+
+def build_direct_path_slot_topic_shadow_metadata(
+    client_message: str,
+    *,
+    context: Optional[Mapping[str, Any]],
+    shadow_fn: Optional[Callable[[str], Mapping[str, Any] | str]],
+) -> Optional[Mapping[str, Any]]:
+    if not _direct_slot_topic_shadow_enabled(context):
+        return None
+    plan = context.get("conversation_intent_plan") if isinstance(context, Mapping) and isinstance(context.get("conversation_intent_plan"), Mapping) else {}
+    metadata: dict[str, Any] = {
+        "schema_version": DIRECT_SLOT_TOPIC_SHADOW_SCHEMA_VERSION,
+        "enabled": True,
+        "used": False,
+        "fallback_reason": "",
+        "model_slots": {},
+        "model_topic": "",
+        "evidence_quote": "",
+        "confidence": 0.0,
+        "direct_known_slots": _presale_prompt_safe_mapping(_direct_path_known_slots(context)),
+        "prompt_known_slots": _direct_path_prompt_known_slots(context),
+        "conversation_intent_plan_known_slots": _presale_prompt_safe_mapping(plan.get("known_slots") if isinstance(plan.get("known_slots"), Mapping) else {}),
+        "plan_primary_intent": str(plan.get("primary_intent") or ""),
+        "plan_answer_topics": [str(item) for item in (plan.get("answer_topics") or ()) if str(item).strip()]
+        if isinstance(plan.get("answer_topics"), Sequence) and not isinstance(plan.get("answer_topics"), (str, bytes, bytearray))
+        else [],
+    }
+    if shadow_fn is None:
+        metadata["fallback_reason"] = "shadow_fn_missing"
+        return metadata
+    prompt = build_direct_path_slot_topic_shadow_prompt(client_message, context=context)
+    try:
+        raw_payload = shadow_fn(prompt)
+    except subprocess.TimeoutExpired:
+        metadata["fallback_reason"] = "timeout"
+        return metadata
+    except Exception as exc:  # noqa: BLE001
+        metadata.update({"fallback_reason": "runtime_error", "error": str(exc)[:300]})
+        return metadata
+    try:
+        payload = extract_json_object(raw_payload) if isinstance(raw_payload, str) else dict(raw_payload)
+    except Exception as exc:  # noqa: BLE001
+        metadata.update({"fallback_reason": "invalid_json", "error": str(exc)[:300]})
+        return metadata
+    metadata.update(
+        {
+            "used": True,
+            "model_slots": _direct_path_shadow_safe_slots(payload.get("model_slots") or payload.get("slots")),
+            "model_topic": _presale_prompt_safe_value(payload.get("model_topic") or payload.get("topic")),
+            "evidence_quote": _presale_prompt_safe_value(payload.get("evidence_quote") or payload.get("quote")),
+            "confidence": _clamp_float(payload.get("confidence")),
+        }
+    )
+    return metadata
 
 def _direct_path_retriever_ids(value: Any) -> tuple[str, ...]:
     if isinstance(value, str):
@@ -1546,7 +1719,12 @@ def _direct_path_known_slots(context: Optional[Mapping[str, Any]]) -> dict[str, 
             result.update({str(k): v for k, v in slots.items() if str(k).strip() and str(v).strip()})
     plan = context.get("conversation_intent_plan")
     if isinstance(plan, Mapping):
-        slots = plan.get("slots")
+        if _direct_plan_known_slots_enabled(context):
+            slots = plan.get("known_slots")
+            if not isinstance(slots, Mapping):
+                slots = plan.get("slots")
+        else:
+            slots = plan.get("slots")
         if isinstance(slots, Mapping):
             result.update({str(k): v for k, v in slots.items() if str(k).strip() and str(v).strip()})
     return result
@@ -2214,6 +2392,8 @@ def _direct_path_metadata(
         ]
     if isinstance(pack.get("llm_retrieve"), Mapping):
         metadata["llm_retrieve"] = dict(pack["llm_retrieve"])  # type: ignore[index]
+    if isinstance(pack.get("slot_topic_shadow"), Mapping):
+        metadata["slot_topic_shadow"] = dict(pack["slot_topic_shadow"])  # type: ignore[index]
     if _assumed_scope_guard_enabled(context):
         metadata["assumed_scope_guard"] = {
             "enabled": True,
@@ -2404,6 +2584,7 @@ def _direct_path_route_rubric_should_regenerate(
     context: Optional[Mapping[str, Any]],
     facts: Mapping[str, str],
     model_called: bool,
+    fact_pack: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     if not _route_rubric_enabled(context):
         return False
@@ -2411,7 +2592,98 @@ def _direct_path_route_rubric_should_regenerate(
         return False
     if result.missing_facts:
         return False
+    if _direct_keyword_fallback_relevance_enabled(context) and _direct_path_fallback_open_question(fact_pack, context):
+        return True
     return bool(facts)
+
+def _direct_path_fallback_open_question(
+    fact_pack: Optional[Mapping[str, Any]],
+    context: Optional[Mapping[str, Any]],
+) -> bool:
+    if not isinstance(fact_pack, Mapping):
+        return False
+    llm_retrieve = fact_pack.get("llm_retrieve")
+    if not isinstance(llm_retrieve, Mapping):
+        return False
+    if str(llm_retrieve.get("fallback_reason") or "") not in {"empty_selection", "timeout"}:
+        return False
+    if not isinstance(context, Mapping):
+        return False
+    plan = context.get("conversation_intent_plan")
+    if isinstance(plan, Mapping) and str(plan.get("direct_question") or "").strip():
+        return True
+    memory = context.get("dialogue_memory_view")
+    open_question = memory.get("open_question") if isinstance(memory, Mapping) and isinstance(memory.get("open_question"), Mapping) else {}
+    return bool(str(open_question.get("text") or "").strip() or str(open_question.get("kind") or "").strip())
+
+def _direct_path_fallback_reask_text(context: Optional[Mapping[str, Any]]) -> str:
+    requested: list[str] = []
+    if isinstance(context, Mapping):
+        plan = context.get("conversation_intent_plan")
+        raw = plan.get("requested_slots") if isinstance(plan, Mapping) else ()
+        if isinstance(raw, str):
+            requested.append(raw)
+        elif isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+            requested.extend(str(item or "") for item in raw)
+    do_not_reask = _direct_path_do_not_reask_slots(context)
+    for slot in requested:
+        normalized = str(slot or "").strip()
+        if not normalized or normalized in do_not_reask:
+            continue
+        if normalized in {"grade", "class"}:
+            return "Подскажите, пожалуйста, класс ученика — тогда сориентирую точнее."
+        if normalized in {"subject", "course_subject"}:
+            return "Подскажите, пожалуйста, предмет — тогда сориентирую точнее."
+        if normalized in {"format", "training_format"}:
+            return "Подскажите, пожалуйста, какой формат удобнее: очно или онлайн?"
+    return "Уточните, пожалуйста, класс, предмет или формат — тогда сориентирую без риска ошибиться."
+
+def apply_direct_keyword_fallback_reask_layer(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]],
+) -> SubscriptionDraftResult:
+    if not _direct_keyword_fallback_relevance_enabled(context):
+        return result
+    if result.route != "draft_for_manager" or result.missing_facts:
+        return result
+    metadata = dict(result.metadata)
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    if not _direct_path_fallback_open_question(direct, context):
+        return result
+    if str(result.risk_level or "").strip().casefold() in {"high", "p0", "critical", "high_risk"}:
+        return result
+    if any(re.search(r"p0|payment_dispute|refund|complaint|legal|high_risk", flag, re.I) for flag in result.safety_flags):
+        return result
+    llm_retrieve = direct.get("llm_retrieve") if isinstance(direct.get("llm_retrieve"), Mapping) else {}
+    trace = {
+        "schema_version": "direct_keyword_fallback_reask_v1_2026_06_17",
+        "enabled": True,
+        "status": "fired",
+        "fallback_reason": str(llm_retrieve.get("fallback_reason") or ""),
+    }
+    direct_copy = dict(direct)
+    direct_copy["keyword_fallback_reask"] = trace
+    direct_copy["route_after"] = "bot_answer_self_for_pilot"
+    direct_copy["is_manager_deferral"] = False
+    direct_copy["reason_class"] = ""
+    direct_copy["reason_evidence"] = {}
+    metadata["direct_path"] = direct_copy
+    metadata["keyword_fallback_reask"] = trace
+    metadata["text_composition_source"] = "deterministic_clarification_question"
+    metadata.pop("reason_class", None)
+    metadata["is_manager_deferral"] = False
+    safety_flags = tuple(flag for flag in result.safety_flags if flag != "manager_approval_required")
+    return replace(
+        result,
+        route="bot_answer_self_for_pilot",
+        draft_text=_direct_path_fallback_reask_text(context),
+        manager_followup_required=False,
+        safety_flags=tuple(dict.fromkeys((*safety_flags, "keyword_fallback_reask"))),
+        context_used=tuple(dict.fromkeys((*result.context_used, "keyword_fallback_reask"))),
+        missing_facts=("уточнить параметры вопроса",),
+        metadata=metadata,
+    )
 
 def _build_direct_path_route_rubric_regen_prompt(prompt: str, first_result: SubscriptionDraftResult) -> str:
     previous_json = json.dumps(first_result.to_json_dict(include_raw_response=False), ensure_ascii=False, indent=2)
@@ -2419,8 +2691,9 @@ def _build_direct_path_route_rubric_regen_prompt(prompt: str, first_result: Subs
         f"{str(prompt or '').rstrip()}\n\n"
         "Предыдущий JSON-ответ модели:\n"
         f"{previous_json}\n\n"
-        'В предыдущем ответе выбран "draft_for_manager", но missing_facts пуст, хотя факты по вопросу есть. '
-        "Либо ответь самостоятельно по фактам, либо заполни missing_facts конкретным недостающим фактом "
+        'В предыдущем ответе выбран "draft_for_manager", но missing_facts пуст. '
+        "Если факты по вопросу есть — ответь самостоятельно по фактам. Если фактов нет или они недостаточны, "
+        "задай один короткий уточняющий вопрос клиенту или заполни missing_facts конкретным недостающим фактом "
         "или нужной проверкой менеджера.\n"
         "Верни только JSON без Markdown и без комментариев."
     )

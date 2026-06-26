@@ -10862,6 +10862,94 @@ class _DirectPathRetrieverProvider(_DirectPathProvider):
         return self.retriever_payload
 
 
+class _DirectPathShadowProvider(_DirectPathProvider):
+    def __init__(self, result: SubscriptionDraftResult, shadow_payload: Mapping[str, object] | Exception) -> None:
+        super().__init__(result)
+        self.shadow_payload = shadow_payload
+        self.shadow_calls = 0
+        self.last_shadow_prompt = ""
+
+    def _direct_path_slot_topic_shadow_runner(self, prompt: str) -> Mapping[str, object] | str:
+        self.shadow_calls += 1
+        self.last_shadow_prompt = prompt
+        if isinstance(self.shadow_payload, Exception):
+            raise self.shadow_payload
+        return self.shadow_payload
+
+
+def test_tz137_slot_topic_shadow_default_off_does_not_call_runner() -> None:
+    provider = _DirectPathShadowProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Подскажите класс ученика."),
+        shadow_payload=AssertionError("shadow runner must not be called with flag OFF"),
+    )
+
+    result = provider.build_draft(
+        "А по истории?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+
+    assert provider.shadow_calls == 0
+    assert result.route == "bot_answer_self_for_pilot"
+    assert "slot_topic_shadow" not in result.metadata["direct_path"]
+
+
+def test_tz137_slot_topic_shadow_on_logs_metadata_without_prompt_or_output_diff() -> None:
+    base_result = SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Подскажите класс ученика.")
+    off_provider = _DirectPathProvider(base_result)
+    on_provider = _DirectPathShadowProvider(
+        base_result,
+        shadow_payload={
+            "model_slots": {"grade": "11", "subject": "история", "format": "онлайн"},
+            "model_topic": "pricing",
+            "evidence_quote": "по истории для 11",
+            "confidence": 0.81,
+        },
+    )
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        "conversation_intent_plan": {"known_slots": {"grade": "10"}, "primary_intent": "pricing"},
+    }
+
+    off = off_provider.build_draft("А по истории для 11?", context=context)
+    on = on_provider.build_draft(
+        "А по истории для 11?",
+        context={**context, subscription_llm.DIRECT_SLOT_TOPIC_SHADOW_ENV: "1"},
+    )
+    off_meta = dict(off.metadata["direct_path"])
+    on_meta = dict(on.metadata["direct_path"])
+    shadow = on_meta.pop("slot_topic_shadow")
+
+    assert on_provider.shadow_calls == 1
+    assert on.route == off.route
+    assert on.draft_text == off.draft_text
+    assert on_provider.last_prompt == off_provider.last_prompt
+    assert on_meta == off_meta
+    assert shadow["used"] is True
+    assert shadow["model_slots"]["subject"] == "история"
+    assert shadow["plan_primary_intent"] == "pricing"
+
+
+def test_tz137_slot_topic_shadow_fail_soft_keeps_output() -> None:
+    provider = _DirectPathShadowProvider(
+        SubscriptionDraftResult(route="bot_answer_self_for_pilot", draft_text="Подскажите класс ученика."),
+        shadow_payload=subprocess.TimeoutExpired(cmd="shadow", timeout=1),
+    )
+
+    result = provider.build_draft(
+        "А по истории?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DIRECT_SLOT_TOPIC_SHADOW_ENV: "1",
+        },
+    )
+
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Подскажите класс ученика."
+    assert result.metadata["direct_path"]["slot_topic_shadow"]["fallback_reason"] == "timeout"
+
+
 def test_direct_path_bot_safe_memory_step_guard_runs_without_semantic_verifier(tmp_path: Path) -> None:
     snapshot_path = _write_wave6_snapshot(tmp_path)
     provider = _DirectPathProvider(
@@ -11494,6 +11582,147 @@ def test_wave6_llm_retrieve_off_parity_keeps_keyword_pack(tmp_path: Path) -> Non
 
     assert off == keyword
     assert calls == 0
+
+
+def test_tz137_direct_plan_known_slots_flag_reads_serialized_known_slots() -> None:
+    context = {
+        "conversation_intent_plan": {
+            "known_slots": {"grade": "8", "subject": "физика"},
+            "slots": {"grade": "7"},
+        }
+    }
+
+    off = subscription_llm._direct_path_known_slots(context)
+    on = subscription_llm._direct_path_known_slots({**context, subscription_llm.DIRECT_PLAN_KNOWN_SLOTS_ENV: "1"})
+    replay = subscription_llm._direct_path_known_slots(
+        {"conversation_intent_plan": {"slots": {"grade": "9"}}, subscription_llm.DIRECT_PLAN_KNOWN_SLOTS_ENV: "1"}
+    )
+
+    assert off["grade"] == "7"
+    assert on["grade"] == "8"
+    assert on["subject"] == "физика"
+    assert replay["grade"] == "9"
+
+
+def test_tz137_keyword_fallback_relevance_drops_irrelevant_top_n() -> None:
+    records = [
+        {
+            "brand": "foton",
+            "fact_key": "foton.tax.license",
+            "fact_type": "tax",
+            "product": "documents",
+            "allowed_for_client_answer": True,
+            "client_safe_text": "Фотон: для налогового вычета используется лицензия.",
+        }
+    ]
+    legacy = {"legacy.safe": "Уточните параметры вопроса, чтобы сориентировать корректно."}
+
+    off = subscription_llm._direct_path_keyword_fact_pack_from_records(
+        records,
+        legacy=legacy,
+        active_brand="foton",
+        context={},
+        client_message="Подскажите",
+        max_facts=3,
+        max_chars=4000,
+    )
+    on = subscription_llm._direct_path_keyword_fact_pack_from_records(
+        records,
+        legacy=legacy,
+        active_brand="foton",
+        context={subscription_llm.DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV: "1"},
+        client_message="Подскажите",
+        max_facts=3,
+        max_chars=4000,
+    )
+
+    assert "foton.tax.license" in off["facts"]
+    assert on["facts"] == legacy
+    assert on["selected_category"] == "legacy_context"
+
+
+def test_tz137_keyword_fallback_relevance_keeps_relevant_price_fact() -> None:
+    records = [
+        {
+            "brand": "foton",
+            "fact_key": "foton.price.online",
+            "fact_type": "price",
+            "product": "regular_course",
+            "allowed_for_client_answer": True,
+            "client_safe_text": "Фотон: онлайн-курс стоит 74 500 ₽ за год.",
+        }
+    ]
+
+    pack = subscription_llm._direct_path_keyword_fact_pack_from_records(
+        records,
+        legacy={},
+        active_brand="foton",
+        context={subscription_llm.DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV: "1"},
+        client_message="Сколько стоит?",
+        max_facts=3,
+        max_chars=4000,
+    )
+
+    assert pack["exact_keys"] == ["foton.price.online"]
+    assert "74 500" in _wide_pack_text(pack)
+
+
+def test_tz137_route_rubric_regenerates_empty_selection_open_question_only_with_flag() -> None:
+    result = SubscriptionDraftResult(route="draft_for_manager", draft_text="Передам менеджеру.")
+    fact_pack = {"llm_retrieve": {"fallback": True, "fallback_reason": "empty_selection"}}
+    context = {
+        subscription_llm.ROUTE_RUBRIC_ENV: "1",
+        "conversation_intent_plan": {"direct_question": "Сколько стоит?"},
+    }
+
+    assert (
+        subscription_llm._direct_path_route_rubric_should_regenerate(
+            result,
+            context=context,
+            facts={},
+            model_called=True,
+            fact_pack=fact_pack,
+        )
+        is False
+    )
+    assert (
+        subscription_llm._direct_path_route_rubric_should_regenerate(
+            result,
+            context={**context, subscription_llm.DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV: "1"},
+            facts={},
+            model_called=True,
+            fact_pack=fact_pack,
+        )
+        is True
+    )
+
+
+def test_tz137_keyword_fallback_reask_turns_empty_selection_handoff_into_question() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Передам менеджеру.",
+        metadata={"direct_path": {"llm_retrieve": {"fallback": True, "fallback_reason": "empty_selection"}}},
+    )
+
+    changed = subscription_llm.apply_direct_keyword_fallback_reask_layer(
+        result,
+        context={
+            subscription_llm.DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV: "1",
+            "conversation_intent_plan": {"direct_question": "Сколько стоит?", "requested_slots": ["grade"]},
+        },
+    )
+    p0 = subscription_llm.apply_direct_keyword_fallback_reask_layer(
+        replace(result, risk_level="high", safety_flags=("payment_dispute",)),
+        context={
+            subscription_llm.DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV: "1",
+            "conversation_intent_plan": {"direct_question": "Верните деньги", "requested_slots": ["grade"]},
+        },
+    )
+
+    assert changed.route == "bot_answer_self_for_pilot"
+    assert "класс" in changed.draft_text.casefold()
+    assert changed.metadata["direct_path"]["route_after"] == "bot_answer_self_for_pilot"
+    assert p0.route == "draft_for_manager"
 
 
 def test_wave6_llm_retrieve_selects_enrollment_fact_for_paid_next_step(tmp_path: Path) -> None:

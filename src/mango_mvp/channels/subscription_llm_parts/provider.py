@@ -243,6 +243,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_keyword_fact_pack_from_records,
     _direct_path_retriever_candidate_summary,
     build_direct_path_llm_retriever_prompt,
+    build_direct_path_slot_topic_shadow_metadata,
     _direct_path_retriever_ids,
     _direct_path_llm_retrieve_fact_pack,
     _direct_path_wide_fact_pack,
@@ -266,8 +267,10 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_metadata,
     _direct_path_merge_metadata,
     apply_assumed_scope_guard,
+    apply_direct_keyword_fallback_reask_layer,
     _direct_path_route_rubric_should_regenerate,
     _build_direct_path_route_rubric_regen_prompt,
+    _direct_slot_topic_shadow_enabled,
     _a2_extract_phone,
     _replace_echoed_phone,
 )
@@ -952,11 +955,12 @@ class SubscriptionLlmDraftProvider:
             if _deal_action_decision_enabled(context):
                 direct_result = _direct_path_autonomy_matrix_topic_result(direct_result, context=context)
                 direct_result = apply_autonomy_matrix_guard(direct_result, client_message=client_message, context=context)
-            return apply_deal_action_decision_layer(
+            dealt = apply_deal_action_decision_layer(
                 direct_result,
                 client_message=client_message,
                 context=context,
             )
+            return apply_direct_keyword_fallback_reask_layer(dealt, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -1087,6 +1091,13 @@ class SubscriptionLlmDraftProvider:
             retriever_fn=self._direct_path_llm_retrieve_runner if llm_retrieve else None,
         )
         facts = dict(fact_pack.get("facts") or {})
+        shadow_meta = build_direct_path_slot_topic_shadow_metadata(
+            client_message,
+            context=context,
+            shadow_fn=self._direct_path_slot_topic_shadow_runner if _direct_slot_topic_shadow_enabled(context) else None,
+        )
+        if shadow_meta is not None:
+            fact_pack = {**dict(fact_pack), "slot_topic_shadow": dict(shadow_meta)}
         if not llm_retrieve:
             preblocked = _direct_path_preblocked_result(client_message, context=context, facts=facts, fact_pack=fact_pack)
             if preblocked is not None:
@@ -1146,7 +1157,13 @@ class SubscriptionLlmDraftProvider:
             result = safe_fallback_draft(reason="direct_path_error", metadata={"direct_path": direct_meta, "last_error": str(exc)[:400]})
         else:
             result = _direct_path_prepare_model_result(result)
-            if _direct_path_route_rubric_should_regenerate(result, context=context, facts=facts, model_called=True):
+            if _direct_path_route_rubric_should_regenerate(
+                result,
+                context=context,
+                facts=facts,
+                model_called=True,
+                fact_pack=fact_pack,
+            ):
                 direct_meta["rubric_reason"] = "missing_justification"
                 regen_prompt = _build_direct_path_route_rubric_regen_prompt(prompt, result)
                 try:
@@ -1392,6 +1409,20 @@ class SubscriptionLlmDraftProvider:
         raw = self._run_prompt_text(
             prompt,
             prefix="mango_direct_path_retriever_",
+            suffix=".json",
+            model=os.getenv(LLM_RETRIEVE_MODEL_ENV) or self.model,
+            reasoning_effort=os.getenv(LLM_RETRIEVE_REASONING_ENV) or "low",
+            timeout_sec=_llm_retrieve_timeout_sec(),
+        )
+        try:
+            return extract_json_object(raw)
+        except Exception:
+            return raw
+
+    def _direct_path_slot_topic_shadow_runner(self, prompt: str) -> Mapping[str, Any] | str:
+        raw = self._run_prompt_text(
+            prompt,
+            prefix="mango_direct_slot_topic_shadow_",
             suffix=".json",
             model=os.getenv(LLM_RETRIEVE_MODEL_ENV) or self.model,
             reasoning_effort=os.getenv(LLM_RETRIEVE_REASONING_ENV) or "low",

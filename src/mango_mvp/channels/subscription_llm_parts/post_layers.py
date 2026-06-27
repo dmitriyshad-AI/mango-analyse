@@ -2238,10 +2238,11 @@ def apply_tone_close_detect_layer(
     previous_bot_texts = _humanity_previous_bot_texts(context)
     refused_previous_step = _tone_close_refused_previous_step(client_message, previous_bot_texts)
     old_p0_without_active_latch = _tone_close_old_p0_history(context)
+    direct_path_close = _tone_close_direct_path_result(result)
     step, text = _tone_close_next_step_text(
         context,
         previous_bot_texts=previous_bot_texts,
-        no_cta=refused_previous_step or old_p0_without_active_latch,
+        no_cta=refused_previous_step or old_p0_without_active_latch or direct_path_close,
     )
     close_flags = tuple(
         flag
@@ -2295,6 +2296,13 @@ def _tone_close_metadata(
     }
     metadata["close_detect"] = payload
     return replace(result, metadata=metadata)
+
+
+def _tone_close_direct_path_result(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    if isinstance(metadata.get("direct_path"), Mapping):
+        return True
+    return "direct_path_model" in {str(flag or "").strip() for flag in result.safety_flags}
 
 
 def _tone_close_detect_is_close_message(client_message: str, *, context: Optional[Mapping[str, Any]]) -> bool:

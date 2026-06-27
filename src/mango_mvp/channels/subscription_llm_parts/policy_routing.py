@@ -1756,6 +1756,11 @@ def _context_with_dialogue_contract_retrieved_facts(
         retrieved_sources.append(pipeline.get("retrieved_facts"))
     if isinstance(direct.get("retrieved_facts"), Mapping):
         retrieved_sources.append(direct.get("retrieved_facts"))
+    direct_fact_metadata = (
+        dict(direct.get("wide_fact_metadata"))
+        if isinstance(direct.get("wide_fact_metadata"), Mapping)
+        else {}
+    )
     facts = {
         str(key): str(value)
         for retrieved in retrieved_sources
@@ -1789,31 +1794,41 @@ def _context_with_dialogue_contract_retrieved_facts(
         else {}
     )
     facts_context_confirmed.update(facts)
-    facts_context.update(
-        {
-            "stale": False,
-            "facts_stale": False,
-            "fresh": True,
-            "facts_fresh": True,
-            "fresh_facts": True,
-            "client_safe_fact_verified": True,
-            "confirmed_facts": facts_context_confirmed,
-        }
-    )
+    facts_context_payload = {
+        "stale": False,
+        "facts_stale": False,
+        "fresh": True,
+        "facts_fresh": True,
+        "fresh_facts": True,
+        "client_safe_fact_verified": True,
+        "confirmed_facts": facts_context_confirmed,
+    }
+    if direct_fact_metadata:
+        facts_context_metadata = (
+            dict(facts_context.get("fact_metadata"))
+            if isinstance(facts_context.get("fact_metadata"), Mapping)
+            else {}
+        )
+        facts_context_metadata.update(
+            {str(key): dict(value) for key, value in direct_fact_metadata.items() if isinstance(value, Mapping)}
+        )
+        facts_context_payload["fact_metadata"] = facts_context_metadata
+    facts_context.update(facts_context_payload)
 
     quality = dict(merged.get("context_quality")) if isinstance(merged.get("context_quality"), Mapping) else {}
     quality["facts_stale"] = False
 
-    merged.update(
-        {
-            "confirmed_facts": confirmed,
-            "dialogue_contract_pipeline": merged_pipeline,
-            "facts_context": facts_context,
-            "context_quality": quality,
-            "facts_fresh": True,
-            "facts_stale": False,
-        }
-    )
+    merged_payload: dict[str, Any] = {
+        "confirmed_facts": confirmed,
+        "dialogue_contract_pipeline": merged_pipeline,
+        "facts_context": facts_context,
+        "context_quality": quality,
+        "facts_fresh": True,
+        "facts_stale": False,
+    }
+    if direct_fact_metadata:
+        merged_payload["direct_path_fact_metadata"] = direct_fact_metadata
+    merged.update(merged_payload)
     return merged
 
 _GUARDCHAIN_RECOVERY_BLOCKING_FLAGS = {

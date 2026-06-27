@@ -26,6 +26,13 @@ from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event, trace_span
+from mango_mvp.channels.fact_venue_scope import (
+    VENUE_SCOPE_VALUES,
+    fact_venue,
+    normalize_requested_scope,
+    venue_scope_enabled,
+    venue_scope_label,
+)
 from mango_mvp.channels.fact_scope_spec import blocked_neighbors_for, detect_fact_scopes, fact_scopes_allowed
 from mango_mvp.channels.fact_retrieval import key_matches
 from mango_mvp.channels.humanity_guards import has_meta_leak
@@ -4134,7 +4141,7 @@ def verify_output(
     if unsupported_entities:
         findings.append(VerificationFinding("unsupported_entity", f"сущность вне фактов хода: {unsupported_entities}"))
     if contract is not None:
-        findings.extend(_wrong_intent_fact_findings(text, contract=contract, facts=facts))
+        findings.extend(_wrong_intent_fact_findings(text, contract=contract, facts=facts, context=context))
         if _preemptive_format_choice_finding(low, contract=contract):
             findings.append(
                 VerificationFinding(
@@ -7074,6 +7081,7 @@ def _wrong_intent_fact_findings(
     *,
     contract: AnswerContract,
     facts: Mapping[str, str],
+    context: Mapping[str, Any] | None = None,
 ) -> list[VerificationFinding]:
     findings: list[VerificationFinding] = []
     if _asks_class_schedule_days(contract) and _draft_uses_contact_hours_as_schedule(draft, facts):
@@ -7097,7 +7105,95 @@ def _wrong_intent_fact_findings(
                 "Лагерный/ЛВШ факт нельзя выдавать как справку вне лагерного контекста.",
             )
         )
+    if venue_scope_enabled(context):
+        findings.extend(_wrong_venue_scope_fact_findings(draft, facts=facts, context=context))
     return findings
+
+
+def _wrong_venue_scope_fact_findings(
+    draft: str,
+    *,
+    facts: Mapping[str, str],
+    context: Mapping[str, Any] | None,
+) -> list[VerificationFinding]:
+    requested_scope = _venue_scope_requested_from_context(context)
+    if requested_scope not in VENUE_SCOPE_VALUES:
+        return []
+    metadata = _venue_scope_fact_metadata(context)
+    if not metadata:
+        return []
+    draft_norm = _venue_scope_normalized_text(draft)
+    findings: list[VerificationFinding] = []
+    for key, text in facts.items():
+        meta = metadata.get(str(key))
+        if not isinstance(meta, Mapping):
+            continue
+        venue = fact_venue(meta)
+        if venue not in VENUE_SCOPE_VALUES or venue == requested_scope:
+            continue
+        fact_norm = _venue_scope_normalized_text(text)
+        if fact_norm and fact_norm in draft_norm:
+            findings.append(
+                VerificationFinding(
+                    "wrong_intent_fact",
+                    f"Факт другой площадки: нужна {venue_scope_label(requested_scope)}, факт {key} помечен как {venue_scope_label(venue)}.",
+                )
+            )
+    return findings
+
+
+def _venue_scope_normalized_text(value: Any) -> str:
+    return " ".join(str(value or "").casefold().replace("ё", "е").split())
+
+
+def _venue_scope_requested_from_context(context: Mapping[str, Any] | None) -> str:
+    if not isinstance(context, Mapping):
+        return "unspecified"
+    for container in (
+        context.get("direct_path"),
+        context.get("dialogue_contract_pipeline"),
+        context.get("facts_context"),
+    ):
+        if not isinstance(container, Mapping):
+            continue
+        venue_meta = container.get("venue_scope") if isinstance(container.get("venue_scope"), Mapping) else {}
+        requested = normalize_requested_scope(venue_meta.get("requested_scope") if isinstance(venue_meta, Mapping) else "")
+        if requested in VENUE_SCOPE_VALUES:
+            return requested
+        requested = normalize_requested_scope(container.get("requested_scope"))
+        if requested in VENUE_SCOPE_VALUES:
+            return requested
+        if isinstance(container.get("llm_retrieve"), Mapping):
+            llm_venue_meta = container["llm_retrieve"].get("venue_scope")  # type: ignore[index]
+            requested = normalize_requested_scope(
+                llm_venue_meta.get("requested_scope") if isinstance(llm_venue_meta, Mapping) else ""
+            )
+            if requested in VENUE_SCOPE_VALUES:
+                return requested
+    return "unspecified"
+
+
+def _venue_scope_fact_metadata(context: Mapping[str, Any] | None) -> Mapping[str, Mapping[str, Any]]:
+    if not isinstance(context, Mapping):
+        return {}
+    candidates: list[Any] = [
+        context.get("direct_path_fact_metadata"),
+        context.get("wide_fact_metadata"),
+    ]
+    facts_context = context.get("facts_context")
+    if isinstance(facts_context, Mapping):
+        candidates.append(facts_context.get("fact_metadata"))
+    direct = context.get("direct_path")
+    if isinstance(direct, Mapping):
+        candidates.append(direct.get("wide_fact_metadata"))
+    result: dict[str, Mapping[str, Any]] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        for key, value in candidate.items():
+            if str(key).strip() and isinstance(value, Mapping):
+                result[str(key)] = value
+    return result
 
 
 def _class_schedule_publication_answer(

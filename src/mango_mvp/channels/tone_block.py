@@ -4,7 +4,6 @@ import os
 import re
 from typing import Any, Mapping, Sequence
 
-
 TONE_WARM_FRAME_ENV = "TELEGRAM_TONE_WARM_FRAME"
 TONE_CLOSE_DETECT_ENV = "TELEGRAM_TONE_CLOSE_DETECT"
 TONE_SELL_PROMPT_ENV = "TELEGRAM_TONE_SELL_PROMPT"
@@ -52,7 +51,15 @@ def close_detect_enabled(context: Mapping[str, Any] | None = None) -> bool:
         for key in (TONE_CLOSE_DETECT_ENV, "tone_close_detect_enabled"):
             if key in context:
                 return truthy_value(context.get(key))
-    return truthy_value(os.getenv(TONE_CLOSE_DETECT_ENV))
+    if TONE_CLOSE_DETECT_ENV in os.environ:
+        return truthy_value(os.getenv(TONE_CLOSE_DETECT_ENV))
+    from mango_mvp.channels.subscription_llm_parts.support import _pilot_profile_default_on_flag_enabled
+
+    return _pilot_profile_default_on_flag_enabled(
+        context,
+        TONE_CLOSE_DETECT_ENV,
+        aliases=("tone_close_detect_enabled",),
+    )
 
 
 def sell_prompt_enabled(context: Mapping[str, Any] | None = None) -> bool:

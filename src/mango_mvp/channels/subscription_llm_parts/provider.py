@@ -275,6 +275,8 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _replace_echoed_phone,
 )
 
+from mango_mvp.channels.subscription_llm_parts.text_hygiene import scrub_direct_path_p0_text
+
 
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
@@ -1177,6 +1179,11 @@ class SubscriptionLlmDraftProvider:
                 result,
                 client_message=client_message,
                 context=context,
+            )
+            result = scrub_direct_path_p0_text(
+                result,
+                context=context,
+                client_message=client_message,
             )
             if _intent_model_led_enabled(context) and _direct_path_model_intent_meta(result):
                 result = apply_conversation_intent_plan_guard(

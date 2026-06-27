@@ -6,6 +6,7 @@ from mango_mvp.channels.subscription_llm_parts import support as _support
 from mango_mvp.channels.subscription_llm_parts import direct_path as _direct_path
 from mango_mvp.channels.subscription_llm_parts import policy_routing as _policy_routing
 from mango_mvp.channels.subscription_llm_parts import post_layers as _post_layers
+from mango_mvp.channels.subscription_llm_parts import text_hygiene as _text_hygiene
 from mango_mvp.channels.subscription_llm_parts import provider as _provider
 from mango_mvp.channels.subscription_llm_parts import monolith as _monolith
 
@@ -21,6 +22,7 @@ __all__.extend(
         "DIRECT_PLAN_KNOWN_SLOTS_ENV",
         "DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV",
         "DIRECT_SLOT_TOPIC_SHADOW_ENV",
+        "DIRECT_P0_TEXT_HYGIENE_ENV",
         "DIRECT_SLOT_TOPIC_SHADOW_SCHEMA_VERSION",
         "DIRECT_PATH_MODEL_P0_ENV",
         "INTENT_MODEL_LED_ENV",
@@ -44,6 +46,7 @@ __all__.extend(
         "_direct_path_bot_safe_context_prompt_block",
         "_direct_keyword_fallback_relevance_enabled",
         "_direct_plan_known_slots_enabled",
+        "_direct_p0_text_hygiene_enabled",
         "_direct_slot_topic_shadow_enabled",
         "_direct_path_known_slots_next_step_prompt_enabled",
         "_direct_path_answerability_shadow_enabled",
@@ -56,6 +59,7 @@ __all__.extend(
         "_retriever_need_shadow_enabled",
         "build_direct_path_slot_topic_shadow_metadata",
         "build_direct_path_slot_topic_shadow_prompt",
+        "scrub_direct_path_p0_text",
     ]
 )
 
@@ -72,6 +76,8 @@ for _name in __all__:
         globals()[_name] = getattr(_policy_routing, _name)
     elif hasattr(_post_layers, _name):
         globals()[_name] = getattr(_post_layers, _name)
+    elif hasattr(_text_hygiene, _name):
+        globals()[_name] = getattr(_text_hygiene, _name)
     elif hasattr(_provider, _name):
         globals()[_name] = getattr(_provider, _name)
     else:

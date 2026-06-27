@@ -86,6 +86,8 @@ DIRECT_KEYWORD_FALLBACK_RELEVANCE_ENV = "TELEGRAM_DIRECT_KEYWORD_FALLBACK_RELEVA
 
 DIRECT_SLOT_TOPIC_SHADOW_ENV = "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"
 
+DIRECT_P0_TEXT_HYGIENE_ENV = "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"
+
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
@@ -263,6 +265,13 @@ def _direct_slot_topic_shadow_enabled(context: Optional[Mapping[str, Any]] = Non
         context,
         DIRECT_SLOT_TOPIC_SHADOW_ENV,
         aliases=("direct_slot_topic_shadow", "direct_slot_topic_shadow_enabled"),
+    )
+
+def _direct_p0_text_hygiene_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        DIRECT_P0_TEXT_HYGIENE_ENV,
+        aliases=("direct_p0_text_hygiene", "direct_p0_text_hygiene_enabled"),
     )
 
 def _direct_path_known_slots_next_step_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -2245,6 +2254,12 @@ def _build_direct_path_prompt(
                 "Растерянность, уточнение порядка или тревога без претензии — «не понимаю», «как дальше», "
                 "«ребёнок в 6 классе», «сначала тест или группа», «вдруг не потянет» — это НЕ complaint: "
                 "ставь is_p0=false и отвечай полезно по фактам.\n\n"
+            )
+        if _direct_p0_text_hygiene_enabled(context):
+            p0_instruction += (
+                "P0-гигиена текста: если тема возврата, претензии, договора или спорной оплаты — "
+                "в draft_text не обещай исход возврата, не называй сумму, не продавай и не подталкивай к оплате. "
+                "Дай короткую нейтральную оговорку и передай вопрос менеджеру.\n\n"
             )
         p0_fields = (
             '  "is_p0": false,\n'

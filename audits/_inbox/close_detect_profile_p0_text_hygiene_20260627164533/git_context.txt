@@ -1,0 +1,11 @@
+branch: main
+rev: 6accc8b
+
+ M src/mango_mvp/channels/subscription_llm_parts/__init__.py
+ M src/mango_mvp/channels/subscription_llm_parts/direct_path.py
+ M src/mango_mvp/channels/subscription_llm_parts/provider.py
+ M src/mango_mvp/channels/subscription_llm_parts/support.py
+ M src/mango_mvp/channels/tone_block.py
+ M tests/test_subscription_llm_draft_provider.py
+?? src/mango_mvp/channels/subscription_llm_parts/text_hygiene.py
+?? tests/test_direct_p0_text_hygiene.py

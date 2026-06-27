@@ -20,6 +20,7 @@ import yaml
 
 from mango_mvp.question_catalog.calibration_metrics import compute_classification_metrics, validate_labeled_rows
 from mango_mvp.question_catalog.classifier import load_valid_theme_and_service_ids
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 
 DEFAULT_INPUT = Path("product_data/question_catalog/stratified_calibration_sample_v2_labeled.csv")
@@ -236,8 +237,9 @@ def run_codex_batch(
             f'model_reasoning_effort="{candidate.reasoning_effort}"',
             "--output-last-message",
             out_file.name,
-            "-",
         ]
+        append_codex_service_tier(cmd)
+        cmd.append("-")
         started = time.time()
         proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, check=False, timeout=timeout_sec)
         elapsed = time.time() - started

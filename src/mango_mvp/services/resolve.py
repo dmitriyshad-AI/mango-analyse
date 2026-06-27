@@ -23,6 +23,7 @@ from mango_mvp.models import CallRecord
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.services.transcribe import TranscribeService
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 
 RESOLVE_SYSTEM_PROMPT = """You improve one speaker transcript from two ASR variants.
@@ -831,6 +832,7 @@ class ResolveService:
                         "--output-last-message",
                         out_file.name,
                     ]
+                    append_codex_service_tier(cmd)
                     if reasoning_effort in {"low", "medium", "high"}:
                         cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
                     cmd.append(
@@ -1084,6 +1086,7 @@ class ResolveService:
                     "--output-last-message",
                     out_file.name,
                 ]
+                append_codex_service_tier(cmd)
                 if reasoning_effort in {"low", "medium", "high"}:
                     cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
                 cmd.append(prompt)

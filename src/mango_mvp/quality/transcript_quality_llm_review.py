@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 
 PROMPT_VERSION = "transcript_quality_llm_review_v2"
@@ -409,6 +410,7 @@ def build_codex_cli_command(config: TranscriptQualityLLMReviewConfig, *, output_
         "--output-last-message",
         str(output_path),
     ]
+    append_codex_service_tier(cmd)
     reasoning = (config.reasoning_effort or "").strip().lower()
     if reasoning:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])

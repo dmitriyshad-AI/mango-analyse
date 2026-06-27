@@ -6,12 +6,18 @@ import re
 import sqlite3
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 import tiktoken
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 
 PROMPT_TEMPLATE = """You merge two ASR transcript variants for the same speaker in one phone call.
@@ -304,8 +310,9 @@ def _run_model(
                     out_file.name,
                     "-c",
                     f'model_reasoning_effort="{reasoning}"',
-                    prompt,
                 ]
+                append_codex_service_tier(cmd)
+                cmd.append(prompt)
                 started = time.time()
                 proc = subprocess.run(
                     cmd,

@@ -14,6 +14,7 @@ from openai import OpenAI
 
 from mango_mvp.amocrm_runtime.config import get_settings
 from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 settings = get_settings()
 
@@ -362,6 +363,7 @@ class DealLLMAnalyzer:
                     "--output-last-message",
                     out_file.name,
                 ]
+                append_codex_service_tier(cmd)
                 if reasoning in {"low", "medium", "high"}:
                     cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
                 cmd.append("-")

@@ -168,6 +168,7 @@ def test_build_codex_cli_command_uses_read_only_schema_and_output() -> None:
     assert cmd[cmd.index("--model") + 1] == "gpt-5.5"
     assert cmd[cmd.index("--output-schema") + 1] == "/tmp/schema.json"
     assert cmd[cmd.index("--output-last-message") + 1] == "/tmp/review.json"
+    assert 'service_tier="flex"' in cmd
     assert 'model_reasoning_effort="medium"' in cmd
     assert cmd[-1] == "-"
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 
 PROMPT_VERSION = "sales_moment_llm_review_v1"
@@ -488,6 +489,7 @@ def build_codex_cli_command(config: LLMReviewConfig, *, output_path: Path, schem
         "--output-last-message",
         str(output_path),
     ]
+    append_codex_service_tier(cmd)
     reasoning = (config.reasoning_effort or "").strip().lower()
     if reasoning:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])

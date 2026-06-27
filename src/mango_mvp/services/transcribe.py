@@ -23,6 +23,7 @@ from mango_mvp.models import CallRecord
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 from mango_mvp.services.pipeline_claims import release_stale_pipeline_claims
 from mango_mvp.utils.audio import resolve_ffmpeg_bin, split_stereo_to_mono
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 
 TOKEN_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 WORD_RE = re.compile(r"\w+", re.UNICODE)
@@ -68,6 +69,7 @@ ROLE_ASSIGN_LOW_INFO_TOKENS = {
 CODEX_HOME_COPY_ALLOWLIST = ("auth.json", "rules", "skills", "models_cache.json")
 CODEX_ROLE_ASSIGN_NEUTRAL_CONFIG = """approval_policy = "never"
 sandbox_mode = "read-only"
+service_tier = "flex"
 model_reasoning_effort = "medium"
 
 [features]
@@ -1839,6 +1841,7 @@ class TranscribeService:
                     "--output-last-message",
                     out_file.name,
                 ]
+                append_codex_service_tier(cmd)
                 if reasoning_effort in {"low", "medium", "high"}:
                     cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
                 cmd.append("-")
@@ -2250,6 +2253,7 @@ class TranscribeService:
                 "--output-last-message",
                 out_file.name,
             ]
+            append_codex_service_tier(cmd)
             if reasoning_effort in {"low", "medium", "high"}:
                 cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
             cmd.append(prompt)

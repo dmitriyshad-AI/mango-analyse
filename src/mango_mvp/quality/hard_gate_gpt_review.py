@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mango_mvp.utils.codex_cli import append_codex_service_tier
+
 
 REVIEW_SCHEMA_VERSION = "hard_gate_gpt_review_v1"
 PROMPT_VERSION = "hard_gate_gpt_review_prompt_v1"
@@ -270,6 +272,7 @@ def _codex_command(config: HardGateGptReviewConfig, *, project_root: Path, outpu
         "--output-last-message",
         str(output_path),
     ]
+    append_codex_service_tier(cmd)
     if config.reasoning_effort:
         cmd.extend(["-c", f'model_reasoning_effort="{config.reasoning_effort}"'])
     cmd.append("-")

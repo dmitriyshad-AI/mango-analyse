@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from mango_mvp.channels.subscription_llm_parts.codex_exec import extract_json_object
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 from mango_mvp.quality.tenant_text_normalizer import normalize_manager_text
 
 
@@ -193,6 +194,7 @@ class CrmHistorySummarizer:
                     "--output-last-message",
                     out_file.name,
                 ]
+                append_codex_service_tier(cmd)
                 reasoning = (self.config.reasoning_effort or "").strip().lower()
                 if reasoning in {"minimal", "low", "medium", "high", "xhigh"}:
                     cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])

@@ -18,6 +18,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from mango_mvp.customer_profile.contracts import ProfileFieldCandidate
 from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 from mango_mvp.utils.phone import normalize_phone
 
 
@@ -751,6 +752,7 @@ def build_codex_cli_command(config: ChildResolverConfig, *, output_path: Path, s
         "--output-last-message",
         str(output_path),
     ]
+    append_codex_service_tier(cmd)
     reasoning = str(config.reasoning_effort or "").strip().lower()
     if reasoning:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])

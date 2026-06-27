@@ -9,15 +9,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from mango_mvp.utils.codex_cli import (
+    CODEX_SERVICE_TIER_ENV,
+    DEFAULT_CODEX_SERVICE_TIER,
+    append_codex_service_tier,
+)
+
 
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 
 
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
-
-
-CODEX_SERVICE_TIER_ENV = "MANGO_CODEX_SERVICE_TIER"
-DEFAULT_CODEX_SERVICE_TIER = "flex"
 
 
 _RETRYABLE_MARKERS = (
@@ -57,9 +59,7 @@ def build_codex_exec_command(
     if cwd is not None:
         cmd.extend(["-C", str(cwd)])
     cmd.extend(["--model", str(model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL])
-    service_tier = str(os.getenv(CODEX_SERVICE_TIER_ENV) or DEFAULT_CODEX_SERVICE_TIER).strip()
-    if service_tier:
-        cmd.extend(["-c", f'service_tier="{service_tier}"'])
+    append_codex_service_tier(cmd)
     reasoning = str(reasoning_effort or "").strip()
     if reasoning:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])

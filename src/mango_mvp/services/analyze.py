@@ -23,6 +23,7 @@ from mango_mvp.config import Settings
 from mango_mvp.models import CallRecord
 from mango_mvp.quality.non_conversation import detect_non_conversation_signals
 from mango_mvp.services.llm_response_cache import LLMResponseCache
+from mango_mvp.utils.codex_cli import append_codex_service_tier
 from mango_mvp.utils.filename_repair import repair_manager_name
 
 SYSTEM_PROMPT_FULL = """Strict analyst for Russian EdTech phone calls.
@@ -2364,6 +2365,7 @@ class AnalyzeService:
                     "--output-last-message",
                     out_file.name,
                 ]
+                append_codex_service_tier(cmd)
                 if reasoning_effort in {"low", "medium", "high"}:
                     cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
                 cmd.append("-")

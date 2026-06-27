@@ -5,6 +5,7 @@ import json
 import os
 import statistics
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from mango_mvp.utils.codex_cli import append_codex_service_tier
+
 OUT_DIR = ROOT / "audits" / "_inbox" / "gpt55_reasoning_effort_bench_20260521"
 MODEL = "gpt-5.5"
 EFFORTS = ("medium", "high", "xhigh")
@@ -250,8 +255,9 @@ def run_codex(case: Case, effort: str) -> dict[str, Any]:
         "-c",
         f'model_reasoning_effort="{effort}"',
         "--skip-git-repo-check",
-        "-",
     ]
+    append_codex_service_tier(cmd)
+    cmd.append("-")
     env = dict(os.environ)
     env.pop("OPENAI_API_KEY", None)
     started = time.perf_counter()

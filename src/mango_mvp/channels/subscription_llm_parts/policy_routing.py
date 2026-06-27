@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from mango_mvp.channels.answer_safety_classifier import classify_answer_safety
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.dialogue_contract_pipeline import (
+    AUTONOMY_SCOPE_PRECISION_ENV,
     _GENERIC_HANDOFF_TEXTS as dialogue_contract_generic_handoff_texts,
     _HANDOFF_EXHAUSTED_TEXTS as dialogue_contract_handoff_exhausted_texts,
     _handoff_factual_claim_text as dialogue_contract_handoff_factual_claim_text,
@@ -60,6 +61,7 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     _keep_answer_hard_anchors,
     _keep_answer_supported,
     _normalize_fact_match_text,
+    _pilot_profile_default_on_flag_enabled,
     _p0_model_led_complaint_backstop,
     _p0_model_led_enabled,
     _p0_model_led_filter_high_risk_codes,
@@ -1661,6 +1663,51 @@ def _unpk_all_addresses_template_from_kb(context: Optional[Mapping[str, Any]]) -
     _template_from_kb_trace_event(context, {"fact_key": "locations_unpk.addresses.*.address", "outcome": "hit"})
     return f"Площадки УНПК: Москва — {sretenka}; Долгопрудный — {mfti} и {patsayeva}."
 
+
+def _autonomy_scope_precision_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_truthy_setting(
+        context,
+        AUTONOMY_SCOPE_PRECISION_ENV,
+        aliases=("autonomy_scope_precision", "autonomy_scope_precision_enabled"),
+    )
+    if explicit is not None:
+        return bool(explicit)
+    return _pilot_profile_default_on_flag_enabled(
+        context,
+        AUTONOMY_SCOPE_PRECISION_ENV,
+        aliases=("autonomy_scope_precision", "autonomy_scope_precision_enabled"),
+    )
+
+
+def _asks_unpk_regular_moscow_route(text: str) -> bool:
+    value = str(text or "").casefold().replace("ё", "е")
+    asks_route = bool(
+        re.search(
+            r"как\s+(?:доехать|добраться|попасть|пройти|проехать)|доехать|добраться|проезд|маршрут",
+            value,
+            re.I,
+        )
+    )
+    mentions_regular_moscow = bool(re.search(r"моск|заняти|площадк|очн|регулярн|обычн|адрес", value, re.I))
+    mentions_camp = bool(re.search(r"лвш|менделеев|лагер|camp|летн|трансфер|выездн", value, re.I))
+    return asks_route and mentions_regular_moscow and not mentions_camp
+
+
+def _autonomy_scope_precision_repaired_address_text(
+    result: SubscriptionDraftResult,
+    *,
+    client_message: str = "",
+    context: Optional[Mapping[str, Any]] = None,
+) -> str:
+    if not _autonomy_scope_precision_enabled(context) or _active_brand(context) != "unpk":
+        return ""
+    if not _asks_unpk_regular_moscow_route(client_message):
+        return ""
+    if not re.search(r"лвш|менделеев|льяловск|красный\s+воин", str(result.draft_text or "").casefold().replace("ё", "е"), re.I):
+        return ""
+    return _unpk_moscow_address_template_from_kb(context)
+
+
 def _foton_contact_template_from_kb(context: Optional[Mapping[str, Any]]) -> str:
     if not _template_from_kb_enabled(context):
         return CONTACT_FOTON_SAFE_TEXT
@@ -2727,6 +2774,11 @@ def apply_autonomy_matrix_guard(
             "autonomy_blocked_asked_known_data_again",
             "Автономный ответ запрещен: черновик повторно запросил уже известные данные клиента.",
         )
+    repaired_address_text = _autonomy_scope_precision_repaired_address_text(result, client_message=client_message, context=context)
+    if repaired_address_text:
+        result = replace(result, draft_text=repaired_address_text)
+        flags.append("autonomy_scope_precision_repaired_address")
+        metadata["autonomy_scope_precision_repaired_address"] = True
     if result.message_type != "question":
         return demote(
             "draft_for_manager",
@@ -4237,6 +4289,14 @@ def _terminal_safe_template(
         or "моск" in client_haystack
     ):
         return _foton_address_template_from_kb(context)
+    if (
+        _autonomy_scope_precision_enabled(context)
+        and active_brand == "unpk"
+        and not recording_followup
+        and not address_negated
+        and _asks_unpk_regular_moscow_route(client_haystack)
+    ):
+        return _unpk_moscow_address_template_from_kb(context)
     if active_brand == "unpk" and not recording_followup and not address_negated and ("площадки" in client_haystack or "адрес" in client_haystack):
         return _unpk_all_addresses_template_from_kb(context)
     asks_contact = _asks_center_contact(client_haystack)

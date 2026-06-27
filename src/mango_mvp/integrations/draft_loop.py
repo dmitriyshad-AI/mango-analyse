@@ -925,7 +925,10 @@ class AmoWappiDraftLoop:
         }
         self.journal.append({**pending_payload, "event": "draft_created", "status": "dry_run" if dry_run else "note_pending"})
         if dry_run:
-            return {"processed": 0, "skipped": 0, "bot_calls": 1}
+            for item in inbound_new:
+                self.state.mark_processed(item)
+            self.state.save()
+            return {"processed": len(inbound_new), "skipped": skipped_before, "bot_calls": 1}
         self.state.set_pending(last_message, pending_payload)
         self.state.save()
         try:

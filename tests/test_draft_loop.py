@@ -672,6 +672,28 @@ def test_draft_loop_state_loss_does_not_duplicate_written_note_from_journal(tmp_
     assert bot.calls == []
 
 
+def test_draft_loop_dry_run_marks_processed_and_does_not_duplicate_drafts(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")
+    amo = FakeAmo()
+    bot = FakeBot()
+    loop = _loop(tmp_path, messages=[_message("m1")], pairs={key: pair}, amo=amo, bot=bot)
+
+    first = loop.run_once(dry_run=True)
+    second = loop.run_once(dry_run=True)
+
+    assert first["processed"] == 1
+    assert first["bot_calls"] == 1
+    assert second["processed"] == 0
+    assert second["bot_calls"] == 0
+    assert amo.notes == []
+    assert len(bot.calls) == 1
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows if row["event"] == "draft_created"] == ["draft_created"]
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert {item["message_id"] for item in state["processed"]} == {"m1"}
+
+
 def test_draft_loop_retries_pending_note_once(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     cfg = _config(tmp_path, pairs={key: DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")})

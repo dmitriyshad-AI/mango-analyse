@@ -838,6 +838,11 @@ class AmoWappiDraftLoop:
                 }
             )
             reason = str((candidate or {}).get("reason") or (candidate or {}).get("status") or "not_enabled")
+            if dry_run:
+                for item in inbound_new:
+                    self.state.mark_processed(item)
+                self.state.save()
+                return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0, "auto_resolver_reason": reason}
         if self.state.is_pair_quarantined(key):
             for item in inbound_new:
@@ -877,6 +882,11 @@ class AmoWappiDraftLoop:
                     "lead_id": pair.lead_id,
                 }
             )
+            if dry_run:
+                for item in inbound_new:
+                    self.state.mark_processed(item)
+                self.state.save()
+                return {"processed": len(inbound_new), "skipped": len(inbound_new), "bot_calls": 0}
             return {"processed": 0, "skipped": len(inbound_new), "bot_calls": 0}
         history = _prompt_history_lines(messages, recent_limit=self.config.history_limit, brand=brand)
         client_message = inbound_new[-1].text

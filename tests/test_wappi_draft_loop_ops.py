@@ -62,6 +62,30 @@ def test_runtime_passport_uses_actual_process_env_and_redacts_secrets(tmp_path: 
     assert "UNRELATED_FLAG" not in env
 
 
+def test_runtime_passport_prefers_python_runner_over_screen_wrapper(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    wrapper_command = (
+        "SCREEN -dmS mango_wappi_observe bash -lc "
+        "python3 scripts/run_amo_wappi_draft_loop.py --loop --dry-run"
+    )
+    processes = [
+        ops.ProcessInfo(pid=10, ppid=1, command=wrapper_command),
+        ops.ProcessInfo(pid=11, ppid=10, command="bash -lc python3 scripts/run_amo_wappi_draft_loop.py --loop --dry-run"),
+        ops.ProcessInfo(pid=12, ppid=11, command="python3 scripts/run_amo_wappi_draft_loop.py --loop --dry-run"),
+    ]
+
+    passport = ops.build_runtime_passport(
+        repo_root=Path.cwd(),
+        config=config,
+        process_lister=lambda: processes,
+        env_reader=lambda pid: ({"DRAFT_LOOP_AUTO_RESOLVER": "0"} if pid == 12 else {"DRAFT_LOOP_AUTO_RESOLVER": "wrong"}, "fake"),
+    )
+
+    assert passport["process"]["pid"] == 12
+    assert passport["process"]["screen"]["detected"] is True
+    assert passport["runtime_env"]["values"]["DRAFT_LOOP_AUTO_RESOLVER"] == "0"
+
+
 def test_daily_report_includes_required_resolver_reasons_and_state_counts(tmp_path: Path) -> None:
     now = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
     journal = tmp_path / "journal.jsonl"
@@ -141,6 +165,31 @@ def test_daily_report_accepts_short_quarantined_and_pending_reason_aliases(tmp_p
     assert reasons["quarantined"] == 1
     assert reasons["pending_notes"] == 1
     assert reasons["pending"] == 1
+
+
+def test_daily_report_includes_heartbeat_auto_resolver_counts(tmp_path: Path) -> None:
+    now = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
+    journal = tmp_path / "journal.jsonl"
+    heartbeat = tmp_path / "heartbeat.json"
+    state = tmp_path / "state.json"
+    _write_jsonl(journal, [{"event": "pair_missing", "created_at": now.isoformat(), "status": "skipped"}])
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "last_cycle_at": now.isoformat(),
+                "status": "ok",
+                "summary": {"auto_resolver_counts": {"not_enabled": 7, "amo_chat_event_ambiguous": 2}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    state.write_text("{}", encoding="utf-8")
+
+    reasons = ops.build_daily_report(journal_path=journal, heartbeat_path=heartbeat, state_path=state, now=now)["resolver_reasons"]
+
+    assert reasons["not_enabled"] == 7
+    assert reasons["amo_chat_event_ambiguous"] == 2
 
 
 def test_quality_table_rows_keep_required_fields_and_manager_reply(tmp_path: Path) -> None:

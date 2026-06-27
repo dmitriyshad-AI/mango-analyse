@@ -694,6 +694,52 @@ def test_draft_loop_dry_run_marks_processed_and_does_not_duplicate_drafts(tmp_pa
     assert {item["message_id"] for item in state["processed"]} == {"m1"}
 
 
+def test_draft_loop_dry_run_marks_pair_missing_and_does_not_duplicate_skip(tmp_path: Path) -> None:
+    amo = FakeAmo()
+    bot = FakeBot()
+    loop = _loop(tmp_path, messages=[_message("m1")], pairs={}, amo=amo, bot=bot)
+
+    first = loop.run_once(dry_run=True)
+    second = loop.run_once(dry_run=True)
+
+    assert first["processed"] == 1
+    assert first["skipped"] == 1
+    assert first["bot_calls"] == 0
+    assert second["processed"] == 0
+    assert second["skipped"] == 0
+    assert second["bot_calls"] == 0
+    assert amo.notes == []
+    assert bot.calls == []
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows if row["event"] == "pair_missing"] == ["pair_missing"]
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert {item["message_id"] for item in state["processed"]} == {"m1"}
+
+
+def test_draft_loop_dry_run_marks_brand_mismatch_and_does_not_duplicate_skip(tmp_path: Path) -> None:
+    key = DraftLoopKey("profile-foton", "chat-1")
+    pair = DraftLoopPair(key=key, lead_id="49832125", expected_brand="unpk")
+    amo = FakeAmo()
+    bot = FakeBot()
+    loop = _loop(tmp_path, messages=[_message("m1")], pairs={key: pair}, amo=amo, bot=bot)
+
+    first = loop.run_once(dry_run=True)
+    second = loop.run_once(dry_run=True)
+
+    assert first["processed"] == 1
+    assert first["skipped"] == 1
+    assert first["bot_calls"] == 0
+    assert second["processed"] == 0
+    assert second["skipped"] == 0
+    assert second["bot_calls"] == 0
+    assert amo.notes == []
+    assert bot.calls == []
+    rows = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in rows if row["event"] == "brand_pair_mismatch"] == ["brand_pair_mismatch"]
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert {item["message_id"] for item in state["processed"]} == {"m1"}
+
+
 def test_draft_loop_retries_pending_note_once(tmp_path: Path) -> None:
     key = DraftLoopKey("profile-foton", "chat-1")
     cfg = _config(tmp_path, pairs={key: DraftLoopPair(key=key, lead_id="49832125", expected_brand="foton")})

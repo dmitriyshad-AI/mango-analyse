@@ -35,6 +35,7 @@ REQUIRED_RESOLVER_REASON_KEYS = (
     "pending_notes",
     "quarantined",
     "pending",
+    "not_enabled",
 )
 QUALITY_COLUMNS = (
     "created_at",
@@ -177,7 +178,15 @@ def find_draft_loop_process(processes: Sequence[ProcessInfo] | None = None) -> P
             candidates.append(process)
     if not candidates:
         return None
-    return sorted(candidates, key=lambda item: item.pid)[0]
+    return sorted(candidates, key=_draft_loop_process_sort_key)[0]
+
+
+def _draft_loop_process_sort_key(process: ProcessInfo) -> tuple[int, int]:
+    command = process.command.casefold()
+    wrapper_markers = ("screen ", "bash -lc", "sh -lc", "login -")
+    is_wrapper = any(marker in command for marker in wrapper_markers)
+    is_python_runner = "python" in command and PROCESS_MARKER.casefold() in command
+    return (0 if is_python_runner and not is_wrapper else 1 if is_python_runner else 2, process.pid)
 
 
 def _parse_null_environ(raw: bytes) -> dict[str, str]:
@@ -358,6 +367,15 @@ def build_daily_report(
     resolver_reasons["quarantined"] = resolver_reasons["quarantined_pairs"]
     resolver_reasons["pending"] = resolver_reasons["pending_notes"]
     heartbeat = _read_json(heartbeat_path)
+    heartbeat_summary = heartbeat.get("summary") if isinstance(heartbeat.get("summary"), Mapping) else {}
+    heartbeat_auto_counts = (
+        heartbeat_summary.get("auto_resolver_counts") if isinstance(heartbeat_summary.get("auto_resolver_counts"), Mapping) else {}
+    )
+    for reason, count in heartbeat_auto_counts.items():
+        try:
+            resolver_reasons[str(reason)] += int(count or 0)
+        except (TypeError, ValueError):
+            continue
     last_cycle = _parse_iso_datetime(heartbeat.get("last_cycle_at"))
     age_sec = None if last_cycle is None else max(0.0, (current_time.astimezone(timezone.utc) - last_cycle).total_seconds())
     error_rows = [

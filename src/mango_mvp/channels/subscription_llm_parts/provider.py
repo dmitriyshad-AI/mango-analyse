@@ -271,6 +271,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_route_rubric_should_regenerate,
     _build_direct_path_route_rubric_regen_prompt,
     _direct_slot_topic_shadow_enabled,
+    _p0_model_classes_v2_enabled,
     _a2_extract_phone,
     _replace_echoed_phone,
 )
@@ -2109,7 +2110,19 @@ def safe_fallback_draft(*, reason: str, metadata: Optional[Mapping[str, Any]] = 
     )
 
 
-_DIRECT_PATH_MODEL_P0_KINDS = frozenset({"payment_dispute", "refund", "complaint", "legal_threat"})
+_DIRECT_PATH_MODEL_P0_BASE_KINDS = frozenset({"payment_dispute", "refund", "complaint", "legal_threat"})
+
+_DIRECT_PATH_MODEL_P0_V2_KINDS = frozenset(
+    {"cancellation_service_request", "contract_dispute", "paid_operation_context"}
+)
+
+_DIRECT_PATH_MODEL_P0_KINDS = _DIRECT_PATH_MODEL_P0_BASE_KINDS | _DIRECT_PATH_MODEL_P0_V2_KINDS
+
+_DIRECT_PATH_MODEL_P0_LEGACY_KIND = {
+    "cancellation_service_request": "refund",
+    "paid_operation_context": "refund",
+    "contract_dispute": "legal_threat",
+}
 
 
 _DIRECT_PATH_MODEL_INTENTS = frozenset({"live_availability", "schedule", "address", "camp", "price_fix", "other"})
@@ -2160,13 +2173,25 @@ def _direct_path_payload_bool(value: Any) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "да", "p0", "high"}
 
 
-def _direct_path_model_p0_kind(value: Any) -> str:
+def _direct_path_model_p0_kind(value: Any, *, include_v2: bool = False) -> str:
     kind = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
     if kind == "legal":
         kind = "legal_threat"
+    if kind in {"contract", "contract_issue", "document_dispute", "contract_claim"}:
+        kind = "contract_dispute"
+    if kind in {"cancellation", "cancel_service", "service_cancellation", "enrollment_cancel"}:
+        kind = "cancellation_service_request"
+    if kind in {"paid_context", "paid_operation", "paid_refund_context", "paid_transfer_context"}:
+        kind = "paid_operation_context"
     if kind in {"payment", "payment_issue", "payment_problem", "payment_claim"}:
         kind = "payment_dispute"
-    return kind if kind in _DIRECT_PATH_MODEL_P0_KINDS else ""
+    allowed = _DIRECT_PATH_MODEL_P0_KINDS if include_v2 else _DIRECT_PATH_MODEL_P0_BASE_KINDS
+    return kind if kind in allowed else ""
+
+
+def _direct_path_model_p0_legacy_kind(kind: str) -> str:
+    normalized = _direct_path_model_p0_kind(kind, include_v2=True)
+    return _DIRECT_PATH_MODEL_P0_LEGACY_KIND.get(normalized, normalized)
 
 
 def _direct_path_answerability_value(value: Any) -> str:
@@ -2212,7 +2237,10 @@ def _direct_path_model_p0_signal(result: SubscriptionDraftResult, *, client_mess
     if not _direct_path_model_p0_enabled(context):
         return {}
     meta = _direct_path_model_p0_meta(result)
-    kind = _direct_path_model_p0_kind(meta.get("p0_kind"))
+    include_v2 = _p0_model_classes_v2_enabled(context)
+    kind = _direct_path_model_p0_kind(meta.get("p0_kind_raw"), include_v2=include_v2)
+    if not kind:
+        kind = _direct_path_model_p0_kind(meta.get("p0_kind"), include_v2=include_v2)
     risk_level = str(meta.get("risk_level") or result.risk_level or "").strip().casefold()
     model_is_p0 = bool(meta.get("is_p0")) or (risk_level in {"high", "p0", "critical", "high_risk"} and bool(kind))
     floor_reason = str(dialogue_contract_p0_pre_gate(client_message, context=context) or "")
@@ -2244,11 +2272,13 @@ def _apply_direct_path_model_p0_route(
     if not signal:
         return result
     kind = str(signal.get("p0_kind") or "complaint")
+    legacy_kind = _direct_path_model_p0_legacy_kind(kind)
     metadata = dict(result.metadata)
     direct = dict(metadata.get("direct_path") or {})
     direct["model_p0"] = {
         "is_p0": True,
         "p0_kind": kind,
+        "legacy_p0_kind": legacy_kind if legacy_kind != kind else "",
         "risk_level": "high",
         "model_reason": str(signal.get("model_reason") or ""),
         "floor_reason": str(signal.get("floor_reason") or ""),
@@ -2258,12 +2288,18 @@ def _apply_direct_path_model_p0_route(
     metadata["direct_path_model_p0"] = dict(direct["model_p0"])
     metadata["reason_class"] = "p0_deferral"
     metadata["is_manager_deferral"] = True
+    mapped_flags: list[str] = [f"direct_path_model_p0_{kind}", kind]
+    if legacy_kind and legacy_kind != kind:
+        mapped_flags.extend([f"direct_path_model_p0_{legacy_kind}", legacy_kind])
+        if legacy_kind == "legal_threat":
+            mapped_flags.append("legal")
+    elif kind == "legal_threat":
+        mapped_flags.append("legal")
     flags = tuple(
         dict.fromkeys(
             [
                 *result.safety_flags,
-                f"direct_path_model_p0_{kind}",
-                kind,
+                *mapped_flags,
                 "manager_approval_required",
                 "no_auto_send",
             ]
@@ -2304,10 +2340,12 @@ def _normalize_direct_path_payload(
     metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), Mapping) else {}
     risk_level = str(payload.get("risk_level") or "low").strip()
     if any(key in payload for key in ("is_p0", "risk_level", "p0_kind", "p0_code", "model_reason")):
+        raw_p0_kind = payload.get("p0_kind") or payload.get("p0_code") or payload.get("risk_code")
         metadata["direct_path_model_p0"] = {
             "is_p0": _direct_path_payload_bool(payload.get("is_p0")),
             "risk_level": risk_level,
-            "p0_kind": _direct_path_model_p0_kind(payload.get("p0_kind") or payload.get("p0_code") or payload.get("risk_code")),
+            "p0_kind": _direct_path_model_p0_kind(raw_p0_kind),
+            "p0_kind_raw": " ".join(str(raw_p0_kind or "").split())[:120],
             "model_reason": " ".join(str(payload.get("model_reason") or payload.get("p0_reason") or "").split())[:240],
         }
     model_intent_meta = _direct_path_model_intent_meta_from_payload(payload)

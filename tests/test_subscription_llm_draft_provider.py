@@ -12590,6 +12590,40 @@ def test_direct_path_model_p0_prompt_is_flagged_off_by_default() -> None:
     assert '"p0_kind": "none|payment_dispute|refund|complaint|legal_threat"' in on_prompt
     assert '"route": "bot_answer_self_for_pilot" | "draft_for_manager" | "manager_only"' in on_prompt
     assert "дорого/подумаю" in on_prompt
+    assert "cancellation_service_request" not in on_prompt
+    assert "paid_operation_context" not in on_prompt
+
+
+def test_p0_model_classes_v2_prompt_is_default_off_and_history_aware_when_enabled() -> None:
+    context = {
+        "active_brand": "foton",
+        DIRECT_PATH_ENV: "1",
+        subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+        "recent_messages": [
+            "Клиент: Мы оплатили июльскую смену, но мест в нужной группе нет.",
+            "Клиент: Что можно сделать?",
+        ],
+    }
+
+    off_prompt = subscription_llm._build_direct_path_prompt("Что можно сделать?", context=context)
+    on_prompt = subscription_llm._build_direct_path_prompt(
+        "Что можно сделать?",
+        context={**context, subscription_llm.P0_MODEL_CLASSES_V2_ENV: "1"},
+    )
+
+    assert subscription_llm.P0_MODEL_CLASSES_V2_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._p0_model_classes_v2_enabled(context) is False
+    assert subscription_llm._p0_model_classes_v2_enabled({**context, subscription_llm.P0_MODEL_CLASSES_V2_ENV: "1"}) is True
+    assert "cancellation_service_request" not in off_prompt
+    assert "contract_dispute" not in off_prompt
+    assert "paid_operation_context" not in off_prompt
+    assert '"p0_kind": "none|payment_dispute|refund|complaint|legal_threat|' in on_prompt
+    assert "cancellation_service_request" in on_prompt
+    assert "contract_dispute" in on_prompt
+    assert "paid_operation_context" in on_prompt
+    assert "оценивай не только текущую реплику" in on_prompt
+    assert "Если есть сомнение" in on_prompt
+    assert "оплаченная смена/курс/запись" in on_prompt
 
 
 def test_intent_model_led_default_off_and_enabled_by_pilot_profile() -> None:
@@ -13265,6 +13299,115 @@ def test_p0_model_led_model_complaint_routes_manager_before_gate() -> None:
     assert direct_p0["p0_kind"] == "complaint"
     assert direct_p0["source"] == "model_p0"
     assert direct_p0["model_reason"] == "клиент описывает реальную претензию к занятию"
+
+
+@pytest.mark.parametrize(
+    ("kind", "message", "history", "legacy_kind"),
+    (
+        (
+            "cancellation_service_request",
+            "Можете подсказать порядок по нашей записи?",
+            (),
+            "refund",
+        ),
+        (
+            "contract_dispute",
+            "Посмотрите, пожалуйста, наш документ.",
+            (),
+            "legal_threat",
+        ),
+        (
+            "paid_operation_context",
+            "Что можно сделать?",
+            (
+                "Клиент: Мы уже оплатили июльскую смену.",
+                "Клиент: Но нужных мест нет, обсуждали перенос на другую смену.",
+            ),
+            "refund",
+        ),
+    ),
+)
+def test_p0_model_classes_v2_routes_new_kinds_to_manager_and_legacy_hard_flags(
+    kind: str,
+    message: str,
+    history: tuple[str, ...],
+    legacy_kind: str,
+) -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Можем подобрать варианты и рассказать про оплату.",
+            risk_level="high",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "risk_level": "high",
+                    "p0_kind": kind,
+                    "model_reason": "модель увидела новый P0-класс",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        message,
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+            subscription_llm.P0_MODEL_CLASSES_V2_ENV: "1",
+            "recent_messages": history,
+        },
+    )
+
+    direct_p0 = result.metadata["direct_path_model_p0"]
+    assert provider.calls == 1
+    assert result.route == "manager_only"
+    assert "варианты и рассказать про оплату" not in result.draft_text.casefold()
+    assert direct_p0["p0_kind"] == kind
+    assert direct_p0["legacy_p0_kind"] == legacy_kind
+    assert f"direct_path_model_p0_{kind}" in result.safety_flags
+    assert kind in result.safety_flags
+    assert f"direct_path_model_p0_{legacy_kind}" in result.safety_flags
+    assert legacy_kind in result.safety_flags
+    assert "manager_approval_required" in result.safety_flags
+    assert "no_auto_send" in result.safety_flags
+    gate = result.metadata["authoritative_output_gate"]
+    assert gate["route_before"] == "manager_only"
+    assert "hard_p0" in {item["code"] for item in gate["findings"]}
+
+
+def test_p0_model_classes_v2_unknown_when_flag_off_falls_back_to_legacy_complaint() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Можем обсудить варианты.",
+            risk_level="high",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "risk_level": "high",
+                    "p0_kind": "cancellation_service_request",
+                    "model_reason": "новый класс пришёл без флага v2",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Можете подсказать порядок по нашей записи?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+        },
+    )
+
+    direct_p0 = result.metadata["direct_path_model_p0"]
+    assert result.route == "manager_only"
+    assert direct_p0["p0_kind"] == "complaint"
+    assert "direct_path_model_p0_cancellation_service_request" not in result.safety_flags
+    assert "direct_path_model_p0_complaint" in result.safety_flags
 
 
 def test_direct_path_model_p0_latches_next_neutral_turn() -> None:

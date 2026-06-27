@@ -88,6 +88,8 @@ DIRECT_SLOT_TOPIC_SHADOW_ENV = "TELEGRAM_DIRECT_SLOT_TOPIC_SHADOW"
 
 DIRECT_P0_TEXT_HYGIENE_ENV = "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"
 
+P0_MODEL_CLASSES_V2_ENV = "TELEGRAM_P0_MODEL_CLASSES_V2"
+
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
@@ -272,6 +274,13 @@ def _direct_p0_text_hygiene_enabled(context: Optional[Mapping[str, Any]] = None)
         context,
         DIRECT_P0_TEXT_HYGIENE_ENV,
         aliases=("direct_p0_text_hygiene", "direct_p0_text_hygiene_enabled"),
+    )
+
+def _p0_model_classes_v2_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        P0_MODEL_CLASSES_V2_ENV,
+        aliases=("p0_model_classes_v2", "p0_model_classes_v2_enabled"),
     )
 
 def _direct_path_known_slots_next_step_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -2237,6 +2246,10 @@ def _build_direct_path_prompt(
     assumed_scope_instruction = ""
     route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager"'
     if _direct_path_model_p0_enabled(context):
+        p0_kind_choices = "none|payment_dispute|refund|complaint|legal_threat"
+        p0_model_classes_v2_enabled = _p0_model_classes_v2_enabled(context)
+        if p0_model_classes_v2_enabled:
+            p0_kind_choices += "|cancellation_service_request|contract_dispute|paid_operation_context"
         route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager" | "manager_only"'
         p0_instruction = (
             "Срочные обращения/P0: если клиент пишет про спорную оплату, списание/платёж, возврат, жалобу, "
@@ -2245,6 +2258,20 @@ def _build_direct_path_prompt(
             "Модель может только добавить срочность; если это обычное возражение «дорого/подумаю» или "
             "гипотетический вопрос про правила возврата без претензии, is_p0=false.\n\n"
         )
+        if p0_model_classes_v2_enabled:
+            p0_instruction += (
+                "P0-классы v2: оценивай не только текущую реплику, но и последние реплики/память диалога. "
+                "Если есть сомнение, безопаснее поставить is_p0=true и route=\"manager_only\". "
+                "cancellation_service_request — клиент хочет выписать/снять/отказаться от записи или кружка, "
+                "отчислиться, перестать ходить, забрать ребёнка с программы. "
+                "contract_dispute — клиент спорит с договором, датой, ФИО, паспортом, подписью, документом "
+                "или говорит об ошибке/претензии в договоре. "
+                "paid_operation_context — в истории есть оплаченная смена/курс/запись, перенос, возврат, "
+                "нет мест или невозможность участия, а текущая короткая реплика вроде «что можно сделать?», "
+                "«как быть?», «какие варианты?» относится к этой оплаченной ситуации. "
+                "Гипотетический вопрос до оплаты «если передумаем, можно ли вернуть?» без претензии и без "
+                "оплаченного контекста — НЕ P0.\n\n"
+            )
         if _p0_model_led_enabled(context):
             p0_instruction += (
                 "Для p0_kind=complaint отличай реальную жалобу от растерянности. Реальная жалоба/претензия: "
@@ -2264,7 +2291,7 @@ def _build_direct_path_prompt(
         p0_fields = (
             '  "is_p0": false,\n'
             '  "risk_level": "low|high",\n'
-            '  "p0_kind": "none|payment_dispute|refund|complaint|legal_threat",\n'
+            f'  "p0_kind": "{p0_kind_choices}",\n'
             '  "model_reason": "кратко, почему это P0 или почему нет",\n'
         )
     if _intent_model_led_enabled(context):

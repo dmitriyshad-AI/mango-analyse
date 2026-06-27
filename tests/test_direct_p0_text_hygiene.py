@@ -51,6 +51,40 @@ def test_tone_close_detect_profile_on_stays_silent_on_p0() -> None:
     assert result.metadata["close_detect"]["status"] == "suppressed_p0"
 
 
+def test_tone_close_detect_keeps_pending_after_recent_manager_handoff() -> None:
+    result = subscription_llm.apply_tone_close_detect_layer(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Спасибо вам! Будем рады видеть вас на занятиях — возвращайтесь, если появятся вопросы.",
+            safety_flags=("direct_path_model",),
+        ),
+        client_message="Хорошо, жду тогда менеджера.",
+        context={
+            **_profile_context(),
+            "dialogue_memory_view": {
+                "route_history": ["bot_answer_self_for_pilot", "manager_only"],
+                "recent_turns": [
+                    {
+                        "role": "bot",
+                        "text": (
+                            "По возврату точную сумму и порядок действий должен подтвердить менеджер. "
+                            "Передам ему ваш вопрос, чтобы он проверил ситуацию по данным записи и оплаты."
+                        ),
+                    }
+                ],
+            },
+        },
+    )
+
+    lowered = result.draft_text.casefold()
+    assert result.route == "manager_only"
+    assert "tone_close_detect_pending" in result.safety_flags
+    assert "рады видеть" not in lowered
+    assert "занятиях" not in lowered
+    assert "менеджер" in lowered
+    assert result.metadata["close_detect"]["status"] == "suppressed_pending"
+
+
 def test_direct_p0_text_hygiene_default_off_is_noop() -> None:
     result = SubscriptionDraftResult(
         route="manager_only",
@@ -172,3 +206,157 @@ def test_direct_p0_text_hygiene_prompt_instruction_is_flagged_only() -> None:
     assert "P0-гигиена текста" not in off_prompt
     assert "P0-гигиена текста" in on_prompt
     assert "не обещай исход возврата" in on_prompt
+
+
+def test_direct_p0_text_hygiene_contract_dispute_zero_collects_detail_request() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "Понимаю. Напишите, пожалуйста, что именно указано неверно в договоре: "
+                "какое поле и как должно быть правильно. Передам менеджеру."
+            ),
+            risk_level="high",
+            metadata={
+                "direct_path_model_p0": {
+                    "is_p0": True,
+                    "risk_level": "high",
+                    "p0_kind": "contract_dispute",
+                    "model_reason": "клиент спорит с договором",
+                }
+            },
+        )
+    )
+
+    result = provider.build_draft(
+        "Договор составлен неправильно, там ошибка. Что делать?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DIRECT_PATH_MODEL_P0_ENV: "1",
+            subscription_llm.P0_MODEL_CLASSES_V2_ENV: "1",
+            subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "1",
+        },
+    )
+
+    lowered = result.draft_text.casefold()
+    assert result.route == "manager_only"
+    assert "direct_p0_text_hygiene" in result.safety_flags
+    assert "что именно" not in lowered
+    assert "какое поле" not in lowered
+    assert "как должно быть правильно" not in lowered
+    assert "возврат" not in lowered
+    assert "документы" in lowered
+    assert result.metadata["direct_p0_text_hygiene"]["kind"] == "legal_threat"
+
+
+def test_direct_p0_text_hygiene_final_hook_scrubs_post_gate_refund_manager_only() -> None:
+    provider = _DirectPathProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text=(
+                "Да, если после оплаты передумаете, возвращается остаток неистраченных средств. "
+                "По онлайн-математике можно спокойно переходить к следующему шагу, если условия подходят."
+            ),
+            message_type="question",
+            topic_id="theme:014_format",
+            risk_level="low",
+            safety_flags=("refund",),
+            metadata={"direct_path_model_p0": {"is_p0": False, "p0_kind": "none"}},
+        )
+    )
+
+    result = provider.build_draft(
+        "Хорошо, оплачу, но если передумаю - деньги вернете?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            subscription_llm.DEAL_ACTION_DECISION_ENV: "1",
+            subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "1",
+            "client_safe_fact_verified": True,
+        },
+    )
+
+    lowered = result.draft_text.casefold()
+    assert result.route == "manager_only"
+    assert "autonomy_blocked_high_risk" in result.safety_flags
+    assert "direct_p0_text_hygiene" in result.safety_flags
+    assert "возвращается остаток" not in lowered
+    assert "следующему шагу" not in lowered
+    assert "условия подходят" not in lowered
+    assert "менеджер" in lowered
+
+
+def test_direct_p0_text_hygiene_keeps_benign_presale_refund_without_high_risk_route() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Если передумаете до оплаты, менеджер подскажет порядок возврата по правилам.",
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "1"},
+        client_message="Если передумаем до оплаты, какие условия возврата?",
+    )
+
+    assert scrubbed is result
+
+
+def test_direct_p0_text_hygiene_keeps_benign_presale_refund_without_refund_word() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text=(
+            "До оплаты можно спокойно уточнить условия. Если передумаете до записи и оплаты, "
+            "менеджер подтвердит порядок по выбранному курсу."
+        ),
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "1"},
+        client_message="А если передумаю ещё ДО оплаты — это ничем не грозит?",
+    )
+
+    assert scrubbed is result
+
+
+def test_direct_p0_text_hygiene_keeps_benign_no_record_or_payment_clarification() -> None:
+    result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Если записи и оплаты ещё нет, можно спокойно уточнить правила заранее.",
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "1"},
+        client_message="Я же про до оплаты, записи и оплаты ещё нет. Просто хочу понять, можно ли спокойно передумать.",
+    )
+
+    assert scrubbed is result
+
+
+def test_direct_p0_text_hygiene_replaces_false_postpayment_handoff_on_presale_refund() -> None:
+    result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text=(
+            "По возврату точную сумму и порядок действий должен подтвердить менеджер. "
+            "Передам ему ваш вопрос, чтобы он проверил ситуацию по данным записи и оплаты."
+        ),
+    )
+
+    scrubbed = scrub_direct_path_p0_text(
+        result,
+        context={subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "1"},
+        client_message="А если передумаю ещё ДО оплаты — это ничем не грозит?",
+    )
+
+    lowered = scrubbed.draft_text.casefold()
+    assert scrubbed is not result
+    assert "данным записи и оплаты" not in lowered
+    assert "точную сумму" not in lowered
+    assert "до оплаты" in lowered
+    assert "выбранному курсу" in lowered
+    assert "direct_presale_policy_text_hygiene" in scrubbed.safety_flags
+    risk_words = ("p0", "refund", "payment", "legal", "complaint", "high_risk")
+    assert all(not any(word in flag.casefold() for word in risk_words) for flag in scrubbed.safety_flags)
+    assert scrubbed.metadata["direct_presale_policy_text_hygiene"]["kind"] == "presale_policy"

@@ -5389,10 +5389,10 @@ def test_tone_close_detect_suppresses_p0_and_pending_manager_without_cta() -> No
     }
     pending_closed = apply_tone_close_detect_layer(pending, client_message="Спасибо, жду ответа менеджера", context=pending_context)
 
-    assert pending_closed.route == "bot_answer_self_for_pilot"
+    assert pending_closed.route == "manager_only"
     assert pending_closed.metadata["close_detect"]["status"] == "suppressed_pending"
     assert "телефон" not in pending_closed.draft_text.casefold()
-    assert pending_closed.draft_text == "Спасибо! Менеджер уже занимается вашим вопросом и скоро вернётся с ответом."
+    assert pending_closed.draft_text == "Спасибо! Менеджер проверит детали и вернётся с ответом."
 
     manager_reference = apply_tone_close_detect_layer(
         pending,

@@ -964,7 +964,12 @@ class SubscriptionLlmDraftProvider:
                 context=context,
             )
             reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
-            return apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
+            closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
+            return scrub_direct_path_p0_text(
+                closed,
+                context=context,
+                client_message=client_message,
+            )
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)

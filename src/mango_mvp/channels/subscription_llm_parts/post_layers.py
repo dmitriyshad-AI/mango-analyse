@@ -2226,7 +2226,7 @@ def apply_tone_close_detect_layer(
         return _tone_close_metadata(
             replace(
                 result,
-                route="bot_answer_self_for_pilot",
+                route="manager_only",
                 draft_text=_tone_close_pending_text(),
                 safety_flags=tuple(dict.fromkeys([*result.safety_flags, "tone_close_detect_pending"])),
             ),
@@ -2354,9 +2354,35 @@ def _tone_close_pending_manager(context: Optional[Mapping[str, Any]], *, client_
     if str(memory.get("handoff_state") or "").strip() in {"required", "suggested"}:
         pending = True
     pending = pending or bool(memory.get("pending_manager_actions"))
+    pending = pending or _tone_close_recent_manager_handoff(memory)
     if not pending:
         return False
     return _tone_close_message_references_pending(client_message)
+
+
+_TONE_CLOSE_RECENT_MANAGER_HANDOFF_RE = re.compile(
+    r"\b(?:передам|передал[аи]?|переда[её]м|подключу|позову)[^.!?\n]{0,80}\bменеджер\w*"
+    r"|\bменеджер\w*[^.!?\n]{0,100}\b(?:провер|уточн|свер|ответ|верн|связ)",
+    re.I,
+)
+
+
+def _tone_close_recent_manager_handoff(memory: Mapping[str, Any]) -> bool:
+    route_history = memory.get("route_history")
+    if isinstance(route_history, Sequence) and not isinstance(route_history, (str, bytes)):
+        recent_routes = {str(item or "").strip() for item in route_history[-4:]}
+        if recent_routes.intersection({"manager_only", "draft_for_manager"}):
+            return True
+    turns = memory.get("recent_turns")
+    if isinstance(turns, Sequence) and not isinstance(turns, (str, bytes)):
+        for turn in turns[-4:]:
+            if not isinstance(turn, Mapping):
+                continue
+            if str(turn.get("role") or "").strip().lower() != "bot":
+                continue
+            if _TONE_CLOSE_RECENT_MANAGER_HANDOFF_RE.search(str(turn.get("text") or "")):
+                return True
+    return False
 
 
 def _tone_close_old_p0_history(context: Optional[Mapping[str, Any]]) -> bool:
@@ -2447,7 +2473,7 @@ def _tone_close_refused_previous_step(client_message: str, previous_bot_texts: S
 
 
 def _tone_close_pending_text() -> str:
-    return "Спасибо! Менеджер уже занимается вашим вопросом и скоро вернётся с ответом."
+    return "Спасибо! Менеджер проверит детали и вернётся с ответом."
 
 
 def _a2_contact_capture_handoff(

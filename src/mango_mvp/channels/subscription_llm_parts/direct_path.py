@@ -270,14 +270,14 @@ def _direct_slot_topic_shadow_enabled(context: Optional[Mapping[str, Any]] = Non
     )
 
 def _direct_p0_text_hygiene_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _default_off_flag_enabled(
+    return _pilot_profile_default_on_flag_enabled(
         context,
         DIRECT_P0_TEXT_HYGIENE_ENV,
         aliases=("direct_p0_text_hygiene", "direct_p0_text_hygiene_enabled"),
     )
 
 def _p0_model_classes_v2_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
-    return _default_off_flag_enabled(
+    return _pilot_profile_default_on_flag_enabled(
         context,
         P0_MODEL_CLASSES_V2_ENV,
         aliases=("p0_model_classes_v2", "p0_model_classes_v2_enabled"),

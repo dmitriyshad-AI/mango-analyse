@@ -35,6 +35,22 @@ def test_tone_close_detect_enabled_by_pilot_profile_with_explicit_override(monke
     assert close_detect_enabled({**_profile_context(), "tone_close_detect_enabled": False}) is False
 
 
+def test_p0_adr_flags_enabled_by_pilot_profile_with_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(subscription_llm.P0_MODEL_CLASSES_V2_ENV, raising=False)
+    monkeypatch.delenv(subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV, raising=False)
+
+    assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._p0_model_classes_v2_enabled({}) is False
+    assert subscription_llm._direct_p0_text_hygiene_enabled({}) is False
+    assert subscription_llm._p0_model_classes_v2_enabled(_profile_context()) is True
+    assert subscription_llm._direct_p0_text_hygiene_enabled(_profile_context()) is True
+    assert subscription_llm._p0_model_classes_v2_enabled({**_profile_context(), subscription_llm.P0_MODEL_CLASSES_V2_ENV: "0"}) is False
+    assert subscription_llm._direct_p0_text_hygiene_enabled({**_profile_context(), subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV: "0"}) is False
+    assert subscription_llm._p0_model_classes_v2_enabled({**_profile_context(), "p0_model_classes_v2_enabled": False}) is False
+    assert subscription_llm._direct_p0_text_hygiene_enabled({**_profile_context(), "direct_p0_text_hygiene_enabled": False}) is False
+
+
 def test_tone_close_detect_profile_on_stays_silent_on_p0() -> None:
     result = subscription_llm.apply_tone_close_detect_layer(
         SubscriptionDraftResult(

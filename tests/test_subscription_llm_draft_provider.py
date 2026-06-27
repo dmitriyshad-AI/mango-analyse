@@ -12594,7 +12594,7 @@ def test_direct_path_model_p0_prompt_is_flagged_off_by_default() -> None:
     assert "paid_operation_context" not in on_prompt
 
 
-def test_p0_model_classes_v2_prompt_is_default_off_and_history_aware_when_enabled() -> None:
+def test_p0_model_classes_v2_prompt_is_profile_on_and_history_aware_when_enabled() -> None:
     context = {
         "active_brand": "foton",
         DIRECT_PATH_ENV: "1",
@@ -12604,16 +12604,21 @@ def test_p0_model_classes_v2_prompt_is_default_off_and_history_aware_when_enable
             "Клиент: Что можно сделать?",
         ],
     }
+    profile_context = {
+        **context,
+        subscription_llm.DIRECT_PATH_PILOT_CONFIG_ENV: subscription_llm.DIRECT_PATH_PILOT_CONFIG_VERSION,
+    }
 
     off_prompt = subscription_llm._build_direct_path_prompt("Что можно сделать?", context=context)
     on_prompt = subscription_llm._build_direct_path_prompt(
         "Что можно сделать?",
-        context={**context, subscription_llm.P0_MODEL_CLASSES_V2_ENV: "1"},
+        context=profile_context,
     )
 
-    assert subscription_llm.P0_MODEL_CLASSES_V2_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._p0_model_classes_v2_enabled(context) is False
-    assert subscription_llm._p0_model_classes_v2_enabled({**context, subscription_llm.P0_MODEL_CLASSES_V2_ENV: "1"}) is True
+    assert subscription_llm._p0_model_classes_v2_enabled(profile_context) is True
+    assert subscription_llm._p0_model_classes_v2_enabled({**profile_context, subscription_llm.P0_MODEL_CLASSES_V2_ENV: "0"}) is False
     assert "cancellation_service_request" not in off_prompt
     assert "contract_dispute" not in off_prompt
     assert "paid_operation_context" not in off_prompt
@@ -14606,7 +14611,8 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.DEAL_ACTION_DECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.DIRECT_PATH_MODEL_P0_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.P0_MODEL_LED_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.P0_MODEL_CLASSES_V2_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm.DIRECT_P0_TEXT_HYGIENE_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm._assumed_scope_guard_enabled(context) is False
     assert subscription_llm._retriever_need_shadow_enabled(context) is False
     assert subscription_llm._retriever_model_driven_enabled(context) is False

@@ -13,6 +13,7 @@ from mango_mvp.crm_card_aggregator import (
 from mango_mvp.crm_card_history_summary import CrmHistorySummaryConfig, CrmHistorySummarizer
 from mango_mvp.crm_card_workbook import CrmCardWorkbookConfig, build_crm_card_workbook
 from mango_mvp.customer_timeline import CustomerTimelineReadApi, CustomerTimelineReadApiConfig
+from mango_mvp.quality.crm_text_quality_detector import detect_crm_text_quality_risks
 from tests.test_customer_timeline_read_api import seed_timeline_db
 
 
@@ -179,13 +180,13 @@ def test_crm_card_uses_full_call_analysis_and_filters_non_conversation() -> None
     assert preview.count(older_summary) == 1
     assert "Возражения: цена" not in history
     assert "Интересы: математика" not in history
-    assert "Шаг: Перезвонить завтра (от 17.06.2026)" in history
+    assert "Шаг: Перезвонить на следующий день (18.06.2026)" in history
     assert "Недозвон не должен попасть" not in history
     assert "Read-only AMO contact snapshot" not in history
     assert "exact_phone_single" not in history
     assert "Закрыто и не реализовано" not in history
     assert "Закрыто и не реализовано" in card["deal_card"]["fields"]["Статус сделки"]
-    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить завтра (от 17.06.2026)"
+    assert card["deal_card"]["fields"]["Следующий шаг"] == "Перезвонить на следующий день (18.06.2026)"
     assert card["deal_card"]["fields"]["Возражения"] == "цена"
     assert "[сжато]" not in history
     assert "Read-only AMO contact snapshot" not in preview
@@ -271,6 +272,63 @@ def test_crm_card_history_uses_cached_summary_and_excludes_email_handoff(tmp_pat
     assert first["contact_card"]["fields"]["История общения"] == second["contact_card"]["fields"]["История общения"]
     assert len(calls) == 1
     assert summarizer.summary()["cache_hits"] == 1
+
+
+def test_crm_card_accepts_prod_mango_summary_without_legacy_eligibility_flag(tmp_path: Path) -> None:
+    profile = {
+        "found": True,
+        "customer_id": "customer:prod-summary",
+        "snapshot_as_of": "2026-06-21T00:00:00+00:00",
+        "customer": {"customer_id": "customer:prod-summary", "identity_status": "strong", "summary": {}},
+        "identity_links": [{"match_class": "strong_unique"}],
+        "manager_projection": {
+            "amo_contact_ids": ["123"],
+            "amo_lead_ids": ["456"],
+            "opportunities": [{"opportunity_id": "opp1", "opportunity_type": "amo_deal", "source_system": "amocrm_snapshot", "source_id": "456"}],
+        },
+        "timeline": {
+            "items": [
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-20T10:00:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "subject": "sales_call",
+                    "summary": "20.06.2026 менеджер обсудил с клиентом летнюю школу. Договорились: перезвонить завтра.",
+                },
+                {
+                    "event_type": "mango_call",
+                    "event_at": "2026-06-21T10:00:00+00:00",
+                    "source_system": "mango_processed_summary",
+                    "subject": "non_conversation",
+                    "summary": "Недозвон не должен стать последней сводкой.",
+                    "call_history_eligible": False,
+                },
+            ]
+        },
+        "signals": [],
+        "bot_context": {"items": []},
+        "conflicts": {"items": [], "summary": {"open_conflicts": 0}},
+        "readiness": {"open_conflicts": 0},
+    }
+
+    summarizer = CrmHistorySummarizer(CrmHistorySummaryConfig(provider="rule", cache_dir=tmp_path / "cache"))
+    card = build_crm_card_projection(profile, history_summarizer=summarizer)
+    quality_payload = {
+        "Последняя AI-сводка": card["contact_card"]["fields"]["Последняя сводка"],
+        "Авто история общения": card["contact_card"]["fields"]["История общения"],
+    }
+
+    assert card["contact_card"]["fields"]["Последняя сводка"].startswith("Сводка:\n20.06.2026 менеджер")
+    assert "завтра" not in card["contact_card"]["fields"]["Последняя сводка"].casefold()
+    assert "на следующий день (21.06.2026)" in card["contact_card"]["fields"]["Последняя сводка"]
+    assert "Недозвон" not in card["contact_card"]["fields"]["История общения"]
+    assert "20.06.2026 менеджер обсудил с клиентом летнюю школу" not in card["contact_card"]["fields"]["История общения"]
+    assert not [
+        item
+        for item in detect_crm_text_quality_risks(quality_payload, min_severity="P2")
+        if item.risk_type == "cross_field_duplicate_information"
+    ]
+    assert card["workbook"]["ready"] == "да"
 
 
 def test_crm_card_history_summarizer_accepts_multiline_history_json(tmp_path: Path) -> None:

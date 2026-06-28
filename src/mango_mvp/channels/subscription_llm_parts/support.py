@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from mango_mvp.channels.dialogue_debug_trace import trace_event
 from mango_mvp.channels.dialogue_contract_pipeline import concrete_anchors as dialogue_contract_concrete_anchors
+from mango_mvp.channels.fact_venue_scope import FACT_VENUE_SCOPE_ENV
 
 
 OUTPUT_SANITIZER_ENV = "TELEGRAM_OUTPUT_SANITIZER"
@@ -134,6 +135,7 @@ DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS = (
     TONE_RICH_FORMAT_ENV,
     A_RICH_FORMAT_ENV,
     LLM_RETRIEVE_ENV,
+    FACT_VENUE_SCOPE_ENV,
     NUMBER_GATE_SCOPE_AWARE_ENV,
     VERIFIER_HANDOFF_CLAIMS_ENV,
     TEMPLATE_FROM_KB_ENV,

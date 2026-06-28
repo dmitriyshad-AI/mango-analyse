@@ -74,14 +74,19 @@ def _pack_text(pack: Mapping[str, object]) -> str:
     return _direct_path_render_fact_block(facts, fact_metadata=meta, keys=tuple(str(key) for key in facts))
 
 
-def test_fact_venue_scope_default_off_and_not_in_pilot_profile(monkeypatch) -> None:
+def test_fact_venue_scope_profile_default_on_and_explicit_override(monkeypatch) -> None:
     monkeypatch.delenv(FACT_VENUE_SCOPE_ENV, raising=False)
 
     assert venue_scope_enabled({}) is False
-    assert venue_scope_enabled({DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}) is False
+    assert venue_scope_enabled({DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}) is True
     assert venue_scope_enabled({FACT_VENUE_SCOPE_ENV: "1"}) is True
     assert venue_scope_enabled({FACT_VENUE_SCOPE_ENV: "0"}) is False
-    assert FACT_VENUE_SCOPE_ENV not in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert venue_scope_enabled({
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        FACT_VENUE_SCOPE_ENV: "0",
+    }) is False
+    assert FACT_VENUE_SCOPE_ENV in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert "TELEGRAM_AUTONOMY_SCOPE_PRECISION" not in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.FACT_VENUE_SCOPE_ENV == FACT_VENUE_SCOPE_ENV
 
 

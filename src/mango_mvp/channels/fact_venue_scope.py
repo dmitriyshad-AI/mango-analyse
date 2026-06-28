@@ -23,14 +23,27 @@ VENUE_SCOPE_LABELS: Mapping[str, str] = {
 _TRUTHY_VALUES = {"1", "true", "yes", "y", "on", "да", "вкл"}
 
 
-def venue_scope_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+def _explicit_venue_scope_setting(context: Optional[Mapping[str, Any]] = None) -> Optional[bool]:
     if isinstance(context, Mapping):
         for key in (FACT_VENUE_SCOPE_ENV, "fact_venue_scope", "fact_venue_scope_enabled"):
             if key in context:
                 return str(context.get(key) or "").strip().casefold() in _TRUTHY_VALUES
     if FACT_VENUE_SCOPE_ENV in os.environ:
         return str(os.getenv(FACT_VENUE_SCOPE_ENV) or "").strip().casefold() in _TRUTHY_VALUES
-    return False
+    return None
+
+
+def venue_scope_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    explicit = _explicit_venue_scope_setting(context)
+    if explicit is not None:
+        return explicit
+    from mango_mvp.channels.subscription_llm_parts.support import _pilot_profile_default_on_flag_enabled
+
+    return _pilot_profile_default_on_flag_enabled(
+        context,
+        FACT_VENUE_SCOPE_ENV,
+        aliases=("fact_venue_scope", "fact_venue_scope_enabled"),
+    )
 
 
 def normalize_requested_scope(value: Any) -> str:

@@ -5,6 +5,7 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from mango_mvp.crm_card_history_summary import clean_history_source_text
@@ -518,11 +519,10 @@ def _next_step(
     resolved_status = _safe_text(resolved.get("status"))
     resolved_text = _safe_text(resolved.get("display_text") or resolved.get("action"))
     if resolved_status in {"active", "closed", "needs_manager_review"} and resolved_text:
-        return resolved_text
+        return _absolutize_relative_dates(resolved_text, _safe_text(resolved.get("source_event_at")))
     call_next_step = _call_analysis_field(latest_call, "next_step")
     if call_next_step:
-        date = _format_date_ru(_safe_text(latest_call.get("event_at")))
-        return f"{call_next_step} (от {date})" if date else call_next_step
+        return _absolutize_relative_dates(call_next_step, _safe_text(latest_call.get("event_at")))
     for signal in sorted(signals, key=lambda item: _safe_text(item.get("created_at")), reverse=True):
         action = _safe_text(signal.get("recommended_action"))
         if _safe_text(signal.get("status") or "active") == "active" and action:
@@ -680,7 +680,7 @@ def _history_summary_source(
     if request_parts:
         blocks.append("Контекст карточки:\n" + "\n".join(f"- {part}" for part in _dedupe(request_parts)))
     if latest_summary:
-        blocks.append("Последний содержательный звонок:\n" + latest_summary)
+        blocks.append(_latest_summary_reference(latest_call))
     for event in sorted(timeline_items, key=lambda item: _safe_text(item.get("event_at")), reverse=True):
         if _is_email_stub_event(event):
             continue
@@ -702,6 +702,13 @@ def _history_summary_source(
         if signal_type or evidence or action:
             blocks.append("Сигнал:\n" + "\n".join(part for part in (signal_type, evidence, action) if part))
     return clean_history_source_text("\n\n".join(blocks))
+
+
+def _latest_summary_reference(latest_call: Mapping[str, Any]) -> str:
+    last_at = _format_date_ru(_safe_text(latest_call.get("event_at"))) or _safe_text(latest_call.get("event_at"))[:10]
+    if last_at:
+        return f"Последний содержательный звонок {last_at}: полный текст вынесен в поле «Последняя сводка»."
+    return "Последний содержательный звонок: полный текст вынесен в поле «Последняя сводка»."
 
 
 def _chronology_text(
@@ -746,7 +753,7 @@ def _history_events(events: Sequence[Mapping[str, Any]]) -> list[Mapping[str, An
         if event_type in SERVICE_SNAPSHOT_EVENT_TYPES:
             continue
         if event_type == "mango_call":
-            if event.get("call_history_eligible") is True:
+            if _mango_call_history_eligible(event):
                 result.append(event)
             continue
         result.append(event)
@@ -757,16 +764,36 @@ def _latest_history_call(events: Sequence[Mapping[str, Any]]) -> Mapping[str, An
     calls = [
         event
         for event in events
-        if _safe_text(event.get("event_type")) == "mango_call" and event.get("call_history_eligible") is True
+        if _safe_text(event.get("event_type")) == "mango_call" and _mango_call_history_eligible(event)
     ]
     if not calls:
         return {}
     return sorted(calls, key=lambda item: _safe_text(item.get("event_at")), reverse=True)[0]
 
 
+def _mango_call_history_eligible(event: Mapping[str, Any]) -> bool:
+    explicit = event.get("call_history_eligible")
+    if explicit is False:
+        return False
+    call_analysis = _call_analysis(event)
+    if call_analysis.get("call_history_eligible") is False:
+        return False
+    call_type = _safe_text(
+        event.get("call_type")
+        or call_analysis.get("call_type")
+        or event.get("subject")
+    ).casefold()
+    if call_type in {"non_conversation", "missed", "missed_call", "no_answer"}:
+        return False
+    if explicit is True or call_analysis.get("call_history_eligible") is True:
+        return True
+    return bool(_event_history_summary(event))
+
+
 def _event_history_summary(event: Mapping[str, Any]) -> str:
     call_analysis = _mapping(event.get("call_analysis"))
-    return _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+    summary = _safe_text(call_analysis.get("history_summary") or event.get("summary") or event.get("text_preview"))
+    return _absolutize_relative_dates(summary, _safe_text(event.get("event_at")))
 
 
 def _is_email_stub_event(event: Mapping[str, Any]) -> bool:
@@ -815,8 +842,7 @@ def _call_analysis_lines(event: Mapping[str, Any]) -> list[str]:
     pain_points = _join_values(call_analysis.get("pain_points"))
     budget = _join_values(call_analysis.get("budget"))
     if next_step:
-        date = _format_date_ru(_safe_text(event.get("event_at")))
-        lines.append(f"Шаг: {next_step} (от {date})" if date else f"Шаг: {next_step}")
+        lines.append(f"Шаг: {_absolutize_relative_dates(next_step, _safe_text(event.get('event_at')))}")
     if pain_points:
         lines.append(f"Боли/ограничения: {pain_points}")
     if budget:
@@ -857,6 +883,44 @@ def _join_values(value: Any) -> str:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return "; ".join(_safe_text(item) for item in value if _safe_text(item))
     return _safe_text(value)
+
+
+RELATIVE_DAY_PATTERNS = (
+    ("сегодня", 0, "в день звонка"),
+    ("завтра", 1, "на следующий день"),
+    ("вчера", -1, "за день до звонка"),
+)
+
+
+def _absolutize_relative_dates(text: str, event_at: str) -> str:
+    result = _safe_text(text)
+    if not result:
+        return ""
+    base = _parse_iso_datetime(event_at)
+    if base is None:
+        return result
+    for marker, offset_days, label in RELATIVE_DAY_PATTERNS:
+        target = base + timedelta(days=offset_days)
+        date_ru = target.strftime("%d.%m.%Y")
+        date_iso = target.date().isoformat()
+        replacement = label if date_ru in result or date_iso in result else f"{label} ({date_ru})"
+        result = re.sub(
+            rf"(?<![0-9A-Za-zА-Яа-яЁё]){re.escape(marker)}(?![0-9A-Za-zА-Яа-яЁё])",
+            replacement,
+            result,
+            flags=re.IGNORECASE,
+        )
+    return result
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _brand_from_event(event: Mapping[str, Any]) -> str:

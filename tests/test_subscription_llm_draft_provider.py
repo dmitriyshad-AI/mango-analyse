@@ -8944,10 +8944,21 @@ def test_step2b1_address_fact_still_blocked_for_non_address_question() -> None:
     assert any(finding.code == "wrong_intent_fact" for finding in findings)
 
 
-def test_autonomy_scope_precision_default_off_and_not_in_pilot_profile() -> None:
+def test_autonomy_scope_precision_profile_default_on_and_explicit_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(AUTONOMY_SCOPE_PRECISION_ENV, raising=False)
+
     assert autonomy_scope_precision_enabled({}) is False
+    assert autonomy_scope_precision_enabled({DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}) is True
     assert autonomy_scope_precision_enabled({AUTONOMY_SCOPE_PRECISION_ENV: "1"}) is True
-    assert AUTONOMY_SCOPE_PRECISION_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert autonomy_scope_precision_enabled({
+        DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION,
+        AUTONOMY_SCOPE_PRECISION_ENV: "0",
+    }) is False
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+    assert autonomy_scope_precision_enabled() is True
+    monkeypatch.setenv(AUTONOMY_SCOPE_PRECISION_ENV, "0")
+    assert autonomy_scope_precision_enabled() is False
+    assert AUTONOMY_SCOPE_PRECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
 
 
 def test_autonomy_scope_precision_address_synonym_is_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -14709,6 +14720,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
         RETRIEVER_MODEL_DRIVEN_ENV,
         RETRIEVER_NEED_SHADOW_ENV,
         subscription_llm.ANSWERABILITY_SHADOW_ENV,
+        AUTONOMY_SCOPE_PRECISION_ENV,
         TEMPLATE_FROM_KB_ENV,
         DIRECT_PATH_PILOT_CONFIG_ENV,
     ):
@@ -14723,6 +14735,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert _output_sanitizer_enabled(context) is True
     assert subscription_llm._llm_retrieve_enabled(context) is True
     assert number_gate_scope_aware_enabled(context) is True
+    assert autonomy_scope_precision_enabled(context) is True
     assert _verifier_handoff_claims_enabled(context) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_PII_MEMORY_ENV) is True
     assert _presale_safety_enabled(context, subflag=PRESALE_VERIFIER_FAILSOFT_ENV) is True
@@ -14743,6 +14756,7 @@ def test_pilot_gold_v1_enables_full_battle_profile_flags(monkeypatch) -> None:
     assert subscription_llm.MEMORY_CHILD_ELLIPSIS_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PRICE_AXES_SELECTOR_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.PRICE_AXES_CLEAN_DEFER_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert AUTONOMY_SCOPE_PRECISION_ENV in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert ASSUMED_SCOPE_GUARD_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_NEED_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert RETRIEVER_MODEL_DRIVEN_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS

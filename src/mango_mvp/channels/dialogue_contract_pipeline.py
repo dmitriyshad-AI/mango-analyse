@@ -722,9 +722,16 @@ def quality_useful_handoff_enabled(context: Mapping[str, Any] | None = None) -> 
 
 
 def autonomy_scope_precision_enabled(context: Mapping[str, Any] | None = None) -> bool:
-    if isinstance(context, MappingABC) and context.get(AUTONOMY_SCOPE_PRECISION_ENV) is not None:
-        return _truthy(context.get(AUTONOMY_SCOPE_PRECISION_ENV))
-    return _truthy(os.getenv(AUTONOMY_SCOPE_PRECISION_ENV))
+    aliases = ("autonomy_scope_precision", "autonomy_scope_precision_enabled")
+    if isinstance(context, MappingABC):
+        for key in (AUTONOMY_SCOPE_PRECISION_ENV, *aliases):
+            if key in context:
+                return _truthy(context.get(key))
+    if AUTONOMY_SCOPE_PRECISION_ENV in os.environ:
+        return _truthy(os.getenv(AUTONOMY_SCOPE_PRECISION_ENV))
+    from mango_mvp.channels.subscription_llm_parts.support import _pilot_profile_default_on_flag_enabled
+
+    return _pilot_profile_default_on_flag_enabled(context, AUTONOMY_SCOPE_PRECISION_ENV, aliases=aliases)
 
 
 def _normalize_warmth_mode(mode: object) -> str:

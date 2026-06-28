@@ -86,7 +86,7 @@ def test_fact_venue_scope_profile_default_on_and_explicit_override(monkeypatch) 
         FACT_VENUE_SCOPE_ENV: "0",
     }) is False
     assert FACT_VENUE_SCOPE_ENV in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
-    assert "TELEGRAM_AUTONOMY_SCOPE_PRECISION" not in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert "TELEGRAM_AUTONOMY_SCOPE_PRECISION" in DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
     assert subscription_llm.FACT_VENUE_SCOPE_ENV == FACT_VENUE_SCOPE_ENV
 
 

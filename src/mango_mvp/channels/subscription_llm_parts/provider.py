@@ -93,8 +93,11 @@ from mango_mvp.channels.subscription_llm_parts.codex_exec import (
     codex_isolation_cwd,
     _with_codex_exec_metadata,
     build_codex_exec_env,
+    cleanup_isolated_codex_home,
+    codex_env_isolation_enabled,
     CodexExecConfig,
     extract_json_object,
+    prepare_isolated_codex_home,
     _cache_key,
     _guard_cache_dir,
     _is_retryable,
@@ -905,7 +908,7 @@ class SubscriptionLlmDraftProvider:
         runner: Optional[_Runner] = None,
         sleep: Callable[[float], None] = time.sleep,
         base_env: Optional[Mapping[str, str]] = None,
-        codex_isolated: bool = False,
+        codex_isolated: Optional[bool] = None,
     ) -> None:
         self.codex_bin = str(codex_bin or "codex").strip() or "codex"
         self.model = str(model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
@@ -915,10 +918,25 @@ class SubscriptionLlmDraftProvider:
         self.runner = runner or subprocess.run
         self.sleep = sleep
         self.base_env = dict(base_env) if base_env is not None else None
-        self.codex_isolated = bool(codex_isolated)
+        self.codex_isolated = bool(codex_isolated) if codex_isolated is not None else codex_env_isolation_enabled(self.base_env)
+        source_env = os.environ if self.base_env is None else self.base_env
+        source_codex_home = source_env.get("CODEX_HOME")
+        self._runtime_codex_home: Optional[str] = (
+            prepare_isolated_codex_home(source_home=source_codex_home) if self.codex_isolated else None
+        )
         self.cache_dir = _guard_cache_dir(cache_dir) if cache_dir is not None else None
         self._dialogue_contract_semantic_match_override = dialogue_contract_semantic_match_fn
         self._dialogue_contract_semantic_match_enabled = bool(dialogue_contract_semantic_match_enabled)
+
+    def close(self) -> None:
+        cleanup_isolated_codex_home(getattr(self, "_runtime_codex_home", None))
+        self._runtime_codex_home = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _build_codex_command(
         self,
@@ -1742,7 +1760,7 @@ class SubscriptionLlmDraftProvider:
                     text=True,
                     check=False,
                     timeout=max(1, int(timeout_sec or self.timeout_sec)),
-                    env=build_codex_exec_env(self.base_env),
+                    env=build_codex_exec_env(self.base_env, codex_home=self._runtime_codex_home),
                 )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
@@ -1780,7 +1798,7 @@ class SubscriptionLlmDraftProvider:
                     text=True,
                     check=False,
                     timeout=self.timeout_sec,
-                    env=build_codex_exec_env(self.base_env),
+                    env=build_codex_exec_env(self.base_env, codex_home=self._runtime_codex_home),
                 )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
@@ -1811,7 +1829,7 @@ class SubscriptionLlmDraftProvider:
                     text=True,
                     check=False,
                     timeout=self.timeout_sec,
-                    env=build_codex_exec_env(self.base_env),
+                    env=build_codex_exec_env(self.base_env, codex_home=self._runtime_codex_home),
                 )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
         if proc.returncode != 0:
@@ -1873,7 +1891,7 @@ class SubscriptionLlmDraftProvider:
                     text=True,
                     check=False,
                     timeout=self.timeout_sec,
-                    env=build_codex_exec_env(self.base_env),
+                    env=build_codex_exec_env(self.base_env, codex_home=self._runtime_codex_home),
                 )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
 
@@ -1911,7 +1929,7 @@ class SubscriptionLlmDraftProvider:
                     text=True,
                     check=False,
                     timeout=self.timeout_sec,
-                    env=build_codex_exec_env(self.base_env),
+                    env=build_codex_exec_env(self.base_env, codex_home=self._runtime_codex_home),
                 )
             raw = output_path.read_text(encoding="utf-8", errors="ignore")
 

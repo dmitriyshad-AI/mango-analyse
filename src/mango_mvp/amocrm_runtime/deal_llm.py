@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -13,6 +12,11 @@ from typing import Any, Optional
 from openai import OpenAI
 
 from mango_mvp.amocrm_runtime.config import get_settings
+from mango_mvp.channels.subscription_llm_parts.codex_exec import (
+    build_codex_exec_env,
+    cleanup_isolated_codex_home,
+    prepare_isolated_codex_home,
+)
 from mango_mvp.services.llm_response_cache import LLMResponseCache
 
 settings = get_settings()
@@ -98,38 +102,7 @@ class DealLLMAnalyzer:
         )
 
     def _prepare_runtime_codex_home(self) -> str:
-        source_root = Path.home() / ".codex"
-        runtime_root = Path(self._settings.crm_analysis_llm_cache_dir).resolve().parent / "codex_home"
-        runtime_root.mkdir(parents=True, exist_ok=True)
-
-        allowlist = tuple(
-            entry.strip()
-            for entry in self._settings.task_container_codex_home_copy_allowlist
-            if str(entry).strip()
-        )
-        if source_root.exists():
-            for entry in allowlist:
-                source_path = source_root / entry
-                target_path = runtime_root / entry
-                if not source_path.exists():
-                    continue
-                if target_path.exists():
-                    if target_path.is_dir():
-                        shutil.rmtree(target_path, ignore_errors=True)
-                    else:
-                        target_path.unlink(missing_ok=True)
-                if source_path.is_dir():
-                    shutil.copytree(source_path, target_path, dirs_exist_ok=True)
-                else:
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_path, target_path)
-
-        shutil.rmtree(runtime_root / "sessions", ignore_errors=True)
-        shutil.rmtree(runtime_root / "sqlite", ignore_errors=True)
-        for entry in ("state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"):
-            (runtime_root / entry).unlink(missing_ok=True)
-        (runtime_root / "sessions").mkdir(parents=True, exist_ok=True)
-        return str(runtime_root)
+        return prepare_isolated_codex_home(prefix="mango_deal_llm_codex_home_")
 
     @staticmethod
     def _safe_text(value: Any) -> str:
@@ -338,75 +311,75 @@ class DealLLMAnalyzer:
             raise DealLLMError(f"codex binary is not available: {codex_bin}")
         model = self._safe_text(self._settings.crm_analysis_model) or "gpt-5.4"
         reasoning = self._safe_text(self._settings.crm_analysis_reasoning_effort).lower()
-        runtime_codex_home = self._prepare_runtime_codex_home()
         cached = self._cache_lookup(provider="codex_cli", model=model, reasoning=reasoning, prompt=prompt)
         if cached is not None:
             return cached
 
+        runtime_codex_home = self._prepare_runtime_codex_home()
         max_attempts = 4
         timeout_sec = max(15, int(self._settings.crm_analysis_timeout_seconds))
         last_error: Optional[str] = None
         retryable_marker = "no last agent message"
 
-        for attempt in range(1, max_attempts + 1):
-            with tempfile.NamedTemporaryFile(prefix="mango_deal_llm_", suffix=".txt") as out_file:
-                cmd = [
-                    codex_bin,
-                    "exec",
-                    "--skip-git-repo-check",
-                    "--ephemeral",
-                    "--sandbox",
-                    "read-only",
-                    "--model",
-                    model,
-                    "--output-last-message",
-                    out_file.name,
-                ]
-                if reasoning in {"low", "medium", "high"}:
-                    cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
-                cmd.append("-")
-                proc = subprocess.run(
-                    cmd,
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=timeout_sec,
-                    env={
-                        **os.environ,
-                        "CODEX_HOME": runtime_codex_home,
-                    },
-                )
-                raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
+        try:
+            for attempt in range(1, max_attempts + 1):
+                with tempfile.NamedTemporaryFile(prefix="mango_deal_llm_", suffix=".txt") as out_file:
+                    cmd = [
+                        codex_bin,
+                        "exec",
+                        "--skip-git-repo-check",
+                        "--ephemeral",
+                        "--sandbox",
+                        "read-only",
+                        "--model",
+                        model,
+                        "--output-last-message",
+                        out_file.name,
+                    ]
+                    if reasoning in {"low", "medium", "high"}:
+                        cmd.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
+                    cmd.append("-")
+                    proc = subprocess.run(
+                        cmd,
+                        input=prompt,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=timeout_sec,
+                        env=build_codex_exec_env(codex_home=runtime_codex_home),
+                    )
+                    raw = Path(out_file.name).read_text(encoding="utf-8", errors="ignore")
 
-            for candidate in (raw, proc.stdout or "", proc.stderr or ""):
-                candidate = (candidate or "").strip()
-                if not candidate:
-                    continue
-                try:
-                    payload = self._extract_json_payload(candidate)
-                except DealLLMError:
-                    continue
-                normalized = self._normalize_response(payload)
-                self._cache_store(provider="codex_cli", model=model, reasoning=reasoning, prompt=prompt, response=normalized)
-                return normalized
+                for candidate in (raw, proc.stdout or "", proc.stderr or ""):
+                    candidate = (candidate or "").strip()
+                    if not candidate:
+                        continue
+                    try:
+                        payload = self._extract_json_payload(candidate)
+                    except DealLLMError:
+                        continue
+                    normalized = self._normalize_response(payload)
+                    self._cache_store(provider="codex_cli", model=model, reasoning=reasoning, prompt=prompt, response=normalized)
+                    return normalized
 
-            stderr = (proc.stderr or "").strip()
-            if proc.returncode == 0:
-                last_error = "Codex deal analysis returned empty content"
-                if attempt < max_attempts:
-                    time.sleep(min(4, attempt + 1))
+                stderr = (proc.stderr or "").strip()
+                if proc.returncode == 0:
+                    last_error = "Codex deal analysis returned empty content"
+                    if attempt < max_attempts:
+                        time.sleep(min(4, attempt + 1))
+                        continue
+                    raise DealLLMError(last_error)
+
+                stderr_tail = stderr.splitlines()[-1:] or [""]
+                last_error = f"codex exec failed rc={proc.returncode}: {stderr_tail[0].strip()}"
+                if retryable_marker in stderr.lower() and attempt < max_attempts:
+                    time.sleep(min(6, attempt * 2))
                     continue
                 raise DealLLMError(last_error)
 
-            stderr_tail = stderr.splitlines()[-1:] or [""]
-            last_error = f"codex exec failed rc={proc.returncode}: {stderr_tail[0].strip()}"
-            if retryable_marker in stderr.lower() and attempt < max_attempts:
-                time.sleep(min(6, attempt * 2))
-                continue
-            raise DealLLMError(last_error)
-
-        raise DealLLMError(last_error or "Codex deal analysis failed")
+            raise DealLLMError(last_error or "Codex deal analysis failed")
+        finally:
+            cleanup_isolated_codex_home(runtime_codex_home)
 
     def analyze(self, *, dossier: dict[str, Any], heuristic_analysis: dict[str, Any]) -> dict[str, Any]:
         prompt = self._build_prompt(dossier, heuristic_analysis)

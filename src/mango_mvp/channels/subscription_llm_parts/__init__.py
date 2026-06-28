@@ -14,6 +14,10 @@ __all__ = ['ADDRESS_FOTON_MOSCOW_SAFE_TEXT', 'ADDRESS_UNPK_MOSCOW_REGULAR_SAFE_T
 __all__.extend(
     [
         "ASSUMED_SCOPE_GUARD_ENV",
+        "CODEX_ENV_ISOLATION_ENV",
+        "CODEX_EXEC_ENV_ALLOWLIST",
+        "cleanup_isolated_codex_home",
+        "codex_env_isolation_enabled",
         "DEAL_ACTION_DECISION_ENV",
         "ANSWERABILITY_SHADOW_ENV",
         "DIRECT_PATH_MODEL_P0_ENV",
@@ -34,6 +38,7 @@ __all__.extend(
         "_direct_path_soft_slot_scope",
         "_retriever_model_driven_enabled",
         "_retriever_need_shadow_enabled",
+        "prepare_isolated_codex_home",
     ]
 )
 

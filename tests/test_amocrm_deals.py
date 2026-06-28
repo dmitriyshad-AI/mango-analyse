@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 import dataclasses
@@ -13,6 +14,7 @@ from typing import Any
 from unittest.mock import patch
 from urllib import error as url_error, parse as url_parse
 
+from mango_mvp.amocrm_runtime import deal_llm as deal_llm_module
 from mango_mvp.amocrm_runtime.deal_dossier import build_deal_dossier
 from mango_mvp.amocrm_runtime.deal_llm import DealLLMAnalyzer
 from mango_mvp.amocrm_runtime.phone_context import PhoneContext
@@ -156,6 +158,66 @@ class AmoCrmDealAnalysisTest(unittest.TestCase):
         self.assertEqual(normalized["premature_close_risk"], "manual_review")
         self.assertTrue(normalized["needs_manual_review"])
         self.assertEqual(normalized["confidence"], 0.2)
+
+    def test_deal_llm_codex_cli_uses_scrubbed_env(self) -> None:
+        analyzer = DealLLMAnalyzer()
+        analyzer._settings = SimpleNamespace(
+            codex_cli_path="codex",
+            crm_analysis_model="gpt-5.5",
+            crm_analysis_reasoning_effort="low",
+            crm_analysis_timeout_seconds=15,
+        )
+        analyzer._cache_lookup = lambda **kwargs: None
+        analyzer._cache_store = lambda **kwargs: None
+        seen: dict[str, Any] = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["env"] = dict(kwargs["env"])
+            output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "close_verdict": "manual_review",
+                        "premature_close_risk": "manual_review",
+                        "close_reason_summary": "Недостаточно данных.",
+                        "recommended_next_step": "Проверить вручную",
+                        "confidence": 0.7,
+                        "needs_manual_review": True,
+                        "evidence_signals": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory(prefix="mango_deal_llm_test_home_") as td:
+            with patch.object(analyzer, "_prepare_runtime_codex_home", return_value=td), patch.object(
+                deal_llm_module.shutil, "which", return_value="/bin/codex"
+            ), patch.object(deal_llm_module.subprocess, "run", fake_run), patch.dict(
+                os.environ,
+                {
+                    "PATH": "/bin",
+                    "HOME": "/home/test",
+                    "OPENAI_API_KEY": "openai",
+                    "AMO_TOKEN": "amo",
+                    "WAPPI_SECRET": "wappi",
+                    "CRM_AMO_API_TOKEN": "crm",
+                    "AI_OFFICE_API_KEY": "office",
+                },
+                clear=False,
+            ):
+                normalized = analyzer._analyze_codex_cli(prompt="Верни JSON")
+
+        self.assertEqual(normalized["close_verdict"], "manual_review")
+        self.assertEqual(seen["env"]["CODEX_HOME"], str(Path(td).resolve()))
+        self.assertEqual(seen["env"]["PATH"], "/bin")
+        self.assertEqual(seen["env"]["HOME"], "/home/test")
+        self.assertNotIn("OPENAI_API_KEY", seen["env"])
+        self.assertNotIn("AMO_TOKEN", seen["env"])
+        self.assertNotIn("WAPPI_SECRET", seen["env"])
+        self.assertNotIn("CRM_AMO_API_TOKEN", seen["env"])
+        self.assertNotIn("AI_OFFICE_API_KEY", seen["env"])
 
     def test_build_dossier_and_analysis_passes_active_brand_to_dossier(self) -> None:
         phone_context = PhoneContext(

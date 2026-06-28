@@ -120,9 +120,12 @@ from mango_mvp.channels.subscription_llm import (
     find_unsupported_numeric_promises,
     find_unsupported_followup_deadline_claims,
     find_redundant_questions_for_known_context,
+    CODEX_ENV_ISOLATION_ENV,
     build_codex_exec_env,
+    cleanup_isolated_codex_home,
     _normalize_direct_path_payload,
     parse_llm_json,
+    prepare_isolated_codex_home,
     strip_internal_service_markers,
     known_context_fields,
 )
@@ -206,16 +209,93 @@ def test_codex_exec_isolated_command_ignores_user_config_and_uses_clean_cwd(tmp_
     assert "personality" not in " ".join(command)
 
 
-def test_codex_exec_env_preserves_codex_home_auth_but_drops_openai_key() -> None:
-    env = build_codex_exec_env({"CODEX_HOME": "/tmp/codex-home", "OPENAI_API_KEY": "secret", "PATH": "/bin"})
+def test_codex_exec_env_allowlist_sets_home_and_drops_secrets() -> None:
+    env = build_codex_exec_env(
+        {
+            "CODEX_HOME": "/tmp/leaky-codex-home",
+            "PATH": "/bin",
+            "HOME": "/home/test",
+            "LANG": "ru_RU.UTF-8",
+            "LC_TIME": "ru_RU.UTF-8",
+            "AMO_TOKEN": "amo",
+            "WAPPI_SECRET": "wappi",
+            "OPENAI_API_KEY": "openai",
+            "CRM_AMO_API_TOKEN": "crm",
+            "AI_OFFICE_API_KEY": "office",
+            "CUSTOM_TOKEN": "custom-token",
+            "SAFE_EXTRA": "ok",
+            "TASK_CONTAINER_ENV_PASSTHROUGH": "SAFE_EXTRA,CUSTOM_SECRET",
+            "CUSTOM_SECRET": "custom-secret",
+            "UNRELATED": "drop-me",
+        },
+        codex_home="/tmp/codex-home",
+    )
 
-    assert env["CODEX_HOME"] == "/tmp/codex-home"
+    assert env["CODEX_HOME"] == str(Path("/tmp/codex-home").resolve())
     assert env["PATH"] == "/bin"
+    assert env["HOME"] == "/home/test"
+    assert env["LANG"] == "ru_RU.UTF-8"
+    assert env["LC_TIME"] == "ru_RU.UTF-8"
+    assert env["SAFE_EXTRA"] == "ok"
+    assert "UNRELATED" not in env
     assert "OPENAI_API_KEY" not in env
+    assert "AMO_TOKEN" not in env
+    assert "WAPPI_SECRET" not in env
+    assert "CRM_AMO_API_TOKEN" not in env
+    assert "AI_OFFICE_API_KEY" not in env
+    assert "CUSTOM_TOKEN" not in env
+    assert "CUSTOM_SECRET" not in env
+
+
+def test_codex_exec_env_does_not_inherit_codex_home_without_explicit_arg() -> None:
+    env = build_codex_exec_env({"CODEX_HOME": "/tmp/leaky-codex-home", "PATH": "/bin"})
+
+    assert env["PATH"] == "/bin"
+    assert "CODEX_HOME" not in env
+
+
+def test_prepare_isolated_codex_home_copies_auth_only_and_writes_neutral_config(tmp_path: Path) -> None:
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text('{"token":"subscription"}', encoding="utf-8")
+    (source_home / "models_cache.json").write_text('{"gpt-5.5":true}', encoding="utf-8")
+    (source_home / "installation_id").write_text("install-1", encoding="utf-8")
+    (source_home / "config.toml").write_text('mcp_servers = {"unsafe" = {}}', encoding="utf-8")
+    (source_home / "AGENTS.md").write_text("secret policy", encoding="utf-8")
+
+    runtime_home = prepare_isolated_codex_home(source_home=source_home)
+    try:
+        runtime_path = Path(runtime_home)
+        assert (runtime_path / "auth.json").read_text(encoding="utf-8") == '{"token":"subscription"}'
+        assert (runtime_path / "models_cache.json").read_text(encoding="utf-8") == '{"gpt-5.5":true}'
+        assert (runtime_path / "installation_id").read_text(encoding="utf-8") == "install-1"
+        assert 'sandbox_mode = "read-only"' in (runtime_path / "config.toml").read_text(encoding="utf-8")
+        assert "mcp_servers" not in (runtime_path / "config.toml").read_text(encoding="utf-8")
+        assert not (runtime_path / "AGENTS.md").exists()
+        assert oct((runtime_path / "auth.json").stat().st_mode & 0o777) == "0o600"
+    finally:
+        cleanup_isolated_codex_home(runtime_home)
+
+
+def test_subscription_provider_codex_isolation_default_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CODEX_ENV_ISOLATION_ENV, raising=False)
+    baseline = CodexExecDraftProvider(runner=lambda *args, **kwargs: None, cache_dir=None)
+    assert baseline.codex_isolated is False
+
+    monkeypatch.setenv(CODEX_ENV_ISOLATION_ENV, "1")
+    isolated = CodexExecDraftProvider(runner=lambda *args, **kwargs: None, cache_dir=None)
+    try:
+        assert isolated.codex_isolated is True
+        assert isolated._runtime_codex_home
+    finally:
+        isolated.close()
 
 
 def test_codex_exec_provider_isolated_bot_run_uses_clean_cwd_and_metadata(tmp_path: Path) -> None:
     seen: dict[str, Any] = {}
+    source_home = tmp_path / "codex-home"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text('{"token":"subscription"}', encoding="utf-8")
 
     def runner(cmd, **kwargs):
         seen["cmd"] = list(cmd)
@@ -243,25 +323,41 @@ def test_codex_exec_provider_isolated_bot_run_uses_clean_cwd_and_metadata(tmp_pa
         runner=runner,
         cache_dir=None,
         codex_isolated=True,
-        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "OPENAI_API_KEY": "secret", "PATH": "/bin"},
+        base_env={
+            "CODEX_HOME": str(source_home),
+            "OPENAI_API_KEY": "secret",
+            "AMO_TOKEN": "amo",
+            "WAPPI_SECRET": "wappi",
+            "PATH": "/bin",
+        },
     )
 
-    result = provider.generate_from_prompt("Верни JSON")
+    try:
+        result = provider.generate_from_prompt("Верни JSON")
 
-    assert "--ignore-user-config" in seen["cmd"]
-    assert "--ignore-rules" in seen["cmd"]
-    assert "-C" in seen["cmd"]
-    assert seen["env"]["CODEX_HOME"].endswith("codex-home")
-    assert "OPENAI_API_KEY" not in seen["env"]
-    assert result.metadata["codex_exec"] == {
-        "isolated": True,
-        "ignore_user_config": True,
-        "ignore_rules": True,
-    }
+        runtime_home = Path(seen["env"]["CODEX_HOME"])
+        assert "--ignore-user-config" in seen["cmd"]
+        assert "--ignore-rules" in seen["cmd"]
+        assert "-C" in seen["cmd"]
+        assert runtime_home != source_home
+        assert (runtime_home / "auth.json").read_text(encoding="utf-8") == '{"token":"subscription"}'
+        assert "OPENAI_API_KEY" not in seen["env"]
+        assert "AMO_TOKEN" not in seen["env"]
+        assert "WAPPI_SECRET" not in seen["env"]
+        assert result.metadata["codex_exec"] == {
+            "isolated": True,
+            "ignore_user_config": True,
+            "ignore_rules": True,
+        }
+    finally:
+        provider.close()
 
 
 def test_codex_exec_provider_isolates_dialogue_contract_subcalls(tmp_path: Path) -> None:
     seen: dict[str, Any] = {}
+    source_home = tmp_path / "codex-home"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text('{"token":"subscription"}', encoding="utf-8")
 
     def runner(cmd, **kwargs):
         seen["cmd"] = list(cmd)
@@ -277,15 +373,26 @@ def test_codex_exec_provider_isolates_dialogue_contract_subcalls(tmp_path: Path)
         runner=runner,
         cache_dir=None,
         codex_isolated=True,
-        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "OPENAI_API_KEY": "secret", "PATH": "/bin"},
+        base_env={
+            "CODEX_HOME": str(source_home),
+            "OPENAI_API_KEY": "secret",
+            "CRM_AMO_API_TOKEN": "crm",
+            "PATH": "/bin",
+        },
     )
 
-    assert provider._run_prompt_text("Верни JSON", prefix="mango_test_", suffix=".json") == '{"ok": true}'
-    assert "--ignore-user-config" in seen["cmd"]
-    assert "--ignore-rules" in seen["cmd"]
-    assert "-C" in seen["cmd"]
-    assert seen["env"]["CODEX_HOME"].endswith("codex-home")
-    assert "OPENAI_API_KEY" not in seen["env"]
+    try:
+        assert provider._run_prompt_text("Верни JSON", prefix="mango_test_", suffix=".json") == '{"ok": true}'
+        runtime_home = Path(seen["env"]["CODEX_HOME"])
+        assert "--ignore-user-config" in seen["cmd"]
+        assert "--ignore-rules" in seen["cmd"]
+        assert "-C" in seen["cmd"]
+        assert runtime_home != source_home
+        assert (runtime_home / "auth.json").read_text(encoding="utf-8") == '{"token":"subscription"}'
+        assert "OPENAI_API_KEY" not in seen["env"]
+        assert "CRM_AMO_API_TOKEN" not in seen["env"]
+    finally:
+        provider.close()
 
 
 def test_provider_parses_valid_json() -> None:

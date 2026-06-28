@@ -30,6 +30,11 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     _clamp_float,
     _normalize_output_sanitizer_text,
 )
+from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
+    build_answer_coverage_plan,
+    reliable_answerer_prompt_block,
+    reliable_answerer_step1_active_for_turn,
+)
 from mango_mvp.channels.subscription_llm_parts.support import (
     BOT_GOLD_REAL_ENV,
     DIRECT_PATH_ENV,
@@ -2453,6 +2458,11 @@ def _build_direct_path_prompt(
     brand_label = _direct_path_brand_label(active_brand)
     pack = fact_pack if isinstance(fact_pack, Mapping) else _direct_path_context_fact_pack(context, client_message=client_message)
     fact_items = dict(facts or pack.get("facts") or {})
+    answer_coverage_plan = (
+        build_answer_coverage_plan(client_message, fact_pack=pack, context=context)
+        if reliable_answerer_step1_active_for_turn(client_message, context=context)
+        else {}
+    )
     fact_metadata = pack.get("fact_metadata") if isinstance(pack.get("fact_metadata"), Mapping) else {}
     exact_keys = [str(key) for key in (pack.get("exact_keys") or fact_items.keys()) if str(key).strip()]
     adjacent_keys = [str(key) for key in (pack.get("adjacent_keys") or ()) if str(key).strip()]
@@ -2478,6 +2488,7 @@ def _build_direct_path_prompt(
     memory_block = json.dumps(memory, ensure_ascii=False, indent=2)[:2400] if memory else "{}"
     known_slots_next_step_block = _direct_path_known_slots_next_step_prompt_block(context)
     bot_safe_context_block = _direct_path_bot_safe_context_prompt_block(context)
+    reliable_answerer_block = reliable_answerer_prompt_block(context, answer_coverage_plan)
     action_proposal_instruction = ""
     action_proposal_field = ""
     p0_instruction = ""
@@ -2580,6 +2591,7 @@ def _build_direct_path_prompt(
         f"{intent_instruction}"
         f"{action_proposal_instruction}"
         f"{assumed_scope_instruction}"
+        + (f"{reliable_answerer_block}\n\n" if reliable_answerer_block else "") +
         f"Активный бренд: {brand_label} ({active_brand}).\n"
         f"Текущее сообщение клиента:\n{prompt_client_message}\n\n"
         + (f"{known_slots_next_step_block}\n\n" if known_slots_next_step_block else "")
@@ -2615,6 +2627,7 @@ def _direct_path_metadata(
     attempted: bool,
     model_called: bool,
     facts: Mapping[str, str],
+    client_message: str = "",
     fact_pack: Optional[Mapping[str, Any]] = None,
     gold_examples: Sequence[Mapping[str, Any]] = (),
     preblocked: bool = False,
@@ -2663,6 +2676,14 @@ def _direct_path_metadata(
         "reason_evidence": dict(reason_evidence or {}),
         "is_manager_deferral": bool(reason_class),
     }
+    if reliable_answerer_step1_active_for_turn(client_message, context=context):
+        metadata["answer_coverage_plan"] = dict(
+            build_answer_coverage_plan(
+                client_message,
+                fact_pack=pack,
+                context=context,
+            )
+        )
     if _template_from_kb_enabled(context) and facts:
         metadata["template_from_kb_trace"] = [
             {
@@ -2698,6 +2719,8 @@ def _direct_path_metadata(
 def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Mapping[str, Any]) -> SubscriptionDraftResult:
     metadata = dict(result.metadata)
     metadata["direct_path"] = dict(direct_meta)
+    if isinstance(direct_meta.get("answer_coverage_plan"), Mapping):
+        metadata["answer_coverage_plan"] = dict(direct_meta["answer_coverage_plan"])  # type: ignore[index]
     metadata["text_composition_source"] = direct_meta.get("text_composition_source") or "direct_path_model"
     if direct_meta.get("reason_class"):
         metadata["reason_class"] = str(direct_meta.get("reason_class") or "")

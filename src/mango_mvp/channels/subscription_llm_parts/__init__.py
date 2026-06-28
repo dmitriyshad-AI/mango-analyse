@@ -7,6 +7,7 @@ from mango_mvp.channels.subscription_llm_parts import direct_path as _direct_pat
 from mango_mvp.channels.subscription_llm_parts import policy_routing as _policy_routing
 from mango_mvp.channels.subscription_llm_parts import post_layers as _post_layers
 from mango_mvp.channels.subscription_llm_parts import text_hygiene as _text_hygiene
+from mango_mvp.channels.subscription_llm_parts import reliable_answerer as _reliable_answerer
 from mango_mvp.channels.subscription_llm_parts import provider as _provider
 from mango_mvp.channels.subscription_llm_parts import monolith as _monolith
 
@@ -35,6 +36,11 @@ __all__.extend(
         "RETRIEVER_MODEL_DRIVEN_ENV",
         "RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION",
         "RETRIEVER_NEED_SHADOW_ENV",
+        "RELIABLE_ANSWERER_STEP1_ENV",
+        "ANSWER_COVERAGE_PLAN_SCHEMA_VERSION",
+        "RELIABLE_ANSWERER_TRACE_SCHEMA_VERSION",
+        "build_answer_coverage_plan",
+        "reliable_answerer_step1_enabled",
         "DEAL_ACTION_DECISION_SCHEMA_VERSION",
         "DEAL_ACTION_UNKNOWN",
         "DEAL_ACTIONS",
@@ -82,6 +88,8 @@ for _name in __all__:
         globals()[_name] = getattr(_post_layers, _name)
     elif hasattr(_text_hygiene, _name):
         globals()[_name] = getattr(_text_hygiene, _name)
+    elif hasattr(_reliable_answerer, _name):
+        globals()[_name] = getattr(_reliable_answerer, _name)
     elif hasattr(_provider, _name):
         globals()[_name] = getattr(_provider, _name)
     else:

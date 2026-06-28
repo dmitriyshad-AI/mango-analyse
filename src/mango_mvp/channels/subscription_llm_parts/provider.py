@@ -192,6 +192,8 @@ from mango_mvp.channels.subscription_llm_parts.contracts import (
     _clamp_float,
 )
 
+from mango_mvp.channels.subscription_llm_parts.reliable_answerer import apply_reliable_answerer_output_guard
+
 from mango_mvp.channels.subscription_llm_parts.direct_path import (
     BOT_GOLD_REAL_PACK_ENV,
     DIRECT_PATH_SCHEMA_VERSION,
@@ -1126,6 +1128,7 @@ class SubscriptionLlmDraftProvider:
         direct_meta = _direct_path_metadata(
             attempted=True,
             model_called=True,
+            client_message=client_message,
             facts=facts,
             fact_pack=fact_pack,
             gold_examples=gold_examples,
@@ -1197,6 +1200,11 @@ class SubscriptionLlmDraftProvider:
                     client_message=client_message,
                     context=context,
                 )
+            result = apply_reliable_answerer_output_guard(
+                result,
+                client_message=client_message,
+                context=context,
+            )
             result = apply_assumed_scope_guard(result, context=context)
 
         semantic_checked = apply_semantic_output_verifier(

@@ -271,6 +271,11 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _replace_echoed_phone,
 )
 
+from mango_mvp.channels.subscription_llm_parts.reliable_answerer import (
+    reliable_answerer_step1_bypass_reason,
+    reliable_answerer_step1_enabled,
+)
+
 
 from mango_mvp.channels.subscription_llm_parts.policy_routing import (
     ADDRESS_FOTON_MOSCOW_SAFE_TEXT,
@@ -1160,6 +1165,79 @@ def _direct_path_preblocked_result(
             manager_checklist=("High-risk: прямой путь не вызывался, отвечает менеджер.",),
             metadata={"direct_path": meta, "reason_class": "high_risk", "is_manager_deferral": True},
         )
+    if reliable_answerer_step1_enabled(context):
+        reliable_bypass_reason = reliable_answerer_step1_bypass_reason(client_message, context=context)
+        if reliable_bypass_reason == "p0":
+            text, kind = _direct_path_p0_text("payment", context)
+            meta = _direct_path_metadata(
+                attempted=True,
+                model_called=False,
+                client_message=client_message,
+                facts=facts,
+                fact_pack=fact_pack,
+                preblocked=True,
+                pilot_config=pilot_config,
+                context=context,
+                preblock_reason="reliable_answerer_p0_bypass",
+                reason_class="p0_deferral",
+                reason_evidence={"source": "reliable_answerer_bypass", "p0_kind": kind},
+            )
+            return SubscriptionDraftResult(
+                message_type="manager_only",
+                broad_group="direct_path",
+                route="manager_only",
+                draft_text=text,
+                risk_level="high",
+                safety_flags=(
+                    *BASE_SAFETY_FLAGS,
+                    "direct_path_preblocked_p0",
+                    f"direct_path_reliable_answerer_bypass_{kind}",
+                    "manager_approval_required",
+                    "no_auto_send",
+                ),
+                manager_checklist=("P0/high-risk: прямой путь не вызывался, отвечает менеджер.",),
+                metadata={
+                    "direct_path": meta,
+                    "reason_class": "p0_deferral",
+                    "is_manager_deferral": True,
+                    "reliable_answerer_bypassed_reason": "p0",
+                },
+            )
+        if reliable_bypass_reason == "cross_brand":
+            meta = _direct_path_metadata(
+                attempted=True,
+                model_called=False,
+                client_message=client_message,
+                facts=facts,
+                fact_pack=fact_pack,
+                preblocked=True,
+                pilot_config=pilot_config,
+                context=context,
+                preblock_reason="reliable_answerer_cross_brand_bypass",
+                reason_class="cross_brand",
+                reason_evidence={"source": "reliable_answerer_bypass"},
+            )
+            return SubscriptionDraftResult(
+                message_type="manager_only",
+                broad_group="direct_path",
+                route="manager_only",
+                draft_text=CROSS_BRAND_GENERIC_SAFE_TEXT,
+                safety_flags=(
+                    *BASE_SAFETY_FLAGS,
+                    "direct_path_preblocked_cross_brand",
+                    "cross_brand_safe_template_applied",
+                    "manager_approval_required",
+                    "no_auto_send",
+                ),
+                manager_checklist=("Cross-brand: прямой путь не вызывался, отвечает менеджер.",),
+                metadata={
+                    "direct_path": meta,
+                    "reason_class": "cross_brand",
+                    "is_manager_deferral": True,
+                    "reliable_answerer_bypassed_reason": "cross_brand",
+                    "cross_brand_safe_template_applied": True,
+                },
+            )
     if should_force_manager_only(context):
         meta = _direct_path_metadata(
             attempted=True,

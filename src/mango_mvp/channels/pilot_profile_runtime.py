@@ -5,7 +5,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, MutableMapping
 
-from mango_mvp.channels.dialogue_contract_pipeline import NUMBER_GATE_SCOPE_AWARE_ENV
+from mango_mvp.channels.dialogue_contract_pipeline import NUMBER_GATE_SCOPE_AWARE_ENV, autonomy_scope_precision_enabled
+from mango_mvp.channels.fact_venue_scope import venue_scope_enabled
 from mango_mvp.channels.subscription_llm_parts.direct_path import _presale_safety_enabled
 from mango_mvp.channels.subscription_llm_parts.post_layers import (
     _output_sanitizer_enabled,
@@ -22,8 +23,10 @@ from mango_mvp.channels.subscription_llm_parts.support import (
     VERIFIER_HANDOFF_CLAIMS_ENV,
     _explicit_truthy_setting,
     _intent_model_led_enabled,
+    _p0_model_led_enabled,
     _pilot_gold_profile_enabled,
     _pilot_profile_default_on_flag_enabled,
+    _prose_model_led_enabled,
 )
 
 
@@ -154,6 +157,10 @@ def _guard_status() -> dict[str, bool]:
         "pii_relation_stopwords": _pilot_profile_default_on_flag_enabled(None, PII_RELATION_STOPWORDS_ENV),
         "verifier_handoff_claims": _verifier_handoff_claims_enabled(None),
         "intent_model_led": _intent_model_led_enabled(None),
+        "p0_model_led": _p0_model_led_enabled(None),
+        "prose_model_led": _prose_model_led_enabled(None),
+        "fact_venue_scope": venue_scope_enabled(None),
+        "autonomy_scope_precision": autonomy_scope_precision_enabled(None),
     }
 
 

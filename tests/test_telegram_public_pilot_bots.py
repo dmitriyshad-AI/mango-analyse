@@ -19,6 +19,7 @@ from scripts.run_telegram_public_pilot_bots import (
     configs_from_env,
     debug_client_label,
     debug_customer_summary,
+    heartbeat_active_guards,
     known_client_fields_for_session,
     known_dialog_fields_from_messages,
     load_debug_clients,
@@ -37,14 +38,25 @@ from mango_mvp.channels.pilot_profile_runtime import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     ENFORCE_CANONICAL_PROFILE_ENV,
+    REQUIRED_GUARD_KEYS,
     ensure_canonical_pilot_profile,
     pilot_profile_selfcheck,
 )
 from mango_mvp.amocrm_runtime.tallanto_context import build_tallanto_live_card
-from mango_mvp.channels.dialogue_contract_pipeline import DIALOGUE_CONTRACT_PIPELINE_ENV, pipeline_enabled
+from mango_mvp.channels.dialogue_contract_pipeline import (
+    AUTONOMY_SCOPE_PRECISION_ENV,
+    DIALOGUE_CONTRACT_PIPELINE_ENV,
+    pipeline_enabled,
+)
 import mango_mvp.channels.dialogue_memory as dialogue_memory_module
 from mango_mvp.pilot_context_assembly import build_pilot_context_payload
-from mango_mvp.channels.subscription_llm import INTENT_MODEL_LED_ENV, SubscriptionDraftResult
+from mango_mvp.channels.fact_venue_scope import FACT_VENUE_SCOPE_ENV
+from mango_mvp.channels.subscription_llm import (
+    INTENT_MODEL_LED_ENV,
+    P0_MODEL_LED_ENV,
+    PROSE_MODEL_LED_ENV,
+    SubscriptionDraftResult,
+)
 from mango_mvp.channels.night_funnel_shadow import (
     AUTO_SEND,
     MANAGER_QUEUE,
@@ -470,6 +482,52 @@ def test_public_bot_selfcheck_reports_intent_model_led_from_profile(monkeypatch)
     monkeypatch.setenv(INTENT_MODEL_LED_ENV, "0")
     check_explicit_off = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
     assert check_explicit_off.active_guards["intent_model_led"] is False
+
+
+def test_public_bot_selfcheck_reports_live_guard_telemetry_without_requiring_env_flags(monkeypatch) -> None:
+    for key in (
+        DIRECT_PATH_PILOT_CONFIG_ENV,
+        ENFORCE_CANONICAL_PROFILE_ENV,
+        FACT_VENUE_SCOPE_ENV,
+        AUTONOMY_SCOPE_PRECISION_ENV,
+        P0_MODEL_LED_ENV,
+        PROSE_MODEL_LED_ENV,
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv(ENFORCE_CANONICAL_PROFILE_ENV, "1")
+    monkeypatch.setenv(DIRECT_PATH_PILOT_CONFIG_ENV, DIRECT_PATH_PILOT_CONFIG_VERSION)
+    profile_without_env = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    assert profile_without_env.ok is True
+    assert profile_without_env.active_guards["fact_venue_scope"] is True
+    assert profile_without_env.active_guards["autonomy_scope_precision"] is True
+    assert profile_without_env.active_guards["p0_model_led"] is False
+    assert profile_without_env.active_guards["prose_model_led"] is False
+    assert "p0_model_led" not in REQUIRED_GUARD_KEYS
+    assert "prose_model_led" not in REQUIRED_GUARD_KEYS
+    assert "fact_venue_scope" not in REQUIRED_GUARD_KEYS
+    assert "autonomy_scope_precision" not in REQUIRED_GUARD_KEYS
+
+    monkeypatch.setenv(P0_MODEL_LED_ENV, "1")
+    monkeypatch.setenv(PROSE_MODEL_LED_ENV, "1")
+    with_live_env = pilot_profile_selfcheck(dialogue_contract_pipeline_enabled=True)
+    combined = heartbeat_active_guards(with_live_env)
+
+    live_guard_keys = {
+        "autonomy_scope_precision",
+        "fact_venue_scope",
+        "number_gate_scope_aware",
+        "output_sanitizer",
+        "p0_model_led",
+        "pii_relation_stopwords",
+        "presale_pii_memory",
+        "presale_safety",
+        "prose_model_led",
+        "semantic_output_verifier",
+        "verifier_handoff_claims",
+    }
+    assert live_guard_keys <= set(combined)
+    assert all(combined[key] is True for key in live_guard_keys)
 
 
 def test_runtime_context_overrides_force_profile_without_process_env(tmp_path: Path, monkeypatch) -> None:

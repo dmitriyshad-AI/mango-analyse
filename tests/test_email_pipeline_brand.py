@@ -30,8 +30,10 @@ def test_dates_are_last_resort_signal() -> None:
 
 
 def test_mask_pii_handles_html_phone_fragments() -> None:
-    masked = mask_pii("8 (800)&nbsp;123-45-67 hello@example.com")
+    masked = mask_pii("8 (800)&nbsp;123-45-67 hello@example.com Иванов И.И.")
     assert "123-45-67" not in masked
     assert "hello@example.com" not in masked
+    assert "Иванов И.И." not in masked
     assert "[phone]" in masked
     assert "[email]" in masked
+    assert "[name]" in masked

@@ -54,6 +54,7 @@ from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     BOT_SAFE_CRM_CONTEXT_ENV,
     DEFAULT_BOT_SAFE_TENANT_ID,
     BotSafeLookup,
+    bot_memory_expanded_shadow_enabled,
     bot_safe_crm_context_enabled,
     bot_safe_tenant_from_env,
     bot_safe_timeline_db_from_env,
@@ -225,7 +226,7 @@ def _build_bot_safe_crm_context_for_draft(
     customer_timeline_allowed_root: Path | None,
     customer_timeline_tenant: str,
 ) -> Mapping[str, Any]:
-    if not bot_safe_crm_context_enabled():
+    if not (bot_safe_crm_context_enabled() or bot_memory_expanded_shadow_enabled()):
         return {}
     pair = draft_config.pair_for(key) if draft_config is not None else None
     if pair is None:

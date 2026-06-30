@@ -42,6 +42,7 @@ from mango_mvp.channels.subscription_llm_parts.post_layers import _tone_close_de
 from mango_mvp.customer_timeline.bot_safe_runtime_context import (
     DEFAULT_BOT_SAFE_TENANT_ID,
     BotSafeLookup,
+    bot_memory_expanded_shadow_enabled,
     bot_safe_crm_context_enabled,
     bot_safe_tenant_from_env,
     bot_safe_timeline_db_from_env,
@@ -2135,7 +2136,7 @@ def bot_safe_context_items_for_judge(context: Mapping[str, Any] | None, *, limit
 
 
 def build_dynamic_bot_safe_crm_context(persona: Mapping[str, Any], *, active_brand: str) -> Mapping[str, Any]:
-    if not bot_safe_crm_context_enabled():
+    if not (bot_safe_crm_context_enabled() or bot_memory_expanded_shadow_enabled()):
         return {}
     db_path = bot_safe_timeline_db_from_env() or DEFAULT_CUSTOMER_TIMELINE_DB
     if not db_path.exists():
@@ -2163,6 +2164,7 @@ def build_dynamic_bot_safe_crm_context(persona: Mapping[str, Any], *, active_bra
             amo_lead_id=amo_lead_id,
             amo_contact_id=amo_contact_id,
         ),
+        allow_explicit_customer_id=bool(customer_id),
     )
     return context if context.get("found") else {}
 

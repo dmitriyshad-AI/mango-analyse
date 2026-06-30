@@ -143,6 +143,8 @@ SKIP_SCALAR_KEYS = {
     "client_facing",
     "bot_route",
 }
+EXPLICIT_FACT_VALUE_KEYS = {"raw_value", "value"}
+EXPLICIT_FACT_METADATA_KEYS = {"raw_value", "value", "valid_until", "valid_from", "structured_value"}
 FORBIDDEN_KEYS = {
     "forbidden_to_say",
     "forbidden_to_ask",
@@ -489,6 +491,20 @@ def walk_value(
     if should_skip_fact_path(path, value):
         return []
     if isinstance(value, Mapping):
+        explicit_leaf = explicit_fact_leaf(value, path=path)
+        if explicit_leaf is not None:
+            leaf_value, structured_overrides = explicit_leaf
+            normalized_value = normalize_value_for_fact(path, leaf_value)
+            return [
+                make_fact(
+                    path=path,
+                    value=normalized_value,
+                    context=context,
+                    source=source,
+                    structured_value_overrides=structured_overrides,
+                )
+            ]
+
         current = dict(context)
         current["brand"] = normalize_brand(value.get("brand") or current.get("brand"))
         status = clean_text(value.get("status") or current.get("status") or "verified")
@@ -530,6 +546,44 @@ def walk_value(
 
     normalized_value = normalize_value_for_fact(path, value)
     return [make_fact(path=path, value=normalized_value, context=context, source=source)]
+
+
+def explicit_fact_leaf(value: Mapping[str, Any], *, path: tuple[str, ...]) -> tuple[Any, dict[str, Any]] | None:
+    """Read a YAML leaf with explicit metadata without changing its fact key.
+
+    Example:
+      semester:
+        raw_value: 44600
+        valid_until: '2026-12-31'
+    """
+    if not any(key in value for key in EXPLICIT_FACT_VALUE_KEYS):
+        return None
+    if any(str(key) not in EXPLICIT_FACT_METADATA_KEYS for key in value):
+        return None
+
+    raw_value = value.get("raw_value") if "raw_value" in value else value.get("value")
+    if raw_value is None:
+        return None
+    if is_range_sequence(path, raw_value):
+        raw_value = {"min": raw_value[0], "max": raw_value[1]}
+
+    structured = dict(value.get("structured_value") or {}) if isinstance(value.get("structured_value"), Mapping) else {}
+    for key in ("valid_until", "valid_from"):
+        metadata_value = value.get(key)
+        if metadata_value is not None and str(metadata_value).strip():
+            structured[key] = str(metadata_value).strip()
+    return raw_value, structured
+
+
+def is_range_sequence(path: tuple[str, ...], value: Any) -> bool:
+    return (
+        bool(path and "range" in path[-1])
+        and isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray))
+        and len(value) >= 2
+        and numeric_value(value[0]) is not None
+        and numeric_value(value[1]) is not None
+    )
 
 
 def should_skip_fact_path(path: tuple[str, ...], value: Any) -> bool:
@@ -590,6 +644,7 @@ def make_fact(
     value: Any,
     context: Mapping[str, Any],
     source: Mapping[str, Any],
+    structured_value_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     fact_key = ".".join(safe_id(part) for part in path)
     brand = normalize_brand(context.get("brand"))
@@ -605,6 +660,10 @@ def make_fact(
     if linked_open_question == "q14_closed" and brand != "unpk":
         linked_open_question = ""
     structured_value = build_structured_value(path, value, fact_type=fact_type)
+    if structured_value_overrides:
+        for key, override_value in structured_value_overrides.items():
+            if override_value is not None and str(override_value).strip():
+                structured_value[str(key)] = override_value
     structured_value["freshness_check_date"] = FRESHNESS_CHECK_DATE
     fact_text = render_fact_text(path, value, brand=brand, fact_type=fact_type, structured_value=structured_value)
     route_policy = infer_route_policy(path, fact_type=fact_type, status=status, internal_only=internal_only)

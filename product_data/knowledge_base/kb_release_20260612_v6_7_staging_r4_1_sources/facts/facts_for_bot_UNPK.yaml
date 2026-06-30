@@ -43,12 +43,20 @@ prices_regular_2026_27:
   freshness_status: document_verified
   offline_5_11_class:
     before_2026_07_01:
-      semester: 49000
-      year: 82000
+      semester:
+        raw_value: 49000
+        valid_until: '2026-12-31'
+      year:
+        raw_value: 82000
+        valid_until: '2026-12-31'
   offline_1_4_class:
     before_2026_07_01:
-      semester: 31000
-      year: 51700
+      semester:
+        raw_value: 31000
+        valid_until: '2026-12-31'
+      year:
+        raw_value: 51700
+        valid_until: '2026-12-31'
     note_internal: Очная площадка 1-4 классов хранится в locations_unpk, а не внутри price-ветки, чтобы адрес не превращался в цену.
   patsayeva_2x_week:
     status: removed_2026_05_20

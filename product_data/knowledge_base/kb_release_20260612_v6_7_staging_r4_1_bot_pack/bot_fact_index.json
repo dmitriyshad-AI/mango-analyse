@@ -3983,7 +3983,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -3995,7 +3995,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -4007,7 +4007,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -4019,7 +4019,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -4031,7 +4031,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-08-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -4043,7 +4043,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-08-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": false,
@@ -4067,7 +4067,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-08-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -4079,7 +4079,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-08-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -10707,7 +10707,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -10719,7 +10719,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": false,
@@ -10743,7 +10743,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": true,
@@ -10755,7 +10755,7 @@
         "freshness_status": "document_verified",
         "risk_level": "low",
         "route_policy": "bot_answer_self_for_pilot",
-        "valid_until": "2026-07-01"
+        "valid_until": "2026-12-31"
       },
       {
         "allowed_for_client_answer": false,

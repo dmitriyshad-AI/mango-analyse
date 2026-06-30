@@ -44,22 +44,38 @@ prices_regular_2026_27:
   freshness_status: document_verified
   offline_5_11_class:
     before_2026_07_01:
-      semester: 44600
-      year: 74500
+      semester:
+        raw_value: 44600
+        valid_until: '2026-12-31'
+      year:
+        raw_value: 74500
+        valid_until: '2026-12-31'
   offline_3_4_class:
     before_2026_07_01:
-      semester: 28250
-      year: 47000
+      semester:
+        raw_value: 28250
+        valid_until: '2026-12-31'
+      year:
+        raw_value: 47000
+        valid_until: '2026-12-31'
   online_5_11_class:
     before_2026_08_01:
-      semester: 29750
-      year: 47250
+      semester:
+        raw_value: 29750
+        valid_until: '2026-12-31'
+      year:
+        raw_value: 47250
+        valid_until: '2026-12-31'
   online_3_4_class:
     before_2026_08_01:
-      semester: 19000
+      semester:
+        raw_value: 19000
+        valid_until: '2026-12-31'
       year_range:
-      - 29900
-      - 33300
+        raw_value:
+        - 29900
+        - 33300
+        valid_until: '2026-12-31'
     note_internal: Группы 1-2 классов могут быть заложены в прайсе на будущее, но клиенту в 2026/27 анонсируем онлайн только с 3-го класса.
   early_booking_2026_27:
     description: Раннее бронирование для действующих учеников Фотона

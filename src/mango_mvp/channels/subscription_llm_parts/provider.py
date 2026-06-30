@@ -1987,7 +1987,11 @@ class SubscriptionLlmDraftProvider:
             raise RuntimeError(message)
 
         payload = extract_json_object(raw or proc.stdout or proc.stderr or "")
-        result = _normalize_direct_path_payload(payload, raw_response=raw)
+        result = _normalize_direct_path_payload(
+            payload,
+            raw_response=raw,
+            include_semantic_frame_shadow='"semantic_frame"' in prompt_text and "SemanticFrame SHADOW" in prompt_text,
+        )
         return replace(result, metadata=_with_codex_exec_metadata(result.metadata, isolated=self.codex_isolated))
 
     def _cache_get(self, cache_key: str) -> Optional[SubscriptionDraftResult]:
@@ -2234,6 +2238,77 @@ def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> 
     }
 
 
+_SEMANTIC_FRAME_PHONE_RE = re.compile(r"(?:\+7|8|7)?[\s\-()]?\d{3}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}")
+_SEMANTIC_FRAME_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+", re.I)
+_SEMANTIC_FRAME_LONG_ID_RE = re.compile(r"(?<!\d)\d{5,}(?!\d)")
+
+
+def _direct_path_semantic_frame_safe_text(value: Any, *, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    text = _SEMANTIC_FRAME_PHONE_RE.sub("[phone]", text)
+    text = _SEMANTIC_FRAME_EMAIL_RE.sub("[email]", text)
+    text = _SEMANTIC_FRAME_LONG_ID_RE.sub("[id]", text)
+    return text[:limit]
+
+
+def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    raw = payload.get("semantic_frame")
+    if not isinstance(raw, Mapping):
+        raw = payload.get("semanticFrame")
+    if not isinstance(raw, Mapping):
+        raw = payload.get("semantic_frame_shadow")
+    if not isinstance(raw, Mapping):
+        return {}
+    requested_product = raw.get("requested_product")
+    if isinstance(requested_product, Mapping):
+        product = {
+            "brand": _direct_path_semantic_frame_safe_text(requested_product.get("brand"), limit=40),
+            "subject": _direct_path_semantic_frame_safe_text(requested_product.get("subject"), limit=80),
+            "grade": _direct_path_semantic_frame_safe_text(requested_product.get("grade"), limit=40),
+            "format": _direct_path_semantic_frame_safe_text(requested_product.get("format"), limit=80),
+            "venue": _direct_path_semantic_frame_safe_text(requested_product.get("venue"), limit=80),
+            "program_kind": _direct_path_semantic_frame_safe_text(requested_product.get("program_kind"), limit=80),
+            "raw_text": _direct_path_semantic_frame_safe_text(requested_product.get("raw_text"), limit=160),
+        }
+    else:
+        product = {"raw_text": _direct_path_semantic_frame_safe_text(requested_product, limit=160)}
+    frame = {
+        "schema_version": "semantic_frame_shadow_v1_2026_06_30",
+        "intent": _direct_path_semantic_frame_safe_text(raw.get("intent"), limit=120),
+        "risk_class": _direct_path_semantic_frame_safe_text(raw.get("risk_class"), limit=80),
+        "deal_stage": _direct_path_semantic_frame_safe_text(raw.get("deal_stage"), limit=80),
+        "payment_readiness": _direct_path_semantic_frame_safe_text(raw.get("payment_readiness"), limit=80),
+        "requested_product": product,
+        "requested_action": _direct_path_semantic_frame_safe_text(raw.get("requested_action"), limit=120),
+        "answerability": _direct_path_answerability_value(raw.get("answerability")),
+        "must_handoff": _direct_path_payload_bool(raw.get("must_handoff")),
+        "evidence": [
+            safe_item
+            for item in _clean_list(raw.get("evidence"), max_items=8, max_chars=300)
+            if (safe_item := _direct_path_semantic_frame_safe_text(item, limit=160))
+        ],
+        "confidence": _clamp_float(raw.get("confidence", 0.0)),
+    }
+    if not any(
+        (
+            frame["intent"],
+            frame["risk_class"],
+            frame["deal_stage"],
+            frame["payment_readiness"],
+            any(str(value or "").strip() for value in frame["requested_product"].values()),
+            frame["requested_action"],
+            frame["answerability"],
+            frame["must_handoff"],
+            frame["evidence"],
+            frame["confidence"],
+        )
+    ):
+        return {}
+    return frame
+
+
 def _direct_path_model_p0_meta(result: SubscriptionDraftResult) -> Mapping[str, Any]:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     meta = metadata.get("direct_path_model_p0")
@@ -2342,6 +2417,7 @@ def _normalize_direct_path_payload(
     *,
     raw_response: Optional[str] = None,
     include_answerability_self: bool = False,
+    include_semantic_frame_shadow: bool = False,
 ) -> SubscriptionDraftResult:
     if not isinstance(payload, Mapping):
         raise RuntimeError("direct path response JSON root must be an object")
@@ -2371,6 +2447,9 @@ def _normalize_direct_path_payload(
         metadata["action_proposal"] = {"action": proposal.strip(), "source": "direct_model"}
     if include_answerability_self:
         metadata["answerability_self"] = _direct_path_answerability_self_from_payload(payload)
+    semantic_frame = _direct_path_semantic_frame_from_payload(payload) if include_semantic_frame_shadow else {}
+    if semantic_frame:
+        metadata["semantic_frame_shadow"] = semantic_frame
     return SubscriptionDraftResult(
         message_type=str(payload.get("message_type") or "question"),
         broad_group=str(payload.get("broad_group") or "direct_path"),

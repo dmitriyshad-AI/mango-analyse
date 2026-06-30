@@ -106,6 +106,8 @@ DIRECT_P0_TEXT_HYGIENE_ENV = "TELEGRAM_DIRECT_P0_TEXT_HYGIENE"
 
 P0_MODEL_CLASSES_V2_ENV = "TELEGRAM_P0_MODEL_CLASSES_V2"
 
+SEMANTIC_FRAME_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_SHADOW"
+
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
@@ -304,6 +306,13 @@ def _p0_model_classes_v2_enabled(context: Optional[Mapping[str, Any]] = None) ->
         context,
         P0_MODEL_CLASSES_V2_ENV,
         aliases=("p0_model_classes_v2", "p0_model_classes_v2_enabled"),
+    )
+
+def _semantic_frame_shadow_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        SEMANTIC_FRAME_SHADOW_ENV,
+        aliases=("semantic_frame_shadow", "semantic_frame_shadow_enabled"),
     )
 
 def _direct_path_known_slots_next_step_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
@@ -2495,6 +2504,8 @@ def _build_direct_path_prompt(
     p0_fields = ""
     intent_instruction = ""
     intent_field = ""
+    semantic_frame_instruction = ""
+    semantic_frame_field = ""
     assumed_scope_instruction = ""
     route_choices = '"bot_answer_self_for_pilot" | "draft_for_manager"'
     if _direct_path_model_p0_enabled(context):
@@ -2563,6 +2574,28 @@ def _build_direct_path_prompt(
         intent_field = (
             '  "model_intent": {"primary_intent": "live_availability|schedule|address|camp|price_fix|other", "scope": "", "sense": "", "confidence": 0.0, "reason": "кратко"},\n'
         )
+    if _semantic_frame_shadow_enabled(context):
+        semantic_frame_instruction = (
+            "SemanticFrame SHADOW: дополнительно заполни поле semantic_frame. Это только телеметрия для анализа; "
+            "не меняй из-за него route, draft_text, safety_flags, manager_checklist и другие поля ответа. "
+            "Опиши смысл всей ситуации с учётом текущей реплики, последних реплик, известных слотов и фактов. "
+            "intent — главный смысл вопроса; risk_class — safe|p0|manager_action|missing_facts|unknown; "
+            "deal_stage — cold|interest|qualification|offer|closing|post_payment|support|unknown; "
+            "payment_readiness — none|asking_price|considering|ready_to_pay|paid|dispute|unknown; "
+            "requested_product — объект с brand, subject, grade, format, venue, program_kind, raw_text; "
+            "requested_action — что клиент просит сделать: answer_question|check_availability|enroll|send_materials|"
+            "send_payment_link|send_document|refund_or_cancel|handoff_manager|unknown; "
+            "answerability — answer_self|manager_only|uncertain; must_handoff — true только если по смыслу нужен менеджер/P0; "
+            "evidence — короткие неперсональные причины без телефонов, email и ФИО; confidence — 0..1.\n\n"
+        )
+        semantic_frame_field = (
+            '  "semantic_frame": {"intent": "", "risk_class": "safe|p0|manager_action|missing_facts|unknown", '
+            '"deal_stage": "cold|interest|qualification|offer|closing|post_payment|support|unknown", '
+            '"payment_readiness": "none|asking_price|considering|ready_to_pay|paid|dispute|unknown", '
+            '"requested_product": {"brand": "", "subject": "", "grade": "", "format": "", "venue": "", "program_kind": "", "raw_text": ""}, '
+            '"requested_action": "answer_question|check_availability|enroll|send_materials|send_payment_link|send_document|refund_or_cancel|handoff_manager|unknown", '
+            '"answerability": "answer_self|manager_only|uncertain", "must_handoff": false, "evidence": [], "confidence": 0.0},\n'
+        )
     if _deal_action_decision_enabled(context):
         action_proposal_instruction = (
             "Предложи одно следующее действие для менеджера в поле action_proposal из закрытого списка: "
@@ -2589,6 +2622,7 @@ def _build_direct_path_prompt(
         "классом или продуктом того факта, из которого взял число. Если скоуп факта не совпадает с вопросом — не называй число.\n\n"
         f"{p0_instruction}"
         f"{intent_instruction}"
+        f"{semantic_frame_instruction}"
         f"{action_proposal_instruction}"
         f"{assumed_scope_instruction}"
         + (f"{reliable_answerer_block}\n\n" if reliable_answerer_block else "") +
@@ -2615,6 +2649,7 @@ def _build_direct_path_prompt(
         '  "draft_text": "текст для клиента",\n'
         f"{p0_fields}"
         f"{intent_field}"
+        f"{semantic_frame_field}"
         f"{action_proposal_field}"
         '  "manager_checklist": [],\n'
         '  "missing_facts": [],\n'
@@ -2718,7 +2753,11 @@ def _direct_path_metadata(
 
 def _direct_path_merge_metadata(result: SubscriptionDraftResult, direct_meta: Mapping[str, Any]) -> SubscriptionDraftResult:
     metadata = dict(result.metadata)
-    metadata["direct_path"] = dict(direct_meta)
+    direct = dict(direct_meta)
+    semantic_frame = metadata.get("semantic_frame_shadow") if isinstance(metadata.get("semantic_frame_shadow"), Mapping) else {}
+    if semantic_frame:
+        direct["semantic_frame_shadow"] = dict(semantic_frame)
+    metadata["direct_path"] = direct
     if isinstance(direct_meta.get("answer_coverage_plan"), Mapping):
         metadata["answer_coverage_plan"] = dict(direct_meta["answer_coverage_plan"])  # type: ignore[index]
     metadata["text_composition_source"] = direct_meta.get("text_composition_source") or "direct_path_model"

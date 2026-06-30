@@ -1,0 +1,106 @@
+{
+  "baseline_scope": {
+    "m1_repro_command_required": true,
+    "notes": [
+      "Builder freezes inputs and observed what-if route/text baseline.",
+      "Bit-for-bit OFF/ON shadow diff and semantic gates must be measured by M1 run.",
+      "No raw chat_id/message_id/phone/email is copied into the eval JSONL."
+    ],
+    "semantic_judge_status": "not_run_by_builder",
+    "source": "existing what-if drafts + frozen regression set manifest"
+  },
+  "existing_regression_sources": [
+    {
+      "exists": true,
+      "line_count": 13,
+      "path": "product_data/telegram_dynamic_test_sets/p0_model_led_micro_20260622.jsonl",
+      "sha256": "976ed1eb3176ee07eade7163fa47565f1100286455b1600daaf61dee7dd9cac6"
+    },
+    {
+      "exists": true,
+      "line_count": 22,
+      "path": "product_data/telegram_dynamic_test_sets/p0_stability_set_20260617.jsonl",
+      "sha256": "134a451ef34b7d8edc6895ca8e42d6d6481ae4812e7cc7430ed3f5d4e9e8d3b6"
+    },
+    {
+      "exists": true,
+      "line_count": 11,
+      "path": "product_data/telegram_dynamic_test_sets/targeted_riskzones_2026_05_26.jsonl",
+      "sha256": "4da381b2549f099f62d2fa44e2aa63816e168f976a27d95a24a64cca32d1bbba"
+    },
+    {
+      "exists": true,
+      "line_count": 14,
+      "path": "product_data/telegram_dynamic_test_sets/reliable_answerer_step1_20260625.jsonl",
+      "sha256": "8d908ca9c2b8b2a10c4173e89ddae53cbfe9ec0e2daabce92a47465836742d4a"
+    },
+    {
+      "exists": true,
+      "line_count": 22,
+      "path": "product_data/telegram_dynamic_test_sets/closing_fix_tz142_20260627.jsonl",
+      "sha256": "ca18d1f6b002422a267a5d83fb4dd0940a8a96392718b8d5c25158293be9910f"
+    },
+    {
+      "exists": true,
+      "line_count": 28,
+      "path": "product_data/telegram_dynamic_test_sets/p0_deep_match_tz147_20260618.jsonl",
+      "sha256": "db90649ae916cf1946b5b49ebe195a7b3924995d1f87ed05a0cd3c2fee5858dc"
+    }
+  ],
+  "generated_at": "2026-06-30T12:22:50+00:00",
+  "moratorium": "Новый провал понимания добавляется как eval-case; не добавлять новый детектор/SAFE_TEXT/флаг без ADR/review.",
+  "schema_version": "adr003_semantic_frame_baseline_v1_2026_06_30",
+  "wappi_brand_counts": {
+    "foton": 11,
+    "unpk": 14
+  },
+  "wappi_latest25_selected": 25,
+  "wappi_route_counts": {
+    "bot_answer_self_for_pilot": 12,
+    "draft_for_manager": 10,
+    "manager_only": 3
+  },
+  "wappi_safety_flag_counts": {
+    "authoritative_gate:unconfirmed_schedule": 3,
+    "authoritative_gate:wrong_intent_fact": 3,
+    "authoritative_output_gate_blocked": 6,
+    "autonomy_blocked_high_risk": 2,
+    "autonomy_default_cautious_live_status_missing": 2,
+    "autonomy_default_cautious_missing_facts": 2,
+    "autonomy_default_cautious_unverified_fact": 12,
+    "autonomy_matrix_passed": 6,
+    "autonomy_matrix_promoted_safe_draft": 4,
+    "autonomy_verified_fact_answer_template_applied": 2,
+    "conversation_intent_plan_answer_first": 7,
+    "conversation_intent_plan_live_availability": 2,
+    "conversation_intent_plan_topic_applied": 24,
+    "direct_p0_text_hygiene": 3,
+    "direct_path_autonomy_topic_from_plan": 2,
+    "direct_path_gate_text_preserved": 6,
+    "direct_path_model": 24,
+    "direct_path_model_p0_paid_operation_context": 1,
+    "direct_path_model_p0_refund": 2,
+    "direct_path_preblocked_p0": 1,
+    "direct_path_reliable_answerer_bypass_payment_dispute": 1,
+    "draft_only": 24,
+    "high_risk_manager_only": 2,
+    "manager_approval_required": 25,
+    "no_auto_send": 25,
+    "output_sanitizer:client_name_echo": 3,
+    "output_sanitizer_applied": 3,
+    "paid_operation_context": 1,
+    "prose_model_led:internal_client_placeholder": 2,
+    "prose_model_led:repeated_cosmetic_opening": 1,
+    "refund": 2,
+    "reliable_answerer_live_status_partial_preserved": 1,
+    "semantic_output_verifier_regenerated_for_manager": 5,
+    "tone_close_detect": 7
+  },
+  "wappi_status_counts": {
+    "drafted": 25
+  },
+  "whatif_drafted_rows": 25,
+  "whatif_rows_total": 154,
+  "whatif_source": "/Users/dmitrijfabarisov/.mango_local/draft_loop_whatif/pair_missing_72h_latest25_20260630T080125Z/whatif_results.jsonl",
+  "whatif_source_sha256": "45bbc9704cb05ff2c98ad95c422efda499f29e6c57c904db57ee323e29942fa3"
+}

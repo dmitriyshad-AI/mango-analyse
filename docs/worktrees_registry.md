@@ -21,6 +21,7 @@
 | `codex/tz1-telegram-aprel` | `/Users/dmitrijfabarisov/Projects/Mango_tz1_telegram_aprel` | ТЗ-1 ingest апрельского Telegram-экспорта в тестовую customer_timeline | 0 | 2026-06-28 | Зарегистрировано для preflight D4; не трогать другие worktree |
 | `codex/tz139-customer-timeline` | `/Users/dmitrijfabarisov/Projects/Mango_tz139_customer_timeline` | TZ139 customer_timeline Step 0 + Work A | 0 | 2026-06-25 | Жива до ревью Work A; потом решать Work B |
 | `codex/tz135-direct-wow-tone` | `/Users/dmitrijfabarisov/Projects/Mango analyse` | TZ135 direct wow tone, основная папка сейчас не main | 4 | 2026-06-25 | Зарегистрировано для preflight; судьбу ветки решить отдельно |
+| `codex/wappi-controlled-watch-observe` | `/Users/dmitrijfabarisov/Projects/Mango_wappi_controlled_watch_observe` | Wappi observe / controlled watch, отдельная наблюдательная петля | н/д | 2026-06-30 | Живая наблюдательная ветка; не трогать в ТЗ-153 |
 | `codex/tz133-handoff-closing-metric` | `/Users/dmitrijfabarisov/Projects/Mango_tz133_handoff_closing` | TZ133 handoff closing metric | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
 | `codex/tz137-adr002-direct-slots-fallback` | `/Users/dmitrijfabarisov/Projects/Mango_tz137_behavior_measure` | TZ137 ADR002 direct slots fallback | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |
 | `codex/tz138-analyze-sweep` | `/Users/dmitrijfabarisov/Projects/Mango_tz138_analyze_sweep` | TZ138 analyze sweep | 1 | 2026-06-25 | Зарегистрировано для preflight; решить отдельно |

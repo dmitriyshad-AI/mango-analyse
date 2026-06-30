@@ -1602,6 +1602,11 @@ def build_turn_rows(transcripts: Sequence[Mapping[str, Any]]) -> list[Mapping[st
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "bot_semantic_frame": json.dumps(
+                        turn.get("bot_semantic_frame") or {},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "bot_semantic_output_verifier": json.dumps(
                         turn.get("bot_semantic_output_verifier") or {},
                         ensure_ascii=False,
@@ -1815,6 +1820,11 @@ def run_one_dialog(
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
             else {}
         )
+        semantic_frame_metadata = (
+            dict(result.metadata.get("semantic_frame_shadow") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("semantic_frame_shadow"), Mapping)
+            else {}
+        )
         if not humanity_x2_metadata and (
             bool(dialogue_contract_metadata.get("warmed"))
             or bool(dialogue_contract_metadata.get("warmth_attempted"))
@@ -1893,6 +1903,8 @@ def run_one_dialog(
         }
         if answerability_trace_metadata:
             turn["bot_answerability_trace"] = answerability_trace_metadata
+        if semantic_frame_metadata:
+            turn["bot_semantic_frame"] = semantic_frame_metadata
         if _handoff_trace_enabled():
             turn["handoff_trace"] = _handoff_trace_for_turn(turn)
         turns.append(turn)
@@ -3268,6 +3280,7 @@ def build_summary(
     semantic_output_verifier = _semantic_output_verifier_summary(transcripts)
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     answerability_trace = _answerability_trace_summary(transcripts)
+    semantic_frame = _semantic_frame_summary(transcripts)
     config_validity = _direct_path_config_invalid(
         transcripts,
         persona_order={str(dialog.get("dialog_id") or ""): index for index, dialog in enumerate(transcripts)},
@@ -3394,6 +3407,7 @@ def build_summary(
         "semantic_output_verifier": semantic_output_verifier,
         "fact_retrieval_trace": fact_retrieval_trace,
         **({"answerability_trace": answerability_trace} if int(answerability_trace.get("turn_count") or 0) else {}),
+        **({"semantic_frame": semantic_frame} if int(semantic_frame.get("turn_count") or 0) else {}),
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
@@ -3657,6 +3671,103 @@ def _answerability_trace_summary(transcripts: Sequence[Mapping[str, Any]]) -> Ma
         "semantic_actions": dict(semantic_actions),
         "gate_findings": dict(gate_findings),
         "self_can_answer": dict(self_can_answer),
+        "examples": examples,
+    }
+
+
+def _semantic_frame_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    risk_classes: Counter[str] = Counter()
+    deal_stages: Counter[str] = Counter()
+    payment_readiness: Counter[str] = Counter()
+    requested_actions: Counter[str] = Counter()
+    answerability: Counter[str] = Counter()
+    must_handoff: Counter[str] = Counter()
+    manager_review_alignment: Counter[str] = Counter()
+    p0_manager_only_alignment: Counter[str] = Counter()
+    detector_mismatches: list[Mapping[str, Any]] = []
+    examples: list[Mapping[str, Any]] = []
+    total = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            frame = turn.get("bot_semantic_frame")
+            if not isinstance(frame, Mapping) or not frame:
+                continue
+            total += 1
+            route = str(turn.get("bot_route") or "").strip()
+            frame_must_handoff = bool(frame.get("must_handoff"))
+            actual_manager_review = route in {"manager_only", "draft_for_manager"}
+            actual_manager_only = route == "manager_only"
+            manager_review_alignment["match" if frame_must_handoff == actual_manager_review else "mismatch"] += 1
+            p0_manager_only_alignment["match" if frame_must_handoff == actual_manager_only else "mismatch"] += 1
+            if frame_must_handoff:
+                must_handoff["true"] += 1
+            else:
+                must_handoff["false"] += 1
+            risk = str(frame.get("risk_class") or "").strip()
+            deal = str(frame.get("deal_stage") or "").strip()
+            payment = str(frame.get("payment_readiness") or "").strip()
+            action = str(frame.get("requested_action") or "").strip()
+            answerability_value = str(frame.get("answerability") or "").strip()
+            if risk:
+                risk_classes[risk] += 1
+            if deal:
+                deal_stages[deal] += 1
+            if payment:
+                payment_readiness[payment] += 1
+            if action:
+                requested_actions[action] += 1
+            if answerability_value:
+                answerability[answerability_value] += 1
+            action_decision = turn.get("bot_action_decision") if isinstance(turn.get("bot_action_decision"), Mapping) else {}
+            intent_plan = turn.get("bot_conversation_intent_plan") if isinstance(turn.get("bot_conversation_intent_plan"), Mapping) else {}
+            close_detect = turn.get("bot_close_detect") if isinstance(turn.get("bot_close_detect"), Mapping) else {}
+            mismatch = frame_must_handoff != actual_manager_review
+            if mismatch and len(detector_mismatches) < 100:
+                detector_mismatches.append(
+                    {
+                        "dialog_id": str(dialog.get("dialog_id") or ""),
+                        "turn": turn.get("turn"),
+                        "brand": str(dialog.get("brand") or ""),
+                        "route": route,
+                        "semantic_must_handoff": frame_must_handoff,
+                        "semantic_intent": str(frame.get("intent") or ""),
+                        "semantic_risk_class": risk,
+                        "intent_plan_primary": str(intent_plan.get("primary_intent") or ""),
+                        "action_decision": str(action_decision.get("action") or ""),
+                        "close_detect_close": bool(close_detect.get("is_close_message")),
+                    }
+                )
+            if len(examples) < 50:
+                examples.append(
+                    {
+                        "dialog_id": str(dialog.get("dialog_id") or ""),
+                        "turn": turn.get("turn"),
+                        "brand": str(dialog.get("brand") or ""),
+                        "route": route,
+                        "intent": str(frame.get("intent") or ""),
+                        "risk_class": risk,
+                        "deal_stage": deal,
+                        "payment_readiness": payment,
+                        "requested_action": action,
+                        "answerability": answerability_value,
+                        "must_handoff": frame_must_handoff,
+                        "confidence": frame.get("confidence"),
+                    }
+                )
+    return {
+        "schema_version": "semantic_frame_shadow_summary_v1_2026_06_30",
+        "turn_count": total,
+        "risk_classes": dict(risk_classes),
+        "deal_stages": dict(deal_stages),
+        "payment_readiness": dict(payment_readiness),
+        "requested_actions": dict(requested_actions),
+        "answerability": dict(answerability),
+        "must_handoff": dict(must_handoff),
+        "manager_review_alignment": dict(manager_review_alignment),
+        "p0_manager_only_alignment": dict(p0_manager_only_alignment),
+        "detector_mismatches": detector_mismatches,
         "examples": examples,
     }
 

@@ -108,6 +108,8 @@ P0_MODEL_CLASSES_V2_ENV = "TELEGRAM_P0_MODEL_CLASSES_V2"
 
 SEMANTIC_FRAME_SHADOW_ENV = "TELEGRAM_SEMANTIC_FRAME_SHADOW"
 
+PAYMENT_REFUND_DISPUTE_SPLIT_ENV = "TELEGRAM_PAYMENT_REFUND_DISPUTE_SPLIT"
+
 BOT_SAFE_CRM_CONTEXT_ENV = "TELEGRAM_BOT_SAFE_CRM_CONTEXT"
 
 RETRIEVER_NEED_DECLARATION_SCHEMA_VERSION = "retriever_need_declaration_v1_2026_06_15"
@@ -313,6 +315,13 @@ def _semantic_frame_shadow_enabled(context: Optional[Mapping[str, Any]] = None) 
         context,
         SEMANTIC_FRAME_SHADOW_ENV,
         aliases=("semantic_frame_shadow", "semantic_frame_shadow_enabled"),
+    )
+
+def _payment_refund_dispute_split_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:
+    return _default_off_flag_enabled(
+        context,
+        PAYMENT_REFUND_DISPUTE_SPLIT_ENV,
+        aliases=("payment_refund_dispute_split", "payment_refund_dispute_split_enabled"),
     )
 
 def _direct_path_known_slots_next_step_prompt_enabled(context: Optional[Mapping[str, Any]] = None) -> bool:

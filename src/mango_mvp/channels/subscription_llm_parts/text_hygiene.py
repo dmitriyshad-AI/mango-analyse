@@ -6,7 +6,11 @@ from typing import Any, Mapping, Optional
 
 from mango_mvp.channels.p0_recall_spec import is_benign_hypothetical_refund
 from mango_mvp.channels.subscription_llm_parts.contracts import SubscriptionDraftResult
-from mango_mvp.channels.subscription_llm_parts.direct_path import _direct_p0_text_hygiene_enabled
+from mango_mvp.channels.subscription_llm_parts.direct_path import (
+    _direct_p0_text_hygiene_enabled,
+    _payment_refund_dispute_split_enabled,
+)
+from mango_mvp.channels.subscription_llm_parts.policy_routing import PAYMENT_LINK_SAFE_TEXT
 
 
 _P0_HYGIENE_KINDS = frozenset(
@@ -96,8 +100,8 @@ def scrub_direct_path_p0_text(
     if not _direct_path_p0_text_needs_scrub(result.draft_text):
         return result
 
-    kind = _direct_path_p0_hygiene_kind(result, client_message=client_message)
-    safe_text = _direct_path_p0_safe_text(kind)
+    kind = _direct_path_p0_hygiene_kind(result, context=context, client_message=client_message)
+    safe_text = _direct_path_p0_safe_text(kind, context=context)
     metadata = dict(result.metadata)
     metadata["direct_p0_text_hygiene"] = {
         "applied": True,
@@ -125,7 +129,9 @@ def _direct_path_p0_text_hygiene_applies(
 ) -> bool:
     if _is_benign_presale_refund_question(client_message) and not _manager_high_risk_signal(result):
         return False
-    kind = _direct_path_p0_hygiene_kind(result, client_message=client_message)
+    kind = _direct_path_p0_hygiene_kind(result, context=context, client_message=client_message)
+    if kind == "forward_payment":
+        return True
     if kind in _P0_HYGIENE_KINDS:
         return True
     flags = {str(flag or "").strip().casefold() for flag in result.safety_flags}
@@ -186,7 +192,12 @@ def _manager_high_risk_signal(result: SubscriptionDraftResult) -> bool:
     )
 
 
-def _direct_path_p0_hygiene_kind(result: SubscriptionDraftResult, *, client_message: str = "") -> str:
+def _direct_path_p0_hygiene_kind(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+    client_message: str = "",
+) -> str:
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     for key in ("direct_path_model_p0",):
         value = metadata.get(key)
@@ -201,6 +212,8 @@ def _direct_path_p0_hygiene_kind(result: SubscriptionDraftResult, *, client_mess
     for kind in ("payment_dispute", "refund", "complaint", "legal_threat", "legal"):
         if kind in flags or f"direct_path_model_p0_{kind}" in flags:
             return kind
+    if _semantic_frame_payment_class(result, context=context) == "forward_payment":
+        return "forward_payment"
     text = str(client_message or "").casefold().replace("ё", "е")
     if re.search(r"\b(?:списал|платеж|платежн|чек|квитанц|оплата\s+прошла|деньги\s+списал)\b", text):
         return "payment_dispute"
@@ -226,6 +239,54 @@ def _normalize_p0_hygiene_kind(value: object) -> str:
     return _P0_HYGIENE_LEGACY_KIND.get(kind, kind)
 
 
+def _semantic_frame_payment_class(result: SubscriptionDraftResult, *, context: Optional[Mapping[str, Any]] = None) -> str:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    if not _payment_refund_dispute_split_enabled(context):
+        return ""
+    if str(result.route or "") == "manager_only":
+        return ""
+    direct = metadata.get("direct_path") if isinstance(metadata.get("direct_path"), Mapping) else {}
+    frame = metadata.get("semantic_frame_shadow")
+    if not isinstance(frame, Mapping):
+        frame = direct.get("semantic_frame_shadow") if isinstance(direct.get("semantic_frame_shadow"), Mapping) else {}
+    if not isinstance(frame, Mapping) or not frame:
+        return ""
+    risk = str(frame.get("risk_class") or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    requested_action = str(frame.get("requested_action") or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    readiness = str(frame.get("payment_readiness") or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    frame_forward = requested_action == "send_payment_link" or readiness in {
+        "ready",
+        "ready_to_pay",
+        "pay_now",
+        "wants_to_pay",
+    }
+    if not frame_forward:
+        return ""
+    if risk in {
+        "p0",
+        "high",
+        "critical",
+        "high_risk",
+        "refund",
+        "refund_claim",
+        "payment_dispute",
+        "dispute",
+        "complaint",
+        "legal",
+        "legal_threat",
+    }:
+        return ""
+    action_decision = metadata.get("action_decision") if isinstance(metadata.get("action_decision"), Mapping) else {}
+    if action_decision:
+        action = str(action_decision.get("action") or "").strip().casefold()
+        if action != "send_payment_link":
+            return ""
+        if action_decision.get("no_live_execution") is False:
+            return ""
+        return "forward_payment"
+    return "forward_payment"
+
+
 def _direct_path_p0_text_needs_scrub(text: str) -> bool:
     value = str(text or "")
     return bool(
@@ -236,13 +297,17 @@ def _direct_path_p0_text_needs_scrub(text: str) -> bool:
     )
 
 
-def _direct_path_p0_safe_text(kind: str) -> str:
+def _direct_path_p0_safe_text(kind: str, *, context: Optional[Mapping[str, Any]] = None) -> str:
+    if kind == "forward_payment":
+        return PAYMENT_LINK_SAFE_TEXT
     if kind == "cancellation_service_request":
         return "Передам вопрос менеджеру: он проверит вашу запись и подскажет безопасный порядок действий."
     if kind == "payment_dispute":
         return "По оплате нужно сверить данные в системе. Передам вопрос менеджеру: он проверит ситуацию и ответит по точным данным."
     if kind in {"complaint", "legal_threat", "legal"}:
         return "Такой вопрос нужно проверить вручную. Передам его менеджеру, чтобы он сверил документы и ответил по точным данным."
+    if _payment_refund_dispute_split_enabled(context):
+        return "Такой вопрос нужно проверить вручную. Передам его менеджеру, чтобы он сверил ситуацию и ответил по точным данным."
     return (
         "По возврату точную сумму и порядок действий должен подтвердить менеджер. "
         "Передам ему ваш вопрос, чтобы он проверил ситуацию по данным записи и оплаты."

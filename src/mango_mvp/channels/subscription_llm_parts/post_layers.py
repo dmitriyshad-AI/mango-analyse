@@ -1063,7 +1063,7 @@ def _rules_engine_result_applied(metadata: Mapping[str, Any]) -> bool:
 
 def _direct_path_p0_text(reason: str, context: Optional[Mapping[str, Any]]) -> tuple[str, str]:
     lowered = str(reason or "").casefold()
-    if "payment" in lowered or "спис" in lowered or "оплат" in lowered:
+    if "payment_dispute" in lowered or "payment dispute" in lowered or "спис" in lowered or "chargeback" in lowered:
         return _p0_text_with_antirepeat("payment_dispute", PAYMENT_DISPUTE_SAFE_TEXT, context), "payment_dispute"
     if "refund" in lowered or "возврат" in lowered:
         return _p0_text_with_antirepeat("refund", REFUND_ZERO_COLLECT_SAFE_TEXT, context), "refund"
@@ -1168,7 +1168,7 @@ def _direct_path_preblocked_result(
     if reliable_answerer_step1_enabled(context):
         reliable_bypass_reason = reliable_answerer_step1_bypass_reason(client_message, context=context)
         if reliable_bypass_reason == "p0":
-            text, kind = _direct_path_p0_text("payment", context)
+            text, kind = _direct_path_p0_text("payment_dispute", context)
             meta = _direct_path_metadata(
                 attempted=True,
                 model_called=False,

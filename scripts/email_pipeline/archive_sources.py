@@ -167,11 +167,14 @@ def load_archive_messages(
         return output
 
 
-def read_text(path: Path | None, *, limit: int = 10000) -> str:
+def read_text(path: Path | None, *, limit: int | None = 10000) -> str:
     if not path or not path.exists():
         return ""
     try:
-        return path.read_text(encoding="utf-8", errors="ignore")[:limit]
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if limit is None:
+            return text
+        return text[:limit]
     except Exception:
         return ""
 
@@ -196,4 +199,3 @@ def check_prod_timeline_readonly(prod_db: Path) -> dict[str, object]:
         "mtime_unchanged": before.st_mtime == after.st_mtime,
         "size_unchanged": before.st_size == after.st_size,
     }
-

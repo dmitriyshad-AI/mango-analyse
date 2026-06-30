@@ -12,10 +12,12 @@ from typing import Any
 
 
 RE_EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.I)
-RE_PHONE = re.compile(r"(?:\+?\d[\s().-]*){7,}\d")
-RE_LONG_NUMBER = re.compile(r"\b\d{4,}\b")
+RE_PHONE_FULL = re.compile(
+    r"(?<!\d)(?:\+7|8)\s*\(?\d{3,4}\)?[\s.-]*\d{2,3}[\s.-]*\d{2}[\s.-]*\d{2}(?!\d)|"
+    r"(?<!\d)7[\s.-]+\(?\d{3,4}\)?[\s.-]+\d{2,3}[\s.-]+\d{2}[\s.-]+\d{2}(?!\d)"
+)
 RE_TELEGRAM = re.compile(r"@\w{4,}")
-RE_PHONE_FRAGMENT = re.compile(r"\b\d{2,3}[-\s]\d{2}[-\s]\d{2}\b")
+RE_PHONE_FRAGMENT = re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{2}\b")
 RE_RU_SURNAME_INITIALS = re.compile(r"\b[А-ЯЁ][а-яё-]{2,}\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.")
 RE_RU_NAME_PAIR = re.compile(r"\b[А-ЯЁ][а-яё]{2,}\s+[А-ЯЁ][а-яё]{2,}\b")
 RE_LATIN_NAME_PAIR = re.compile(r"\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b")
@@ -50,7 +52,7 @@ class SummaryResult:
     reasoning: str
 
 
-def clean_body(text: str, *, limit: int = 2600) -> str:
+def clean_body(text: str, *, limit: int | None = None) -> str:
     if not text:
         return ""
     lines: list[str] = []
@@ -63,16 +65,18 @@ def clean_body(text: str, *, limit: int = 2600) -> str:
         if FOOTER_HINT.search(stripped) and len("\n".join(lines)) > 120:
             break
         lines.append(line)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()[:limit]
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    if limit is not None:
+        return cleaned[:limit]
+    return cleaned
 
 
 def mask_pii(text: str) -> str:
     value = (text or "").replace("&nbsp;", " ")
     value = RE_EMAIL.sub("[email]", value)
-    value = RE_PHONE.sub("[phone]", value)
+    value = RE_PHONE_FULL.sub("[phone]", value)
     value = RE_PHONE_FRAGMENT.sub("[phone]", value)
     value = RE_TELEGRAM.sub("[handle]", value)
-    value = RE_LONG_NUMBER.sub("[number]", value)
     value = RE_RU_SURNAME_INITIALS.sub("[name]", value)
     value = RE_RU_NAME_PAIR.sub("[name]", value)
     value = RE_LATIN_NAME_PAIR.sub("[name]", value)
@@ -103,42 +107,106 @@ def summarize_items(
         if llm_calls >= max_llm_calls:
             raise RuntimeError(f"LLM call limit exceeded: {llm_calls} >= {max_llm_calls}")
         batch = items[offset : offset + batch_size]
-        prompt = build_summary_prompt(batch)
-        if resolved_provider == "openai":
-            payload = _call_openai_json(prompt, model=model, reasoning=reasoning, timeout_sec=timeout_sec)
-        elif resolved_provider == "codex_cli":
-            payload = _call_codex_json(
-                prompt,
+        payload = _call_summary_provider(
+            batch,
+            provider=resolved_provider,
+            model=model,
+            reasoning=reasoning,
+            project_root=project_root,
+            codex_home=codex_home,
+            timeout_sec=timeout_sec,
+        )
+        llm_calls += 1
+        expected = {item.message_sha256 for item in batch}
+        for row in _extract_summaries(payload, expected=expected, require_complete=False):
+            summaries[str(row["message_sha256"])] = _normalize_summary_row(row)
+        missing = expected - summaries.keys()
+        for item in batch:
+            if item.message_sha256 not in missing:
+                continue
+            if llm_calls >= max_llm_calls:
+                raise RuntimeError(f"LLM call limit exceeded while repairing missing summaries: {llm_calls} >= {max_llm_calls}")
+            repair_payload = _call_summary_provider(
+                [item],
+                provider=resolved_provider,
                 model=model,
                 reasoning=reasoning,
                 project_root=project_root,
                 codex_home=codex_home,
                 timeout_sec=timeout_sec,
             )
-        elif resolved_provider == "stub":
-            payload = {
-                "summaries": [
-                    {
-                        "message_sha256": item.message_sha256,
-                        "summary": "Тестовая заглушка сводки.",
-                        "topic": "stub",
-                        "next_step": None,
-                        "confidence": 0.0,
-                    }
-                    for item in batch
-                ]
-            }
-        else:
-            raise RuntimeError(f"Unsupported summary provider: {resolved_provider}")
-        llm_calls += 1
-        for row in _extract_summaries(payload, expected={item.message_sha256 for item in batch}):
-            row = dict(row)
-            row["summary"] = mask_pii(str(row.get("summary") or "")).strip()
-            row["topic"] = mask_pii(str(row.get("topic") or "")).strip()
-            next_step = row.get("next_step")
-            row["next_step"] = mask_pii(str(next_step)).strip() if next_step not in (None, "") else None
-            summaries[str(row["message_sha256"])] = row
+            llm_calls += 1
+            for row in _extract_summaries(repair_payload, expected={item.message_sha256}, require_complete=True):
+                summaries[str(row["message_sha256"])] = _normalize_summary_row(row)
     return SummaryResult(summaries, llm_calls, resolved_provider, model, reasoning)
+
+
+def _call_summary_provider(
+    batch: list[SummaryItem],
+    *,
+    provider: str,
+    model: str,
+    reasoning: str,
+    project_root: Path,
+    codex_home: Path | None,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    prompt = build_summary_prompt(batch)
+    if provider == "openai":
+        return _call_openai_json(prompt, model=model, reasoning=reasoning, timeout_sec=timeout_sec)
+    if provider == "codex_cli":
+        return _call_codex_json(
+            prompt,
+            model=model,
+            reasoning=reasoning,
+            project_root=project_root,
+            codex_home=codex_home,
+            timeout_sec=timeout_sec,
+        )
+    if provider == "stub":
+        return {
+            "summaries": [
+                {
+                    "message_sha256": item.message_sha256,
+                    "summary": "Тестовая заглушка сводки.",
+                    "topic": "stub",
+                    "next_step": None,
+                    "confidence": 0.0,
+                }
+                for item in batch
+            ]
+        }
+    raise RuntimeError(f"Unsupported summary provider: {provider}")
+
+
+def _normalize_summary_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    normalized["summary"] = _humanize_mask_tokens(str(normalized.get("summary") or "").strip())
+    normalized["topic"] = _humanize_mask_tokens(str(normalized.get("topic") or "").strip())
+    next_step = normalized.get("next_step")
+    normalized["next_step"] = _humanize_mask_tokens(str(next_step).strip()) if next_step not in (None, "") else None
+    return normalized
+
+
+def _humanize_mask_tokens(text: str) -> str:
+    return (
+        (text or "")
+        .replace("[phone]", "телефон")
+        .replace("[Phone]", "телефон")
+        .replace("[PHONE]", "телефон")
+        .replace("[number]", "число")
+        .replace("[Number]", "число")
+        .replace("[NUMBER]", "число")
+        .replace("[email]", "email")
+        .replace("[Email]", "email")
+        .replace("[EMAIL]", "email")
+        .replace("[name]", "имя")
+        .replace("[Name]", "имя")
+        .replace("[NAME]", "имя")
+        .replace("[handle]", "контакт")
+        .replace("[Handle]", "контакт")
+        .replace("[HANDLE]", "контакт")
+    )
 
 
 def build_summary_prompt(items: list[SummaryItem]) -> str:
@@ -150,8 +218,8 @@ def build_summary_prompt(items: list[SummaryItem]) -> str:
                 "direction": item.direction,
                 "brand": item.brand,
                 "brand_source": item.brand_source,
-                "subject": mask_pii(item.subject)[:500],
-                "body": mask_pii(clean_body(item.body))[:2400],
+                "subject": mask_pii(item.subject)[:800],
+                "body": mask_pii(clean_body(item.body, limit=6000)),
             }
         )
     return (
@@ -159,10 +227,16 @@ def build_summary_prompt(items: list[SummaryItem]) -> str:
         "Верни строго JSON object с ключом summaries. Не используй markdown. "
         "На каждый входной message_sha256 верни одну сводку. "
         "Не выдумывай факты, суммы, бренды и следующие шаги. "
-        "Если brand='none', не называй Фотон, УНПК, МФТИ или Физтех в summary/topic/next_step. "
-        "Не возвращай телефоны, e-mail, ФИО, адреса или номера документов; если встретились, замени смысловым описанием. "
+        "Если brand='none', не называй Фотон, УНПК, МФТИ, Физтех, cdpofoton.ru, kmipt.ru или другие бренд-домены "
+        "в summary/topic/next_step; вместо этого пиши нейтрально 'ссылка' или 'сайт'. "
+        "Ключевое: сохраняй конкретику из письма. Не заменяй время, расписание, цену, дату, учебный год, класс, курс или группу "
+        "общими словами вроде 'указанное расписание', 'указанная стоимость', 'данное время'. "
+        "Если в письме есть 'Воскресенье 10:50-12:30', '2025-2026 уч.г.', '126 000 руб.', '8 класс' или название группы, "
+        "перенеси эту конкретику в summary/next_step, если она относится к сути письма. "
+        "ПДн во входе уже скрыты маркерами, не восстанавливай и не выдумывай их; не уничтожай учебные числа, даты, время, цены и группы. "
         "Схема каждой строки: {message_sha256, summary, topic, next_step, confidence}. "
-        "summary: 1-2 коротких предложения по-русски; topic: 2-6 слов; next_step: строка или null; confidence: 0..1.\n\n"
+        "summary: 2-4 предложения по-русски, с фактами и конкретными значениями; topic: 2-8 слов; "
+        "next_step: конкретный следующий шаг или null; confidence: 0..1.\n\n"
         + json.dumps({"emails": records}, ensure_ascii=False)
     )
 
@@ -281,7 +355,7 @@ def _call_codex_json(
     raise RuntimeError(f"codex exec returned no JSON; rc={proc.returncode}; stderr_tail={stderr_tail[0]}")
 
 
-def _extract_summaries(payload: dict[str, Any], *, expected: set[str]) -> list[dict[str, Any]]:
+def _extract_summaries(payload: dict[str, Any], *, expected: set[str], require_complete: bool = True) -> list[dict[str, Any]]:
     rows = payload.get("summaries")
     if not isinstance(rows, list):
         raise RuntimeError("summary payload must contain summaries list")
@@ -295,7 +369,7 @@ def _extract_summaries(payload: dict[str, Any], *, expected: set[str]) -> list[d
             seen.add(sha)
             output.append(row)
     missing = expected - seen
-    if missing:
+    if missing and require_complete:
         raise RuntimeError(f"summary payload missing {len(missing)} message_sha256 values")
     return output
 

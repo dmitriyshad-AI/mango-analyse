@@ -1,4 +1,5 @@
 from scripts.email_pipeline.brand import infer_email_brand
+from scripts.email_pipeline.summary import mask_pii
 
 
 def test_brand_uses_explicit_content_words() -> None:
@@ -27,3 +28,10 @@ def test_dates_are_last_resort_signal() -> None:
     assert infer_email_brand("", "смена 20-28 июня").brand == "foton"
     assert infer_email_brand("", "период 15-25 августа").brand == "unpk"
 
+
+def test_mask_pii_handles_html_phone_fragments() -> None:
+    masked = mask_pii("8 (800)&nbsp;123-45-67 hello@example.com")
+    assert "123-45-67" not in masked
+    assert "hello@example.com" not in masked
+    assert "[phone]" in masked
+    assert "[email]" in masked

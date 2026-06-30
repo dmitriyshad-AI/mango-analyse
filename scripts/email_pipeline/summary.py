@@ -15,6 +15,7 @@ RE_EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.I)
 RE_PHONE = re.compile(r"(?:\+?\d[\s().-]*){7,}\d")
 RE_LONG_NUMBER = re.compile(r"\b\d{4,}\b")
 RE_TELEGRAM = re.compile(r"@\w{4,}")
+RE_PHONE_FRAGMENT = re.compile(r"\b\d{2,3}[-\s]\d{2}[-\s]\d{2}\b")
 RE_RU_NAME_PAIR = re.compile(r"\b[А-ЯЁ][а-яё]{2,}\s+[А-ЯЁ][а-яё]{2,}\b")
 RE_LATIN_NAME_PAIR = re.compile(r"\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b")
 RE_GREETING_NAME = re.compile(r"(^|\n)(\s*)[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,})?\s*,")
@@ -65,8 +66,10 @@ def clean_body(text: str, *, limit: int = 2600) -> str:
 
 
 def mask_pii(text: str) -> str:
-    value = RE_EMAIL.sub("[email]", text or "")
+    value = (text or "").replace("&nbsp;", " ")
+    value = RE_EMAIL.sub("[email]", value)
     value = RE_PHONE.sub("[phone]", value)
+    value = RE_PHONE_FRAGMENT.sub("[phone]", value)
     value = RE_TELEGRAM.sub("[handle]", value)
     value = RE_LONG_NUMBER.sub("[number]", value)
     value = RE_RU_NAME_PAIR.sub("[name]", value)

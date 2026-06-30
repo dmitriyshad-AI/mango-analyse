@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build a tracked-file ``mango_clean_<sha>`` bundle with a final manifest."""
+"""Build a tracked-file ``mango_clean_<sha>`` bundle with a final manifest.
+
+Deprecated for routine M1 evals since TZ-155: use ``build_job_manifest.py`` and
+git checkout instead. This script remains as an explicit heavy fallback only.
+"""
 
 from __future__ import annotations
 
@@ -92,11 +96,23 @@ def build_bundle(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build mango_clean bundle with manifest.json written last.")
+    parser.add_argument(
+        "--allow-heavy-bundle",
+        action="store_true",
+        help="Required fallback guard: this copies all tracked files and can create a very large bundle.",
+    )
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--out-root", type=Path, default=DEFAULT_TESTS_ROOT)
     parser.add_argument("--kb-snapshot", default=DEFAULT_KB_SNAPSHOT)
     parser.add_argument("--info-line", action="append", default=[], help="Extra BUNDLE_INFO.txt line, written before manifest.")
     args = parser.parse_args(argv)
+    if not args.allow_heavy_bundle:
+        print(
+            "Refusing heavy bundle build by default. Use scripts/build_job_manifest.py for normal M1 evals, "
+            "or pass --allow-heavy-bundle for the explicit fallback.",
+            file=sys.stderr,
+        )
+        return 2
     out_dir = build_bundle(
         args.repo.resolve(),
         args.out_root,

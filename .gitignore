@@ -54,8 +54,12 @@ tmp/
 
 # Local runtime/output artifacts
 .cache/
+.codex/
 .codex_local/
 .codex_workers/
+auth.json
+**/auth.json
+*.env.private
 docs/PROJECT_NOW.md
 docs/_automation_status/
 docs/.preflight_baseline.json

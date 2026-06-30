@@ -4,6 +4,9 @@
 The watcher intentionally accepts only one fixed job shape: deploy a checked
 ``mango_clean_<sha>`` bundle and run ``run_telegram_dynamic_client_sim.py``.
 It does not use LLMs and does not accept arbitrary scripts from task files.
+
+Deprecated for new quick evals since TZ-155. Keep this watcher dormant; the
+current manual path is git fetch/checkout plus ``build_job_manifest.py``.
 """
 
 from __future__ import annotations

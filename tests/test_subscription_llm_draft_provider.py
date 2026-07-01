@@ -132,6 +132,10 @@ from mango_mvp.channels.subscription_llm import (
     known_context_fields,
 )
 from mango_mvp.channels.subscription_llm import apply_high_risk_content_guards
+from mango_mvp.channels.subscription_llm_parts.provider import (
+    _direct_path_semantic_frame_from_payload,
+    build_direct_path_semantic_frame_posthoc_prompt,
+)
 from mango_mvp.channels.dialogue_memory import build_dialogue_memory, update_dialogue_memory_after_answer
 
 
@@ -536,6 +540,58 @@ def test_dialogue_contract_understanding_valid_json_still_parses() -> None:
 
     assert result["answerability"] == "answer_self"
     assert result["current_question"] == "цена"
+
+
+def test_semantic_frame_answerability_uses_frame_enum_not_legacy_yes_no() -> None:
+    frame = _direct_path_semantic_frame_from_payload(
+        {
+            "semantic_frame": {
+                "intent": "price_question",
+                "risk_class": "safe",
+                "answerability": "yes",
+                "must_handoff": False,
+                "confidence": 0.91,
+            }
+        }
+    )
+
+    assert frame["answerability"] == "answer_self"
+
+    frame = _direct_path_semantic_frame_from_payload(
+        {
+            "semantic_frame": {
+                "intent": "payment_confirmation",
+                "risk_class": "manager_action",
+                "answerability": "no",
+                "must_handoff": True,
+                "confidence": 0.9,
+            }
+        }
+    )
+
+    assert frame["answerability"] == "manager_only"
+
+
+def test_semantic_frame_posthoc_prompt_has_strict_answerability_boundary() -> None:
+    prompt = build_direct_path_semantic_frame_posthoc_prompt(
+        SubscriptionDraftResult(
+            route="draft_for_manager",
+            draft_text="Стоимость курса 93 100 рублей. Записаться можно после тестирования.",
+            safety_flags=("manager_approval_required", "no_auto_send"),
+            metadata={"direct_path": {"reason_class": "manager_approval_required"}},
+        ),
+        client_message="Сколько стоит курс?",
+        context={"active_brand": "foton", "recent_messages": []},
+    )
+
+    assert "справочная информация != действие менеджера" in prompt
+    assert "draft_for_manager может быть просто режимом черновика" in prompt
+    assert "если хотя бы часть запроса требует человека" in prompt
+    assert "живое наличие мест или подходящей группы" in prompt
+    assert "сроки или порядок оплаты" in prompt
+    assert "удержание/вычет/списание/отработка/возвратные условия" in prompt
+    assert "answerability=answer_self" in prompt
+    assert "Не используй yes/no" in prompt
 
 
 def test_codex_provider_llm_rewriter_is_feature_flagged(monkeypatch, tmp_path: Path) -> None:

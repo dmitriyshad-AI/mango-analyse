@@ -184,3 +184,36 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold
 - Field accuracy: `risk_class` 37/75, `requested_action` 61/75, `answerability` 1/75.
 
 Вывод Ф1: `SemanticFrame` пока не готов рулить автономией. `too_confident=0` на этой очереди подтверждает безопасную сторону ошибки, но `must_handoff` accuracy низкая, а `answerability` не соблюдает заявленную схему (`yes/no` вместо `answer_self/manager_only` в сохранённых frame). Следующий шаг — улучшать инструкцию/схему и повторять Ф1-калибровку, а не включать Ф2/Ф3 active self-answer gate.
+
+## Phase 1 Prompt Calibration v4
+
+Локальная калибровка 2026-07-01 после исправления enum `answerability` и уточнения границы "safe справка" vs "manager action":
+
+- Code/tests: `src/mango_mvp/channels/subscription_llm_parts/provider.py`, `tests/test_subscription_llm_draft_provider.py`.
+- OFF source: `audits/_inbox/adr003_semantic_frame_enrich_full131_20260701/off/dynamic_dialog_transcripts.jsonl`.
+- ON paired enrichment: `audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/on/`.
+- Gold report: `audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/adr003_frame_gold_calibration_report.json`.
+- Paired report: `audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/adr003_semantic_frame_eval_report.json`.
+- Dialogs/turns: 131 / 241.
+- Route/text diff: 0.
+- ON model calls: 241 total, 241 `bot_semantic_frame_shadow`, 0 non-frame calls.
+- Frame required fields complete: 241 / 241.
+- Gold compared rows: 73 comparable + 2 unclear.
+- `must_handoff` accuracy: `0.9315` (68/73).
+- `too_confident`: `0`.
+- `too_cautious`: `5`.
+- Field accuracy: `answerability` 68/75, `risk_class` 67/75, `requested_action` 62/75.
+- Confidence calibration: bucket `0.90-1.00` = 62 rows / 98.39% `must_handoff` accuracy / 0 `too_confident`; bucket `0.80-0.89` = 11 rows / 63.64% `must_handoff` accuracy / 0 `too_confident` / 4 `too_cautious`.
+
+Что изменилось относительно первой Ф1-калибровки:
+
+| Run | must_handoff accuracy | too_cautious | too_confident | answerability accuracy | risk_class accuracy | requested_action accuracy |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| initial | 0.6027 | 29 | 0 | 0.0133 | 0.4933 | 0.8133 |
+| prompt v2 | 0.8219 | 1 | 12 | 0.8000 | 0.8133 | 0.8267 |
+| prompt v3 | 0.8904 | 5 | 2 | 0.8667 | 0.8533 | 0.8000 |
+| prompt v4 | 0.9315 | 5 | 0 | 0.9067 | 0.8933 | 0.8267 |
+
+Остаточные 5 `too_cautious` строк: safe age/format/address/schedule reference, compare formats/prices without live availability, age suitability without free seats, general discount/benefit explanation, general pedagogical guidance. Это не опасные пропуски, но это всё ещё lost-autonomy и требует регрейда Claude #1 перед Ф2/F3.
+
+Вывод: Ф1 дала сильный безопасный прирост и убрала опасные `too_confident` на gold-75, но это не разрешение включать активный self-answer gate. Следующий допустимый шаг — Ф2 shadow lowering с порогом не ниже confidence `0.90`, class-specific статистикой, freshness checks и отдельным регрейдом. Ф3 active остаётся заблокированной до регрейда Ф2 и решения Дмитрия.

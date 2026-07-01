@@ -2283,6 +2283,17 @@ def _direct_path_answerability_value(value: Any) -> str:
     return text[:40] if text else ""
 
 
+def _direct_path_semantic_frame_answerability_value(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    if text in {"answer_self", "self", "can_answer", "yes", "да", "true", "1"}:
+        return "answer_self"
+    if text in {"manager_only", "manager", "handoff", "no", "нет", "false", "0"}:
+        return "manager_only"
+    if text in {"uncertain", "unknown", "не_уверен", "не уверен", "непонятно"}:
+        return "uncertain"
+    return text[:40] if text else ""
+
+
 def _direct_path_answerability_self_from_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     can_answer_self = _direct_path_answerability_value(payload.get("can_answer_self"))
     missing_facts = _clean_list(payload.get("self_missing_facts"), max_items=12, max_chars=120)
@@ -2351,7 +2362,7 @@ def _direct_path_semantic_frame_from_payload(payload: Mapping[str, Any]) -> dict
         "payment_readiness": _direct_path_semantic_frame_safe_text(raw.get("payment_readiness"), limit=80),
         "requested_product": product,
         "requested_action": _direct_path_semantic_frame_safe_text(raw.get("requested_action"), limit=120),
-        "answerability": _direct_path_answerability_value(raw.get("answerability")),
+        "answerability": _direct_path_semantic_frame_answerability_value(raw.get("answerability")),
         "must_handoff": _direct_path_payload_bool(raw.get("must_handoff")),
         "evidence": [
             safe_item
@@ -2409,6 +2420,13 @@ def build_direct_path_semantic_frame_posthoc_prompt(
         "Нельзя переписывать ответ, менять route, менять safety_flags или предлагать клиентский текст.\n"
         "Оцени смысл ситуации по текущей реплике, истории и уже готовому результату.\n"
         "Верни только JSON с одним ключом semantic_frame.\n\n"
+        "Ключевая граница: справочная информация != действие менеджера.\n"
+        "Ставь must_handoff=false и answerability=answer_self только когда ВЕСЬ запрос является безопасной справкой и финальный черновик уже отвечает по проверенным фактам: публичная цена без индивидуальных условий, адрес, формат, платформа, программа, возраст/класс, общий порядок записи, общий порядок тестирования, пауза клиента «подумаем/вернёмся позже» без слов про оплату/место, благодарность/подтверждение без просьбы что-то оформить.\n"
+        "Ставь must_handoff=true и answerability=manager_only, если хотя бы часть запроса требует человека: P0/жалоба/юридическое/возврат-претензия, подтверждение оплаты или чек, ссылка/реквизиты/альтернативная оплата, сроки или порядок оплаты («оплачу позже/сегодня/завтра»), рассрочка, предоплата, частичный платёж, фиксация цены, удержание/вычет/списание/отработка/возвратные условия, договорные документы, фактическая запись/бронь/лист ожидания/закрепление места, живое наличие мест или подходящей группы, конкретное расписание/доступ «завтра/после оплаты не видно», просьба администратора связаться, персональный подбор преподавателя/группы, индивидуальная ситуация ребёнка после урока/по болезни/по документам, или отсутствует проверенный факт и безопасно ответить нельзя.\n"
+        "Не копируй осторожность из final_route: draft_for_manager может быть просто режимом черновика, а не доказательством, что must_handoff=true.\n"
+        "Не называй known factual answer missing_facts только потому, что есть manager_approval_required/no_auto_send: если в final_draft_text уже есть конкретный проверенный ответ на справочный вопрос, risk_class=safe.\n"
+        "Поле answerability верни строго одним из: answer_self, manager_only, uncertain. Не используй yes/no.\n"
+        "Поле requested_action верни строго одним из перечисленных enum; для благодарности/паузы/получили ссылку используй answer_question, если отдельного действия нет.\n\n"
         "Схема semantic_frame:\n"
         "{\n"
         '  "intent": "главный смысл запроса",\n'

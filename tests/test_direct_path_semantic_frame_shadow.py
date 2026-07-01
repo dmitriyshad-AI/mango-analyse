@@ -152,7 +152,7 @@ def test_direct_path_payload_stores_semantic_frame_shadow_metadata_only() -> Non
             "raw_text": "онлайн-курс физики 7 класс",
         },
         "requested_action": "enroll",
-        "answerability": "yes",
+        "answerability": "answer_self",
         "must_handoff": False,
         "evidence": ["клиент спрашивает про запись без P0, телефон [phone], id [id]"],
         "confidence": 0.91,

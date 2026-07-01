@@ -1,0 +1,19 @@
+{
+  "schema_version": "audit_pack_v1",
+  "created_at": "2026-07-01T23:30:02+03:00",
+  "block": "adr003_frame_prompt_v4_calibration",
+  "base_head": "fdb682d",
+  "phase": "F1",
+  "status": "formal_pass_and_semantic_pass_for_shadow_calibration",
+  "raw_reports": {
+    "gold": "audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/adr003_frame_gold_calibration_report.json",
+    "paired_eval": "audits/_inbox/adr003_frame_prompt_v4_calibration_20260701/adr003_semantic_frame_eval_report.json"
+  },
+  "gates": {
+    "route_text_diff": 0,
+    "too_confident": 0,
+    "must_handoff_accuracy": 0.9315,
+    "full_pytest": "3809 passed, 5 skipped, 1 warning"
+  }
+}
+

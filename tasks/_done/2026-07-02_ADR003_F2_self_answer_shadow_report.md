@@ -23,6 +23,7 @@
 - `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/on/dynamic_dialog_transcripts.jsonl`
 - `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/adr003_semantic_frame_eval_report.json`
 - `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/self_answer_shadow_candidates.csv`
+- `audits/_inbox/adr003_frame_f2_self_shadow_measure_20260702/gold_calibration/adr003_frame_gold_calibration_report.json`
 
 Примечание: для локального enrichment восстановлены `valid_until`/`client_safe` из snapshot по exact fact keys, потому что старый v4 transcript был снят до добавления этих полей в `wide_fact_metadata`.
 
@@ -37,6 +38,15 @@
 - `manager_only_lowered_count`: `0`
 - `freshness_unknown_self_candidates`: `0`
 - Unsafe candidate examples: `0`
+
+Gold-калибровка на Ф2-транскрипте:
+- Gold rows: `79`
+- Compared `must_handoff` rows: `77`
+- `must_handoff_accuracy`: `0.9351`
+- `too_confident`: `0`
+- `too_cautious`: `5`
+- `p0_misses`: `0`
+- confidence bucket `0.90-1.00`: `65/66`, `too_confident=0`
 
 Кандидаты:
 - `rz_foton_offline_price_06` turn 1, `price`
@@ -69,3 +79,5 @@
 - Claude #1 регрейдит 6 candidates по raw transcript.
 - Для более сильного доказательства нужен fresh M1/enrichment run на текущем коде, потому что локальный замер переиспользует v4 frame-транскрипты.
 - Ф3 active можно обсуждать только после регрейда, class-by-class precision и отдельного `да` Дмитрия.
+
+Сырьё и SHA-указатели зафиксированы в `tasks/_done/2026-07-02_ADR003_F2_self_answer_shadow_trace_manifest.md`. Большие raw transcripts остаются локально в `audits/_inbox/`: каталог gitignored, файлы 9-10 МБ и содержат публичные телефоны/почту из ответов бота; без отдельного решения не force-add'ятся в git.

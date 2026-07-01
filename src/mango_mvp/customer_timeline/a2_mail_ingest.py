@@ -30,6 +30,7 @@ from mango_mvp.customer_timeline.ingestion import (
     compact_text,
     customer_identity_from_json,
 )
+from mango_mvp.customer_timeline.canonical_readonly_import import infer_offline_brand
 from mango_mvp.customer_timeline.mail_stage2_ingest import (
     file_sha256,
     write_json,
@@ -120,6 +121,9 @@ class PlannedA2V3MailEvent:
     prod_duplicate_keys: tuple[str, ...] = ()
     bot_visible: bool = False
     bot_gate_reason: str = ""
+    customer_brand: str = "unknown"
+    customer_brand_source: str = "unknown"
+    customer_brand_reason: str = "not_resolved"
 
 
 def ensure_not_prod_apply_path(path: Path) -> None:
@@ -207,7 +211,20 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
         qualified = bool(
             linked_customer_id and snapshot["qualified_by_customer"].get(linked_customer_id, {}).get("qualified")
         )
-        bot_visible, bot_gate_reason = _bot_visibility(row, resolution=resolution, qualified=qualified)
+        customer_brand, customer_brand_source, customer_brand_reason = _resolve_customer_brand(
+            row,
+            resolution=resolution,
+            snapshot=snapshot,
+        )
+        counters[f"customer_brand.{customer_brand}"] += 1
+        if resolution.outcome == "linked" and customer_brand == "unknown":
+            counters[f"linked_customer_brand_unknown.{customer_brand_reason}"] += 1
+        bot_visible, bot_gate_reason = _bot_visibility(
+            row,
+            resolution=resolution,
+            qualified=qualified,
+            customer_brand=customer_brand,
+        )
         counters[f"bot_gate.{bot_gate_reason}"] += 1
         if bot_visible:
             counters["bot_visible"] += 1
@@ -234,6 +251,12 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 source_id=thread_id,
                 title=compact_text(row.get("subject_full") or "Email thread", limit=180),
                 status="observed",
+                product_context={
+                    "brand": customer_brand,
+                    "brand_source": customer_brand_source,
+                    "brand_reason": customer_brand_reason,
+                    "email_brand": _brand(row),
+                },
                 opened_at=event_at,
                 confidence=0.75,
                 evidence={"message_sha256": message_sha, "thread_id_stable": True},
@@ -253,9 +276,20 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
             summary=compact_text(_summary_text(row), limit=700),
             match_status=_match_status_for_resolution(resolution),
             confidence=0.95 if resolution.outcome == "linked" else 0.0,
-            record=_event_record(row, resolution=resolution, qualified=qualified, bot_visible=bot_visible),
+            record=_event_record(
+                row,
+                resolution=resolution,
+                qualified=qualified,
+                bot_visible=bot_visible,
+                customer_brand=customer_brand,
+                customer_brand_source=customer_brand_source,
+                customer_brand_reason=customer_brand_reason,
+            ),
             metadata={
                 "a2v3_mail_ingest": True,
+                "brand": customer_brand,
+                "brand_source": customer_brand_source,
+                "brand_reason": customer_brand_reason,
                 "pending_attribution": resolution.outcome != "linked",
                 "pending_reason": None if resolution.outcome == "linked" else resolution.reason,
             },
@@ -281,7 +315,9 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                     "message_sha256": message_sha,
                     "memory_status": _quality(row).get("memory_status"),
                     "bot_gate_reason": bot_gate_reason,
-                    "brand": _brand(row),
+                    "brand": customer_brand,
+                    "brand_source": customer_brand_source,
+                    "email_brand": _brand(row),
                     "thread_id": _thread_id(row),
                     "safe_next_step_note": _quality(row).get("safe_next_step_note"),
                     "requires_human_confirmation": bool(_quality(row).get("requires_human_confirmation")),
@@ -301,6 +337,9 @@ def plan_a2v3_mail_ingest(config: A2V3MailIngestConfig) -> tuple[list[PlannedA2V
                 prod_duplicate_keys=prod_duplicate_keys,
                 bot_visible=bot_visible,
                 bot_gate_reason=bot_gate_reason,
+                customer_brand=customer_brand,
+                customer_brand_source=customer_brand_source,
+                customer_brand_reason=customer_brand_reason,
             )
         )
 
@@ -444,6 +483,8 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
         )
     finally:
         store.close()
+    facts_upserted = _upsert_a2v3_event_facts(config.timeline_db_path, selected)
+    counters["upserted_a2v3_event_facts"] += facts_upserted
     report = {
         **planning_report,
         "mode": "apply",
@@ -453,6 +494,149 @@ def apply_a2v3_mail_ingest(config: A2V3MailIngestConfig, *, backup_manifest_path
     }
     write_json(config.out_dir / "apply_report.json", report)
     return report
+
+
+def _upsert_a2v3_event_facts(db_path: Path, plans: Sequence[PlannedA2V3MailEvent]) -> int:
+    if not plans:
+        _ensure_a2v3_event_facts_table(db_path)
+        return 0
+    with sqlite3.connect(Path(db_path)) as con:
+        _ensure_a2v3_event_facts_table(db_path, connection=con)
+        rows = [_a2v3_event_fact_row(plan) for plan in plans]
+        con.executemany(
+            """
+            INSERT INTO a2v3_mail_event_facts (
+              event_id, tenant_id, customer_id, message_sha256, event_type_detail,
+              money_direction, amount_kind, amount_rub, money_amounts_rub_json,
+              amount_uncertain, email_brand, email_brand_source, customer_brand,
+              customer_brand_source, customer_brand_reason, contact_email, contact_phone,
+              contact_name, student_name, grade, subject_area, memory_status,
+              bot_visible, bot_gate_reason, identity_outcome, identity_reason,
+              created_at
+            )
+            VALUES (
+              :event_id, :tenant_id, :customer_id, :message_sha256, :event_type_detail,
+              :money_direction, :amount_kind, :amount_rub, :money_amounts_rub_json,
+              :amount_uncertain, :email_brand, :email_brand_source, :customer_brand,
+              :customer_brand_source, :customer_brand_reason, :contact_email, :contact_phone,
+              :contact_name, :student_name, :grade, :subject_area, :memory_status,
+              :bot_visible, :bot_gate_reason, :identity_outcome, :identity_reason,
+              :created_at
+            )
+            ON CONFLICT(event_id) DO UPDATE SET
+              customer_id = excluded.customer_id,
+              event_type_detail = excluded.event_type_detail,
+              money_direction = excluded.money_direction,
+              amount_kind = excluded.amount_kind,
+              amount_rub = excluded.amount_rub,
+              money_amounts_rub_json = excluded.money_amounts_rub_json,
+              amount_uncertain = excluded.amount_uncertain,
+              email_brand = excluded.email_brand,
+              email_brand_source = excluded.email_brand_source,
+              customer_brand = excluded.customer_brand,
+              customer_brand_source = excluded.customer_brand_source,
+              customer_brand_reason = excluded.customer_brand_reason,
+              contact_email = excluded.contact_email,
+              contact_phone = excluded.contact_phone,
+              contact_name = excluded.contact_name,
+              student_name = excluded.student_name,
+              grade = excluded.grade,
+              subject_area = excluded.subject_area,
+              memory_status = excluded.memory_status,
+              bot_visible = excluded.bot_visible,
+              bot_gate_reason = excluded.bot_gate_reason,
+              identity_outcome = excluded.identity_outcome,
+              identity_reason = excluded.identity_reason
+            """,
+            rows,
+        )
+        con.commit()
+    return len(plans)
+
+
+def _ensure_a2v3_event_facts_table(db_path: Path, *, connection: sqlite3.Connection | None = None) -> None:
+    owns_connection = connection is None
+    con = connection or sqlite3.connect(Path(db_path))
+    try:
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS a2v3_mail_event_facts (
+              event_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              customer_id TEXT,
+              message_sha256 TEXT NOT NULL UNIQUE,
+              event_type_detail TEXT,
+              money_direction TEXT,
+              amount_kind TEXT,
+              amount_rub REAL,
+              money_amounts_rub_json TEXT NOT NULL,
+              amount_uncertain INTEGER NOT NULL,
+              email_brand TEXT NOT NULL,
+              email_brand_source TEXT,
+              customer_brand TEXT NOT NULL,
+              customer_brand_source TEXT NOT NULL,
+              customer_brand_reason TEXT NOT NULL,
+              contact_email TEXT,
+              contact_phone TEXT,
+              contact_name TEXT,
+              student_name TEXT,
+              grade TEXT,
+              subject_area TEXT,
+              memory_status TEXT,
+              bot_visible INTEGER NOT NULL,
+              bot_gate_reason TEXT NOT NULL,
+              identity_outcome TEXT NOT NULL,
+              identity_reason TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_a2v3_mail_event_facts_customer
+              ON a2v3_mail_event_facts(tenant_id, customer_id, customer_brand);
+            CREATE INDEX IF NOT EXISTS idx_a2v3_mail_event_facts_type_amount
+              ON a2v3_mail_event_facts(tenant_id, event_type_detail, amount_kind, amount_rub);
+            CREATE INDEX IF NOT EXISTS idx_a2v3_mail_event_facts_bot_visible
+              ON a2v3_mail_event_facts(tenant_id, bot_visible, customer_brand);
+            """
+        )
+        if owns_connection:
+            con.commit()
+    finally:
+        if owns_connection:
+            con.close()
+
+
+def _a2v3_event_fact_row(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
+    row = plan.row
+    payload = row.get("summary_payload") or {}
+    quality = _quality(row)
+    return {
+        "event_id": plan.event.event_id,
+        "tenant_id": plan.event.tenant_id,
+        "customer_id": plan.resolution.customer_id if plan.resolution.outcome == "linked" else None,
+        "message_sha256": _message_sha(row),
+        "event_type_detail": _detail_event_type(row),
+        "money_direction": payload.get("money_direction"),
+        "amount_kind": payload.get("amount_kind"),
+        "amount_rub": payload.get("amount_rub"),
+        "money_amounts_rub_json": json.dumps(quality.get("money_amounts_rub") or [], ensure_ascii=False),
+        "amount_uncertain": 1 if quality.get("amount_uncertain") else 0,
+        "email_brand": _brand(row),
+        "email_brand_source": row.get("brand_source") or row.get("raw_infer_offline_brand"),
+        "customer_brand": plan.customer_brand,
+        "customer_brand_source": plan.customer_brand_source,
+        "customer_brand_reason": plan.customer_brand_reason,
+        "contact_email": row.get("contact_email"),
+        "contact_phone": row.get("contact_phone"),
+        "contact_name": row.get("contact_name"),
+        "student_name": payload.get("student_name"),
+        "grade": payload.get("grade"),
+        "subject_area": payload.get("subject_area"),
+        "memory_status": quality.get("memory_status"),
+        "bot_visible": 1 if plan.bot_visible else 0,
+        "bot_gate_reason": plan.bot_gate_reason,
+        "identity_outcome": plan.resolution.outcome,
+        "identity_reason": plan.resolution.reason,
+        "created_at": plan.event.created_at.isoformat(),
+    }
 
 
 def existing_event_dedupe_keys(db_path: Path) -> set[str]:
@@ -469,6 +653,7 @@ def existing_event_dedupe_keys(db_path: Path) -> set[str]:
 
 
 def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[PlannedA2V3MailEvent]) -> Mapping[str, Any]:
+    fact_by_sha = _a2v3_facts_by_message_sha(config.timeline_db_path)
     grouped: dict[str, list[PlannedA2V3MailEvent]] = defaultdict(list)
     for plan in plans:
         key = f"customer:{plan.resolution.customer_id}" if plan.resolution.outcome == "linked" and plan.resolution.customer_id else (
@@ -486,7 +671,7 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
                 else _empty_customer_history_summary()
             )
             existing_events = existing.get("events") or []
-            combined_timeline = _combined_timeline(existing_events, new_plans)
+            combined_timeline = _combined_timeline(existing_events, new_plans, fact_by_sha=fact_by_sha)
             next_step = _review_next_step(existing_events, new_plans, customer_id=customer_id)
             review_rows.append(
                 {
@@ -495,7 +680,7 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
                     "contact": _review_contact(new_plans),
                     "brand_values": sorted({_brand(plan.row) for plan in new_plans}),
                     "existing_before": existing,
-                    "new_email_events": [_review_new_event(plan) for plan in new_plans],
+                    "new_email_events": [_review_new_event(plan, fact_by_sha=fact_by_sha) for plan in new_plans],
                     "combined_timeline": combined_timeline,
                     "combined_timeline_count": len(combined_timeline),
                     "resolution": dict(Counter(plan.resolution.outcome for plan in new_plans)),
@@ -574,6 +759,25 @@ def build_local_client_review(config: A2V3MailIngestConfig, plans: Sequence[Plan
     }
 
 
+def _a2v3_facts_by_message_sha(db_path: Path) -> Mapping[str, Mapping[str, Any]]:
+    path = Path(db_path)
+    if not path.exists():
+        return {}
+    with sqlite3.connect(path) as con:
+        con.row_factory = sqlite3.Row
+        exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_mail_event_facts'"
+        ).fetchone()
+        if not exists:
+            return {}
+        facts: dict[str, Mapping[str, Any]] = {}
+        for row in con.execute("SELECT * FROM a2v3_mail_event_facts"):
+            payload = dict(row)
+            payload["money_amounts_rub"] = json.loads(payload.get("money_amounts_rub_json") or "[]")
+            facts[str(payload["message_sha256"]).lower()] = payload
+        return facts
+
+
 def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
     with sqlite3.connect(f"file:{config.timeline_db_path}?mode=ro", uri=True) as con:
         con.row_factory = sqlite3.Row
@@ -614,6 +818,70 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
             str(row["match_status"]): int(row["c"])
             for row in con.execute("SELECT match_status, count(*) AS c FROM timeline_events GROUP BY match_status")
         }
+        a2_facts_table_exists = bool(
+            con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='a2v3_mail_event_facts'"
+            ).fetchone()
+        )
+        a2_fact_counts: Mapping[str, Any] = {}
+        if a2_facts_table_exists:
+            a2_fact_counts = {
+                "rows": int(con.execute("SELECT count(*) FROM a2v3_mail_event_facts").fetchone()[0]),
+                "bot_visible": int(
+                    con.execute("SELECT count(*) FROM a2v3_mail_event_facts WHERE bot_visible = 1").fetchone()[0]
+                ),
+                "unknown_linked_customer_brand": int(
+                    con.execute(
+                        """
+                        SELECT count(*)
+                        FROM a2v3_mail_event_facts
+                        WHERE identity_outcome = 'linked' AND customer_brand = 'unknown'
+                        """
+                    ).fetchone()[0]
+                ),
+                "amount_rows": int(
+                    con.execute(
+                        """
+                        SELECT count(*)
+                        FROM a2v3_mail_event_facts
+                        WHERE amount_rub IS NOT NULL OR money_amounts_rub_json != '[]'
+                        """
+                    ).fetchone()[0]
+                ),
+                "event_type_detail_counts": {
+                    str(row["event_type_detail"]): int(row["c"])
+                    for row in con.execute(
+                        """
+                        SELECT event_type_detail, count(*) AS c
+                        FROM a2v3_mail_event_facts
+                        GROUP BY event_type_detail
+                        ORDER BY event_type_detail
+                        """
+                    )
+                },
+                "customer_brand_counts": {
+                    str(row["customer_brand"]): int(row["c"])
+                    for row in con.execute(
+                        """
+                        SELECT customer_brand, count(*) AS c
+                        FROM a2v3_mail_event_facts
+                        GROUP BY customer_brand
+                        ORDER BY customer_brand
+                        """
+                    )
+                },
+                "bot_gate_counts": {
+                    str(row["bot_gate_reason"]): int(row["c"])
+                    for row in con.execute(
+                        """
+                        SELECT bot_gate_reason, count(*) AS c
+                        FROM a2v3_mail_event_facts
+                        GROUP BY bot_gate_reason
+                        ORDER BY bot_gate_reason
+                        """
+                    )
+                },
+            }
         chunk_gate_counts = [
             {
                 "allowed_for_bot": int(row["allowed_for_bot"]),
@@ -635,6 +903,7 @@ def verify_test_db(config: A2V3MailIngestConfig) -> Mapping[str, Any]:
         "bad_sync_chunks": bad_sync_chunks,
         "visible_not_usable": visible_not_usable,
         "match_status_counts": match_status_counts,
+        "a2_fact_counts": a2_fact_counts,
         "chunk_gate_counts": chunk_gate_counts,
     }
     write_json(config.out_dir / "test_db_verification.json", report)
@@ -654,6 +923,7 @@ def write_foton_report(
     test_db_path: Path,
 ) -> None:
     counts = first_apply_report.get("counts", {})
+    a2_fact_counts = test_db_verification.get("a2_fact_counts") or {}
     lines = [
         "# A2-v3: тестовое вливание 100 писем в customer_timeline",
         "",
@@ -682,6 +952,17 @@ def write_foton_report(
         f"- bot-visible chunks: `{counts.get('created_bot_visible_chunks', 0)}`",
         f"- stored-not-visible: `{counts.get('stored_not_visible', 0)}`",
         "- Правило: `allowed_for_bot=1` и `requires_manager_review=0` только для `usable_memory + qualified + linked + non-ambiguous`.",
+        "- Дополнительное правило A2: bot-visible только при разрешённом `customer_brand` (`foton`/`unpk`).",
+        "",
+        "## A2 first-class факты в тест-БД",
+        f"- a2v3_mail_event_facts rows: `{a2_fact_counts.get('rows', 0)}`",
+        f"- event_type_detail counts: `{a2_fact_counts.get('event_type_detail_counts', {})}`",
+        f"- customer_brand counts: `{a2_fact_counts.get('customer_brand_counts', {})}`",
+        f"- linked с unresolved customer_brand: `{a2_fact_counts.get('unknown_linked_customer_brand', 0)}`",
+        f"- linked unknown-brand reasons: `{ {key.replace('linked_customer_brand_unknown.', ''): value for key, value in counts.items() if key.startswith('linked_customer_brand_unknown.')} }`",
+        f"- rows with amount fields: `{a2_fact_counts.get('amount_rows', 0)}`",
+        f"- bot gate counts: `{a2_fact_counts.get('bot_gate_counts', {})}`",
+        "- Базовый `timeline_events.event_type` остаётся `email_message`, потому что контракт TimelineEventType не принимает `payment/refund`; бизнес-тип хранится в `a2v3_mail_event_facts.event_type_detail`.",
         "",
         "## Apply в тест-БД",
         f"- selected events first apply: `{first_apply_report.get('selected_events')}`",
@@ -758,11 +1039,13 @@ def _load_prod_snapshot(
         customer_id: _customer_qualification(con, tenant_id=tenant_id, customer_id=customer_id)
         for customer_id in customer_payload_by_id
     }
+    brand_profile_by_customer = _load_customer_brand_profiles(con, tenant_id=tenant_id, customer_ids=customer_ids)
     return {
         "direct_links": direct_links,
         "tallanto_to_customers": tallanto_to_customers,
         "customer_payload_by_id": customer_payload_by_id,
         "qualified_by_customer": qualified_by_customer,
+        "brand_profile_by_customer": brand_profile_by_customer,
         "prod_duplicate_keys_by_sha": prod_duplicate_keys_by_sha,
         "existing_email_values": set(emails) & set(direct_links.get("email", {})),
         "summary": {
@@ -775,6 +1058,117 @@ def _load_prod_snapshot(
             "customer_payloads_loaded": len(customer_payload_by_id),
         },
     }
+
+
+def _load_customer_brand_profiles(
+    con: sqlite3.Connection,
+    *,
+    tenant_id: str,
+    customer_ids: set[str],
+) -> Mapping[str, Mapping[str, Any]]:
+    if not customer_ids:
+        return {}
+    profiles: dict[str, Mapping[str, Any]] = {}
+    for customer_id in sorted(customer_ids):
+        counts: Counter[str] = Counter()
+        sources: Counter[str] = Counter()
+        opportunity_rows = con.execute(
+            """
+            SELECT title, record_json
+            FROM customer_opportunities
+            WHERE tenant_id = ? AND customer_id = ?
+            """,
+            (tenant_id, customer_id),
+        ).fetchall()
+        for row in opportunity_rows:
+            payload = _safe_json_object(row["record_json"])
+            product_context = payload.get("product_context") if isinstance(payload.get("product_context"), Mapping) else {}
+            brand = _normalize_known_brand(product_context.get("brand"))
+            if brand == "unknown":
+                brand = _infer_brand_from_mapping({"title": row["title"], "product_context": product_context})
+            if brand in {"foton", "unpk"}:
+                counts[brand] += 3
+                sources[f"opportunity:{brand}"] += 1
+        event_rows = con.execute(
+            """
+            SELECT subject, text_preview, summary, record_json
+            FROM timeline_events
+            WHERE tenant_id = ? AND customer_id = ?
+            """,
+            (tenant_id, customer_id),
+        ).fetchall()
+        for row in event_rows:
+            payload = _safe_json_object(row["record_json"])
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+            record = payload.get("record") if isinstance(payload.get("record"), Mapping) else {}
+            brand = _normalize_known_brand(metadata.get("brand") or record.get("brand"))
+            source = "event_explicit_brand"
+            if brand == "unknown":
+                brand = _infer_brand_from_mapping(
+                    {
+                        "subject": row["subject"],
+                        "text_preview": row["text_preview"],
+                        "summary": row["summary"],
+                        "record_summary": record.get("summary"),
+                        "full_clean_text": record.get("full_clean_text"),
+                    }
+                )
+                source = "event_content_infer"
+            if brand in {"foton", "unpk"}:
+                counts[brand] += 1
+                sources[f"{source}:{brand}"] += 1
+        known = {brand: count for brand, count in counts.items() if brand in {"foton", "unpk"} and count > 0}
+        if not known:
+            profiles[customer_id] = {
+                "brand": "unknown",
+                "source": "customer_history",
+                "reason": "no_known_brand_in_history",
+                "counts": dict(counts),
+            }
+            continue
+        if len(known) > 1:
+            profiles[customer_id] = {
+                "brand": "unknown",
+                "source": "customer_history",
+                "reason": "mixed_brand_history",
+                "counts": dict(counts),
+                "sources": dict(sources),
+            }
+            continue
+        brand = next(iter(known))
+        profiles[customer_id] = {
+            "brand": brand,
+            "source": "customer_history",
+            "reason": "single_known_brand_in_history",
+            "counts": dict(counts),
+            "sources": dict(sources),
+        }
+    return profiles
+
+
+def _safe_json_object(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, Mapping) else {}
+
+
+def _infer_brand_from_mapping(values: Mapping[str, Any]) -> str:
+    return _normalize_known_brand(infer_offline_brand(values))
+
+
+def _normalize_known_brand(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"foton", "фотон"}:
+        return "foton"
+    if text in {"unpk", "унпк", "мфти"}:
+        return "unpk"
+    return "unknown"
 
 
 def _load_direct_identity_links(
@@ -1107,6 +1501,7 @@ def _bot_visibility(
     *,
     resolution: CustomerResolution,
     qualified: bool,
+    customer_brand: str,
 ) -> tuple[bool, str]:
     status = str(_quality(row).get("memory_status") or "")
     if status != "usable_memory":
@@ -1115,6 +1510,8 @@ def _bot_visibility(
         return False, f"identity_{resolution.outcome}"
     if resolution.ambiguous or resolution.blocked:
         return False, "identity_ambiguous_or_blocked"
+    if customer_brand not in {"foton", "unpk"}:
+        return False, "customer_brand_unknown"
     if not qualified:
         return False, "customer_not_qualified"
     return True, "usable_linked_qualified"
@@ -1126,6 +1523,9 @@ def _event_record(
     resolution: CustomerResolution,
     qualified: bool,
     bot_visible: bool,
+    customer_brand: str,
+    customer_brand_source: str,
+    customer_brand_reason: str,
 ) -> Mapping[str, Any]:
     payload = row.get("summary_payload") or {}
     quality = _quality(row)
@@ -1136,6 +1536,9 @@ def _event_record(
         "thread_basis": quality.get("thread_basis"),
         "brand": _brand(row),
         "brand_source": row.get("brand_source") or row.get("raw_infer_offline_brand"),
+        "customer_brand": customer_brand,
+        "customer_brand_source": customer_brand_source,
+        "customer_brand_reason": customer_brand_reason,
         "direction": row.get("direction"),
         "subject": row.get("subject_full"),
         "full_clean_text": row.get("full_clean_text"),
@@ -1170,6 +1573,34 @@ def _event_record(
             "requires_manager_review": not bot_visible,
         },
     }
+
+
+def _detail_event_type(row: Mapping[str, Any]) -> str:
+    payload = row.get("summary_payload") or {}
+    value = str(payload.get("event_type") or "other").strip().lower()
+    return value or "other"
+
+
+def _resolve_customer_brand(
+    row: Mapping[str, Any],
+    *,
+    resolution: CustomerResolution,
+    snapshot: Mapping[str, Any],
+) -> tuple[str, str, str]:
+    if resolution.outcome == "linked" and resolution.customer_id:
+        profile = (snapshot.get("brand_profile_by_customer") or {}).get(resolution.customer_id) or {}
+        brand = _normalize_known_brand(profile.get("brand"))
+        if brand in {"foton", "unpk"}:
+            return brand, str(profile.get("source") or "customer_history"), str(profile.get("reason") or "resolved_from_history")
+        reason = str(profile.get("reason") or "no_known_brand_in_history")
+        email_brand = _brand(row)
+        if email_brand in {"foton", "unpk"} and reason != "mixed_brand_history":
+            return email_brand, "a2v3_email_content", "history_unknown_email_content_known"
+        return "unknown", str(profile.get("source") or "customer_history"), reason
+    email_brand = _brand(row)
+    if email_brand in {"foton", "unpk"}:
+        return email_brand, "a2v3_email_content_unlinked", "unlinked_email_content_known"
+    return "unknown", "unresolved_identity", resolution.reason
 
 
 def _match_status_for_resolution(resolution: CustomerResolution) -> IdentityMatchClass:
@@ -1211,8 +1642,7 @@ def _thread_id(row: Mapping[str, Any]) -> str:
 
 
 def _brand(row: Mapping[str, Any]) -> str:
-    value = str(row.get("brand") or "unknown").strip().lower()
-    return value if value in {"foton", "unpk"} else "unknown"
+    return _normalize_known_brand(row.get("brand"))
 
 
 def _direction(row: Mapping[str, Any]) -> TimelineDirection:
@@ -1344,7 +1774,8 @@ def _customer_history_events(
             "text_preview",
             "summary",
         ):
-            payload.setdefault(key, row[key])
+            if payload.get(key) in (None, ""):
+                payload[key] = row[key]
         events.append(payload)
     return events
 
@@ -1352,10 +1783,12 @@ def _customer_history_events(
 def _combined_timeline(
     existing_events: Sequence[Mapping[str, Any]],
     new_plans: Sequence[PlannedA2V3MailEvent],
+    *,
+    fact_by_sha: Mapping[str, Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
     # New email items are intentionally shown first: Dmitry reviews what would be added over current memory.
     new_items = [
-        _timeline_review_item(_new_event_for_review(plan), source="new_a2v3_email")
+        _timeline_review_item(_new_event_for_review(plan, fact_by_sha=fact_by_sha), source="new_a2v3_email")
         for plan in sorted(new_plans, key=lambda item: str(item.event.event_at.isoformat()), reverse=True)
     ]
     existing_items = [_timeline_review_item(event, source="existing_prod") for event in existing_events]
@@ -1385,24 +1818,42 @@ def _review_next_step(
     )
 
 
-def _new_event_for_review(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
+def _new_event_for_review(
+    plan: PlannedA2V3MailEvent,
+    *,
+    fact_by_sha: Mapping[str, Mapping[str, Any]] | None = None,
+) -> Mapping[str, Any]:
     event = dict(plan.event.to_json_dict())
     record = dict(event.get("record") or {})
+    fact = (fact_by_sha or {}).get(_message_sha(plan.row)) or {}
     record["safe_next_step_note"] = _quality(plan.row).get("safe_next_step_note")
     record["next_step_model"] = (plan.row.get("summary_payload") or {}).get("next_step")
-    record["memory_status"] = _quality(plan.row).get("memory_status")
+    record["memory_status"] = fact.get("memory_status") or _quality(plan.row).get("memory_status")
+    record["event_type_detail"] = fact.get("event_type_detail") or record.get("event_type_detail")
+    record["amount_rub"] = fact.get("amount_rub") if fact.get("amount_rub") is not None else record.get("amount_rub")
+    record["amount_kind"] = fact.get("amount_kind") or record.get("amount_kind")
+    record["money_amounts_rub"] = fact.get("money_amounts_rub") or record.get("money_amounts_rub")
+    record["brand"] = fact.get("email_brand") or record.get("brand")
+    record["customer_brand"] = fact.get("customer_brand") or record.get("customer_brand")
+    record["customer_brand_source"] = fact.get("customer_brand_source") or record.get("customer_brand_source")
+    record["customer_brand_reason"] = fact.get("customer_brand_reason") or record.get("customer_brand_reason")
+    record["contact_email"] = fact.get("contact_email") or record.get("contact_email")
+    record["contact_phone"] = fact.get("contact_phone") or record.get("contact_phone")
+    record["student_name"] = fact.get("student_name") or record.get("student_name")
+    record["grade"] = fact.get("grade") or record.get("grade")
+    record["subject_area"] = fact.get("subject_area") or record.get("subject_area")
     record["identity_resolution"] = {
-        "outcome": plan.resolution.outcome,
-        "reason": plan.resolution.reason,
+        "outcome": fact.get("identity_outcome") or plan.resolution.outcome,
+        "reason": fact.get("identity_reason") or plan.resolution.reason,
         "method": plan.resolution.method,
         "customer_id": plan.resolution.customer_id,
         "blocked": plan.resolution.blocked,
         "ambiguous": plan.resolution.ambiguous,
     }
     record["bot_visibility"] = {
-        "allowed_for_bot": plan.bot_visible,
-        "requires_manager_review": not plan.bot_visible,
-        "reason": plan.bot_gate_reason,
+        "allowed_for_bot": bool(fact.get("bot_visible")) if fact else plan.bot_visible,
+        "requires_manager_review": not (bool(fact.get("bot_visible")) if fact else plan.bot_visible),
+        "reason": fact.get("bot_gate_reason") or plan.bot_gate_reason,
     }
     event["record"] = record
     return event
@@ -1426,10 +1877,15 @@ def _timeline_review_item(event: Mapping[str, Any], *, source: str) -> Mapping[s
         "event_id": event.get("event_id") or event.get("source_id"),
         "event_at": event.get("event_at"),
         "event_type": event.get("event_type"),
+        "event_type_detail": record.get("event_type_detail"),
         "source_system": event.get("source_system"),
         "direction": event.get("direction"),
         "subject": compact_text(event.get("subject"), limit=160),
         "summary": compact_text(event.get("summary") or record.get("summary"), limit=260),
+        "email_brand": record.get("brand"),
+        "customer_brand": record.get("customer_brand") or (metadata.get("brand") if metadata else None),
+        "customer_brand_source": record.get("customer_brand_source") or (metadata.get("brand_source") if metadata else None),
+        "customer_brand_reason": record.get("customer_brand_reason") or (metadata.get("brand_reason") if metadata else None),
         "safe_next_step_note": compact_text(record.get("safe_next_step_note"), limit=220),
         "amount_rub": record.get("amount_rub"),
         "amount_kind": record.get("amount_kind"),
@@ -1451,21 +1907,32 @@ def _review_contact(plans: Sequence[PlannedA2V3MailEvent]) -> Mapping[str, Any]:
     return {}
 
 
-def _review_new_event(plan: PlannedA2V3MailEvent) -> Mapping[str, Any]:
+def _review_new_event(
+    plan: PlannedA2V3MailEvent,
+    *,
+    fact_by_sha: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
     row = plan.row
     payload = row.get("summary_payload") or {}
+    fact = fact_by_sha.get(_message_sha(row)) or {}
     return {
         "message_sha256": _message_sha(row),
         "date_iso": row.get("date_iso"),
-        "event_type": payload.get("event_type"),
+        "event_type": fact.get("event_type_detail") or payload.get("event_type"),
         "summary": payload.get("summary"),
         "safe_next_step_note": _quality(row).get("safe_next_step_note"),
-        "amount_rub": payload.get("amount_rub"),
-        "amount_kind": payload.get("amount_kind"),
-        "memory_status": _quality(row).get("memory_status"),
-        "bot_visible": plan.bot_visible,
-        "resolution": plan.resolution.outcome,
-        "resolution_reason": plan.resolution.reason,
+        "amount_rub": fact.get("amount_rub") if fact.get("amount_rub") is not None else payload.get("amount_rub"),
+        "amount_kind": fact.get("amount_kind") or payload.get("amount_kind"),
+        "money_amounts_rub": fact.get("money_amounts_rub") or _quality(row).get("money_amounts_rub"),
+        "memory_status": fact.get("memory_status") or _quality(row).get("memory_status"),
+        "email_brand": fact.get("email_brand") or _brand(row),
+        "customer_brand": fact.get("customer_brand") or plan.customer_brand,
+        "customer_brand_source": fact.get("customer_brand_source") or plan.customer_brand_source,
+        "customer_brand_reason": fact.get("customer_brand_reason") or plan.customer_brand_reason,
+        "bot_visible": bool(fact.get("bot_visible")) if fact else plan.bot_visible,
+        "bot_gate_reason": fact.get("bot_gate_reason") or plan.bot_gate_reason,
+        "resolution": fact.get("identity_outcome") or plan.resolution.outcome,
+        "resolution_reason": fact.get("identity_reason") or plan.resolution.reason,
     }
 
 

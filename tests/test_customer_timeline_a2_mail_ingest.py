@@ -31,13 +31,16 @@ def _row(
     email: str = "parent@example.com",
     status: str = "usable_memory",
     event_type: str = "application",
+    brand: str = "foton",
+    amount_kind: str = "",
+    amount_rub: object = None,
     thread_id: str = "thread-a",
 ) -> dict[str, object]:
     return {
         "message_sha256": sha,
         "date_iso": "2026-07-01T10:00:00+00:00",
         "direction": "inbound",
-        "brand": "foton",
+        "brand": brand,
         "brand_source": "test",
         "contact_email": email,
         "contact_phone": None,
@@ -51,8 +54,8 @@ def _row(
             "topic": "Запись",
             "event_type": event_type,
             "money_direction": "none",
-            "amount_kind": "",
-            "amount_rub": None,
+            "amount_kind": amount_kind,
+            "amount_rub": amount_rub,
             "next_step": "Ответить по условиям записи.",
         },
         "quality": {
@@ -196,7 +199,10 @@ def _config(tmp_path: Path, rows: list[dict[str, object]]) -> A2V3MailIngestConf
 
 
 def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path) -> None:
-    config = _config(tmp_path, [_row("a" * 64, email="parent@example.com")])
+    config = _config(
+        tmp_path,
+        [_row("a" * 64, email="parent@example.com", event_type="payment", amount_kind="actual", amount_rub=50000)],
+    )
     CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
 
     plans, report = plan_a2v3_mail_ingest(config)
@@ -218,6 +224,14 @@ def test_a2v3_mail_ingest_uses_tallanto_email_and_adds_email_link(tmp_path: Path
         assert con.execute("SELECT link_type, link_value FROM identity_links WHERE link_type='email'").fetchall() == [
             ("email", "parent@example.com")
         ]
+        fact = con.execute(
+            """
+            SELECT event_type_detail, amount_kind, amount_rub, email_brand, customer_brand,
+                   customer_brand_source, bot_visible
+            FROM a2v3_mail_event_facts
+            """
+        ).fetchone()
+        assert fact == ("payment", "actual", 50000.0, "foton", "foton", "a2v3_email_content", 1)
 
 
 def test_a2v3_mail_ingest_blocks_ambiguous_identity_and_non_usable_memory(tmp_path: Path) -> None:
@@ -240,6 +254,18 @@ def test_a2v3_mail_ingest_blocks_ambiguous_identity_and_non_usable_memory(tmp_pa
     assert by_sha["c" * 64].chunk.requires_manager_review is True
     assert report["counts"]["blocked"] == 1
     assert report["counts"]["linked"] == 1
+
+
+def test_a2v3_mail_ingest_blocks_bot_visibility_when_customer_brand_unknown(tmp_path: Path) -> None:
+    config = _config(tmp_path, [_row("g" * 64, email="known@example.com", brand="none")])
+    CustomerTimelineSQLiteStore(config.timeline_db_path, allowed_root=tmp_path).close()
+
+    plans, report = plan_a2v3_mail_ingest(config)
+
+    assert report["counts"]["linked"] == 1
+    assert report["counts"]["bot_gate.customer_brand_unknown"] == 1
+    assert plans[0].customer_brand == "unknown"
+    assert plans[0].bot_visible is False
 
 
 def test_a2v3_mail_ingest_checks_prod_dedupe_across_both_mail_namespaces(tmp_path: Path) -> None:

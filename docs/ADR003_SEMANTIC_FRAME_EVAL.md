@@ -91,3 +91,23 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/run_telegram_dynamic_cl
 - SHA256 report JSON: `53f572da5316040daf39f197ec7594acbae411d6b67b8befdeb91b36cb1b40c0`
 
 Ограничение: это доказывает только paired metadata no-op на Wappi25. В отчёте есть frame-vs-current-route mismatches (`must_handoff_vs_route`: 17 match / 8 mismatch; `must_handoff_vs_p0_signal`: 13 match / 12 mismatch), поэтому использовать frame для изменения маршрута пока нельзя. Следующий шаг перед active-фазой — ручной `expected_frame` gold и разбор mismatch-классов.
+
+## Local Full131 Paired Enrichment
+
+Локальный замер 2026-07-01:
+
+- Артефакты: `audits/_inbox/adr003_semantic_frame_enrich_full131_20260701/`
+- Scope: полный ADR003 M1-набор, 131 диалог / 241 ход.
+- OFF: реальный `bot-mode codex`, fake judge/memory/semantic auxiliary; `pilot_gold_v1`, `P0_MODEL_LED=1`, `PROSE_MODEL_LED=1`.
+- ON: paired enrichment от OFF-транскрипта, `parallel=4`.
+- Время: OFF 1465 sec, ON enrichment 738 sec, total 2203 sec.
+- Acceptance: `pass`
+- `route/text/safety_flags/manager_checklist` diff: 0
+- Input diff: 0
+- Frame coverage: 241 / 241, required fields complete 241 / 241
+- ON model calls: 241 total, 241 `bot_semantic_frame_shadow`, 0 non-frame calls
+- SHA256 OFF transcripts: `ea2bfde7f34bdf11535a6b579980e9e081f977930a9bb4fd921b8359b53d8bb3`
+- SHA256 ON enriched transcripts: `c43f67e48ba8c58108f1a424df01259cddc8af51805b0911d5da6bf14c19b15c`
+- SHA256 report JSON: `6f66fc424766e2329384b1fe0a6dd21111aa6af26d8fab2b0ae493414db63241`
+
+Ограничение: full131 доказывает технический shadow/no-op, но не semantic-pass для руления. `frame.must_handoff` всё ещё существенно расходится с текущими детекторами (`must_handoff_vs_route`: 174 match / 67 mismatch; `must_handoff_vs_p0_signal`: 172 match / 69 mismatch). Эти расхождения нужно разметить по gold: часть может быть желаемым снижением over-handoff, часть — ложный handoff или риск пропуска.

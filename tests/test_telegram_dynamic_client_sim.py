@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -2374,6 +2375,8 @@ def test_semantic_frame_enrich_transcripts_preserves_frozen_route_text(monkeypat
     )
 
     def fake_frame_runner(self, prompt: str) -> str:
+        if "SLOW" in prompt:
+            time.sleep(0.05)
         return json.dumps(
             {
                 "semantic_frame": {
@@ -2416,7 +2419,7 @@ def test_semantic_frame_enrich_transcripts_preserves_frozen_route_text(monkeypat
             "turns": [
                 {
                     "turn": 1,
-                    "client_message": "Есть места?",
+                    "client_message": "SLOW Есть места?",
                     "bot_route": "draft_for_manager",
                     "bot_text": "Менеджер проверит наличие места.",
                     "bot_safety_flags": ["manager_approval_required"],
@@ -2431,7 +2434,23 @@ def test_semantic_frame_enrich_transcripts_preserves_frozen_route_text(monkeypat
                     "bot_manager_checklist": [],
                 }
             ],
-        }
+        },
+        {
+            "dialog_id": "d2",
+            "brand": "unpk",
+            "persona": {"dialog_id": "d2", "brand": "unpk"},
+            "judge_result": {"verdict": "PASS_WITH_NOTES"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Где занятия?",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Занятия проходят по адресу центра.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+            ],
+        },
     ]
 
     enriched = sim.enrich_transcripts_with_semantic_frame(
@@ -2439,8 +2458,10 @@ def test_semantic_frame_enrich_transcripts_preserves_frozen_route_text(monkeypat
         bot_provider=provider,
         snapshot_path=tmp_path / "snapshot.json",
         memory_model=None,
+        parallel=2,
     )
 
+    assert [dialog["dialog_id"] for dialog in enriched] == ["d1", "d2"]
     turn = enriched[0]["turns"][0]
     assert turn["bot_route"] == "draft_for_manager"
     assert turn["bot_text"] == "Менеджер проверит наличие места."
@@ -2454,7 +2475,160 @@ def test_semantic_frame_enrich_transcripts_preserves_frozen_route_text(monkeypat
     assert second_turn["bot_safety_flags"] == ["no_auto_send"]
     assert second_turn["bot_manager_checklist"] == []
     assert second_turn["bot_semantic_frame"]["intent"] == "live_availability"
-    assert counter.snapshot()["bot_semantic_frame_shadow"] == 2
+    third_turn = enriched[1]["turns"][0]
+    assert third_turn["bot_route"] == "bot_answer_self_for_pilot"
+    assert third_turn["bot_text"] == "Занятия проходят по адресу центра."
+    assert third_turn["bot_semantic_frame"]["intent"] == "live_availability"
+    assert counter.snapshot()["bot_semantic_frame_shadow"] == 3
+    assert counter.snapshot().get("bot_direct_draft", 0) == 0
+
+
+def test_semantic_frame_enrich_transcripts_keeps_frozen_fields_if_provider_mutates(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_DECISION_SHADOW", "1")
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "foton",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+
+    class MutatingProvider:
+        def _apply_direct_path_semantic_frame_posthoc_shadow(self, result, *, client_message: str, context):
+            return sim.SubscriptionDraftResult(
+                route="manager_only",
+                draft_text="MUTATED",
+                safety_flags=("mutated_flag",),
+                manager_checklist=("mutated checklist",),
+                missing_facts=result.missing_facts,
+                topic_id=result.topic_id,
+                message_type=result.message_type,
+                risk_level=result.risk_level,
+                metadata={
+                    **dict(result.metadata),
+                    "semantic_frame": {
+                        "intent": "availability",
+                        "risk_class": "safe",
+                        "deal_stage": "exploration",
+                        "payment_readiness": "unknown",
+                        "requested_product": {"brand": "foton", "raw_text": ""},
+                        "requested_action": "ask_info",
+                        "answerability": "yes",
+                        "must_handoff": False,
+                        "evidence": ["test"],
+                        "confidence": 0.9,
+                    },
+                },
+            )
+
+    dialogs = [
+        {
+            "dialog_id": "frozen",
+            "brand": "foton",
+            "persona": {"dialog_id": "frozen", "brand": "foton"},
+            "turns": [
+                {
+                    "turn": 1,
+                    "client_message": "Есть места?",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Да, есть места.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+            ],
+        }
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=MutatingProvider(),
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+        parallel=1,
+    )
+
+    turn = enriched[0]["turns"][0]
+    assert turn["bot_route"] == "bot_answer_self_for_pilot"
+    assert turn["bot_text"] == "Да, есть места."
+    assert turn["bot_safety_flags"] == ["no_auto_send"]
+    assert turn["bot_manager_checklist"] == []
+    assert turn["bot_semantic_frame"]["intent"] == "availability"
+    assert turn["bot_frame_decision_shadow"]["status"] == "observed"
+
+
+def test_semantic_frame_enrich_transcripts_parallel_counter_stress(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TELEGRAM_SEMANTIC_FRAME_POSTHOC_SHADOW", "1")
+    counter = sim.LlmCallCounter()
+    provider = sim.CountingSubscriptionLlmDraftProvider(
+        cache_dir=None,
+        base_env={"CODEX_HOME": str(tmp_path / "codex-home"), "PATH": "/bin"},
+        llm_call_counter=counter,
+    )
+
+    def fake_frame_runner(self, prompt: str) -> str:
+        return json.dumps(
+            {
+                "semantic_frame": {
+                    "intent": "stress",
+                    "risk_class": "safe",
+                    "deal_stage": "exploration",
+                    "payment_readiness": "unknown",
+                    "requested_product": {"brand": "foton", "raw_text": ""},
+                    "requested_action": "ask_info",
+                    "answerability": "yes",
+                    "must_handoff": False,
+                    "evidence": ["stress"],
+                    "confidence": 0.8,
+                }
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(sim.SubscriptionLlmDraftProvider, "_direct_path_semantic_frame_shadow_runner", fake_frame_runner)
+    monkeypatch.setattr(
+        sim,
+        "build_bot_prompt_context",
+        lambda *args, **kwargs: {
+            "active_brand": "foton",
+            "recent_messages": [],
+            "dialogue_memory_view": {},
+            "conversation_intent_plan": {},
+        },
+    )
+    dialogs = [
+        {
+            "dialog_id": f"d{dialog_index}",
+            "brand": "foton",
+            "persona": {"dialog_id": f"d{dialog_index}", "brand": "foton"},
+            "turns": [
+                {
+                    "turn": turn_index,
+                    "client_message": f"Вопрос {dialog_index}-{turn_index}",
+                    "bot_route": "bot_answer_self_for_pilot",
+                    "bot_text": "Ответ.",
+                    "bot_safety_flags": ["no_auto_send"],
+                    "bot_manager_checklist": [],
+                }
+                for turn_index in range(1, 4)
+            ],
+        }
+        for dialog_index in range(10)
+    ]
+
+    enriched = sim.enrich_transcripts_with_semantic_frame(
+        dialogs,
+        bot_provider=provider,
+        snapshot_path=tmp_path / "snapshot.json",
+        memory_model=None,
+        parallel=4,
+    )
+
+    assert len(enriched) == 10
+    assert sum(len(dialog["turns"]) for dialog in enriched) == 30
+    assert counter.snapshot()["bot_semantic_frame_shadow"] == 30
     assert counter.snapshot().get("bot_direct_draft", 0) == 0
 
 

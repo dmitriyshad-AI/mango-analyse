@@ -8,10 +8,17 @@
 
 ## Почему
 
-Измеритель корректно доказывает, что post-hoc frame metadata можно добавить без изменения готового черновика. Но frame не сравнен с ручной gold-разметкой, а локальный Wappi25 report показывает расхождения с текущим route/P0-сигналом:
+Измеритель корректно доказывает, что post-hoc frame metadata можно добавить без изменения готового черновика. Но frame не сравнен с ручной gold-разметкой, а локальные reports показывают расхождения с текущим route/P0-сигналом.
+
+Wappi25:
 
 - `must_handoff_vs_route`: 17 match / 8 mismatch
 - `must_handoff_vs_p0_signal`: 13 match / 12 mismatch
+
+Full131:
+
+- `must_handoff_vs_route`: 174 match / 67 mismatch
+- `must_handoff_vs_p0_signal`: 172 match / 69 mismatch
 
 Эти mismatch не являются автоматическим FAIL самого shadow-слоя, но запрещают включать frame в active decision path без следующего этапа:
 

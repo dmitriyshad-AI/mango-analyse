@@ -50,10 +50,10 @@
   "case_count": 25,
   "generated_at": "2026-07-01T15:59:43+00:00",
   "gold_labels": {
-    "coverage": "75 full131 mismatch/manager-action rows, no client text",
-    "line_count": 75,
+    "coverage": "79 full131 mismatch/manager-action rows, including 4 turn3 P0 payment/refund closing cases, no client text",
+    "line_count": 79,
     "path": "product_data/telegram_dynamic_test_sets/adr003_frame_gold_labels_20260701.jsonl",
-    "sha256": "4c505bb23cddbdfb8a0d4324bd2822b253001dc46fc0e75b90ab5ba2d6fb5be3"
+    "sha256": "a45077c33b65c73c372085f9b9b23dd3a5dee60422ee49162189f1271c8b3c93"
   },
   "m1_acceptance": {
     "brand_leaks": 0,

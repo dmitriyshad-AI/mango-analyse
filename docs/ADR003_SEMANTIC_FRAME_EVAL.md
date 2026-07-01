@@ -217,3 +217,16 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold
 Остаточные 5 `too_cautious` строк: safe age/format/address/schedule reference, compare formats/prices without live availability, age suitability without free seats, general discount/benefit explanation, general pedagogical guidance. Это не опасные пропуски, но это всё ещё lost-autonomy и требует регрейда Claude #1 перед Ф2/F3.
 
 Вывод: Ф1 дала сильный безопасный прирост и убрала опасные `too_confident` на gold-75, но это не разрешение включать активный self-answer gate. Следующий допустимый шаг — Ф2 shadow lowering с порогом не ниже confidence `0.90`, class-specific статистикой, freshness checks и отдельным регрейдом. Ф3 active остаётся заблокированной до регрейда Ф2 и решения Дмитрия.
+
+## Phase 1 v4 Turn3 P0 Gold Extension
+
+Доброс 2026-07-01 перед ручным M1 re-run:
+
+- Gold расширен с 75 до 79 строк.
+- Новый Gold SHA256: `a45077c33b65c73c372085f9b9b23dd3a5dee60422ee49162189f1271c8b3c93`.
+- Добавлены 4 опасные `turn=3` строки для closing-наборов: `cf142_p0_foton_refund_after_signup`, `cf142_p0_unpk_refund_after_signup`, `cf142_p0_foton_payment_dispute_close`, `cf142_p0_unpk_paid_transfer`.
+- Все 4 строки ожидают `must_handoff=true`, `answerability=manager_only`; цель — чтобы regression `too_confident` ловился скорером, а не ручной сверкой.
+- Локальный recheck по уже сохранённому v4 paired enrichment: `audits/_inbox/adr003_frame_prompt_v4_turn3_gold_recheck_20260701/`.
+- Recheck: 79 labeled / 77 comparable + 2 unclear; `must_handoff` accuracy `0.9351` (72/77), `too_confident=0`, `too_cautious=5`, route/text diff `0`.
+
+Это не заменяет свежий M1-прогон. Цель M1-доброса — проверить хрупкость prompt v4 на свежем запуске при том же full131-наборе и расширенном gold.

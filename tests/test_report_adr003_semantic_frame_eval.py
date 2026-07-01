@@ -323,6 +323,9 @@ def test_report_summarizes_self_answer_shadow_candidates_and_unsafe(tmp_path: Pa
     assert shadow["freshness_unknown_self_candidates"] == 1
     assert shadow["partial_freshness_self_candidates"] == 1
     assert len(shadow["unsafe_candidate_examples"]) == 5
+    assert result["acceptance"]["status"] == "needs_review"
+    assert result["acceptance"]["flags"]["self_answer_partial_freshness_zero"] is False
+    assert any("partial freshness" in note for note in result["acceptance"]["notes"])
 
 
 def test_report_cli_writes_json_and_markdown(tmp_path: Path) -> None:

@@ -517,6 +517,11 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
     diff = report.get("off_on_diff") if isinstance(report.get("off_on_diff"), Mapping) else {}
     llm = report.get("llm_calls") if isinstance(report.get("llm_calls"), Mapping) else {}
     frame = report.get("semantic_frame") if isinstance(report.get("semantic_frame"), Mapping) else {}
+    self_shadow = (
+        report.get("semantic_frame_self_answer_shadow")
+        if isinstance(report.get("semantic_frame_self_answer_shadow"), Mapping)
+        else {}
+    )
     hard = report.get("hard_gate_failures") if isinstance(report.get("hard_gate_failures"), Mapping) else {}
     extra_total = llm.get("extra_total")
     extra_frame = llm.get("extra_semantic_frame_shadow")
@@ -548,6 +553,7 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         "extra_model_calls_expected": expected_call_delta,
         "semantic_frame_present_on_all_turns": bool(frame.get("turns_total")) and frame.get("missing_count") == 0,
         "semantic_frame_required_fields_complete": frame.get("present_count") == frame.get("complete_required_count"),
+        "self_answer_partial_freshness_zero": self_shadow.get("partial_freshness_self_candidates", 0) == 0,
         "hard_gate_failures_zero": hard.get("on") in (None, 0),
     }
     notes: list[str] = []
@@ -568,6 +574,8 @@ def _acceptance(report: Mapping[str, Any]) -> dict[str, Any]:
         notes.append("Extra model calls are expected post-hoc SemanticFrame shadow calls.")
     if not flags["semantic_frame_present_on_all_turns"]:
         notes.append("SemanticFrame is missing on at least one ON turn or ON turn count is zero.")
+    if not flags["self_answer_partial_freshness_zero"]:
+        notes.append("At least one self-answer shadow candidate has only partial freshness/client-safe fact coverage.")
     status = "pass" if all(flags.values()) else "needs_review"
     return {"status": status, "flags": flags, "notes": notes}
 

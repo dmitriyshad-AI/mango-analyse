@@ -273,6 +273,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_path_route_rubric_should_regenerate,
     _build_direct_path_route_rubric_regen_prompt,
     _direct_slot_topic_shadow_enabled,
+    _semantic_frame_decision_shadow_enabled,
     _p0_model_classes_v2_enabled,
     _a2_extract_phone,
     _replace_echoed_phone,
@@ -967,11 +968,12 @@ class SubscriptionLlmDraftProvider:
             )
             reasked = apply_direct_keyword_fallback_reask_layer(dealt, context=context)
             closed = apply_tone_close_detect_layer(reasked, client_message=client_message, context=context)
-            return scrub_direct_path_p0_text(
+            scrubbed = scrub_direct_path_p0_text(
                 closed,
                 context=context,
                 client_message=client_message,
             )
+            return apply_semantic_frame_decision_shadow(scrubbed, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -2418,6 +2420,206 @@ def _apply_direct_path_model_p0_route(
         manager_checklist=checklist,
         metadata=metadata,
     )
+
+
+SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION = "semantic_frame_decision_shadow_v1_2026_07_01"
+
+_SEMANTIC_FRAME_P0_FLAGS = {
+    "p0",
+    "refund",
+    "refund_claim",
+    "payment_dispute",
+    "complaint",
+    "legal",
+    "legal_threat",
+    "high_risk",
+    "p0_deferral",
+    "zero_collect_required",
+    "direct_path_model_p0_refund",
+    "direct_path_model_p0_payment_dispute",
+    "direct_path_model_p0_complaint",
+    "direct_path_model_p0_legal_threat",
+    "direct_path_model_p0_contract_dispute",
+    "direct_path_model_p0_cancellation_service_request",
+    "direct_path_model_p0_paid_operation_context",
+}
+
+_SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST = {
+    "answer_question": "answer_only",
+    "check_availability": "capture_lead",
+    "enroll": "capture_lead",
+    "send_materials": "send_materials",
+    "send_payment_link": "send_payment_link",
+    "send_document": "send_document",
+    "refund_or_cancel": "handoff_manager",
+    "handoff_manager": "handoff_manager",
+}
+
+_SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES = {"offer", "closing"}
+_SEMANTIC_FRAME_CLOSE_VETO_PAYMENT = {"asking_price", "considering", "ready_to_pay"}
+_SEMANTIC_FRAME_CLOSE_VETO_ACTIONS = {
+    "check_availability",
+    "enroll",
+    "send_materials",
+    "send_payment_link",
+    "send_document",
+}
+
+
+def _semantic_frame_value(frame: Mapping[str, Any], key: str) -> str:
+    return str(frame.get(key) or "").strip().casefold()
+
+
+def _semantic_frame_from_result(result: SubscriptionDraftResult) -> Mapping[str, Any]:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    for key in ("semantic_frame", "semantic_frame_shadow"):
+        frame = metadata.get(key)
+        if isinstance(frame, Mapping):
+            return frame
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        for key in ("semantic_frame", "semantic_frame_shadow"):
+            frame = direct.get(key)
+            if isinstance(frame, Mapping):
+                return frame
+    return {}
+
+
+def _semantic_frame_actual_p0(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    direct_model_p0 = metadata.get("direct_path_model_p0")
+    if isinstance(direct_model_p0, Mapping) and bool(direct_model_p0.get("is_p0")):
+        return True
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping) and isinstance(direct.get("model_p0"), Mapping):
+        return True
+    flags = {str(flag or "").strip() for flag in result.safety_flags if str(flag or "").strip()}
+    if flags.intersection(_SEMANTIC_FRAME_P0_FLAGS):
+        return True
+    return str(result.risk_level or "").strip().casefold() in {"high", "p0", "critical", "high_risk"} and result.route == "manager_only"
+
+
+def _semantic_frame_alignment(expected: Optional[bool], actual: bool) -> str:
+    if expected is None:
+        return "unknown"
+    return "match" if bool(expected) == bool(actual) else "mismatch"
+
+
+def _semantic_frame_expected_handoff(frame: Mapping[str, Any]) -> Optional[bool]:
+    answerability = _semantic_frame_value(frame, "answerability")
+    risk_class = _semantic_frame_value(frame, "risk_class")
+    if bool(frame.get("must_handoff")) or answerability == "manager_only" or risk_class in {"p0", "manager_action"}:
+        return True
+    if answerability == "answer_self" or risk_class == "safe":
+        return False
+    return None
+
+
+def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
+    if _clamp_float(frame.get("confidence", 0.0)) < 0.6:
+        return False
+    if _semantic_frame_value(frame, "risk_class") == "p0" or bool(frame.get("must_handoff")):
+        return False
+    return (
+        _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES
+        or _semantic_frame_value(frame, "payment_readiness") in _SEMANTIC_FRAME_CLOSE_VETO_PAYMENT
+        or _semantic_frame_value(frame, "requested_action") in _SEMANTIC_FRAME_CLOSE_VETO_ACTIONS
+    )
+
+
+def _semantic_frame_action_alignment(frame: Mapping[str, Any], actual_action: str) -> dict[str, str]:
+    requested_action = _semantic_frame_value(frame, "requested_action")
+    expected_action = _SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST.get(requested_action, "")
+    if not expected_action or not actual_action:
+        alignment = "unknown"
+    elif expected_action == actual_action:
+        alignment = "match"
+    else:
+        alignment = "mismatch"
+    return {
+        "requested_action": requested_action,
+        "expected_deal_action": expected_action,
+        "actual_deal_action": actual_action,
+        "alignment": alignment,
+    }
+
+
+def apply_semantic_frame_decision_shadow(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_decision_shadow_enabled(context):
+        return result
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    frame = _semantic_frame_from_result(result)
+    if not frame:
+        shadow = {
+            "schema_version": SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "no_frame",
+            "route_after": result.route,
+        }
+    else:
+        actual_handoff = result.route not in AUTONOMOUS_ROUTES
+        actual_p0 = _semantic_frame_actual_p0(result)
+        frame_p0 = _semantic_frame_value(frame, "risk_class") == "p0"
+        expected_handoff = _semantic_frame_expected_handoff(frame)
+        action_decision = metadata.get("action_decision") if isinstance(metadata.get("action_decision"), Mapping) else {}
+        close_detect = metadata.get("close_detect") if isinstance(metadata.get("close_detect"), Mapping) else {}
+        actual_action = str(action_decision.get("action") or "").strip()
+        close_status = str(close_detect.get("status") or "").strip()
+        close_veto_candidate = _semantic_frame_close_veto_candidate(frame)
+        if close_veto_candidate and close_status == "fired":
+            close_alignment = "mismatch"
+        elif close_veto_candidate:
+            close_alignment = "match"
+        else:
+            close_alignment = "not_applicable"
+        shadow = {
+            "schema_version": SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "observed",
+            "frame": {
+                "mode": str(frame.get("mode") or "").strip(),
+                "confidence": _clamp_float(frame.get("confidence", 0.0)),
+                "intent": _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=120),
+                "risk_class": _semantic_frame_value(frame, "risk_class"),
+                "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+                "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+                "requested_action": _semantic_frame_value(frame, "requested_action"),
+                "answerability": _semantic_frame_value(frame, "answerability"),
+                "must_handoff": bool(frame.get("must_handoff")),
+                "evidence_count": (
+                    len(frame.get("evidence") or ())
+                    if isinstance(frame.get("evidence"), Sequence)
+                    and not isinstance(frame.get("evidence"), (str, bytes))
+                    else 0
+                ),
+            },
+            "actual": {
+                "route_after": result.route,
+                "handoff": actual_handoff,
+                "manager_only": result.route == "manager_only",
+                "p0": actual_p0,
+                "action_decision": actual_action,
+                "close_detect_status": close_status,
+                "direct_selected_category": str(direct.get("selected_category") or "").strip(),
+            },
+            "comparisons": {
+                "must_handoff_vs_route": _semantic_frame_alignment(expected_handoff, actual_handoff),
+                "p0_vs_actual": _semantic_frame_alignment(frame_p0, actual_p0),
+                "answerability_vs_route": _semantic_frame_alignment(expected_handoff, actual_handoff),
+                "close_veto_candidate": close_veto_candidate,
+                "close_veto_vs_close_detect": close_alignment,
+                "action": _semantic_frame_action_alignment(frame, actual_action),
+            },
+        }
+    metadata["frame_decision_shadow"] = shadow
+    direct["frame_decision_shadow"] = shadow
+    metadata["direct_path"] = direct
+    return replace(result, metadata=metadata)
 
 
 def _normalize_direct_path_payload(

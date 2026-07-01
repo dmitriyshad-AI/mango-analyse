@@ -597,6 +597,47 @@ def test_direct_path_fail_fast_marks_config_invalid(monkeypatch, tmp_path):
     assert summary["config_validity"]["reason"] == "config_invalid"
 
 
+def test_summary_includes_frame_decision_shadow_counts(tmp_path):
+    transcripts = [
+        {
+            "dialog_id": "frame_shadow",
+            "brand": "foton",
+            "run_status": "completed",
+            "turns": [
+                {
+                    "turn": 1,
+                    "bot_route": "draft_for_manager",
+                    "bot_frame_decision_shadow": {
+                        "status": "observed",
+                        "comparisons": {
+                            "must_handoff_vs_route": "match",
+                            "p0_vs_actual": "mismatch",
+                            "answerability_vs_route": "match",
+                            "close_veto_vs_close_detect": "not_applicable",
+                            "action": {"alignment": "unknown"},
+                        },
+                    },
+                }
+            ],
+        }
+    ]
+
+    summary = sim.build_summary(
+        transcripts,
+        [{"dialog_id": "frame_shadow", "brand": "foton", "verdict": "PASS", "hard_gates_passed": True}],
+        scenario_path=tmp_path / "scenarios.jsonl",
+        snapshot_path=tmp_path / "snapshot.json",
+    )
+
+    frame_shadow = summary["frame_decision_shadow"]
+    assert frame_shadow["turn_count"] == 1
+    assert frame_shadow["statuses"] == {"observed": 1}
+    assert frame_shadow["must_handoff_vs_route"] == {"match": 1}
+    assert frame_shadow["p0_vs_actual"] == {"mismatch": 1}
+    assert frame_shadow["mismatches"][0]["dialog_id"] == "frame_shadow"
+    assert "Frame decision shadow" in sim.render_summary_md(summary)
+
+
 def test_summary_dumps_key_run_flags(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_DIRECT_PATH_PILOT_CONFIG", "pilot_gold_v1")
     monkeypatch.delenv("TELEGRAM_TEMPLATE_FROM_KB", raising=False)

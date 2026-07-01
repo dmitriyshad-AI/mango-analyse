@@ -7,6 +7,7 @@ from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_ENV,
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
+    SEMANTIC_FRAME_DECISION_SHADOW_ENV,
     SEMANTIC_FRAME_SHADOW_ENV,
     SubscriptionDraftResult,
     SubscriptionLlmDraftProvider,
@@ -25,6 +26,18 @@ def test_semantic_frame_shadow_flag_is_default_off_and_not_profile_on(monkeypatc
     assert subscription_llm._semantic_frame_shadow_enabled({SEMANTIC_FRAME_SHADOW_ENV: "1"}) is True
     assert subscription_llm._semantic_frame_shadow_enabled({"semantic_frame_shadow": "1"}) is True
     assert subscription_llm._semantic_frame_shadow_enabled({SEMANTIC_FRAME_SHADOW_ENV: "0"}) is False
+
+
+def test_semantic_frame_decision_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(SEMANTIC_FRAME_DECISION_SHADOW_ENV, raising=False)
+    profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert subscription_llm._semantic_frame_decision_shadow_enabled({}) is False
+    assert subscription_llm._semantic_frame_decision_shadow_enabled(profile_context) is False
+    assert SEMANTIC_FRAME_DECISION_SHADOW_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1"}) is True
+    assert subscription_llm._semantic_frame_decision_shadow_enabled({"semantic_frame_decision_shadow": "1"}) is True
+    assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "0"}) is False
 
 
 def test_semantic_frame_shadow_prompt_is_explicitly_flagged() -> None:
@@ -159,3 +172,88 @@ def test_semantic_frame_shadow_does_not_change_route_text_or_call_count() -> Non
     assert result.metadata["direct_path"]["semantic_frame"]["intent"] == "live_availability"
     assert result.metadata["direct_path"]["semantic_frame"]["mode"] == "shadow"
     assert result.metadata["direct_path"]["semantic_frame_shadow"]["intent"] == "live_availability"
+    assert "frame_decision_shadow" not in result.metadata
+
+
+def test_semantic_frame_decision_shadow_adds_metadata_only() -> None:
+    base_result = SubscriptionDraftResult(
+        route="draft_for_manager",
+        draft_text="Менеджер проверит наличие места и подскажет следующий шаг.",
+        safety_flags=("manager_approval_required",),
+        manager_checklist=("Проверить наличие места.",),
+        metadata={
+            "direct_path_model_p0": {"is_p0": False},
+            "semantic_frame": {
+                "schema_version": "semantic_frame_v1_2026_07_01",
+                "mode": "shadow",
+                "intent": "live_availability",
+                "risk_class": "manager_action",
+                "deal_stage": "closing",
+                "payment_readiness": "considering",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.88,
+                "evidence": ["нужно проверить место"],
+            },
+        },
+    )
+    off_provider = _SemanticFrameFakeProvider(base_result)
+    off_result = off_provider.build_draft(
+        "Есть места в онлайн-группе?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_SHADOW_ENV: "1",
+        },
+    )
+    provider = _SemanticFrameFakeProvider(base_result)
+
+    result = provider.build_draft(
+        "Есть места в онлайн-группе?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_SHADOW_ENV: "1",
+            SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert off_provider.calls == 1
+    assert result.route == off_result.route == "draft_for_manager"
+    assert result.draft_text == off_result.draft_text == "Менеджер проверит наличие места и подскажет следующий шаг."
+    assert result.safety_flags == off_result.safety_flags
+    assert result.manager_checklist == off_result.manager_checklist
+    assert "frame_decision_shadow" not in off_result.metadata
+    shadow = result.metadata["frame_decision_shadow"]
+    assert shadow["schema_version"] == "semantic_frame_decision_shadow_v1_2026_07_01"
+    assert shadow["status"] == "observed"
+    assert shadow["frame"]["intent"] == "live_availability"
+    assert shadow["actual"]["route_after"] == "draft_for_manager"
+    assert shadow["comparisons"]["must_handoff_vs_route"] == "match"
+    assert shadow["comparisons"]["p0_vs_actual"] == "match"
+    assert result.metadata["direct_path"]["frame_decision_shadow"] == shadow
+
+
+def test_semantic_frame_decision_shadow_reports_missing_frame_without_behavior_change() -> None:
+    provider = _SemanticFrameFakeProvider(
+        SubscriptionDraftResult(
+            route="bot_answer_self_for_pilot",
+            draft_text="Да, можно записаться на онлайн-курс.",
+        )
+    )
+
+    result = provider.build_draft(
+        "Можно записаться на курс?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Да, можно записаться на онлайн-курс."
+    assert result.metadata["frame_decision_shadow"]["status"] == "no_frame"

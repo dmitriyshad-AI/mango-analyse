@@ -1,0 +1,12 @@
+# Тесты
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_direct_path_semantic_frame_shadow.py tests/test_direct_path_payment_refund_split.py tests/test_adr003_regex_understanding_moratorium.py tests/test_telegram_dynamic_client_sim.py::test_summary_includes_frame_decision_shadow_counts
+17 passed in 0.67s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py tests/test_direct_p0_text_hygiene.py tests/test_reliable_answerer_step1.py
+566 passed in 75.00s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+3768 passed, 5 skipped, 1 warning in 84.09s
+```

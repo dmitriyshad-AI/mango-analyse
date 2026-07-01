@@ -1816,6 +1816,11 @@ def run_one_dialog(
         tone_sell_prompt_metadata = dict(result.metadata.get("tone_sell_prompt") or {}) if isinstance(result.metadata.get("tone_sell_prompt"), Mapping) else {}
         action_proposal_metadata = dict(result.metadata.get("action_proposal") or {}) if isinstance(result.metadata.get("action_proposal"), Mapping) else {}
         action_decision_metadata = dict(result.metadata.get("action_decision") or {}) if isinstance(result.metadata.get("action_decision"), Mapping) else {}
+        frame_decision_shadow_metadata = (
+            dict(result.metadata.get("frame_decision_shadow") or {})
+            if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("frame_decision_shadow"), Mapping)
+            else {}
+        )
         answerability_trace_metadata = (
             dict(result.metadata.get("answerability_trace") or {})
             if isinstance(result.metadata, Mapping) and isinstance(result.metadata.get("answerability_trace"), Mapping)
@@ -1874,6 +1879,7 @@ def run_one_dialog(
             "bot_action_decision": action_decision_metadata,
             "bot_action_decision_action": str(action_decision_metadata.get("action") or ""),
             "bot_close_detect": close_detect_metadata,
+            "bot_frame_decision_shadow": frame_decision_shadow_metadata,
             "bot_tone_sell_prompt": tone_sell_prompt_metadata,
             "bot_claude_cli_errors": claude_cli_events,
             "bot_claude_cli_error_count": len(claude_cli_events),
@@ -3285,6 +3291,7 @@ def build_summary(
     fact_retrieval_trace = _fact_retrieval_trace_summary(transcripts)
     answerability_trace = _answerability_trace_summary(transcripts)
     semantic_frame = _semantic_frame_summary(transcripts)
+    frame_decision_shadow = _frame_decision_shadow_summary(transcripts)
     config_validity = _direct_path_config_invalid(
         transcripts,
         persona_order={str(dialog.get("dialog_id") or ""): index for index, dialog in enumerate(transcripts)},
@@ -3412,6 +3419,7 @@ def build_summary(
         "fact_retrieval_trace": fact_retrieval_trace,
         **({"answerability_trace": answerability_trace} if int(answerability_trace.get("turn_count") or 0) else {}),
         **({"semantic_frame": semantic_frame} if int(semantic_frame.get("turn_count") or 0) else {}),
+        **({"frame_decision_shadow": frame_decision_shadow} if int(frame_decision_shadow.get("turn_count") or 0) else {}),
         "turn_fallback_reasons": fallback_reasons,
         "manager_deferrals": manager_deferrals,
         "action_decision": action_decision,
@@ -3772,6 +3780,68 @@ def _semantic_frame_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping
         "manager_review_alignment": dict(manager_review_alignment),
         "p0_manager_only_alignment": dict(p0_manager_only_alignment),
         "detector_mismatches": detector_mismatches,
+        "examples": examples,
+    }
+
+
+def _frame_decision_shadow_summary(transcripts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    statuses: Counter[str] = Counter()
+    handoff_alignment: Counter[str] = Counter()
+    p0_alignment: Counter[str] = Counter()
+    answerability_alignment: Counter[str] = Counter()
+    close_alignment: Counter[str] = Counter()
+    action_alignment: Counter[str] = Counter()
+    mismatches: list[Mapping[str, Any]] = []
+    examples: list[Mapping[str, Any]] = []
+    total = 0
+    for dialog in transcripts:
+        for turn in dialog.get("turns") or []:
+            if not isinstance(turn, Mapping):
+                continue
+            shadow = turn.get("bot_frame_decision_shadow")
+            if not isinstance(shadow, Mapping) or not shadow:
+                continue
+            total += 1
+            status = str(shadow.get("status") or "").strip() or "unknown"
+            statuses[status] += 1
+            comparisons = shadow.get("comparisons") if isinstance(shadow.get("comparisons"), Mapping) else {}
+            action = comparisons.get("action") if isinstance(comparisons.get("action"), Mapping) else {}
+            handoff = str(comparisons.get("must_handoff_vs_route") or "unknown")
+            p0 = str(comparisons.get("p0_vs_actual") or "unknown")
+            answerability = str(comparisons.get("answerability_vs_route") or "unknown")
+            close = str(comparisons.get("close_veto_vs_close_detect") or "unknown")
+            action_value = str(action.get("alignment") or "unknown")
+            handoff_alignment[handoff] += 1
+            p0_alignment[p0] += 1
+            answerability_alignment[answerability] += 1
+            close_alignment[close] += 1
+            action_alignment[action_value] += 1
+            has_mismatch = "mismatch" in {handoff, p0, answerability, close, action_value}
+            row = {
+                "dialog_id": str(dialog.get("dialog_id") or ""),
+                "turn": turn.get("turn"),
+                "brand": str(dialog.get("brand") or ""),
+                "route": str(turn.get("bot_route") or ""),
+                "status": status,
+                "handoff_alignment": handoff,
+                "p0_alignment": p0,
+                "close_alignment": close,
+                "action_alignment": action_value,
+            }
+            if has_mismatch and len(mismatches) < 100:
+                mismatches.append(row)
+            if len(examples) < 50:
+                examples.append(row)
+    return {
+        "schema_version": "frame_decision_shadow_summary_v1_2026_07_01",
+        "turn_count": total,
+        "statuses": dict(statuses),
+        "must_handoff_vs_route": dict(handoff_alignment),
+        "p0_vs_actual": dict(p0_alignment),
+        "answerability_vs_route": dict(answerability_alignment),
+        "close_veto_vs_close_detect": dict(close_alignment),
+        "action_alignment": dict(action_alignment),
+        "mismatches": mismatches,
         "examples": examples,
     }
 
@@ -5127,6 +5197,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
     over_handoff = summary.get("over_handoff") if isinstance(summary.get("over_handoff"), Mapping) else {}
     handoff_trace = summary.get("handoff_trace") if isinstance(summary.get("handoff_trace"), Mapping) else {}
     judge_fact_audit = summary.get("judge_fact_audit") if isinstance(summary.get("judge_fact_audit"), Mapping) else {}
+    frame_decision_shadow = summary.get("frame_decision_shadow") if isinstance(summary.get("frame_decision_shadow"), Mapping) else {}
     return "\n".join(
         [
             "# Dynamic Telegram Client Simulation v7",
@@ -5147,6 +5218,7 @@ def render_summary_md(summary: Mapping[str, Any]) -> str:
             f"- LLM calls: `{llm_calls}`",
             f"- Turn fallback reasons: `{summary.get('turn_fallback_reasons')}`",
             f"- Close detect: `{summary.get('close_detect')}`",
+            f"- Frame decision shadow: `{frame_decision_shadow}`",
             f"- Claude CLI errors: `{summary.get('claude_cli_errors')}`",
             f"- Send-unedited proxy: `{summary.get('send_unedited_proxy')}`",
             f"- Over-handoff: `{over_handoff}`",

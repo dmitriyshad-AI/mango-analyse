@@ -28,6 +28,21 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_semantic_f
 - SemanticFrame должен приходить в существующем direct-path payload, без отдельного модельного вызова.
 - M1-регрейд сравнивает OFF/ON на этом наборе: diff финальных черновиков = 0, extra model calls = 0, `frame.must_handoff` vs фактический P0 >= 95%.
 
+## OFF/ON Report
+
+После M1-прогона отчёт собирается из сохранённых `dynamic_dialog_transcripts.jsonl` и `dynamic_summary.json`:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/report_adr003_semantic_frame_eval.py \
+  --off-transcripts <OFF_RUN>/dynamic_dialog_transcripts.jsonl \
+  --off-summary <OFF_RUN>/dynamic_summary.json \
+  --on-transcripts <ON_RUN>/dynamic_dialog_transcripts.jsonl \
+  --on-summary <ON_RUN>/dynamic_summary.json \
+  --out-dir <REPORT_DIR>
+```
+
+Отчёт проверяет route/text no-op, delta модельных вызовов, coverage/schema `SemanticFrame`, `frame_decision_shadow` и расхождения `must_handoff` с фактическим handoff/P0-сигналом. Если OFF-ветка не передана, отчёт не заявляет no-op, а явно пишет `needs_review`.
+
 ## Baseline
 
 Для 25 Wappi what-if кейсов на 2026-07-01:

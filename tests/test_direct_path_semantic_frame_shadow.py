@@ -10,6 +10,7 @@ from mango_mvp.channels.subscription_llm import (
     DIRECT_PATH_PILOT_CONFIG_ENV,
     DIRECT_PATH_PILOT_CONFIG_VERSION,
     SEMANTIC_FRAME_DECISION_SHADOW_ENV,
+    SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV,
     SEMANTIC_FRAME_POSTHOC_SHADOW_ENV,
     SEMANTIC_FRAME_SHADOW_ENV,
     SubscriptionDraftResult,
@@ -41,6 +42,18 @@ def test_semantic_frame_decision_shadow_flag_is_default_off_and_not_profile_on(m
     assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1"}) is True
     assert subscription_llm._semantic_frame_decision_shadow_enabled({"semantic_frame_decision_shadow": "1"}) is True
     assert subscription_llm._semantic_frame_decision_shadow_enabled({SEMANTIC_FRAME_DECISION_SHADOW_ENV: "0"}) is False
+
+
+def test_semantic_frame_manager_action_gate_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV, raising=False)
+    profile_context = {DIRECT_PATH_PILOT_CONFIG_ENV: DIRECT_PATH_PILOT_CONFIG_VERSION}
+
+    assert subscription_llm._semantic_frame_manager_action_gate_enabled({}) is False
+    assert subscription_llm._semantic_frame_manager_action_gate_enabled(profile_context) is False
+    assert SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV not in subscription_llm.DIRECT_PATH_PILOT_PROFILE_DEFAULT_ON_FLAGS
+    assert subscription_llm._semantic_frame_manager_action_gate_enabled({SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1"}) is True
+    assert subscription_llm._semantic_frame_manager_action_gate_enabled({"semantic_frame_manager_action_gate": "1"}) is True
+    assert subscription_llm._semantic_frame_manager_action_gate_enabled({SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "0"}) is False
 
 
 def test_semantic_frame_posthoc_shadow_flag_is_default_off_and_not_profile_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -375,3 +388,269 @@ def test_semantic_frame_decision_shadow_reports_missing_frame_without_behavior_c
     assert result.route == "bot_answer_self_for_pilot"
     assert result.draft_text == "Да, можно записаться на онлайн-курс."
     assert result.metadata["frame_decision_shadow"]["status"] == "no_frame"
+
+
+def test_semantic_frame_manager_action_gate_is_off_noop() -> None:
+    base_result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, можно записаться на онлайн-курс.",
+        metadata={
+            "semantic_frame_posthoc_shadow": {"status": "ok"},
+            "semantic_frame": {
+                "intent": "live_availability",
+                "risk_class": "manager_action",
+                "deal_stage": "closing",
+                "payment_readiness": "considering",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.9,
+            },
+        },
+    )
+    provider = _SemanticFrameFakeProvider(base_result)
+
+    result = provider.build_draft(
+        "Есть места в онлайн-группе?",
+        context={"active_brand": "foton", DIRECT_PATH_ENV: "1"},
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Да, можно записаться на онлайн-курс."
+    assert "semantic_frame_manager_action_gate" not in result.metadata
+
+
+def test_semantic_frame_manager_action_gate_promotes_strong_manager_action() -> None:
+    base_result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, можно записаться на онлайн-курс.",
+        metadata={
+            "semantic_frame_posthoc_shadow": {"status": "ok"},
+            "semantic_frame": {
+                "intent": "live_availability",
+                "risk_class": "manager_action",
+                "deal_stage": "closing",
+                "payment_readiness": "considering",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.9,
+                "evidence": ["нужно проверить место"],
+            },
+        },
+    )
+    provider = _SemanticFrameFakeProvider(base_result)
+
+    result = provider.build_draft(
+        "Есть места в онлайн-группе?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1",
+            SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "draft_for_manager"
+    assert result.draft_text == "Да, можно записаться на онлайн-курс."
+    assert "semantic_frame_manager_action_gate" in result.safety_flags
+    assert "SemanticFrame: проверить действие менеджера перед ответом клиенту." in result.manager_checklist
+    gate = result.metadata["semantic_frame_manager_action_gate"]
+    assert gate["status"] == "promoted_to_draft_for_manager"
+    assert gate["reason"] == "manager_action:check_availability"
+    assert gate["route_before"] == "bot_answer_self_for_pilot"
+    assert gate["route_after"] == "draft_for_manager"
+    assert result.metadata["direct_path"]["semantic_frame_manager_action_gate"] == gate
+    shadow = result.metadata["frame_decision_shadow"]
+    assert shadow["actual"]["route_after"] == "draft_for_manager"
+    assert shadow["comparisons"]["must_handoff_vs_route"] == "match"
+
+
+def test_semantic_frame_manager_action_gate_keeps_safe_or_forward_payment_self_answer() -> None:
+    safe_result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Оплатить можно по ссылке, которую пришлёт менеджер после оформления.",
+        metadata={
+            "semantic_frame_posthoc_shadow": {"status": "ok"},
+            "semantic_frame": {
+                "intent": "payment_link_request",
+                "risk_class": "manager_action",
+                "deal_stage": "closing",
+                "payment_readiness": "ready_to_pay",
+                "requested_action": "send_payment_link",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.92,
+            },
+        },
+    )
+    provider = _SemanticFrameFakeProvider(safe_result)
+
+    result = provider.build_draft(
+        "А сюда можно ссылку на оплату?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    assert result.draft_text == "Оплатить можно по ссылке, которую пришлёт менеджер после оформления."
+    gate = result.metadata["semantic_frame_manager_action_gate"]
+    assert gate["status"] == "pass"
+    assert gate["reason"] == "unsupported_manager_action"
+
+
+def test_semantic_frame_manager_action_gate_does_not_promote_interest_availability() -> None:
+    base_result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, очные курсы есть, расскажу по формату и направлениям.",
+        metadata={
+            "semantic_frame_posthoc_shadow": {"status": "ok"},
+            "semantic_frame": {
+                "intent": "course_existence_question",
+                "risk_class": "manager_action",
+                "deal_stage": "interest",
+                "payment_readiness": "none",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.92,
+            },
+        },
+    )
+    provider = _SemanticFrameFakeProvider(base_result)
+
+    result = provider.build_draft(
+        "Есть очные курсы?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    gate = result.metadata["semantic_frame_manager_action_gate"]
+    assert gate["status"] == "pass"
+    assert gate["reason"] == "unsupported_manager_action"
+
+
+def test_semantic_frame_manager_action_gate_does_not_trust_string_false_must_handoff() -> None:
+    base_result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, можно начать с пробного занятия.",
+        metadata={
+            "semantic_frame_posthoc_shadow": {"status": "ok"},
+            "semantic_frame": {
+                "intent": "trial_lesson_question",
+                "risk_class": "safe",
+                "deal_stage": "interest",
+                "payment_readiness": "none",
+                "requested_action": "enroll",
+                "answerability": "answer_self",
+                "must_handoff": "false",
+                "confidence": 0.93,
+            },
+        },
+    )
+    provider = _SemanticFrameFakeProvider(base_result)
+
+    result = provider.build_draft(
+        "Можно пробное?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1",
+            SEMANTIC_FRAME_DECISION_SHADOW_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    gate = result.metadata["semantic_frame_manager_action_gate"]
+    assert gate["status"] == "pass"
+    assert gate["reason"] == "risk_class_not_manager_action"
+    shadow = result.metadata["frame_decision_shadow"]
+    assert shadow["frame"]["must_handoff"] is False
+    assert shadow["comparisons"]["must_handoff_vs_route"] == "match"
+
+
+def test_semantic_frame_manager_action_gate_does_not_lower_existing_handoff() -> None:
+    base_result = SubscriptionDraftResult(
+        route="manager_only",
+        draft_text="Передам вопрос менеджеру.",
+        risk_level="high",
+        metadata={
+            "semantic_frame_posthoc_shadow": {"status": "ok"},
+            "semantic_frame": {
+                "intent": "payment_receipt_check",
+                "risk_class": "manager_action",
+                "deal_stage": "post_payment",
+                "payment_readiness": "paid",
+                "requested_action": "handoff_manager",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.91,
+            },
+        },
+    )
+    provider = _SemanticFrameFakeProvider(base_result)
+
+    result = provider.build_draft(
+        "Я оплатил, чек пришёл?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "manager_only"
+    gate = result.metadata["semantic_frame_manager_action_gate"]
+    assert gate["status"] == "pass"
+    assert gate["reason"] == "manager_action:handoff_manager"
+    assert gate["route_before"] == "manager_only"
+    assert gate["route_after"] == "manager_only"
+
+
+def test_semantic_frame_manager_action_gate_ignores_inline_non_posthoc_frame() -> None:
+    base_result = SubscriptionDraftResult(
+        route="bot_answer_self_for_pilot",
+        draft_text="Да, можно записаться на онлайн-курс.",
+        metadata={
+            "semantic_frame": {
+                "intent": "live_availability",
+                "risk_class": "manager_action",
+                "deal_stage": "closing",
+                "payment_readiness": "considering",
+                "requested_action": "check_availability",
+                "answerability": "manager_only",
+                "must_handoff": True,
+                "confidence": 0.95,
+            },
+        },
+    )
+    provider = _SemanticFrameFakeProvider(base_result)
+
+    result = provider.build_draft(
+        "Есть места в онлайн-группе?",
+        context={
+            "active_brand": "foton",
+            DIRECT_PATH_ENV: "1",
+            SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV: "1",
+        },
+    )
+
+    assert provider.calls == 1
+    assert result.route == "bot_answer_self_for_pilot"
+    gate = result.metadata["semantic_frame_manager_action_gate"]
+    assert gate["status"] == "frame_not_posthoc"
+    assert gate["route_before"] == "bot_answer_self_for_pilot"
+    assert gate["route_after"] == "bot_answer_self_for_pilot"

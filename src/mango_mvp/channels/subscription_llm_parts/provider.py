@@ -275,6 +275,7 @@ from mango_mvp.channels.subscription_llm_parts.direct_path import (
     _direct_slot_topic_shadow_enabled,
     _semantic_frame_posthoc_shadow_enabled,
     _semantic_frame_decision_shadow_enabled,
+    _semantic_frame_manager_action_gate_enabled,
     _p0_model_classes_v2_enabled,
     _a2_extract_phone,
     _replace_echoed_phone,
@@ -979,7 +980,8 @@ class SubscriptionLlmDraftProvider:
                 client_message=client_message,
                 context=context,
             )
-            return apply_semantic_frame_decision_shadow(framed, context=context)
+            manager_gated = apply_semantic_frame_manager_action_gate(framed, context=context)
+            return apply_semantic_frame_decision_shadow(manager_gated, context=context)
         if dialogue_contract_pipeline_enabled(context):
             result = self._build_dialogue_contract_pipeline_draft(client_message, context=context)
             guarded = self._apply_dialogue_contract_v2_guard_chain(result, client_message=client_message, context=context)
@@ -2529,6 +2531,7 @@ def _apply_direct_path_model_p0_route(
 
 
 SEMANTIC_FRAME_DECISION_SHADOW_SCHEMA_VERSION = "semantic_frame_decision_shadow_v1_2026_07_01"
+SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION = "semantic_frame_manager_action_gate_v1_2026_07_01"
 
 _SEMANTIC_FRAME_P0_FLAGS = {
     "p0",
@@ -2571,6 +2574,27 @@ _SEMANTIC_FRAME_CLOSE_VETO_ACTIONS = {
     "send_document",
 }
 
+_SEMANTIC_FRAME_MANAGER_ACTION_GATE_CONFIDENCE = 0.8
+_SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES = {"closing", "post_payment", "support"}
+_SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES = {"paid", "dispute"}
+
+
+def _semantic_frame_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "y", "да", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "нет", "off"}:
+            return False
+    return None
+
 
 def _semantic_frame_value(frame: Mapping[str, Any], key: str) -> str:
     return str(frame.get(key) or "").strip().casefold()
@@ -2589,6 +2613,18 @@ def _semantic_frame_from_result(result: SubscriptionDraftResult) -> Mapping[str,
             if isinstance(frame, Mapping):
                 return frame
     return {}
+
+
+def _semantic_frame_posthoc_ok(result: SubscriptionDraftResult) -> bool:
+    metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+    status = metadata.get("semantic_frame_posthoc_shadow")
+    if isinstance(status, Mapping) and str(status.get("status") or "").strip() == "ok":
+        return True
+    direct = metadata.get("direct_path")
+    if isinstance(direct, Mapping):
+        status = direct.get("semantic_frame_posthoc_shadow")
+        return isinstance(status, Mapping) and str(status.get("status") or "").strip() == "ok"
+    return False
 
 
 def _semantic_frame_actual_p0(result: SubscriptionDraftResult) -> bool:
@@ -2614,7 +2650,8 @@ def _semantic_frame_alignment(expected: Optional[bool], actual: bool) -> str:
 def _semantic_frame_expected_handoff(frame: Mapping[str, Any]) -> Optional[bool]:
     answerability = _semantic_frame_value(frame, "answerability")
     risk_class = _semantic_frame_value(frame, "risk_class")
-    if bool(frame.get("must_handoff")) or answerability == "manager_only" or risk_class in {"p0", "manager_action"}:
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    if must_handoff is True or answerability == "manager_only" or risk_class in {"p0", "manager_action"}:
         return True
     if answerability == "answer_self" or risk_class == "safe":
         return False
@@ -2624,7 +2661,7 @@ def _semantic_frame_expected_handoff(frame: Mapping[str, Any]) -> Optional[bool]
 def _semantic_frame_close_veto_candidate(frame: Mapping[str, Any]) -> bool:
     if _clamp_float(frame.get("confidence", 0.0)) < 0.6:
         return False
-    if _semantic_frame_value(frame, "risk_class") == "p0" or bool(frame.get("must_handoff")):
+    if _semantic_frame_value(frame, "risk_class") == "p0" or _semantic_frame_bool(frame.get("must_handoff")) is True:
         return False
     return (
         _semantic_frame_value(frame, "deal_stage") in _SEMANTIC_FRAME_CLOSE_VETO_DEAL_STAGES
@@ -2648,6 +2685,134 @@ def _semantic_frame_action_alignment(frame: Mapping[str, Any], actual_action: st
         "actual_deal_action": actual_action,
         "alignment": alignment,
     }
+
+
+def _semantic_frame_manager_action_gate_reason(frame: Mapping[str, Any]) -> tuple[bool, str]:
+    confidence = _clamp_float(frame.get("confidence", 0.0))
+    if confidence < _SEMANTIC_FRAME_MANAGER_ACTION_GATE_CONFIDENCE:
+        return False, "low_confidence"
+    if _semantic_frame_value(frame, "risk_class") != "manager_action":
+        return False, "risk_class_not_manager_action"
+
+    must_handoff = _semantic_frame_bool(frame.get("must_handoff"))
+    answerability = _semantic_frame_value(frame, "answerability")
+    if must_handoff is not True and answerability != "manager_only":
+        return False, "no_strong_handoff_signal"
+
+    requested_action = _semantic_frame_value(frame, "requested_action")
+    deal_stage = _semantic_frame_value(frame, "deal_stage")
+    payment_readiness = _semantic_frame_value(frame, "payment_readiness")
+
+    if requested_action == "check_availability" and deal_stage in _SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES:
+        return True, "manager_action:check_availability"
+    if requested_action in {"handoff_manager", "send_document"}:
+        return True, f"manager_action:{requested_action}"
+    if requested_action == "enroll" and (
+        deal_stage in _SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES
+        or payment_readiness in {"ready_to_pay", *_SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES}
+    ):
+        return True, "manager_action:enroll_closing"
+    if payment_readiness in _SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES and requested_action in {
+        "unknown",
+        "handoff_manager",
+        "send_document",
+    }:
+        return True, f"manager_action:payment_{payment_readiness}"
+    return False, "unsupported_manager_action"
+
+
+def apply_semantic_frame_manager_action_gate(
+    result: SubscriptionDraftResult,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> SubscriptionDraftResult:
+    if not _semantic_frame_manager_action_gate_enabled(context):
+        return result
+
+    metadata = dict(result.metadata)
+    direct = dict(metadata.get("direct_path") or {})
+    frame = _semantic_frame_from_result(result)
+    route_before = result.route
+
+    if not frame:
+        trace = {
+            "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "no_frame",
+            "route_before": route_before,
+            "route_after": route_before,
+        }
+        metadata["semantic_frame_manager_action_gate"] = trace
+        direct["semantic_frame_manager_action_gate"] = trace
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
+    if not _semantic_frame_posthoc_ok(result):
+        trace = {
+            "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+            "enabled": True,
+            "status": "frame_not_posthoc",
+            "route_before": route_before,
+            "route_after": route_before,
+        }
+        metadata["semantic_frame_manager_action_gate"] = trace
+        direct["semantic_frame_manager_action_gate"] = trace
+        metadata["direct_path"] = direct
+        return replace(result, metadata=metadata)
+
+    should_gate, reason = _semantic_frame_manager_action_gate_reason(frame)
+    route_is_autonomous = route_before in AUTONOMOUS_ROUTES
+    status = "promoted_to_draft_for_manager" if should_gate and route_is_autonomous else "pass"
+    route_after = "draft_for_manager" if status == "promoted_to_draft_for_manager" else route_before
+    trace = {
+        "schema_version": SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION,
+        "enabled": True,
+        "status": status,
+        "reason": reason,
+        "route_before": route_before,
+        "route_after": route_after,
+        "frame": {
+            "confidence": _clamp_float(frame.get("confidence", 0.0)),
+            "intent": _direct_path_semantic_frame_safe_text(frame.get("intent"), limit=120),
+            "risk_class": _semantic_frame_value(frame, "risk_class"),
+            "deal_stage": _semantic_frame_value(frame, "deal_stage"),
+            "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
+            "requested_action": _semantic_frame_value(frame, "requested_action"),
+            "answerability": _semantic_frame_value(frame, "answerability"),
+            "must_handoff": _semantic_frame_bool(frame.get("must_handoff")),
+        },
+    }
+    metadata["semantic_frame_manager_action_gate"] = trace
+    direct["semantic_frame_manager_action_gate"] = trace
+    metadata["direct_path"] = direct
+    if status != "promoted_to_draft_for_manager":
+        return replace(result, metadata=metadata)
+
+    flags = tuple(
+        dict.fromkeys(
+            [
+                *result.safety_flags,
+                "semantic_frame_manager_action_gate",
+                "manager_approval_required",
+                "no_auto_send",
+            ]
+        )
+    )
+    checklist = tuple(
+        dict.fromkeys(
+            [
+                *result.manager_checklist,
+                "SemanticFrame: проверить действие менеджера перед ответом клиенту.",
+            ]
+        )
+    )
+    return replace(
+        result,
+        route="draft_for_manager",
+        safety_flags=flags,
+        manager_checklist=checklist,
+        metadata=metadata,
+    )
 
 
 def apply_semantic_frame_decision_shadow(
@@ -2696,7 +2861,7 @@ def apply_semantic_frame_decision_shadow(
                 "payment_readiness": _semantic_frame_value(frame, "payment_readiness"),
                 "requested_action": _semantic_frame_value(frame, "requested_action"),
                 "answerability": _semantic_frame_value(frame, "answerability"),
-                "must_handoff": bool(frame.get("must_handoff")),
+                "must_handoff": _semantic_frame_bool(frame.get("must_handoff")) is True,
                 "evidence_count": (
                     len(frame.get("evidence") or ())
                     if isinstance(frame.get("evidence"), Sequence)

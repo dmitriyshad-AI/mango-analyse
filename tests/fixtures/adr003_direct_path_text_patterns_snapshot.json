@@ -4939,6 +4939,14 @@
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
     "qualname": "<module>",
+    "symbol": "SEMANTIC_FRAME_MANAGER_ACTION_GATE_ENV",
+    "value_preview": "'TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE'",
+    "value_sha256": "dad70e4523a5d27af721ba988f98373f9b28a411afd4305893704a4d4fb9da07"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/direct_path.py",
+    "qualname": "<module>",
     "symbol": "_ASSUMED_SCOPE_KEYS",
     "value_preview": "frozenset({'format', 'training_format', 'grade', 'class', 'subject', 'course_subject', 'product', 'product_family'})",
     "value_sha256": "f26320fa07ae3dc593247c75492d27692538df576b9f353393fd7a6e585838a1"
@@ -5187,6 +5195,14 @@
     "node_kind": "text_table",
     "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
     "qualname": "<module>",
+    "symbol": "SEMANTIC_FRAME_MANAGER_ACTION_GATE_SCHEMA_VERSION",
+    "value_preview": "'semantic_frame_manager_action_gate_v1_2026_07_01'",
+    "value_sha256": "8527ef9ea758a7613beff6d026ebcd0a975b90bd3388f0e4271e69ca0fa1e1a3"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
+    "qualname": "<module>",
     "symbol": "_DIRECT_PATH_MODEL_INTENTS",
     "value_preview": "frozenset({'live_availability', 'schedule', 'address', 'camp', 'price_fix', 'other'})",
     "value_sha256": "b9a928fdcb2b1b5a3e754ecf4c764047447be53276de43e248b4438c73a8fe84"
@@ -5206,6 +5222,30 @@
     "symbol": "_SEMANTIC_FRAME_DEAL_ACTION_BY_REQUEST",
     "value_preview": "{'answer_question': 'answer_only', 'check_availability': 'capture_lead', 'enroll': 'capture_lead', 'send_materials': 'send_materials', 'send_payment_link': 'send_payment_link', 'send_document': 'send_document', 'refund_or_cancel': 'handoff_",
     "value_sha256": "bacaf557e731e464a4be175a50f48fc61f20b1f0fe61b2c14aa0f5b7f7f3561b"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
+    "qualname": "<module>",
+    "symbol": "_SEMANTIC_FRAME_MANAGER_ACTION_GATE_CONFIDENCE",
+    "value_preview": "0.8",
+    "value_sha256": "9a91a2df174d8ffdc850d55b5dfc469abc27454dd79d39f75be4ea9296141495"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
+    "qualname": "<module>",
+    "symbol": "_SEMANTIC_FRAME_MANAGER_ACTION_GATE_PAID_STATES",
+    "value_preview": "{'paid', 'dispute'}",
+    "value_sha256": "5f119f2e03be5d284a506faf9e2a38f4409aaa151a61f9f97e963818676e6177"
+  },
+  {
+    "node_kind": "text_table",
+    "path": "src/mango_mvp/channels/subscription_llm_parts/provider.py",
+    "qualname": "<module>",
+    "symbol": "_SEMANTIC_FRAME_MANAGER_ACTION_GATE_STAGES",
+    "value_preview": "{'closing', 'post_payment', 'support'}",
+    "value_sha256": "1e88021d3c75432881d339567c95f66d37a0aca50798bba7060a9325ce6e1e37"
   },
   {
     "node_kind": "text_table",

@@ -1,0 +1,25 @@
+Commands:
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_direct_path_semantic_frame_shadow.py
+Result: 16 passed in 0.48s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_direct_path_semantic_frame_shadow.py tests/test_adr003_regex_understanding_moratorium.py
+Result before manager-action narrowing: 20 passed in 1.50s
+Result after manager-action narrowing: 21 passed in 1.78s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q tests/test_subscription_llm_draft_provider.py tests/test_direct_path_semantic_frame_shadow.py
+Result: 555 passed in 68.26s
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m pytest -q
+Result before manager-action narrowing: 3804 passed, 5 skipped, 1 warning in 75.03s
+Result after manager-action narrowing: 3805 passed, 5 skipped, 1 warning in 85.75s
+
+git diff --check
+Result: clean
+
+Offline eval:
+
+Source: audits/_inbox/adr003_semantic_frame_enrich_full131_20260701/on/dynamic_dialog_transcripts.jsonl
+Turns: 241
+Before narrowing check_availability: 17 promoted, 0 text changes
+After narrowing check_availability: 12 promoted, 0 text changes

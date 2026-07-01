@@ -150,3 +150,18 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 scripts/build_adr003_frame_gold
 - `unclear`: 3
 
 Вывод: `SemanticFrame` уже полезен как сигнал `manager_action` для оплаты/чека/брони/живого наличия/запроса администратора, но пока слишком часто поднимает `must_handoff` на справочных вопросах, обычных next-step ходах и safe deferral. Поэтому active behavior остаётся заблокированным. Следующий этап должен быть не "frame рулит всем", а узкий `manager_action_gate` за отдельным default-OFF флагом и с gold-регрессиями из этой очереди.
+
+## Manager-Action Gate Prototype
+
+Коммит `7ef2c50` добавляет узкий default-OFF флаг `TELEGRAM_SEMANTIC_FRAME_MANAGER_ACTION_GATE`.
+
+Гейт работает только после post-hoc frame со статусом `ok`; inline legacy `semantic_frame_shadow` не считается активным источником. Он может только повысить автономный `bot_answer_self*` до `draft_for_manager`, не меняет текст, не поднимает в `manager_only`, не понижает существующие handoff/P0 routes и не включён в профиль.
+
+Локальный replay поверх сохранённого full131 paired-enrichment артефакта:
+
+- source: `audits/_inbox/adr003_semantic_frame_enrich_full131_20260701/on/dynamic_dialog_transcripts.jsonl`;
+- первый вариант дал 17 promoted / 241, 0 text changes;
+- после сужения `check_availability` до поздних/операционных стадий: 12 promoted / 241, 0 text changes;
+- убраны ранние справочные `check_availability` на `interest/qualification`, где SemanticFrame был too-cautious.
+
+Ограничение: это `formal_pass` + локальный semantic smoke, но не разрешение на включение флага. Перед включением нужен отдельный semantic gold-регрейд promoted rows и negative rows: цены, адрес, платформа, формат, порядок записи, рассрочка, pre-sale refund, "подумаем/оплачу позже", safe deferral.
